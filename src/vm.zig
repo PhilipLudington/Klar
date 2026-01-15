@@ -20,6 +20,8 @@ const ObjRange = vm_value.ObjRange;
 const ObjNative = vm_value.ObjNative;
 const RuntimeError = vm_value.RuntimeError;
 const vm_builtins = @import("vm_builtins.zig");
+const gc_mod = @import("gc.zig");
+const GC = gc_mod.GC;
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -60,6 +62,9 @@ const CallFrame = struct {
 pub const VM = struct {
     allocator: Allocator,
 
+    /// Garbage collector for heap-allocated objects.
+    gc: GC,
+
     /// Value stack.
     stack: [stack_max]Value,
 
@@ -84,6 +89,12 @@ pub const VM = struct {
     /// Debug mode flag.
     debug_trace: bool,
 
+    /// Enable GC debug logging.
+    debug_gc: bool,
+
+    /// Enable GC stress testing (collect on every allocation).
+    stress_gc: bool,
+
     // -------------------------------------------------------------------------
     // Initialization
     // -------------------------------------------------------------------------
@@ -91,6 +102,7 @@ pub const VM = struct {
     pub fn init(allocator: Allocator) !VM {
         var vm = VM{
             .allocator = allocator,
+            .gc = GC.init(allocator),
             .stack = undefined,
             .stack_top = 0,
             .frames = undefined,
@@ -99,6 +111,8 @@ pub const VM = struct {
             .open_upvalues = null,
             .stdout = getStdOut(),
             .debug_trace = false,
+            .debug_gc = false,
+            .stress_gc = false,
         };
 
         // Initialize stack with void values
@@ -126,6 +140,7 @@ pub const VM = struct {
     }
 
     pub fn deinit(self: *VM) void {
+        self.gc.deinit();
         self.globals.deinit(self.allocator);
     }
 

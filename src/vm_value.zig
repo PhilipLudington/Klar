@@ -2,6 +2,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const chunk_mod = @import("chunk.zig");
 const Function = chunk_mod.Function;
+const gc_mod = @import("gc.zig");
+pub const ObjHeader = gc_mod.ObjHeader;
+pub const ObjType = gc_mod.ObjType;
+pub const GC = gc_mod.GC;
 
 // ============================================================================
 // VM Value Representation
@@ -210,6 +214,9 @@ pub const Value = union(enum) {
 
 /// String object.
 pub const ObjString = struct {
+    /// GC header - must be first field.
+    header: ObjHeader,
+
     /// The actual string data.
     chars: []const u8,
 
@@ -219,10 +226,17 @@ pub const ObjString = struct {
     /// Whether this string owns its data (should be freed).
     owns_data: bool,
 
+    /// Create a new string via GC (preferred method).
+    pub fn createGC(gc: *GC, chars: []const u8) !*ObjString {
+        return gc.internString(chars);
+    }
+
+    /// Legacy create using direct allocator (for backward compatibility during migration).
     pub fn create(allocator: Allocator, chars: []const u8) !*ObjString {
         const obj = try allocator.create(ObjString);
         const owned = try allocator.dupe(u8, chars);
         obj.* = .{
+            .header = ObjHeader.init(.string),
             .chars = owned,
             .hash = hashString(owned),
             .owns_data = true,
@@ -233,6 +247,7 @@ pub const ObjString = struct {
     pub fn createBorrowed(allocator: Allocator, chars: []const u8) !*ObjString {
         const obj = try allocator.create(ObjString);
         obj.* = .{
+            .header = ObjHeader.init(.string),
             .chars = chars,
             .hash = hashString(chars),
             .owns_data = false,
@@ -250,11 +265,24 @@ pub const ObjString = struct {
 
 /// Array object.
 pub const ObjArray = struct {
+    /// GC header - must be first field.
+    header: ObjHeader,
+
     items: []Value,
 
+    /// Create array via GC (preferred).
+    pub fn createGC(gc: *GC, items: []const Value) !*ObjArray {
+        const obj = try gc.allocObject(ObjArray, .array);
+        obj.items = try gc.allocBytes(Value, items.len);
+        @memcpy(obj.items, items);
+        return obj;
+    }
+
+    /// Legacy create using direct allocator.
     pub fn create(allocator: Allocator, items: []const Value) !*ObjArray {
         const obj = try allocator.create(ObjArray);
         obj.* = .{
+            .header = ObjHeader.init(.array),
             .items = try allocator.dupe(Value, items),
         };
         return obj;
@@ -268,11 +296,24 @@ pub const ObjArray = struct {
 
 /// Tuple object.
 pub const ObjTuple = struct {
+    /// GC header - must be first field.
+    header: ObjHeader,
+
     items: []Value,
 
+    /// Create tuple via GC (preferred).
+    pub fn createGC(gc: *GC, items: []const Value) !*ObjTuple {
+        const obj = try gc.allocObject(ObjTuple, .tuple);
+        obj.items = try gc.allocBytes(Value, items.len);
+        @memcpy(obj.items, items);
+        return obj;
+    }
+
+    /// Legacy create using direct allocator.
     pub fn create(allocator: Allocator, items: []const Value) !*ObjTuple {
         const obj = try allocator.create(ObjTuple);
         obj.* = .{
+            .header = ObjHeader.init(.tuple),
             .items = try allocator.dupe(Value, items),
         };
         return obj;
@@ -286,12 +327,25 @@ pub const ObjTuple = struct {
 
 /// Struct object.
 pub const ObjStruct = struct {
+    /// GC header - must be first field.
+    header: ObjHeader,
+
     type_name: []const u8,
     fields: std.StringHashMapUnmanaged(Value),
 
+    /// Create struct via GC (preferred).
+    pub fn createGC(gc: *GC, type_name: []const u8) !*ObjStruct {
+        const obj = try gc.allocObject(ObjStruct, .struct_);
+        obj.type_name = type_name;
+        obj.fields = .{};
+        return obj;
+    }
+
+    /// Legacy create using direct allocator.
     pub fn create(allocator: Allocator, type_name: []const u8) !*ObjStruct {
         const obj = try allocator.create(ObjStruct);
         obj.* = .{
+            .header = ObjHeader.init(.struct_),
             .type_name = type_name,
             .fields = .{},
         };
@@ -314,15 +368,29 @@ pub const ObjStruct = struct {
 
 /// Closure object (function + captured upvalues).
 pub const ObjClosure = struct {
+    /// GC header - must be first field.
+    header: ObjHeader,
+
     function: *Function,
     upvalues: []*ObjUpvalue,
 
+    /// Create closure via GC (preferred).
+    pub fn createGC(gc: *GC, function: *Function) !*ObjClosure {
+        const obj = try gc.allocObject(ObjClosure, .closure);
+        obj.upvalues = try gc.allocBytes(*ObjUpvalue, function.upvalue_count);
+        @memset(obj.upvalues, undefined);
+        obj.function = function;
+        return obj;
+    }
+
+    /// Legacy create using direct allocator.
     pub fn create(allocator: Allocator, function: *Function) !*ObjClosure {
         const upvalues = try allocator.alloc(*ObjUpvalue, function.upvalue_count);
         @memset(upvalues, undefined);
 
         const obj = try allocator.create(ObjClosure);
         obj.* = .{
+            .header = ObjHeader.init(.closure),
             .function = function,
             .upvalues = upvalues,
         };
@@ -337,6 +405,9 @@ pub const ObjClosure = struct {
 
 /// Upvalue object (captured variable from enclosing scope).
 pub const ObjUpvalue = struct {
+    /// GC header - must be first field.
+    header: ObjHeader,
+
     /// Pointer to the captured value (on stack or closed).
     location: *Value,
 
@@ -346,9 +417,20 @@ pub const ObjUpvalue = struct {
     /// Next upvalue in the linked list of open upvalues.
     next: ?*ObjUpvalue,
 
+    /// Create upvalue via GC (preferred).
+    pub fn createGC(gc: *GC, slot: *Value) !*ObjUpvalue {
+        const obj = try gc.allocObject(ObjUpvalue, .upvalue);
+        obj.location = slot;
+        obj.closed = .void_;
+        obj.next = null;
+        return obj;
+    }
+
+    /// Legacy create using direct allocator.
     pub fn create(allocator: Allocator, slot: *Value) !*ObjUpvalue {
         const obj = try allocator.create(ObjUpvalue);
         obj.* = .{
+            .header = ObjHeader.init(.upvalue),
             .location = slot,
             .closed = .void_,
             .next = null,
@@ -363,11 +445,23 @@ pub const ObjUpvalue = struct {
 
 /// Function object (for script-level function references).
 pub const ObjFunction = struct {
+    /// GC header - must be first field.
+    header: ObjHeader,
+
     function: *Function,
 
+    /// Create function object via GC (preferred).
+    pub fn createGC(gc: *GC, function: *Function) !*ObjFunction {
+        const obj = try gc.allocObject(ObjFunction, .function);
+        obj.function = function;
+        return obj;
+    }
+
+    /// Legacy create using direct allocator.
     pub fn create(allocator: Allocator, function: *Function) !*ObjFunction {
         const obj = try allocator.create(ObjFunction);
         obj.* = .{
+            .header = ObjHeader.init(.function),
             .function = function,
         };
         return obj;
@@ -380,11 +474,29 @@ pub const ObjFunction = struct {
 
 /// Native function object.
 pub const ObjNative = struct {
+    /// GC header - must be first field.
+    header: ObjHeader,
+
     name: []const u8,
     arity: u8,
     /// Native function that takes allocator and args.
     function: *const fn (allocator: Allocator, args: []const Value) RuntimeError!Value,
 
+    /// Create native function via GC (preferred).
+    pub fn createGC(
+        gc: *GC,
+        name: []const u8,
+        arity: u8,
+        function: *const fn (allocator: Allocator, args: []const Value) RuntimeError!Value,
+    ) !*ObjNative {
+        const obj = try gc.allocObject(ObjNative, .native);
+        obj.name = name;
+        obj.arity = arity;
+        obj.function = function;
+        return obj;
+    }
+
+    /// Legacy create using direct allocator.
     pub fn create(
         allocator: Allocator,
         name: []const u8,
@@ -393,6 +505,7 @@ pub const ObjNative = struct {
     ) !*ObjNative {
         const obj = try allocator.create(ObjNative);
         obj.* = .{
+            .header = ObjHeader.init(.native),
             .name = name,
             .arity = arity,
             .function = function,
@@ -407,19 +520,46 @@ pub const ObjNative = struct {
 
 /// Optional value object.
 pub const ObjOptional = struct {
+    /// GC header - must be first field.
+    header: ObjHeader,
+
     value: ?*Value,
 
-    pub fn createNone(allocator: Allocator) !*ObjOptional {
-        const obj = try allocator.create(ObjOptional);
-        obj.* = .{ .value = null };
+    /// Create None via GC (preferred).
+    pub fn createNoneGC(gc: *GC) !*ObjOptional {
+        const obj = try gc.allocObject(ObjOptional, .optional);
+        obj.value = null;
         return obj;
     }
 
+    /// Create Some via GC (preferred).
+    pub fn createSomeGC(gc: *GC, value: Value) !*ObjOptional {
+        const obj = try gc.allocObject(ObjOptional, .optional);
+        const val_ptr = try gc.backing_allocator.create(Value);
+        val_ptr.* = value;
+        obj.value = val_ptr;
+        return obj;
+    }
+
+    /// Legacy create None.
+    pub fn createNone(allocator: Allocator) !*ObjOptional {
+        const obj = try allocator.create(ObjOptional);
+        obj.* = .{
+            .header = ObjHeader.init(.optional),
+            .value = null,
+        };
+        return obj;
+    }
+
+    /// Legacy create Some.
     pub fn createSome(allocator: Allocator, value: Value) !*ObjOptional {
         const obj = try allocator.create(ObjOptional);
         const val_ptr = try allocator.create(Value);
         val_ptr.* = value;
-        obj.* = .{ .value = val_ptr };
+        obj.* = .{
+            .header = ObjHeader.init(.optional),
+            .value = val_ptr,
+        };
         return obj;
     }
 
@@ -433,14 +573,29 @@ pub const ObjOptional = struct {
 
 /// Range object for iteration.
 pub const ObjRange = struct {
+    /// GC header - must be first field.
+    header: ObjHeader,
+
     start: i128,
     end: i128,
     inclusive: bool,
     current: i128,
 
+    /// Create range via GC (preferred).
+    pub fn createGC(gc: *GC, start: i128, end: i128, inclusive: bool) !*ObjRange {
+        const obj = try gc.allocObject(ObjRange, .range);
+        obj.start = start;
+        obj.end = end;
+        obj.inclusive = inclusive;
+        obj.current = start;
+        return obj;
+    }
+
+    /// Legacy create using direct allocator.
     pub fn create(allocator: Allocator, start: i128, end: i128, inclusive: bool) !*ObjRange {
         const obj = try allocator.create(ObjRange);
         obj.* = .{
+            .header = ObjHeader.init(.range),
             .start = start,
             .end = end,
             .inclusive = inclusive,

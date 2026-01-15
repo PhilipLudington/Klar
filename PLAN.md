@@ -240,31 +240,31 @@ Re-implement all builtins for the VM.
 
 ---
 
-### Milestone 5: Memory Management
+### Milestone 5: Memory Management ✓
 
 Implement proper memory management for the VM.
 
 #### Tasks
 
-- [ ] **5.1** Object allocation
+- [x] **5.1** Object allocation
   - Heap allocation for objects
   - Object headers for GC
 
-- [ ] **5.2** String interning
+- [x] **5.2** String interning
   - Deduplicate identical strings
   - Intern table
 
-- [ ] **5.3** Mark-sweep garbage collection
+- [x] **5.3** Mark-sweep garbage collection
   - Root marking (stack, globals)
   - Object graph traversal
   - Sweep and reclaim
 
-- [ ] **5.4** GC triggering
+- [x] **5.4** GC triggering
   - Allocation threshold
   - Stress test mode for debugging
 
 #### Deliverables
-- `src/gc.zig` - Garbage collector
+- `src/gc.zig` - Garbage collector ✓
 - Memory leak tests
 
 ---
