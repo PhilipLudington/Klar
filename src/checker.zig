@@ -650,11 +650,14 @@ pub const TypeChecker = struct {
                 return self.type_builder.referenceType(operand_type, true) catch self.type_builder.unknownType();
             },
             .deref => {
-                if (operand_type != .reference) {
+                // Only allow dereferencing reference types (&T, &mut T)
+                // Rc[T] should use .get() or Cell/RefCell patterns instead
+                if (operand_type == .reference) {
+                    return operand_type.reference.inner;
+                } else {
                     self.addError(.invalid_operation, un.span, "cannot dereference non-reference type", .{});
                     return self.type_builder.unknownType();
                 }
-                return operand_type.reference.inner;
             },
         }
     }
@@ -790,6 +793,18 @@ pub const TypeChecker = struct {
             if (std.mem.eql(u8, obj_name, "Weak") and std.mem.eql(u8, method.method_name, "new")) {
                 self.addError(.invalid_call, method.span, "Weak cannot be created directly; use rc_value.downgrade()", .{});
                 return self.type_builder.unknownType();
+            }
+
+            // Cell.new(value) -> Cell[T] where T is the type of value
+            // Cell provides interior mutability for Copy types
+            if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, method.method_name, "new")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "Cell.new() expects exactly 1 argument", .{});
+                    return self.type_builder.unknownType();
+                }
+                const value_type = self.checkExpr(method.args[0]);
+                // Cell should only wrap Copy types, but we'll allow it for flexibility
+                return self.type_builder.cellType(value_type) catch self.type_builder.unknownType();
             }
         }
 
@@ -936,7 +951,8 @@ pub const TypeChecker = struct {
                 return .{ .primitive = .usize_ };
             }
 
-            // Accessing the inner value is done via * operator (deref), not methods
+            // To access the inner value of Rc, use Rc.new(Cell.new(value))
+            // then call cell.get() and cell.set() for interior mutability
         }
 
         // Weak methods
@@ -974,6 +990,45 @@ pub const TypeChecker = struct {
                     self.addError(.invalid_call, method.span, "weak_count() takes no arguments", .{});
                 }
                 return .{ .primitive = .usize_ };
+            }
+        }
+
+        // Cell methods for interior mutability
+        if (object_type == .cell) {
+            const inner_type = object_type.cell.inner;
+
+            // get() -> T (returns a copy of the inner value)
+            if (std.mem.eql(u8, method.method_name, "get")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "get() takes no arguments", .{});
+                }
+                return inner_type;
+            }
+
+            // set(value: T) -> void (sets the inner value)
+            if (std.mem.eql(u8, method.method_name, "set")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "set() expects exactly 1 argument", .{});
+                    return self.type_builder.voidType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (!arg_type.eql(inner_type)) {
+                    self.addError(.type_mismatch, method.span, "set() argument type mismatch", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // replace(value: T) -> T (sets new value, returns old value)
+            if (std.mem.eql(u8, method.method_name, "replace")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "replace() expects exactly 1 argument", .{});
+                    return inner_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (!arg_type.eql(inner_type)) {
+                    self.addError(.type_mismatch, method.span, "replace() argument type mismatch", .{});
+                }
+                return inner_type;
             }
         }
 

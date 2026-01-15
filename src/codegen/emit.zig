@@ -84,6 +84,8 @@ pub const Emitter = struct {
         is_signed: bool,
         /// For struct variables, the name of the struct type for field resolution.
         struct_type_name: ?[]const u8 = null,
+        /// For Rc[T] or reference types, the inner type that can be dereferenced.
+        inner_type: ?llvm.TypeRef = null,
     };
 
     const LoopContext = struct {
@@ -374,12 +376,15 @@ pub const Emitter = struct {
                 const is_signed = if (decl.type_) |t| self.isTypeSigned(t) else true;
                 // Extract struct type name if this is a struct literal
                 const struct_type_name = self.getStructTypeName(decl.value);
+                // For Rc types, track the inner type for dereferencing
+                const inner_type = self.tryGetRcInnerType(decl.value);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
                     .ty = ty,
                     .is_signed = is_signed,
                     .struct_type_name = struct_type_name,
+                    .inner_type = inner_type,
                 }) catch return EmitError.OutOfMemory;
             },
             .var_decl => |decl| {
@@ -392,12 +397,15 @@ pub const Emitter = struct {
                 const is_signed = if (decl.type_) |t| self.isTypeSigned(t) else true;
                 // Extract struct type name if this is a struct literal
                 const struct_type_name = self.getStructTypeName(decl.value);
+                // For Rc types, track the inner type for dereferencing
+                const inner_type = self.tryGetRcInnerType(decl.value);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
                     .ty = ty,
                     .is_signed = is_signed,
                     .struct_type_name = struct_type_name,
+                    .inner_type = inner_type,
                 }) catch return EmitError.OutOfMemory;
             },
             .return_stmt => |ret| {
@@ -967,13 +975,135 @@ pub const Emitter = struct {
     }
 
     fn emitUnary(self: *Emitter, un: *ast.Unary) EmitError!llvm.ValueRef {
-        const operand = try self.emitExpr(un.operand);
-
         return switch (un.op) {
-            .negate => self.builder.buildNeg(operand, "negtmp"),
-            .not => self.builder.buildNot(operand, "nottmp"),
-            else => operand, // Placeholder
+            .negate => {
+                const operand = try self.emitExpr(un.operand);
+                return self.builder.buildNeg(operand, "negtmp");
+            },
+            .not => {
+                const operand = try self.emitExpr(un.operand);
+                return self.builder.buildNot(operand, "nottmp");
+            },
+            .deref => {
+                // Dereference a pointer: load the value from the pointer
+                const operand = try self.emitExpr(un.operand);
+
+                // Try to get the inner type from the operand
+                // First, check if operand is an identifier with a known inner type
+                const inner_type: llvm.TypeRef = if (un.operand == .identifier) blk: {
+                    const id = un.operand.identifier;
+                    if (self.named_values.get(id.name)) |local| {
+                        if (local.inner_type) |inner| {
+                            break :blk inner;
+                        }
+                    }
+                    // Fallback: try to infer from expression
+                    break :blk try self.inferDerefType(un.operand);
+                } else try self.inferDerefType(un.operand);
+
+                return self.builder.buildLoad(inner_type, operand, "deref");
+            },
+            .ref => {
+                // Taking address of a value - for lvalues, return the alloca pointer
+                // For now, handle identifiers which have an alloca
+                if (un.operand == .identifier) {
+                    const id = un.operand.identifier;
+                    if (self.named_values.get(id.name)) |local| {
+                        if (local.is_alloca) {
+                            // Return the pointer to the alloca (the address)
+                            return local.value;
+                        }
+                    }
+                }
+                // Fallback: emit the operand as-is (may need refinement)
+                return try self.emitExpr(un.operand);
+            },
+            .ref_mut => {
+                // Mutable reference - same as immutable ref for now
+                if (un.operand == .identifier) {
+                    const id = un.operand.identifier;
+                    if (self.named_values.get(id.name)) |local| {
+                        if (local.is_alloca) {
+                            return local.value;
+                        }
+                    }
+                }
+                return try self.emitExpr(un.operand);
+            },
         };
+    }
+
+    /// Infer the type that results from dereferencing an expression.
+    /// Used when the inner type is not explicitly tracked.
+    fn inferDerefType(self: *Emitter, expr: ast.Expr) EmitError!llvm.TypeRef {
+        // For Rc[T] method calls, try to determine T
+        if (expr == .method_call) {
+            const method = expr.method_call;
+            if (method.object == .identifier) {
+                const obj_name = method.object.identifier.name;
+                // Rc.new(value) - the inner type is the type of value
+                if (std.mem.eql(u8, obj_name, "Rc") and std.mem.eql(u8, method.method_name, "new")) {
+                    if (method.args.len > 0) {
+                        return try self.inferExprType(method.args[0]);
+                    }
+                }
+            }
+            // clone() returns same Rc type, need to trace back
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                return try self.inferDerefType(method.object);
+            }
+        }
+
+        // For identifiers, check the named_values for inner_type
+        if (expr == .identifier) {
+            const id = expr.identifier;
+            if (self.named_values.get(id.name)) |local| {
+                if (local.inner_type) |inner| {
+                    return inner;
+                }
+            }
+        }
+
+        // Default to i32 if we can't infer
+        return llvm.Types.int32(self.ctx);
+    }
+
+    /// Try to get the inner type of an Rc or Cell expression.
+    /// Returns null if the expression is not an Rc or Cell type.
+    fn tryGetRcInnerType(self: *Emitter, expr: ast.Expr) ?llvm.TypeRef {
+        // Check for Rc.new(value) or Cell.new(value) - inner type is type of value
+        if (expr == .method_call) {
+            const method = expr.method_call;
+            if (method.object == .identifier) {
+                const obj_name = method.object.identifier.name;
+                // Rc.new(value)
+                if (std.mem.eql(u8, obj_name, "Rc") and std.mem.eql(u8, method.method_name, "new")) {
+                    if (method.args.len > 0) {
+                        return self.inferExprType(method.args[0]) catch null;
+                    }
+                }
+                // Cell.new(value)
+                if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, method.method_name, "new")) {
+                    if (method.args.len > 0) {
+                        return self.inferExprType(method.args[0]) catch null;
+                    }
+                }
+            }
+            // For clone(), the inner type is the same as the receiver's inner type
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                return self.tryGetRcInnerType(method.object);
+            }
+        }
+
+        // Check for identifier that is already an Rc or Cell
+        if (expr == .identifier) {
+            const id = expr.identifier;
+            if (self.named_values.get(id.name)) |local| {
+                return local.inner_type;
+            }
+        }
+
+        return null;
     }
 
     fn emitCall(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
@@ -1376,11 +1506,15 @@ pub const Emitter = struct {
                 return operand_type;
             },
             .method_call => |m| {
-                // Check for special Rc methods that return pointers
+                // Check for special Rc and Cell methods that return pointers
                 if (m.object == .identifier) {
                     const obj_name = m.object.identifier.name;
                     if (std.mem.eql(u8, obj_name, "Rc") and std.mem.eql(u8, m.method_name, "new")) {
                         // Rc.new() returns a pointer (Rc[T])
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                    if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, m.method_name, "new")) {
+                        // Cell.new() returns a pointer (Cell[T])
                         return llvm.Types.pointer(self.ctx);
                     }
                 }
@@ -1396,6 +1530,18 @@ pub const Emitter = struct {
                     var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ptr_type };
                     return llvm.Types.struct_(self.ctx, &opt_fields, false);
                 }
+                // get() returns the inner type
+                if (std.mem.eql(u8, m.method_name, "get")) {
+                    return self.inferCellInnerType(m.object);
+                }
+                // replace() returns the inner type (old value)
+                if (std.mem.eql(u8, m.method_name, "replace")) {
+                    return self.inferCellInnerType(m.object);
+                }
+                // set() returns void (we use i32 as placeholder)
+                if (std.mem.eql(u8, m.method_name, "set")) {
+                    return llvm.Types.int32(self.ctx);
+                }
                 return llvm.Types.int32(self.ctx);
             },
             .closure => {
@@ -1405,6 +1551,19 @@ pub const Emitter = struct {
                     llvm.Types.pointer(self.ctx), // env_ptr
                 };
                 return llvm.Types.struct_(self.ctx, &closure_fields, false);
+            },
+            .unary => |un| {
+                return switch (un.op) {
+                    .negate, .not => try self.inferExprType(un.operand),
+                    .deref => {
+                        // Dereference returns the inner type
+                        return try self.inferDerefType(un.operand);
+                    },
+                    .ref, .ref_mut => {
+                        // Reference returns a pointer type
+                        return llvm.Types.pointer(self.ctx);
+                    },
+                };
             },
             else => llvm.Types.int32(self.ctx),
         };
@@ -2004,20 +2163,40 @@ pub const Emitter = struct {
     }
 
     /// Emit a method call expression.
-    /// Handles special methods like Rc.new(), .clone(), .downgrade(), etc.
+    /// Handles special methods like Rc.new(), Cell.new(), .clone(), .downgrade(), etc.
     fn emitMethodCall(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
-        // Check for Rc.new(value) static constructor
+        // Check for static constructors: Rc.new(value), Cell.new(value)
         if (method.object == .identifier) {
             const obj_name = method.object.identifier.name;
 
             if (std.mem.eql(u8, obj_name, "Rc") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitRcNew(method);
             }
+
+            if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, method.method_name, "new")) {
+                return self.emitCellNew(method);
+            }
         }
 
         // Emit the object
         const object = try self.emitExpr(method.object);
         const object_type = llvm.typeOf(object);
+
+        // Check for Cell methods: .get(), .set()
+        if (std.mem.eql(u8, method.method_name, "get")) {
+            // Cell.get() - load the value from the cell
+            return self.emitCellGet(method, object, object_type);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "set")) {
+            // Cell.set(value) - store a new value in the cell
+            return self.emitCellSet(method, object, object_type);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "replace")) {
+            // Cell.replace(value) - store new value, return old
+            return self.emitCellReplace(method, object, object_type);
+        }
 
         // Check for Rc methods
         if (std.mem.eql(u8, method.method_name, "clone")) {
@@ -2162,6 +2341,104 @@ pub const Emitter = struct {
 
         // Load and return the optional
         return self.builder.buildLoad(opt_type, opt_alloca, "upgrade.result");
+    }
+
+    /// Emit Cell.new(value) - creates a Cell containing the value.
+    /// Cell is represented as a pointer to stack-allocated storage.
+    fn emitCellNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        // Emit the value to be stored in the cell
+        const value = try self.emitExpr(method.args[0]);
+        const value_type = llvm.typeOf(value);
+
+        // Allocate stack space for the cell's value
+        const cell_alloca = self.builder.buildAlloca(value_type, "cell.storage");
+
+        // Store the initial value
+        _ = self.builder.buildStore(value, cell_alloca);
+
+        // Return the pointer to the cell (Cell[T] is represented as a pointer)
+        return cell_alloca;
+    }
+
+    /// Emit cell.get() - returns a copy of the value in the cell.
+    fn emitCellGet(self: *Emitter, method: *ast.MethodCall, object: llvm.ValueRef, object_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        _ = object_type;
+
+        // The object is a pointer to the cell's storage
+        // We need to determine the type to load
+        const inner_type = self.inferCellInnerType(method.object);
+        return self.builder.buildLoad(inner_type, object, "cell.get");
+    }
+
+    /// Emit cell.set(value) - stores a new value in the cell.
+    fn emitCellSet(self: *Emitter, method: *ast.MethodCall, object: llvm.ValueRef, object_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        _ = object_type;
+
+        if (method.args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        // Emit the new value
+        const new_value = try self.emitExpr(method.args[0]);
+
+        // Store the new value in the cell
+        _ = self.builder.buildStore(new_value, object);
+
+        // set() returns void, but we need to return something
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit cell.replace(value) - stores new value, returns old value.
+    fn emitCellReplace(self: *Emitter, method: *ast.MethodCall, object: llvm.ValueRef, object_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        _ = object_type;
+
+        if (method.args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        // Load the old value first
+        const inner_type = self.inferCellInnerType(method.object);
+        const old_value = self.builder.buildLoad(inner_type, object, "cell.old");
+
+        // Emit and store the new value
+        const new_value = try self.emitExpr(method.args[0]);
+        _ = self.builder.buildStore(new_value, object);
+
+        // Return the old value
+        return old_value;
+    }
+
+    /// Infer the inner type of a Cell expression.
+    fn inferCellInnerType(self: *Emitter, expr: ast.Expr) llvm.TypeRef {
+        // Check if it's an identifier with tracked inner type
+        if (expr == .identifier) {
+            const id = expr.identifier;
+            if (self.named_values.get(id.name)) |local| {
+                if (local.inner_type) |inner| {
+                    return inner;
+                }
+            }
+        }
+
+        // For Cell.new(value), the inner type is the type of value
+        if (expr == .method_call) {
+            const method = expr.method_call;
+            if (method.object == .identifier) {
+                const obj_name = method.object.identifier.name;
+                if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, method.method_name, "new")) {
+                    if (method.args.len > 0) {
+                        return self.inferExprType(method.args[0]) catch llvm.Types.int32(self.ctx);
+                    }
+                }
+            }
+        }
+
+        // Default to i32
+        return llvm.Types.int32(self.ctx);
     }
 
     /// Emit a closure expression.

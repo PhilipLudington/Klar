@@ -35,6 +35,9 @@ pub const Type = union(enum) {
     rc: *RcType,
     weak_rc: *WeakRcType,
 
+    // Interior mutability types
+    cell: *CellType,
+
     // Special types
     void_,
     never,
@@ -82,6 +85,7 @@ pub const Type = union(enum) {
             },
             .rc => |r| r.inner.eql(other.rc.inner),
             .weak_rc => |w| w.inner.eql(other.weak_rc.inner),
+            .cell => |c| c.inner.eql(other.cell.inner),
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -162,8 +166,9 @@ pub const Type = union(enum) {
             // - Result (may contain non-Copy ok/err types)
             // - Function types (closures may capture non-Copy data)
             // - Rc/Weak (must use .clone() explicitly to get new reference)
+            // - Cell (provides interior mutability, has move semantics)
             // - Unknown/error types (conservative)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .unknown, .error_type => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .cell, .unknown, .error_type => false,
         };
     }
 };
@@ -434,6 +439,13 @@ pub const WeakRcType = struct {
     inner: Type, // The wrapped type
 };
 
+/// Cell type for interior mutability (Cell[T])
+/// Allows mutation of the inner value even through an immutable reference.
+/// Only safe for Copy types (no aliasing issues).
+pub const CellType = struct {
+    inner: Type, // The wrapped type (must be Copy)
+};
+
 // ============================================================================
 // Type Builder - Arena-based type allocation
 // ============================================================================
@@ -583,6 +595,13 @@ pub const TypeBuilder = struct {
         weak.* = .{ .inner = inner };
         return .{ .weak_rc = weak };
     }
+
+    // Interior mutability type constructors
+    pub fn cellType(self: *TypeBuilder, inner: Type) !Type {
+        const cell = try self.arena.allocator().create(CellType);
+        cell.* = .{ .inner = inner };
+        return .{ .cell = cell };
+    }
 };
 
 // ============================================================================
@@ -659,6 +678,11 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .weak_rc => |w| {
             try writer.writeAll("Weak[");
             try formatType(writer, w.inner);
+            try writer.writeAll("]");
+        },
+        .cell => |c| {
+            try writer.writeAll("Cell[");
+            try formatType(writer, c.inner);
             try writer.writeAll("]");
         },
         .void_ => try writer.writeAll("void"),

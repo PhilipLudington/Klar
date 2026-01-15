@@ -1,0 +1,15 @@
+// Test address-of operator (&)
+// This test creates a reference to a value and dereferences it
+
+fn main() -> i32 {
+    var x = 42
+
+    // Take address of x (creates a reference)
+    let ptr = &x
+
+    // Dereference the reference to get the value
+    let value = *ptr
+
+    // Return the value (should be 42)
+    value
+}

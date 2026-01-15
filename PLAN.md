@@ -669,6 +669,8 @@ Example: ?i32 is { i1, i32 }
 - [x] Implement `Rc.downgrade()` - create Weak reference
 - [x] Add Rc[T] and Weak[T] to type system
 - [x] Implement embedded runtime functions (klar_rc_alloc, klar_rc_clone, etc.)
+- [x] Implement address-of operator (`&`) for creating references
+- [x] Implement Cell[T] with .get()/.set()/.replace() for interior mutability
 - [ ] Implement automatic Rc drop at scope exit - deferred (requires emitter scope tracking)
 - [ ] Implement Arc with atomic operations for thread safety
 - [ ] Add cycle detection in debug mode (optional)
@@ -704,6 +706,8 @@ Arc[T] - same as Rc but with atomic operations:
 test/native/
 ├── rc_basic.kl         # Basic Rc.new() allocation ✅
 ├── rc_clone.kl         # Rc.clone() reference count increment ✅
+├── ref_addr.kl         # Address-of operator and reference dereference ✅
+├── cell_basic.kl       # Cell[T] with .get()/.set() for interior mutability ✅
 ```
 
 ```klar
@@ -736,10 +740,12 @@ fn main() {
 ```
 
 **Success Criteria:**
-- Shared data accessible through multiple Rc handles
-- Memory freed exactly once when last reference dropped
-- No use-after-free
-- Arc works correctly across threads
+- ✅ Shared data accessible through multiple Rc handles
+- ✅ References can be created with `&` operator
+- ✅ Cell[T] provides .get()/.set()/.replace() for interior mutability
+- ⏳ Memory freed exactly once when last reference dropped (requires drop insertion)
+- ⏳ No use-after-free (requires drop insertion)
+- ⏳ Arc works correctly across threads (future work)
 
 ---
 
