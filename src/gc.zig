@@ -109,8 +109,9 @@ pub const GC = struct {
         frame_count: *usize,
     };
 
-    /// Placeholder for CallFrame - will be properly imported when integrating.
-    pub const CallFrame = extern struct {
+    /// CallFrame type matching vm.zig's definition.
+    /// Must be kept in sync with vm.CallFrame.
+    pub const CallFrame = struct {
         closure: *vm_value.ObjClosure,
         ip: usize,
         slots_base: usize,

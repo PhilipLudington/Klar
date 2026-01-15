@@ -265,12 +265,6 @@ pub const Compiler = struct {
             self.allocator.destroy(new_func);
         }
 
-        // If we're at global scope, define the global.
-        if (self.current.scope_depth == 0) {
-            const global_idx = try self.makeConstant(.{ .string = func.name });
-            try self.emitOp2(.op_define_global, @intCast(global_idx), line);
-        }
-
         // Create a new compiler scope for this function.
         var scope = CompilerScope.init(self.allocator, new_func, .function, self.current);
         defer scope.deinit(self.allocator);
@@ -292,7 +286,13 @@ pub const Compiler = struct {
         }
 
         // Emit implicit return if needed.
-        try self.emitReturn();
+        // If the function has a return type, emit op_return (which pops and returns a value).
+        // Otherwise, emit op_return_void.
+        if (func.return_type != null) {
+            try self.emitOp(.op_return, line);
+        } else {
+            try self.emitOp(.op_return_void, line);
+        }
 
         // End the function scope.
         self.endScope();
@@ -300,7 +300,7 @@ pub const Compiler = struct {
         // Restore the previous compiler scope.
         self.current = previous;
 
-        // Emit closure instruction.
+        // Emit closure instruction - this pushes the closure onto the stack.
         const func_const = try self.makeConstant(.{ .function = new_func });
         try self.emitOp2(.op_closure, @intCast(func_const), line);
 
@@ -311,8 +311,10 @@ pub const Compiler = struct {
         }
 
         // Store the function in a global or local.
+        // op_define_global pops the closure from the stack.
         if (previous.scope_depth == 0) {
-            // Already defined as global above
+            const global_idx = try self.makeConstant(.{ .string = func.name });
+            try self.emitOp2(.op_define_global, @intCast(global_idx), line);
         } else {
             try self.declareVariable(func.name, false, func.span);
             try self.defineVariable();
@@ -701,6 +703,33 @@ pub const Compiler = struct {
     fn compileBinary(self: *Compiler, bin: *ast.Binary) Error!void {
         const line = bin.span.line;
 
+        // Handle assignment operators - convert to assignment statement logic.
+        switch (bin.op) {
+            .assign => {
+                // Simple assignment: evaluate RHS, assign to LHS.
+                try self.compileExpr(bin.right);
+                try self.compileAssignmentTarget(bin.left, line);
+                return;
+            },
+            .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign => {
+                // Compound assignment: read LHS, apply op with RHS, assign back.
+                try self.compileExpr(bin.left);
+                try self.compileExpr(bin.right);
+                const op: OpCode = switch (bin.op) {
+                    .add_assign => .op_add,
+                    .sub_assign => .op_sub,
+                    .mul_assign => .op_mul,
+                    .div_assign => .op_div,
+                    .mod_assign => .op_mod,
+                    else => unreachable,
+                };
+                try self.emitOp(op, line);
+                try self.compileAssignmentTarget(bin.left, line);
+                return;
+            },
+            else => {},
+        }
+
         // Handle short-circuit operators specially.
         switch (bin.op) {
             .and_ => {
@@ -760,9 +789,8 @@ pub const Compiler = struct {
             .bit_xor => .op_bit_xor,
             .shl => .op_shl,
             .shr => .op_shr,
-            // Handled above
+            // Handled above (short-circuit operators and assignment)
             .and_, .or_, .null_coalesce => unreachable,
-            // Assignment is handled in compileAssignment
             .assign, .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign => unreachable,
             // 'is' type check
             .is => .op_is_type, // TODO: needs type operand

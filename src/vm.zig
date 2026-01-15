@@ -127,17 +127,33 @@ pub const VM = struct {
             slot.* = .void_;
         }
 
-        // Register built-in functions
-        try vm.registerBuiltins();
-
         return vm;
+    }
+
+    /// Set up GC roots and register built-in functions.
+    /// Must be called after VM is in its final memory location.
+    pub fn setup(self: *VM) !void {
+        // Set up GC roots
+        // Note: We cast the frames pointer because vm.CallFrame and gc.GC.CallFrame
+        // have identical layouts but are distinct types in Zig.
+        self.gc.setRoots(
+            &self.stack,
+            &self.stack_top,
+            &self.globals,
+            &self.open_upvalues,
+            @ptrCast(&self.frames),
+            &self.frame_count,
+        );
+
+        // Register built-in functions using GC allocation
+        try self.registerBuiltins();
     }
 
     /// Register all built-in native functions.
     fn registerBuiltins(self: *VM) !void {
         for (vm_builtins.builtins) |builtin| {
-            const native = try ObjNative.create(
-                self.allocator,
+            const native = try ObjNative.createGC(
+                &self.gc,
                 builtin.name,
                 builtin.arity,
                 builtin.function,
@@ -241,8 +257,8 @@ pub const VM = struct {
 
     /// Interpret compiled bytecode.
     pub fn interpret(self: *VM, function: *Function) !Value {
-        // Create a closure for the script function.
-        const closure = try ObjClosure.create(self.allocator, function);
+        // Create a closure for the script function (via GC).
+        const closure = try ObjClosure.createGC(&self.gc, function);
 
         // Push the closure onto the stack.
         try self.push(.{ .closure = closure });
@@ -533,7 +549,7 @@ pub const VM = struct {
                 .op_closure => {
                     const func_idx = self.readU16();
                     const func = self.currentChunk().getConstant(func_idx).function;
-                    const closure = try ObjClosure.create(self.allocator, func);
+                    const closure = try ObjClosure.createGC(&self.gc, func);
 
                     // Read upvalue descriptors.
                     for (0..func.upvalue_count) |i| {
@@ -565,7 +581,7 @@ pub const VM = struct {
                         try items.insert(self.allocator, 0, try self.pop());
                     }
 
-                    const arr = try ObjArray.create(self.allocator, items.items);
+                    const arr = try ObjArray.createGC(&self.gc, items.items);
                     try self.push(.{ .array = arr });
                 },
                 .op_tuple => {
@@ -578,12 +594,12 @@ pub const VM = struct {
                         try items.insert(self.allocator, 0, try self.pop());
                     }
 
-                    const tuple = try ObjTuple.create(self.allocator, items.items);
+                    const tuple = try ObjTuple.createGC(&self.gc, items.items);
                     try self.push(.{ .tuple = tuple });
                 },
                 .op_struct => {
                     const field_count = self.readU16();
-                    const struc = try ObjStruct.create(self.allocator, "anonymous");
+                    const struc = try ObjStruct.createGC(&self.gc, "anonymous");
 
                     // Pop values in reverse order.
                     // TODO: Get field names from constant pool
@@ -677,7 +693,7 @@ pub const VM = struct {
                 .op_array_empty => {
                     const capacity = self.readU16();
                     _ = capacity; // TODO: Use capacity hint
-                    const arr = try ObjArray.create(self.allocator, &.{});
+                    const arr = try ObjArray.createGC(&self.gc, &.{});
                     try self.push(.{ .array = arr });
                 },
                 .op_array_push => {
@@ -691,7 +707,7 @@ pub const VM = struct {
                     try new_items.appendSlice(self.allocator, arr_val.array.items);
                     try new_items.append(self.allocator, value);
 
-                    const new_arr = try ObjArray.create(self.allocator, new_items.items);
+                    const new_arr = try ObjArray.createGC(&self.gc, new_items.items);
                     try self.push(.{ .array = new_arr });
                 },
 
@@ -753,7 +769,7 @@ pub const VM = struct {
                 .op_type_of => {
                     const value = try self.pop();
                     const type_name = self.getTypeName(value);
-                    const str = try ObjString.create(self.allocator, type_name);
+                    const str = try ObjString.createGC(&self.gc, type_name);
                     try self.push(.{ .string = str });
                 },
                 .op_is_type => {
@@ -774,7 +790,7 @@ pub const VM = struct {
                             a.string.chars,
                             b.string.chars,
                         });
-                        const str_obj = try ObjString.create(self.allocator, new_str);
+                        const str_obj = try ObjString.createGC(&self.gc, new_str);
                         self.allocator.free(new_str);
                         try self.push(.{ .string = str_obj });
                     } else {
@@ -795,7 +811,7 @@ pub const VM = struct {
                     }
 
                     const result = try std.mem.concat(self.allocator, u8, parts.items);
-                    const str_obj = try ObjString.create(self.allocator, result);
+                    const str_obj = try ObjString.createGC(&self.gc, result);
                     self.allocator.free(result);
                     try self.push(.{ .string = str_obj });
                 },
@@ -849,7 +865,7 @@ pub const VM = struct {
                     const start_val = try self.pop();
                     const start = start_val.asInt() orelse return RuntimeError.TypeError;
                     const end = end_val.asInt() orelse return RuntimeError.TypeError;
-                    const range = try ObjRange.create(self.allocator, start, end, true);
+                    const range = try ObjRange.createGC(&self.gc, start, end, true);
                     try self.push(.{ .range = range });
                 },
                 .op_range_exclusive => {
@@ -857,7 +873,7 @@ pub const VM = struct {
                     const start_val = try self.pop();
                     const start = start_val.asInt() orelse return RuntimeError.TypeError;
                     const end = end_val.asInt() orelse return RuntimeError.TypeError;
-                    const range = try ObjRange.create(self.allocator, start, end, false);
+                    const range = try ObjRange.createGC(&self.gc, start, end, false);
                     try self.push(.{ .range = range });
                 },
                 .op_in_range => {
@@ -1032,6 +1048,19 @@ pub const VM = struct {
         self.frame_count += 1;
     }
 
+    /// Call the main() function after module execution.
+    /// This is called externally after interpret() completes.
+    pub fn callMain(self: *VM, closure: *ObjClosure) !Value {
+        // Push the closure as the callee
+        try self.push(.{ .closure = closure });
+
+        // Call it with 0 arguments
+        try self.callValue(.{ .closure = closure }, 0);
+
+        // Run until completion
+        return self.run();
+    }
+
     // -------------------------------------------------------------------------
     // Upvalue handling
     // -------------------------------------------------------------------------
@@ -1056,7 +1085,7 @@ pub const VM = struct {
         }
 
         // Create a new upvalue.
-        const created = try ObjUpvalue.create(self.allocator, local);
+        const created = try ObjUpvalue.createGC(&self.gc, local);
         created.next = upvalue;
 
         if (prev_upvalue) |prev| {
@@ -1107,7 +1136,7 @@ pub const VM = struct {
                 a.string.chars,
                 b.string.chars,
             });
-            const str_obj = try ObjString.create(self.allocator, new_str);
+            const str_obj = try ObjString.createGC(&self.gc, new_str);
             self.allocator.free(new_str);
             try self.push(.{ .string = str_obj });
             return;
@@ -1240,6 +1269,17 @@ pub const VM = struct {
     fn invokeMethod(self: *VM, method_name: []const u8, arg_count: u8) !void {
         const receiver = try self.peek(arg_count);
 
+        // Handle universal methods first.
+        if (std.mem.eql(u8, method_name, "to_string")) {
+            if (arg_count != 0) return RuntimeError.WrongArity;
+            _ = try self.pop(); // Pop receiver
+            const str_data = try self.valueToString(receiver);
+            defer self.allocator.free(str_data);
+            const str = try ObjString.createGC(&self.gc, str_data);
+            try self.push(.{ .string = str });
+            return;
+        }
+
         // Built-in methods based on receiver type.
         switch (receiver) {
             .string => |str| {
@@ -1292,7 +1332,7 @@ pub const VM = struct {
             if (arg_count != 0) return RuntimeError.WrongArity;
             _ = try self.pop();
             const trimmed = std.mem.trim(u8, str.chars, " \t\n\r");
-            const new_str = try ObjString.create(self.allocator, trimmed);
+            const new_str = try ObjString.createGC(&self.gc, trimmed);
             try self.push(.{ .string = new_str });
         } else if (std.mem.eql(u8, method, "to_uppercase")) {
             if (arg_count != 0) return RuntimeError.WrongArity;
@@ -1301,7 +1341,7 @@ pub const VM = struct {
             for (str.chars, 0..) |c, i| {
                 upper[i] = std.ascii.toUpper(c);
             }
-            const new_str = try ObjString.create(self.allocator, upper);
+            const new_str = try ObjString.createGC(&self.gc, upper);
             self.allocator.free(upper);
             try self.push(.{ .string = new_str });
         } else if (std.mem.eql(u8, method, "to_lowercase")) {
@@ -1311,7 +1351,7 @@ pub const VM = struct {
             for (str.chars, 0..) |c, i| {
                 lower[i] = std.ascii.toLower(c);
             }
-            const new_str = try ObjString.create(self.allocator, lower);
+            const new_str = try ObjString.createGC(&self.gc, lower);
             self.allocator.free(lower);
             try self.push(.{ .string = new_str });
         } else if (std.mem.eql(u8, method, "chars")) {
@@ -1329,7 +1369,7 @@ pub const VM = struct {
                 }
                 i += len;
             }
-            const arr = try ObjArray.create(self.allocator, chars.items);
+            const arr = try ObjArray.createGC(&self.gc, chars.items);
             try self.push(.{ .array = arr });
         } else if (std.mem.eql(u8, method, "bytes")) {
             // Return array of bytes
@@ -1340,7 +1380,7 @@ pub const VM = struct {
             for (str.chars, 0..) |b, i| {
                 bytes[i] = Value.fromInt(b);
             }
-            const arr = try ObjArray.create(self.allocator, bytes);
+            const arr = try ObjArray.createGC(&self.gc, bytes);
             try self.push(.{ .array = arr });
         } else {
             return RuntimeError.UndefinedField;
@@ -1476,12 +1516,12 @@ pub const VM = struct {
             .int => |i| Value.fromInt(i),
             .float => |f| Value.fromFloat(f),
             .string => |s| blk: {
-                const str = try ObjString.create(self.allocator, s);
+                const str = try ObjString.createGC(&self.gc, s);
                 break :blk .{ .string = str };
             },
             .char => |c| Value.fromChar(c),
             .function => |f| blk: {
-                const closure = try ObjClosure.create(self.allocator, f);
+                const closure = try ObjClosure.createGC(&self.gc, f);
                 break :blk .{ .closure = closure };
             },
             .struct_type, .enum_variant => .void_,
@@ -1648,6 +1688,9 @@ test "VM init/deinit" {
 
     var vm = try VM.init(testing.allocator);
     defer vm.deinit();
+
+    // Set up GC roots and register builtins
+    try vm.setup();
 
     try testing.expectEqual(@as(usize, 0), vm.stack_top);
     try testing.expectEqual(@as(usize, 0), vm.frame_count);

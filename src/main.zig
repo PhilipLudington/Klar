@@ -34,12 +34,26 @@ pub fn main() !void {
 
     const command = args[1];
 
-    if (std.mem.eql(u8, command, "run")) {
+    if (std.mem.eql(u8, command, "run") or std.mem.eql(u8, command, "run-vm")) {
         if (args.len < 3) {
             try getStdErr().writeAll("Error: no input file\n");
             return;
         }
-        try runFile(allocator, args[2]);
+        // Check for flags
+        var debug_mode = false;
+        var use_interpreter = false;
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--debug")) {
+                debug_mode = true;
+            } else if (std.mem.eql(u8, arg, "--interpret")) {
+                use_interpreter = true;
+            }
+        }
+        if (use_interpreter) {
+            try runInterpreterFile(allocator, args[2]);
+        } else {
+            try runVmFile(allocator, args[2], debug_mode);
+        }
     } else if (std.mem.eql(u8, command, "tokenize")) {
         if (args.len < 3) {
             try getStdErr().writeAll("Error: no input file\n");
@@ -66,19 +80,6 @@ pub fn main() !void {
             return;
         }
         try disasmFile(allocator, args[2]);
-    } else if (std.mem.eql(u8, command, "run-vm")) {
-        if (args.len < 3) {
-            try getStdErr().writeAll("Error: no input file\n");
-            return;
-        }
-        // Check for --debug flag
-        var debug_mode = false;
-        for (args) |arg| {
-            if (std.mem.eql(u8, arg, "--debug")) {
-                debug_mode = true;
-            }
-        }
-        try runVmFile(allocator, args[2], debug_mode);
     } else if (std.mem.eql(u8, command, "test")) {
         try getStdErr().writeAll("Test not yet implemented\n");
     } else if (std.mem.eql(u8, command, "fmt")) {
@@ -95,7 +96,7 @@ pub fn main() !void {
     }
 }
 
-fn runFile(allocator: std.mem.Allocator, path: []const u8) !void {
+fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
@@ -536,6 +537,12 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool) !
     };
     defer vm.deinit();
 
+    // Set up GC roots and register builtins
+    vm.setup() catch {
+        try stderr.writeAll("Failed to set up VM\n");
+        return;
+    };
+
     // Set debug mode if requested
     vm.debug_trace = debug_mode;
 
@@ -553,6 +560,23 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool) !
         }
         return;
     };
+
+    // Look for main function and call it
+    if (vm.globals.get("main")) |main_val| {
+        if (main_val == .closure) {
+            _ = vm.callMain(main_val.closure) catch |err| {
+                var buf: [512]u8 = undefined;
+                if (vm.getLastError()) |ctx| {
+                    var err_buf: [2048]u8 = undefined;
+                    const detailed_msg = ctx.format(&err_buf);
+                    try stderr.writeAll(detailed_msg);
+                } else {
+                    const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
+                    try stderr.writeAll(msg);
+                }
+            };
+        }
+    }
 }
 
 fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
@@ -658,8 +682,7 @@ fn printUsage() !void {
         \\Usage: klar <command> [options]
         \\
         \\Commands:
-        \\  run <file>           Run a Klar program (tree-walking interpreter)
-        \\  run-vm <file>        Run a Klar program (bytecode VM)
+        \\  run <file>           Run a Klar program (bytecode VM)
         \\  tokenize <file>      Tokenize a file (lexer output)
         \\  parse <file>         Parse a file (AST output)
         \\  check <file>         Type check a file
@@ -671,14 +694,14 @@ fn printUsage() !void {
         \\  version              Show version
         \\
         \\Options:
-        \\  --debug              Enable instruction tracing (for run-vm)
+        \\  --debug              Enable instruction tracing
+        \\  --interpret          Use tree-walking interpreter instead of VM
         \\
         \\Examples:
         \\  klar run hello.kl
-        \\  klar run-vm hello.kl
-        \\  klar run-vm hello.kl --debug
+        \\  klar run hello.kl --debug
+        \\  klar run hello.kl --interpret
         \\  klar tokenize example.kl
-        \\  klar parse example.kl
         \\  klar check example.kl
         \\  klar disasm example.kl
         \\
