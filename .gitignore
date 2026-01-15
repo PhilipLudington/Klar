@@ -14,3 +14,7 @@ test_io
 .build-results.json
 .test-results.json
 .native-test-results.json
+
+# Compiled native test binaries
+test/native/*
+!test/native/*.kl
