@@ -269,31 +269,32 @@ Implement proper memory management for the VM.
 
 ---
 
-### Milestone 6: Debugging and Tooling
+### Milestone 6: Debugging and Tooling ✓
 
 Add debugging support and developer tools.
 
 #### Tasks
 
-- [ ] **6.1** Disassembler
+- [x] **6.1** Disassembler
   - Pretty-print bytecode
   - Show constant pool
 
-- [ ] **6.2** Source maps
+- [x] **6.2** Source maps
   - Line number tracking
   - Error messages with source locations
 
-- [ ] **6.3** Stack traces
+- [x] **6.3** Stack traces
   - Function name tracking
   - Call stack on errors
 
-- [ ] **6.4** Debug mode
+- [x] **6.4** Debug mode
   - Instruction tracing
   - Stack inspection
 
 #### Deliverables
-- `zig build run -- disasm file.kl` command
-- Rich error messages with line numbers
+- `klar disasm file.kl` command ✓
+- `klar run-vm file.kl --debug` command ✓
+- Rich error messages with line numbers ✓
 
 ---
 
@@ -422,4 +423,4 @@ src/
 
 ---
 
-*Last updated: January 14, 2026*
+*Last updated: January 15, 2026*

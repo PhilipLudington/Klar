@@ -666,6 +666,96 @@ pub const RuntimeError = error{
 };
 
 // ============================================================================
+// Source Location (for error messages)
+// ============================================================================
+
+/// Represents a source location for error reporting.
+pub const SourceLocation = struct {
+    /// Function name (may be "<script>" for top-level code)
+    function_name: []const u8,
+
+    /// Line number (1-indexed)
+    line: u32,
+
+    /// Bytecode offset within the function
+    offset: usize,
+};
+
+/// A stack frame for error reporting (simplified view of call stack).
+pub const StackFrame = struct {
+    location: SourceLocation,
+};
+
+/// Runtime error context with location information and stack trace.
+pub const ErrorContext = struct {
+    /// The error that occurred
+    err: RuntimeError,
+
+    /// Primary error location
+    location: SourceLocation,
+
+    /// Stack trace (up to max_frames entries)
+    stack_trace: [max_frames]StackFrame,
+    stack_depth: usize,
+
+    /// Error message (if any)
+    message: ?[]const u8,
+
+    const max_frames: usize = 16;
+
+    pub fn init(err: RuntimeError, location: SourceLocation) ErrorContext {
+        return .{
+            .err = err,
+            .location = location,
+            .stack_trace = undefined,
+            .stack_depth = 0,
+            .message = null,
+        };
+    }
+
+    /// Add a stack frame to the trace.
+    pub fn addFrame(self: *ErrorContext, frame: StackFrame) void {
+        if (self.stack_depth < max_frames) {
+            self.stack_trace[self.stack_depth] = frame;
+            self.stack_depth += 1;
+        }
+    }
+
+    /// Format error message to buffer.
+    pub fn format(self: *const ErrorContext, buf: []u8) []const u8 {
+        var writer = std.io.fixedBufferStream(buf);
+        self.writeTo(writer.writer().any()) catch return "Error formatting error";
+        return buf[0..writer.pos];
+    }
+
+    /// Write formatted error to a writer.
+    pub fn writeTo(self: *const ErrorContext, writer: std.io.AnyWriter) !void {
+        // Write main error
+        try writer.print("Runtime error: {s}\n", .{@errorName(self.err)});
+        try writer.print("  at {s}:{d}\n", .{ self.location.function_name, self.location.line });
+
+        // Write message if present
+        if (self.message) |msg| {
+            try writer.print("  {s}\n", .{msg});
+        }
+
+        // Write stack trace
+        if (self.stack_depth > 0) {
+            try writer.print("\nStack trace:\n", .{});
+            var i: usize = 0;
+            while (i < self.stack_depth) : (i += 1) {
+                const frame = self.stack_trace[i];
+                try writer.print("  {d}: {s}:{d}\n", .{
+                    i,
+                    frame.location.function_name,
+                    frame.location.line,
+                });
+            }
+        }
+    }
+};
+
+// ============================================================================
 // Hash function for string interning
 // ============================================================================
 

@@ -6,6 +6,9 @@ const ast = @import("ast.zig");
 const TypeChecker = @import("checker.zig").TypeChecker;
 const Interpreter = @import("interpreter.zig").Interpreter;
 const values = @import("values.zig");
+const Compiler = @import("compiler.zig").Compiler;
+const Disassembler = @import("disasm.zig").Disassembler;
+const VM = @import("vm.zig").VM;
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -57,6 +60,25 @@ pub fn main() !void {
             return;
         }
         try checkFile(allocator, args[2]);
+    } else if (std.mem.eql(u8, command, "disasm")) {
+        if (args.len < 3) {
+            try getStdErr().writeAll("Error: no input file\n");
+            return;
+        }
+        try disasmFile(allocator, args[2]);
+    } else if (std.mem.eql(u8, command, "run-vm")) {
+        if (args.len < 3) {
+            try getStdErr().writeAll("Error: no input file\n");
+            return;
+        }
+        // Check for --debug flag
+        var debug_mode = false;
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--debug")) {
+                debug_mode = true;
+            }
+        }
+        try runVmFile(allocator, args[2], debug_mode);
     } else if (std.mem.eql(u8, command, "test")) {
         try getStdErr().writeAll("Test not yet implemented\n");
     } else if (std.mem.eql(u8, command, "fmt")) {
@@ -427,6 +449,207 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8) !void {
     }
 }
 
+fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool) !void {
+    const source = readSourceFile(allocator, path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+        try getStdErr().writeAll(msg);
+        return;
+    };
+    defer allocator.free(source);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const stderr = getStdErr();
+
+    // Parse the source
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = parser.parseModule() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+        try stderr.writeAll(msg);
+
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
+    };
+
+    // Type check
+    var checker = TypeChecker.init(allocator);
+    defer checker.deinit();
+
+    checker.checkModule(module);
+
+    if (checker.hasErrors()) {
+        var buf: [512]u8 = undefined;
+        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
+        try stderr.writeAll(header);
+
+        for (checker.errors.items) |check_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                check_err.span.line,
+                check_err.span.column,
+                check_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
+    }
+
+    // Compile to bytecode
+    var compiler = Compiler.init(allocator);
+    defer compiler.deinit();
+
+    const function = compiler.compile(module) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Compilation error: {s}\n", .{@errorName(err)}) catch "Compilation error\n";
+        try stderr.writeAll(msg);
+
+        for (compiler.errors.items) |comp_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                comp_err.span.line,
+                comp_err.span.column,
+                comp_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
+    };
+    defer {
+        function.deinit();
+        allocator.destroy(function);
+    }
+
+    // Run in VM
+    var vm = VM.init(allocator) catch {
+        try stderr.writeAll("Failed to initialize VM\n");
+        return;
+    };
+    defer vm.deinit();
+
+    // Set debug mode if requested
+    vm.debug_trace = debug_mode;
+
+    _ = vm.interpret(function) catch |err| {
+        var buf: [512]u8 = undefined;
+
+        // Check if we have detailed error context
+        if (vm.getLastError()) |ctx| {
+            var err_buf: [2048]u8 = undefined;
+            const detailed_msg = ctx.format(&err_buf);
+            try stderr.writeAll(detailed_msg);
+        } else {
+            const msg = std.fmt.bufPrint(&buf, "Runtime error: {s}\n", .{@errorName(err)}) catch "Runtime error\n";
+            try stderr.writeAll(msg);
+        }
+        return;
+    };
+}
+
+fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
+    const source = readSourceFile(allocator, path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+        try getStdErr().writeAll(msg);
+        return;
+    };
+    defer allocator.free(source);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const stderr = getStdErr();
+    const stdout = getStdOut();
+
+    // Parse the source
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = parser.parseModule() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+        try stderr.writeAll(msg);
+
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
+    };
+
+    // Type check
+    var checker = TypeChecker.init(allocator);
+    defer checker.deinit();
+
+    checker.checkModule(module);
+
+    if (checker.hasErrors()) {
+        var buf: [512]u8 = undefined;
+        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
+        try stderr.writeAll(header);
+
+        for (checker.errors.items) |check_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                check_err.span.line,
+                check_err.span.column,
+                check_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
+    }
+
+    // Compile to bytecode
+    var compiler = Compiler.init(allocator);
+    defer compiler.deinit();
+
+    const function = compiler.compile(module) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Compilation error: {s}\n", .{@errorName(err)}) catch "Compilation error\n";
+        try stderr.writeAll(msg);
+
+        for (compiler.errors.items) |comp_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                comp_err.span.line,
+                comp_err.span.column,
+                comp_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
+    };
+    defer {
+        function.deinit();
+        allocator.destroy(function);
+    }
+
+    // Disassemble
+    var disasm = Disassembler.init(allocator);
+    defer disasm.deinit();
+
+    disasm.disassembleFunction(function) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Disassembly error: {s}\n", .{@errorName(err)}) catch "Disassembly error\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    try stdout.writeAll(disasm.getOutput());
+}
+
 fn printUsage() !void {
     try getStdOut().writeAll(
         \\
@@ -435,21 +658,29 @@ fn printUsage() !void {
         \\Usage: klar <command> [options]
         \\
         \\Commands:
-        \\  run <file>       Run a Klar program
-        \\  tokenize <file>  Tokenize a file (lexer output)
-        \\  parse <file>     Parse a file (AST output)
-        \\  check <file>     Type check a file
-        \\  build            Build a Klar project
-        \\  test             Run tests
-        \\  fmt              Format source files
-        \\  help             Show this help
-        \\  version          Show version
+        \\  run <file>           Run a Klar program (tree-walking interpreter)
+        \\  run-vm <file>        Run a Klar program (bytecode VM)
+        \\  tokenize <file>      Tokenize a file (lexer output)
+        \\  parse <file>         Parse a file (AST output)
+        \\  check <file>         Type check a file
+        \\  disasm <file>        Disassemble bytecode
+        \\  build                Build a Klar project
+        \\  test                 Run tests
+        \\  fmt                  Format source files
+        \\  help                 Show this help
+        \\  version              Show version
+        \\
+        \\Options:
+        \\  --debug              Enable instruction tracing (for run-vm)
         \\
         \\Examples:
         \\  klar run hello.kl
+        \\  klar run-vm hello.kl
+        \\  klar run-vm hello.kl --debug
         \\  klar tokenize example.kl
         \\  klar parse example.kl
         \\  klar check example.kl
+        \\  klar disasm example.kl
         \\
     );
 }
@@ -468,4 +699,12 @@ test {
     _ = @import("checker.zig");
     _ = @import("values.zig");
     _ = @import("interpreter.zig");
+    _ = @import("bytecode.zig");
+    _ = @import("chunk.zig");
+    _ = @import("compiler.zig");
+    _ = @import("vm.zig");
+    _ = @import("vm_value.zig");
+    _ = @import("vm_builtins.zig");
+    _ = @import("gc.zig");
+    _ = @import("disasm.zig");
 }

@@ -267,7 +267,7 @@ pub const Chunk = struct {
     }
 
     /// Get line number for instruction at offset
-    pub fn getLine(self: *Chunk, offset: usize) u32 {
+    pub fn getLine(self: *const Chunk, offset: usize) u32 {
         var accumulated: usize = 0;
         for (self.lines.items) |info| {
             accumulated += info.count;

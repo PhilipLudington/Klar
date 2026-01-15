@@ -19,6 +19,9 @@ const ObjOptional = vm_value.ObjOptional;
 const ObjRange = vm_value.ObjRange;
 const ObjNative = vm_value.ObjNative;
 const RuntimeError = vm_value.RuntimeError;
+const SourceLocation = vm_value.SourceLocation;
+const StackFrame = vm_value.StackFrame;
+const ErrorContext = vm_value.ErrorContext;
 const vm_builtins = @import("vm_builtins.zig");
 const gc_mod = @import("gc.zig");
 const GC = gc_mod.GC;
@@ -95,6 +98,9 @@ pub const VM = struct {
     /// Enable GC stress testing (collect on every allocation).
     stress_gc: bool,
 
+    /// Last error context (for detailed error reporting).
+    last_error: ?ErrorContext,
+
     // -------------------------------------------------------------------------
     // Initialization
     // -------------------------------------------------------------------------
@@ -113,6 +119,7 @@ pub const VM = struct {
             .debug_trace = false,
             .debug_gc = false,
             .stress_gc = false,
+            .last_error = null,
         };
 
         // Initialize stack with void values
@@ -142,6 +149,90 @@ pub const VM = struct {
     pub fn deinit(self: *VM) void {
         self.gc.deinit();
         self.globals.deinit(self.allocator);
+    }
+
+    // -------------------------------------------------------------------------
+    // Error Reporting
+    // -------------------------------------------------------------------------
+
+    /// Get the current source location based on the active call frame.
+    pub fn getCurrentLocation(self: *VM) SourceLocation {
+        if (self.frame_count == 0) {
+            return .{
+                .function_name = "<unknown>",
+                .line = 0,
+                .offset = 0,
+            };
+        }
+
+        const frame = &self.frames[self.frame_count - 1];
+        const func = frame.closure.function;
+        // Subtract 1 from ip because it's already advanced past the current instruction
+        const offset = if (frame.ip > 0) frame.ip - 1 else 0;
+        const line = func.chunk.getLine(offset);
+
+        return .{
+            .function_name = func.name,
+            .line = line,
+            .offset = offset,
+        };
+    }
+
+    /// Build a full error context with stack trace.
+    pub fn buildErrorContext(self: *VM, err: RuntimeError) ErrorContext {
+        var ctx = ErrorContext.init(err, self.getCurrentLocation());
+
+        // Add stack trace (walk up call stack)
+        var i = self.frame_count;
+        while (i > 0) {
+            i -= 1;
+            const frame = &self.frames[i];
+            const func = frame.closure.function;
+            const offset = if (frame.ip > 0) frame.ip - 1 else 0;
+            const line = func.chunk.getLine(offset);
+
+            ctx.addFrame(.{
+                .location = .{
+                    .function_name = func.name,
+                    .line = line,
+                    .offset = offset,
+                },
+            });
+        }
+
+        return ctx;
+    }
+
+    /// Record an error with full context.
+    pub fn recordError(self: *VM, err: RuntimeError) RuntimeError {
+        self.last_error = self.buildErrorContext(err);
+        return err;
+    }
+
+    /// Record an error with a custom message.
+    pub fn recordErrorWithMessage(self: *VM, err: RuntimeError, message: []const u8) RuntimeError {
+        var ctx = self.buildErrorContext(err);
+        ctx.message = message;
+        self.last_error = ctx;
+        return err;
+    }
+
+    /// Get the last error context (if any).
+    pub fn getLastError(self: *VM) ?*const ErrorContext {
+        if (self.last_error) |*ctx| {
+            return ctx;
+        }
+        return null;
+    }
+
+    /// Print the last error to stderr.
+    pub fn printLastError(self: *VM) void {
+        if (self.last_error) |ctx| {
+            var buf: [2048]u8 = undefined;
+            const msg = ctx.format(&buf);
+            const stderr = std.io.getStdErr();
+            stderr.writeAll(msg) catch {};
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -465,13 +556,13 @@ pub const VM = struct {
                 // -------------------------------------------------------------
                 .op_array => {
                     const count = self.readU16();
-                    var items = std.ArrayList(Value).init(self.allocator);
-                    defer items.deinit();
+                    var items = std.ArrayListUnmanaged(Value){};
+                    defer items.deinit(self.allocator);
 
                     // Pop items in reverse order.
                     var i: usize = 0;
                     while (i < count) : (i += 1) {
-                        try items.insert(0, try self.pop());
+                        try items.insert(self.allocator, 0, try self.pop());
                     }
 
                     const arr = try ObjArray.create(self.allocator, items.items);
@@ -479,12 +570,12 @@ pub const VM = struct {
                 },
                 .op_tuple => {
                     const count = self.readByte();
-                    var items = std.ArrayList(Value).init(self.allocator);
-                    defer items.deinit();
+                    var items = std.ArrayListUnmanaged(Value){};
+                    defer items.deinit(self.allocator);
 
                     var i: u8 = 0;
                     while (i < count) : (i += 1) {
-                        try items.insert(0, try self.pop());
+                        try items.insert(self.allocator, 0, try self.pop());
                     }
 
                     const tuple = try ObjTuple.create(self.allocator, items.items);
@@ -595,10 +686,10 @@ pub const VM = struct {
                     if (arr_val != .array) return RuntimeError.TypeError;
 
                     // Create a new array with the value appended
-                    var new_items = std.ArrayList(Value).init(self.allocator);
-                    defer new_items.deinit();
-                    try new_items.appendSlice(arr_val.array.items);
-                    try new_items.append(value);
+                    var new_items = std.ArrayListUnmanaged(Value){};
+                    defer new_items.deinit(self.allocator);
+                    try new_items.appendSlice(self.allocator, arr_val.array.items);
+                    try new_items.append(self.allocator, value);
 
                     const new_arr = try ObjArray.create(self.allocator, new_items.items);
                     try self.push(.{ .array = new_arr });
@@ -692,15 +783,15 @@ pub const VM = struct {
                 },
                 .op_string_build => {
                     const count = self.readByte();
-                    var parts = std.ArrayList([]const u8).init(self.allocator);
-                    defer parts.deinit();
+                    var parts = std.ArrayListUnmanaged([]const u8){};
+                    defer parts.deinit(self.allocator);
 
                     // Pop parts in reverse order
                     var i: u8 = 0;
                     while (i < count) : (i += 1) {
                         const part = try self.pop();
                         const str = try self.valueToString(part);
-                        try parts.insert(0, str);
+                        try parts.insert(self.allocator, 0, str);
                     }
 
                     const result = try std.mem.concat(self.allocator, u8, parts.items);
@@ -1227,14 +1318,14 @@ pub const VM = struct {
             // Return array of characters
             if (arg_count != 0) return RuntimeError.WrongArity;
             _ = try self.pop();
-            var chars = std.ArrayList(Value).init(self.allocator);
-            defer chars.deinit();
+            var chars = std.ArrayListUnmanaged(Value){};
+            defer chars.deinit(self.allocator);
             var i: usize = 0;
             while (i < str.chars.len) {
                 const len = std.unicode.utf8ByteSequenceLength(str.chars[i]) catch 1;
                 if (i + len <= str.chars.len) {
                     const codepoint = std.unicode.utf8Decode(str.chars[i..][0..len]) catch str.chars[i];
-                    try chars.append(Value.fromChar(codepoint));
+                    try chars.append(self.allocator, Value.fromChar(codepoint));
                 }
                 i += len;
             }
