@@ -27,6 +27,8 @@ get_expected() {
         nested_calls) echo 15 ;;
         recursive_deep) echo 42 ;;
         return_types) echo 42 ;;
+        tuple) echo 42 ;;  # 10 + 32 = 42
+        array) echo 42 ;;  # 10 + 20 + 12 = 42
         *) echo -1 ;;  # -1 means accept any result
     esac
 }

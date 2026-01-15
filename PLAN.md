@@ -519,20 +519,42 @@ fn main() -> i32 {
 
 ---
 
-### Milestone 6: Composite Types (Structs, Tuples, Arrays)
+### Milestone 6: Composite Types (Structs, Tuples, Arrays) ⏳
 
 **Objective:** Implement memory layout and operations for composite types.
 
+**Status:** In Progress (January 2026)
+
 **Deliverables:**
-- [ ] Implement struct memory layout calculation (match C ABI)
-- [ ] Implement struct creation (stack allocation)
-- [ ] Implement field access (get/set)
+- [x] Implement struct memory layout calculation (match C ABI)
+- [x] Implement struct creation (stack allocation)
+- [x] Implement field access (get/set) - numeric indices for tuples
 - [ ] Implement struct destruction (call field destructors)
-- [ ] Implement tuple creation and element access
-- [ ] Implement fixed-size array allocation
-- [ ] Implement array indexing with bounds checks
-- [ ] Implement slice representation (ptr + len)
+- [x] Implement tuple creation and element access
+- [x] Implement fixed-size array allocation
+- [x] Implement array indexing
+- [x] Implement slice representation (ptr + len)
 - [ ] Implement struct passing (by value or reference per ABI)
+- [ ] Implement array bounds checking
+- [ ] Implement named field access for structs
+
+**Files Created/Modified:**
+```
+src/codegen/
+├── layout.zig        # NEW: Memory layout calculation (C ABI compatible)
+├── mod.zig           # Updated to export layout module
+├── emit.zig          # Enhanced with composite type support
+└── target.zig        # Added getPointerSize()
+
+src/parser.zig        # Updated to parse tuple index access (.0, .1)
+```
+
+**Test Programs:**
+```
+test/native/
+├── tuple.kl          # NEW: Tuple literal and element access (pair.0, pair.1)
+├── array.kl          # NEW: Array literal and indexing (arr[0])
+```
 
 **Memory Layout Rules:**
 ```

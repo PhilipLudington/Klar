@@ -108,6 +108,15 @@ pub const Platform = struct {
             else => false,
         };
     }
+
+    /// Get the pointer size in bytes for this platform.
+    pub fn getPointerSize(self: Platform) usize {
+        return switch (self.arch) {
+            .x86_64, .aarch64 => 8, // 64-bit architectures
+            .x86, .arm => 4, // 32-bit architectures
+            else => 8, // Default to 64-bit
+        };
+    }
 };
 
 /// LLVM optimization level mapping.

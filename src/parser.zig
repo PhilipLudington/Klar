@@ -975,7 +975,22 @@ pub const Parser = struct {
             }
         }
 
-        const field_name = try self.consumeIdentifier();
+        // Accept either identifier or integer literal for field name
+        // Integer literals are used for tuple indexing: tuple.0, tuple.1
+        const field_name = if (self.check(.identifier))
+            blk: {
+                const name = self.tokenText(self.current);
+                self.advance();
+                break :blk name;
+            }
+        else if (self.check(.int_literal))
+            blk: {
+                const name = self.tokenText(self.current);
+                self.advance();
+                break :blk name;
+            }
+        else
+            return ParseError.ExpectedIdentifier;
 
         // Check for method call
         if (self.check(.l_paren)) {

@@ -1,0 +1,6 @@
+// test_tuple.kl - Test tuple creation and element access
+
+fn main() -> i32 {
+    let pair = (10, 32)
+    pair.0 + pair.1
+}

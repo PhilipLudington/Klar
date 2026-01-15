@@ -6,6 +6,7 @@ pub const llvm = @import("llvm.zig");
 pub const target = @import("target.zig");
 pub const emit = @import("emit.zig");
 pub const linker = @import("linker.zig");
+pub const layout = @import("layout.zig");
 
 /// Errors that can occur during code generation.
 pub const CodegenError = error{
@@ -36,3 +37,5 @@ pub const Emitter = emit.Emitter;
 pub const EmitError = emit.EmitError;
 pub const Platform = target.Platform;
 pub const OptLevel = target.OptLevel;
+pub const LayoutCalculator = layout.LayoutCalculator;
+pub const StructLayout = layout.StructLayout;

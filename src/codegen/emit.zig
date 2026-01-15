@@ -9,6 +9,7 @@ const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const llvm = @import("llvm.zig");
 const target = @import("target.zig");
+const layout = @import("layout.zig");
 
 /// Errors that can occur during IR emission.
 pub const EmitError = error{
@@ -49,6 +50,17 @@ pub const Emitter = struct {
     uadd_overflow_id: ?c_uint,
     usub_overflow_id: ?c_uint,
     umul_overflow_id: ?c_uint,
+
+    /// Cache of LLVM struct types by name.
+    struct_types: std.StringHashMap(StructTypeInfo),
+    /// Layout calculator for composite types.
+    layout_calc: layout.LayoutCalculator,
+
+    const StructTypeInfo = struct {
+        llvm_type: llvm.TypeRef,
+        field_indices: []const u32,
+        field_names: []const []const u8,
+    };
 
     const LocalValue = struct {
         value: llvm.ValueRef,
@@ -94,12 +106,22 @@ pub const Emitter = struct {
             .uadd_overflow_id = null,
             .usub_overflow_id = null,
             .umul_overflow_id = null,
+            .struct_types = std.StringHashMap(StructTypeInfo).init(allocator),
+            .layout_calc = layout.LayoutCalculator.init(allocator, platform),
         };
     }
 
     pub fn deinit(self: *Emitter) void {
         self.loop_stack.deinit(self.allocator);
         self.named_values.deinit();
+        // Free struct type info allocations
+        var it = self.struct_types.valueIterator();
+        while (it.next()) |info| {
+            self.allocator.free(info.field_indices);
+            self.allocator.free(info.field_names);
+        }
+        self.struct_types.deinit();
+        self.layout_calc.deinit();
         self.builder.dispose();
         self.module.dispose();
         self.ctx.dispose();
@@ -508,6 +530,12 @@ pub const Emitter = struct {
                 break :blk result orelse llvm.Const.int32(self.ctx, 0);
             },
             .grouped => |g| try self.emitExpr(g.expr),
+            // Composite types
+            .struct_literal => |s| try self.emitStructLiteral(s),
+            .array_literal => |a| try self.emitArrayLiteral(a),
+            .tuple_literal => |t| try self.emitTupleLiteral(t),
+            .field => |f| try self.emitFieldAccess(f),
+            .index => |i| try self.emitIndexAccess(i),
             else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
         };
     }
@@ -891,7 +919,63 @@ pub const Emitter = struct {
     fn typeExprToLLVM(self: *Emitter, type_expr: ast.TypeExpr) EmitError!llvm.TypeRef {
         return switch (type_expr) {
             .named => |named| self.namedTypeToLLVM(named.name),
-            else => llvm.Types.int32(self.ctx), // Default to i32 for now
+            .array => |arr| {
+                // Get element type
+                const elem_type = try self.typeExprToLLVM(arr.element);
+                // Get size from the size expression (must be compile-time constant)
+                const size: u64 = switch (arr.size) {
+                    .literal => |lit| switch (lit.kind) {
+                        .int => |v| @intCast(v),
+                        else => return EmitError.InvalidAST,
+                    },
+                    else => return EmitError.UnsupportedFeature, // Non-constant array size
+                };
+                return llvm.Types.array(elem_type, size);
+            },
+            .tuple => |tup| {
+                // Create struct type for tuple
+                var elem_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+                defer elem_types.deinit(self.allocator);
+
+                for (tup.elements) |elem| {
+                    const elem_llvm_type = try self.typeExprToLLVM(elem);
+                    elem_types.append(self.allocator, elem_llvm_type) catch return EmitError.OutOfMemory;
+                }
+
+                return llvm.Types.struct_(self.ctx, elem_types.items, false);
+            },
+            .slice => |sl| {
+                // Slice is a struct of {pointer, length}
+                const elem_type = try self.typeExprToLLVM(sl.element);
+                _ = elem_type; // Element type is for the pointed-to data
+                var slice_fields = [_]llvm.TypeRef{
+                    llvm.Types.pointer(self.ctx), // data pointer
+                    llvm.Types.int64(self.ctx), // length (usize)
+                };
+                return llvm.Types.struct_(self.ctx, &slice_fields, false);
+            },
+            .reference => |ref| {
+                // Reference is a pointer
+                _ = ref;
+                return llvm.Types.pointer(self.ctx);
+            },
+            .optional => |opt| {
+                // Optional is a struct of {tag, value}
+                const inner_type = try self.typeExprToLLVM(opt.inner);
+                var opt_fields = [_]llvm.TypeRef{
+                    llvm.Types.int1(self.ctx), // tag (0 = none, 1 = some)
+                    inner_type, // value
+                };
+                return llvm.Types.struct_(self.ctx, &opt_fields, false);
+            },
+            .function => {
+                // Function type - for now just return pointer
+                return llvm.Types.pointer(self.ctx);
+            },
+            .result, .generic_apply => {
+                // Complex types - return pointer as placeholder
+                return llvm.Types.pointer(self.ctx);
+            },
         };
     }
 
@@ -965,6 +1049,61 @@ pub const Emitter = struct {
                     },
                 }
             },
+            // Composite types - build the type from elements
+            .tuple_literal => |tup| {
+                if (tup.elements.len == 0) {
+                    return llvm.Types.int32(self.ctx); // Empty tuple as unit
+                }
+                var elem_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+                defer elem_types.deinit(self.allocator);
+                for (tup.elements) |elem| {
+                    const elem_ty = try self.inferExprType(elem);
+                    elem_types.append(self.allocator, elem_ty) catch return EmitError.OutOfMemory;
+                }
+                return llvm.Types.struct_(self.ctx, elem_types.items, false);
+            },
+            .array_literal => |arr| {
+                if (arr.elements.len == 0) {
+                    return llvm.Types.array(llvm.Types.int32(self.ctx), 0);
+                }
+                const elem_ty = try self.inferExprType(arr.elements[0]);
+                return llvm.Types.array(elem_ty, @intCast(arr.elements.len));
+            },
+            .struct_literal => |s| {
+                // Infer struct type from field values
+                var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+                defer field_types.deinit(self.allocator);
+                for (s.fields) |field_init| {
+                    const field_ty = try self.inferExprType(field_init.value);
+                    field_types.append(self.allocator, field_ty) catch return EmitError.OutOfMemory;
+                }
+                return llvm.Types.struct_(self.ctx, field_types.items, false);
+            },
+            .field => |f| {
+                // Field access on a composite - get the base type and extract field type
+                const base_ty = try self.inferExprType(f.object);
+                const type_kind = llvm.getTypeKind(base_ty);
+                if (type_kind == llvm.c.LLVMStructTypeKind) {
+                    // Try to parse as numeric index for tuple
+                    if (std.fmt.parseInt(u32, f.field_name, 10)) |idx| {
+                        return llvm.c.LLVMStructGetTypeAtIndex(base_ty, idx);
+                    } else |_| {
+                        // Named field - for now return i32 as placeholder
+                        return llvm.Types.int32(self.ctx);
+                    }
+                }
+                return llvm.Types.int32(self.ctx);
+            },
+            .index => |i| {
+                // Index access on array - return element type
+                const base_ty = try self.inferExprType(i.object);
+                const type_kind = llvm.getTypeKind(base_ty);
+                if (type_kind == llvm.c.LLVMArrayTypeKind) {
+                    return llvm.c.LLVMGetElementType(base_ty);
+                }
+                return llvm.Types.int32(self.ctx);
+            },
+            .grouped => |g| try self.inferExprType(g.expr),
             else => llvm.Types.int32(self.ctx),
         };
     }
@@ -977,5 +1116,262 @@ pub const Emitter = struct {
     /// Verify the module.
     pub fn verify(self: *Emitter) !void {
         try self.module.verify();
+    }
+
+    // =========================================================================
+    // Composite Type Support
+    // =========================================================================
+
+    /// Get or create an LLVM struct type for a named struct.
+    fn getOrCreateStructType(self: *Emitter, name: []const u8, fields: []const ast.StructField) EmitError!llvm.TypeRef {
+        // Check cache first
+        if (self.struct_types.get(name)) |info| {
+            return info.llvm_type;
+        }
+
+        // Create array of field types
+        var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer field_types.deinit(self.allocator);
+
+        var field_indices = try self.allocator.alloc(u32, fields.len);
+        errdefer self.allocator.free(field_indices);
+
+        var field_names = try self.allocator.alloc([]const u8, fields.len);
+        errdefer self.allocator.free(field_names);
+
+        for (fields, 0..) |field, i| {
+            const field_llvm_type = try self.typeExprToLLVM(field.type_);
+            field_types.append(self.allocator, field_llvm_type) catch return EmitError.OutOfMemory;
+            field_indices[i] = @intCast(i);
+            field_names[i] = field.name;
+        }
+
+        // Create LLVM struct type (not packed - follows C ABI alignment)
+        const struct_type = llvm.Types.struct_(self.ctx, field_types.items, false);
+
+        // Cache the struct type info
+        self.struct_types.put(name, .{
+            .llvm_type = struct_type,
+            .field_indices = field_indices,
+            .field_names = field_names,
+        }) catch return EmitError.OutOfMemory;
+
+        return struct_type;
+    }
+
+    /// Emit a struct literal expression.
+    fn emitStructLiteral(self: *Emitter, lit: *ast.StructLiteral) EmitError!llvm.ValueRef {
+        // Get the struct type name
+        const type_name = switch (lit.type_name orelse return EmitError.InvalidAST) {
+            .named => |n| n.name,
+            else => return EmitError.UnsupportedFeature,
+        };
+
+        // For now, we need to know the struct definition to emit properly.
+        // Create a simple struct type based on the field initializers.
+        var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer field_types.deinit(self.allocator);
+
+        var field_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer field_values.deinit(self.allocator);
+
+        for (lit.fields) |field_init| {
+            const value = try self.emitExpr(field_init.value);
+            const value_type = llvm.typeOf(value);
+            field_types.append(self.allocator, value_type) catch return EmitError.OutOfMemory;
+            field_values.append(self.allocator, value) catch return EmitError.OutOfMemory;
+        }
+
+        // Create struct type
+        const struct_type = llvm.Types.struct_(self.ctx, field_types.items, false);
+
+        // Allocate stack space for the struct
+        const type_name_z = self.allocator.dupeZ(u8, type_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(type_name_z);
+        const alloca = self.builder.buildAlloca(struct_type, type_name_z);
+
+        // Store each field value using GEP
+        for (field_values.items, 0..) |value, i| {
+            var indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, @intCast(i)),
+            };
+            const field_ptr = self.builder.buildGEP(struct_type, alloca, &indices, "field.ptr");
+            _ = self.builder.buildStore(value, field_ptr);
+        }
+
+        // Load and return the complete struct value
+        return self.builder.buildLoad(struct_type, alloca, "struct.val");
+    }
+
+    /// Emit an array literal expression.
+    fn emitArrayLiteral(self: *Emitter, arr: *ast.ArrayLiteral) EmitError!llvm.ValueRef {
+        if (arr.elements.len == 0) {
+            // Empty array - return undefined/zero value
+            const arr_type = llvm.Types.array(llvm.Types.int32(self.ctx), 0);
+            return llvm.Const.undef(arr_type);
+        }
+
+        // Emit all elements
+        var element_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer element_values.deinit(self.allocator);
+
+        for (arr.elements) |elem| {
+            const value = try self.emitExpr(elem);
+            element_values.append(self.allocator, value) catch return EmitError.OutOfMemory;
+        }
+
+        // Get element type from first element
+        const elem_type = llvm.typeOf(element_values.items[0]);
+        const arr_type = llvm.Types.array(elem_type, @intCast(arr.elements.len));
+
+        // Allocate stack space for the array
+        const alloca = self.builder.buildAlloca(arr_type, "arr.tmp");
+
+        // Store each element using GEP
+        for (element_values.items, 0..) |value, i| {
+            var indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, @intCast(i)),
+            };
+            const elem_ptr = self.builder.buildGEP(arr_type, alloca, &indices, "arr.elem.ptr");
+            _ = self.builder.buildStore(value, elem_ptr);
+        }
+
+        // Load and return the complete array value
+        return self.builder.buildLoad(arr_type, alloca, "arr.val");
+    }
+
+    /// Emit a tuple literal expression.
+    fn emitTupleLiteral(self: *Emitter, tup: *ast.TupleLiteral) EmitError!llvm.ValueRef {
+        if (tup.elements.len == 0) {
+            // Empty tuple - treated as unit/void
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        // Emit all elements
+        var element_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer element_values.deinit(self.allocator);
+
+        var element_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer element_types.deinit(self.allocator);
+
+        for (tup.elements) |elem| {
+            const value = try self.emitExpr(elem);
+            element_values.append(self.allocator, value) catch return EmitError.OutOfMemory;
+            element_types.append(self.allocator, llvm.typeOf(value)) catch return EmitError.OutOfMemory;
+        }
+
+        // Create tuple type (anonymous struct in LLVM)
+        const tuple_type = llvm.Types.struct_(self.ctx, element_types.items, false);
+
+        // Allocate stack space for the tuple
+        const alloca = self.builder.buildAlloca(tuple_type, "tup.tmp");
+
+        // Store each element using GEP
+        for (element_values.items, 0..) |value, i| {
+            var indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, @intCast(i)),
+            };
+            const elem_ptr = self.builder.buildGEP(tuple_type, alloca, &indices, "tup.elem.ptr");
+            _ = self.builder.buildStore(value, elem_ptr);
+        }
+
+        // Load and return the complete tuple value
+        return self.builder.buildLoad(tuple_type, alloca, "tup.val");
+    }
+
+    /// Emit field access expression (e.g., point.x or tuple.0).
+    fn emitFieldAccess(self: *Emitter, field: *ast.Field) EmitError!llvm.ValueRef {
+        // Check if this is a tuple index (numeric field name like .0, .1)
+        const field_index: ?u32 = std.fmt.parseInt(u32, field.field_name, 10) catch null;
+
+        // Special handling for identifier access - we can GEP directly from the alloca
+        if (field.object == .identifier) {
+            const id = field.object.identifier;
+            if (self.named_values.get(id.name)) |local| {
+                if (local.is_alloca) {
+                    // Get the field pointer directly from the variable's alloca
+                    if (field_index) |idx| {
+                        var indices = [_]llvm.ValueRef{
+                            llvm.Const.int32(self.ctx, 0),
+                            llvm.Const.int32(self.ctx, @intCast(idx)),
+                        };
+                        const field_ptr = self.builder.buildGEP(local.ty, local.value, &indices, "field.ptr");
+                        // Get the field type from struct type
+                        const field_type = llvm.c.LLVMStructGetTypeAtIndex(local.ty, idx);
+                        return self.builder.buildLoad(field_type, field_ptr, "field.val");
+                    }
+                    // Named field access - need to find the field index
+                    // For now, return error - proper implementation needs type info
+                    return EmitError.UnsupportedFeature;
+                }
+            }
+        }
+
+        // For other cases, emit the object and handle it
+        const obj = try self.emitExpr(field.object);
+        const obj_type = llvm.typeOf(obj);
+        const obj_type_kind = llvm.getTypeKind(obj_type);
+
+        if (obj_type_kind == llvm.c.LLVMStructTypeKind) {
+            // Object is a struct value - need to store to temp first for GEP
+            const alloca = self.builder.buildAlloca(obj_type, "obj.tmp");
+            _ = self.builder.buildStore(obj, alloca);
+
+            if (field_index) |idx| {
+                // Tuple access by index
+                var indices = [_]llvm.ValueRef{
+                    llvm.Const.int32(self.ctx, 0),
+                    llvm.Const.int32(self.ctx, @intCast(idx)),
+                };
+                const field_ptr = self.builder.buildGEP(obj_type, alloca, &indices, "field.ptr");
+                // Get the field type - need to extract from struct type
+                const field_type = llvm.c.LLVMStructGetTypeAtIndex(obj_type, idx);
+                return self.builder.buildLoad(field_type, field_ptr, "field.val");
+            } else {
+                // Named field access - for now, try to find by searching struct types
+                return EmitError.UnsupportedFeature;
+            }
+        }
+
+        return EmitError.UnsupportedFeature;
+    }
+
+    /// Emit array/slice index access expression (e.g., arr[i]).
+    fn emitIndexAccess(self: *Emitter, idx: *ast.Index) EmitError!llvm.ValueRef {
+        // Emit the array/slice object
+        const obj = try self.emitExpr(idx.object);
+        const obj_type = llvm.typeOf(obj);
+
+        // Emit the index
+        const index_val = try self.emitExpr(idx.index);
+
+        const obj_type_kind = llvm.getTypeKind(obj_type);
+
+        if (obj_type_kind == llvm.c.LLVMArrayTypeKind) {
+            // Array access - store to temp for GEP
+            const alloca = self.builder.buildAlloca(obj_type, "arr.tmp");
+            _ = self.builder.buildStore(obj, alloca);
+
+            // GEP with the index
+            var indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                index_val,
+            };
+            const elem_ptr = self.builder.buildGEP(obj_type, alloca, &indices, "elem.ptr");
+
+            // Get element type and load
+            const elem_type = llvm.c.LLVMGetElementType(obj_type);
+            return self.builder.buildLoad(elem_type, elem_ptr, "elem.val");
+        } else if (obj_type_kind == llvm.c.LLVMPointerTypeKind) {
+            // Pointer/slice access
+            // For slices, we'd need to bounds check and extract the data pointer
+            // For now, treat as raw pointer indexing
+            return EmitError.UnsupportedFeature;
+        }
+
+        return EmitError.UnsupportedFeature;
     }
 };
