@@ -43,6 +43,9 @@ pub const Emitter = struct {
     /// Stack of loop contexts for break/continue.
     loop_stack: std.ArrayListUnmanaged(LoopContext),
 
+    /// Stack of scopes for automatic drop insertion.
+    scope_stack: std.ArrayListUnmanaged(ScopeInfo),
+
     /// Current function's return type info (for optional wrapping).
     current_return_type: ?ReturnTypeInfo,
 
@@ -103,6 +106,23 @@ pub const Emitter = struct {
         break_block: llvm.BasicBlockRef,
     };
 
+    /// Info about a variable that needs to be dropped at scope exit.
+    const DroppableVar = struct {
+        name: []const u8,
+        alloca: llvm.ValueRef,
+        inner_type: llvm.TypeRef,
+        /// True if this is an Rc type (needs klar_rc_drop).
+        is_rc: bool,
+    };
+
+    /// Info about a scope for drop tracking.
+    const ScopeInfo = struct {
+        /// Variables declared in this scope that need dropping.
+        droppables: std.ArrayListUnmanaged(DroppableVar),
+        /// True if this scope is a loop body (break/continue need drops).
+        is_loop: bool,
+    };
+
     /// Info about a generated closure type.
     const ClosureTypeInfo = struct {
         struct_type: llvm.TypeRef,
@@ -137,6 +157,7 @@ pub const Emitter = struct {
             .named_values = std.StringHashMap(LocalValue).init(allocator),
             .has_terminator = false,
             .loop_stack = .{},
+            .scope_stack = .{},
             .current_return_type = null,
             .sadd_overflow_id = null,
             .ssub_overflow_id = null,
@@ -199,6 +220,11 @@ pub const Emitter = struct {
             di_builder.dispose();
         }
         self.loop_stack.deinit(self.allocator);
+        // Clean up any remaining scopes (shouldn't normally have any)
+        for (self.scope_stack.items) |*scope| {
+            scope.droppables.deinit(self.allocator);
+        }
+        self.scope_stack.deinit(self.allocator);
         self.named_values.deinit();
         // Free struct type info allocations
         var it = self.struct_types.valueIterator();
@@ -389,6 +415,9 @@ pub const Emitter = struct {
 
         // Emit function body
         if (func.body) |body| {
+            // Push function scope for drop tracking
+            try self.pushScope(false);
+
             const result = try self.emitBlock(body);
 
             // Check if the final_expr is an if-without-else (produces dummy value)
@@ -405,8 +434,11 @@ pub const Emitter = struct {
                 if (has_if_without_else) {
                     if (self.current_return_type) |rt_info| {
                         if (rt_info.is_optional) {
+                            self.emitDropsForReturn();
                             const none_val = self.emitNone(rt_info.llvm_type);
                             _ = self.builder.buildRet(none_val);
+                            self.popScope();
+                            self.current_function = null;
                             return;
                         }
                     }
@@ -423,27 +455,43 @@ pub const Emitter = struct {
                                 llvm.c.LLVMCountStructElementTypes(val_type) != 2)
                             {
                                 // Not an optional, wrap in Some
+                                self.emitDropsForReturn();
                                 const some_val = self.emitSome(val, rt_info.inner_type.?);
                                 _ = self.builder.buildRet(some_val);
+                                self.popScope();
+                                self.current_function = null;
                                 return;
                             }
                         }
                     }
+                    self.emitDropsForReturn();
                     _ = self.builder.buildRet(val);
                 } else if (func.return_type == null) {
+                    self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
                 } else if (self.current_return_type) |rt_info| {
                     if (rt_info.is_optional) {
                         // Return None for optional type with no value
+                        self.emitDropsForReturn();
                         const none_val = self.emitNone(rt_info.llvm_type);
                         _ = self.builder.buildRet(none_val);
                     } else {
+                        self.emitDropsForReturn();
                         _ = self.builder.buildRetVoid();
                     }
                 } else {
                     // Return type specified but no value - emit void return
+                    self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
                 }
+            }
+
+            // Pop the function scope - just cleanup, drops already emitted
+            // Note: when we reach here from the non-terminator path, drops were emitted by emitDropsForReturn
+            // When we reach here from the terminator path (has_terminator), drops were emitted by the statement
+            if (self.scope_stack.pop()) |scope| {
+                var s = scope;
+                s.droppables.deinit(self.allocator);
             }
         }
 
@@ -492,6 +540,11 @@ pub const Emitter = struct {
                     .struct_type_name = struct_type_name,
                     .inner_type = inner_type,
                 }) catch return EmitError.OutOfMemory;
+
+                // Register Rc variables for automatic dropping
+                if (inner_type) |it| {
+                    try self.registerDroppable(decl.name, alloca, it, true);
+                }
             },
             .var_decl => |decl| {
                 const value = try self.emitExpr(decl.value);
@@ -513,8 +566,16 @@ pub const Emitter = struct {
                     .struct_type_name = struct_type_name,
                     .inner_type = inner_type,
                 }) catch return EmitError.OutOfMemory;
+
+                // Register Rc variables for automatic dropping
+                if (inner_type) |it| {
+                    try self.registerDroppable(decl.name, alloca, it, true);
+                }
             },
             .return_stmt => |ret| {
+                // Emit drops for all variables before returning
+                self.emitDropsForReturn();
+
                 if (ret.value) |val| {
                     var result = try self.emitExpr(val);
                     // If return type is optional, wrap value in Some if needed
@@ -606,12 +667,22 @@ pub const Emitter = struct {
         const cond = try self.emitExpr(loop.condition);
         _ = self.builder.buildCondBr(cond, body_bb, end_bb);
 
-        // Emit body
+        // Emit body with loop scope for drop tracking
         self.builder.positionAtEnd(body_bb);
         self.has_terminator = false;
+        try self.pushScope(true); // is_loop = true
         _ = try self.emitBlock(loop.body);
         if (!self.has_terminator) {
+            // Emit drops for variables declared in this iteration before looping back
+            self.popScope();
             _ = self.builder.buildBr(cond_bb);
+        } else {
+            // Terminator already emitted (break/continue/return)
+            // Drops were already emitted by the terminator, just clean up scope without emitting
+            if (self.scope_stack.pop()) |scope| {
+                var s = scope;
+                s.droppables.deinit(self.allocator);
+            }
         }
 
         // Continue after loop
@@ -700,12 +771,22 @@ pub const Emitter = struct {
             self.builder.buildICmp(llvm.c.LLVMIntSLT, cur_val, end_val, "for.cmp");
         _ = self.builder.buildCondBr(cmp, body_bb, end_bb);
 
-        // Emit body
+        // Emit body with loop scope for drop tracking
         self.builder.positionAtEnd(body_bb);
         self.has_terminator = false;
+        try self.pushScope(true); // is_loop = true
         _ = try self.emitBlock(loop.body);
         if (!self.has_terminator) {
+            // Emit drops for variables declared in this iteration before continuing
+            self.popScope();
             _ = self.builder.buildBr(incr_bb);
+        } else {
+            // Terminator already emitted (break/continue/return)
+            // Drops were already emitted by the terminator, just clean up scope without emitting
+            if (self.scope_stack.pop()) |scope| {
+                var s = scope;
+                s.droppables.deinit(self.allocator);
+            }
         }
 
         // Emit increment
@@ -741,12 +822,22 @@ pub const Emitter = struct {
         // Branch to body
         _ = self.builder.buildBr(body_bb);
 
-        // Emit body
+        // Emit body with loop scope for drop tracking
         self.builder.positionAtEnd(body_bb);
         self.has_terminator = false;
+        try self.pushScope(true); // is_loop = true
         _ = try self.emitBlock(loop.body);
         if (!self.has_terminator) {
+            // Emit drops for variables declared in this iteration before looping
+            self.popScope();
             _ = self.builder.buildBr(body_bb);
+        } else {
+            // Terminator already emitted (break/continue/return)
+            // Drops were already emitted by the terminator, just clean up scope without emitting
+            if (self.scope_stack.pop()) |scope| {
+                var s = scope;
+                s.droppables.deinit(self.allocator);
+            }
         }
 
         // Continue after loop
@@ -758,6 +849,8 @@ pub const Emitter = struct {
         if (self.loop_stack.items.len == 0) {
             return EmitError.InvalidAST; // break outside of loop
         }
+        // Emit drops for all scopes until we reach the loop scope
+        self.emitDropsForLoopExit();
         const loop_ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
         _ = self.builder.buildBr(loop_ctx.break_block);
         self.has_terminator = true;
@@ -767,6 +860,8 @@ pub const Emitter = struct {
         if (self.loop_stack.items.len == 0) {
             return EmitError.InvalidAST; // continue outside of loop
         }
+        // Emit drops for all scopes until we reach the loop scope
+        self.emitDropsForLoopExit();
         const loop_ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
         _ = self.builder.buildBr(loop_ctx.continue_block);
         self.has_terminator = true;
@@ -3402,5 +3497,113 @@ pub const Emitter = struct {
         const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
         // Note: noreturn attribute would be nice but not critical - abort() always exits
         return func;
+    }
+
+    // ==================== Scope Management for Automatic Drop ====================
+
+    /// Push a new scope onto the scope stack.
+    fn pushScope(self: *Emitter, is_loop: bool) EmitError!void {
+        self.scope_stack.append(self.allocator, .{
+            .droppables = .{},
+            .is_loop = is_loop,
+        }) catch return EmitError.OutOfMemory;
+    }
+
+    /// Pop a scope and emit drops for all droppable variables in it.
+    fn popScope(self: *Emitter) void {
+        if (self.scope_stack.pop()) |scope| {
+            // Emit drops in reverse order (LIFO - last declared, first dropped)
+            self.emitDropsForVars(scope.droppables.items);
+            var s = scope;
+            s.droppables.deinit(self.allocator);
+        }
+    }
+
+    /// Emit drops for all variables in the given list (in reverse order).
+    fn emitDropsForVars(self: *Emitter, droppables: []const DroppableVar) void {
+        if (droppables.len == 0) return;
+
+        // Drop in reverse declaration order
+        var i: usize = droppables.len;
+        while (i > 0) {
+            i -= 1;
+            const v = droppables[i];
+            self.emitDropForVar(v);
+        }
+    }
+
+    /// Emit a drop call for a single variable.
+    fn emitDropForVar(self: *Emitter, v: DroppableVar) void {
+        if (v.is_rc) {
+            // Load the Rc pointer from the alloca
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const rc_ptr = self.builder.buildLoad(ptr_type, v.alloca, "rc_ptr_drop");
+
+            // Get the size of the inner type
+            const inner_size = llvm.c.LLVMSizeOf(v.inner_type);
+            const i64_type = llvm.Types.int64(self.ctx);
+            const size_val = llvm.c.LLVMBuildIntCast2(self.builder.ref, inner_size, i64_type, 0, "size");
+
+            // Alignment (8 is a safe default for most types)
+            const align_val = llvm.Const.int64(self.ctx, 8);
+
+            // No destructor callback for primitive types (null pointer)
+            const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+
+            // Call klar_rc_drop
+            const drop_fn = self.getOrDeclareRcDrop();
+            var args = [_]llvm.ValueRef{ rc_ptr, size_val, align_val, null_ptr };
+            _ = llvm.c.LLVMBuildCall2(
+                self.builder.ref,
+                llvm.c.LLVMGlobalGetValueType(drop_fn),
+                drop_fn,
+                &args,
+                4,
+                "",
+            );
+        }
+        // For non-Rc types that need dropping (future: closures, custom destructors),
+        // we would add additional cases here.
+    }
+
+    /// Emit drops for all scopes up to (and including) the current function scope.
+    /// Used for return statements.
+    fn emitDropsForReturn(self: *Emitter) void {
+        // Drop all variables in all scopes (innermost first)
+        var i: usize = self.scope_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const scope = self.scope_stack.items[i];
+            self.emitDropsForVars(scope.droppables.items);
+        }
+    }
+
+    /// Emit drops for all scopes until we reach a loop scope.
+    /// Used for break/continue statements.
+    fn emitDropsForLoopExit(self: *Emitter) void {
+        var i: usize = self.scope_stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const scope = self.scope_stack.items[i];
+            self.emitDropsForVars(scope.droppables.items);
+            if (scope.is_loop) {
+                // Stop at the loop scope itself (its variables will be dropped
+                // when the loop ends normally or when outer scope exits)
+                break;
+            }
+        }
+    }
+
+    /// Register a variable in the current scope as needing dropping.
+    fn registerDroppable(self: *Emitter, name: []const u8, alloca: llvm.ValueRef, inner_type: llvm.TypeRef, is_rc: bool) EmitError!void {
+        if (self.scope_stack.items.len == 0) return;
+
+        const scope = &self.scope_stack.items[self.scope_stack.items.len - 1];
+        scope.droppables.append(self.allocator, .{
+            .name = name,
+            .alloca = alloca,
+            .inner_type = inner_type,
+            .is_rc = is_rc,
+        }) catch return EmitError.OutOfMemory;
     }
 };
