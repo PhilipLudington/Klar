@@ -1,0 +1,4 @@
+// hello.kl - Hello World in Klar
+fn main() {
+    println("Hello, Klar!")
+}
