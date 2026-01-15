@@ -594,7 +594,15 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
-            // Try to parse as expression first
+            // Check if this is a statement keyword
+            if (self.isStatementKeyword()) {
+                const stmt = try self.parseStatement();
+                try statements.append(self.allocator, stmt);
+                _ = self.match(.newline) or self.match(.semicolon);
+                continue;
+            }
+
+            // Try to parse as expression
             const expr = try self.parseExpression();
 
             // If followed by closing brace (no newline/semicolon), it's the final expression
@@ -622,6 +630,13 @@ pub const Parser = struct {
             .final_expr = final_expr,
             .span = ast.Span.merge(start_span, end_span),
         });
+    }
+
+    fn isStatementKeyword(self: *Parser) bool {
+        return switch (self.current.kind) {
+            .let, .var_, .return_, .break_, .continue_, .for_, .while_, .loop => true,
+            else => false,
+        };
     }
 
     fn parseIfExpr(self: *Parser) ParseError!ast.Expr {
@@ -1017,6 +1032,178 @@ pub const Parser = struct {
     }
 
     // ========================================================================
+    // Statement parsing
+    // ========================================================================
+
+    /// Parse a statement (let, var, return, break, continue, loops, or expression statement)
+    pub fn parseStatement(self: *Parser) ParseError!ast.Stmt {
+        return switch (self.current.kind) {
+            .let => self.parseLetDecl(),
+            .var_ => self.parseVarDecl(),
+            .return_ => self.parseReturnStmt(),
+            .break_ => self.parseBreakStmt(),
+            .continue_ => self.parseContinueStmt(),
+            .for_ => self.parseForLoop(),
+            .while_ => self.parseWhileLoop(),
+            .loop => self.parseLoopStmt(),
+            else => self.parseExpressionStatement(),
+        };
+    }
+
+    fn parseLetDecl(self: *Parser) ParseError!ast.Stmt {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'let'
+
+        const name = try self.consumeIdentifier();
+
+        var type_: ?ast.TypeExpr = null;
+        if (self.match(.colon)) {
+            type_ = try self.parseType();
+        }
+
+        try self.consume(.eq, "expected '=' in let declaration");
+        const value = try self.parseExpression();
+
+        const end_span = value.span();
+        const let_decl = try self.create(ast.LetDecl, .{
+            .name = name,
+            .type_ = type_,
+            .value = value,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .let_decl = let_decl };
+    }
+
+    fn parseVarDecl(self: *Parser) ParseError!ast.Stmt {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'var'
+
+        const name = try self.consumeIdentifier();
+
+        var type_: ?ast.TypeExpr = null;
+        if (self.match(.colon)) {
+            type_ = try self.parseType();
+        }
+
+        try self.consume(.eq, "expected '=' in var declaration");
+        const value = try self.parseExpression();
+
+        const end_span = value.span();
+        const var_decl = try self.create(ast.VarDecl, .{
+            .name = name,
+            .type_ = type_,
+            .value = value,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .var_decl = var_decl };
+    }
+
+    fn parseReturnStmt(self: *Parser) ParseError!ast.Stmt {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'return'
+
+        var value: ?ast.Expr = null;
+        var end_span = start_span;
+
+        // Return value is optional - check if we have an expression following
+        if (!self.check(.newline) and !self.check(.r_brace) and !self.check(.semicolon) and !self.check(.eof)) {
+            value = try self.parseExpression();
+            end_span = value.?.span();
+        }
+
+        const return_stmt = try self.create(ast.ReturnStmt, .{
+            .value = value,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .return_stmt = return_stmt };
+    }
+
+    fn parseBreakStmt(self: *Parser) ParseError!ast.Stmt {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'break'
+
+        var value: ?ast.Expr = null;
+        var end_span = start_span;
+
+        // Break value is optional
+        if (!self.check(.newline) and !self.check(.r_brace) and !self.check(.semicolon) and !self.check(.eof)) {
+            value = try self.parseExpression();
+            end_span = value.?.span();
+        }
+
+        const break_stmt = try self.create(ast.BreakStmt, .{
+            .value = value,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .break_stmt = break_stmt };
+    }
+
+    fn parseContinueStmt(self: *Parser) ParseError!ast.Stmt {
+        const span = self.spanFromToken(self.current);
+        self.advance(); // consume 'continue'
+
+        const continue_stmt = try self.create(ast.ContinueStmt, .{
+            .span = span,
+        });
+        return .{ .continue_stmt = continue_stmt };
+    }
+
+    fn parseForLoop(self: *Parser) ParseError!ast.Stmt {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'for'
+
+        const pattern = try self.parsePattern();
+        try self.consume(.in, "expected 'in' after for pattern");
+        const iterable = try self.parseExpression();
+        const body = try self.parseBlock();
+
+        const for_loop = try self.create(ast.ForLoop, .{
+            .pattern = pattern,
+            .iterable = iterable,
+            .body = body,
+            .span = ast.Span.merge(start_span, body.span),
+        });
+        return .{ .for_loop = for_loop };
+    }
+
+    fn parseWhileLoop(self: *Parser) ParseError!ast.Stmt {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'while'
+
+        const condition = try self.parseExpression();
+        const body = try self.parseBlock();
+
+        const while_loop = try self.create(ast.WhileLoop, .{
+            .condition = condition,
+            .body = body,
+            .span = ast.Span.merge(start_span, body.span),
+        });
+        return .{ .while_loop = while_loop };
+    }
+
+    fn parseLoopStmt(self: *Parser) ParseError!ast.Stmt {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'loop'
+
+        const body = try self.parseBlock();
+
+        const loop_stmt = try self.create(ast.LoopStmt, .{
+            .body = body,
+            .span = ast.Span.merge(start_span, body.span),
+        });
+        return .{ .loop_stmt = loop_stmt };
+    }
+
+    fn parseExpressionStatement(self: *Parser) ParseError!ast.Stmt {
+        const expr = try self.parseExpression();
+        const expr_stmt = try self.create(ast.ExprStmt, .{
+            .expr = expr,
+            .span = expr.span(),
+        });
+        return .{ .expr_stmt = expr_stmt };
+    }
+
+    // ========================================================================
     // Pattern parsing
     // ========================================================================
 
@@ -1206,6 +1393,12 @@ pub const Parser = struct {
             return .{ .function = func };
         }
 
+        // Handle Self as a type
+        if (self.match(.self_type)) {
+            const span = self.spanFromToken(self.previous);
+            return .{ .named = .{ .name = "Self", .span = span } };
+        }
+
         // Named type (with possible generic args)
         if (self.check(.identifier)) {
             const span = self.spanFromToken(self.current);
@@ -1238,6 +1431,594 @@ pub const Parser = struct {
 
         try self.reportError("expected type");
         return ParseError.ExpectedType;
+    }
+
+    // ========================================================================
+    // Declaration parsing
+    // ========================================================================
+
+    /// Parse a declaration at the top level
+    pub fn parseDeclaration(self: *Parser) ParseError!ast.Decl {
+        // Handle visibility modifier
+        const is_pub = self.match(.pub_);
+
+        return switch (self.current.kind) {
+            .fn_ => self.parseFunctionDecl(is_pub),
+            .struct_ => self.parseStructDecl(is_pub),
+            .enum_ => self.parseEnumDecl(is_pub),
+            .trait => self.parseTraitDecl(is_pub),
+            .impl => self.parseImplDecl(),
+            .type_ => self.parseTypeAlias(is_pub),
+            .const_ => self.parseConstDecl(is_pub),
+            .import => self.parseImportDecl(),
+            .module => self.parseModuleDecl(),
+            else => {
+                try self.reportError("expected declaration");
+                return ParseError.UnexpectedToken;
+            },
+        };
+    }
+
+    fn parseFunctionDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'fn'
+
+        const name = try self.consumeIdentifier();
+
+        // Parse optional type parameters: fn name[T, U]
+        const type_params = try self.parseTypeParams();
+
+        // Parse parameters
+        try self.consume(.l_paren, "expected '(' after function name");
+        const params = try self.parseFunctionParams();
+        try self.consume(.r_paren, "expected ')' after parameters");
+
+        // Parse optional return type
+        var return_type: ?ast.TypeExpr = null;
+        if (self.match(.arrow)) {
+            return_type = try self.parseType();
+        }
+
+        // Parse optional where clause
+        const where_clause = try self.parseWhereClause();
+
+        // Parse body (either block or = expr for single-expression)
+        var body: ?*ast.Block = null;
+        if (self.check(.l_brace)) {
+            body = try self.parseBlock();
+        } else if (self.match(.eq)) {
+            // Single-expression function: fn foo() -> i32 = 42
+            const expr = try self.parseExpression();
+            const stmts = std.ArrayListUnmanaged(ast.Stmt){};
+            body = try self.create(ast.Block, .{
+                .statements = try self.dupeSlice(ast.Stmt, stmts.items),
+                .final_expr = expr,
+                .span = expr.span(),
+            });
+        }
+
+        const end_span = if (body) |b| b.span else if (return_type) |rt| rt.span() else start_span;
+
+        const func = try self.create(ast.FunctionDecl, .{
+            .name = name,
+            .type_params = type_params,
+            .params = params,
+            .return_type = return_type,
+            .where_clause = where_clause,
+            .body = body,
+            .is_pub = is_pub,
+            .is_async = false,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .function = func };
+    }
+
+    fn parseTypeParams(self: *Parser) ParseError![]const ast.TypeParam {
+        if (!self.match(.l_bracket)) {
+            return &[_]ast.TypeParam{};
+        }
+
+        var params = std.ArrayListUnmanaged(ast.TypeParam){};
+
+        while (!self.check(.r_bracket) and !self.check(.eof)) {
+            const param_span = self.spanFromToken(self.current);
+            const param_name = try self.consumeIdentifier();
+
+            // Parse optional bounds: T: Trait + OtherTrait
+            var bounds = std.ArrayListUnmanaged(ast.TypeExpr){};
+            if (self.match(.colon)) {
+                while (true) {
+                    try bounds.append(self.allocator, try self.parseType());
+                    if (!self.match(.plus)) break;
+                }
+            }
+
+            try params.append(self.allocator, .{
+                .name = param_name,
+                .bounds = try self.dupeSlice(ast.TypeExpr, bounds.items),
+                .span = param_span,
+            });
+
+            if (!self.match(.comma)) break;
+        }
+
+        try self.consume(.r_bracket, "expected ']' after type parameters");
+        return self.dupeSlice(ast.TypeParam, params.items);
+    }
+
+    fn parseFunctionParams(self: *Parser) ParseError![]const ast.FunctionParam {
+        var params = std.ArrayListUnmanaged(ast.FunctionParam){};
+
+        if (self.check(.r_paren)) {
+            return &[_]ast.FunctionParam{};
+        }
+
+        while (true) {
+            const param_span = self.spanFromToken(self.current);
+
+            // Handle 'self' and regular identifiers as parameter names
+            const param_name = if (self.match(.self))
+                "self"
+            else
+                try self.consumeIdentifier();
+
+            try self.consume(.colon, "expected ':' after parameter name");
+            const param_type = try self.parseType();
+
+            // Parse optional default value
+            var default_value: ?ast.Expr = null;
+            if (self.match(.eq)) {
+                default_value = try self.parseExpression();
+            }
+
+            try params.append(self.allocator, .{
+                .name = param_name,
+                .type_ = param_type,
+                .default_value = default_value,
+                .span = param_span,
+            });
+
+            if (!self.match(.comma)) break;
+        }
+
+        return self.dupeSlice(ast.FunctionParam, params.items);
+    }
+
+    fn parseWhereClause(self: *Parser) ParseError!?[]const ast.WhereConstraint {
+        if (!self.match(.where)) {
+            return null;
+        }
+
+        var constraints = std.ArrayListUnmanaged(ast.WhereConstraint){};
+
+        while (true) {
+            const constraint_span = self.spanFromToken(self.current);
+            const type_param = try self.consumeIdentifier();
+
+            try self.consume(.colon, "expected ':' after type parameter in where clause");
+
+            var bounds = std.ArrayListUnmanaged(ast.TypeExpr){};
+            while (true) {
+                try bounds.append(self.allocator, try self.parseType());
+                if (!self.match(.plus)) break;
+            }
+
+            try constraints.append(self.allocator, .{
+                .type_param = type_param,
+                .bounds = try self.dupeSlice(ast.TypeExpr, bounds.items),
+                .span = constraint_span,
+            });
+
+            if (!self.match(.comma)) break;
+        }
+
+        return try self.dupeSlice(ast.WhereConstraint, constraints.items);
+    }
+
+    fn parseStructDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'struct'
+
+        const name = try self.consumeIdentifier();
+        const type_params = try self.parseTypeParams();
+
+        // Parse optional trait implementations: struct Foo: Trait1 + Trait2
+        var traits = std.ArrayListUnmanaged(ast.TypeExpr){};
+        if (self.match(.colon)) {
+            while (true) {
+                try traits.append(self.allocator, try self.parseType());
+                if (!self.match(.plus)) break;
+            }
+        }
+
+        try self.consume(.l_brace, "expected '{' after struct name");
+
+        // Parse fields
+        var fields = std.ArrayListUnmanaged(ast.StructField){};
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            // Skip newlines
+            while (self.match(.newline)) {}
+            if (self.check(.r_brace)) break;
+
+            const field_is_pub = self.match(.pub_);
+            const field_span = self.spanFromToken(self.current);
+            const field_name = try self.consumeIdentifier();
+
+            try self.consume(.colon, "expected ':' after field name");
+            const field_type = try self.parseType();
+
+            try fields.append(self.allocator, .{
+                .name = field_name,
+                .type_ = field_type,
+                .is_pub = field_is_pub,
+                .span = field_span,
+            });
+
+            _ = self.match(.comma) or self.match(.newline);
+        }
+
+        try self.consume(.r_brace, "expected '}' after struct fields");
+        const end_span = self.spanFromToken(self.previous);
+
+        const struct_decl = try self.create(ast.StructDecl, .{
+            .name = name,
+            .type_params = type_params,
+            .fields = try self.dupeSlice(ast.StructField, fields.items),
+            .traits = try self.dupeSlice(ast.TypeExpr, traits.items),
+            .is_pub = is_pub,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .struct_decl = struct_decl };
+    }
+
+    fn parseEnumDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'enum'
+
+        const name = try self.consumeIdentifier();
+        const type_params = try self.parseTypeParams();
+
+        try self.consume(.l_brace, "expected '{' after enum name");
+
+        // Parse variants
+        var variants = std.ArrayListUnmanaged(ast.EnumVariant){};
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            while (self.match(.newline)) {}
+            if (self.check(.r_brace)) break;
+
+            const variant_span = self.spanFromToken(self.current);
+            const variant_name = try self.consumeIdentifier();
+
+            // Parse optional payload
+            var payload: ?ast.VariantPayload = null;
+
+            if (self.match(.l_paren)) {
+                // Tuple payload: Variant(T1, T2)
+                var tuple_types = std.ArrayListUnmanaged(ast.TypeExpr){};
+                if (!self.check(.r_paren)) {
+                    while (true) {
+                        try tuple_types.append(self.allocator, try self.parseType());
+                        if (!self.match(.comma)) break;
+                    }
+                }
+                try self.consume(.r_paren, "expected ')' after tuple payload");
+                payload = .{ .tuple = try self.dupeSlice(ast.TypeExpr, tuple_types.items) };
+            } else if (self.match(.l_brace)) {
+                // Struct payload: Variant { field: T }
+                var struct_fields = std.ArrayListUnmanaged(ast.StructField){};
+                while (!self.check(.r_brace) and !self.check(.eof)) {
+                    while (self.match(.newline)) {}
+                    if (self.check(.r_brace)) break;
+
+                    const field_span = self.spanFromToken(self.current);
+                    const field_name = try self.consumeIdentifier();
+                    try self.consume(.colon, "expected ':' after field name");
+                    const field_type = try self.parseType();
+
+                    try struct_fields.append(self.allocator, .{
+                        .name = field_name,
+                        .type_ = field_type,
+                        .is_pub = false,
+                        .span = field_span,
+                    });
+
+                    _ = self.match(.comma) or self.match(.newline);
+                }
+                try self.consume(.r_brace, "expected '}' after struct payload");
+                payload = .{ .struct_ = try self.dupeSlice(ast.StructField, struct_fields.items) };
+            }
+
+            try variants.append(self.allocator, .{
+                .name = variant_name,
+                .payload = payload,
+                .span = variant_span,
+            });
+
+            _ = self.match(.comma) or self.match(.newline);
+        }
+
+        try self.consume(.r_brace, "expected '}' after enum variants");
+        const end_span = self.spanFromToken(self.previous);
+
+        const enum_decl = try self.create(ast.EnumDecl, .{
+            .name = name,
+            .type_params = type_params,
+            .variants = try self.dupeSlice(ast.EnumVariant, variants.items),
+            .is_pub = is_pub,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .enum_decl = enum_decl };
+    }
+
+    fn parseTraitDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'trait'
+
+        const name = try self.consumeIdentifier();
+        const type_params = try self.parseTypeParams();
+
+        try self.consume(.l_brace, "expected '{' after trait name");
+
+        // Parse method signatures
+        var methods = std.ArrayListUnmanaged(ast.FunctionDecl){};
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            while (self.match(.newline)) {}
+            if (self.check(.r_brace)) break;
+
+            // Each method in trait is a function signature (potentially without body)
+            const method_decl = try self.parseFunctionDecl(false);
+            try methods.append(self.allocator, method_decl.function.*);
+
+            _ = self.match(.newline);
+        }
+
+        try self.consume(.r_brace, "expected '}' after trait methods");
+        const end_span = self.spanFromToken(self.previous);
+
+        const trait_decl = try self.create(ast.TraitDecl, .{
+            .name = name,
+            .type_params = type_params,
+            .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
+            .is_pub = is_pub,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .trait_decl = trait_decl };
+    }
+
+    fn parseImplDecl(self: *Parser) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'impl'
+
+        // Parse optional type parameters: impl[T]
+        const type_params = try self.parseTypeParams();
+
+        // Parse target type
+        const target_type = try self.parseType();
+
+        // Parse optional trait: impl Type: Trait
+        var trait_type: ?ast.TypeExpr = null;
+        if (self.match(.colon)) {
+            trait_type = try self.parseType();
+        }
+
+        // Parse optional where clause
+        const where_clause = try self.parseWhereClause();
+
+        try self.consume(.l_brace, "expected '{' after impl");
+
+        // Parse methods
+        var methods = std.ArrayListUnmanaged(ast.FunctionDecl){};
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            while (self.match(.newline)) {}
+            if (self.check(.r_brace)) break;
+
+            const is_pub = self.match(.pub_);
+            const method_decl = try self.parseFunctionDecl(is_pub);
+            try methods.append(self.allocator, method_decl.function.*);
+
+            _ = self.match(.newline);
+        }
+
+        try self.consume(.r_brace, "expected '}' after impl methods");
+        const end_span = self.spanFromToken(self.previous);
+
+        const impl_decl = try self.create(ast.ImplDecl, .{
+            .type_params = type_params,
+            .target_type = target_type,
+            .trait_type = trait_type,
+            .where_clause = where_clause,
+            .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .impl_decl = impl_decl };
+    }
+
+    fn parseTypeAlias(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'type'
+
+        const name = try self.consumeIdentifier();
+        const type_params = try self.parseTypeParams();
+
+        try self.consume(.eq, "expected '=' in type alias");
+        const target = try self.parseType();
+
+        const type_alias = try self.create(ast.TypeAlias, .{
+            .name = name,
+            .type_params = type_params,
+            .target = target,
+            .is_pub = is_pub,
+            .span = ast.Span.merge(start_span, target.span()),
+        });
+        return .{ .type_alias = type_alias };
+    }
+
+    fn parseConstDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'const'
+
+        const name = try self.consumeIdentifier();
+
+        var type_: ?ast.TypeExpr = null;
+        if (self.match(.colon)) {
+            type_ = try self.parseType();
+        }
+
+        try self.consume(.eq, "expected '=' in const declaration");
+        const value = try self.parseExpression();
+
+        const const_decl = try self.create(ast.ConstDecl, .{
+            .name = name,
+            .type_ = type_,
+            .value = value,
+            .is_pub = is_pub,
+            .span = ast.Span.merge(start_span, value.span()),
+        });
+        return .{ .const_decl = const_decl };
+    }
+
+    fn parseImportDecl(self: *Parser) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'import'
+
+        // Parse module path: std.collections.List
+        var path = std.ArrayListUnmanaged([]const u8){};
+        try path.append(self.allocator, try self.consumeIdentifier());
+
+        while (self.match(.dot)) {
+            // Check for wildcard: import path.*
+            if (self.match(.star)) {
+                const import_decl = try self.create(ast.ImportDecl, .{
+                    .path = try self.dupeSlice([]const u8, path.items),
+                    .items = .all,
+                    .alias = null,
+                    .span = ast.Span.merge(start_span, self.spanFromToken(self.previous)),
+                });
+                return .{ .import_decl = import_decl };
+            }
+
+            // Check for specific items: import path.{ Item1, Item2 }
+            if (self.match(.l_brace)) {
+                var items = std.ArrayListUnmanaged(ast.ImportItem){};
+
+                while (!self.check(.r_brace) and !self.check(.eof)) {
+                    while (self.match(.newline)) {}
+                    if (self.check(.r_brace)) break;
+
+                    const item_span = self.spanFromToken(self.current);
+                    const item_name = try self.consumeIdentifier();
+
+                    var alias: ?[]const u8 = null;
+                    if (self.match(.as)) {
+                        alias = try self.consumeIdentifier();
+                    }
+
+                    try items.append(self.allocator, .{
+                        .name = item_name,
+                        .alias = alias,
+                        .span = item_span,
+                    });
+
+                    _ = self.match(.comma);
+                }
+
+                try self.consume(.r_brace, "expected '}' after import items");
+                const end_span = self.spanFromToken(self.previous);
+
+                const import_decl = try self.create(ast.ImportDecl, .{
+                    .path = try self.dupeSlice([]const u8, path.items),
+                    .items = .{ .specific = try self.dupeSlice(ast.ImportItem, items.items) },
+                    .alias = null,
+                    .span = ast.Span.merge(start_span, end_span),
+                });
+                return .{ .import_decl = import_decl };
+            }
+
+            // Regular path segment
+            try path.append(self.allocator, try self.consumeIdentifier());
+        }
+
+        // Check for alias: import path as alias
+        var alias: ?[]const u8 = null;
+        if (self.match(.as)) {
+            alias = try self.consumeIdentifier();
+        }
+
+        const end_span = self.spanFromToken(self.previous);
+
+        const import_decl = try self.create(ast.ImportDecl, .{
+            .path = try self.dupeSlice([]const u8, path.items),
+            .items = null,
+            .alias = alias,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .import_decl = import_decl };
+    }
+
+    fn parseModuleDecl(self: *Parser) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'module'
+
+        // Parse module path: module name.subname
+        var path = std.ArrayListUnmanaged([]const u8){};
+        try path.append(self.allocator, try self.consumeIdentifier());
+
+        while (self.match(.dot)) {
+            try path.append(self.allocator, try self.consumeIdentifier());
+        }
+
+        const end_span = self.spanFromToken(self.previous);
+
+        const module_decl = try self.create(ast.ModuleDecl, .{
+            .path = try self.dupeSlice([]const u8, path.items),
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .module_decl = module_decl };
+    }
+
+    // ========================================================================
+    // Top-level parsing
+    // ========================================================================
+
+    /// Parse a complete module (file)
+    pub fn parseModule(self: *Parser) ParseError!ast.Module {
+        var module_decl: ?ast.ModuleDecl = null;
+        var imports = std.ArrayListUnmanaged(ast.ImportDecl){};
+        var declarations = std.ArrayListUnmanaged(ast.Decl){};
+
+        // Skip leading newlines
+        while (self.match(.newline)) {}
+
+        // Parse optional module declaration
+        if (self.check(.module)) {
+            const decl = try self.parseDeclaration();
+            module_decl = decl.module_decl.*;
+            _ = self.match(.newline);
+        }
+
+        // Parse imports and declarations
+        while (!self.check(.eof)) {
+            // Skip newlines
+            while (self.match(.newline)) {}
+            if (self.check(.eof)) break;
+
+            const decl = try self.parseDeclaration();
+
+            // Separate imports from other declarations
+            if (decl == .import_decl) {
+                try imports.append(self.allocator, decl.import_decl.*);
+            } else {
+                try declarations.append(self.allocator, decl);
+            }
+
+            _ = self.match(.newline);
+        }
+
+        return .{
+            .module_decl = module_decl,
+            .imports = try self.dupeSlice(ast.ImportDecl, imports.items),
+            .declarations = try self.dupeSlice(ast.Decl, declarations.items),
+        };
     }
 };
 
@@ -1368,4 +2149,275 @@ test "parse inclusive range" {
 
     try std.testing.expect(result.expr == .range);
     try std.testing.expect(result.expr.range.inclusive);
+}
+
+// ============================================================================
+// Statement Tests
+// ============================================================================
+
+fn testParseStmt(source: []const u8) !struct { stmt: ast.Stmt, arena: std.heap.ArenaAllocator } {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    errdefer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const stmt = try parser.parseStatement();
+    return .{ .stmt = stmt, .arena = arena };
+}
+
+test "parse let declaration" {
+    var result = try testParseStmt("let x = 42");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .let_decl);
+    try std.testing.expectEqualStrings("x", result.stmt.let_decl.name);
+    try std.testing.expect(result.stmt.let_decl.type_ == null);
+}
+
+test "parse let with type annotation" {
+    var result = try testParseStmt("let x: i32 = 42");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .let_decl);
+    try std.testing.expectEqualStrings("x", result.stmt.let_decl.name);
+    try std.testing.expect(result.stmt.let_decl.type_ != null);
+}
+
+test "parse var declaration" {
+    var result = try testParseStmt("var count = 0");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .var_decl);
+    try std.testing.expectEqualStrings("count", result.stmt.var_decl.name);
+}
+
+test "parse return statement" {
+    var result = try testParseStmt("return 42");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .return_stmt);
+    try std.testing.expect(result.stmt.return_stmt.value != null);
+}
+
+test "parse break statement" {
+    var result = try testParseStmt("break value");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .break_stmt);
+    try std.testing.expect(result.stmt.break_stmt.value != null);
+}
+
+test "parse continue statement" {
+    var result = try testParseStmt("continue");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .continue_stmt);
+}
+
+test "parse while loop" {
+    var result = try testParseStmt("while x { y }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .while_loop);
+}
+
+test "parse for loop" {
+    var result = try testParseStmt("for item in items { print(item) }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .for_loop);
+}
+
+test "parse loop statement" {
+    var result = try testParseStmt("loop { break }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .loop_stmt);
+}
+
+// ============================================================================
+// Declaration Tests
+// ============================================================================
+
+fn testParseDecl(source: []const u8) !struct { decl: ast.Decl, arena: std.heap.ArenaAllocator } {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    errdefer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const decl = try parser.parseDeclaration();
+    return .{ .decl = decl, .arena = arena };
+}
+
+test "parse function declaration" {
+    var result = try testParseDecl("fn add(x: i32, y: i32) -> i32 { x + y }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .function);
+    try std.testing.expectEqualStrings("add", result.decl.function.name);
+    try std.testing.expectEqual(@as(usize, 2), result.decl.function.params.len);
+    try std.testing.expect(result.decl.function.return_type != null);
+}
+
+test "parse generic function" {
+    var result = try testParseDecl("fn identity[T](x: T) -> T { x }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .function);
+    try std.testing.expectEqual(@as(usize, 1), result.decl.function.type_params.len);
+    try std.testing.expectEqualStrings("T", result.decl.function.type_params[0].name);
+}
+
+test "parse pub function" {
+    var result = try testParseDecl("pub fn hello() { }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .function);
+    try std.testing.expect(result.decl.function.is_pub);
+}
+
+test "parse single-expression function" {
+    var result = try testParseDecl("fn double(x: i32) -> i32 = x * 2");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .function);
+    try std.testing.expect(result.decl.function.body != null);
+    try std.testing.expect(result.decl.function.body.?.final_expr != null);
+}
+
+test "parse struct declaration" {
+    var result = try testParseDecl("struct Point { x: i32, y: i32 }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .struct_decl);
+    try std.testing.expectEqualStrings("Point", result.decl.struct_decl.name);
+    try std.testing.expectEqual(@as(usize, 2), result.decl.struct_decl.fields.len);
+}
+
+test "parse generic struct" {
+    var result = try testParseDecl("struct Container[T] { value: T }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .struct_decl);
+    try std.testing.expectEqual(@as(usize, 1), result.decl.struct_decl.type_params.len);
+}
+
+test "parse enum declaration" {
+    var result = try testParseDecl("enum Color { Red, Green, Blue }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .enum_decl);
+    try std.testing.expectEqualStrings("Color", result.decl.enum_decl.name);
+    try std.testing.expectEqual(@as(usize, 3), result.decl.enum_decl.variants.len);
+}
+
+test "parse enum with tuple payload" {
+    var result = try testParseDecl("enum Option[T] { Some(T), None }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .enum_decl);
+    try std.testing.expectEqual(@as(usize, 2), result.decl.enum_decl.variants.len);
+    try std.testing.expect(result.decl.enum_decl.variants[0].payload != null);
+}
+
+test "parse trait declaration" {
+    var result = try testParseDecl("trait Display { fn display(self: Self) -> string }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .trait_decl);
+    try std.testing.expectEqualStrings("Display", result.decl.trait_decl.name);
+    try std.testing.expectEqual(@as(usize, 1), result.decl.trait_decl.methods.len);
+}
+
+test "parse impl declaration" {
+    var result = try testParseDecl("impl Point { fn new() -> Point { } }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .impl_decl);
+    try std.testing.expect(result.decl.impl_decl.trait_type == null);
+    try std.testing.expectEqual(@as(usize, 1), result.decl.impl_decl.methods.len);
+}
+
+test "parse impl trait for type" {
+    var result = try testParseDecl("impl Point: Display { fn display(self: Self) -> string { } }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .impl_decl);
+    try std.testing.expect(result.decl.impl_decl.trait_type != null);
+}
+
+test "parse type alias" {
+    var result = try testParseDecl("type Int = i32");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .type_alias);
+    try std.testing.expectEqualStrings("Int", result.decl.type_alias.name);
+}
+
+test "parse const declaration" {
+    var result = try testParseDecl("const PI = 3.14159");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .const_decl);
+    try std.testing.expectEqualStrings("PI", result.decl.const_decl.name);
+}
+
+test "parse import declaration" {
+    var result = try testParseDecl("import std.io");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .import_decl);
+    try std.testing.expectEqual(@as(usize, 2), result.decl.import_decl.path.len);
+}
+
+test "parse import with items" {
+    var result = try testParseDecl("import std.collections.{ List, Map }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .import_decl);
+    try std.testing.expect(result.decl.import_decl.items != null);
+}
+
+test "parse module declaration" {
+    var result = try testParseDecl("module myapp.utils");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .module_decl);
+    try std.testing.expectEqual(@as(usize, 2), result.decl.module_decl.path.len);
+}
+
+// ============================================================================
+// Module Tests
+// ============================================================================
+
+fn testParseModule(source: []const u8) !struct { module: ast.Module, arena: std.heap.ArenaAllocator } {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    errdefer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = try parser.parseModule();
+    return .{ .module = module, .arena = arena };
+}
+
+test "parse complete module" {
+    const source =
+        \\module mymodule
+        \\
+        \\import std.io
+        \\
+        \\fn main() {
+        \\    println("Hello")
+        \\}
+    ;
+
+    var result = try testParseModule(source);
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.module.module_decl != null);
+    try std.testing.expectEqual(@as(usize, 1), result.module.imports.len);
+    try std.testing.expectEqual(@as(usize, 1), result.module.declarations.len);
 }

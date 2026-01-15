@@ -470,7 +470,7 @@ klar/
 - [x] main.zig implemented with CLI (run, tokenize, parse, help, version)
 - [x] All tests passing (26 tests)
 
-**Milestone 2**: In Progress
+**Milestone 2**: Complete ✓
 - [x] ast.zig - Complete AST node definitions for:
   - Expressions: Literal, Identifier, Binary, Unary, Postfix, Call, Index, Field, MethodCall, IfExpr, MatchExpr, Block, Closure, Range, StructLiteral, ArrayLiteral, TupleLiteral, TypeCast, Grouped
   - Patterns: Wildcard, PatternLiteral, Binding, VariantPattern, StructPattern, TuplePattern, OrPattern, GuardedPattern
@@ -493,12 +493,13 @@ klar/
   - Block expressions
   - Closures (|args| body and fn(args) body)
   - Array and tuple literals
-  - Type parsing (named, optional, reference, slice, function, generic)
-- [x] 14 parser unit tests passing
-- [ ] Statement parsing (let, var, for, while, loop, return, break, continue)
-- [ ] Declaration parsing (fn, struct, enum, trait, impl, import, module)
+  - Type parsing (named, optional, reference, slice, function, generic, Self)
+- [x] Statement parsing (let, var, for, while, loop, return, break, continue)
+- [x] Declaration parsing (fn, struct, enum, trait, impl, type, const, import, module)
+- [x] Module parsing (complete file parsing with module declaration, imports, declarations)
+- [x] 52 parser unit tests passing
 
-**Next Step**: Add statement and declaration parsing to complete Milestone 2, then begin Milestone 3 (Type Checker)
+**Next Step**: Begin Milestone 3 - Type System (define type representation and implement type checker)
 
 ---
 
