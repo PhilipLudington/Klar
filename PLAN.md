@@ -17,53 +17,53 @@
 
 Transform the tree-walking interpreter into a bytecode compiler and stack-based VM for improved performance.
 
-### Milestone 1: Bytecode Instruction Set Design
+### Milestone 1: Bytecode Instruction Set Design ✓
 
 Design a compact, efficient instruction set for the Klar VM.
 
 #### Tasks
 
-- [ ] **1.1** Define core bytecode format and encoding
+- [x] **1.1** Define core bytecode format and encoding
   - Single-byte opcodes with variable-length operands
   - Constant pool for literals (strings, numbers, functions)
   - Consider alignment and cache-friendliness
 
-- [ ] **1.2** Define stack manipulation instructions
+- [x] **1.2** Define stack manipulation instructions
   - `OP_CONST` - Push constant from pool
   - `OP_POP` - Pop and discard top of stack
   - `OP_DUP` - Duplicate top of stack
 
-- [ ] **1.3** Define arithmetic instructions
+- [x] **1.3** Define arithmetic instructions
   - `OP_ADD`, `OP_SUB`, `OP_MUL`, `OP_DIV`, `OP_MOD`
   - `OP_ADD_WRAP`, `OP_SUB_WRAP`, `OP_MUL_WRAP` (wrapping)
   - `OP_ADD_SAT`, `OP_SUB_SAT`, `OP_MUL_SAT` (saturating)
   - `OP_NEG` (unary negation)
 
-- [ ] **1.4** Define comparison and logical instructions
+- [x] **1.4** Define comparison and logical instructions
   - `OP_EQ`, `OP_NE`, `OP_LT`, `OP_GT`, `OP_LE`, `OP_GE`
   - `OP_NOT`, `OP_AND`, `OP_OR`
 
-- [ ] **1.5** Define bitwise instructions
+- [x] **1.5** Define bitwise instructions
   - `OP_BIT_AND`, `OP_BIT_OR`, `OP_BIT_XOR`, `OP_BIT_NOT`
   - `OP_SHL`, `OP_SHR`
 
-- [ ] **1.6** Define control flow instructions
+- [x] **1.6** Define control flow instructions
   - `OP_JUMP` - Unconditional jump
   - `OP_JUMP_IF_FALSE` - Conditional jump
   - `OP_LOOP` - Backward jump (for loops)
 
-- [ ] **1.7** Define variable access instructions
+- [x] **1.7** Define variable access instructions
   - `OP_GET_LOCAL` - Read local variable by slot index
   - `OP_SET_LOCAL` - Write local variable by slot index
   - `OP_GET_GLOBAL` - Read global by name (constant pool index)
   - `OP_SET_GLOBAL` - Write global by name
 
-- [ ] **1.8** Define function instructions
+- [x] **1.8** Define function instructions
   - `OP_CALL` - Call function with N arguments
   - `OP_RETURN` - Return from function
   - `OP_CLOSURE` - Create closure capturing upvalues
 
-- [ ] **1.9** Define composite type instructions
+- [x] **1.9** Define composite type instructions
   - `OP_ARRAY` - Create array from N stack values
   - `OP_TUPLE` - Create tuple from N stack values
   - `OP_STRUCT` - Create struct with field names
@@ -72,15 +72,15 @@ Design a compact, efficient instruction set for the Klar VM.
   - `OP_GET_FIELD` - Struct field access
   - `OP_SET_FIELD` - Struct field assignment
 
-- [ ] **1.10** Define optional/result instructions
+- [x] **1.10** Define optional/result instructions
   - `OP_SOME` - Wrap value in Some
   - `OP_NONE` - Push None
   - `OP_UNWRAP` - Unwrap optional (trap on None)
   - `OP_UNWRAP_OR` - Unwrap with default
 
 #### Deliverables
-- `src/bytecode.zig` - Opcode enum and bytecode chunk structure
-- `src/chunk.zig` - Bytecode container with constant pool
+- `src/bytecode.zig` - Opcode enum and bytecode chunk structure ✓
+- `src/chunk.zig` - Bytecode container with constant pool ✓
 
 ---
 
