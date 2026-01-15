@@ -23,6 +23,9 @@ pub const CodegenError = error{
     OutputWriteFailed,
 };
 
+/// Klar IR optimization level (before LLVM lowering).
+pub const KlarOptLevel = @import("../opt/mod.zig").OptLevel;
+
 /// Compile options for native code generation.
 pub const CompileOptions = struct {
     output_path: ?[]const u8 = null,
@@ -30,6 +33,10 @@ pub const CompileOptions = struct {
     emit_assembly: bool = false,
     optimization_level: target.OptLevel = .none,
     target_triple: ?[:0]const u8 = null,
+    /// Klar IR optimization level (constant folding, DCE, simplification).
+    opt_level: KlarOptLevel = .O0,
+    /// Verbose output for optimization passes.
+    verbose_opt: bool = false,
 };
 
 /// Convenience re-exports

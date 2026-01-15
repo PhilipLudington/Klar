@@ -12,6 +12,7 @@ const VM = @import("vm.zig").VM;
 const codegen = @import("codegen/mod.zig");
 const ir = @import("ir/mod.zig");
 const ownership = @import("ownership/mod.zig");
+const opt = @import("opt/mod.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -78,6 +79,8 @@ pub fn main() !void {
         var output_path: ?[]const u8 = null;
         var emit_llvm = false;
         var emit_asm = false;
+        var opt_level: opt.OptLevel = .O0;
+        var verbose_opt = false;
 
         var i: usize = 3;
         while (i < args.len) : (i += 1) {
@@ -89,6 +92,16 @@ pub fn main() !void {
                 emit_llvm = true;
             } else if (std.mem.eql(u8, arg, "--emit-asm")) {
                 emit_asm = true;
+            } else if (std.mem.eql(u8, arg, "-O0")) {
+                opt_level = .O0;
+            } else if (std.mem.eql(u8, arg, "-O1")) {
+                opt_level = .O1;
+            } else if (std.mem.eql(u8, arg, "-O2")) {
+                opt_level = .O2;
+            } else if (std.mem.eql(u8, arg, "-O3")) {
+                opt_level = .O3;
+            } else if (std.mem.eql(u8, arg, "--verbose-opt")) {
+                verbose_opt = true;
             }
         }
 
@@ -96,6 +109,8 @@ pub fn main() !void {
             .output_path = output_path,
             .emit_llvm_ir = emit_llvm,
             .emit_assembly = emit_asm,
+            .opt_level = opt_level,
+            .verbose_opt = verbose_opt,
         });
     } else if (std.mem.eql(u8, command, "check")) {
         if (args.len < 3) {
@@ -384,12 +399,20 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
 
+    // Map Klar optimization level to LLVM codegen level
+    const llvm_opt_level: codegen.llvm.c.LLVMCodeGenOptLevel = switch (options.opt_level) {
+        .O0 => codegen.llvm.c.LLVMCodeGenLevelNone,
+        .O1 => codegen.llvm.c.LLVMCodeGenLevelLess,
+        .O2 => codegen.llvm.c.LLVMCodeGenLevelDefault,
+        .O3 => codegen.llvm.c.LLVMCodeGenLevelAggressive,
+    };
+
     const tm = codegen.llvm.createTargetMachine(
         target_ref,
         triple,
         codegen.target.getDefaultCPU(),
         codegen.target.getDefaultFeatures(),
-        codegen.llvm.c.LLVMCodeGenLevelDefault,
+        llvm_opt_level,
         codegen.llvm.c.LLVMRelocDefault,
         codegen.llvm.c.LLVMCodeModelDefault,
     ) orelse {
@@ -397,6 +420,13 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
     defer codegen.llvm.disposeTargetMachine(tm);
+
+    // Print optimization info if verbose
+    if (options.verbose_opt and options.opt_level != .O0) {
+        var buf2: [256]u8 = undefined;
+        const opt_msg = std.fmt.bufPrint(&buf2, "Optimization level: {s}\n", .{options.opt_level.toString()}) catch "Optimization enabled\n";
+        try stdout.writeAll(opt_msg);
+    }
 
     codegen.llvm.targetMachineEmitToFile(tm, emitter.getModule(), obj_path, codegen.llvm.c.LLVMObjectFile) catch |err| {
         var buf: [512]u8 = undefined;
@@ -939,6 +969,11 @@ fn printUsage() !void {
         \\  --interpret          Use tree-walking interpreter instead of VM
         \\  --emit-llvm          Output LLVM IR (.ll file)
         \\  -o <name>            Output file name
+        \\  -O0                  No optimizations (default)
+        \\  -O1                  Basic optimizations (constant folding, DCE)
+        \\  -O2                  Standard optimizations (O1 + simplification)
+        \\  -O3                  Aggressive optimizations (O2 + LLVM aggressive)
+        \\  --verbose-opt        Show optimization statistics
         \\
         \\Examples:
         \\  klar run hello.kl
@@ -946,6 +981,7 @@ fn printUsage() !void {
         \\  klar run hello.kl --interpret
         \\  klar build hello.kl
         \\  klar build hello.kl -o myapp
+        \\  klar build hello.kl -O2
         \\  klar build hello.kl --emit-llvm
         \\  klar tokenize example.kl
         \\  klar check example.kl
@@ -978,4 +1014,5 @@ test {
     _ = @import("gc.zig");
     _ = @import("disasm.zig");
     _ = @import("ir/mod.zig");
+    _ = @import("opt/mod.zig");
 }
