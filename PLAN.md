@@ -6,14 +6,15 @@ Implementation plan for the Klar programming language, based on DESIGN.md specif
 
 ## Overview
 
-**Goal**: Build a working Klar interpreter in Zig, following a phased approach.
+**Goal**: Build a self-hosting Klar compiler, starting with a Zig implementation.
 
 **Strategy**:
-1. Phase 1: Tree-walking interpreter (validate language design)
+1. Phase 1: Tree-walking interpreter (validate language design) ✓
 2. Phase 2: Bytecode VM (practical performance)
 3. Phase 3: Native compiler (Cranelift/LLVM)
+4. Phase 4: Self-hosting (Klar compiler written in Klar)
 
-This plan focuses on **Phase 1** - getting a working interpreter that can run basic Klar programs.
+**Current**: Phase 1 complete. Ready for Phase 2.
 
 ---
 
@@ -594,14 +595,94 @@ Ready for Phase 2 (Bytecode VM) or additional language features.
 - Builtins integrated directly in interpreter (no separate builtins.zig needed)
 - Standard library stubs in Klar itself (std/*.kl) for future native implementation
 
-### Next Phase Considerations
-- Phase 2 (Bytecode VM) will need:
-  - Bytecode instruction set design
-  - Compiler from AST to bytecode
-  - Stack-based or register-based VM
-  - Garbage collection strategy
-- Consider adding before Phase 2:
+### Phase 2: Bytecode VM (Planned)
+
+**Goal**: Practical performance for real programs.
+
+- Bytecode instruction set design
+- Compiler from AST to bytecode
+- Stack-based or register-based VM
+- Garbage collection strategy
+- Consider adding:
   - ~~String interpolation (`"value: {x}"`)~~ ✓ Implemented
   - More collection methods (map, filter, reduce)
   - Import/module system implementation
   - REPL mode
+
+---
+
+### Phase 3: Native Compiler (Planned)
+
+**Goal**: Production-ready performance via native code generation.
+
+- Backend options: Cranelift (faster compile) or LLVM (better optimization)
+- Full standard library with OS bindings
+- FFI/C interop for system calls
+- Debug info generation
+- Cross-compilation support
+
+---
+
+### Phase 4: Self-Hosting (Planned)
+
+**Goal**: Write the Klar compiler in Klar itself.
+
+#### Prerequisites
+
+| Feature | Required For | Phase |
+|---------|--------------|-------|
+| File I/O | Reading source files | 2-3 |
+| HashMap | Symbol tables, scopes | 2-3 |
+| ArrayList/Vec | AST nodes, tokens | 2-3 |
+| String manipulation | Lexer, error messages | ✓ |
+| Pattern matching | AST traversal | ✓ |
+| Traits/generics | Visitor patterns | ✓ |
+| Memory management | Compiler data structures | 3 |
+| Native codegen | Producing executables | 3 |
+
+#### Bootstrap Strategy
+
+```
+Step 1: Implement standard library
+        └── Collections (HashMap, Vec, Set)
+        └── File I/O (read, write, path handling)
+        └── String utilities (StringBuilder, formatting)
+
+Step 2: Write Klar compiler in Klar (klar-in-klar)
+        └── Lexer (port from Zig)
+        └── Parser (port from Zig)
+        └── Type checker (port from Zig)
+        └── Code generator (new, targets same backend)
+
+Step 3: Bootstrap
+        └── Compile klar-in-klar using Zig-based compiler
+        └── Produces: klar1 executable
+
+Step 4: Self-compile
+        └── Compile klar-in-klar using klar1
+        └── Produces: klar2 executable
+
+Step 5: Verify
+        └── klar1 and klar2 should produce identical output
+        └── Run full test suite with klar2
+```
+
+#### Milestones
+
+- [ ] **4.1** Standard library: collections (HashMap, Vec, Set)
+- [ ] **4.2** Standard library: file I/O
+- [ ] **4.3** Standard library: string builder
+- [ ] **4.4** Port lexer to Klar
+- [ ] **4.5** Port parser to Klar
+- [ ] **4.6** Port type checker to Klar
+- [ ] **4.7** Implement code generator in Klar
+- [ ] **4.8** First successful bootstrap (klar1)
+- [ ] **4.9** Self-compilation (klar2)
+- [ ] **4.10** Bootstrap verification (klar1 == klar2 output)
+
+#### Benefits of Self-Hosting
+
+1. **Dogfooding** — Find language pain points by using it
+2. **Single language** — Contributors only need to know Klar
+3. **Proof of capability** — Demonstrates Klar can build real software
+4. **Faster iteration** — Compiler improvements benefit themselves
