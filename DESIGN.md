@@ -351,17 +351,24 @@ match value {
 ### Closures
 
 ```klar
-// Full form
-let add = fn(a: i32, b: i32) -> i32 { a + b }
-
-// Short form
+// Basic form (types inferred)
 let double = |x| x * 2
 let add = |a, b| a + b
 
-// With type annotations
+// With parameter types
+let double = |x: i32| x * 2
+let add = |a: i32, b: i32| a + b
+
+// With return type
 let parse = |s: string| -> i32 { s.parse()? }
 
-// Capturing
+// Multi-line body
+let process = |x: i32| -> i32 {
+    let y = x * 2
+    y + 1
+}
+
+// Capturing environment
 let factor = 10
 let scale = |x| x * factor
 ```

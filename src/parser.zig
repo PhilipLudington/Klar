@@ -226,9 +226,8 @@ pub const Parser = struct {
             // Match expression
             .match => self.parseMatchExpr(),
 
-            // Closure
+            // Closure (pipe syntax only: |x| expr, |x: T| expr, |x: T| -> R { expr })
             .pipe => self.parseClosure(),
-            .fn_ => self.parseFnClosure(),
 
             // Unary operators
             .minus => self.parseUnary(.negate),
@@ -753,55 +752,6 @@ pub const Parser = struct {
         }
 
         const body = try self.parseExpression();
-        const end_span = body.span();
-
-        const closure = try self.create(ast.Closure, .{
-            .params = try self.dupeSlice(ast.ClosureParam, params.items),
-            .return_type = return_type,
-            .body = body,
-            .span = ast.Span.merge(start_span, end_span),
-        });
-        return .{ .closure = closure };
-    }
-
-    fn parseFnClosure(self: *Parser) ParseError!ast.Expr {
-        const start_span = self.spanFromToken(self.current);
-        self.advance(); // consume 'fn'
-
-        try self.consume(.l_paren, "expected '(' after fn");
-
-        var params = std.ArrayListUnmanaged(ast.ClosureParam){};
-
-        if (!self.check(.r_paren)) {
-            while (true) {
-                const param_name = try self.consumeIdentifier();
-                const param_span = self.spanFromToken(self.previous);
-
-                try self.consume(.colon, "expected ':' after parameter name");
-                const param_type = try self.parseType();
-
-                try params.append(self.allocator, .{
-                    .name = param_name,
-                    .type_ = param_type,
-                    .span = param_span,
-                });
-
-                if (!self.match(.comma)) break;
-            }
-        }
-
-        try self.consume(.r_paren, "expected ')' after parameters");
-
-        var return_type: ?ast.TypeExpr = null;
-        if (self.match(.arrow)) {
-            return_type = try self.parseType();
-        }
-
-        const body = if (self.check(.l_brace))
-            ast.Expr{ .block = try self.parseBlock() }
-        else
-            try self.parseExpression();
-
         const end_span = body.span();
 
         const closure = try self.create(ast.Closure, .{

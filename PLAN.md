@@ -78,7 +78,7 @@ This plan focuses on **Phase 1** - getting a working interpreter that can run ba
   - `If` - if expression (value-producing)
   - `Match` - pattern matching expression
   - `Block` - `{ ... }` expression
-  - `Closure` - `|args| body` or `fn(args) body`
+  - `Closure` - `|args| body` with optional type annotations
   - `Range` - `a..b`, `a..=b`
   - `Struct` - struct literal `Point { x: 1, y: 2 }`
   - `Array` - array literal `[1, 2, 3]`
@@ -493,7 +493,7 @@ klar/
   - If expressions with else branches
   - Match expressions with pattern matching
   - Block expressions
-  - Closures (|args| body and fn(args) body)
+  - Closures (|args| body with optional types)
   - Array and tuple literals
   - Type parsing (named, optional, reference, slice, function, generic, Self)
 - [x] Statement parsing (let, var, for, while, loop, return, break, continue)
