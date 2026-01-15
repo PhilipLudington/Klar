@@ -29,6 +29,10 @@ get_expected() {
         return_types) echo 42 ;;
         tuple) echo 42 ;;  # 10 + 32 = 42
         array) echo 42 ;;  # 10 + 20 + 12 = 42
+        optional_some) echo 42 ;;  # Force unwrap Some(42)
+        optional_unwrap) echo 42 ;;  # Force unwrap Some(42)
+        optional_coalesce) echo 99 ;;  # None ?? 99 = 99
+        optional_coalesce_some) echo 42 ;;  # Some(42) ?? 99 = 42
         *) echo -1 ;;  # -1 means accept any result
     esac
 }

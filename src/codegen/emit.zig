@@ -43,6 +43,9 @@ pub const Emitter = struct {
     /// Stack of loop contexts for break/continue.
     loop_stack: std.ArrayListUnmanaged(LoopContext),
 
+    /// Current function's return type info (for optional wrapping).
+    current_return_type: ?ReturnTypeInfo,
+
     /// Cached overflow intrinsic IDs.
     sadd_overflow_id: ?c_uint,
     ssub_overflow_id: ?c_uint,
@@ -55,6 +58,14 @@ pub const Emitter = struct {
     struct_types: std.StringHashMap(StructTypeInfo),
     /// Layout calculator for composite types.
     layout_calc: layout.LayoutCalculator,
+
+    // --- Type declarations (must come after all fields in Zig 0.15+) ---
+
+    const ReturnTypeInfo = struct {
+        llvm_type: llvm.TypeRef,
+        is_optional: bool,
+        inner_type: ?llvm.TypeRef, // Non-null if is_optional
+    };
 
     const StructTypeInfo = struct {
         llvm_type: llvm.TypeRef,
@@ -102,6 +113,7 @@ pub const Emitter = struct {
             .named_values = std.StringHashMap(LocalValue).init(allocator),
             .has_terminator = false,
             .loop_stack = .{},
+            .current_return_type = null,
             .sadd_overflow_id = null,
             .ssub_overflow_id = null,
             .smul_overflow_id = null,
@@ -204,6 +216,20 @@ pub const Emitter = struct {
         const function = self.module.getNamedFunction(name) orelse return EmitError.InvalidAST;
         self.current_function = function;
 
+        // Set up return type info
+        if (func.return_type) |rt| {
+            const llvm_rt = try self.typeExprToLLVM(rt);
+            const is_opt = rt == .optional;
+            self.current_return_type = .{
+                .llvm_type = llvm_rt,
+                .is_optional = is_opt,
+                .inner_type = if (is_opt) try self.typeExprToLLVM(rt.optional.inner) else null,
+            };
+        } else {
+            self.current_return_type = null;
+        }
+        defer self.current_return_type = null;
+
         // Create entry block
         const entry = llvm.appendBasicBlock(self.ctx, function, "entry");
         self.builder.positionAtEnd(entry);
@@ -237,12 +263,55 @@ pub const Emitter = struct {
         if (func.body) |body| {
             const result = try self.emitBlock(body);
 
+            // Check if the final_expr is an if-without-else (produces dummy value)
+            // In that case, for optional returns, we should return None instead
+            const has_if_without_else = if (body.final_expr) |expr|
+                expr == .if_expr and expr.if_expr.else_branch == null
+            else
+                false;
+
             // If block has a value and we haven't terminated, return it
             if (!self.has_terminator) {
+                // For optional return types with if-without-else as final expr,
+                // treat it as if there's no value (return None)
+                if (has_if_without_else) {
+                    if (self.current_return_type) |rt_info| {
+                        if (rt_info.is_optional) {
+                            const none_val = self.emitNone(rt_info.llvm_type);
+                            _ = self.builder.buildRet(none_val);
+                            return;
+                        }
+                    }
+                }
+
                 if (result) |val| {
+                    // If return type is optional and value isn't already optional, wrap in Some
+                    if (self.current_return_type) |rt_info| {
+                        if (rt_info.is_optional) {
+                            const val_type = llvm.typeOf(val);
+                            const val_kind = llvm.getTypeKind(val_type);
+                            // Check if value is already an optional (struct with our layout)
+                            if (val_kind != llvm.c.LLVMStructTypeKind or
+                                llvm.c.LLVMCountStructElementTypes(val_type) != 2)
+                            {
+                                // Not an optional, wrap in Some
+                                const some_val = self.emitSome(val, rt_info.inner_type.?);
+                                _ = self.builder.buildRet(some_val);
+                                return;
+                            }
+                        }
+                    }
                     _ = self.builder.buildRet(val);
                 } else if (func.return_type == null) {
                     _ = self.builder.buildRetVoid();
+                } else if (self.current_return_type) |rt_info| {
+                    if (rt_info.is_optional) {
+                        // Return None for optional type with no value
+                        const none_val = self.emitNone(rt_info.llvm_type);
+                        _ = self.builder.buildRet(none_val);
+                    } else {
+                        _ = self.builder.buildRetVoid();
+                    }
                 } else {
                     // Return type specified but no value - emit void return
                     _ = self.builder.buildRetVoid();
@@ -313,10 +382,35 @@ pub const Emitter = struct {
             },
             .return_stmt => |ret| {
                 if (ret.value) |val| {
-                    const result = try self.emitExpr(val);
+                    var result = try self.emitExpr(val);
+                    // If return type is optional, wrap value in Some if needed
+                    if (self.current_return_type) |rt_info| {
+                        if (rt_info.is_optional) {
+                            const val_type = llvm.typeOf(result);
+                            const val_kind = llvm.getTypeKind(val_type);
+                            // Check if value is already an optional (struct with our layout)
+                            if (val_kind != llvm.c.LLVMStructTypeKind or
+                                llvm.c.LLVMCountStructElementTypes(val_type) != 2)
+                            {
+                                // Not an optional, wrap in Some
+                                result = self.emitSome(result, rt_info.inner_type.?);
+                            }
+                        }
+                    }
                     _ = self.builder.buildRet(result);
                 } else {
-                    _ = self.builder.buildRetVoid();
+                    // Return with no value
+                    if (self.current_return_type) |rt_info| {
+                        if (rt_info.is_optional) {
+                            // Return None for optional type
+                            const none_val = self.emitNone(rt_info.llvm_type);
+                            _ = self.builder.buildRet(none_val);
+                        } else {
+                            _ = self.builder.buildRetVoid();
+                        }
+                    } else {
+                        _ = self.builder.buildRetVoid();
+                    }
                 }
                 self.has_terminator = true;
             },
@@ -563,6 +657,7 @@ pub const Emitter = struct {
             .tuple_literal => |t| try self.emitTupleLiteral(t),
             .field => |f| try self.emitFieldAccess(f),
             .index => |i| try self.emitIndexAccess(i),
+            .postfix => |p| try self.emitPostfix(p),
             else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
         };
     }
@@ -609,6 +704,11 @@ pub const Emitter = struct {
             bin.op == .mul_assign or bin.op == .div_assign or bin.op == .mod_assign)
         {
             return self.emitAssignment(bin);
+        }
+
+        // Handle null coalescing (short-circuit evaluation)
+        if (bin.op == .null_coalesce) {
+            return self.emitNullCoalesce(bin);
         }
 
         const lhs = try self.emitExpr(bin.left);
@@ -1131,6 +1231,33 @@ pub const Emitter = struct {
                 return llvm.Types.int32(self.ctx);
             },
             .grouped => |g| try self.inferExprType(g.expr),
+            .call => |call| {
+                // Get function return type
+                const func_name = switch (call.callee) {
+                    .identifier => |id| id.name,
+                    else => return llvm.Types.int32(self.ctx),
+                };
+                const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
+                defer self.allocator.free(name);
+
+                if (self.module.getNamedFunction(name)) |func| {
+                    const fn_type = llvm.getGlobalValueType(func);
+                    return llvm.getReturnType(fn_type);
+                }
+                return llvm.Types.int32(self.ctx);
+            },
+            .postfix => |post| {
+                // Postfix operators (unwrap) return the inner type
+                const operand_type = try self.inferExprType(post.operand);
+                const type_kind = llvm.getTypeKind(operand_type);
+                if (type_kind == llvm.c.LLVMStructTypeKind) {
+                    // For optional types (2-field struct), return the value field type
+                    if (llvm.c.LLVMCountStructElementTypes(operand_type) == 2) {
+                        return llvm.c.LLVMStructGetTypeAtIndex(operand_type, 1);
+                    }
+                }
+                return operand_type;
+            },
             else => llvm.Types.int32(self.ctx),
         };
     }
@@ -1533,5 +1660,198 @@ pub const Emitter = struct {
         }
 
         return EmitError.UnsupportedFeature;
+    }
+
+    // =========================================================================
+    // Optional Type Support
+    // =========================================================================
+
+    /// Emit a postfix operator expression (? for safe unwrap, ! for force unwrap).
+    fn emitPostfix(self: *Emitter, post: *ast.Postfix) EmitError!llvm.ValueRef {
+        // Emit the operand (should be an optional type)
+        const operand = try self.emitExpr(post.operand);
+        const operand_type = llvm.typeOf(operand);
+
+        // Optional type layout is { i1, T } where i1 is the tag (0=None, 1=Some)
+        // First, check if operand is a struct type (our optional representation)
+        const type_kind = llvm.getTypeKind(operand_type);
+        if (type_kind != llvm.c.LLVMStructTypeKind) {
+            return EmitError.UnsupportedFeature;
+        }
+
+        // Store the optional to a temp for GEP access
+        const opt_alloca = self.builder.buildAlloca(operand_type, "opt.tmp");
+        _ = self.builder.buildStore(operand, opt_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(operand_type, opt_alloca, &tag_indices, "opt.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "opt.tag");
+
+        // Get the value (index 1)
+        var val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const val_ptr = self.builder.buildGEP(operand_type, opt_alloca, &val_indices, "opt.val.ptr");
+        const val_type = llvm.c.LLVMStructGetTypeAtIndex(operand_type, 1);
+
+        switch (post.op) {
+            .force_unwrap => {
+                // ! operator: trap if None, return value if Some
+                const func = self.current_function orelse return EmitError.InvalidAST;
+
+                const ok_block = llvm.appendBasicBlock(self.ctx, func, "unwrap.ok");
+                const fail_block = llvm.appendBasicBlock(self.ctx, func, "unwrap.fail");
+
+                // Branch based on tag
+                _ = self.builder.buildCondBr(tag, ok_block, fail_block);
+
+                // Fail block: unreachable/trap
+                self.builder.positionAtEnd(fail_block);
+                _ = self.builder.buildUnreachable();
+
+                // OK block: load and return value
+                self.builder.positionAtEnd(ok_block);
+                return self.builder.buildLoad(val_type, val_ptr, "unwrap.val");
+            },
+            .unwrap => {
+                // ? operator: safe unwrap - for now, same as force_unwrap
+                // In full implementation, this would propagate None
+                const func = self.current_function orelse return EmitError.InvalidAST;
+
+                const ok_block = llvm.appendBasicBlock(self.ctx, func, "unwrap.ok");
+                const fail_block = llvm.appendBasicBlock(self.ctx, func, "unwrap.fail");
+
+                // Branch based on tag
+                _ = self.builder.buildCondBr(tag, ok_block, fail_block);
+
+                // Fail block: unreachable/trap for now
+                self.builder.positionAtEnd(fail_block);
+                _ = self.builder.buildUnreachable();
+
+                // OK block: load and return value
+                self.builder.positionAtEnd(ok_block);
+                return self.builder.buildLoad(val_type, val_ptr, "unwrap.val");
+            },
+        }
+    }
+
+    /// Emit null coalescing operator (??) - returns left if Some, else right.
+    fn emitNullCoalesce(self: *Emitter, bin: *ast.Binary) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Emit the left side (optional value)
+        const lhs = try self.emitExpr(bin.left);
+        const lhs_type = llvm.typeOf(lhs);
+
+        // Check type is struct (optional representation)
+        const type_kind = llvm.getTypeKind(lhs_type);
+        if (type_kind != llvm.c.LLVMStructTypeKind) {
+            // Not an optional - just return right side as fallback
+            return self.emitExpr(bin.right);
+        }
+
+        // Store optional to temp for GEP
+        const opt_alloca = self.builder.buildAlloca(lhs_type, "coalesce.opt");
+        _ = self.builder.buildStore(lhs, opt_alloca);
+
+        // Extract tag
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(lhs_type, opt_alloca, &tag_indices, "coalesce.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "coalesce.tag");
+
+        // Create blocks for Some/None branches
+        const lhs_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const some_bb = llvm.appendBasicBlock(self.ctx, func, "coalesce.some");
+        const none_bb = llvm.appendBasicBlock(self.ctx, func, "coalesce.none");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, func, "coalesce.merge");
+
+        // Branch based on tag (1 = Some, 0 = None)
+        _ = self.builder.buildCondBr(tag, some_bb, none_bb);
+
+        // Some block: extract inner value
+        self.builder.positionAtEnd(some_bb);
+        var val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const val_ptr = self.builder.buildGEP(lhs_type, opt_alloca, &val_indices, "coalesce.val.ptr");
+        const val_type = llvm.c.LLVMStructGetTypeAtIndex(lhs_type, 1);
+        const some_val = self.builder.buildLoad(val_type, val_ptr, "coalesce.some.val");
+        const some_end_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        _ = self.builder.buildBr(merge_bb);
+
+        // None block: evaluate right side
+        self.builder.positionAtEnd(none_bb);
+        const none_val = try self.emitExpr(bin.right);
+        const none_end_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        _ = self.builder.buildBr(merge_bb);
+
+        // Merge block: phi node to select result
+        self.builder.positionAtEnd(merge_bb);
+        const phi = self.builder.buildPhi(val_type, "coalesce.result");
+        var incoming_vals = [_]llvm.ValueRef{ some_val, none_val };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ some_end_bb, none_end_bb };
+        llvm.addIncoming(phi, &incoming_vals, &incoming_blocks);
+
+        _ = lhs_bb; // Suppress unused variable warning
+
+        return phi;
+    }
+
+    /// Create an optional Some value wrapping the given value.
+    fn emitSome(self: *Emitter, value: llvm.ValueRef, inner_type: llvm.TypeRef) llvm.ValueRef {
+        // Optional type is { i1, T }
+        var opt_fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag
+            inner_type, // value
+        };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+
+        // Allocate and populate
+        const opt_alloca = self.builder.buildAlloca(opt_type, "some.tmp");
+
+        // Set tag to 1 (Some)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(opt_type, opt_alloca, &tag_indices, "some.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+        // Set value
+        var val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const val_ptr = self.builder.buildGEP(opt_type, opt_alloca, &val_indices, "some.val.ptr");
+        _ = self.builder.buildStore(value, val_ptr);
+
+        // Load and return
+        return self.builder.buildLoad(opt_type, opt_alloca, "some.val");
+    }
+
+    /// Create an optional None value of the given optional type.
+    fn emitNone(self: *Emitter, opt_type: llvm.TypeRef) llvm.ValueRef {
+        // Allocate and set tag to 0 (None)
+        const opt_alloca = self.builder.buildAlloca(opt_type, "none.tmp");
+
+        // Set tag to 0 (None)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(opt_type, opt_alloca, &tag_indices, "none.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+
+        // Load and return (value field is undefined/uninitialized)
+        return self.builder.buildLoad(opt_type, opt_alloca, "none.val");
     }
 };

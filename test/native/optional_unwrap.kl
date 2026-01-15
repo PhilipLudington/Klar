@@ -1,0 +1,10 @@
+// Test force unwrap operator
+
+fn get_value() -> ?i32 {
+    return 42
+}
+
+fn main() -> i32 {
+    let opt = get_value()
+    opt!
+}

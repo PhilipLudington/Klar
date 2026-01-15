@@ -1136,11 +1136,21 @@ pub const TypeChecker = struct {
             const value_type = self.checkExpr(value);
             if (self.current_return_type) |expected| {
                 if (!value_type.eql(expected)) {
+                    // Allow returning T when ?T is expected (implicit Some wrapping)
+                    if (expected == .optional) {
+                        if (value_type.eql(expected.optional.*)) {
+                            return; // OK: T can be returned as ?T (becomes Some(T))
+                        }
+                    }
                     self.addError(.return_type_mismatch, ret.span, "return type mismatch", .{});
                 }
             }
         } else {
             if (self.current_return_type) |expected| {
+                // Allow returning nothing when ?T is expected (becomes None)
+                if (expected == .optional) {
+                    return; // OK: implicit None return
+                }
                 if (expected != .void_) {
                     self.addError(.return_type_mismatch, ret.span, "missing return value", .{});
                 }

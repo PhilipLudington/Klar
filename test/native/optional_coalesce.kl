@@ -1,0 +1,16 @@
+// test_optional_coalesce.kl - Test null coalescing operator (??)
+// Expected exit code: 99 (default value when None)
+
+fn maybe_value(flag: bool) -> ?i32 {
+    if flag {
+        return 42
+    }
+    // Implicit None return at end of function
+}
+
+fn main() -> i32 {
+    // Get None since flag is false
+    let opt = maybe_value(false)
+    // Use null coalescing to get default value
+    opt ?? 99
+}

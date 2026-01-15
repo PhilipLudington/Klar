@@ -1,0 +1,16 @@
+// test_optional_coalesce_some.kl - Test null coalescing with Some value
+// Expected exit code: 42 (Some value, not default)
+
+fn maybe_value(flag: bool) -> ?i32 {
+    if flag {
+        return 42
+    }
+    // Implicit None return
+}
+
+fn main() -> i32 {
+    // Get Some(42) since flag is true
+    let opt = maybe_value(true)
+    // Coalescing should return the Some value, not default
+    opt ?? 99
+}

@@ -1,0 +1,15 @@
+// test_optional_some.kl - Test optional type with Some value
+// Tests: returning value from function with ?T return type wraps in Some
+// Expected exit code: 42
+
+fn maybe_value(flag: bool) -> ?i32 {
+    if flag {
+        return 42
+    }
+    // Implicit None return at end of function
+}
+
+fn main() -> i32 {
+    let opt = maybe_value(true)
+    opt!  // Force unwrap - should return 42
+}
