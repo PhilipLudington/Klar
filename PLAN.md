@@ -1,428 +1,1062 @@
-# Klar Implementation Plan
+# Phase 3: Native Compiler Implementation Plan
 
-## Current Status
+> **Goal:** Compile Klar programs directly to native machine code for optimal performance.
 
-**Phase 1: Tree-Walking Interpreter** — COMPLETE ✓
-- Lexer with all token types
-- Parser with full expression/statement support
-- Type checker with inference
-- Interpreter with all core features
-- Built-in functions and methods
-- String interpolation
-- Closures with lexical scoping
+## Executive Summary
 
----
+Phase 3 transforms Klar from an interpreted language to a compiled one. This plan outlines the implementation of a native code compiler using **LLVM** as the code generation backend. The approach introduces a mid-level IR (Intermediate Representation) layer between the typed AST and LLVM IR, and implements Klar's **ownership-based memory model** with compile-time tracking and automatic destructor insertion.
 
-## Phase 2: Bytecode Virtual Machine
+**Key Decision: LLVM over Cranelift**
 
-Transform the tree-walking interpreter into a bytecode compiler and stack-based VM for improved performance.
+| Factor | LLVM | Cranelift |
+|--------|------|-----------|
+| Optimization quality | Best-in-class (20+ years) | Good but not extreme |
+| Target coverage | 20+ architectures | x86_64, ARM64, RISC-V, s390x |
+| Ecosystem maturity | Battle-tested (Clang, Rust, Swift) | Younger, fewer production users |
+| Debug info | Full DWARF/PDB support | Basic DWARF |
+| Zig integration | Well-established C API | Uncertain/immature bindings |
+| LTO/PGO | Full support | Not available |
+| Documentation | Extensive | Sparse |
+| Compilation speed | Slower | Fast (JIT-focused) |
 
-### Milestone 1: Bytecode Instruction Set Design ✓
+LLVM is the right choice for a production AOT compiler. While compilation is slower than Cranelift, this matters less for ahead-of-time compilation than for JIT scenarios. The optimization quality, tooling maturity, and target coverage justify the complexity.
 
-Design a compact, efficient instruction set for the Klar VM.
+**Memory Model: Ownership (Not GC)**
 
-#### Tasks
-
-- [x] **1.1** Define core bytecode format and encoding
-  - Single-byte opcodes with variable-length operands
-  - Constant pool for literals (strings, numbers, functions)
-  - Consider alignment and cache-friendliness
-
-- [x] **1.2** Define stack manipulation instructions
-  - `OP_CONST` - Push constant from pool
-  - `OP_POP` - Pop and discard top of stack
-  - `OP_DUP` - Duplicate top of stack
-
-- [x] **1.3** Define arithmetic instructions
-  - `OP_ADD`, `OP_SUB`, `OP_MUL`, `OP_DIV`, `OP_MOD`
-  - `OP_ADD_WRAP`, `OP_SUB_WRAP`, `OP_MUL_WRAP` (wrapping)
-  - `OP_ADD_SAT`, `OP_SUB_SAT`, `OP_MUL_SAT` (saturating)
-  - `OP_NEG` (unary negation)
-
-- [x] **1.4** Define comparison and logical instructions
-  - `OP_EQ`, `OP_NE`, `OP_LT`, `OP_GT`, `OP_LE`, `OP_GE`
-  - `OP_NOT`, `OP_AND`, `OP_OR`
-
-- [x] **1.5** Define bitwise instructions
-  - `OP_BIT_AND`, `OP_BIT_OR`, `OP_BIT_XOR`, `OP_BIT_NOT`
-  - `OP_SHL`, `OP_SHR`
-
-- [x] **1.6** Define control flow instructions
-  - `OP_JUMP` - Unconditional jump
-  - `OP_JUMP_IF_FALSE` - Conditional jump
-  - `OP_LOOP` - Backward jump (for loops)
-
-- [x] **1.7** Define variable access instructions
-  - `OP_GET_LOCAL` - Read local variable by slot index
-  - `OP_SET_LOCAL` - Write local variable by slot index
-  - `OP_GET_GLOBAL` - Read global by name (constant pool index)
-  - `OP_SET_GLOBAL` - Write global by name
-
-- [x] **1.8** Define function instructions
-  - `OP_CALL` - Call function with N arguments
-  - `OP_RETURN` - Return from function
-  - `OP_CLOSURE` - Create closure capturing upvalues
-
-- [x] **1.9** Define composite type instructions
-  - `OP_ARRAY` - Create array from N stack values
-  - `OP_TUPLE` - Create tuple from N stack values
-  - `OP_STRUCT` - Create struct with field names
-  - `OP_GET_INDEX` - Array/tuple index access
-  - `OP_SET_INDEX` - Array/tuple index assignment
-  - `OP_GET_FIELD` - Struct field access
-  - `OP_SET_FIELD` - Struct field assignment
-
-- [x] **1.10** Define optional/result instructions
-  - `OP_SOME` - Wrap value in Some
-  - `OP_NONE` - Push None
-  - `OP_UNWRAP` - Unwrap optional (trap on None)
-  - `OP_UNWRAP_OR` - Unwrap with default
-
-#### Deliverables
-- `src/bytecode.zig` - Opcode enum and bytecode chunk structure ✓
-- `src/chunk.zig` - Bytecode container with constant pool ✓
+Klar uses ownership-based memory management as specified in DESIGN.md:
+- **Single owner** - each value has exactly one owner
+- **Move semantics** - assignment transfers ownership
+- **Borrowing** - `&T` and `&mut T` for temporary access
+- **RAII** - automatic destruction when owner goes out of scope
+- **Rc/Arc** - explicit reference counting for shared ownership
+- **No tracing garbage collector**
 
 ---
 
-### Milestone 2: Compiler (AST to Bytecode)
-
-Implement a single-pass compiler that transforms AST nodes into bytecode.
-
-#### Tasks
-
-- [x] **2.1** Create compiler infrastructure
-  - Compiler struct with bytecode output
-  - Scope tracking for local variable slots
-  - Constant pool management
-
-- [x] **2.2** Compile literal expressions
-  - Numbers → constant pool + OP_CONST
-  - Strings → constant pool + OP_CONST
-  - Booleans → OP_TRUE / OP_FALSE
-  - None → OP_NONE
-
-- [x] **2.3** Compile binary expressions
-  - Arithmetic: emit left, emit right, emit op
-  - Comparison: same pattern
-  - Short-circuit `and`/`or` with jumps
-
-- [x] **2.4** Compile unary expressions
-  - Negation, not, references
-
-- [x] **2.5** Compile variable declarations and access
-  - Track local variable slots in scope
-  - Resolve at compile-time where possible
-  - Handle shadowing correctly
-
-- [x] **2.6** Compile control flow
-  - If/else with jump patching
-  - While loops with backward jumps
-  - For loops (desugar to while)
-  - Match expressions with jump tables
-
-- [x] **2.7** Compile functions
-  - Compile function body to separate chunk
-  - Parameter binding as locals
-  - Return statement handling
-
-- [x] **2.8** Compile closures
-  - Upvalue resolution
-  - Closure creation with captured variables
-
-- [x] **2.9** Compile pattern matching
-  - Match arm compilation
-  - Guard condition handling
-  - Variable binding in patterns
-
-- [x] **2.10** Compile method calls and type conversions
-  - Built-in method dispatch
-  - Type cast operations
-
-#### Deliverables
-- `src/compiler.zig` - AST to bytecode compiler
-- Unit tests for each compilation phase
-
----
-
-### Milestone 3: Virtual Machine Core ✓
-
-Implement the stack-based bytecode interpreter.
-
-#### Tasks
-
-- [x] **3.1** Create VM infrastructure
-  - Value stack (fixed size or growable)
-  - Call stack for function frames
-  - Global variable table
-  - Instruction pointer management
-
-- [x] **3.2** Implement value representation
-  - Tagged union for runtime values
-  - NaN-boxing consideration for performance
-  - Object heap for strings, arrays, closures
-
-- [x] **3.3** Implement stack operations
-  - Push, pop, peek
-  - Stack underflow/overflow checking
-
-- [x] **3.4** Implement arithmetic execution
-  - All numeric operations
-  - Overflow behavior (trap/wrap/saturate)
-  - Type checking at runtime
-
-- [x] **3.5** Implement comparison and logical ops
-  - Equality, ordering
-  - Short-circuit evaluation
-
-- [x] **3.6** Implement control flow execution
-  - Jump instructions
-  - Loop back-edges
-
-- [x] **3.7** Implement variable access
-  - Local variable slots in call frame
-  - Global variable hash table
-
-- [x] **3.8** Implement function calls
-  - Call frame creation
-  - Argument passing
-  - Return value handling
-
-- [x] **3.9** Implement closures
-  - Upvalue objects
-  - Closure invocation
-
-- [x] **3.10** Implement composite types
-  - Array/tuple creation and indexing
-  - Struct field access
-
-#### Deliverables
-- `src/vm.zig` - Virtual machine implementation ✓
-- `src/vm_value.zig` - Runtime value representation ✓
-- Integration tests running example programs
-
----
-
-### Milestone 4: Built-in Functions and Methods ✓
-
-Re-implement all builtins for the VM.
-
-#### Tasks
-
-- [x] **4.1** Core output functions
-  - `print`, `println` for VM
-
-- [x] **4.2** Assertion functions
-  - `assert`, `assert_eq`, `panic`
-
-- [x] **4.3** Utility functions
-  - `len`, `type_of`
-
-- [x] **4.4** String methods
-  - `len`, `is_empty`, `contains`
-  - `starts_with`, `ends_with`, `trim`
-  - `to_uppercase`, `to_lowercase`
-  - `chars`, `bytes`
-
-- [x] **4.5** Array methods
-  - `len`, `is_empty`, `first`, `last`, `get`
-  - `contains`
-
-- [x] **4.6** Integer methods
-  - `abs`, `min`, `max`
-
-- [x] **4.7** Optional methods
-  - `is_some`, `is_none`, `unwrap`, `unwrap_or`, `expect`
-
-#### Deliverables
-- `src/vm_builtins.zig` - Built-in native function implementations ✓
-- Built-in function dispatch in VM ✓
-- Method call resolution ✓
-
----
-
-### Milestone 5: Memory Management ✓
-
-Implement proper memory management for the VM.
-
-#### Tasks
-
-- [x] **5.1** Object allocation
-  - Heap allocation for objects
-  - Object headers for GC
-
-- [x] **5.2** String interning
-  - Deduplicate identical strings
-  - Intern table
-
-- [x] **5.3** Mark-sweep garbage collection
-  - Root marking (stack, globals)
-  - Object graph traversal
-  - Sweep and reclaim
-
-- [x] **5.4** GC triggering
-  - Allocation threshold
-  - Stress test mode for debugging
-
-#### Deliverables
-- `src/gc.zig` - Garbage collector ✓
-- Memory leak tests
-
----
-
-### Milestone 6: Debugging and Tooling ✓
-
-Add debugging support and developer tools.
-
-#### Tasks
-
-- [x] **6.1** Disassembler
-  - Pretty-print bytecode
-  - Show constant pool
-
-- [x] **6.2** Source maps
-  - Line number tracking
-  - Error messages with source locations
-
-- [x] **6.3** Stack traces
-  - Function name tracking
-  - Call stack on errors
-
-- [x] **6.4** Debug mode
-  - Instruction tracing
-  - Stack inspection
-
-#### Deliverables
-- `klar disasm file.kl` command ✓
-- `klar run-vm file.kl --debug` command ✓
-- Rich error messages with line numbers ✓
-
----
-
-### Milestone 7: Integration and Testing ✓
-
-Ensure the VM passes all existing tests and runs example programs.
-
-#### Tasks
-
-- [x] **7.1** Port interpreter tests to VM
-  - Arithmetic tests
-  - Control flow tests
-  - Function tests
-  - Pattern matching tests
-
-- [x] **7.2** Run example programs
-  - `hello.kl`, `fibonacci.kl`, `fizzbuzz.kl`
-  - Verify output matches interpreter
-
-- [x] **7.3** Performance comparison
-  - Benchmark vs tree-walking interpreter
-  - **Result: VM is ~100x faster than interpreter** (fib(30): 1.3s vs 143s)
-
-- [x] **7.4** CLI integration
-  - `klar run` uses VM by default
-  - `klar run --interpret` for tree-walker (debug)
-
-#### Deliverables
-- All tests passing on VM ✓
-- Performance benchmark results ✓
-
----
-
-## Phase 3: Native Compilation (Future)
-
-Compile bytecode to native code using Cranelift or LLVM.
-
-### Planned Features
-- JIT compilation for hot paths
-- AOT compilation for deployment
-- Platform-specific optimizations
-
----
-
-## Phase 4: Self-Hosting (Future)
-
-Rewrite the Klar compiler in Klar itself.
-
-### Planned Steps
-1. Implement Klar lexer in Klar
-2. Implement Klar parser in Klar
-3. Implement Klar type checker in Klar
-4. Implement Klar bytecode compiler in Klar
-5. Bootstrap: compile Klar compiler with itself
-
----
-
-## Architecture Overview
+## Phase 3 Architecture
 
 ```
-Source Code (.kl)
-       │
-       ▼
-┌─────────────┐
-│   Lexer     │  src/lexer.zig
-└─────────────┘
-       │ Tokens
-       ▼
-┌─────────────┐
-│   Parser    │  src/parser.zig
-└─────────────┘
-       │ AST
-       ▼
-┌─────────────┐
-│   Checker   │  src/checker.zig
-└─────────────┘
-       │ Typed AST
-       ▼
-┌─────────────┐
-│  Compiler   │  src/compiler.zig  ← Phase 2
-└─────────────┘
-       │ Bytecode
-       ▼
-┌─────────────┐
-│     VM      │  src/vm.zig        ← Phase 2
-└─────────────┘
-       │
-       ▼
-    Output
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         KLAR COMPILATION PIPELINE                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Source (.kl)                                                          │
+│        │                                                                │
+│        ▼                                                                │
+│   ┌─────────┐                                                           │
+│   │  Lexer  │  ← existing                                               │
+│   └────┬────┘                                                           │
+│        │ tokens                                                         │
+│        ▼                                                                │
+│   ┌─────────┐                                                           │
+│   │ Parser  │  ← existing                                               │
+│   └────┬────┘                                                           │
+│        │ AST                                                            │
+│        ▼                                                                │
+│   ┌─────────┐                                                           │
+│   │ Checker │  ← existing (+ ownership analysis)                        │
+│   └────┬────┘                                                           │
+│        │ typed AST + ownership info                                     │
+│        │                                                                │
+│   ┌────┴────────────────────────────────────────┐                       │
+│   │             COMPILATION TARGETS             │                       │
+│   ├─────────────────┬───────────────────────────┤                       │
+│   │                 │                           │                       │
+│   ▼                 ▼                           ▼                       │
+│ ┌──────────┐   ┌──────────┐              ┌───────────┐                  │
+│ │Interpreter│   │ Bytecode │              │  Klar IR  │  ← NEW          │
+│ │(existing) │   │ Compiler │              │ Generator │                 │
+│ └──────────┘   │(existing) │              └─────┬─────┘                 │
+│                └─────┬─────┘                    │                       │
+│                      │                    ┌─────┴─────┐                 │
+│                      ▼                    │ Drop/Move │  ← NEW          │
+│                ┌──────────┐               │ Insertion │                 │
+│                │    VM    │               └─────┬─────┘                 │
+│                │(existing)│                     │ IR + destructors      │
+│                └──────────┘                     ▼                       │
+│                                         ┌─────────────┐                 │
+│                                         │ Optimizer   │  ← NEW          │
+│                                         │   Passes    │                 │
+│                                         └──────┬──────┘                 │
+│                                                │                        │
+│                                                ▼                        │
+│                                         ┌───────────┐                   │
+│                                         │   LLVM    │  ← NEW            │
+│                                         │  Backend  │                   │
+│                                         └─────┬─────┘                   │
+│                                               │                         │
+│                                               ▼                         │
+│                                        Native Binary                    │
+│                                       (.exe / ELF / Mach-O)             │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## File Structure (After Phase 2)
+## Memory Model Implementation
+
+### Ownership Rules (from DESIGN.md)
+
+```klar
+// Single owner - value destroyed when owner goes out of scope
+let a = Buffer.new(1024)
+// a destroyed here (RAII)
+
+// Move semantics - ownership transfers
+let a = Buffer.new(1024)
+let b = a                    // a is MOVED to b, a is now invalid
+// only b is destroyed
+
+// Copy types - opt-in for simple types
+struct Point: Copy { x: f64, y: f64 }
+let p1 = Point { x: 1.0, y: 2.0 }
+let p2 = p1                  // p1 is COPIED, both valid
+
+// Borrowing - temporary access without ownership transfer
+fn print_length(buf: &Buffer) {    // immutable borrow
+    print(buf.len)
+}
+let buffer = Buffer.new(1024)
+print_length(&buffer)              // buffer still valid
+
+// Reference counting for shared ownership
+let data = Rc.new(Config.load())
+let alias = data.clone()           // cheap reference count increment
+// Both data and alias valid, freed when last reference dropped
+```
+
+### Compiler Implementation Strategy
+
+**1. Ownership Tracking (in Checker)**
+- Track ownership state for each variable: `owned`, `moved`, `borrowed`
+- Error on use-after-move
+- Verify borrow rules: one `&mut` OR many `&`, never both
+
+**2. Drop Insertion (new pass)**
+- Insert destructor calls at scope exits
+- Handle early returns, breaks, continues
+- Respect move semantics (don't drop moved values)
+
+**3. Copy vs Move Decision**
+- Types implementing `Copy` trait are copied
+- All other types are moved by default
+
+**4. Reference Counting (for Rc/Arc)**
+- `clone()` increments reference count
+- Drop decrements and frees when zero
+- Weak references for cycle breaking
+
+---
+
+## Milestone Breakdown
+
+### Milestone 1: LLVM Integration & Foundation
+
+**Objective:** Set up LLVM C API bindings and create the basic code generation infrastructure.
+
+**Deliverables:**
+- [ ] Add LLVM-C dependency to build system
+- [ ] Create `src/codegen/` module directory
+- [ ] Implement `src/codegen/llvm.zig` - LLVM C API wrapper
+- [ ] Implement `src/codegen/target.zig` - Target platform abstraction
+- [ ] Create basic test: compile `fn main() -> i32 { 42 }` to native code
+- [ ] Add `--native` flag to CLI for native compilation mode
+- [ ] Set up system linker invocation (ld/lld)
+
+**Files to Create:**
+```
+src/codegen/
+├── mod.zig           # Module root
+├── llvm.zig          # LLVM C API wrapper
+├── target.zig        # x86_64, aarch64 target configs
+├── object.zig        # Object file generation
+└── linker.zig        # System linker invocation
+```
+
+**LLVM C API Usage:**
+```zig
+// Example wrapper structure
+const c = @cImport({
+    @cInclude("llvm-c/Core.h");
+    @cInclude("llvm-c/Target.h");
+    @cInclude("llvm-c/TargetMachine.h");
+});
+
+pub const Context = struct {
+    handle: c.LLVMContextRef,
+
+    pub fn create() Context {
+        return .{ .handle = c.LLVMContextCreate() };
+    }
+
+    pub fn dispose(self: Context) void {
+        c.LLVMContextDispose(self.handle);
+    }
+};
+```
+
+**Success Criteria:**
+- `klar build --native hello.kl` produces an executable
+- Executable runs and returns correct exit code
+- Works on at least one platform (macOS ARM64 or Linux x86_64)
+
+---
+
+### Milestone 2: Klar IR Design & Generation
+
+**Objective:** Design and implement a mid-level IR that bridges typed AST and LLVM.
+
+**Deliverables:**
+- [ ] Design Klar IR instruction set (SSA-form)
+- [ ] Implement `src/ir/mod.zig` - IR module root
+- [ ] Implement `src/ir/inst.zig` - IR instructions
+- [ ] Implement `src/ir/builder.zig` - IR construction API
+- [ ] Implement `src/ir/printer.zig` - IR text output for debugging
+- [ ] Create AST-to-IR lowering pass in `src/ir/lower.zig`
+- [ ] Unit tests for IR generation from simple functions
+
+**Klar IR Instruction Set (Draft):**
+```
+; Control flow
+  br %label                   ; unconditional branch
+  br.cond %cond, %then, %else ; conditional branch
+  ret %val                    ; return value
+  unreachable                 ; trap/panic
+
+; Constants
+  %0 = const.i32 42
+  %1 = const.f64 3.14
+  %2 = const.bool true
+  %3 = const.str "hello"
+
+; Arithmetic (typed)
+  %r = add.i32 %a, %b         ; checked (traps on overflow)
+  %r = add.wrap.i32 %a, %b    ; wrapping
+  %r = add.sat.i32 %a, %b     ; saturating
+
+; Comparison
+  %r = cmp.eq %a, %b
+  %r = cmp.lt.i32 %a, %b
+
+; Memory (stack)
+  %ptr = alloca i32           ; stack allocation
+  %val = load %ptr
+  store %val, %ptr
+
+; Memory (heap) - for Rc/Arc internals
+  %ptr = heap.alloc %size
+  heap.free %ptr
+
+; Calls
+  %r = call @fn_name(%arg1, %arg2)
+
+; Ownership operations
+  move %src to %dst           ; transfer ownership
+  copy %src to %dst           ; copy (for Copy types)
+  drop %val                   ; call destructor
+  borrow %val                 ; create reference
+  borrow.mut %val             ; create mutable reference
+
+; Reference counting
+  rc.inc %ptr                 ; increment ref count
+  rc.dec %ptr                 ; decrement, free if zero
+
+; Type operations
+  %r = cast %val to i64       ; safe widening
+  %r = trunc %val to i8       ; truncation
+
+; Aggregates
+  %r = struct.new @Point
+  %f = struct.get %r, field_idx
+  struct.set %r, field_idx, %val
+```
+
+**Success Criteria:**
+- Simple functions (arithmetic, conditionals) lower to IR
+- IR printer produces readable text representation
+- IR validates (type consistency, proper SSA form)
+
+---
+
+### Milestone 3: Ownership Analysis & Drop Insertion
+
+**Objective:** Implement compile-time ownership tracking and automatic destructor insertion.
+
+**Deliverables:**
+- [ ] Extend checker with ownership state tracking
+- [ ] Implement move detection and use-after-move errors
+- [ ] Implement borrow checking (one &mut OR many &)
+- [ ] Create drop insertion pass
+- [ ] Handle drops at scope exits, returns, breaks
+- [ ] Implement Copy trait detection (skip drop for Copy types)
+- [ ] Add `--dump-ownership` debug flag
+
+**Ownership States:**
+```
+enum OwnershipState {
+    owned,           // Variable owns the value
+    moved,           // Ownership transferred elsewhere
+    borrowed,        // Temporarily lent out (immutable)
+    borrowed_mut,    // Temporarily lent out (mutable)
+    partially_moved, // Some fields moved (for structs)
+}
+```
+
+**Drop Insertion Example:**
+```klar
+// Source
+fn example() {
+    let a = Buffer.new(100)
+    let b = Buffer.new(200)
+    if condition {
+        return           // Must drop both a and b
+    }
+    let c = a            // Move a to c
+    // Must drop b and c (not a, it was moved)
+}
+
+// After drop insertion (IR)
+fn example() {
+    %a = call @Buffer.new(100)
+    %b = call @Buffer.new(200)
+    br.cond %condition, %early_return, %continue
+
+%early_return:
+    drop %b              ; inserted
+    drop %a              ; inserted
+    ret void
+
+%continue:
+    move %a to %c
+    ; ... rest of function ...
+    drop %c              ; inserted (not %a - it was moved)
+    drop %b              ; inserted
+    ret void
+}
+```
+
+**Success Criteria:**
+- Use-after-move produces compile error
+- Values automatically destroyed at scope exit
+- No double-frees or memory leaks
+- Moved values not dropped
+
+---
+
+### Milestone 4: Primitive Operations & Control Flow
+
+**Objective:** Implement native code generation for primitive types and basic control flow.
+
+**Deliverables:**
+- [ ] Implement integer arithmetic (add, sub, mul, div, mod)
+- [ ] Implement overflow-checking arithmetic (trap on overflow)
+- [ ] Implement wrapping/saturating arithmetic variants
+- [ ] Implement floating-point operations
+- [ ] Implement comparison operators
+- [ ] Implement logical operators (and, or, not)
+- [ ] Implement if/else code generation
+- [ ] Implement while loops
+- [ ] Implement basic for loops (range iteration)
+- [ ] Implement break/continue
+
+**Test Programs:**
+```klar
+// test_arithmetic.kl
+fn main() -> i32 {
+    let x = 10 + 20 * 3
+    let y = x / 2
+    y
+}
+
+// test_control.kl
+fn main() -> i32 {
+    var sum = 0
+    for i in 0..10 {
+        if i % 2 == 0 {
+            sum = sum + i
+        }
+    }
+    sum
+}
+```
+
+**Success Criteria:**
+- Arithmetic test returns correct value (35)
+- Control flow test returns 20 (sum of even numbers 0-9)
+- Overflow traps in debug mode
+- Generated code matches expected semantics
+
+---
+
+### Milestone 5: Functions & Calling Convention
+
+**Objective:** Implement function definitions, calls, and follow platform ABI.
+
+**Deliverables:**
+- [ ] Use platform calling conventions (System V AMD64, AAPCS64)
+- [ ] Implement function prologue/epilogue generation
+- [ ] Implement function calls (direct)
+- [ ] Implement return values (including struct returns)
+- [ ] Implement multiple parameters
+- [ ] Implement local variables (stack slots via LLVM alloca)
+- [ ] Implement recursive function calls
+- [ ] Add stack overflow detection
+
+**Calling Convention (use platform standard):**
+```
+x86_64 System V ABI:
+  Parameters: rdi, rsi, rdx, rcx, r8, r9 (integers)
+              xmm0-xmm7 (floats)
+  Return:     rax (integers), xmm0 (floats)
+              Small structs in rax:rdx
+              Large structs via hidden pointer parameter
+
+ARM64 AAPCS64:
+  Parameters: x0-x7 (integers), v0-v7 (floats)
+  Return:     x0 (integers), v0 (floats)
+```
+
+**Test Programs:**
+```klar
+// test_fib.kl
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        return n
+    }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn main() -> i32 {
+    fib(30)
+}
+```
+
+**Success Criteria:**
+- fib(30) returns 832040
+- Performance comparable to C implementation
+- No stack corruption on deep recursion
+
+---
+
+### Milestone 6: Composite Types (Structs, Tuples, Arrays)
+
+**Objective:** Implement memory layout and operations for composite types.
+
+**Deliverables:**
+- [ ] Implement struct memory layout calculation (match C ABI)
+- [ ] Implement struct creation (stack allocation)
+- [ ] Implement field access (get/set)
+- [ ] Implement struct destruction (call field destructors)
+- [ ] Implement tuple creation and element access
+- [ ] Implement fixed-size array allocation
+- [ ] Implement array indexing with bounds checks
+- [ ] Implement slice representation (ptr + len)
+- [ ] Implement struct passing (by value or reference per ABI)
+
+**Memory Layout Rules:**
+```
+Struct layout (C-compatible):
+  - Fields ordered as declared
+  - Natural alignment for each field
+  - Padding inserted as needed
+  - Total size rounded to max field alignment
+
+Example:
+  struct Point { x: f64, y: f64 }
+  Size: 16 bytes, Align: 8 bytes
+  Layout: [x:8][y:8]
+
+Struct destruction:
+  - Call drop on each field (in reverse declaration order)
+  - Skip fields that implement Copy
+```
+
+**Test Programs:**
+```klar
+// test_struct.kl
+struct Point { x: f64, y: f64 }
+
+fn distance(p: Point) -> f64 {
+    (p.x * p.x + p.y * p.y).sqrt()
+}
+
+fn main() {
+    let p = Point { x: 3.0, y: 4.0 }
+    print(distance(p))  // 5.0
+}
+```
+
+**Success Criteria:**
+- Struct fields correctly accessed
+- Array bounds checking works
+- Struct destructors called correctly
+- No memory corruption
+
+---
+
+### Milestone 7: Optional & Result Types
+
+**Objective:** Implement the `?T` and `Result[T, E]` types with proper native representation.
+
+**Deliverables:**
+- [ ] Implement Optional as tagged union
+- [ ] Implement Some/None construction
+- [ ] Implement optional unwrapping (with trap on None)
+- [ ] Implement `??` null coalescing operator
+- [ ] Implement `?` propagation operator
+- [ ] Implement Result type as tagged union
+- [ ] Implement Ok/Err construction
+- [ ] Implement Result matching
+- [ ] Proper drop semantics (drop inner value)
+
+**Optional Layout:**
+```
+?T layout:
+  - Tag: u8 (0 = None, 1 = Some)
+  - Padding for alignment
+  - Value storage (only valid when tag = 1)
+
+Optimization for nullable pointers:
+  ?&T and ?Rc[T] can use null pointer representation
+  (no separate tag needed)
+
+Example sizes:
+  ?i32: 8 bytes  [tag:1][pad:3][value:4]
+  ?i64: 16 bytes [tag:1][pad:7][value:8]
+  ?&T:  8 bytes  [nullable pointer]
+```
+
+**Drop for Optional:**
+```
+fn drop(opt: ?T) {
+    if opt is Some(value) {
+        drop(value)  // Only drop if Some
+    }
+}
+```
+
+**Test Programs:**
+```klar
+// test_optional.kl
+fn find(arr: [i32], target: i32) -> ?usize {
+    for (i, val) in arr.enumerate() {
+        if val == target {
+            return Some(i)
+        }
+    }
+    None
+}
+
+fn main() {
+    let arr = [1, 2, 3, 4, 5]
+    let idx = find(arr, 3) ?? 999
+    print(idx)  // 2
+}
+```
+
+**Success Criteria:**
+- Optional Some/None distinguishable at runtime
+- Unwrap on None produces clear trap message
+- `??` operator works correctly
+- Inner values properly dropped
+
+---
+
+### Milestone 8: Reference Counting (Rc/Arc)
+
+**Objective:** Implement Rc and Arc for shared ownership scenarios.
+
+**Deliverables:**
+- [ ] Implement Rc struct layout (count + value)
+- [ ] Implement `Rc.new()` - allocate and initialize
+- [ ] Implement `Rc.clone()` - increment reference count
+- [ ] Implement Rc drop - decrement and free when zero
+- [ ] Implement Arc with atomic operations for thread safety
+- [ ] Implement Weak references for cycle breaking
+- [ ] Add cycle detection in debug mode (optional)
+
+**Rc Layout:**
+```
+Rc[T] internal structure:
+┌─────────────────────────┐
+│ strong_count: usize     │  (reference count)
+│ weak_count: usize       │  (weak reference count)
+│ value: T                │  (the owned value)
+└─────────────────────────┘
+
+Rc[T] handle (what user sees):
+  - Single pointer to the above structure
+
+Operations:
+  Rc.new(val)  → allocate struct, set count=1, move val in
+  rc.clone()   → increment strong_count, return new handle
+  drop(rc)     → decrement strong_count, if 0: drop value and free
+```
+
+**Arc Implementation:**
+```
+Arc[T] - same as Rc but with atomic operations:
+  - Use atomic increment/decrement for counts
+  - Memory ordering: Acquire on load, Release on store
+  - Implements Send + Sync traits
+```
+
+**Test Programs:**
+```klar
+// test_rc.kl
+fn main() {
+    let data = Rc.new(Buffer.new(1024))
+    let alias = data.clone()
+
+    print(data.len)   // 1024
+    print(alias.len)  // 1024 (same buffer)
+
+    // Both references dropped, buffer freed once
+}
+```
+
+**Success Criteria:**
+- Shared data accessible through multiple Rc handles
+- Memory freed exactly once when last reference dropped
+- No use-after-free
+- Arc works correctly across threads
+
+---
+
+### Milestone 9: Closures & First-Class Functions
+
+**Objective:** Implement closures with captured variables respecting ownership.
+
+**Deliverables:**
+- [ ] Implement function pointer representation
+- [ ] Implement closure environment capture (by move or borrow)
+- [ ] Implement closure struct layout (fn_ptr + environment)
+- [ ] Implement closure invocation
+- [ ] Implement closure passing as arguments
+- [ ] Implement closure return from functions
+- [ ] Handle environment destruction (drop captured values)
+
+**Closure Representation:**
+```
+Closure layout:
+┌─────────────────────────┐
+│ fn_ptr: *fn             │  (pointer to generated function)
+│ env: Environment        │  (captured variables, inline)
+└─────────────────────────┘
+
+Capture modes:
+  - Move: ownership transferred to closure
+  - Borrow: reference stored (closure lifetime limited)
+  - Copy: value copied into closure (for Copy types)
+```
+
+**Closure Drop:**
+```
+When closure is dropped:
+  1. Drop each captured value (if owned, not borrowed)
+  2. Free closure struct (if heap-allocated)
+```
+
+**Test Programs:**
+```klar
+// test_closure.kl
+fn make_adder(n: i32) -> fn(i32) -> i32 {
+    return |x| x + n  // n is captured by copy (i32 is Copy)
+}
+
+fn main() {
+    let add5 = make_adder(5)
+    print(add5(10))  // 15
+}
+
+// test_closure_move.kl
+fn make_counter() -> fn() -> i32 {
+    let state = Rc.new(Cell.new(0))
+    return || {
+        let current = state.get()
+        state.set(current + 1)
+        current
+    }
+}
+```
+
+**Success Criteria:**
+- Closures correctly capture variables
+- Captured values properly dropped when closure dropped
+- No memory leaks from closure environments
+
+---
+
+### Milestone 10: Runtime Library & Builtins
+
+**Objective:** Implement the native runtime support library.
+
+**Deliverables:**
+- [ ] Create `src/runtime/` directory for native runtime
+- [ ] Implement `print` and `println` builtins
+- [ ] Implement string operations (concat, slice, compare)
+- [ ] Implement type introspection (`type_of`)
+- [ ] Implement panic handler with stack traces
+- [ ] Implement assert and assert_eq
+- [ ] Implement allocator interface (system malloc/free)
+- [ ] Link runtime library into generated executables
+
+**Runtime Library Contents:**
+```
+klar_runtime.a (static library)
+├── print.zig         # Console output
+├── string.zig        # String type and operations
+├── panic.zig         # Trap handler with backtraces
+├── alloc.zig         # Heap allocation (malloc/free wrapper)
+├── rc.zig            # Rc/Arc implementation
+└── math.zig          # Math builtins (sqrt, etc.)
+```
+
+**Panic Handler:**
+```
+On trap/panic:
+  1. Capture stack trace (using frame pointers or DWARF)
+  2. Print error message with source location
+  3. Print stack trace with function names
+  4. Exit with non-zero code
+```
+
+**Success Criteria:**
+- `print()` works with all primitive types
+- String concatenation works
+- Panic shows source location and stack trace
+
+---
+
+### Milestone 11: Optimization Passes
+
+**Objective:** Implement optimization passes on Klar IR before LLVM lowering.
+
+**Deliverables:**
+- [ ] Implement dead code elimination
+- [ ] Implement constant folding and propagation
+- [ ] Implement common subexpression elimination
+- [ ] Implement function inlining (small functions)
+- [ ] Implement drop coalescing (combine adjacent drops)
+- [ ] Implement move elimination (for Copy types)
+- [ ] Implement tail call optimization
+- [ ] Add optimization level flags (`-O0`, `-O1`, `-O2`, `-O3`)
+- [ ] Let LLVM handle most heavy optimizations at -O2+
+
+**Optimization Pass Pipeline:**
+```
+Klar IR
+  → ConstantFold
+  → DeadCodeElim
+  → DropCoalesce
+  → Inline (small fns)
+  → TailCall
+  → LLVM IR
+  → LLVM Optimizations (when -O1+)
+  → Native Code
+```
+
+**Success Criteria:**
+- fib(35) runs faster with `-O2` than `-O0`
+- Tail-recursive functions don't grow stack
+- Constant expressions evaluated at compile time
+- LLVM optimizations applied correctly
+
+---
+
+### Milestone 12: Debug Information & Tooling
+
+**Objective:** Generate debug information for native debugging.
+
+**Deliverables:**
+- [ ] Generate DWARF debug info via LLVM (Linux/macOS)
+- [ ] Generate PDB debug info via LLVM (Windows)
+- [ ] Map Klar source locations to native instructions
+- [ ] Enable `lldb`/`gdb` debugging of Klar programs
+- [ ] Implement `-g` flag for debug builds
+- [ ] Add `--emit-llvm` flag to output LLVM IR
+- [ ] Add `--emit-asm` flag to output assembly
+
+**Debug Info via LLVM:**
+```zig
+// Use LLVM's debug info API
+const di_builder = c.LLVMCreateDIBuilder(module);
+const di_file = c.LLVMDIBuilderCreateFile(di_builder, filename, ...);
+const di_func = c.LLVMDIBuilderCreateFunction(di_builder, ...);
+// Attach debug locations to instructions
+c.LLVMSetCurrentDebugLocation2(builder, location);
+```
+
+**Success Criteria:**
+- Can set breakpoints by Klar source line in lldb/gdb
+- Can inspect local variables in debugger
+- Stack traces show Klar function names
+
+---
+
+### Milestone 13: Multi-Platform Support
+
+**Objective:** Support multiple target platforms.
+
+**Deliverables:**
+- [ ] Complete x86_64 Linux support (ELF)
+- [ ] Complete ARM64 macOS support (Mach-O)
+- [ ] Complete x86_64 macOS support (Mach-O)
+- [ ] Complete x86_64 Windows support (PE/COFF) - stretch goal
+- [ ] Implement cross-compilation (`--target` flag)
+- [ ] Add platform-specific runtime variants
+
+**Platform Matrix:**
+
+| Platform | Architecture | Object Format | Priority |
+|----------|--------------|---------------|----------|
+| Linux | x86_64 | ELF | Primary |
+| macOS | ARM64 | Mach-O | Primary |
+| macOS | x86_64 | Mach-O | Secondary |
+| Windows | x86_64 | PE/COFF | Stretch |
+
+**Cross-Compilation:**
+```bash
+# Compile for Linux from macOS
+klar build --target=x86_64-linux-gnu program.kl
+
+# Compile for macOS Intel from ARM
+klar build --target=x86_64-apple-darwin program.kl
+```
+
+**Success Criteria:**
+- Same Klar program compiles on Linux and macOS
+- Cross-compilation produces working binaries
+- Executables run correctly on target platform
+
+---
+
+### Milestone 14: Integration & Polish
+
+**Objective:** Complete integration testing and polish the native compiler.
+
+**Deliverables:**
+- [ ] Run all existing test suite with native backend
+- [ ] Benchmark suite: compare VM vs native performance
+- [ ] Document native compilation in README
+- [ ] Improve `klar build` command
+- [ ] Add `--emit-ir` flag for Klar IR debugging
+- [ ] Error messages with source context
+- [ ] Memory usage profiling
+
+**Benchmark Suite:**
+```klar
+// benchmarks/
+├── fib.kl           # Recursive Fibonacci
+├── sort.kl          # Quicksort implementation
+├── matrix.kl        # Matrix multiplication
+├── string.kl        # String operations
+└── rc_stress.kl     # Reference counting stress test
+```
+
+**Performance Targets:**
+
+| Benchmark | VM Time | Native Target | Speedup |
+|-----------|---------|---------------|---------|
+| fib(35) | ~15s | <0.1s | 150x+ |
+| sort(10000) | ~2s | <0.05s | 40x+ |
+| matrix(100) | ~5s | <0.1s | 50x+ |
+
+**Success Criteria:**
+- All tests pass with native backend
+- Performance targets met
+- No regressions from VM behavior
+- Clean, documented codebase
+
+---
+
+## File Structure (Final)
 
 ```
 src/
-├── main.zig           # CLI entry point
-├── lexer.zig          # Tokenizer
-├── token.zig          # Token types
-├── parser.zig         # AST parser
-├── ast.zig            # AST node types
-├── types.zig          # Type system
-├── checker.zig        # Type checker
-├── interpreter.zig    # Tree-walking interpreter (Phase 1)
-├── values.zig         # Interpreter values
-├── bytecode.zig       # Opcode definitions        ← NEW
-├── chunk.zig          # Bytecode container        ← NEW
-├── compiler.zig       # AST → Bytecode            ← NEW
-├── vm.zig             # Virtual machine           ← NEW
-├── vm_value.zig       # VM runtime values         ← NEW
-├── vm_builtins.zig    # VM built-in functions     ← NEW
-├── gc.zig             # Garbage collector         ← NEW
-└── disasm.zig         # Disassembler              ← NEW
+├── main.zig              # CLI entry point (updated)
+├── lexer.zig             # existing
+├── parser.zig            # existing
+├── checker.zig           # existing (+ ownership tracking)
+├── ast.zig               # existing
+├── token.zig             # existing
+├── types.zig             # existing
+├── errors.zig            # existing
+│
+├── interpreter.zig       # existing, Phase 1
+├── values.zig            # existing, Phase 1
+│
+├── compiler.zig          # existing, Phase 2, bytecode
+├── bytecode.zig          # existing, Phase 2
+├── chunk.zig             # existing, Phase 2
+├── vm.zig                # existing, Phase 2
+├── vm_value.zig          # existing, Phase 2
+├── vm_builtins.zig       # existing, Phase 2
+├── disasm.zig            # existing, Phase 2
+│
+├── ownership/            # NEW: Ownership Analysis
+│   ├── mod.zig
+│   ├── state.zig         # Ownership state tracking
+│   ├── checker.zig       # Borrow checking
+│   └── drop.zig          # Drop insertion pass
+│
+├── ir/                   # NEW: Intermediate Representation
+│   ├── mod.zig
+│   ├── inst.zig          # IR instructions
+│   ├── builder.zig       # IR construction
+│   ├── printer.zig       # IR text output
+│   ├── lower.zig         # AST → IR lowering
+│   └── validate.zig      # IR validation
+│
+├── codegen/              # NEW: Native Code Generation
+│   ├── mod.zig
+│   ├── llvm.zig          # LLVM C API wrapper
+│   ├── target.zig        # Platform targets
+│   ├── emit.zig          # IR → LLVM translation
+│   ├── object.zig        # Object file emission
+│   └── linker.zig        # System linker invocation
+│
+├── opt/                  # NEW: Optimization Passes
+│   ├── mod.zig
+│   ├── constfold.zig
+│   ├── dce.zig           # Dead code elimination
+│   ├── inline.zig
+│   └── tailcall.zig
+│
+└── runtime/              # NEW: Native Runtime Library
+    ├── mod.zig
+    ├── print.zig
+    ├── string.zig
+    ├── panic.zig
+    ├── alloc.zig
+    └── rc.zig            # Rc/Arc implementation
 ```
 
 ---
 
-## Success Criteria for Phase 2
+## Dependencies
 
-1. **Correctness**: All Phase 1 tests pass on the VM ✓
-2. **Performance**: At least 5x faster than tree-walking interpreter ✓ (~100x achieved!)
-3. **Memory**: No memory leaks under stress testing ✓ (GC integration complete)
-4. **Debugging**: Clear error messages with source locations ✓
-5. **Examples**: All example programs run correctly ✓
+**build.zig modifications:**
 
-**Phase 2 Status: COMPLETE** 🎉
+```zig
+// Link against LLVM libraries
+const llvm = b.systemLibrary("LLVM");
+exe.linkLibrary(llvm);
+
+// Or use LLVM from a specific path
+exe.addLibraryPath("/usr/local/opt/llvm/lib");
+exe.addIncludePath("/usr/local/opt/llvm/include");
+exe.linkSystemLibrary("LLVM");
+```
+
+**Required LLVM components:**
+- Core
+- Target (X86, AArch64)
+- Analysis
+- CodeGen
+- MC (Machine Code)
+- Object
+
+**Installation:**
+```bash
+# macOS
+brew install llvm
+
+# Ubuntu/Debian
+apt install llvm-dev
+
+# From source (for specific version)
+cmake -G Ninja ../llvm -DLLVM_ENABLE_PROJECTS="clang" -DCMAKE_BUILD_TYPE=Release
+```
 
 ---
 
-*Last updated: January 15, 2026*
+## Risk Assessment
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| LLVM API complexity | Medium | Medium | Start with minimal subset, expand incrementally |
+| Ownership analysis edge cases | Medium | High | Extensive test suite, study Rust's approach |
+| Platform ABI differences | Low | Medium | Use LLVM's target-specific code generation |
+| Debug info generation | Medium | Low | Can ship without full debugger support initially |
+| Compilation time | Low | Low | LLVM is slower but acceptable for AOT |
+
+---
+
+## Success Metrics
+
+**Phase 3 is complete when:**
+
+1. **Functionality**
+   - [ ] All example programs compile and run natively
+   - [ ] All unit tests pass with native backend
+   - [ ] Ownership rules enforced at compile time
+   - [ ] No memory leaks (verified by tools like Valgrind)
+
+2. **Performance**
+   - [ ] fib(35) runs in <0.1 seconds
+   - [ ] At least 100x faster than VM for compute-bound code
+   - [ ] Compilation time <2 seconds for small programs
+
+3. **Usability**
+   - [ ] `klar build program.kl` produces working executable
+   - [ ] Clear error messages for ownership violations
+   - [ ] Works on Linux x86_64 and macOS ARM64
+
+4. **Quality**
+   - [ ] Code compiles with no warnings
+   - [ ] Documentation updated
+   - [ ] Benchmark suite with reproducible results
+
+---
+
+## Getting Started (First Steps)
+
+1. **Set up LLVM development environment**
+   - Install LLVM (14+ recommended)
+   - Verify C API headers available
+   - Create minimal Zig program that links LLVM
+
+2. **Proof of concept: hello world**
+   - Generate LLVM IR for `fn main() -> i32 { 42 }`
+   - Compile to object file
+   - Link with system linker
+   - Execute and verify exit code
+
+3. **Set up codegen module structure**
+   - Create `src/codegen/llvm.zig` with basic wrappers
+   - Add `--native` CLI flag
+   - Wire up the compilation pipeline
+
+4. **Implement ownership tracking**
+   - Add ownership state to checker
+   - Implement basic move detection
+   - Add use-after-move error
+
+---
+
+## Comparison: GC vs Ownership (Why Ownership)
+
+| Aspect | Garbage Collection | Ownership (Klar's approach) |
+|--------|-------------------|----------------------------|
+| Memory overhead | GC metadata per object | Zero runtime overhead |
+| Latency | Pause times during collection | Predictable, no pauses |
+| Determinism | Non-deterministic cleanup | Deterministic destruction |
+| FFI | Complex (root tracking) | Natural C interop |
+| Learning curve | Easier initially | Requires understanding ownership |
+| Resource management | Only memory | Memory + files + locks + etc. |
+
+Klar's ownership model provides:
+- **Zero-cost abstraction** - no runtime overhead for memory safety
+- **Deterministic destruction** - resources freed immediately when done
+- **RAII** - works for all resources, not just memory
+- **Simpler FFI** - natural interop with C libraries
+- **No GC pauses** - predictable performance
+
+---
+
+*Plan Version: 2.0*
+*Created: January 2026*
+*Revised: January 2026 (LLVM backend, ownership model)*
+*Status: Ready for Implementation*
