@@ -4,6 +4,8 @@ const Token = @import("token.zig").Token;
 const Parser = @import("parser.zig").Parser;
 const ast = @import("ast.zig");
 const TypeChecker = @import("checker.zig").TypeChecker;
+const Interpreter = @import("interpreter.zig").Interpreter;
+const values = @import("values.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -80,26 +82,77 @@ fn runFile(allocator: std.mem.Allocator, path: []const u8) !void {
     };
     defer allocator.free(source);
 
-    const stdout = getStdOut();
-    try stdout.writeAll("=== Lexer Output ===\n");
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
 
+    const stderr = getStdErr();
+
+    // Parse the source
     var lexer = Lexer.init(source);
-    var buf: [512]u8 = undefined;
+    var parser = Parser.init(arena.allocator(), &lexer, source);
 
-    while (true) {
-        const token = lexer.next();
-        const text = source[token.loc.start..token.loc.end];
-        const msg = std.fmt.bufPrint(&buf, "{d}:{d} {s}: \"{s}\"\n", .{
-            token.loc.line,
-            token.loc.column,
-            @tagName(token.kind),
-            text,
-        }) catch continue;
-        try stdout.writeAll(msg);
-        if (token.kind == .eof) break;
+    const module = parser.parseModule() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+        try stderr.writeAll(msg);
+
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
+    };
+
+    // Type check
+    var checker = TypeChecker.init(allocator);
+    defer checker.deinit();
+
+    checker.checkModule(module);
+
+    if (checker.hasErrors()) {
+        var buf: [512]u8 = undefined;
+        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
+        try stderr.writeAll(header);
+
+        for (checker.errors.items) |check_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                check_err.span.line,
+                check_err.span.column,
+                check_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
     }
 
-    try stdout.writeAll("\n=== TODO: Parse and Execute ===\n");
+    // Execute
+    var interp = Interpreter.init(allocator) catch {
+        try stderr.writeAll("Failed to initialize interpreter\n");
+        return;
+    };
+    defer interp.deinit();
+
+    interp.executeModule(module) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Runtime error: {s}\n", .{@errorName(err)}) catch "Runtime error\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    // Look for main function and call it
+    if (interp.global_env.get("main")) |main_val| {
+        if (main_val == .function) {
+            _ = interp.callFunction(main_val.function, &.{}) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
+                try stderr.writeAll(msg);
+            };
+        }
+    }
 }
 
 fn tokenizeFile(allocator: std.mem.Allocator, path: []const u8) !void {
@@ -413,4 +466,6 @@ test {
     _ = @import("parser.zig");
     _ = @import("types.zig");
     _ = @import("checker.zig");
+    _ = @import("values.zig");
+    _ = @import("interpreter.zig");
 }

@@ -1,0 +1,17 @@
+// fibonacci.kl - Fibonacci sequence in Klar
+
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn main() {
+    println("Fibonacci sequence:")
+    let result = fib(10)
+    // Note: println currently requires string type
+    // In a full implementation, we'd have string interpolation or overloading
+    println("Result computed")
+}

@@ -519,7 +519,29 @@ klar/
 - [x] CLI 'check' command for type checking files
 - [x] 62 total tests passing
 
-**Next Step**: Begin Milestone 5 - Interpreter (define runtime values and implement tree-walking interpreter)
+**Milestone 5**: Complete ✓
+- [x] values.zig - Runtime value representation:
+  - Integer values with type info (i8-i128, u8-u128)
+  - Float values (f32, f64)
+  - Bool, char, string values
+  - Composite values: Array, Tuple, Struct, Enum
+  - Optional/Result wrappers
+  - References
+  - Callable values: Function, Closure, Builtin
+  - Value equality, cloning, formatting
+- [x] interpreter.zig - Tree-walking interpreter:
+  - Environment with scope management
+  - Expression evaluation (all expression types)
+  - Statement execution (let, var, assignment, control flow)
+  - Function calls (user functions and closures)
+  - Pattern matching runtime
+  - Arithmetic with overflow behavior (trap, wrap, saturate)
+  - Built-in functions: print, println, assert, assert_eq
+- [x] CLI 'run' command executes Klar programs
+- [x] Can run Hello World, Fibonacci, and other examples
+- [x] 78 total tests passing
+
+**Next Step**: Begin Milestone 6 - Builtins & Standard Library
 
 ---
 
