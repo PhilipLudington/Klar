@@ -1,0 +1,14 @@
+// Test Rc.clone() functionality
+// This test creates an Rc and clones it
+
+fn main() -> i32 {
+    // Create an Rc-wrapped integer
+    let rc1 = Rc.new(42)
+
+    // Clone the Rc
+    let rc2 = rc1.clone()
+
+    // Both should hold the same value
+    // (Accessing the value isn't implemented yet, so just return 0)
+    0
+}

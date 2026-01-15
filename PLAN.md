@@ -655,17 +655,22 @@ Example: ?i32 is { i1, i32 }
 
 ---
 
-### Milestone 8: Reference Counting (Rc/Arc)
+### Milestone 8: Reference Counting (Rc/Arc) 🚧
 
 **Objective:** Implement Rc and Arc for shared ownership scenarios.
 
+**Status:** Partially Complete (January 2026) - Rc.new(), .clone(), .downgrade(), .upgrade() implemented
+
 **Deliverables:**
-- [ ] Implement Rc struct layout (count + value)
-- [ ] Implement `Rc.new()` - allocate and initialize
-- [ ] Implement `Rc.clone()` - increment reference count
-- [ ] Implement Rc drop - decrement and free when zero
+- [x] Implement Rc struct layout (count + value)
+- [x] Implement `Rc.new()` - allocate and initialize
+- [x] Implement `Rc.clone()` - increment reference count
+- [x] Implement `Weak.upgrade()` - attempt to get Rc from Weak
+- [x] Implement `Rc.downgrade()` - create Weak reference
+- [x] Add Rc[T] and Weak[T] to type system
+- [x] Implement embedded runtime functions (klar_rc_alloc, klar_rc_clone, etc.)
+- [ ] Implement automatic Rc drop at scope exit - deferred (requires emitter scope tracking)
 - [ ] Implement Arc with atomic operations for thread safety
-- [ ] Implement Weak references for cycle breaking
 - [ ] Add cycle detection in debug mode (optional)
 
 **Rc Layout:**
@@ -695,6 +700,28 @@ Arc[T] - same as Rc but with atomic operations:
 ```
 
 **Test Programs:**
+```
+test/native/
+├── rc_basic.kl         # Basic Rc.new() allocation ✅
+├── rc_clone.kl         # Rc.clone() reference count increment ✅
+```
+
+```klar
+// test/native/rc_basic.kl - Basic Rc allocation ✅
+fn main() -> i32 {
+    let rc_value = Rc.new(42)
+    0
+}
+
+// test/native/rc_clone.kl - Clone creates shared reference ✅
+fn main() -> i32 {
+    let rc1 = Rc.new(42)
+    let rc2 = rc1.clone()
+    0
+}
+```
+
+**Future Test (when print is implemented):**
 ```klar
 // test_rc.kl
 fn main() {

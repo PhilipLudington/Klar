@@ -31,6 +31,10 @@ pub const Type = union(enum) {
     type_var: TypeVar,
     applied: *AppliedType,
 
+    // Reference-counted types
+    rc: *RcType,
+    weak_rc: *WeakRcType,
+
     // Special types
     void_,
     never,
@@ -76,6 +80,8 @@ pub const Type = union(enum) {
                 }
                 break :blk true;
             },
+            .rc => |r| r.inner.eql(other.rc.inner),
+            .weak_rc => |w| w.inner.eql(other.weak_rc.inner),
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -155,8 +161,9 @@ pub const Type = union(enum) {
             // - Traits (dyn trait objects have ownership semantics)
             // - Result (may contain non-Copy ok/err types)
             // - Function types (closures may capture non-Copy data)
+            // - Rc/Weak (must use .clone() explicitly to get new reference)
             // - Unknown/error types (conservative)
-            .slice, .enum_, .trait_, .result, .function, .unknown, .error_type => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .unknown, .error_type => false,
         };
     }
 };
@@ -410,6 +417,24 @@ pub const AppliedType = struct {
 };
 
 // ============================================================================
+// Reference-Counted Types
+// ============================================================================
+
+/// Reference-counted wrapper type (Rc[T])
+/// Provides shared ownership with automatic memory management.
+/// The value is freed when the last Rc reference is dropped.
+pub const RcType = struct {
+    inner: Type, // The wrapped type
+};
+
+/// Weak reference type (Weak[T])
+/// Non-owning reference that doesn't prevent deallocation.
+/// Must be upgraded to Rc before accessing the value.
+pub const WeakRcType = struct {
+    inner: Type, // The wrapped type
+};
+
+// ============================================================================
 // Type Builder - Arena-based type allocation
 // ============================================================================
 
@@ -545,6 +570,19 @@ pub const TypeBuilder = struct {
         applied.* = .{ .base = base, .args = args_copy };
         return .{ .applied = applied };
     }
+
+    // Reference-counted type constructors
+    pub fn rcType(self: *TypeBuilder, inner: Type) !Type {
+        const rc = try self.arena.allocator().create(RcType);
+        rc.* = .{ .inner = inner };
+        return .{ .rc = rc };
+    }
+
+    pub fn weakRcType(self: *TypeBuilder, inner: Type) !Type {
+        const weak = try self.arena.allocator().create(WeakRcType);
+        weak.* = .{ .inner = inner };
+        return .{ .weak_rc = weak };
+    }
 };
 
 // ============================================================================
@@ -611,6 +649,16 @@ pub fn formatType(writer: anytype, t: Type) !void {
                 if (i > 0) try writer.writeAll(", ");
                 try formatType(writer, arg);
             }
+            try writer.writeAll("]");
+        },
+        .rc => |r| {
+            try writer.writeAll("Rc[");
+            try formatType(writer, r.inner);
+            try writer.writeAll("]");
+        },
+        .weak_rc => |w| {
+            try writer.writeAll("Weak[");
+            try formatType(writer, w.inner);
             try writer.writeAll("]");
         },
         .void_ => try writer.writeAll("void"),
@@ -796,4 +844,61 @@ test "isCopyType" {
     // Function types are NOT Copy
     const func_t = try builder.functionType(&.{builder.i32Type()}, builder.i32Type());
     try testing.expect(!func_t.isCopyType());
+
+    // Rc types are NOT Copy (must use .clone())
+    const rc_t = try builder.rcType(builder.i32Type());
+    try testing.expect(!rc_t.isCopyType());
+
+    // Weak types are NOT Copy
+    const weak_t = try builder.weakRcType(builder.i32Type());
+    try testing.expect(!weak_t.isCopyType());
+}
+
+test "Rc type creation and equality" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // Create Rc types
+    const rc_i32 = try builder.rcType(builder.i32Type());
+    const rc_i32_2 = try builder.rcType(builder.i32Type());
+    const rc_bool = try builder.rcType(builder.boolType());
+
+    try testing.expect(rc_i32.eql(rc_i32_2));
+    try testing.expect(!rc_i32.eql(rc_bool));
+
+    // Weak types
+    const weak_i32 = try builder.weakRcType(builder.i32Type());
+    const weak_i32_2 = try builder.weakRcType(builder.i32Type());
+    try testing.expect(weak_i32.eql(weak_i32_2));
+
+    // Rc and Weak are different
+    try testing.expect(!rc_i32.eql(weak_i32));
+}
+
+test "Rc type formatting" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // Rc[i32]
+    const rc_t = try builder.rcType(builder.i32Type());
+    const rc_str = try typeToString(testing.allocator, rc_t);
+    defer testing.allocator.free(rc_str);
+    try testing.expectEqualStrings("Rc[i32]", rc_str);
+
+    // Weak[string]
+    const weak_t = try builder.weakRcType(builder.stringType());
+    const weak_str = try typeToString(testing.allocator, weak_t);
+    defer testing.allocator.free(weak_str);
+    try testing.expectEqualStrings("Weak[string]", weak_str);
+
+    // Nested: Rc[?i32]
+    const opt_i32 = try builder.optionalType(builder.i32Type());
+    const rc_opt = try builder.rcType(opt_i32);
+    const rc_opt_str = try typeToString(testing.allocator, rc_opt);
+    defer testing.allocator.free(rc_opt_str);
+    try testing.expectEqualStrings("Rc[?i32]", rc_opt_str);
 }

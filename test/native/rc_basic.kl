@@ -1,0 +1,11 @@
+// Test basic Rc functionality
+// This test creates an Rc-wrapped value and verifies it works
+
+fn main() -> i32 {
+    // Create an Rc-wrapped integer
+    let rc_value = Rc.new(42)
+
+    // For now, just return a success value
+    // Full Rc functionality will be tested once runtime is linked
+    0
+}

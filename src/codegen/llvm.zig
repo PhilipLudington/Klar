@@ -641,3 +641,13 @@ pub fn getReturnType(fn_type: TypeRef) TypeRef {
 pub fn isVoidType(ty: TypeRef) bool {
     return c.LLVMGetTypeKind(ty) == c.LLVMVoidTypeKind;
 }
+
+/// Get the size of a type in bytes using target data.
+pub fn sizeOfType(target_data: TargetDataRef, ty: TypeRef) u64 {
+    return c.LLVMABISizeOfType(target_data, ty);
+}
+
+/// Get the ABI alignment of a type in bytes using target data.
+pub fn abiAlignOfType(target_data: TargetDataRef, ty: TypeRef) u32 {
+    return c.LLVMABIAlignmentOfType(target_data, ty);
+}

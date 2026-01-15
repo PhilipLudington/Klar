@@ -374,6 +374,32 @@ pub const TypeChecker = struct {
                 return try self.type_builder.referenceType(inner, r.mutable);
             },
             .generic_apply => |g| {
+                // Check for built-in generic types: Rc[T], Weak[T]
+                if (g.base == .named) {
+                    const base_name = g.base.named.name;
+
+                    // Rc[T] - reference-counted type
+                    if (std.mem.eql(u8, base_name, "Rc")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "Rc expects exactly 1 type argument", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner = try self.resolveTypeExpr(g.args[0]);
+                        return try self.type_builder.rcType(inner);
+                    }
+
+                    // Weak[T] - weak reference type
+                    if (std.mem.eql(u8, base_name, "Weak")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "Weak expects exactly 1 type argument", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner = try self.resolveTypeExpr(g.args[0]);
+                        return try self.type_builder.weakRcType(inner);
+                    }
+                }
+
+                // Generic user-defined type
                 const base = try self.resolveTypeExpr(g.base);
                 var args: std.ArrayListUnmanaged(Type) = .{};
                 defer args.deinit(self.allocator);
@@ -692,6 +718,27 @@ pub const TypeChecker = struct {
     }
 
     fn checkMethodCall(self: *TypeChecker, method: *ast.MethodCall) Type {
+        // Handle Rc.new(value) and Weak.new(value) static constructors
+        if (method.object == .identifier) {
+            const obj_name = method.object.identifier.name;
+
+            // Rc.new(value) -> Rc[T] where T is the type of value
+            if (std.mem.eql(u8, obj_name, "Rc") and std.mem.eql(u8, method.method_name, "new")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "Rc.new() expects exactly 1 argument", .{});
+                    return self.type_builder.unknownType();
+                }
+                const value_type = self.checkExpr(method.args[0]);
+                return self.type_builder.rcType(value_type) catch self.type_builder.unknownType();
+            }
+
+            // Weak.new() is not valid - Weak can only be created from Rc.downgrade()
+            if (std.mem.eql(u8, obj_name, "Weak") and std.mem.eql(u8, method.method_name, "new")) {
+                self.addError(.invalid_call, method.span, "Weak cannot be created directly; use rc_value.downgrade()", .{});
+                return self.type_builder.unknownType();
+            }
+        }
+
         const object_type = self.checkExpr(method.object);
 
         // Check for type conversion methods
@@ -796,6 +843,83 @@ pub const TypeChecker = struct {
                 std.mem.eql(u8, method.method_name, "expect"))
             {
                 return object_type.optional.*;
+            }
+        }
+
+        // Rc methods
+        if (object_type == .rc) {
+            const inner_type = object_type.rc.inner;
+
+            // clone() -> Rc[T] (increments reference count)
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
+                }
+                return object_type; // Returns same Rc[T] type
+            }
+
+            // downgrade() -> Weak[T] (creates weak reference)
+            if (std.mem.eql(u8, method.method_name, "downgrade")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "downgrade() takes no arguments", .{});
+                }
+                return self.type_builder.weakRcType(inner_type) catch self.type_builder.unknownType();
+            }
+
+            // strong_count() -> usize
+            if (std.mem.eql(u8, method.method_name, "strong_count")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "strong_count() takes no arguments", .{});
+                }
+                return .{ .primitive = .usize_ };
+            }
+
+            // weak_count() -> usize
+            if (std.mem.eql(u8, method.method_name, "weak_count")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "weak_count() takes no arguments", .{});
+                }
+                return .{ .primitive = .usize_ };
+            }
+
+            // Accessing the inner value is done via * operator (deref), not methods
+        }
+
+        // Weak methods
+        if (object_type == .weak_rc) {
+            const inner_type = object_type.weak_rc.inner;
+
+            // clone() -> Weak[T] (increments weak count)
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
+                }
+                return object_type; // Returns same Weak[T] type
+            }
+
+            // upgrade() -> ?Rc[T] (attempts to get strong reference)
+            if (std.mem.eql(u8, method.method_name, "upgrade")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "upgrade() takes no arguments", .{});
+                }
+                const rc_type = self.type_builder.rcType(inner_type) catch return self.type_builder.unknownType();
+                return self.type_builder.optionalType(rc_type) catch self.type_builder.unknownType();
+            }
+
+            // strong_count() -> usize
+            if (std.mem.eql(u8, method.method_name, "strong_count")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "strong_count() takes no arguments", .{});
+                }
+                return .{ .primitive = .usize_ };
+            }
+
+            // weak_count() -> usize
+            if (std.mem.eql(u8, method.method_name, "weak_count")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "weak_count() takes no arguments", .{});
+                }
+                return .{ .primitive = .usize_ };
             }
         }
 
