@@ -499,7 +499,27 @@ klar/
 - [x] Module parsing (complete file parsing with module declaration, imports, declarations)
 - [x] 52 parser unit tests passing
 
-**Next Step**: Begin Milestone 3 - Type System (define type representation and implement type checker)
+**Milestone 4**: Complete ✓
+- [x] types.zig - Type representation:
+  - Primitive types: i8-i128, u8-u128, isize, usize, f32, f64, bool, char, string
+  - Composite types: Array, Slice, Tuple, Optional, Result, Function, Reference
+  - User-defined types: Struct, Enum, Trait
+  - Generic types: TypeVar, AppliedType
+  - TypeBuilder for arena-based type construction
+  - Type equality and widening checks
+- [x] checker.zig - Type checker:
+  - Symbol table with scope management (global, function, block, loop)
+  - Type environment for type variable substitution
+  - Expression type checking (literals, identifiers, binary ops, calls, etc.)
+  - Statement type checking (let, var, assignment, control flow)
+  - Declaration type checking (functions, structs, enums)
+  - Pattern matching type checking
+  - Built-in types and functions (print, println, assert)
+  - Error reporting with source locations
+- [x] CLI 'check' command for type checking files
+- [x] 62 total tests passing
+
+**Next Step**: Begin Milestone 5 - Interpreter (define runtime values and implement tree-walking interpreter)
 
 ---
 

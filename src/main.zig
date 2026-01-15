@@ -3,6 +3,7 @@ const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("token.zig").Token;
 const Parser = @import("parser.zig").Parser;
 const ast = @import("ast.zig");
+const TypeChecker = @import("checker.zig").TypeChecker;
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -49,7 +50,11 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, command, "build")) {
         try getStdErr().writeAll("Build not yet implemented\n");
     } else if (std.mem.eql(u8, command, "check")) {
-        try getStdErr().writeAll("Check not yet implemented\n");
+        if (args.len < 3) {
+            try getStdErr().writeAll("Error: no input file\n");
+            return;
+        }
+        try checkFile(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "test")) {
         try getStdErr().writeAll("Test not yet implemented\n");
     } else if (std.mem.eql(u8, command, "fmt")) {
@@ -303,6 +308,72 @@ fn printExpr(out: std.fs.File, source: []const u8, expr: ast.Expr, indent: usize
     }
 }
 
+fn checkFile(allocator: std.mem.Allocator, path: []const u8) !void {
+    const source = readSourceFile(allocator, path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+        try getStdErr().writeAll(msg);
+        return;
+    };
+    defer allocator.free(source);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    // Parse the module
+    const module = parser.parseModule() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+        try stderr.writeAll(msg);
+
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
+    };
+
+    // Type check the module
+    var checker = TypeChecker.init(allocator);
+    defer checker.deinit();
+
+    checker.checkModule(module);
+
+    var buf: [512]u8 = undefined;
+
+    if (checker.hasErrors()) {
+        const header = std.fmt.bufPrint(&buf, "Type check failed with {d} error(s):\n", .{checker.errors.items.len}) catch "Type check failed:\n";
+        try stderr.writeAll(header);
+
+        for (checker.errors.items) |check_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d} [{s}]: {s}\n", .{
+                check_err.span.line,
+                check_err.span.column,
+                @tagName(check_err.kind),
+                check_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+    } else {
+        const msg = std.fmt.bufPrint(&buf, "Type check passed for '{s}'\n", .{path}) catch "Type check passed\n";
+        try stdout.writeAll(msg);
+
+        // Print some stats
+        const decl_count = module.declarations.len;
+        const stats = std.fmt.bufPrint(&buf, "  {d} declaration(s)\n", .{decl_count}) catch "";
+        try stdout.writeAll(stats);
+    }
+}
+
 fn printUsage() !void {
     try getStdOut().writeAll(
         \\
@@ -314,8 +385,8 @@ fn printUsage() !void {
         \\  run <file>       Run a Klar program
         \\  tokenize <file>  Tokenize a file (lexer output)
         \\  parse <file>     Parse a file (AST output)
+        \\  check <file>     Type check a file
         \\  build            Build a Klar project
-        \\  check            Type check without building
         \\  test             Run tests
         \\  fmt              Format source files
         \\  help             Show this help
@@ -325,7 +396,7 @@ fn printUsage() !void {
         \\  klar run hello.kl
         \\  klar tokenize example.kl
         \\  klar parse example.kl
-        \\  klar build --release
+        \\  klar check example.kl
         \\
     );
 }
@@ -340,4 +411,6 @@ test {
     _ = @import("lexer.zig");
     _ = @import("ast.zig");
     _ = @import("parser.zig");
+    _ = @import("types.zig");
+    _ = @import("checker.zig");
 }
