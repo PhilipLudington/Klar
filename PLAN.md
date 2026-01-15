@@ -144,60 +144,60 @@ Implement a single-pass compiler that transforms AST nodes into bytecode.
 
 ---
 
-### Milestone 3: Virtual Machine Core
+### Milestone 3: Virtual Machine Core ✓
 
 Implement the stack-based bytecode interpreter.
 
 #### Tasks
 
-- [ ] **3.1** Create VM infrastructure
+- [x] **3.1** Create VM infrastructure
   - Value stack (fixed size or growable)
   - Call stack for function frames
   - Global variable table
   - Instruction pointer management
 
-- [ ] **3.2** Implement value representation
+- [x] **3.2** Implement value representation
   - Tagged union for runtime values
   - NaN-boxing consideration for performance
   - Object heap for strings, arrays, closures
 
-- [ ] **3.3** Implement stack operations
+- [x] **3.3** Implement stack operations
   - Push, pop, peek
   - Stack underflow/overflow checking
 
-- [ ] **3.4** Implement arithmetic execution
+- [x] **3.4** Implement arithmetic execution
   - All numeric operations
   - Overflow behavior (trap/wrap/saturate)
   - Type checking at runtime
 
-- [ ] **3.5** Implement comparison and logical ops
+- [x] **3.5** Implement comparison and logical ops
   - Equality, ordering
   - Short-circuit evaluation
 
-- [ ] **3.6** Implement control flow execution
+- [x] **3.6** Implement control flow execution
   - Jump instructions
   - Loop back-edges
 
-- [ ] **3.7** Implement variable access
+- [x] **3.7** Implement variable access
   - Local variable slots in call frame
   - Global variable hash table
 
-- [ ] **3.8** Implement function calls
+- [x] **3.8** Implement function calls
   - Call frame creation
   - Argument passing
   - Return value handling
 
-- [ ] **3.9** Implement closures
+- [x] **3.9** Implement closures
   - Upvalue objects
   - Closure invocation
 
-- [ ] **3.10** Implement composite types
+- [x] **3.10** Implement composite types
   - Array/tuple creation and indexing
   - Struct field access
 
 #### Deliverables
-- `src/vm.zig` - Virtual machine implementation
-- `src/vm_value.zig` - Runtime value representation
+- `src/vm.zig` - Virtual machine implementation ✓
+- `src/vm_value.zig` - Runtime value representation ✓
 - Integration tests running example programs
 
 ---
