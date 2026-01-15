@@ -90,51 +90,51 @@ Implement a single-pass compiler that transforms AST nodes into bytecode.
 
 #### Tasks
 
-- [ ] **2.1** Create compiler infrastructure
+- [x] **2.1** Create compiler infrastructure
   - Compiler struct with bytecode output
   - Scope tracking for local variable slots
   - Constant pool management
 
-- [ ] **2.2** Compile literal expressions
+- [x] **2.2** Compile literal expressions
   - Numbers → constant pool + OP_CONST
   - Strings → constant pool + OP_CONST
   - Booleans → OP_TRUE / OP_FALSE
   - None → OP_NONE
 
-- [ ] **2.3** Compile binary expressions
+- [x] **2.3** Compile binary expressions
   - Arithmetic: emit left, emit right, emit op
   - Comparison: same pattern
   - Short-circuit `and`/`or` with jumps
 
-- [ ] **2.4** Compile unary expressions
+- [x] **2.4** Compile unary expressions
   - Negation, not, references
 
-- [ ] **2.5** Compile variable declarations and access
+- [x] **2.5** Compile variable declarations and access
   - Track local variable slots in scope
   - Resolve at compile-time where possible
   - Handle shadowing correctly
 
-- [ ] **2.6** Compile control flow
+- [x] **2.6** Compile control flow
   - If/else with jump patching
   - While loops with backward jumps
   - For loops (desugar to while)
   - Match expressions with jump tables
 
-- [ ] **2.7** Compile functions
+- [x] **2.7** Compile functions
   - Compile function body to separate chunk
   - Parameter binding as locals
   - Return statement handling
 
-- [ ] **2.8** Compile closures
+- [x] **2.8** Compile closures
   - Upvalue resolution
   - Closure creation with captured variables
 
-- [ ] **2.9** Compile pattern matching
+- [x] **2.9** Compile pattern matching
   - Match arm compilation
   - Guard condition handling
   - Variable binding in patterns
 
-- [ ] **2.10** Compile method calls and type conversions
+- [x] **2.10** Compile method calls and type conversions
   - Built-in method dispatch
   - Type cast operations
 
