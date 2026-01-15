@@ -1,2 +1,241 @@
 # Klar
-A language for Claude Code/AI by Claude Code/AI
+
+> **"No ambiguity. No surprises."**
+
+Klar is a systems programming language designed for clarity, safety, and simplicity. It is optimized for AI code generation—specifically Claude Code—prioritizing unambiguous syntax and predictable semantics.
+
+## Design Philosophy
+
+### Why Klar?
+
+Traditional systems languages present challenges for AI code generation:
+- **C/C++**: Ambiguous syntax, undefined behavior, preprocessor complexity
+- **Rust**: Steep learning curve, complex lifetime annotations, borrow checker friction
+
+Klar takes a different approach: **maximize clarity, minimize surprises**.
+
+### Core Principles
+
+1. **Unambiguous syntax** — no context needed to parse
+2. **No undefined behavior** — every operation has defined semantics
+3. **Memory safe by default** — ownership without lifetime annotations
+4. **Explicit over implicit** — no silent type conversions
+5. **One obvious way** — minimize redundant syntax forms
+6. **Readable operators** — `and`, `or`, `not` instead of `&&`, `||`, `!`
+
+### Problems Solved
+
+| C/C++ Problem | Klar Solution |
+|---------------|---------------|
+| Ambiguous syntax | Keyword-driven, context-free parsing |
+| Preprocessor macros | `comptime` blocks |
+| Undefined behavior | Defined semantics + explicit overflow operators |
+| Null pointer danger | `?T` optional types |
+| Memory unsafety | Ownership + borrows, no dangling references |
+| Header/source split | Modules |
+| Implicit conversions | Explicit `.as[T]`, `.to[T]`, `.trunc[T]` |
+| Complex build systems | Convention-based builds |
+
+## Quick Tour
+
+### Hello World
+
+```klar
+fn main() {
+    println("Hello, Klar!")
+}
+```
+
+### Variables and Types
+
+```klar
+let x = 42              // immutable, type inferred (i32)
+let y: i64 = 100        // explicit type
+var counter = 0         // mutable
+
+// No implicit conversions
+let wide = x.as[i64]    // safe widening
+let narrow = y.to[i32]  // checked narrowing (traps on overflow)
+```
+
+### String Interpolation
+
+```klar
+let name = "World"
+let count = 42
+println("Hello, {name}! Count: {count}")
+```
+
+### Control Flow
+
+```klar
+// If expressions (produce values)
+let max = if a > b { a } else { b }
+
+// Pattern matching
+let result = match status {
+    Status.Ok => "success"
+    Status.Error(msg) => "failed: {msg}"
+    _ => "unknown"
+}
+
+// Loops
+for item in collection {
+    process(item)
+}
+
+for i in 0..10 {
+    println("{i}")
+}
+
+while condition {
+    work()
+}
+```
+
+### Functions
+
+```klar
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+fn greet(name: string) {
+    println("Hello, {name}!")
+}
+
+// Generic functions
+fn max[T: Ordered](a: T, b: T) -> T {
+    if a > b { a } else { b }
+}
+```
+
+### Closures
+
+```klar
+let double = |x| x * 2
+let add = |a: i32, b: i32| a + b
+let process = |x: i32| -> i32 {
+    let y = x * 2
+    y + 1
+}
+
+// With capturing
+let factor = 10
+let scale = |x| x * factor
+```
+
+### Structs and Enums
+
+```klar
+struct Point {
+    x: f64
+    y: f64
+}
+
+enum Option[T] {
+    Some(T)
+    None
+}
+
+enum Message {
+    Quit
+    Move { x: i32, y: i32 }
+    Write(string)
+}
+```
+
+### Error Handling
+
+```klar
+// Optional types
+let maybe: ?i32 = Some(42)
+let value = maybe ?? 0          // default if None
+let forced = maybe!             // trap if None
+
+// Result types with propagation
+fn read_config() -> Result[Config, Error] {
+    let content = read_file(path)?   // propagate error
+    let parsed = parse(content)?
+    Ok(parsed)
+}
+```
+
+### Explicit Arithmetic
+
+```klar
+let a: i32 = 2_000_000_000
+let b = a + a           // trap on overflow (default, safe)
+let c = a +% a          // wrapping arithmetic
+let d = a +| a          // saturating arithmetic
+```
+
+## Key Features
+
+### For AI Code Generation
+
+- **Context-free grammar**: Every construct is unambiguous without surrounding context
+- **Keyword-driven**: `and`/`or`/`not` vs `&&`/`||`/`!` eliminates symbol confusion
+- **Consistent patterns**: One way to do things, predictable structure
+- **Explicit semantics**: No hidden behavior or implicit conversions
+
+### For Safety
+
+- **Ownership model**: Memory safety without garbage collection
+- **No null**: Optional types (`?T`) for nullable values
+- **Bounds checking**: Array access is checked by default
+- **Defined overflow**: Choose trap, wrap, or saturate explicitly
+
+### For Simplicity
+
+- **No header files**: Single source of truth per module
+- **No preprocessor**: `comptime` for compile-time computation
+- **No function overloading**: Use generics instead
+- **Minimal syntax**: Fewer ways to express the same thing
+
+## Current Status
+
+**Phase 1: Tree-Walking Interpreter** — Complete
+
+- Lexer with all token types
+- Parser with full expression/statement support
+- Type checker with inference
+- Interpreter with all core features
+- Built-in functions and methods
+- String interpolation
+
+See [PLAN.md](PLAN.md) for implementation details and roadmap.
+
+## Building
+
+Requires [Zig](https://ziglang.org/) 0.15+.
+
+```bash
+# Build
+zig build
+
+# Run a Klar program
+./zig-out/bin/klar run examples/hello.kl
+
+# Run tests
+zig build test
+```
+
+## Examples
+
+See the `examples/` directory:
+- `hello.kl` — Hello World
+- `fibonacci.kl` — Recursive Fibonacci
+- `fizzbuzz.kl` — Classic FizzBuzz
+
+## File Extension
+
+`.kl`
+
+## License
+
+MIT
+
+---
+
+*Klar is designed by Claude Code for Claude Code.*
