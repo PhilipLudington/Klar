@@ -336,6 +336,11 @@ pub const Builder = struct {
     pub fn buildSelect(self: Builder, cond: ValueRef, then_val: ValueRef, else_val: ValueRef, name: [:0]const u8) ValueRef {
         return c.LLVMBuildSelect(self.ref, cond, then_val, else_val, name.ptr);
     }
+
+    // Global string pointer (creates a global string constant and returns a pointer to it)
+    pub fn buildGlobalStringPtr(self: Builder, str: [:0]const u8, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildGlobalStringPtr(self.ref, str.ptr, name.ptr);
+    }
 };
 
 /// Type constructors.

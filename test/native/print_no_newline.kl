@@ -1,0 +1,8 @@
+// Test print without newline
+fn main() -> i32 {
+    print("Hello")
+    print(", ")
+    print("World!")
+    println("")
+    0
+}

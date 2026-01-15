@@ -1,0 +1,6 @@
+// Test assert that passes
+fn main() -> i32 {
+    assert(true)
+    assert(1 + 1 == 2)
+    42
+}

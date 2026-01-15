@@ -697,7 +697,12 @@ pub const Emitter = struct {
             .float => |v| llvm.Const.float64(self.ctx, v),
             .bool_ => |v| llvm.Const.int1(self.ctx, v),
             .char => |v| llvm.Const.int(llvm.Types.int32(self.ctx), v, false),
-            .string => llvm.Const.int32(self.ctx, 0), // TODO: string handling
+            .string => |s| blk: {
+                // Create a null-terminated string and get a pointer to it
+                const str_z = self.allocator.dupeZ(u8, s) catch return llvm.Const.int32(self.ctx, 0);
+                defer self.allocator.free(str_z);
+                break :blk self.builder.buildGlobalStringPtr(str_z, "str");
+            },
         };
     }
 
@@ -977,6 +982,19 @@ pub const Emitter = struct {
             .identifier => |id| id.name,
             else => null,
         };
+
+        // Check for builtin functions first
+        if (func_name) |name| {
+            if (std.mem.eql(u8, name, "print")) {
+                return self.emitPrint(call.args, false);
+            } else if (std.mem.eql(u8, name, "println")) {
+                return self.emitPrint(call.args, true);
+            } else if (std.mem.eql(u8, name, "panic")) {
+                return self.emitPanic(call.args);
+            } else if (std.mem.eql(u8, name, "assert")) {
+                return self.emitAssert(call.args);
+            }
+        }
 
         // Try to find as a module-level function
         if (func_name) |name| {
@@ -2706,5 +2724,269 @@ pub const Emitter = struct {
         var param_types = [_]llvm.TypeRef{ptr_type};
         const fn_type = llvm.c.LLVMFunctionType(void_type, &param_types, 1, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    /// Emit a print or println call using libc puts/printf
+    fn emitPrint(self: *Emitter, args: []const ast.Expr, newline: bool) EmitError!llvm.ValueRef {
+        if (args.len == 0) {
+            // No arguments - just print newline if println
+            if (newline) {
+                const puts_fn = self.getOrDeclarePuts();
+                const empty_str = self.builder.buildGlobalStringPtr("", "empty");
+                var call_args = [_]llvm.ValueRef{empty_str};
+                const fn_type = llvm.c.LLVMGlobalGetValueType(puts_fn);
+                return self.builder.buildCall(fn_type, puts_fn, &call_args, "");
+            }
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        // Emit the argument (should be a string)
+        const arg_value = try self.emitExpr(args[0]);
+
+        if (newline) {
+            // Use puts for println (automatically adds newline)
+            const puts_fn = self.getOrDeclarePuts();
+            var call_args = [_]llvm.ValueRef{arg_value};
+            const fn_type = llvm.c.LLVMGlobalGetValueType(puts_fn);
+            return self.builder.buildCall(fn_type, puts_fn, &call_args, "");
+        } else {
+            // Use printf for print (no newline)
+            const printf_fn = self.getOrDeclarePrintf();
+            var call_args = [_]llvm.ValueRef{arg_value};
+            const fn_type = llvm.c.LLVMGlobalGetValueType(printf_fn);
+            return self.builder.buildCall(fn_type, printf_fn, &call_args, "");
+        }
+    }
+
+    fn getOrDeclarePuts(self: *Emitter) llvm.ValueRef {
+        const fn_name = "puts";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int puts(const char *s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclarePrintf(self: *Emitter) llvm.ValueRef {
+        const fn_name = "printf";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int printf(const char *format, ...)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        // variadic = 1 (true)
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 1, 1);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    /// Emit a panic call that prints an error message and aborts
+    fn emitPanic(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        // Print "panic: " prefix
+        const fprintf_fn = self.getOrDeclareFprintf();
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr");
+
+        const panic_prefix = self.builder.buildGlobalStringPtr("panic: ", "panic_prefix");
+        var prefix_args = [_]llvm.ValueRef{ stderr, panic_prefix };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &prefix_args, "");
+
+        // Print the message if provided
+        if (args.len > 0) {
+            const msg = try self.emitExpr(args[0]);
+            var msg_args = [_]llvm.ValueRef{ stderr, msg };
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &msg_args, "");
+        }
+
+        // Print newline
+        const newline_str = self.builder.buildGlobalStringPtr("\n", "newline");
+        var nl_args = [_]llvm.ValueRef{ stderr, newline_str };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &nl_args, "");
+
+        // Call abort
+        const abort_fn = self.getOrDeclareAbort();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(abort_fn), abort_fn, &[_]llvm.ValueRef{}, "");
+
+        // Add unreachable since abort doesn't return
+        _ = self.builder.buildUnreachable();
+
+        // Mark that we have a terminator so no more code is emitted after this
+        self.has_terminator = true;
+
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit an assert that panics if condition is false
+    fn emitAssert(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len == 0) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Evaluate the condition
+        const cond = try self.emitExpr(args[0]);
+
+        // Create blocks
+        const fail_bb = llvm.appendBasicBlock(self.ctx, func, "assert.fail");
+        const continue_bb = llvm.appendBasicBlock(self.ctx, func, "assert.continue");
+
+        // Branch based on condition
+        _ = self.builder.buildCondBr(cond, continue_bb, fail_bb);
+
+        // Emit failure block
+        self.builder.positionAtEnd(fail_bb);
+
+        // Print assertion failure message to stderr
+        const fprintf_fn = self.getOrDeclareFprintf();
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr");
+
+        const fail_msg = self.builder.buildGlobalStringPtr("assertion failed\n", "assert_msg");
+        var fail_args = [_]llvm.ValueRef{ stderr, fail_msg };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fail_args, "");
+
+        // Call abort
+        const abort_fn = self.getOrDeclareAbort();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(abort_fn), abort_fn, &[_]llvm.ValueRef{}, "");
+        _ = self.builder.buildUnreachable();
+
+        // Continue block - assertion passed
+        self.builder.positionAtEnd(continue_bb);
+
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    fn getOrDeclareFprintf(self: *Emitter) llvm.ValueRef {
+        const fn_name = "fprintf";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int fprintf(FILE *stream, const char *format, ...)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        // variadic = 1 (true)
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 2, 1);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStderr(self: *Emitter) llvm.ValueRef {
+        // On macOS/BSD, stderr is accessed via __stderrp
+        // On Linux, it's accessed via stderr global
+        const os = @import("builtin").os.tag;
+
+        if (os == .macos) {
+            // macOS: use __stderrp pointer
+            const var_name = "__stderrp";
+            if (llvm.c.LLVMGetNamedGlobal(self.module.ref, var_name)) |global| {
+                // Declare a function that loads the global
+                const fn_name = "klar_get_stderr";
+                if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                    return func;
+                }
+
+                const ptr_type = llvm.Types.pointer(self.ctx);
+                const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+                const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+                // Create function body to load __stderrp
+                const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+                const saved_func = self.current_function;
+
+                const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+                const stderr_val = self.builder.buildLoad(ptr_type, global, "stderr");
+                _ = llvm.c.LLVMBuildRet(self.builder.ref, stderr_val);
+
+                if (saved_bb) |bb| {
+                    llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+                }
+                self.current_function = saved_func;
+
+                return func;
+            }
+
+            // Declare __stderrp external global
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const global = llvm.c.LLVMAddGlobal(self.module.ref, ptr_type, var_name);
+            llvm.c.LLVMSetLinkage(global, llvm.c.LLVMExternalLinkage);
+
+            // Now create getter function
+            const fn_name = "klar_get_stderr";
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            // Create function body to load __stderrp
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            const stderr_val = self.builder.buildLoad(ptr_type, global, "stderr");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stderr_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
+        } else {
+            // Linux: use stderr directly (declared as extern)
+            const fn_name = "klar_get_stderr";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+
+            // Declare stderr external global
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const global = llvm.c.LLVMAddGlobal(self.module.ref, ptr_type, "stderr");
+            llvm.c.LLVMSetLinkage(global, llvm.c.LLVMExternalLinkage);
+
+            // Create getter function
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            const stderr_val = self.builder.buildLoad(ptr_type, global, "stderr");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stderr_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
+        }
+    }
+
+    fn getOrDeclareAbort(self: *Emitter) llvm.ValueRef {
+        const fn_name = "abort";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // void abort(void) __attribute__((noreturn))
+        const void_type = llvm.Types.void_(self.ctx);
+        const fn_type = llvm.c.LLVMFunctionType(void_type, null, 0, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        // Note: noreturn attribute would be nice but not critical - abort() always exits
+        return func;
     }
 };

@@ -278,6 +278,16 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
+
+        // panic(message: string) -> ! (noreturn)
+        const panic_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "panic",
+            .type_ = panic_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
     }
 
     // ========================================================================

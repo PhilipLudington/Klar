@@ -831,44 +831,49 @@ fn main() -> i32 {
 
 ---
 
-### Milestone 10: Runtime Library & Builtins
+### Milestone 10: Runtime Library & Builtins 🚧
 
 **Objective:** Implement the native runtime support library.
 
+**Status:** Partially Complete (January 2026) - Core builtins implemented
+
 **Deliverables:**
-- [ ] Create `src/runtime/` directory for native runtime
-- [ ] Implement `print` and `println` builtins
-- [ ] Implement string operations (concat, slice, compare)
-- [ ] Implement type introspection (`type_of`)
-- [ ] Implement panic handler with stack traces
-- [ ] Implement assert and assert_eq
-- [ ] Implement allocator interface (system malloc/free)
-- [ ] Link runtime library into generated executables
+- [x] Create `src/runtime/` directory for native runtime (exists with rc.zig, alloc.zig)
+- [x] Implement `print` and `println` builtins (using libc printf/puts)
+- [x] Implement string literal emission for native code
+- [x] Implement `panic(message)` builtin with error messages
+- [x] Implement `assert(condition)` builtin
+- [ ] Implement string operations (concat, slice, compare) - deferred
+- [ ] Implement type introspection (`type_of`) - deferred
+- [ ] Implement panic handler with stack traces - deferred (basic panic works)
+- [ ] Implement assert_eq - deferred
+- [ ] Implement allocator interface (system malloc/free) - already available via Rc
+- [ ] Link runtime library into generated executables - inline LLVM generation used instead
 
-**Runtime Library Contents:**
-```
-klar_runtime.a (static library)
-├── print.zig         # Console output
-├── string.zig        # String type and operations
-├── panic.zig         # Trap handler with backtraces
-├── alloc.zig         # Heap allocation (malloc/free wrapper)
-├── rc.zig            # Rc/Arc implementation
-└── math.zig          # Math builtins (sqrt, etc.)
-```
+**Implementation Notes:**
+- `print(str)` - Uses libc `printf` directly, no newline
+- `println(str)` - Uses libc `puts`, adds newline
+- `panic(msg)` - Prints "panic: <msg>" to stderr and calls `abort()`
+- `assert(cond)` - Branch on condition, abort on failure
+- String literals compile to global constants in LLVM IR
 
-**Panic Handler:**
+**Test Programs:**
 ```
-On trap/panic:
-  1. Capture stack trace (using frame pointers or DWARF)
-  2. Print error message with source location
-  3. Print stack trace with function names
-  4. Exit with non-zero code
+test/native/
+├── print_hello.kl        # println("Hello, World!") ✅
+├── print_no_newline.kl   # Multiple print() calls ✅
+├── test_panic.kl         # panic("message") ✅
+├── test_assert_pass.kl   # assert(true) ✅
+├── test_assert_fail.kl   # assert(false) - aborts ✅
 ```
 
 **Success Criteria:**
-- `print()` works with all primitive types
-- String concatenation works
-- Panic shows source location and stack trace
+- ✅ `print()` works with string literals
+- ✅ `println()` works with string literals
+- ✅ `panic()` prints message and aborts
+- ✅ `assert()` works for boolean conditions
+- ⏳ String concatenation (future milestone)
+- ⏳ Stack traces (future milestone)
 
 ---
 

@@ -1,0 +1,5 @@
+// Test assert that fails
+fn main() -> i32 {
+    assert(false)
+    0  // Never reached
+}
