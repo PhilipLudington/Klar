@@ -9,6 +9,7 @@ const values = @import("values.zig");
 const Compiler = @import("compiler.zig").Compiler;
 const Disassembler = @import("disasm.zig").Disassembler;
 const VM = @import("vm.zig").VM;
+const codegen = @import("codegen/mod.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -67,7 +68,33 @@ pub fn main() !void {
         }
         try parseFile(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "build")) {
-        try getStdErr().writeAll("Build not yet implemented\n");
+        if (args.len < 3) {
+            try getStdErr().writeAll("Error: no input file\n");
+            return;
+        }
+        // Parse options
+        var output_path: ?[]const u8 = null;
+        var emit_llvm = false;
+        var emit_asm = false;
+
+        var i: usize = 3;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "-o") and i + 1 < args.len) {
+                output_path = args[i + 1];
+                i += 1;
+            } else if (std.mem.eql(u8, arg, "--emit-llvm")) {
+                emit_llvm = true;
+            } else if (std.mem.eql(u8, arg, "--emit-asm")) {
+                emit_asm = true;
+            }
+        }
+
+        try buildNative(allocator, args[2], .{
+            .output_path = output_path,
+            .emit_llvm_ir = emit_llvm,
+            .emit_assembly = emit_asm,
+        });
     } else if (std.mem.eql(u8, command, "check")) {
         if (args.len < 3) {
             try getStdErr().writeAll("Error: no input file\n");
@@ -215,6 +242,178 @@ fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     defer file.close();
 
     return try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+}
+
+fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.CompileOptions) !void {
+    const source = readSourceFile(allocator, path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+        try getStdErr().writeAll(msg);
+        return;
+    };
+    defer allocator.free(source);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const stderr = getStdErr();
+    const stdout = getStdOut();
+
+    // Parse the source
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = parser.parseModule() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+        try stderr.writeAll(msg);
+
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
+    };
+
+    // Type check
+    var checker = TypeChecker.init(allocator);
+    defer checker.deinit();
+
+    checker.checkModule(module);
+
+    if (checker.hasErrors()) {
+        var buf: [512]u8 = undefined;
+        const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
+        try stderr.writeAll(header);
+
+        for (checker.errors.items) |check_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                check_err.span.line,
+                check_err.span.column,
+                check_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return;
+    }
+
+    // Initialize LLVM
+    codegen.llvm.initializeNativeTarget();
+
+    // Determine base name for output files
+    const base_name = std.fs.path.stem(path);
+    const module_name = allocator.dupeZ(u8, base_name) catch {
+        try stderr.writeAll("Out of memory\n");
+        return;
+    };
+    defer allocator.free(module_name);
+
+    // Create emitter and emit LLVM IR
+    var emitter = codegen.Emitter.init(allocator, module_name);
+    defer emitter.deinit();
+
+    emitter.emitModule(module) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    emitter.verify() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "LLVM verification failed: {s}\n", .{@errorName(err)}) catch "LLVM verification failed\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    // Emit LLVM IR if requested
+    if (options.emit_llvm_ir) {
+        const ll_path_str = std.fmt.allocPrint(allocator, "{s}.ll", .{base_name}) catch {
+            try stderr.writeAll("Out of memory\n");
+            return;
+        };
+        defer allocator.free(ll_path_str);
+        const ll_path = allocator.dupeZ(u8, ll_path_str) catch {
+            try stderr.writeAll("Out of memory\n");
+            return;
+        };
+        defer allocator.free(ll_path);
+
+        emitter.getModule().printToFile(ll_path) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to write LLVM IR: {s}\n", .{@errorName(err)}) catch "Failed to write LLVM IR\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Wrote LLVM IR to {s}.ll\n", .{base_name}) catch "Wrote LLVM IR\n";
+        try stdout.writeAll(msg);
+    }
+
+    // Generate object file
+    const obj_path_str = std.fmt.allocPrint(allocator, "{s}.o", .{base_name}) catch {
+        try stderr.writeAll("Out of memory\n");
+        return;
+    };
+    defer allocator.free(obj_path_str);
+    const obj_path = allocator.dupeZ(u8, obj_path_str) catch {
+        try stderr.writeAll("Out of memory\n");
+        return;
+    };
+    defer allocator.free(obj_path);
+
+    const triple = codegen.target.getDefaultTriple();
+    const target_ref = codegen.llvm.getTargetFromTriple(triple) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Failed to get target: {s}\n", .{@errorName(err)}) catch "Failed to get target\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    const tm = codegen.llvm.createTargetMachine(
+        target_ref,
+        triple,
+        codegen.target.getDefaultCPU(),
+        codegen.target.getDefaultFeatures(),
+        codegen.llvm.c.LLVMCodeGenLevelDefault,
+        codegen.llvm.c.LLVMRelocDefault,
+        codegen.llvm.c.LLVMCodeModelDefault,
+    ) orelse {
+        try stderr.writeAll("Failed to create target machine\n");
+        return;
+    };
+    defer codegen.llvm.disposeTargetMachine(tm);
+
+    codegen.llvm.targetMachineEmitToFile(tm, emitter.getModule(), obj_path, codegen.llvm.c.LLVMObjectFile) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Failed to emit object file: {s}\n", .{@errorName(err)}) catch "Failed to emit object file\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    // Link to create executable
+    const exe_path = options.output_path orelse base_name;
+
+    codegen.linker.link(allocator, obj_path, exe_path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Linker failed: {s}\n", .{@errorName(err)}) catch "Linker failed\n";
+        try stderr.writeAll(msg);
+        // Clean up object file
+        std.fs.cwd().deleteFile(obj_path) catch {};
+        return;
+    };
+
+    // Clean up object file (only on success)
+    std.fs.cwd().deleteFile(obj_path) catch {};
+
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Built {s}\n", .{exe_path}) catch "Built executable\n";
+    try stdout.writeAll(msg);
 }
 
 fn parseFile(allocator: std.mem.Allocator, path: []const u8) !void {
@@ -687,7 +886,7 @@ fn printUsage() !void {
         \\  parse <file>         Parse a file (AST output)
         \\  check <file>         Type check a file
         \\  disasm <file>        Disassemble bytecode
-        \\  build                Build a Klar project
+        \\  build <file>         Build native executable
         \\  test                 Run tests
         \\  fmt                  Format source files
         \\  help                 Show this help
@@ -696,11 +895,16 @@ fn printUsage() !void {
         \\Options:
         \\  --debug              Enable instruction tracing
         \\  --interpret          Use tree-walking interpreter instead of VM
+        \\  --emit-llvm          Output LLVM IR (.ll file)
+        \\  -o <name>            Output file name
         \\
         \\Examples:
         \\  klar run hello.kl
         \\  klar run hello.kl --debug
         \\  klar run hello.kl --interpret
+        \\  klar build hello.kl
+        \\  klar build hello.kl -o myapp
+        \\  klar build hello.kl --emit-llvm
         \\  klar tokenize example.kl
         \\  klar check example.kl
         \\  klar disasm example.kl
@@ -728,6 +932,7 @@ test {
     _ = @import("vm.zig");
     _ = @import("vm_value.zig");
     _ = @import("vm_builtins.zig");
+    _ = @import("codegen/mod.zig");
     _ = @import("gc.zig");
     _ = @import("disasm.zig");
 }

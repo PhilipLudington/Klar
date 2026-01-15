@@ -151,26 +151,28 @@ let alias = data.clone()           // cheap reference count increment
 
 ## Milestone Breakdown
 
-### Milestone 1: LLVM Integration & Foundation
+### Milestone 1: LLVM Integration & Foundation ✅
 
 **Objective:** Set up LLVM C API bindings and create the basic code generation infrastructure.
 
-**Deliverables:**
-- [ ] Add LLVM-C dependency to build system
-- [ ] Create `src/codegen/` module directory
-- [ ] Implement `src/codegen/llvm.zig` - LLVM C API wrapper
-- [ ] Implement `src/codegen/target.zig` - Target platform abstraction
-- [ ] Create basic test: compile `fn main() -> i32 { 42 }` to native code
-- [ ] Add `--native` flag to CLI for native compilation mode
-- [ ] Set up system linker invocation (ld/lld)
+**Status:** Complete (January 2026)
 
-**Files to Create:**
+**Deliverables:**
+- [x] Add LLVM-C dependency to build system
+- [x] Create `src/codegen/` module directory
+- [x] Implement `src/codegen/llvm.zig` - LLVM C API wrapper
+- [x] Implement `src/codegen/target.zig` - Target platform abstraction
+- [x] Create basic test: compile `fn main() -> i32 { 42 }` to native code
+- [x] Add `klar build` command to CLI for native compilation mode
+- [x] Set up system linker invocation (ld on macOS/Linux)
+
+**Files Created:**
 ```
 src/codegen/
-├── mod.zig           # Module root
-├── llvm.zig          # LLVM C API wrapper
-├── target.zig        # x86_64, aarch64 target configs
-├── object.zig        # Object file generation
+├── mod.zig           # Module root, exports public API
+├── llvm.zig          # LLVM C API wrapper (Context, Module, Builder, Types, Const)
+├── target.zig        # Platform detection, target triple generation
+├── emit.zig          # AST to LLVM IR translation
 └── linker.zig        # System linker invocation
 ```
 

@@ -1,0 +1,38 @@
+//! Native code generation module.
+//!
+//! Provides LLVM-based code generation for Klar programs.
+
+pub const llvm = @import("llvm.zig");
+pub const target = @import("target.zig");
+pub const emit = @import("emit.zig");
+pub const linker = @import("linker.zig");
+
+/// Errors that can occur during code generation.
+pub const CodegenError = error{
+    OutOfMemory,
+    UnsupportedFeature,
+    InvalidAST,
+    LLVMError,
+    ModuleVerificationFailed,
+    TargetNotFound,
+    TargetMachineCreationFailed,
+    EmitFailed,
+    LinkerFailed,
+    LinkerNotFound,
+    OutputWriteFailed,
+};
+
+/// Compile options for native code generation.
+pub const CompileOptions = struct {
+    output_path: ?[]const u8 = null,
+    emit_llvm_ir: bool = false,
+    emit_assembly: bool = false,
+    optimization_level: target.OptLevel = .none,
+    target_triple: ?[:0]const u8 = null,
+};
+
+/// Convenience re-exports
+pub const Emitter = emit.Emitter;
+pub const EmitError = emit.EmitError;
+pub const Platform = target.Platform;
+pub const OptLevel = target.OptLevel;

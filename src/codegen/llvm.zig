@@ -1,0 +1,544 @@
+//! LLVM C API wrappers.
+//!
+//! Provides type-safe Zig wrappers for LLVM-C types and functions.
+
+const std = @import("std");
+
+pub const c = @cImport({
+    @cInclude("llvm-c/Core.h");
+    @cInclude("llvm-c/Target.h");
+    @cInclude("llvm-c/TargetMachine.h");
+    @cInclude("llvm-c/Analysis.h");
+});
+
+// Re-export opaque pointer types
+pub const ContextRef = c.LLVMContextRef;
+pub const ModuleRef = c.LLVMModuleRef;
+pub const BuilderRef = c.LLVMBuilderRef;
+pub const TypeRef = c.LLVMTypeRef;
+pub const ValueRef = c.LLVMValueRef;
+pub const BasicBlockRef = c.LLVMBasicBlockRef;
+pub const TargetRef = c.LLVMTargetRef;
+pub const TargetMachineRef = c.LLVMTargetMachineRef;
+pub const TargetDataRef = c.LLVMTargetDataRef;
+
+/// Errors that can occur during LLVM operations.
+pub const Error = error{
+    ModuleVerificationFailed,
+    TargetNotFound,
+    TargetMachineCreationFailed,
+    EmitFailed,
+};
+
+/// Initialize LLVM targets for the host platform.
+pub fn initializeNativeTarget() void {
+    _ = c.LLVMInitializeNativeTarget();
+    _ = c.LLVMInitializeNativeAsmPrinter();
+    _ = c.LLVMInitializeNativeAsmParser();
+}
+
+/// LLVM Context wrapper.
+pub const Context = struct {
+    ref: ContextRef,
+
+    pub fn create() Context {
+        return .{ .ref = c.LLVMContextCreate() };
+    }
+
+    pub fn dispose(self: Context) void {
+        c.LLVMContextDispose(self.ref);
+    }
+};
+
+/// LLVM Module wrapper.
+pub const Module = struct {
+    ref: ModuleRef,
+
+    pub fn create(name: [:0]const u8, ctx: Context) Module {
+        return .{ .ref = c.LLVMModuleCreateWithNameInContext(name.ptr, ctx.ref) };
+    }
+
+    pub fn dispose(self: Module) void {
+        c.LLVMDisposeModule(self.ref);
+    }
+
+    pub fn setTarget(self: Module, triple: [:0]const u8) void {
+        c.LLVMSetTarget(self.ref, triple.ptr);
+    }
+
+    pub fn setDataLayout(self: Module, layout: [:0]const u8) void {
+        c.LLVMSetDataLayout(self.ref, layout.ptr);
+    }
+
+    pub fn verify(self: Module) Error!void {
+        var error_msg: [*c]u8 = null;
+        if (c.LLVMVerifyModule(self.ref, c.LLVMReturnStatusAction, &error_msg) != 0) {
+            if (error_msg != null) {
+                std.debug.print("LLVM Module verification failed: {s}\n", .{error_msg});
+                c.LLVMDisposeMessage(error_msg);
+            }
+            return Error.ModuleVerificationFailed;
+        }
+    }
+
+    pub fn printToString(self: Module, allocator: std.mem.Allocator) ![]u8 {
+        const str = c.LLVMPrintModuleToString(self.ref);
+        defer c.LLVMDisposeMessage(str);
+        const len = std.mem.len(str);
+        const result = try allocator.alloc(u8, len);
+        @memcpy(result, str[0..len]);
+        return result;
+    }
+
+    pub fn printToFile(self: Module, filename: [:0]const u8) Error!void {
+        var error_msg: [*c]u8 = null;
+        if (c.LLVMPrintModuleToFile(self.ref, filename.ptr, &error_msg) != 0) {
+            if (error_msg != null) {
+                std.debug.print("LLVM print to file failed: {s}\n", .{error_msg});
+                c.LLVMDisposeMessage(error_msg);
+            }
+            return Error.EmitFailed;
+        }
+    }
+
+    pub fn getNamedFunction(self: Module, name: [:0]const u8) ?ValueRef {
+        const func = c.LLVMGetNamedFunction(self.ref, name.ptr);
+        if (func == null) return null;
+        return func;
+    }
+};
+
+/// LLVM IR Builder wrapper.
+pub const Builder = struct {
+    ref: BuilderRef,
+
+    pub fn create(ctx: Context) Builder {
+        return .{ .ref = c.LLVMCreateBuilderInContext(ctx.ref) };
+    }
+
+    pub fn dispose(self: Builder) void {
+        c.LLVMDisposeBuilder(self.ref);
+    }
+
+    pub fn positionAtEnd(self: Builder, block: BasicBlockRef) void {
+        c.LLVMPositionBuilderAtEnd(self.ref, block);
+    }
+
+    // Return instructions
+    pub fn buildRet(self: Builder, value: ValueRef) ValueRef {
+        return c.LLVMBuildRet(self.ref, value);
+    }
+
+    pub fn buildRetVoid(self: Builder) ValueRef {
+        return c.LLVMBuildRetVoid(self.ref);
+    }
+
+    // Arithmetic instructions
+    pub fn buildAdd(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildAdd(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildNSWAdd(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildNSWAdd(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildSub(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildSub(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildNSWSub(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildNSWSub(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildMul(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildMul(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildNSWMul(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildNSWMul(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildSDiv(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildSDiv(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildSRem(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildSRem(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildNeg(self: Builder, value: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildNeg(self.ref, value, name.ptr);
+    }
+
+    // Comparison instructions
+    pub fn buildICmp(self: Builder, op: c.LLVMIntPredicate, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildICmp(self.ref, op, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildFCmp(self: Builder, op: c.LLVMRealPredicate, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFCmp(self.ref, op, lhs, rhs, name.ptr);
+    }
+
+    // Floating-point arithmetic
+    pub fn buildFAdd(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFAdd(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildFSub(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFSub(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildFMul(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFMul(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildFDiv(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFDiv(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildFNeg(self: Builder, value: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFNeg(self.ref, value, name.ptr);
+    }
+
+    // Control flow
+    pub fn buildCondBr(self: Builder, cond: ValueRef, then_block: BasicBlockRef, else_block: BasicBlockRef) ValueRef {
+        return c.LLVMBuildCondBr(self.ref, cond, then_block, else_block);
+    }
+
+    pub fn buildBr(self: Builder, block: BasicBlockRef) ValueRef {
+        return c.LLVMBuildBr(self.ref, block);
+    }
+
+    pub fn buildPhi(self: Builder, ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildPhi(self.ref, ty, name.ptr);
+    }
+
+    // Function calls
+    pub fn buildCall(self: Builder, fn_type: TypeRef, func: ValueRef, args: []const ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildCall2(
+            self.ref,
+            fn_type,
+            func,
+            @ptrCast(@constCast(args.ptr)),
+            @intCast(args.len),
+            name.ptr,
+        );
+    }
+
+    // Memory operations
+    pub fn buildAlloca(self: Builder, ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildAlloca(self.ref, ty, name.ptr);
+    }
+
+    pub fn buildLoad(self: Builder, ty: TypeRef, ptr: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildLoad2(self.ref, ty, ptr, name.ptr);
+    }
+
+    pub fn buildStore(self: Builder, value: ValueRef, ptr: ValueRef) ValueRef {
+        return c.LLVMBuildStore(self.ref, value, ptr);
+    }
+
+    // Bitwise operations
+    pub fn buildAnd(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildAnd(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildOr(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildOr(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildXor(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildXor(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildNot(self: Builder, value: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildNot(self.ref, value, name.ptr);
+    }
+
+    pub fn buildShl(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildShl(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildAShr(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildAShr(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildLShr(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildLShr(self.ref, lhs, rhs, name.ptr);
+    }
+
+    // Type conversions
+    pub fn buildSExt(self: Builder, value: ValueRef, dest_ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildSExt(self.ref, value, dest_ty, name.ptr);
+    }
+
+    pub fn buildZExt(self: Builder, value: ValueRef, dest_ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildZExt(self.ref, value, dest_ty, name.ptr);
+    }
+
+    pub fn buildTrunc(self: Builder, value: ValueRef, dest_ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildTrunc(self.ref, value, dest_ty, name.ptr);
+    }
+
+    pub fn buildSIToFP(self: Builder, value: ValueRef, dest_ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildSIToFP(self.ref, value, dest_ty, name.ptr);
+    }
+
+    pub fn buildFPToSI(self: Builder, value: ValueRef, dest_ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFPToSI(self.ref, value, dest_ty, name.ptr);
+    }
+};
+
+/// Type constructors.
+pub const Types = struct {
+    pub fn int1(ctx: Context) TypeRef {
+        return c.LLVMInt1TypeInContext(ctx.ref);
+    }
+
+    pub fn int8(ctx: Context) TypeRef {
+        return c.LLVMInt8TypeInContext(ctx.ref);
+    }
+
+    pub fn int16(ctx: Context) TypeRef {
+        return c.LLVMInt16TypeInContext(ctx.ref);
+    }
+
+    pub fn int32(ctx: Context) TypeRef {
+        return c.LLVMInt32TypeInContext(ctx.ref);
+    }
+
+    pub fn int64(ctx: Context) TypeRef {
+        return c.LLVMInt64TypeInContext(ctx.ref);
+    }
+
+    pub fn int128(ctx: Context) TypeRef {
+        return c.LLVMInt128TypeInContext(ctx.ref);
+    }
+
+    pub fn intN(ctx: Context, bits: c_uint) TypeRef {
+        return c.LLVMIntTypeInContext(ctx.ref, bits);
+    }
+
+    pub fn float32(ctx: Context) TypeRef {
+        return c.LLVMFloatTypeInContext(ctx.ref);
+    }
+
+    pub fn float64(ctx: Context) TypeRef {
+        return c.LLVMDoubleTypeInContext(ctx.ref);
+    }
+
+    pub fn void_(ctx: Context) TypeRef {
+        return c.LLVMVoidTypeInContext(ctx.ref);
+    }
+
+    pub fn pointer(ctx: Context) TypeRef {
+        // LLVM 15+ uses opaque pointers
+        return c.LLVMPointerTypeInContext(ctx.ref, 0);
+    }
+
+    pub fn function(return_type: TypeRef, param_types: []const TypeRef, is_var_arg: bool) TypeRef {
+        return c.LLVMFunctionType(
+            return_type,
+            @ptrCast(@constCast(param_types.ptr)),
+            @intCast(param_types.len),
+            @intFromBool(is_var_arg),
+        );
+    }
+
+    pub fn array(elem_type: TypeRef, count: u64) TypeRef {
+        return c.LLVMArrayType2(elem_type, count);
+    }
+
+    pub fn struct_(ctx: Context, elem_types: []const TypeRef, is_packed: bool) TypeRef {
+        return c.LLVMStructTypeInContext(
+            ctx.ref,
+            @ptrCast(@constCast(elem_types.ptr)),
+            @intCast(elem_types.len),
+            @intFromBool(is_packed),
+        );
+    }
+};
+
+/// Constant value constructors.
+pub const Const = struct {
+    pub fn int(ty: TypeRef, value: u64, sign_extend: bool) ValueRef {
+        return c.LLVMConstInt(ty, value, @intFromBool(sign_extend));
+    }
+
+    pub fn int1(ctx: Context, value: bool) ValueRef {
+        return c.LLVMConstInt(Types.int1(ctx), @intFromBool(value), 0);
+    }
+
+    pub fn int8(ctx: Context, value: i8) ValueRef {
+        const val64: i64 = value;
+        return c.LLVMConstInt(Types.int8(ctx), @bitCast(@as(u64, @bitCast(val64))), 1);
+    }
+
+    pub fn int16(ctx: Context, value: i16) ValueRef {
+        const val64: i64 = value;
+        return c.LLVMConstInt(Types.int16(ctx), @bitCast(@as(u64, @bitCast(val64))), 1);
+    }
+
+    pub fn int32(ctx: Context, value: i32) ValueRef {
+        // Sign-extend to 64 bits for LLVM
+        const val64: i64 = value;
+        return c.LLVMConstInt(Types.int32(ctx), @bitCast(@as(u64, @bitCast(val64))), 1);
+    }
+
+    pub fn int64(ctx: Context, value: i64) ValueRef {
+        return c.LLVMConstInt(Types.int64(ctx), @bitCast(@as(u64, @bitCast(value))), 1);
+    }
+
+    pub fn float64(ctx: Context, value: f64) ValueRef {
+        return c.LLVMConstReal(Types.float64(ctx), value);
+    }
+
+    pub fn float32(ctx: Context, value: f32) ValueRef {
+        return c.LLVMConstReal(Types.float32(ctx), value);
+    }
+
+    pub fn null_(ty: TypeRef) ValueRef {
+        return c.LLVMConstNull(ty);
+    }
+
+    pub fn undef(ty: TypeRef) ValueRef {
+        return c.LLVMGetUndef(ty);
+    }
+
+    pub fn string(ctx: Context, str: []const u8, null_terminate: bool) ValueRef {
+        return c.LLVMConstStringInContext(
+            ctx.ref,
+            str.ptr,
+            @intCast(str.len),
+            @intFromBool(!null_terminate),
+        );
+    }
+};
+
+/// Function operations.
+pub fn addFunction(module: Module, name: [:0]const u8, fn_type: TypeRef) ValueRef {
+    return c.LLVMAddFunction(module.ref, name.ptr, fn_type);
+}
+
+pub fn appendBasicBlock(ctx: Context, func: ValueRef, name: [:0]const u8) BasicBlockRef {
+    return c.LLVMAppendBasicBlockInContext(ctx.ref, func, name.ptr);
+}
+
+pub fn getParam(func: ValueRef, index: c_uint) ValueRef {
+    return c.LLVMGetParam(func, index);
+}
+
+pub fn setFunctionCallConv(func: ValueRef, cc: c_uint) void {
+    c.LLVMSetFunctionCallConv(func, cc);
+}
+
+pub fn getGlobalValueType(func: ValueRef) TypeRef {
+    return c.LLVMGlobalGetValueType(func);
+}
+
+/// PHI node operations.
+pub fn addIncoming(phi: ValueRef, incoming_values: []const ValueRef, incoming_blocks: []const BasicBlockRef) void {
+    c.LLVMAddIncoming(
+        phi,
+        @ptrCast(@constCast(incoming_values.ptr)),
+        @ptrCast(@constCast(incoming_blocks.ptr)),
+        @intCast(incoming_values.len),
+    );
+}
+
+/// Target machine operations.
+pub fn getDefaultTargetTriple(allocator: std.mem.Allocator) ![:0]u8 {
+    const triple = c.LLVMGetDefaultTargetTriple();
+    defer c.LLVMDisposeMessage(triple);
+    const len = std.mem.len(triple);
+    const result = try allocator.allocSentinel(u8, len, 0);
+    @memcpy(result, triple[0..len]);
+    return result;
+}
+
+pub fn getTargetFromTriple(triple: [:0]const u8) Error!TargetRef {
+    var target: TargetRef = undefined;
+    var error_msg: [*c]u8 = null;
+    if (c.LLVMGetTargetFromTriple(triple.ptr, &target, &error_msg) != 0) {
+        if (error_msg != null) {
+            std.debug.print("LLVM target lookup failed: {s}\n", .{error_msg});
+            c.LLVMDisposeMessage(error_msg);
+        }
+        return Error.TargetNotFound;
+    }
+    return target;
+}
+
+pub fn createTargetMachine(
+    target: TargetRef,
+    triple: [:0]const u8,
+    cpu: [:0]const u8,
+    features: [:0]const u8,
+    opt_level: c.LLVMCodeGenOptLevel,
+    reloc_mode: c.LLVMRelocMode,
+    code_model: c.LLVMCodeModel,
+) ?TargetMachineRef {
+    const tm = c.LLVMCreateTargetMachine(
+        target,
+        triple.ptr,
+        cpu.ptr,
+        features.ptr,
+        opt_level,
+        reloc_mode,
+        code_model,
+    );
+    if (tm == null) return null;
+    return tm;
+}
+
+pub fn disposeTargetMachine(tm: TargetMachineRef) void {
+    c.LLVMDisposeTargetMachine(tm);
+}
+
+pub fn targetMachineEmitToFile(
+    tm: TargetMachineRef,
+    module: Module,
+    filename: [:0]const u8,
+    codegen: c.LLVMCodeGenFileType,
+) Error!void {
+    var error_msg: [*c]u8 = null;
+    if (c.LLVMTargetMachineEmitToFile(
+        tm,
+        module.ref,
+        @ptrCast(@constCast(filename.ptr)),
+        codegen,
+        &error_msg,
+    ) != 0) {
+        if (error_msg != null) {
+            std.debug.print("LLVM emit to file failed: {s}\n", .{error_msg});
+            c.LLVMDisposeMessage(error_msg);
+        }
+        return Error.EmitFailed;
+    }
+}
+
+pub fn getTargetMachineTriple(tm: TargetMachineRef, allocator: std.mem.Allocator) ![:0]u8 {
+    const triple = c.LLVMGetTargetMachineTriple(tm);
+    defer c.LLVMDisposeMessage(triple);
+    const len = std.mem.len(triple);
+    const result = try allocator.allocSentinel(u8, len, 0);
+    @memcpy(result, triple[0..len]);
+    return result;
+}
+
+pub fn createTargetDataLayout(tm: TargetMachineRef) TargetDataRef {
+    return c.LLVMCreateTargetDataLayout(tm);
+}
+
+pub fn disposeTargetData(td: TargetDataRef) void {
+    c.LLVMDisposeTargetData(td);
+}
+
+pub fn copyStringRepOfTargetData(td: TargetDataRef, allocator: std.mem.Allocator) ![:0]u8 {
+    const str = c.LLVMCopyStringRepOfTargetData(td);
+    defer c.LLVMDisposeMessage(str);
+    const len = std.mem.len(str);
+    const result = try allocator.allocSentinel(u8, len, 0);
+    @memcpy(result, str[0..len]);
+    return result;
+}
