@@ -463,17 +463,42 @@ klar/
 
 ## Current Status
 
-**Milestone 1**: In progress
-- [x] Starter code exists in DESIGN.md
+**Milestone 1**: Complete ✓
 - [x] Project structure created (build.zig, build.zig.zon, src/)
 - [x] token.zig implemented with all token types
 - [x] lexer.zig implemented with full lexer and tests
-- [x] main.zig implemented with CLI (run, tokenize, help, version)
-- [x] All tests passing
-- [ ] Need to add more lexer edge case tests (1.4)
-- [ ] Parser implementation (Milestone 2)
+- [x] main.zig implemented with CLI (run, tokenize, parse, help, version)
+- [x] All tests passing (26 tests)
 
-**Next Step**: Complete Milestone 1 task 1.4 (lexer tests) or begin Milestone 2 (AST & Parser)
+**Milestone 2**: In Progress
+- [x] ast.zig - Complete AST node definitions for:
+  - Expressions: Literal, Identifier, Binary, Unary, Postfix, Call, Index, Field, MethodCall, IfExpr, MatchExpr, Block, Closure, Range, StructLiteral, ArrayLiteral, TupleLiteral, TypeCast, Grouped
+  - Patterns: Wildcard, PatternLiteral, Binding, VariantPattern, StructPattern, TuplePattern, OrPattern, GuardedPattern
+  - Statements: LetDecl, VarDecl, Assignment, ExprStmt, ReturnStmt, BreakStmt, ContinueStmt, ForLoop, WhileLoop, LoopStmt
+  - Declarations: FunctionDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl, TypeAlias, ConstDecl, ImportDecl, ModuleDecl
+  - Types: NamedType, ArrayType, SliceType, TupleType, OptionalType, ResultType, FunctionType, ReferenceType, GenericApply
+- [x] parser.zig - Pratt parser with:
+  - Full precedence support (15 levels from spec)
+  - All arithmetic operators (+, -, *, /, %, +%, -%, *%, +|, -|, *|)
+  - Comparison operators (==, !=, <, >, <=, >=, is)
+  - Logical operators (and, or, not)
+  - Bitwise operators (&, |, ^, ~, <<, >>)
+  - Range operators (.., ..=)
+  - Assignment operators (=, +=, -=, *=, /=, %=)
+  - Null coalescing (??)
+  - Postfix operators (?, !)
+  - Function calls, method calls, field access, indexing
+  - If expressions with else branches
+  - Match expressions with pattern matching
+  - Block expressions
+  - Closures (|args| body and fn(args) body)
+  - Array and tuple literals
+  - Type parsing (named, optional, reference, slice, function, generic)
+- [x] 14 parser unit tests passing
+- [ ] Statement parsing (let, var, for, while, loop, return, break, continue)
+- [ ] Declaration parsing (fn, struct, enum, trait, impl, import, module)
+
+**Next Step**: Add statement and declaration parsing to complete Milestone 2, then begin Milestone 3 (Type Checker)
 
 ---
 

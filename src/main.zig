@@ -1,6 +1,8 @@
 const std = @import("std");
 const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("token.zig").Token;
+const Parser = @import("parser.zig").Parser;
+const ast = @import("ast.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -38,6 +40,12 @@ pub fn main() !void {
             return;
         }
         try tokenizeFile(allocator, args[2]);
+    } else if (std.mem.eql(u8, command, "parse")) {
+        if (args.len < 3) {
+            try getStdErr().writeAll("Error: no input file\n");
+            return;
+        }
+        try parseFile(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "build")) {
         try getStdErr().writeAll("Build not yet implemented\n");
     } else if (std.mem.eql(u8, command, "check")) {
@@ -128,6 +136,173 @@ fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
 }
 
+fn parseFile(allocator: std.mem.Allocator, path: []const u8) !void {
+    const source = readSourceFile(allocator, path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+        try getStdErr().writeAll(msg);
+        return;
+    };
+    defer allocator.free(source);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const stdout = getStdOut();
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    try stdout.writeAll("=== Parsing Expression ===\n");
+
+    const expr = parser.parseExpression() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+        try getStdErr().writeAll(msg);
+
+        // Print any accumulated errors
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try getStdErr().writeAll(err_msg);
+        }
+        return;
+    };
+
+    // Print the parsed expression
+    try printExpr(stdout, source, expr, 0);
+    try stdout.writeAll("\n");
+}
+
+fn printExpr(out: std.fs.File, source: []const u8, expr: ast.Expr, indent: usize) !void {
+    var indent_buf: [64]u8 = undefined;
+    const indent_str = indent_buf[0..@min(indent * 2, 64)];
+    @memset(indent_str, ' ');
+
+    var buf: [512]u8 = undefined;
+
+    switch (expr) {
+        .literal => |lit| {
+            const kind_str = switch (lit.kind) {
+                .int => |v| std.fmt.bufPrint(&buf, "int({d})", .{v}) catch "int(?)",
+                .float => |v| std.fmt.bufPrint(&buf, "float({d})", .{v}) catch "float(?)",
+                .string => |v| std.fmt.bufPrint(&buf, "string(\"{s}\")", .{v}) catch "string(?)",
+                .char => |v| std.fmt.bufPrint(&buf, "char('{u}')", .{v}) catch "char(?)",
+                .bool_ => |v| if (v) "bool(true)" else "bool(false)",
+            };
+            try out.writeAll(indent_str);
+            try out.writeAll("Literal: ");
+            try out.writeAll(kind_str);
+            try out.writeAll("\n");
+        },
+        .identifier => |id| {
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "Identifier: {s}\n", .{id.name}) catch "Identifier: ?\n";
+            try out.writeAll(msg);
+        },
+        .binary => |bin| {
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "Binary: {s}\n", .{@tagName(bin.op)}) catch "Binary: ?\n";
+            try out.writeAll(msg);
+            try printExpr(out, source, bin.left, indent + 1);
+            try printExpr(out, source, bin.right, indent + 1);
+        },
+        .unary => |un| {
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "Unary: {s}\n", .{@tagName(un.op)}) catch "Unary: ?\n";
+            try out.writeAll(msg);
+            try printExpr(out, source, un.operand, indent + 1);
+        },
+        .call => |call| {
+            try out.writeAll(indent_str);
+            try out.writeAll("Call:\n");
+            try out.writeAll(indent_str);
+            try out.writeAll("  callee:\n");
+            try printExpr(out, source, call.callee, indent + 2);
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "  args: ({d})\n", .{call.args.len}) catch "  args: ?\n";
+            try out.writeAll(msg);
+            for (call.args) |arg| {
+                try printExpr(out, source, arg, indent + 2);
+            }
+        },
+        .if_expr => |if_e| {
+            try out.writeAll(indent_str);
+            try out.writeAll("If:\n");
+            try out.writeAll(indent_str);
+            try out.writeAll("  condition:\n");
+            try printExpr(out, source, if_e.condition, indent + 2);
+            try out.writeAll(indent_str);
+            try out.writeAll("  then:\n");
+            try printExpr(out, source, if_e.then_branch, indent + 2);
+            if (if_e.else_branch) |else_b| {
+                try out.writeAll(indent_str);
+                try out.writeAll("  else:\n");
+                try printExpr(out, source, else_b, indent + 2);
+            }
+        },
+        .block => |blk| {
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "Block: ({d} stmts)\n", .{blk.statements.len}) catch "Block: ?\n";
+            try out.writeAll(msg);
+            if (blk.final_expr) |final| {
+                try out.writeAll(indent_str);
+                try out.writeAll("  final:\n");
+                try printExpr(out, source, final, indent + 2);
+            }
+        },
+        .closure => |cls| {
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "Closure: ({d} params)\n", .{cls.params.len}) catch "Closure: ?\n";
+            try out.writeAll(msg);
+            try out.writeAll(indent_str);
+            try out.writeAll("  body:\n");
+            try printExpr(out, source, cls.body, indent + 2);
+        },
+        .field => |fld| {
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "Field: .{s}\n", .{fld.field_name}) catch "Field: ?\n";
+            try out.writeAll(msg);
+            try printExpr(out, source, fld.object, indent + 1);
+        },
+        .method_call => |meth| {
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "MethodCall: .{s}()\n", .{meth.method_name}) catch "MethodCall: ?\n";
+            try out.writeAll(msg);
+            try printExpr(out, source, meth.object, indent + 1);
+        },
+        .index => |idx| {
+            try out.writeAll(indent_str);
+            try out.writeAll("Index:\n");
+            try printExpr(out, source, idx.object, indent + 1);
+            try printExpr(out, source, idx.index, indent + 1);
+        },
+        .range => |rng| {
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "Range: (inclusive={s})\n", .{if (rng.inclusive) "true" else "false"}) catch "Range: ?\n";
+            try out.writeAll(msg);
+            if (rng.start) |s| try printExpr(out, source, s, indent + 1);
+            if (rng.end) |e| try printExpr(out, source, e, indent + 1);
+        },
+        .array_literal => |arr| {
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "Array: [{d} elements]\n", .{arr.elements.len}) catch "Array: ?\n";
+            try out.writeAll(msg);
+        },
+        .tuple_literal => |tup| {
+            try out.writeAll(indent_str);
+            const msg = std.fmt.bufPrint(&buf, "Tuple: ({d} elements)\n", .{tup.elements.len}) catch "Tuple: ?\n";
+            try out.writeAll(msg);
+        },
+        else => {
+            try out.writeAll(indent_str);
+            try out.writeAll("(other expression)\n");
+        },
+    }
+}
+
 fn printUsage() !void {
     try getStdOut().writeAll(
         \\
@@ -138,6 +313,7 @@ fn printUsage() !void {
         \\Commands:
         \\  run <file>       Run a Klar program
         \\  tokenize <file>  Tokenize a file (lexer output)
+        \\  parse <file>     Parse a file (AST output)
         \\  build            Build a Klar project
         \\  check            Type check without building
         \\  test             Run tests
@@ -148,8 +324,8 @@ fn printUsage() !void {
         \\Examples:
         \\  klar run hello.kl
         \\  klar tokenize example.kl
+        \\  klar parse example.kl
         \\  klar build --release
-        \\  klar test
         \\
     );
 }
@@ -158,7 +334,10 @@ fn printVersion() !void {
     try getStdOut().writeAll("Klar 0.1.0-dev\n");
 }
 
-// Re-export tests from lexer
+// Re-export tests from all modules
 test {
+    _ = @import("token.zig");
     _ = @import("lexer.zig");
+    _ = @import("ast.zig");
+    _ = @import("parser.zig");
 }
