@@ -1,0 +1,12 @@
+// Test passing a closure as a function argument
+// Expected exit code: 30 (apply(add, 10, 20))
+
+// A higher-order function that takes a closure and applies it
+fn apply(f: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
+    f(a, b)
+}
+
+fn main() -> i32 {
+    let add = |x: i32, y: i32| x + y
+    apply(add, 10, 20)
+}

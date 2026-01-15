@@ -1019,13 +1019,7 @@ pub const Emitter = struct {
             // Check if it's a local variable (closure)
             if (self.named_values.get(name)) |local| {
                 // Load the closure value from the local variable
-                const closure_struct_type = blk: {
-                    var types_arr = [_]llvm.TypeRef{
-                        llvm.Types.pointer(self.ctx),
-                        llvm.Types.pointer(self.ctx),
-                    };
-                    break :blk llvm.Types.struct_(self.ctx, &types_arr, false);
-                };
+                const closure_struct_type = self.getClosureStructType();
                 const closure_value = if (local.is_alloca)
                     self.builder.buildLoad(closure_struct_type, local.value, "closure.load")
                 else
@@ -1043,13 +1037,7 @@ pub const Emitter = struct {
     /// Closure struct is { fn_ptr: ptr, env_ptr: ptr }
     fn emitClosureCall(self: *Emitter, closure_value: llvm.ValueRef, args: []const ast.Expr) EmitError!llvm.ValueRef {
         // Closure struct type: { fn_ptr, env_ptr }
-        const closure_struct_type = blk: {
-            var types_arr = [_]llvm.TypeRef{
-                llvm.Types.pointer(self.ctx),
-                llvm.Types.pointer(self.ctx),
-            };
-            break :blk llvm.Types.struct_(self.ctx, &types_arr, false);
-        };
+        const closure_struct_type = self.getClosureStructType();
 
         // Allocate space to store the closure value (since we have it by value)
         const closure_alloca = self.builder.buildAlloca(closure_struct_type, "closure.tmp");
@@ -1214,14 +1202,25 @@ pub const Emitter = struct {
                 return llvm.Types.struct_(self.ctx, &opt_fields, false);
             },
             .function => {
-                // Function type - for now just return pointer
-                return llvm.Types.pointer(self.ctx);
+                // Function type is represented as closure struct: { fn_ptr: ptr, env_ptr: ptr }
+                // This is the same layout used in emitClosure
+                return self.getClosureStructType();
             },
             .result, .generic_apply => {
                 // Complex types - return pointer as placeholder
                 return llvm.Types.pointer(self.ctx);
             },
         };
+    }
+
+    /// Get the LLVM struct type for closures: { fn_ptr: ptr, env_ptr: ptr }
+    /// This is a consistent layout used throughout closure handling.
+    fn getClosureStructType(self: *Emitter) llvm.TypeRef {
+        var types_arr = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // fn_ptr
+            llvm.Types.pointer(self.ctx), // env_ptr
+        };
+        return llvm.Types.struct_(self.ctx, &types_arr, false);
     }
 
     fn namedTypeToLLVM(self: *Emitter, name: []const u8) llvm.TypeRef {
@@ -2314,13 +2313,7 @@ pub const Emitter = struct {
 
         // Now create the closure value in the calling context
         // Closure struct: { fn_ptr: ptr, env_ptr: ptr }
-        const closure_struct_type = blk: {
-            var types_arr = [_]llvm.TypeRef{
-                llvm.Types.pointer(self.ctx), // fn_ptr
-                llvm.Types.pointer(self.ctx), // env_ptr
-            };
-            break :blk llvm.Types.struct_(self.ctx, &types_arr, false);
-        };
+        const closure_struct_type = self.getClosureStructType();
 
         // Allocate closure struct
         const closure_alloca = self.builder.buildAlloca(closure_struct_type, "closure");

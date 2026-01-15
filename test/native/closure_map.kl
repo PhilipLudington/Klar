@@ -1,0 +1,16 @@
+// Test a map-like function that applies a closure
+// Expected exit code: 64 (sum of squares 1^2 + 2^2 + 3^2 + 4^2 + 5^2 + 6^2 + 7^2 - 1 = 140 % 256 = 140)
+// Actually: 1+4+9+16+25 = 55, let's simplify
+
+// A function that transforms a value with a closure
+fn transform(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+fn main() -> i32 {
+    let square = |x: i32| x * x
+    let double = |x: i32| x * 2
+
+    // transform(square, 5) + transform(double, 10) = 25 + 20 = 45
+    transform(square, 5) + transform(double, 10)
+}

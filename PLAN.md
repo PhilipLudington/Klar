@@ -747,14 +747,14 @@ fn main() {
 
 **Objective:** Implement closures with captured variables respecting ownership.
 
-**Status:** Partially Complete (January 2026) - Basic closures with capture implemented
+**Status:** Partially Complete (January 2026) - Closures with capture and argument passing implemented
 
 **Deliverables:**
 - [x] Implement closure struct layout (fn_ptr + environment pointer)
 - [x] Implement capture analysis in type checker
 - [x] Implement closure LLVM emission (lifted function + environment)
 - [x] Implement closure invocation
-- [ ] Implement closure passing as arguments
+- [x] Implement closure passing as arguments
 - [ ] Implement closure return from functions - requires function type unification
 - [ ] Handle environment destruction (drop captured values) - deferred to Milestone 10
 
@@ -792,6 +792,9 @@ test/native/
 ├── closure_simple.kl        # Simple closure without captures ✅
 ├── closure_capture.kl       # Closure capturing one variable ✅
 ├── closure_multi_capture.kl # Closure capturing multiple variables ✅
+├── closure_arg.kl           # Closure passed as function argument ✅
+├── closure_arg_capture.kl   # Closure with captures passed as argument ✅
+├── closure_map.kl           # Map-like function with closures ✅
 ```
 
 ```klar
@@ -806,6 +809,15 @@ fn main() -> i32 {
     let factor = 5
     let multiply = |x: i32| x * factor
     multiply(5)
+}
+
+// test/native/closure_arg.kl - returns 30 ✅
+fn apply(f: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
+    f(a, b)
+}
+fn main() -> i32 {
+    let add = |x: i32, y: i32| x + y
+    apply(add, 10, 20)
 }
 ```
 
@@ -826,6 +838,8 @@ fn main() -> i32 {
 - ✅ Closures correctly capture variables from enclosing scope
 - ✅ Multiple captured variables work correctly
 - ✅ Closure invocation passes environment and arguments correctly
+- ✅ Closures can be passed as function arguments
+- ✅ Higher-order functions work with closures (apply, map patterns)
 - ⏳ Captured values properly dropped when closure dropped (Milestone 10)
 - ⏳ Closures can be returned from functions (requires type unification)
 

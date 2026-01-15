@@ -1,0 +1,13 @@
+// Test passing a closure with captures as a function argument
+// Expected exit code: 50 (apply_twice(multiply_by_5, 2) = 5 * (5 * 2) = 50)
+
+// A higher-order function that applies a closure twice
+fn apply_twice(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(f(x))
+}
+
+fn main() -> i32 {
+    let factor = 5
+    let multiply = |x: i32| x * factor
+    apply_twice(multiply, 2)
+}
