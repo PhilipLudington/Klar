@@ -672,13 +672,10 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'match'
 
-        // Note: Klar uses "value match { ... }" syntax, but we could also support "match value { ... }"
-        // For now, implement as if we're parsing: subject match { arms }
-        // Actually looking at the spec, it's "value match { ... }"
-        // But this function is called when we see 'match', so let's assume standalone match
-        // We'll need to handle this in infix parsing instead for "expr match { }"
+        // Klar uses "match value { ... }" syntax (Rust-style)
+        const subject = try self.parseExpression();
 
-        try self.consume(.l_brace, "expected '{' after match");
+        try self.consume(.l_brace, "expected '{' after match subject");
 
         var arms = std.ArrayListUnmanaged(ast.MatchArm){};
 
@@ -695,10 +692,8 @@ pub const Parser = struct {
         try self.consume(.r_brace, "expected '}' after match arms");
         const end_span = self.spanFromToken(self.previous);
 
-        // This is incomplete - we need the subject. For standalone match, we'd need different syntax.
-        // For now, create a placeholder
         const match_expr = try self.create(ast.MatchExpr, .{
-            .subject = .{ .literal = .{ .kind = .{ .bool_ = true }, .span = start_span } },
+            .subject = subject,
             .arms = try self.dupeSlice(ast.MatchArm, arms.items),
             .span = ast.Span.merge(start_span, end_span),
         });

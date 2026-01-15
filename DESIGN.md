@@ -275,7 +275,7 @@ enum Message {
 let max = if a > b { a } else { b }
 
 // Match expression
-let name = direction match {
+let name = match direction {
     Direction.North => "north"
     Direction.South => "south"
     Direction.East => "east"
@@ -283,7 +283,7 @@ let name = direction match {
 }
 
 // Match with guards
-let description = value match {
+let description = match value {
     0 => "zero"
     n if n < 0 => "negative"
     n if n > 100 => "large"
@@ -329,19 +329,19 @@ let Point { x, y } = point
 let (first, second) = tuple
 
 // In match
-value match {
+match value {
     Option.Some(x) => use(x)
     Option.None => default()
 }
 
 // Or patterns
-value match {
+match value {
     1 | 2 | 3 => "small"
     _ => "other"
 }
 
 // Nested patterns
-value match {
+match value {
     Message.Move { x: 0, y } => "vertical"
     Message.Move { x, y: 0 } => "horizontal"
     Message.Move { x, y } => "diagonal"
@@ -605,7 +605,7 @@ fn divide(a: i32, b: i32) -> Result[i32, MathError] {
 
 ```klar
 // Pattern matching
-let value = result match {
+let value = match result {
     Ok(v) => v
     Err(e) => {
         log("Error: {e}")
@@ -736,7 +736,7 @@ spawn async {
 
 spawn async {
     loop {
-        rx.recv().await match {
+        match rx.recv().await {
             Message.Data(payload) => process(payload)
             Message.Done => break
         }
@@ -2062,7 +2062,7 @@ fn main() {
 ```klar
 fn main() {
     for i in 1..=100 {
-        let msg = (i % 3, i % 5) match {
+        let msg = match (i % 3, i % 5) {
             (0, 0) => "FizzBuzz"
             (0, _) => "Fizz"
             (_, 0) => "Buzz"
@@ -2099,7 +2099,7 @@ import std.net.http.{ Server, Request, Response, Status }
 import std.io
 
 async fn handle(req: Request) -> Response {
-    req.path match {
+    match req.path {
         "/" => Response.text("Hello, World!")
         "/health" => Response.json(Health { ok: true })
         _ => Response.status(Status.NotFound)

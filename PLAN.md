@@ -130,7 +130,7 @@ This plan focuses on **Phase 1** - getting a working interpreter that can run ba
 
 - [x] **2.5 Parse complex expressions**
   - If expressions: `if cond { a } else { b }`
-  - Match expressions: `value match { ... }`
+  - Match expressions: `match value { ... }`
   - Block expressions: `{ stmt; stmt; expr }`
   - Closures: `|x, y| x + y`
   - Struct literals: `Point { x: 1, y: 2 }`
