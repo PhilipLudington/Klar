@@ -19,6 +19,7 @@ const ObjOptional = vm_value.ObjOptional;
 const ObjRange = vm_value.ObjRange;
 const ObjNative = vm_value.ObjNative;
 const RuntimeError = vm_value.RuntimeError;
+const vm_builtins = @import("vm_builtins.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -87,7 +88,7 @@ pub const VM = struct {
     // Initialization
     // -------------------------------------------------------------------------
 
-    pub fn init(allocator: Allocator) VM {
+    pub fn init(allocator: Allocator) !VM {
         var vm = VM{
             .allocator = allocator,
             .stack = undefined,
@@ -105,7 +106,23 @@ pub const VM = struct {
             slot.* = .void_;
         }
 
+        // Register built-in functions
+        try vm.registerBuiltins();
+
         return vm;
+    }
+
+    /// Register all built-in native functions.
+    fn registerBuiltins(self: *VM) !void {
+        for (vm_builtins.builtins) |builtin| {
+            const native = try ObjNative.create(
+                self.allocator,
+                builtin.name,
+                builtin.arity,
+                builtin.function,
+            );
+            try self.globals.put(self.allocator, builtin.name, .{ .native = native });
+        }
     }
 
     pub fn deinit(self: *VM) void {
@@ -885,7 +902,7 @@ pub const VM = struct {
                     return RuntimeError.WrongArity;
                 }
                 const args = self.stack[self.stack_top - arg_count .. self.stack_top];
-                const result = try native.function(args);
+                const result = try native.function(self.allocator, args);
                 self.stack_top -= arg_count + 1; // Pop args and callee
                 try self.push(result);
             },
@@ -1128,6 +1145,9 @@ pub const VM = struct {
             .optional => |opt| {
                 try self.invokeOptionalMethod(opt, method_name, arg_count);
             },
+            .int => |i| {
+                try self.invokeIntegerMethod(i, method_name, arg_count);
+            },
             else => return RuntimeError.TypeError,
         }
     }
@@ -1148,6 +1168,74 @@ pub const VM = struct {
             if (needle != .string) return RuntimeError.TypeError;
             const found = std.mem.indexOf(u8, str.chars, needle.string.chars) != null;
             try self.push(Value.fromBool(found));
+        } else if (std.mem.eql(u8, method, "starts_with")) {
+            if (arg_count != 1) return RuntimeError.WrongArity;
+            const prefix = try self.pop();
+            _ = try self.pop();
+            if (prefix != .string) return RuntimeError.TypeError;
+            const result = std.mem.startsWith(u8, str.chars, prefix.string.chars);
+            try self.push(Value.fromBool(result));
+        } else if (std.mem.eql(u8, method, "ends_with")) {
+            if (arg_count != 1) return RuntimeError.WrongArity;
+            const suffix = try self.pop();
+            _ = try self.pop();
+            if (suffix != .string) return RuntimeError.TypeError;
+            const result = std.mem.endsWith(u8, str.chars, suffix.string.chars);
+            try self.push(Value.fromBool(result));
+        } else if (std.mem.eql(u8, method, "trim")) {
+            if (arg_count != 0) return RuntimeError.WrongArity;
+            _ = try self.pop();
+            const trimmed = std.mem.trim(u8, str.chars, " \t\n\r");
+            const new_str = try ObjString.create(self.allocator, trimmed);
+            try self.push(.{ .string = new_str });
+        } else if (std.mem.eql(u8, method, "to_uppercase")) {
+            if (arg_count != 0) return RuntimeError.WrongArity;
+            _ = try self.pop();
+            const upper = self.allocator.alloc(u8, str.chars.len) catch return RuntimeError.OutOfMemory;
+            for (str.chars, 0..) |c, i| {
+                upper[i] = std.ascii.toUpper(c);
+            }
+            const new_str = try ObjString.create(self.allocator, upper);
+            self.allocator.free(upper);
+            try self.push(.{ .string = new_str });
+        } else if (std.mem.eql(u8, method, "to_lowercase")) {
+            if (arg_count != 0) return RuntimeError.WrongArity;
+            _ = try self.pop();
+            const lower = self.allocator.alloc(u8, str.chars.len) catch return RuntimeError.OutOfMemory;
+            for (str.chars, 0..) |c, i| {
+                lower[i] = std.ascii.toLower(c);
+            }
+            const new_str = try ObjString.create(self.allocator, lower);
+            self.allocator.free(lower);
+            try self.push(.{ .string = new_str });
+        } else if (std.mem.eql(u8, method, "chars")) {
+            // Return array of characters
+            if (arg_count != 0) return RuntimeError.WrongArity;
+            _ = try self.pop();
+            var chars = std.ArrayList(Value).init(self.allocator);
+            defer chars.deinit();
+            var i: usize = 0;
+            while (i < str.chars.len) {
+                const len = std.unicode.utf8ByteSequenceLength(str.chars[i]) catch 1;
+                if (i + len <= str.chars.len) {
+                    const codepoint = std.unicode.utf8Decode(str.chars[i..][0..len]) catch str.chars[i];
+                    try chars.append(Value.fromChar(codepoint));
+                }
+                i += len;
+            }
+            const arr = try ObjArray.create(self.allocator, chars.items);
+            try self.push(.{ .array = arr });
+        } else if (std.mem.eql(u8, method, "bytes")) {
+            // Return array of bytes
+            if (arg_count != 0) return RuntimeError.WrongArity;
+            _ = try self.pop();
+            var bytes = self.allocator.alloc(Value, str.chars.len) catch return RuntimeError.OutOfMemory;
+            defer self.allocator.free(bytes);
+            for (str.chars, 0..) |b, i| {
+                bytes[i] = Value.fromInt(b);
+            }
+            const arr = try ObjArray.create(self.allocator, bytes);
+            try self.push(.{ .array = arr });
         } else {
             return RuntimeError.UndefinedField;
         }
@@ -1182,6 +1270,30 @@ pub const VM = struct {
                 const opt = try ObjOptional.createNone(self.allocator);
                 try self.push(.{ .optional = opt });
             }
+        } else if (std.mem.eql(u8, method, "get")) {
+            if (arg_count != 1) return RuntimeError.WrongArity;
+            const idx_val = try self.pop();
+            _ = try self.pop();
+            const idx = idx_val.asInt() orelse return RuntimeError.TypeError;
+            if (idx < 0 or idx >= arr.items.len) {
+                const opt = try ObjOptional.createNone(self.allocator);
+                try self.push(.{ .optional = opt });
+            } else {
+                const opt = try ObjOptional.createSome(self.allocator, arr.items[@intCast(idx)]);
+                try self.push(.{ .optional = opt });
+            }
+        } else if (std.mem.eql(u8, method, "contains")) {
+            if (arg_count != 1) return RuntimeError.WrongArity;
+            const needle = try self.pop();
+            _ = try self.pop();
+            var found = false;
+            for (arr.items) |item| {
+                if (item.eql(needle)) {
+                    found = true;
+                    break;
+                }
+            }
+            try self.push(Value.fromBool(found));
         } else {
             return RuntimeError.UndefinedField;
         }
@@ -1213,6 +1325,32 @@ pub const VM = struct {
             } else {
                 try self.push(default);
             }
+        } else if (std.mem.eql(u8, method, "expect")) {
+            if (arg_count != 1) return RuntimeError.WrongArity;
+            const msg = try self.pop();
+            _ = try self.pop();
+            if (opt.value) |v| {
+                try self.push(v.*);
+            } else {
+                // Print error message and panic
+                const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+                stderr.writeAll("expect failed: ") catch {};
+                if (msg == .string) {
+                    stderr.writeAll(msg.string.chars) catch {};
+                }
+                stderr.writeAll("\n") catch {};
+                return RuntimeError.Panic;
+            }
+        } else {
+            return RuntimeError.UndefinedField;
+        }
+    }
+
+    fn invokeIntegerMethod(self: *VM, value: i128, method: []const u8, arg_count: u8) !void {
+        if (std.mem.eql(u8, method, "abs")) {
+            if (arg_count != 0) return RuntimeError.WrongArity;
+            _ = try self.pop();
+            try self.push(Value.fromInt(if (value < 0) -value else value));
         } else {
             return RuntimeError.UndefinedField;
         }
@@ -1402,17 +1540,23 @@ pub const VM = struct {
 test "VM init/deinit" {
     const testing = std.testing;
 
-    var vm = VM.init(testing.allocator);
+    var vm = try VM.init(testing.allocator);
     defer vm.deinit();
 
     try testing.expectEqual(@as(usize, 0), vm.stack_top);
     try testing.expectEqual(@as(usize, 0), vm.frame_count);
+
+    // Check that built-ins are registered
+    try testing.expect(vm.globals.contains("print"));
+    try testing.expect(vm.globals.contains("println"));
+    try testing.expect(vm.globals.contains("assert"));
+    try testing.expect(vm.globals.contains("len"));
 }
 
 test "VM stack operations" {
     const testing = std.testing;
 
-    var vm = VM.init(testing.allocator);
+    var vm = try VM.init(testing.allocator);
     defer vm.deinit();
 
     // Push values.
@@ -1433,7 +1577,7 @@ test "VM stack operations" {
 test "VM arithmetic" {
     const testing = std.testing;
 
-    var vm = VM.init(testing.allocator);
+    var vm = try VM.init(testing.allocator);
     defer vm.deinit();
 
     // Test addition.
@@ -1452,7 +1596,7 @@ test "VM arithmetic" {
 test "VM comparison" {
     const testing = std.testing;
 
-    var vm = VM.init(testing.allocator);
+    var vm = try VM.init(testing.allocator);
     defer vm.deinit();
 
     // Test less than.

@@ -202,40 +202,41 @@ Implement the stack-based bytecode interpreter.
 
 ---
 
-### Milestone 4: Built-in Functions and Methods
+### Milestone 4: Built-in Functions and Methods ✓
 
 Re-implement all builtins for the VM.
 
 #### Tasks
 
-- [ ] **4.1** Core output functions
+- [x] **4.1** Core output functions
   - `print`, `println` for VM
 
-- [ ] **4.2** Assertion functions
+- [x] **4.2** Assertion functions
   - `assert`, `assert_eq`, `panic`
 
-- [ ] **4.3** Utility functions
+- [x] **4.3** Utility functions
   - `len`, `type_of`
 
-- [ ] **4.4** String methods
+- [x] **4.4** String methods
   - `len`, `is_empty`, `contains`
   - `starts_with`, `ends_with`, `trim`
   - `to_uppercase`, `to_lowercase`
   - `chars`, `bytes`
 
-- [ ] **4.5** Array methods
+- [x] **4.5** Array methods
   - `len`, `is_empty`, `first`, `last`, `get`
   - `contains`
 
-- [ ] **4.6** Integer methods
+- [x] **4.6** Integer methods
   - `abs`, `min`, `max`
 
-- [ ] **4.7** Optional methods
+- [x] **4.7** Optional methods
   - `is_some`, `is_none`, `unwrap`, `unwrap_or`, `expect`
 
 #### Deliverables
-- Built-in function dispatch in VM
-- Method call resolution
+- `src/vm_builtins.zig` - Built-in native function implementations ✓
+- Built-in function dispatch in VM ✓
+- Method call resolution ✓
 
 ---
 
@@ -404,6 +405,7 @@ src/
 ├── compiler.zig       # AST → Bytecode            ← NEW
 ├── vm.zig             # Virtual machine           ← NEW
 ├── vm_value.zig       # VM runtime values         ← NEW
+├── vm_builtins.zig    # VM built-in functions     ← NEW
 ├── gc.zig             # Garbage collector         ← NEW
 └── disasm.zig         # Disassembler              ← NEW
 ```
@@ -420,4 +422,4 @@ src/
 
 ---
 
-*Last updated: January 2026*
+*Last updated: January 14, 2026*

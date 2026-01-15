@@ -382,13 +382,14 @@ pub const ObjFunction = struct {
 pub const ObjNative = struct {
     name: []const u8,
     arity: u8,
-    function: *const fn (args: []const Value) RuntimeError!Value,
+    /// Native function that takes allocator and args.
+    function: *const fn (allocator: Allocator, args: []const Value) RuntimeError!Value,
 
     pub fn create(
         allocator: Allocator,
         name: []const u8,
         arity: u8,
-        function: *const fn (args: []const Value) RuntimeError!Value,
+        function: *const fn (allocator: Allocator, args: []const Value) RuntimeError!Value,
     ) !*ObjNative {
         const obj = try allocator.create(ObjNative);
         obj.* = .{
