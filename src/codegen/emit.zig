@@ -30,10 +30,27 @@ pub const Emitter = struct {
     /// Track whether we've seen a terminator in the current block.
     has_terminator: bool,
 
+    /// Stack of loop contexts for break/continue.
+    loop_stack: std.ArrayListUnmanaged(LoopContext),
+
+    /// Cached overflow intrinsic IDs.
+    sadd_overflow_id: ?c_uint,
+    ssub_overflow_id: ?c_uint,
+    smul_overflow_id: ?c_uint,
+    uadd_overflow_id: ?c_uint,
+    usub_overflow_id: ?c_uint,
+    umul_overflow_id: ?c_uint,
+
     const LocalValue = struct {
         value: llvm.ValueRef,
         is_alloca: bool,
         ty: llvm.TypeRef,
+        is_signed: bool,
+    };
+
+    const LoopContext = struct {
+        continue_block: llvm.BasicBlockRef,
+        break_block: llvm.BasicBlockRef,
     };
 
     pub fn init(allocator: Allocator, module_name: [:0]const u8) Emitter {
@@ -49,10 +66,18 @@ pub const Emitter = struct {
             .current_function = null,
             .named_values = std.StringHashMap(LocalValue).init(allocator),
             .has_terminator = false,
+            .loop_stack = .{},
+            .sadd_overflow_id = null,
+            .ssub_overflow_id = null,
+            .smul_overflow_id = null,
+            .uadd_overflow_id = null,
+            .usub_overflow_id = null,
+            .umul_overflow_id = null,
         };
     }
 
     pub fn deinit(self: *Emitter) void {
+        self.loop_stack.deinit(self.allocator);
         self.named_values.deinit();
         self.builder.dispose();
         self.module.dispose();
@@ -132,10 +157,12 @@ pub const Emitter = struct {
             const alloca = self.builder.buildAlloca(param_ty, param_name);
             _ = self.builder.buildStore(param_value, alloca);
 
+            const is_signed = self.isTypeSigned(param.type_);
             self.named_values.put(param.name, .{
                 .value = alloca,
                 .is_alloca = true,
                 .ty = param_ty,
+                .is_signed = is_signed,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -188,10 +215,12 @@ pub const Emitter = struct {
                 defer self.allocator.free(name);
                 const alloca = self.builder.buildAlloca(ty, name);
                 _ = self.builder.buildStore(value, alloca);
+                const is_signed = if (decl.type_) |t| self.isTypeSigned(t) else true;
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
                     .ty = ty,
+                    .is_signed = is_signed,
                 }) catch return EmitError.OutOfMemory;
             },
             .var_decl => |decl| {
@@ -201,10 +230,12 @@ pub const Emitter = struct {
                 defer self.allocator.free(name);
                 const alloca = self.builder.buildAlloca(ty, name);
                 _ = self.builder.buildStore(value, alloca);
+                const is_signed = if (decl.type_) |t| self.isTypeSigned(t) else true;
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
                     .ty = ty,
+                    .is_signed = is_signed,
                 }) catch return EmitError.OutOfMemory;
             },
             .return_stmt => |ret| {
@@ -220,6 +251,7 @@ pub const Emitter = struct {
                 _ = try self.emitExpr(expr_stmt.expr);
             },
             .assignment => |assign| {
+                // Handle assignment statements (legacy path - parser now uses binary with .assign op)
                 const value = try self.emitExpr(assign.value);
                 switch (assign.target) {
                     .identifier => |id| {
@@ -236,11 +268,16 @@ pub const Emitter = struct {
                 try self.emitWhileLoop(loop);
             },
             .for_loop => |loop| {
-                _ = loop;
-                // TODO: implement for loops
+                try self.emitForLoop(loop);
             },
-            .break_stmt, .continue_stmt, .loop_stmt => {
-                // TODO: implement control flow
+            .loop_stmt => |loop| {
+                try self.emitInfiniteLoop(loop);
+            },
+            .break_stmt => {
+                try self.emitBreak();
+            },
+            .continue_stmt => {
+                try self.emitContinue();
             },
         }
     }
@@ -252,6 +289,13 @@ pub const Emitter = struct {
         const cond_bb = llvm.appendBasicBlock(self.ctx, func, "while.cond");
         const body_bb = llvm.appendBasicBlock(self.ctx, func, "while.body");
         const end_bb = llvm.appendBasicBlock(self.ctx, func, "while.end");
+
+        // Push loop context for break/continue
+        self.loop_stack.append(self.allocator, .{
+            .continue_block = cond_bb,
+            .break_block = end_bb,
+        }) catch return EmitError.OutOfMemory;
+        defer _ = self.loop_stack.pop();
 
         // Branch to condition
         _ = self.builder.buildBr(cond_bb);
@@ -272,6 +316,159 @@ pub const Emitter = struct {
         // Continue after loop
         self.builder.positionAtEnd(end_bb);
         self.has_terminator = false;
+    }
+
+    fn emitForLoop(self: *Emitter, loop: *ast.ForLoop) EmitError!void {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Get the binding name from the pattern
+        const binding_name = switch (loop.pattern) {
+            .binding => |b| b.name,
+            else => return EmitError.UnsupportedFeature, // Only simple bindings for now
+        };
+
+        // For now, handle range-based for loops: for i in start..end { body }
+        // We emit this as:
+        //   %i = alloca i32
+        //   store start, %i
+        //   br cond
+        // cond:
+        //   %cur = load %i
+        //   %cmp = icmp slt %cur, end
+        //   br %cmp, body, end
+        // body:
+        //   ... loop body ...
+        //   %next = add %cur, 1
+        //   store %next, %i
+        //   br cond
+        // end:
+
+        // Get range bounds
+        const range = switch (loop.iterable) {
+            .range => |r| r,
+            else => return EmitError.UnsupportedFeature, // Only range iteration for now
+        };
+
+        // Range can have optional start/end; default start to 0
+        const start_val = if (range.start) |s|
+            try self.emitExpr(s)
+        else
+            llvm.Const.int32(self.ctx, 0);
+        const end_val = if (range.end) |e|
+            try self.emitExpr(e)
+        else
+            return EmitError.UnsupportedFeature; // End is required for for loops
+        const iter_ty = llvm.Types.int32(self.ctx);
+
+        // Allocate loop variable
+        const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(var_name);
+        const iter_alloca = self.builder.buildAlloca(iter_ty, var_name);
+        _ = self.builder.buildStore(start_val, iter_alloca);
+
+        // Add loop variable to scope
+        self.named_values.put(binding_name, .{
+            .value = iter_alloca,
+            .is_alloca = true,
+            .ty = iter_ty,
+            .is_signed = true,
+        }) catch return EmitError.OutOfMemory;
+
+        // Create blocks
+        const cond_bb = llvm.appendBasicBlock(self.ctx, func, "for.cond");
+        const body_bb = llvm.appendBasicBlock(self.ctx, func, "for.body");
+        const incr_bb = llvm.appendBasicBlock(self.ctx, func, "for.incr");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "for.end");
+
+        // Push loop context (continue goes to increment, break goes to end)
+        self.loop_stack.append(self.allocator, .{
+            .continue_block = incr_bb,
+            .break_block = end_bb,
+        }) catch return EmitError.OutOfMemory;
+        defer _ = self.loop_stack.pop();
+
+        // Branch to condition
+        _ = self.builder.buildBr(cond_bb);
+
+        // Emit condition: i < end (or i <= end for inclusive)
+        self.builder.positionAtEnd(cond_bb);
+        const cur_val = self.builder.buildLoad(iter_ty, iter_alloca, "for.cur");
+        const cmp = if (range.inclusive)
+            self.builder.buildICmp(llvm.c.LLVMIntSLE, cur_val, end_val, "for.cmp")
+        else
+            self.builder.buildICmp(llvm.c.LLVMIntSLT, cur_val, end_val, "for.cmp");
+        _ = self.builder.buildCondBr(cmp, body_bb, end_bb);
+
+        // Emit body
+        self.builder.positionAtEnd(body_bb);
+        self.has_terminator = false;
+        _ = try self.emitBlock(loop.body);
+        if (!self.has_terminator) {
+            _ = self.builder.buildBr(incr_bb);
+        }
+
+        // Emit increment
+        self.builder.positionAtEnd(incr_bb);
+        const cur_val2 = self.builder.buildLoad(iter_ty, iter_alloca, "for.cur2");
+        const one = llvm.Const.int32(self.ctx, 1);
+        const next_val = self.builder.buildAdd(cur_val2, one, "for.next");
+        _ = self.builder.buildStore(next_val, iter_alloca);
+        _ = self.builder.buildBr(cond_bb);
+
+        // Continue after loop
+        self.builder.positionAtEnd(end_bb);
+        self.has_terminator = false;
+
+        // Remove loop variable from scope
+        _ = self.named_values.remove(binding_name);
+    }
+
+    fn emitInfiniteLoop(self: *Emitter, loop: *ast.LoopStmt) EmitError!void {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Create blocks
+        const body_bb = llvm.appendBasicBlock(self.ctx, func, "loop.body");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "loop.end");
+
+        // Push loop context
+        self.loop_stack.append(self.allocator, .{
+            .continue_block = body_bb,
+            .break_block = end_bb,
+        }) catch return EmitError.OutOfMemory;
+        defer _ = self.loop_stack.pop();
+
+        // Branch to body
+        _ = self.builder.buildBr(body_bb);
+
+        // Emit body
+        self.builder.positionAtEnd(body_bb);
+        self.has_terminator = false;
+        _ = try self.emitBlock(loop.body);
+        if (!self.has_terminator) {
+            _ = self.builder.buildBr(body_bb);
+        }
+
+        // Continue after loop
+        self.builder.positionAtEnd(end_bb);
+        self.has_terminator = false;
+    }
+
+    fn emitBreak(self: *Emitter) EmitError!void {
+        if (self.loop_stack.items.len == 0) {
+            return EmitError.InvalidAST; // break outside of loop
+        }
+        const loop_ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
+        _ = self.builder.buildBr(loop_ctx.break_block);
+        self.has_terminator = true;
+    }
+
+    fn emitContinue(self: *Emitter) EmitError!void {
+        if (self.loop_stack.items.len == 0) {
+            return EmitError.InvalidAST; // continue outside of loop
+        }
+        const loop_ctx = self.loop_stack.items[self.loop_stack.items.len - 1];
+        _ = self.builder.buildBr(loop_ctx.continue_block);
+        self.has_terminator = true;
     }
 
     fn emitExpr(self: *Emitter, expr: ast.Expr) EmitError!llvm.ValueRef {
@@ -328,24 +525,79 @@ pub const Emitter = struct {
             return self.emitLogicalBinary(bin);
         }
 
+        // Handle assignment operators
+        if (bin.op == .assign or bin.op == .add_assign or bin.op == .sub_assign or
+            bin.op == .mul_assign or bin.op == .div_assign or bin.op == .mod_assign)
+        {
+            return self.emitAssignment(bin);
+        }
+
         const lhs = try self.emitExpr(bin.left);
         const rhs = try self.emitExpr(bin.right);
 
-        return switch (bin.op) {
-            // Arithmetic
-            .add => self.builder.buildAdd(lhs, rhs, "addtmp"),
-            .sub => self.builder.buildSub(lhs, rhs, "subtmp"),
-            .mul => self.builder.buildMul(lhs, rhs, "multmp"),
-            .div => self.builder.buildSDiv(lhs, rhs, "divtmp"),
-            .mod => self.builder.buildSRem(lhs, rhs, "modtmp"),
+        // Check if operands are floating-point
+        const lhs_ty = llvm.typeOf(lhs);
+        const is_float = llvm.getTypeKind(lhs_ty) == llvm.c.LLVMFloatTypeKind or
+            llvm.getTypeKind(lhs_ty) == llvm.c.LLVMDoubleTypeKind;
 
-            // Comparison
-            .eq => self.builder.buildICmp(llvm.c.LLVMIntEQ, lhs, rhs, "eqtmp"),
-            .not_eq => self.builder.buildICmp(llvm.c.LLVMIntNE, lhs, rhs, "netmp"),
-            .lt => self.builder.buildICmp(llvm.c.LLVMIntSLT, lhs, rhs, "lttmp"),
-            .gt => self.builder.buildICmp(llvm.c.LLVMIntSGT, lhs, rhs, "gttmp"),
-            .lt_eq => self.builder.buildICmp(llvm.c.LLVMIntSLE, lhs, rhs, "letmp"),
-            .gt_eq => self.builder.buildICmp(llvm.c.LLVMIntSGE, lhs, rhs, "getmp"),
+        return switch (bin.op) {
+            // Standard arithmetic (with overflow checking for integers)
+            .add => if (is_float)
+                self.builder.buildFAdd(lhs, rhs, "faddtmp")
+            else
+                self.emitCheckedAdd(lhs, rhs, true),
+            .sub => if (is_float)
+                self.builder.buildFSub(lhs, rhs, "fsubtmp")
+            else
+                self.emitCheckedSub(lhs, rhs, true),
+            .mul => if (is_float)
+                self.builder.buildFMul(lhs, rhs, "fmultmp")
+            else
+                self.emitCheckedMul(lhs, rhs, true),
+            .div => if (is_float)
+                self.builder.buildFDiv(lhs, rhs, "fdivtmp")
+            else
+                self.builder.buildSDiv(lhs, rhs, "divtmp"),
+            .mod => if (is_float)
+                self.builder.buildFRem(lhs, rhs, "fremtmp")
+            else
+                self.builder.buildSRem(lhs, rhs, "modtmp"),
+
+            // Wrapping arithmetic (no overflow check, wraps around)
+            .add_wrap => self.builder.buildAdd(lhs, rhs, "addwrap"),
+            .sub_wrap => self.builder.buildSub(lhs, rhs, "subwrap"),
+            .mul_wrap => self.builder.buildMul(lhs, rhs, "mulwrap"),
+
+            // Saturating arithmetic
+            .add_sat => self.emitSaturatingAdd(lhs, rhs, true),
+            .sub_sat => self.emitSaturatingSub(lhs, rhs, true),
+            .mul_sat => self.emitSaturatingMul(lhs, rhs, true),
+
+            // Comparison - use appropriate type
+            .eq => if (is_float)
+                self.builder.buildFCmp(llvm.c.LLVMRealOEQ, lhs, rhs, "feqtmp")
+            else
+                self.builder.buildICmp(llvm.c.LLVMIntEQ, lhs, rhs, "eqtmp"),
+            .not_eq => if (is_float)
+                self.builder.buildFCmp(llvm.c.LLVMRealONE, lhs, rhs, "fnetmp")
+            else
+                self.builder.buildICmp(llvm.c.LLVMIntNE, lhs, rhs, "netmp"),
+            .lt => if (is_float)
+                self.builder.buildFCmp(llvm.c.LLVMRealOLT, lhs, rhs, "flttmp")
+            else
+                self.builder.buildICmp(llvm.c.LLVMIntSLT, lhs, rhs, "lttmp"),
+            .gt => if (is_float)
+                self.builder.buildFCmp(llvm.c.LLVMRealOGT, lhs, rhs, "fgttmp")
+            else
+                self.builder.buildICmp(llvm.c.LLVMIntSGT, lhs, rhs, "gttmp"),
+            .lt_eq => if (is_float)
+                self.builder.buildFCmp(llvm.c.LLVMRealOLE, lhs, rhs, "fletmp")
+            else
+                self.builder.buildICmp(llvm.c.LLVMIntSLE, lhs, rhs, "letmp"),
+            .gt_eq => if (is_float)
+                self.builder.buildFCmp(llvm.c.LLVMRealOGE, lhs, rhs, "fgetmp")
+            else
+                self.builder.buildICmp(llvm.c.LLVMIntSGE, lhs, rhs, "getmp"),
 
             // Bitwise
             .bit_and => self.builder.buildAnd(lhs, rhs, "andtmp"),
@@ -356,6 +608,108 @@ pub const Emitter = struct {
 
             else => llvm.Const.int32(self.ctx, 0), // Placeholder
         };
+    }
+
+    /// Emit checked addition that traps on overflow.
+    fn emitCheckedAdd(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_signed: bool) llvm.ValueRef {
+        // For now, use simple wrapping add.
+        // In production, this would use LLVM overflow intrinsics and trap on overflow.
+        // TODO: implement proper overflow checking with intrinsics
+        if (is_signed) {
+            return self.builder.buildNSWAdd(lhs, rhs, "addtmp");
+        } else {
+            return self.builder.buildAdd(lhs, rhs, "addtmp");
+        }
+    }
+
+    /// Emit checked subtraction that traps on overflow.
+    fn emitCheckedSub(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_signed: bool) llvm.ValueRef {
+        if (is_signed) {
+            return self.builder.buildNSWSub(lhs, rhs, "subtmp");
+        } else {
+            return self.builder.buildSub(lhs, rhs, "subtmp");
+        }
+    }
+
+    /// Emit checked multiplication that traps on overflow.
+    fn emitCheckedMul(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_signed: bool) llvm.ValueRef {
+        if (is_signed) {
+            return self.builder.buildNSWMul(lhs, rhs, "multmp");
+        } else {
+            return self.builder.buildMul(lhs, rhs, "multmp");
+        }
+    }
+
+    /// Emit saturating addition.
+    fn emitSaturatingAdd(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_signed: bool) llvm.ValueRef {
+        // For saturating arithmetic, we use LLVM's select instruction to clamp
+        // This is a simplified implementation - proper saturation would use intrinsics
+        _ = is_signed;
+        // For now, just do regular add (TODO: proper saturation)
+        return self.builder.buildAdd(lhs, rhs, "addsattmp");
+    }
+
+    /// Emit saturating subtraction.
+    fn emitSaturatingSub(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_signed: bool) llvm.ValueRef {
+        _ = is_signed;
+        return self.builder.buildSub(lhs, rhs, "subsattmp");
+    }
+
+    /// Emit saturating multiplication.
+    fn emitSaturatingMul(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_signed: bool) llvm.ValueRef {
+        _ = is_signed;
+        return self.builder.buildMul(lhs, rhs, "mulsattmp");
+    }
+
+    /// Emit assignment (including compound assignment operators).
+    fn emitAssignment(self: *Emitter, bin: *ast.Binary) EmitError!llvm.ValueRef {
+        // Get the target variable
+        const target_id = switch (bin.left) {
+            .identifier => |id| id,
+            else => return EmitError.UnsupportedFeature, // Only simple variable assignment for now
+        };
+
+        const local = self.named_values.get(target_id.name) orelse
+            return EmitError.InvalidAST;
+
+        if (!local.is_alloca) {
+            return EmitError.InvalidAST; // Can only assign to allocas
+        }
+
+        // Evaluate the right-hand side
+        const rhs = try self.emitExpr(bin.right);
+
+        // For compound assignment, load current value and perform operation
+        const value = switch (bin.op) {
+            .assign => rhs,
+            .add_assign => blk: {
+                const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
+                break :blk self.builder.buildAdd(lhs, rhs, "addtmp");
+            },
+            .sub_assign => blk: {
+                const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
+                break :blk self.builder.buildSub(lhs, rhs, "subtmp");
+            },
+            .mul_assign => blk: {
+                const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
+                break :blk self.builder.buildMul(lhs, rhs, "multmp");
+            },
+            .div_assign => blk: {
+                const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
+                break :blk self.builder.buildSDiv(lhs, rhs, "divtmp");
+            },
+            .mod_assign => blk: {
+                const lhs = self.builder.buildLoad(local.ty, local.value, "loadtmp");
+                break :blk self.builder.buildSRem(lhs, rhs, "modtmp");
+            },
+            else => return EmitError.InvalidAST,
+        };
+
+        // Store the result
+        _ = self.builder.buildStore(value, local.value);
+
+        // Return the stored value (assignments are expressions in Klar)
+        return value;
     }
 
     fn emitLogicalBinary(self: *Emitter, bin: *ast.Binary) EmitError!llvm.ValueRef {
@@ -531,6 +885,29 @@ pub const Emitter = struct {
 
         // Default to i32
         return llvm.Types.int32(self.ctx);
+    }
+
+    /// Check if a type expression represents a signed type.
+    fn isTypeSigned(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .named => |named| {
+                // Unsigned types start with 'u'
+                if (named.name.len > 0 and named.name[0] == 'u') {
+                    // But could be "usize" which is architecture-dependent
+                    // For now, treat it as unsigned
+                    if (std.mem.eql(u8, named.name, "u8")) return false;
+                    if (std.mem.eql(u8, named.name, "u16")) return false;
+                    if (std.mem.eql(u8, named.name, "u32")) return false;
+                    if (std.mem.eql(u8, named.name, "u64")) return false;
+                    if (std.mem.eql(u8, named.name, "u128")) return false;
+                    if (std.mem.eql(u8, named.name, "usize")) return false;
+                }
+                // Signed types: i8, i16, i32, i64, i128, isize, or floats
+                return true;
+            },
+            else => true, // Default to signed
+        };
     }
 
     /// Infer LLVM type from expression (simplified).

@@ -1,0 +1,15 @@
+// test_float.kl - Test floating-point operations for native compilation
+
+fn main() -> i32 {
+    let a = 3.5
+    let b = 2.0
+
+    let sum = a + b        // 5.5
+    let diff = a - b       // 1.5
+    let prod = a * b       // 7.0
+    let quot = a / b       // 1.75
+
+    // Can't return float from main() yet, so return integer
+    // Just verify it compiles and runs
+    42
+}

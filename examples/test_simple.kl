@@ -1,0 +1,7 @@
+// test_simple.kl - Simple assignment test
+
+fn main() -> i32 {
+    var sum = 0
+    sum = sum + 1
+    sum
+}

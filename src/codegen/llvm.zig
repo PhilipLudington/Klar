@@ -287,6 +287,55 @@ pub const Builder = struct {
     pub fn buildFPToSI(self: Builder, value: ValueRef, dest_ty: TypeRef, name: [:0]const u8) ValueRef {
         return c.LLVMBuildFPToSI(self.ref, value, dest_ty, name.ptr);
     }
+
+    pub fn buildUIToFP(self: Builder, value: ValueRef, dest_ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildUIToFP(self.ref, value, dest_ty, name.ptr);
+    }
+
+    pub fn buildFPToUI(self: Builder, value: ValueRef, dest_ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFPToUI(self.ref, value, dest_ty, name.ptr);
+    }
+
+    // Unsigned arithmetic
+    pub fn buildUDiv(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildUDiv(self.ref, lhs, rhs, name.ptr);
+    }
+
+    pub fn buildURem(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildURem(self.ref, lhs, rhs, name.ptr);
+    }
+
+    // Floating-point remainder
+    pub fn buildFRem(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFRem(self.ref, lhs, rhs, name.ptr);
+    }
+
+    // Unreachable (for traps)
+    pub fn buildUnreachable(self: Builder) ValueRef {
+        return c.LLVMBuildUnreachable(self.ref);
+    }
+
+    // Extract value from aggregate (used for overflow intrinsic results)
+    pub fn buildExtractValue(self: Builder, agg: ValueRef, index: c_uint, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildExtractValue(self.ref, agg, index, name.ptr);
+    }
+
+    // GEP (get element pointer)
+    pub fn buildGEP(self: Builder, ty: TypeRef, ptr: ValueRef, indices: []const ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildGEP2(
+            self.ref,
+            ty,
+            ptr,
+            @ptrCast(@constCast(indices.ptr)),
+            @intCast(indices.len),
+            name.ptr,
+        );
+    }
+
+    // Select instruction (ternary)
+    pub fn buildSelect(self: Builder, cond: ValueRef, then_val: ValueRef, else_val: ValueRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildSelect(self.ref, cond, then_val, else_val, name.ptr);
+    }
 };
 
 /// Type constructors.
@@ -541,4 +590,39 @@ pub fn copyStringRepOfTargetData(td: TargetDataRef, allocator: std.mem.Allocator
     const result = try allocator.allocSentinel(u8, len, 0);
     @memcpy(result, str[0..len]);
     return result;
+}
+
+/// Get the intrinsic ID for a given name.
+pub fn lookupIntrinsicID(name: []const u8) c_uint {
+    return c.LLVMLookupIntrinsicID(name.ptr, name.len);
+}
+
+/// Get the intrinsic declaration for a module.
+pub fn getIntrinsicDeclaration(module: Module, id: c_uint, param_types: []const TypeRef) ValueRef {
+    return c.LLVMGetIntrinsicDeclaration(
+        module.ref,
+        id,
+        @ptrCast(@constCast(param_types.ptr)),
+        param_types.len,
+    );
+}
+
+/// Get the type of an intrinsic.
+pub fn intrinsicGetType(ctx: Context, id: c_uint, param_types: []const TypeRef) TypeRef {
+    return c.LLVMIntrinsicGetType(
+        ctx.ref,
+        id,
+        @ptrCast(@constCast(param_types.ptr)),
+        param_types.len,
+    );
+}
+
+/// Get the type kind of a type (for checking if float vs int).
+pub fn getTypeKind(ty: TypeRef) c.LLVMTypeKind {
+    return c.LLVMGetTypeKind(ty);
+}
+
+/// Get type of a value.
+pub fn typeOf(value: ValueRef) TypeRef {
+    return c.LLVMTypeOf(value);
 }

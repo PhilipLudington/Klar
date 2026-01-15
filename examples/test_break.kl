@@ -1,0 +1,14 @@
+// test_break.kl - Test break statement for native compilation
+
+fn main() -> i32 {
+    var sum = 0
+    for i in 0..100 {
+        if i >= 5 {
+            break
+        }
+        sum = sum + i
+    }
+
+    // sum should be 0 + 1 + 2 + 3 + 4 = 10
+    sum
+}
