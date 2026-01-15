@@ -743,18 +743,20 @@ fn main() {
 
 ---
 
-### Milestone 9: Closures & First-Class Functions
+### Milestone 9: Closures & First-Class Functions 🚧
 
 **Objective:** Implement closures with captured variables respecting ownership.
 
+**Status:** Partially Complete (January 2026) - Basic closures with capture implemented
+
 **Deliverables:**
-- [ ] Implement function pointer representation
-- [ ] Implement closure environment capture (by move or borrow)
-- [ ] Implement closure struct layout (fn_ptr + environment)
-- [ ] Implement closure invocation
+- [x] Implement closure struct layout (fn_ptr + environment pointer)
+- [x] Implement capture analysis in type checker
+- [x] Implement closure LLVM emission (lifted function + environment)
+- [x] Implement closure invocation
 - [ ] Implement closure passing as arguments
-- [ ] Implement closure return from functions
-- [ ] Handle environment destruction (drop captured values)
+- [ ] Implement closure return from functions - requires function type unification
+- [ ] Handle environment destruction (drop captured values) - deferred to Milestone 10
 
 **Closure Representation:**
 ```
@@ -777,33 +779,55 @@ When closure is dropped:
   2. Free closure struct (if heap-allocated)
 ```
 
+**Files Modified:**
+```
+src/ast.zig          # Added CapturedVar struct and captures field to Closure
+src/checker.zig      # Added capture analysis in checkClosure
+src/codegen/emit.zig # Added emitClosure, emitClosureCall, closure type inference
+```
+
 **Test Programs:**
+```
+test/native/
+├── closure_simple.kl        # Simple closure without captures ✅
+├── closure_capture.kl       # Closure capturing one variable ✅
+├── closure_multi_capture.kl # Closure capturing multiple variables ✅
+```
+
 ```klar
-// test_closure.kl
+// test/native/closure_simple.kl - returns 15 ✅
+fn main() -> i32 {
+    let add = |a: i32, b: i32| a + b
+    add(5, 10)
+}
+
+// test/native/closure_capture.kl - returns 25 ✅
+fn main() -> i32 {
+    let factor = 5
+    let multiply = |x: i32| x * factor
+    multiply(5)
+}
+```
+
+**Future Test (when closure return is implemented):**
+```klar
+// test_closure_return.kl - make_adder pattern
 fn make_adder(n: i32) -> fn(i32) -> i32 {
-    return |x| x + n  // n is captured by copy (i32 is Copy)
+    |x| x + n
 }
 
-fn main() {
+fn main() -> i32 {
     let add5 = make_adder(5)
-    print(add5(10))  // 15
-}
-
-// test_closure_move.kl
-fn make_counter() -> fn() -> i32 {
-    let state = Rc.new(Cell.new(0))
-    return || {
-        let current = state.get()
-        state.set(current + 1)
-        current
-    }
+    add5(10)  // 15
 }
 ```
 
 **Success Criteria:**
-- Closures correctly capture variables
-- Captured values properly dropped when closure dropped
-- No memory leaks from closure environments
+- ✅ Closures correctly capture variables from enclosing scope
+- ✅ Multiple captured variables work correctly
+- ✅ Closure invocation passes environment and arguments correctly
+- ⏳ Captured values properly dropped when closure dropped (Milestone 10)
+- ⏳ Closures can be returned from functions (requires type unification)
 
 ---
 

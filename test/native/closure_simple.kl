@@ -1,0 +1,10 @@
+// Test simple closure without captures
+// Expected exit code: 15 (5 + 10)
+
+fn main() -> i32 {
+    // Simple closure that adds two numbers
+    let add = |a: i32, b: i32| a + b
+
+    // Call the closure
+    add(5, 10)
+}

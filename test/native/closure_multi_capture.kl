@@ -1,0 +1,15 @@
+// Test closure that captures multiple variables
+// Expected exit code: 32 (2 * 10 + 3 * 4)
+
+fn main() -> i32 {
+    let a = 2
+    let b = 10
+    let c = 3
+    let d = 4
+
+    // Closure that captures multiple variables
+    let calc = |x: i32| a * b + c * d
+
+    // Call the closure (x is unused, just testing capture)
+    calc(0)
+}

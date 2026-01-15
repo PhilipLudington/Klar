@@ -58,6 +58,10 @@ pub const Emitter = struct {
     struct_types: std.StringHashMap(StructTypeInfo),
     /// Layout calculator for composite types.
     layout_calc: layout.LayoutCalculator,
+    /// Counter for generating unique closure names.
+    closure_counter: u32 = 0,
+    /// Cache of generated closure types.
+    closure_types: std.StringHashMap(ClosureTypeInfo),
 
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
 
@@ -85,6 +89,14 @@ pub const Emitter = struct {
     const LoopContext = struct {
         continue_block: llvm.BasicBlockRef,
         break_block: llvm.BasicBlockRef,
+    };
+
+    /// Info about a generated closure type.
+    const ClosureTypeInfo = struct {
+        struct_type: llvm.TypeRef,
+        fn_ptr_type: llvm.TypeRef,
+        lifted_fn: llvm.ValueRef,
+        capture_names: []const []const u8,
     };
 
     pub fn init(allocator: Allocator, module_name: [:0]const u8) Emitter {
@@ -122,6 +134,8 @@ pub const Emitter = struct {
             .umul_overflow_id = null,
             .struct_types = std.StringHashMap(StructTypeInfo).init(allocator),
             .layout_calc = layout.LayoutCalculator.init(allocator, platform),
+            .closure_counter = 0,
+            .closure_types = std.StringHashMap(ClosureTypeInfo).init(allocator),
         };
     }
 
@@ -135,6 +149,12 @@ pub const Emitter = struct {
             self.allocator.free(info.field_names);
         }
         self.struct_types.deinit();
+        // Free closure type info allocations
+        var cit = self.closure_types.valueIterator();
+        while (cit.next()) |info| {
+            self.allocator.free(info.capture_names);
+        }
+        self.closure_types.deinit();
         self.layout_calc.deinit();
         self.builder.dispose();
         self.module.dispose();
@@ -659,6 +679,7 @@ pub const Emitter = struct {
             .index => |i| try self.emitIndexAccess(i),
             .postfix => |p| try self.emitPostfix(p),
             .method_call => |m| try self.emitMethodCall(m),
+            .closure => |c| try self.emitClosure(c),
             else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
         };
     }
@@ -951,33 +972,111 @@ pub const Emitter = struct {
     }
 
     fn emitCall(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
-        // Get function name
+        // Check if callee is a direct function reference
         const func_name = switch (call.callee) {
             .identifier => |id| id.name,
-            else => return llvm.Const.int32(self.ctx, 0),
+            else => null,
         };
 
-        const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
-        defer self.allocator.free(name);
+        // Try to find as a module-level function
+        if (func_name) |name| {
+            const name_z = self.allocator.dupeZ(u8, name) catch return EmitError.OutOfMemory;
+            defer self.allocator.free(name_z);
 
-        // Get function from module
-        const func = self.module.getNamedFunction(name) orelse
-            return llvm.Const.int32(self.ctx, 0);
+            if (self.module.getNamedFunction(name_z)) |func| {
+                // Direct function call
+                var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                defer args.deinit(self.allocator);
 
-        // Emit arguments
-        var args = std.ArrayListUnmanaged(llvm.ValueRef){};
-        defer args.deinit(self.allocator);
+                for (call.args) |arg| {
+                    args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                }
 
-        for (call.args) |arg| {
-            args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                const fn_type = llvm.getGlobalValueType(func);
+                const return_type = llvm.getReturnType(fn_type);
+                const call_name_str: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
+                return self.builder.buildCall(fn_type, func, args.items, call_name_str);
+            }
+
+            // Check if it's a local variable (closure)
+            if (self.named_values.get(name)) |local| {
+                // Load the closure value from the local variable
+                const closure_struct_type = blk: {
+                    var types_arr = [_]llvm.TypeRef{
+                        llvm.Types.pointer(self.ctx),
+                        llvm.Types.pointer(self.ctx),
+                    };
+                    break :blk llvm.Types.struct_(self.ctx, &types_arr, false);
+                };
+                const closure_value = if (local.is_alloca)
+                    self.builder.buildLoad(closure_struct_type, local.value, "closure.load")
+                else
+                    local.value;
+                return self.emitClosureCall(closure_value, call.args);
+            }
         }
 
-        const fn_type = llvm.getGlobalValueType(func);
+        // Generic callee - evaluate it and call as closure
+        const callee_value = try self.emitExpr(call.callee);
+        return self.emitClosureCall(callee_value, call.args);
+    }
 
-        // Check if function returns void - void calls can't have names
-        const return_type = llvm.getReturnType(fn_type);
-        const call_name: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
-        return self.builder.buildCall(fn_type, func, args.items, call_name);
+    /// Emit a call to a closure value.
+    /// Closure struct is { fn_ptr: ptr, env_ptr: ptr }
+    fn emitClosureCall(self: *Emitter, closure_value: llvm.ValueRef, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        // Closure struct type: { fn_ptr, env_ptr }
+        const closure_struct_type = blk: {
+            var types_arr = [_]llvm.TypeRef{
+                llvm.Types.pointer(self.ctx),
+                llvm.Types.pointer(self.ctx),
+            };
+            break :blk llvm.Types.struct_(self.ctx, &types_arr, false);
+        };
+
+        // Allocate space to store the closure value (since we have it by value)
+        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "closure.tmp");
+        _ = self.builder.buildStore(closure_value, closure_alloca);
+
+        // Load function pointer
+        var fn_ptr_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const fn_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &fn_ptr_indices, "fn.ptr.ptr");
+        const fn_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), fn_ptr_gep, "fn.ptr");
+
+        // Load environment pointer
+        var env_ptr_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const env_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &env_ptr_indices, "env.ptr.ptr");
+        const env_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), env_ptr_gep, "env.ptr");
+
+        // Build argument list: env_ptr + user args
+        var call_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer call_args.deinit(self.allocator);
+
+        call_args.append(self.allocator, env_ptr) catch return EmitError.OutOfMemory;
+
+        for (args) |arg| {
+            call_args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+        }
+
+        // Build function type for the call
+        // Return type: i32 (default), params: env_ptr + user params
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer param_types.deinit(self.allocator);
+
+        param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
+        for (args) |_| {
+            param_types.append(self.allocator, llvm.Types.int32(self.ctx)) catch return EmitError.OutOfMemory;
+        }
+
+        const fn_type = llvm.Types.function(llvm.Types.int32(self.ctx), param_types.items, false);
+
+        // Call through function pointer
+        return self.builder.buildCall(fn_type, fn_ptr, call_args.items, "closure.call");
     }
 
     fn emitIf(self: *Emitter, if_expr: *ast.IfExpr) EmitError!llvm.ValueRef {
@@ -1281,6 +1380,14 @@ pub const Emitter = struct {
                     return llvm.Types.struct_(self.ctx, &opt_fields, false);
                 }
                 return llvm.Types.int32(self.ctx);
+            },
+            .closure => {
+                // Closure type is a struct { fn_ptr: ptr, env_ptr: ptr }
+                var closure_fields = [_]llvm.TypeRef{
+                    llvm.Types.pointer(self.ctx), // fn_ptr
+                    llvm.Types.pointer(self.ctx), // env_ptr
+                };
+                return llvm.Types.struct_(self.ctx, &closure_fields, false);
             },
             else => llvm.Types.int32(self.ctx),
         };
@@ -2038,6 +2145,236 @@ pub const Emitter = struct {
 
         // Load and return the optional
         return self.builder.buildLoad(opt_type, opt_alloca, "upgrade.result");
+    }
+
+    /// Emit a closure expression.
+    /// Closures are represented as a struct { fn_ptr, env_ptr } where:
+    /// - fn_ptr points to the lifted function
+    /// - env_ptr points to captured variables (null if no captures)
+    fn emitClosure(self: *Emitter, closure: *ast.Closure) EmitError!llvm.ValueRef {
+        // Generate unique name for this closure's lifted function
+        const closure_id = self.closure_counter;
+        self.closure_counter += 1;
+
+        // Build closure name
+        var name_buf: [64]u8 = undefined;
+        const name_slice = std.fmt.bufPrint(&name_buf, "__klar_closure_{d}", .{closure_id}) catch
+            return EmitError.OutOfMemory;
+        const fn_name = self.allocator.dupeZ(u8, name_slice) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(fn_name);
+
+        // Determine return type
+        const return_type = if (closure.return_type) |rt|
+            try self.typeExprToLLVM(rt)
+        else
+            llvm.Types.int32(self.ctx); // Default to i32 if not specified
+
+        // Build parameter types for the lifted function
+        // First parameter is the environment pointer (for captured variables)
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer param_types.deinit(self.allocator);
+
+        // Add environment pointer as first parameter
+        param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
+
+        // Add closure's declared parameters
+        for (closure.params) |param| {
+            const param_ty = if (param.type_) |t|
+                try self.typeExprToLLVM(t)
+            else
+                llvm.Types.int32(self.ctx);
+            param_types.append(self.allocator, param_ty) catch return EmitError.OutOfMemory;
+        }
+
+        // Create function type
+        const fn_type = llvm.Types.function(return_type, param_types.items, false);
+
+        // Create the lifted function
+        const lifted_fn = llvm.addFunction(self.module, fn_name, fn_type);
+        llvm.setFunctionCallConv(lifted_fn, self.calling_convention.toLLVM());
+
+        // Save current state before emitting the lifted function body
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+        const saved_named_values = self.named_values;
+        const saved_return_type = self.current_return_type;
+        const saved_terminator = self.has_terminator;
+
+        // Set up new context for lifted function
+        self.named_values = std.StringHashMap(LocalValue).init(self.allocator);
+        self.current_function = lifted_fn;
+        self.has_terminator = false;
+
+        // Set up return type info
+        self.current_return_type = .{
+            .llvm_type = return_type,
+            .is_optional = if (closure.return_type) |rt| rt == .optional else false,
+            .inner_type = if (closure.return_type) |rt|
+                if (rt == .optional) try self.typeExprToLLVM(rt.optional.inner) else null
+            else
+                null,
+        };
+
+        // Create entry block for lifted function
+        const entry_bb = llvm.appendBasicBlock(self.ctx, lifted_fn, "entry");
+        self.builder.positionAtEnd(entry_bb);
+
+        // Get environment pointer (first parameter)
+        const env_ptr = llvm.getParam(lifted_fn, 0);
+
+        // Load captured variables from environment and add to named_values
+        if (closure.captures) |captures| {
+            for (captures, 0..) |capture, i| {
+                // GEP to get pointer to captured value
+                var indices = [_]llvm.ValueRef{
+                    llvm.Const.int32(self.ctx, @intCast(i)),
+                };
+                const capture_ptr = self.builder.buildGEP(
+                    llvm.Types.pointer(self.ctx), // element type for array of pointers
+                    env_ptr,
+                    &indices,
+                    "cap.ptr",
+                );
+
+                // Load the captured value's pointer
+                const captured_value_ptr = self.builder.buildLoad(
+                    llvm.Types.pointer(self.ctx),
+                    capture_ptr,
+                    "cap.val.ptr",
+                );
+
+                // Store as named value (we'll load from this pointer when accessed)
+                self.named_values.put(capture.name, .{
+                    .value = captured_value_ptr,
+                    .is_alloca = true,
+                    .ty = llvm.Types.int32(self.ctx), // TODO: Get actual type from capture analysis
+                    .is_signed = true,
+                }) catch return EmitError.OutOfMemory;
+            }
+        }
+
+        // Add closure parameters to named_values
+        for (closure.params, 0..) |param, i| {
+            const param_value = llvm.getParam(lifted_fn, @intCast(i + 1)); // +1 for env ptr
+            const param_ty = if (param.type_) |t|
+                try self.typeExprToLLVM(t)
+            else
+                llvm.Types.int32(self.ctx);
+
+            // Allocate stack space for parameter
+            const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
+            defer self.allocator.free(param_name);
+
+            const alloca = self.builder.buildAlloca(param_ty, param_name);
+            _ = self.builder.buildStore(param_value, alloca);
+
+            self.named_values.put(param.name, .{
+                .value = alloca,
+                .is_alloca = true,
+                .ty = param_ty,
+                .is_signed = self.isTypeExprSigned(param.type_),
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // Emit the closure body
+        const body_value = try self.emitExpr(closure.body);
+
+        // Add return if not terminated
+        if (!self.has_terminator) {
+            _ = self.builder.buildRet(body_value);
+        }
+
+        // Restore original context
+        self.named_values.deinit();
+        self.named_values = saved_named_values;
+        self.current_function = saved_func;
+        self.current_return_type = saved_return_type;
+        self.has_terminator = saved_terminator;
+        if (saved_bb) |bb| {
+            self.builder.positionAtEnd(bb);
+        }
+
+        // Now create the closure value in the calling context
+        // Closure struct: { fn_ptr: ptr, env_ptr: ptr }
+        const closure_struct_type = blk: {
+            var types_arr = [_]llvm.TypeRef{
+                llvm.Types.pointer(self.ctx), // fn_ptr
+                llvm.Types.pointer(self.ctx), // env_ptr
+            };
+            break :blk llvm.Types.struct_(self.ctx, &types_arr, false);
+        };
+
+        // Allocate closure struct
+        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "closure");
+
+        // Store function pointer
+        var fn_ptr_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const fn_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &fn_ptr_indices, "closure.fn.ptr");
+        _ = self.builder.buildStore(lifted_fn, fn_ptr_gep);
+
+        // Create and store environment (captured variables)
+        const env_value = try self.createClosureEnvironment(closure.captures);
+        var env_ptr_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const env_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &env_ptr_indices, "closure.env.ptr");
+        _ = self.builder.buildStore(env_value, env_ptr_gep);
+
+        // Return the closure struct (loaded)
+        return self.builder.buildLoad(closure_struct_type, closure_alloca, "closure.val");
+    }
+
+    /// Create the environment struct for captured variables.
+    fn createClosureEnvironment(self: *Emitter, captures: ?[]const ast.CapturedVar) EmitError!llvm.ValueRef {
+        if (captures == null or captures.?.len == 0) {
+            // No captures - return null pointer
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+
+        const captures_list = captures.?;
+
+        // Allocate array of pointers to captured values
+        const arr_type = llvm.Types.array(llvm.Types.pointer(self.ctx), captures_list.len);
+        const env_alloca = self.builder.buildAlloca(arr_type, "env");
+
+        // Store pointers to each captured variable
+        for (captures_list, 0..) |capture, i| {
+            if (self.named_values.get(capture.name)) |local| {
+                // GEP to the i-th slot in the environment array
+                var indices = [_]llvm.ValueRef{
+                    llvm.Const.int32(self.ctx, 0),
+                    llvm.Const.int32(self.ctx, @intCast(i)),
+                };
+                const slot_ptr = self.builder.buildGEP(arr_type, env_alloca, &indices, "env.slot");
+
+                // Store the pointer to the local variable (not the value)
+                // For captured-by-value semantics, we'd copy the value instead
+                _ = self.builder.buildStore(local.value, slot_ptr);
+            }
+        }
+
+        // Return pointer to environment array
+        return env_alloca;
+    }
+
+    /// Check if a type expression represents a signed type.
+    fn isTypeExprSigned(self: *Emitter, type_expr: ?ast.TypeExpr) bool {
+        _ = self;
+        if (type_expr == null) return true; // Default to signed
+
+        const te = type_expr.?;
+        return switch (te) {
+            .named => |n| {
+                // Unsigned types
+                if (std.mem.startsWith(u8, n.name, "u")) return false;
+                return true;
+            },
+            else => true,
+        };
     }
 
     // Runtime function declarations

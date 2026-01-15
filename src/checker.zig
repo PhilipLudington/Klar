@@ -180,6 +180,15 @@ pub const TypeChecker = struct {
     global_scope: *Scope,
     current_scope: *Scope,
     current_return_type: ?Type,
+    /// Scope of the current closure being analyzed (for capture tracking).
+    /// Null when not inside a closure.
+    closure_scope: ?*Scope,
+    /// Captured variables for the current closure being analyzed.
+    closure_captures: std.StringHashMapUnmanaged(CaptureInfo),
+
+    const CaptureInfo = struct {
+        is_mutable: bool,
+    };
 
     pub fn init(allocator: Allocator) TypeChecker {
         // Allocate global scope on the heap so pointer remains stable
@@ -194,6 +203,8 @@ pub const TypeChecker = struct {
             .global_scope = global_scope,
             .current_scope = global_scope,
             .current_return_type = null,
+            .closure_scope = null,
+            .closure_captures = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -205,6 +216,7 @@ pub const TypeChecker = struct {
         self.errors.deinit(self.allocator);
         self.global_scope.deinit();
         self.allocator.destroy(self.global_scope);
+        self.closure_captures.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -464,10 +476,42 @@ pub const TypeChecker = struct {
 
     fn checkIdentifier(self: *TypeChecker, id: ast.Identifier) Type {
         if (self.current_scope.lookup(id.name)) |sym| {
+            // Track captures if we're inside a closure
+            if (self.closure_scope) |closure_scope| {
+                // Check if this variable is from outside the closure's scope
+                // It's a capture if not found in closure scope's local symbols
+                // and not found in any child scope of the closure
+                if (!self.isInClosureScope(closure_scope, id.name)) {
+                    // Skip functions and types - they don't need to be captured
+                    if (sym.kind == .variable or sym.kind == .parameter or sym.kind == .constant) {
+                        self.closure_captures.put(self.allocator, id.name, .{
+                            .is_mutable = sym.mutable,
+                        }) catch {};
+                    }
+                }
+            }
             return sym.type_;
         }
         self.addError(.undefined_variable, id.span, "undefined variable '{s}'", .{id.name});
         return self.type_builder.unknownType();
+    }
+
+    /// Check if a variable is defined within the closure scope (not a capture).
+    fn isInClosureScope(self: *TypeChecker, closure_scope: *Scope, name: []const u8) bool {
+        // Check the closure scope and all its child scopes (which are nested inside it)
+        // Starting from current_scope, walk up to closure_scope checking each scope's locals
+        var check_scope: ?*Scope = self.current_scope;
+        while (check_scope) |s| {
+            if (s.lookupLocal(name) != null) {
+                return true;
+            }
+            // Stop when we've checked up to and including the closure scope
+            if (s == closure_scope) {
+                break;
+            }
+            check_scope = s.parent;
+        }
+        return false;
     }
 
     fn checkBinary(self: *TypeChecker, bin: *ast.Binary) Type {
@@ -995,8 +1039,17 @@ pub const TypeChecker = struct {
     }
 
     fn checkClosure(self: *TypeChecker, closure: *ast.Closure) Type {
-        _ = self.pushScope(.function) catch return self.type_builder.unknownType();
+        const new_scope = self.pushScope(.function) catch return self.type_builder.unknownType();
         defer self.popScope();
+
+        // Set up capture tracking for this closure
+        const old_closure_scope = self.closure_scope;
+        self.closure_scope = new_scope;
+        self.closure_captures.clearRetainingCapacity();
+        defer {
+            self.closure_scope = old_closure_scope;
+            // Note: captures are extracted before this defer runs
+        }
 
         var param_types: std.ArrayListUnmanaged(Type) = .{};
         defer param_types.deinit(self.allocator);
@@ -1031,6 +1084,22 @@ pub const TypeChecker = struct {
 
         // Infer return type if not specified
         const actual_return = if (closure.return_type == null) body_type else return_type;
+
+        // Store captured variables in the AST node
+        // Note: This allocation is intentionally not freed here as it becomes
+        // part of the AST and is used during code generation. The memory will
+        // be freed when the allocator is cleaned up (arena-style).
+        if (self.closure_captures.count() > 0) {
+            var captures = std.ArrayListUnmanaged(ast.CapturedVar){};
+            var iter = self.closure_captures.iterator();
+            while (iter.next()) |entry| {
+                captures.append(self.allocator, .{
+                    .name = entry.key_ptr.*,
+                    .is_mutable = entry.value_ptr.is_mutable,
+                }) catch {};
+            }
+            closure.captures = captures.toOwnedSlice(self.allocator) catch null;
+        }
 
         return self.type_builder.functionType(param_types.items, actual_return) catch self.type_builder.unknownType();
     }

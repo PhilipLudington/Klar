@@ -277,6 +277,16 @@ pub const Closure = struct {
     return_type: ?TypeExpr,
     body: Expr,
     span: Span,
+    /// Captured variables from enclosing scope (populated by type checker).
+    /// Null until capture analysis is performed.
+    captures: ?[]const CapturedVar = null,
+};
+
+/// Represents a variable captured by a closure from an enclosing scope.
+pub const CapturedVar = struct {
+    name: []const u8,
+    /// True if the captured variable is mutable (captured by reference).
+    is_mutable: bool,
 };
 
 pub const ClosureParam = struct {

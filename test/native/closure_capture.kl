@@ -1,0 +1,12 @@
+// Test closure that captures a variable from enclosing scope
+// Expected exit code: 25 (5 * 5)
+
+fn main() -> i32 {
+    let factor = 5
+
+    // Closure that captures 'factor' from outer scope
+    let multiply = |x: i32| x * factor
+
+    // Call the closure
+    multiply(5)
+}
