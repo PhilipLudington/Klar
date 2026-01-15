@@ -10,6 +10,7 @@ const Compiler = @import("compiler.zig").Compiler;
 const Disassembler = @import("disasm.zig").Disassembler;
 const VM = @import("vm.zig").VM;
 const codegen = @import("codegen/mod.zig");
+const ir = @import("ir/mod.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -935,4 +936,5 @@ test {
     _ = @import("codegen/mod.zig");
     _ = @import("gc.zig");
     _ = @import("disasm.zig");
+    _ = @import("ir/mod.zig");
 }

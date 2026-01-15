@@ -1655,8 +1655,8 @@ pub const VM = struct {
     fn debugPrintValue(_: *VM, value: Value) void {
         switch (value) {
             .int => |i| std.debug.print("{d}", .{i}),
-            .float => |f| std.debug.print("{d}", .{f}),
-            .bool_ => |b| std.debug.print("{}", .{b}),
+            .float => |f| std.debug.print("{any}", .{f}),
+            .bool_ => |b| std.debug.print("{any}", .{b}),
             .void_ => std.debug.print("void", .{}),
             .string => |s| std.debug.print("\"{s}\"", .{s.chars}),
             .closure => std.debug.print("<closure>", .{}),

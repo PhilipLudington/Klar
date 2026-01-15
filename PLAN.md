@@ -205,18 +205,43 @@ pub const Context = struct {
 
 ---
 
-### Milestone 2: Klar IR Design & Generation
+### Milestone 2: Klar IR Design & Generation ✅
 
 **Objective:** Design and implement a mid-level IR that bridges typed AST and LLVM.
 
+**Status:** Complete (January 2026)
+
 **Deliverables:**
-- [ ] Design Klar IR instruction set (SSA-form)
-- [ ] Implement `src/ir/mod.zig` - IR module root
-- [ ] Implement `src/ir/inst.zig` - IR instructions
-- [ ] Implement `src/ir/builder.zig` - IR construction API
-- [ ] Implement `src/ir/printer.zig` - IR text output for debugging
-- [ ] Create AST-to-IR lowering pass in `src/ir/lower.zig`
-- [ ] Unit tests for IR generation from simple functions
+- [x] Design Klar IR instruction set (SSA-form)
+- [x] Implement `src/ir/mod.zig` - IR module root
+- [x] Implement `src/ir/inst.zig` - IR instructions
+- [x] Implement `src/ir/builder.zig` - IR construction API
+- [x] Implement `src/ir/printer.zig` - IR text output for debugging
+- [x] Create AST-to-IR lowering pass in `src/ir/lower.zig`
+- [x] Unit tests for IR generation from simple functions
+
+**Files Created:**
+```
+src/ir/
+├── mod.zig           # Module root, exports public API
+├── inst.zig          # IR instructions (60+ ops), types, values, functions
+├── builder.zig       # Fluent IR construction API
+├── printer.zig       # LLVM-style text output
+├── lower.zig         # AST to IR lowering pass
+└── tests.zig         # Comprehensive unit tests (17 test cases)
+```
+
+**IR Features Implemented:**
+- SSA-form values with unique IDs
+- Typed instructions: i8-i128, u8-u128, f32/f64, bool, char
+- Composite types: ptr, array, slice, tuple, struct, optional, ref
+- Arithmetic: add/sub/mul/div with checked, wrapping, saturating variants
+- Comparisons: icmp (eq/ne/lt/le/gt/ge), fcmp
+- Memory: alloca, load, store
+- Ownership: move, copy, drop, borrow, borrow_mut
+- Reference counting: rc_inc, rc_dec
+- Optional: some, none, is_some, is_none, unwrap
+- Control flow: br, cond_br, ret, ret_void, phi nodes
 
 **Klar IR Instruction Set (Draft):**
 ```
