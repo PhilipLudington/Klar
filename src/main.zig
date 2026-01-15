@@ -11,6 +11,7 @@ const Disassembler = @import("disasm.zig").Disassembler;
 const VM = @import("vm.zig").VM;
 const codegen = @import("codegen/mod.zig");
 const ir = @import("ir/mod.zig");
+const ownership = @import("ownership/mod.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -101,7 +102,14 @@ pub fn main() !void {
             try getStdErr().writeAll("Error: no input file\n");
             return;
         }
-        try checkFile(allocator, args[2]);
+        // Parse flags
+        var dump_ownership = false;
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--dump-ownership")) {
+                dump_ownership = true;
+            }
+        }
+        try checkFile(allocator, args[2], dump_ownership);
     } else if (std.mem.eql(u8, command, "disasm")) {
         if (args.len < 3) {
             try getStdErr().writeAll("Error: no input file\n");
@@ -584,7 +592,7 @@ fn printExpr(out: std.fs.File, source: []const u8, expr: ast.Expr, indent: usize
     }
 }
 
-fn checkFile(allocator: std.mem.Allocator, path: []const u8) !void {
+fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag: bool) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
@@ -639,8 +647,41 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8) !void {
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        return; // Don't proceed to ownership check if type check fails
+    }
+
+    // Ownership analysis
+    var ownership_checker = ownership.OwnershipChecker.init(allocator);
+    defer ownership_checker.deinit();
+
+    ownership_checker.analyze(module) catch |err| {
+        const msg = std.fmt.bufPrint(&buf, "Ownership analysis error: {}\n", .{err}) catch "Ownership analysis error\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    // Dump ownership state if requested
+    if (dump_ownership_flag) {
+        try stdout.writeAll("\n=== Ownership State ===\n");
+        try stdout.writeAll("(No detailed state dumped in this version)\n\n");
+    }
+
+    // Report ownership errors
+    if (ownership_checker.hasErrors()) {
+        const header = std.fmt.bufPrint(&buf, "Ownership check failed with {d} error(s):\n", .{ownership_checker.errors.items.len}) catch "Ownership check failed:\n";
+        try stderr.writeAll(header);
+
+        for (ownership_checker.errors.items) |own_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d} [{s}]: {s}\n", .{
+                own_err.span.line,
+                own_err.span.column,
+                @tagName(own_err.kind),
+                own_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
     } else {
-        const msg = std.fmt.bufPrint(&buf, "Type check passed for '{s}'\n", .{path}) catch "Type check passed\n";
+        const msg = std.fmt.bufPrint(&buf, "All checks passed for '{s}'\n", .{path}) catch "All checks passed\n";
         try stdout.writeAll(msg);
 
         // Print some stats

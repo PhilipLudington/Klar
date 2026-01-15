@@ -107,6 +107,58 @@ pub const Type = union(enum) {
             else => false,
         };
     }
+
+    /// Returns true if this type is a Copy type (values are copied, not moved).
+    /// Copy types include:
+    /// - All primitive types (integers, floats, bool, char)
+    /// - References (both immutable and mutable)
+    /// - Arrays of Copy types
+    /// - Tuples where all elements are Copy
+    /// - Structs explicitly marked as Copy
+    pub fn isCopyType(self: Type) bool {
+        return switch (self) {
+            // All primitives are Copy (integers, floats, bool, char, string literals)
+            .primitive => true,
+
+            // References are always Copy (they're just pointers)
+            .reference => true,
+
+            // Arrays are Copy if their element type is Copy
+            .array => |a| a.element.isCopyType(),
+
+            // Tuples are Copy if all elements are Copy
+            .tuple => |t| {
+                for (t.elements) |elem| {
+                    if (!elem.isCopyType()) return false;
+                }
+                return true;
+            },
+
+            // Structs may be explicitly marked as Copy
+            .struct_ => |s| s.is_copy,
+
+            // Optionals are Copy if the inner type is Copy
+            .optional => |o| o.isCopyType(),
+
+            // Type variables might be Copy depending on bounds, but conservatively say no
+            .type_var => false,
+
+            // Applied types need to check the base type
+            .applied => |a| a.base.isCopyType(),
+
+            // void and never are trivially Copy (no data to move)
+            .void_, .never => true,
+
+            // These types are NOT Copy:
+            // - Slices (contain a pointer + length, may own data)
+            // - Enums (may contain non-Copy payloads)
+            // - Traits (dyn trait objects have ownership semantics)
+            // - Result (may contain non-Copy ok/err types)
+            // - Function types (closures may capture non-Copy data)
+            // - Unknown/error types (conservative)
+            .slice, .enum_, .trait_, .result, .function, .unknown, .error_type => false,
+        };
+    }
 };
 
 // ============================================================================
@@ -700,4 +752,48 @@ test "Type formatting" {
     const func_str = try typeToString(testing.allocator, func_t);
     defer testing.allocator.free(func_str);
     try testing.expectEqualStrings("fn(i32, i32) -> bool", func_str);
+}
+
+test "isCopyType" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // Primitives are Copy
+    try testing.expect(builder.i32Type().isCopyType());
+    try testing.expect(builder.boolType().isCopyType());
+    try testing.expect(builder.f64Type().isCopyType());
+    try testing.expect(builder.charType().isCopyType());
+    try testing.expect(builder.stringType().isCopyType());
+
+    // References are Copy
+    const ref_t = try builder.referenceType(builder.i32Type(), false);
+    try testing.expect(ref_t.isCopyType());
+    const mut_ref_t = try builder.referenceType(builder.i32Type(), true);
+    try testing.expect(mut_ref_t.isCopyType());
+
+    // Arrays of Copy types are Copy
+    const arr_copy = try builder.arrayType(builder.i32Type(), 10);
+    try testing.expect(arr_copy.isCopyType());
+
+    // Tuples of Copy types are Copy
+    const tuple_copy = try builder.tupleType(&.{ builder.i32Type(), builder.boolType() });
+    try testing.expect(tuple_copy.isCopyType());
+
+    // Optionals of Copy types are Copy
+    const opt_copy = try builder.optionalType(builder.i32Type());
+    try testing.expect(opt_copy.isCopyType());
+
+    // void and never are Copy
+    try testing.expect(builder.voidType().isCopyType());
+    try testing.expect(builder.neverType().isCopyType());
+
+    // Slices are NOT Copy (they may own data)
+    const slice_t = try builder.sliceType(builder.i32Type());
+    try testing.expect(!slice_t.isCopyType());
+
+    // Function types are NOT Copy
+    const func_t = try builder.functionType(&.{builder.i32Type()}, builder.i32Type());
+    try testing.expect(!func_t.isCopyType());
 }

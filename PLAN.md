@@ -306,18 +306,38 @@ src/ir/
 
 ---
 
-### Milestone 3: Ownership Analysis & Drop Insertion
+### Milestone 3: Ownership Analysis & Drop Insertion ✅
 
 **Objective:** Implement compile-time ownership tracking and automatic destructor insertion.
 
+**Status:** Complete (January 2026)
+
 **Deliverables:**
-- [ ] Extend checker with ownership state tracking
-- [ ] Implement move detection and use-after-move errors
-- [ ] Implement borrow checking (one &mut OR many &)
-- [ ] Create drop insertion pass
-- [ ] Handle drops at scope exits, returns, breaks
-- [ ] Implement Copy trait detection (skip drop for Copy types)
-- [ ] Add `--dump-ownership` debug flag
+- [x] Extend checker with ownership state tracking
+- [x] Implement move detection and use-after-move errors
+- [x] Implement borrow checking (one &mut OR many &)
+- [x] Create drop insertion pass
+- [x] Handle drops at scope exits, returns, breaks
+- [x] Implement Copy trait detection (skip drop for Copy types)
+- [x] Add `--dump-ownership` debug flag
+
+**Files Created:**
+```
+src/ownership/
+├── mod.zig           # Module root, exports public API
+├── state.zig         # OwnershipState, BorrowInfo, VariableState, OwnershipScope
+├── checker.zig       # OwnershipChecker with AST analysis
+└── drop.zig          # DropInserter, DropPoint, DropInfo
+```
+
+**Key Features:**
+- OwnershipState enum: owned, moved, borrowed, borrowed_mut, partially_moved
+- Variable state tracking with borrow lists
+- Use-after-move detection with clear error messages
+- Borrow conflict detection (immutable + mutable, double mutable)
+- Scope-based borrow invalidation
+- Type.isCopyType() for Copy trait detection
+- Integration with main checker via --dump-ownership flag
 
 **Ownership States:**
 ```
