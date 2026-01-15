@@ -1,0 +1,24 @@
+// Test deep recursion - validates stack handling
+// This tests mutual recursion between two functions
+
+fn is_even(n: i32) -> i32 {
+    if n == 0 {
+        1
+    } else {
+        is_odd(n - 1)
+    }
+}
+
+fn is_odd(n: i32) -> i32 {
+    if n == 0 {
+        0
+    } else {
+        is_even(n - 1)
+    }
+}
+
+fn main() -> i32 {
+    // is_even(100) should return 1 (true)
+    // Then multiply by 42 to get 42
+    is_even(100) * 42
+}

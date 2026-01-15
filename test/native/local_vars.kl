@@ -1,0 +1,15 @@
+// Test local variable handling (stack slots)
+
+fn compute(x: i32) -> i32 {
+    let a = x + 1
+    let b = a * 2
+    let c = b - 3
+    var d = c
+    d = d + 10
+    d
+}
+
+fn main() -> i32 {
+    // compute(5) = ((5+1)*2-3)+10 = (12-3)+10 = 9+10 = 19
+    compute(5)
+}

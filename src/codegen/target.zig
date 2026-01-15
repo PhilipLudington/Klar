@@ -160,3 +160,115 @@ pub const CodeModel = enum {
         };
     }
 };
+
+/// Calling convention for the platform.
+/// LLVM calling conventions are defined in llvm-c/Core.h
+pub const CallingConvention = enum(c_uint) {
+    /// Default C calling convention (platform default)
+    c = 0,
+    /// Fast calling convention (LLVM specific, fewer registers saved)
+    fast = 8,
+    /// Cold calling convention (optimize for infrequent calls)
+    cold = 9,
+    /// WebKit JS calling convention
+    webkit_js = 12,
+    /// Any register calling convention
+    any_reg = 13,
+    /// x86 stdcall (Windows)
+    x86_stdcall = 64,
+    /// x86 fastcall (Windows)
+    x86_fastcall = 65,
+    /// ARM AAPCS calling convention
+    arm_aapcs = 67,
+    /// ARM AAPCS-VFP (use VFP registers for floats)
+    arm_aapcs_vfp = 68,
+    /// x86-64 System V AMD64 ABI
+    x86_64_sysv = 78,
+    /// Win64 calling convention
+    win64 = 79,
+
+    /// Get the appropriate calling convention for the current platform.
+    pub fn forPlatform(platform: Platform) CallingConvention {
+        return switch (platform.os) {
+            .macos => switch (platform.arch) {
+                // macOS ARM64 uses AAPCS64-like but LLVM uses C convention
+                .aarch64 => .c,
+                // macOS x86_64 uses System V AMD64 ABI (same as Linux)
+                .x86_64 => .c, // LLVM's C convention handles SysV on Unix
+                else => .c,
+            },
+            .linux => switch (platform.arch) {
+                .aarch64 => .c,
+                .x86_64 => .c, // System V AMD64 is the default on Linux
+                else => .c,
+            },
+            .windows => switch (platform.arch) {
+                .x86_64 => .win64,
+                .aarch64 => .c,
+                else => .c,
+            },
+            else => .c,
+        };
+    }
+
+    /// Convert to LLVM calling convention constant.
+    pub fn toLLVM(self: CallingConvention) c_uint {
+        return @intFromEnum(self);
+    }
+};
+
+/// ABI information for struct passing/returning.
+/// Different platforms have different rules for how structs are passed:
+/// - System V AMD64: structs <= 16 bytes in registers, > 16 bytes via hidden pointer
+/// - Win64: structs <= 8 bytes in register, > 8 bytes via hidden pointer
+/// - AAPCS64: structs <= 16 bytes in registers, > 16 bytes via hidden pointer
+pub const ABI = struct {
+    platform: Platform,
+
+    pub fn init(platform: Platform) ABI {
+        return .{ .platform = platform };
+    }
+
+    /// Maximum size of struct that can be returned in registers.
+    pub fn maxRegisterReturnSize(self: ABI) usize {
+        return switch (self.platform.os) {
+            .windows => switch (self.platform.arch) {
+                .x86_64 => 8, // Win64: only 64-bit or smaller in RAX
+                else => 8,
+            },
+            else => switch (self.platform.arch) {
+                // System V AMD64 and AAPCS64: 16 bytes (in RAX:RDX or X0:X1)
+                .x86_64, .aarch64 => 16,
+                else => 8,
+            },
+        };
+    }
+
+    /// Number of integer argument registers available.
+    pub fn integerArgRegs(self: ABI) usize {
+        return switch (self.platform.os) {
+            .windows => switch (self.platform.arch) {
+                .x86_64 => 4, // RCX, RDX, R8, R9
+                else => 8,
+            },
+            else => switch (self.platform.arch) {
+                .x86_64 => 6, // RDI, RSI, RDX, RCX, R8, R9
+                .aarch64 => 8, // X0-X7
+                else => 6,
+            },
+        };
+    }
+
+    /// Number of floating-point argument registers available.
+    pub fn floatArgRegs(self: ABI) usize {
+        return switch (self.platform.os) {
+            .windows => 4, // XMM0-XMM3 (shared with int on Win64)
+            else => 8, // XMM0-XMM7 on x86_64, V0-V7 on ARM64
+        };
+    }
+
+    /// Check if a struct of given size should be passed by pointer.
+    pub fn passByPointer(self: ABI, size: usize) bool {
+        return size > self.maxRegisterReturnSize();
+    }
+};

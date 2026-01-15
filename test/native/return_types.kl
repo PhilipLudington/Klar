@@ -1,0 +1,30 @@
+// Test various return types
+
+fn return_i32() -> i32 {
+    42
+}
+
+fn return_i64() -> i64 {
+    9876543210
+}
+
+fn return_bool() -> bool {
+    true
+}
+
+fn return_f64() -> f64 {
+    3.14159
+}
+
+fn no_return() {
+    // void function
+}
+
+fn main() -> i32 {
+    let a = return_i32()
+    let b = return_bool()
+    no_return()
+
+    // Simple verification: return a (42)
+    a
+}

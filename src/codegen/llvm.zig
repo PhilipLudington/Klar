@@ -626,3 +626,13 @@ pub fn getTypeKind(ty: TypeRef) c.LLVMTypeKind {
 pub fn typeOf(value: ValueRef) TypeRef {
     return c.LLVMTypeOf(value);
 }
+
+/// Get the return type of a function type.
+pub fn getReturnType(fn_type: TypeRef) TypeRef {
+    return c.LLVMGetReturnType(fn_type);
+}
+
+/// Check if a type is void.
+pub fn isVoidType(ty: TypeRef) bool {
+    return c.LLVMGetTypeKind(ty) == c.LLVMVoidTypeKind;
+}

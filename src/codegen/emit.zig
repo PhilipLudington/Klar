@@ -3,10 +3,12 @@
 //! Translates typed AST to LLVM IR for native code generation.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const llvm = @import("llvm.zig");
+const target = @import("target.zig");
 
 /// Errors that can occur during IR emission.
 pub const EmitError = error{
@@ -23,6 +25,13 @@ pub const Emitter = struct {
     module: llvm.Module,
     builder: llvm.Builder,
     current_function: ?llvm.ValueRef,
+
+    /// Target platform information.
+    platform: target.Platform,
+    /// ABI information for struct passing/returning.
+    abi: target.ABI,
+    /// Calling convention for the target.
+    calling_convention: target.CallingConvention,
 
     /// Named values in current scope (locals, params).
     named_values: std.StringHashMap(LocalValue),
@@ -58,12 +67,24 @@ pub const Emitter = struct {
         const module = llvm.Module.create(module_name, ctx);
         const builder = llvm.Builder.create(ctx);
 
+        // Initialize platform and ABI info
+        const platform = target.Platform.current();
+        const abi = target.ABI.init(platform);
+        const calling_convention = target.CallingConvention.forPlatform(platform);
+
+        // Set target triple on the module for proper code generation
+        const triple = target.getDefaultTriple();
+        module.setTarget(triple);
+
         return .{
             .allocator = allocator,
             .ctx = ctx,
             .module = module,
             .builder = builder,
             .current_function = null,
+            .platform = platform,
+            .abi = abi,
+            .calling_convention = calling_convention,
             .named_values = std.StringHashMap(LocalValue).init(allocator),
             .has_terminator = false,
             .loop_stack = .{},
@@ -126,7 +147,10 @@ pub const Emitter = struct {
         const fn_type = llvm.Types.function(return_type, param_types.items, false);
         const name = self.allocator.dupeZ(u8, func.name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
-        _ = llvm.addFunction(self.module, name, fn_type);
+        const llvm_func = llvm.addFunction(self.module, name, fn_type);
+
+        // Set the calling convention for proper ABI compliance
+        llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
     }
 
     fn emitFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
@@ -793,7 +817,11 @@ pub const Emitter = struct {
         }
 
         const fn_type = llvm.getGlobalValueType(func);
-        return self.builder.buildCall(fn_type, func, args.items, "calltmp");
+
+        // Check if function returns void - void calls can't have names
+        const return_type = llvm.getReturnType(fn_type);
+        const call_name: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
+        return self.builder.buildCall(fn_type, func, args.items, call_name);
     }
 
     fn emitIf(self: *Emitter, if_expr: *ast.IfExpr) EmitError!llvm.ValueRef {
