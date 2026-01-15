@@ -749,11 +749,11 @@ fn main() {
 
 ---
 
-### Milestone 9: Closures & First-Class Functions 🚧
+### Milestone 9: Closures & First-Class Functions ✅
 
 **Objective:** Implement closures with captured variables respecting ownership.
 
-**Status:** Partially Complete (January 2026) - Closures with capture and argument passing implemented
+**Status:** Complete (January 2026) - Closures fully functional including return from functions
 
 **Deliverables:**
 - [x] Implement closure struct layout (fn_ptr + environment pointer)
@@ -761,7 +761,7 @@ fn main() {
 - [x] Implement closure LLVM emission (lifted function + environment)
 - [x] Implement closure invocation
 - [x] Implement closure passing as arguments
-- [ ] Implement closure return from functions - requires function type unification
+- [x] Implement closure return from functions (heap-allocated environment for escaping closures)
 - [ ] Handle environment destruction (drop captured values) - deferred to Milestone 10
 
 **Closure Representation:**
@@ -801,6 +801,8 @@ test/native/
 ├── closure_arg.kl           # Closure passed as function argument ✅
 ├── closure_arg_capture.kl   # Closure with captures passed as argument ✅
 ├── closure_map.kl           # Map-like function with closures ✅
+├── closure_return.kl        # Closure returned from function ✅
+├── closure_return_simple.kl # Closure without captures returned ✅
 ```
 
 ```klar
@@ -825,15 +827,11 @@ fn main() -> i32 {
     let add = |x: i32, y: i32| x + y
     apply(add, 10, 20)
 }
-```
 
-**Future Test (when closure return is implemented):**
-```klar
-// test_closure_return.kl - make_adder pattern
+// test/native/closure_return.kl - make_adder pattern, returns 15 ✅
 fn make_adder(n: i32) -> fn(i32) -> i32 {
-    |x| x + n
+    |x: i32| x + n
 }
-
 fn main() -> i32 {
     let add5 = make_adder(5)
     add5(10)  // 15
@@ -846,8 +844,8 @@ fn main() -> i32 {
 - ✅ Closure invocation passes environment and arguments correctly
 - ✅ Closures can be passed as function arguments
 - ✅ Higher-order functions work with closures (apply, map patterns)
+- ✅ Closures can be returned from functions (heap-allocated environment)
 - ⏳ Captured values properly dropped when closure dropped (Milestone 10)
-- ⏳ Closures can be returned from functions (requires type unification)
 
 ---
 

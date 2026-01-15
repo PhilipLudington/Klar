@@ -2622,32 +2622,41 @@ pub const Emitter = struct {
         // Get environment pointer (first parameter)
         const env_ptr = llvm.getParam(lifted_fn, 0);
 
-        // Load captured variables from environment and add to named_values
+        // Load captured variables from environment and add to named_values.
+        // The environment is a heap-allocated struct with values stored directly (not pointers).
         if (closure.captures) |captures| {
+            // Build the environment struct type (must match what createClosureEnvironment built).
+            // For now, assume all captures are i32. TODO: pass type info through AST.
+            var field_types: [32]llvm.TypeRef = undefined;
+            for (0..captures.len) |i| {
+                field_types[i] = llvm.Types.int32(self.ctx);
+            }
+            const env_struct_type = llvm.Types.struct_(self.ctx, field_types[0..captures.len], false);
+
             for (captures, 0..) |capture, i| {
-                // GEP to get pointer to captured value
+                // GEP to get pointer to the value field in the env struct
                 var indices = [_]llvm.ValueRef{
+                    llvm.Const.int32(self.ctx, 0),
                     llvm.Const.int32(self.ctx, @intCast(i)),
                 };
-                const capture_ptr = self.builder.buildGEP(
-                    llvm.Types.pointer(self.ctx), // element type for array of pointers
+                const field_ptr = self.builder.buildGEP(
+                    env_struct_type,
                     env_ptr,
                     &indices,
-                    "cap.ptr",
+                    "cap.field.ptr",
                 );
 
-                // Load the captured value's pointer
-                const captured_value_ptr = self.builder.buildLoad(
-                    llvm.Types.pointer(self.ctx),
-                    capture_ptr,
-                    "cap.val.ptr",
-                );
+                // Load the value from the env struct into a local alloca
+                const cap_ty = llvm.Types.int32(self.ctx);
+                const local_alloca = self.builder.buildAlloca(cap_ty, "cap.local");
+                const cap_value = self.builder.buildLoad(cap_ty, field_ptr, "cap.value");
+                _ = self.builder.buildStore(cap_value, local_alloca);
 
-                // Store as named value (we'll load from this pointer when accessed)
+                // Store the alloca as the named value (will be loaded when accessed)
                 self.named_values.put(capture.name, .{
-                    .value = captured_value_ptr,
+                    .value = local_alloca,
                     .is_alloca = true,
-                    .ty = llvm.Types.int32(self.ctx), // TODO: Get actual type from capture analysis
+                    .ty = cap_ty,
                     .is_signed = true,
                 }) catch return EmitError.OutOfMemory;
             }
@@ -2723,6 +2732,7 @@ pub const Emitter = struct {
     }
 
     /// Create the environment struct for captured variables.
+    /// Allocates the environment on the heap so closures can be returned from functions.
     fn createClosureEnvironment(self: *Emitter, captures: ?[]const ast.CapturedVar) EmitError!llvm.ValueRef {
         if (captures == null or captures.?.len == 0) {
             // No captures - return null pointer
@@ -2731,28 +2741,56 @@ pub const Emitter = struct {
 
         const captures_list = captures.?;
 
-        // Allocate array of pointers to captured values
-        const arr_type = llvm.Types.array(llvm.Types.pointer(self.ctx), captures_list.len);
-        const env_alloca = self.builder.buildAlloca(arr_type, "env");
+        // Build a struct type containing all captured values (by value, not by pointer).
+        // This allows closures to be returned from functions without dangling pointers.
+        var field_types: [32]llvm.TypeRef = undefined;
+        if (captures_list.len > 32) return EmitError.OutOfMemory;
 
-        // Store pointers to each captured variable
         for (captures_list, 0..) |capture, i| {
             if (self.named_values.get(capture.name)) |local| {
-                // GEP to the i-th slot in the environment array
+                field_types[i] = local.ty;
+            } else {
+                // Fallback to i32 if not found
+                field_types[i] = llvm.Types.int32(self.ctx);
+            }
+        }
+
+        const env_struct_type = llvm.Types.struct_(self.ctx, field_types[0..captures_list.len], false);
+
+        // Calculate size of the struct: each i32 is 4 bytes, no padding needed for homogeneous structs
+        // TODO: Use proper target data layout when capturing non-i32 types
+        const size_of_env: u64 = captures_list.len * 4;
+
+        // Allocate on the heap using malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, @intCast(size_of_env))};
+        const env_ptr = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &malloc_args,
+            1,
+            "env.heap",
+        );
+
+        // Copy each captured value into the heap-allocated struct
+        for (captures_list, 0..) |capture, i| {
+            if (self.named_values.get(capture.name)) |local| {
+                // GEP to the i-th field in the environment struct
                 var indices = [_]llvm.ValueRef{
                     llvm.Const.int32(self.ctx, 0),
                     llvm.Const.int32(self.ctx, @intCast(i)),
                 };
-                const slot_ptr = self.builder.buildGEP(arr_type, env_alloca, &indices, "env.slot");
+                const field_ptr = self.builder.buildGEP(env_struct_type, env_ptr, &indices, "env.field");
 
-                // Store the pointer to the local variable (not the value)
-                // For captured-by-value semantics, we'd copy the value instead
-                _ = self.builder.buildStore(local.value, slot_ptr);
+                // Load the value from the local variable and store it in the env
+                const value = self.builder.buildLoad(local.ty, local.value, "cap.load");
+                _ = self.builder.buildStore(value, field_ptr);
             }
         }
 
-        // Return pointer to environment array
-        return env_alloca;
+        // Return pointer to heap-allocated environment
+        return env_ptr;
     }
 
     /// Check if a type expression represents a signed type.
