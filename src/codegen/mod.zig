@@ -37,6 +37,10 @@ pub const CompileOptions = struct {
     opt_level: KlarOptLevel = .O0,
     /// Verbose output for optimization passes.
     verbose_opt: bool = false,
+    /// Generate debug information (DWARF).
+    debug_info: bool = false,
+    /// Source file path (for debug info).
+    source_path: ?[]const u8 = null,
 };
 
 /// Convenience re-exports

@@ -952,18 +952,34 @@ Klar IR
 
 ---
 
-### Milestone 12: Debug Information & Tooling
+### Milestone 12: Debug Information & Tooling 🚧
 
 **Objective:** Generate debug information for native debugging.
 
+**Status:** Partially Complete (January 2026) - Basic debug info and emit flags implemented
+
 **Deliverables:**
-- [ ] Generate DWARF debug info via LLVM (Linux/macOS)
-- [ ] Generate PDB debug info via LLVM (Windows)
-- [ ] Map Klar source locations to native instructions
-- [ ] Enable `lldb`/`gdb` debugging of Klar programs
-- [ ] Implement `-g` flag for debug builds
-- [ ] Add `--emit-llvm` flag to output LLVM IR
-- [ ] Add `--emit-asm` flag to output assembly
+- [x] Generate DWARF debug info via LLVM (Linux/macOS)
+- [ ] Generate PDB debug info via LLVM (Windows) - deferred
+- [x] Map Klar source locations to native instructions
+- [x] Enable `lldb`/`gdb` debugging of Klar programs (function-level)
+- [x] Implement `-g` flag for debug builds
+- [x] Add `--emit-llvm` flag to output LLVM IR
+- [x] Add `--emit-asm` flag to output assembly
+
+**Implementation Notes:**
+- Debug info includes compile unit, file, and function-level metadata
+- All LLVM instructions have debug locations attached
+- Function names and line numbers are preserved for stack traces
+- Local variable debug info not yet implemented (future work)
+
+**Files Modified:**
+```
+src/codegen/llvm.zig     # Added DIBuilder wrapper and debug info API
+src/codegen/emit.zig     # Added debug info fields and initDebugInfo()
+src/codegen/mod.zig      # Added debug_info option to CompileOptions
+src/main.zig             # Added -g and --emit-asm flag handling
+```
 
 **Debug Info via LLVM:**
 ```zig
@@ -976,9 +992,9 @@ c.LLVMSetCurrentDebugLocation2(builder, location);
 ```
 
 **Success Criteria:**
-- Can set breakpoints by Klar source line in lldb/gdb
-- Can inspect local variables in debugger
-- Stack traces show Klar function names
+- ✅ Can set breakpoints by Klar function name in lldb/gdb
+- ⏳ Can inspect local variables in debugger (requires DILocalVariable)
+- ✅ Stack traces show Klar function names
 
 ---
 

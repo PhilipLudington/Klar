@@ -63,6 +63,16 @@ pub const Emitter = struct {
     /// Cache of generated closure types.
     closure_types: std.StringHashMap(ClosureTypeInfo),
 
+    // --- Debug info fields ---
+    /// Debug info builder (null if debug info is disabled).
+    di_builder: ?llvm.DIBuilder,
+    /// Compile unit metadata (root of debug info).
+    di_compile_unit: ?llvm.MetadataRef,
+    /// Current file metadata.
+    di_file: ?llvm.MetadataRef,
+    /// Current scope for debug locations.
+    di_scope: ?llvm.MetadataRef,
+
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
 
     const ReturnTypeInfo = struct {
@@ -138,10 +148,56 @@ pub const Emitter = struct {
             .layout_calc = layout.LayoutCalculator.init(allocator, platform),
             .closure_counter = 0,
             .closure_types = std.StringHashMap(ClosureTypeInfo).init(allocator),
+            .di_builder = null,
+            .di_compile_unit = null,
+            .di_file = null,
+            .di_scope = null,
         };
     }
 
+    /// Initialize debug info for the module.
+    pub fn initDebugInfo(self: *Emitter, filename: []const u8, directory: []const u8) void {
+        const di_builder = llvm.DIBuilder.create(self.module);
+
+        // Create the file
+        const di_file = di_builder.createFile(filename, directory);
+
+        // Create the compile unit
+        // Use C99 as the language since DWARF doesn't have a Klar entry
+        const di_compile_unit = di_builder.createCompileUnit(
+            llvm.c.LLVMDWARFSourceLanguageC99,
+            di_file,
+            "Klar Compiler 0.3.0",
+            false, // not optimized
+            "", // flags
+            0, // runtime version
+            "", // split name
+            llvm.c.LLVMDWARFEmissionFull,
+            0, // DWO id
+            false, // split debug inlining
+            false, // debug info for profiling
+            "", // sysroot
+            "", // SDK
+        );
+
+        self.di_builder = di_builder;
+        self.di_compile_unit = di_compile_unit;
+        self.di_file = di_file;
+        self.di_scope = di_compile_unit;
+    }
+
+    /// Finalize debug info. Must be called before module verification.
+    pub fn finalizeDebugInfo(self: *Emitter) void {
+        if (self.di_builder) |di_builder| {
+            di_builder.finalize();
+        }
+    }
+
     pub fn deinit(self: *Emitter) void {
+        // Dispose debug info builder first
+        if (self.di_builder) |di_builder| {
+            di_builder.dispose();
+        }
         self.loop_stack.deinit(self.allocator);
         self.named_values.deinit();
         // Free struct type info allocations
@@ -252,10 +308,60 @@ pub const Emitter = struct {
         }
         defer self.current_return_type = null;
 
+        // Create debug info for function if enabled
+        if (self.di_builder) |di_builder| {
+            if (self.di_file) |di_file| {
+                // Create subroutine type (empty for now - just void return for simplicity)
+                const subroutine_type = di_builder.createSubroutineType(
+                    di_file,
+                    &.{}, // empty param types
+                    llvm.c.LLVMDIFlagZero,
+                );
+
+                // Get line number from function span
+                const line_no: c_uint = @intCast(func.span.line);
+
+                // Create function debug info
+                const subprogram = di_builder.createFunction(
+                    self.di_compile_unit.?, // scope (compile unit)
+                    func.name, // name
+                    func.name, // linkage name
+                    di_file, // file
+                    line_no, // line number
+                    subroutine_type, // type
+                    false, // is local
+                    true, // is definition
+                    line_no, // scope line
+                    llvm.c.LLVMDIFlagZero, // flags
+                    false, // is optimized
+                );
+
+                // Attach subprogram to function
+                llvm.setSubprogram(function, subprogram);
+
+                // Set as current scope for debug locations
+                self.di_scope = subprogram;
+            }
+        }
+
         // Create entry block
         const entry = llvm.appendBasicBlock(self.ctx, function, "entry");
         self.builder.positionAtEnd(entry);
         self.has_terminator = false;
+
+        // Set debug location for entry block if debug info enabled
+        if (self.di_builder != null) {
+            if (self.di_scope) |scope| {
+                const loc = llvm.createDebugLocation(
+                    self.ctx,
+                    @intCast(func.span.line),
+                    @intCast(func.span.column),
+                    scope,
+                    null,
+                );
+                llvm.setCurrentDebugLocation(self.builder, loc);
+            }
+        }
 
         // Clear named values for new scope
         self.named_values.clearRetainingCapacity();

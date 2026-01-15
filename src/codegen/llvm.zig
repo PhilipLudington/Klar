@@ -9,6 +9,7 @@ pub const c = @cImport({
     @cInclude("llvm-c/Target.h");
     @cInclude("llvm-c/TargetMachine.h");
     @cInclude("llvm-c/Analysis.h");
+    @cInclude("llvm-c/DebugInfo.h");
 });
 
 // Re-export opaque pointer types
@@ -21,6 +22,8 @@ pub const BasicBlockRef = c.LLVMBasicBlockRef;
 pub const TargetRef = c.LLVMTargetRef;
 pub const TargetMachineRef = c.LLVMTargetMachineRef;
 pub const TargetDataRef = c.LLVMTargetDataRef;
+pub const DIBuilderRef = c.LLVMDIBuilderRef;
+pub const MetadataRef = c.LLVMMetadataRef;
 
 /// Errors that can occur during LLVM operations.
 pub const Error = error{
@@ -655,4 +658,197 @@ pub fn sizeOfType(target_data: TargetDataRef, ty: TypeRef) u64 {
 /// Get the ABI alignment of a type in bytes using target data.
 pub fn abiAlignOfType(target_data: TargetDataRef, ty: TypeRef) u32 {
     return c.LLVMABIAlignmentOfType(target_data, ty);
+}
+
+// ============================================================================
+// Debug Information API
+// ============================================================================
+
+/// Debug info builder wrapper for generating DWARF debug information.
+pub const DIBuilder = struct {
+    ref: DIBuilderRef,
+
+    /// Create a new DIBuilder for the given module.
+    pub fn create(module: Module) DIBuilder {
+        return .{ .ref = c.LLVMCreateDIBuilder(module.ref) };
+    }
+
+    /// Dispose of the DIBuilder.
+    pub fn dispose(self: DIBuilder) void {
+        c.LLVMDisposeDIBuilder(self.ref);
+    }
+
+    /// Finalize the debug info. Must be called before the module is verified.
+    pub fn finalize(self: DIBuilder) void {
+        c.LLVMDIBuilderFinalize(self.ref);
+    }
+
+    /// Create a compile unit (the root of debug info).
+    pub fn createCompileUnit(
+        self: DIBuilder,
+        lang: c.LLVMDWARFSourceLanguage,
+        file: MetadataRef,
+        producer: []const u8,
+        is_optimized: bool,
+        flags: []const u8,
+        runtime_version: c_uint,
+        split_name: []const u8,
+        kind: c.LLVMDWARFEmissionKind,
+        dwo_id: c_uint,
+        split_debug_inlining: bool,
+        debug_info_for_profiling: bool,
+        sysroot: []const u8,
+        sdk: []const u8,
+    ) MetadataRef {
+        return c.LLVMDIBuilderCreateCompileUnit(
+            self.ref,
+            lang,
+            file,
+            producer.ptr,
+            producer.len,
+            @intFromBool(is_optimized),
+            flags.ptr,
+            flags.len,
+            runtime_version,
+            split_name.ptr,
+            split_name.len,
+            kind,
+            dwo_id,
+            @intFromBool(split_debug_inlining),
+            @intFromBool(debug_info_for_profiling),
+            sysroot.ptr,
+            sysroot.len,
+            sdk.ptr,
+            sdk.len,
+        );
+    }
+
+    /// Create a file descriptor.
+    pub fn createFile(self: DIBuilder, filename: []const u8, directory: []const u8) MetadataRef {
+        return c.LLVMDIBuilderCreateFile(
+            self.ref,
+            filename.ptr,
+            filename.len,
+            directory.ptr,
+            directory.len,
+        );
+    }
+
+    /// Create a subroutine type (function signature for debug info).
+    pub fn createSubroutineType(
+        self: DIBuilder,
+        file: ?MetadataRef,
+        param_types: []const MetadataRef,
+        flags: c.LLVMDIFlags,
+    ) MetadataRef {
+        return c.LLVMDIBuilderCreateSubroutineType(
+            self.ref,
+            file orelse null,
+            @ptrCast(@constCast(param_types.ptr)),
+            @intCast(param_types.len),
+            flags,
+        );
+    }
+
+    /// Create a function definition for debug info.
+    pub fn createFunction(
+        self: DIBuilder,
+        scope: MetadataRef,
+        name: []const u8,
+        linkage_name: []const u8,
+        file: MetadataRef,
+        line_no: c_uint,
+        ty: MetadataRef,
+        is_local_to_unit: bool,
+        is_definition: bool,
+        scope_line: c_uint,
+        flags: c.LLVMDIFlags,
+        is_optimized: bool,
+    ) MetadataRef {
+        return c.LLVMDIBuilderCreateFunction(
+            self.ref,
+            scope,
+            name.ptr,
+            name.len,
+            linkage_name.ptr,
+            linkage_name.len,
+            file,
+            line_no,
+            ty,
+            @intFromBool(is_local_to_unit),
+            @intFromBool(is_definition),
+            scope_line,
+            flags,
+            @intFromBool(is_optimized),
+        );
+    }
+
+    /// Create a basic type (e.g., int, float).
+    pub fn createBasicType(
+        self: DIBuilder,
+        name: []const u8,
+        size_in_bits: u64,
+        encoding: c_uint,
+        flags: c.LLVMDIFlags,
+    ) MetadataRef {
+        return c.LLVMDIBuilderCreateBasicType(
+            self.ref,
+            name.ptr,
+            name.len,
+            size_in_bits,
+            encoding,
+            flags,
+        );
+    }
+
+    /// Create a lexical block scope.
+    pub fn createLexicalBlock(
+        self: DIBuilder,
+        scope: MetadataRef,
+        file: MetadataRef,
+        line: c_uint,
+        column: c_uint,
+    ) MetadataRef {
+        return c.LLVMDIBuilderCreateLexicalBlock(
+            self.ref,
+            scope,
+            file,
+            line,
+            column,
+        );
+    }
+};
+
+/// Create a debug location.
+pub fn createDebugLocation(
+    ctx: Context,
+    line: c_uint,
+    column: c_uint,
+    scope: MetadataRef,
+    inlined_at: ?MetadataRef,
+) MetadataRef {
+    return c.LLVMDIBuilderCreateDebugLocation(
+        ctx.ref,
+        line,
+        column,
+        scope,
+        inlined_at orelse null,
+    );
+}
+
+/// Set the current debug location for the builder.
+pub fn setCurrentDebugLocation(builder: Builder, loc: ?MetadataRef) void {
+    c.LLVMSetCurrentDebugLocation2(builder.ref, loc orelse null);
+}
+
+/// Attach debug info to a function.
+pub fn setSubprogram(func: ValueRef, subprogram: MetadataRef) void {
+    c.LLVMSetSubprogram(func, subprogram);
+}
+
+/// Get the subprogram attached to a function.
+pub fn getSubprogram(func: ValueRef) ?MetadataRef {
+    const sp = c.LLVMGetSubprogram(func);
+    if (sp == null) return null;
+    return sp;
 }

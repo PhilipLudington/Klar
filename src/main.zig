@@ -81,6 +81,7 @@ pub fn main() !void {
         var emit_asm = false;
         var opt_level: opt.OptLevel = .O0;
         var verbose_opt = false;
+        var debug_info = false;
 
         var i: usize = 3;
         while (i < args.len) : (i += 1) {
@@ -102,6 +103,8 @@ pub fn main() !void {
                 opt_level = .O3;
             } else if (std.mem.eql(u8, arg, "--verbose-opt")) {
                 verbose_opt = true;
+            } else if (std.mem.eql(u8, arg, "-g")) {
+                debug_info = true;
             }
         }
 
@@ -111,6 +114,8 @@ pub fn main() !void {
             .emit_assembly = emit_asm,
             .opt_level = opt_level,
             .verbose_opt = verbose_opt,
+            .debug_info = debug_info,
+            .source_path = args[2],
         });
     } else if (std.mem.eql(u8, command, "check")) {
         if (args.len < 3) {
@@ -340,12 +345,25 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     var emitter = codegen.Emitter.init(allocator, module_name);
     defer emitter.deinit();
 
+    // Initialize debug info if requested
+    if (options.debug_info) {
+        if (options.source_path) |source_path_str| {
+            // Extract filename and directory from path
+            const filename = std.fs.path.basename(source_path_str);
+            const directory = std.fs.path.dirname(source_path_str) orelse ".";
+            emitter.initDebugInfo(filename, directory);
+        }
+    }
+
     emitter.emitModule(module) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
         try stderr.writeAll(msg);
         return;
     };
+
+    // Finalize debug info before verification
+    emitter.finalizeDebugInfo();
 
     emitter.verify() catch |err| {
         var buf: [512]u8 = undefined;
@@ -379,18 +397,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try stdout.writeAll(msg);
     }
 
-    // Generate object file
-    const obj_path_str = std.fmt.allocPrint(allocator, "{s}.o", .{base_name}) catch {
-        try stderr.writeAll("Out of memory\n");
-        return;
-    };
-    defer allocator.free(obj_path_str);
-    const obj_path = allocator.dupeZ(u8, obj_path_str) catch {
-        try stderr.writeAll("Out of memory\n");
-        return;
-    };
-    defer allocator.free(obj_path);
-
+    // Get target info for assembly emission (needed before object generation)
     const triple = codegen.target.getDefaultTriple();
     const target_ref = codegen.llvm.getTargetFromTriple(triple) catch |err| {
         var buf: [512]u8 = undefined;
@@ -420,6 +427,43 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
     defer codegen.llvm.disposeTargetMachine(tm);
+
+    // Emit assembly if requested
+    if (options.emit_assembly) {
+        const asm_path_str = std.fmt.allocPrint(allocator, "{s}.s", .{base_name}) catch {
+            try stderr.writeAll("Out of memory\n");
+            return;
+        };
+        defer allocator.free(asm_path_str);
+        const asm_path = allocator.dupeZ(u8, asm_path_str) catch {
+            try stderr.writeAll("Out of memory\n");
+            return;
+        };
+        defer allocator.free(asm_path);
+
+        codegen.llvm.targetMachineEmitToFile(tm, emitter.getModule(), asm_path, codegen.llvm.c.LLVMAssemblyFile) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to write assembly: {s}\n", .{@errorName(err)}) catch "Failed to write assembly\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Wrote assembly to {s}.s\n", .{base_name}) catch "Wrote assembly\n";
+        try stdout.writeAll(msg);
+    }
+
+    // Generate object file
+    const obj_path_str = std.fmt.allocPrint(allocator, "{s}.o", .{base_name}) catch {
+        try stderr.writeAll("Out of memory\n");
+        return;
+    };
+    defer allocator.free(obj_path_str);
+    const obj_path = allocator.dupeZ(u8, obj_path_str) catch {
+        try stderr.writeAll("Out of memory\n");
+        return;
+    };
+    defer allocator.free(obj_path);
 
     // Print optimization info if verbose
     if (options.verbose_opt and options.opt_level != .O0) {
@@ -968,6 +1012,8 @@ fn printUsage() !void {
         \\  --debug              Enable instruction tracing
         \\  --interpret          Use tree-walking interpreter instead of VM
         \\  --emit-llvm          Output LLVM IR (.ll file)
+        \\  --emit-asm           Output assembly (.s file)
+        \\  -g                   Generate debug information (DWARF)
         \\  -o <name>            Output file name
         \\  -O0                  No optimizations (default)
         \\  -O1                  Basic optimizations (constant folding, DCE)
