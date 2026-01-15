@@ -709,7 +709,7 @@ fn printUsage() !void {
 }
 
 fn printVersion() !void {
-    try getStdOut().writeAll("Klar 0.2.0-dev\n");
+    try getStdOut().writeAll("Klar 0.3.0-dev\n");
 }
 
 // Re-export tests from all modules
