@@ -1,0 +1,124 @@
+//! std/io.kl - Input/Output operations
+//!
+//! Basic I/O operations for reading and writing.
+
+module std.io
+
+import std.core
+
+// ============================================================================
+// Traits
+// ============================================================================
+
+/// Types that can be read from.
+trait Read {
+    fn read(self: &mut Self, buf: &mut [u8]) -> Result[usize, IoError]
+}
+
+/// Types that can be written to.
+trait Write {
+    fn write(self: &mut Self, buf: &[u8]) -> Result[usize, IoError]
+    fn flush(self: &mut Self) -> Result[void, IoError]
+}
+
+// ============================================================================
+// Errors
+// ============================================================================
+
+enum IoError {
+    NotFound
+    PermissionDenied
+    ConnectionRefused
+    BrokenPipe
+    AlreadyExists
+    WouldBlock
+    InvalidInput
+    TimedOut
+    WriteZero
+    Interrupted
+    UnexpectedEof
+    Other(string)
+}
+
+// ============================================================================
+// Standard Streams
+// ============================================================================
+
+/// Standard input stream.
+struct Stdin {}
+
+impl Stdin: Read {
+    fn read(self: &mut Self, buf: &mut [u8]) -> Result[usize, IoError] {
+        // Built-in implementation
+    }
+}
+
+/// Standard output stream.
+struct Stdout {}
+
+impl Stdout: Write {
+    fn write(self: &mut Self, buf: &[u8]) -> Result[usize, IoError] {
+        // Built-in implementation
+    }
+
+    fn flush(self: &mut Self) -> Result[void, IoError] {
+        // Built-in implementation
+    }
+}
+
+/// Standard error stream.
+struct Stderr {}
+
+impl Stderr: Write {
+    fn write(self: &mut Self, buf: &[u8]) -> Result[usize, IoError] {
+        // Built-in implementation
+    }
+
+    fn flush(self: &mut Self) -> Result[void, IoError] {
+        // Built-in implementation
+    }
+}
+
+/// Get standard input handle.
+pub fn stdin() -> Stdin {
+    Stdin {}
+}
+
+/// Get standard output handle.
+pub fn stdout() -> Stdout {
+    Stdout {}
+}
+
+/// Get standard error handle.
+pub fn stderr() -> Stderr {
+    Stderr {}
+}
+
+// ============================================================================
+// Convenience Functions
+// ============================================================================
+
+/// Read a line from stdin.
+pub fn read_line() -> Result[string, IoError] {
+    // Built-in implementation
+}
+
+/// Print formatted output to stdout.
+pub fn print(msg: string) {
+    // Built-in implementation
+}
+
+/// Print formatted output to stdout with newline.
+pub fn println(msg: string) {
+    // Built-in implementation
+}
+
+/// Print formatted output to stderr.
+pub fn eprint(msg: string) {
+    // Built-in implementation
+}
+
+/// Print formatted output to stderr with newline.
+pub fn eprintln(msg: string) {
+    // Built-in implementation
+}

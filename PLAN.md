@@ -541,7 +541,37 @@ klar/
 - [x] Can run Hello World, Fibonacci, and other examples
 - [x] 78 total tests passing
 
-**Next Step**: Begin Milestone 6 - Builtins & Standard Library
+**Milestone 6**: In Progress
+- [x] Core builtins:
+  - [x] panic(msg: string) -> ! (halt with message)
+  - [x] len(collection) -> usize (array, tuple, string length)
+  - [x] type_of(value) -> string (runtime type name)
+- [x] Type conversion methods:
+  - [x] .as[T] - safe widening conversion
+  - [x] .to[T] - checked narrowing (trap on overflow)
+  - [x] .trunc[T] - truncating conversion
+- [x] String operations:
+  - [x] .to_string() on all types
+  - [x] String methods: len, is_empty, contains, starts_with, ends_with, trim
+  - [x] String methods: to_uppercase, to_lowercase, chars, bytes
+- [x] Array/collection methods:
+  - [x] len, is_empty, first, last, get, contains
+- [x] Integer methods:
+  - [x] abs, min, max
+- [x] Optional methods:
+  - [x] is_some, is_none, unwrap, unwrap_or, expect
+- [x] Standard library stubs:
+  - [x] std/core.kl - Core types and traits
+  - [x] std/io.kl - Basic I/O operations
+  - [x] std/string.kl - String utilities
+- [x] Integration tests:
+  - [x] Hello World works
+  - [x] FizzBuzz works (examples/fizzbuzz.kl)
+  - [x] Fibonacci works
+- [x] Fixed assignment expression evaluation in binary operations
+- [x] Type checker recognizes built-in methods
+
+**Next Step**: Phase 1 complete! Ready for Phase 2 (Bytecode VM) or additional language features
 
 ---
 

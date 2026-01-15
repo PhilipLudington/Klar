@@ -1,0 +1,167 @@
+//! std/core.kl - Core types and functions (auto-imported)
+//!
+//! This module contains the fundamental types and functions that are
+//! automatically available in every Klar program.
+
+module std.core
+
+// ============================================================================
+// Primitive Types (built-in)
+// ============================================================================
+// The following types are built into the language:
+// - i8, i16, i32, i64, i128, isize (signed integers)
+// - u8, u16, u32, u64, u128, usize (unsigned integers)
+// - f32, f64 (floating point)
+// - bool (true, false)
+// - char (unicode scalar value)
+// - string (UTF-8 string)
+
+// ============================================================================
+// Option Type
+// ============================================================================
+
+/// Represents an optional value - either Some(value) or None.
+/// Written as `?T` in type syntax.
+enum Option[T] {
+    Some(T)
+    None
+}
+
+// ============================================================================
+// Result Type
+// ============================================================================
+
+/// Represents a computation that may succeed with Ok(value) or fail with Err(error).
+enum Result[T, E] {
+    Ok(T)
+    Err(E)
+}
+
+// ============================================================================
+// Ordering
+// ============================================================================
+
+/// Represents the result of a comparison.
+enum Ordering {
+    Less
+    Equal
+    Greater
+}
+
+// ============================================================================
+// Core Traits
+// ============================================================================
+
+/// Types that can be compared for equality.
+trait Eq {
+    fn eq(self, other: Self) -> bool
+
+    fn ne(self, other: Self) -> bool {
+        not self.eq(other)
+    }
+}
+
+/// Types that have a total ordering.
+trait Ordered: Eq {
+    fn compare(self, other: Self) -> Ordering
+
+    fn lt(self, other: Self) -> bool {
+        self.compare(other) is Ordering.Less
+    }
+
+    fn le(self, other: Self) -> bool {
+        let cmp = self.compare(other)
+        cmp is Ordering.Less or cmp is Ordering.Equal
+    }
+
+    fn gt(self, other: Self) -> bool {
+        self.compare(other) is Ordering.Greater
+    }
+
+    fn ge(self, other: Self) -> bool {
+        let cmp = self.compare(other)
+        cmp is Ordering.Greater or cmp is Ordering.Equal
+    }
+}
+
+/// Types that can be cloned (deep copy).
+trait Clone {
+    fn clone(self) -> Self
+}
+
+/// Types that can be copied implicitly (bitwise copy).
+trait Copy: Clone {}
+
+/// Types that can be hashed.
+trait Hash {
+    fn hash(self) -> u64
+}
+
+/// Types that have a default value.
+trait Default {
+    fn default() -> Self
+}
+
+/// Types that can be converted to a string representation.
+trait Printable {
+    fn to_string(self) -> string
+}
+
+// ============================================================================
+// Core Functions (built-in implementations)
+// ============================================================================
+
+/// Print to stdout without newline.
+pub fn print(msg: string) {
+    // Built-in implementation
+}
+
+/// Print to stdout with newline.
+pub fn println(msg: string) {
+    // Built-in implementation
+}
+
+/// Assert that a condition is true. Traps if false.
+pub fn assert(condition: bool) {
+    // Built-in implementation
+}
+
+/// Assert that two values are equal. Traps if not equal.
+pub fn assert_eq[T: Eq](a: T, b: T) {
+    // Built-in implementation
+}
+
+/// Halt execution with an error message.
+pub fn panic(msg: string) -> ! {
+    // Built-in implementation - never returns
+}
+
+// ============================================================================
+// Numeric Operations
+// ============================================================================
+
+/// Returns the absolute value.
+pub fn abs[T](value: T) -> T {
+    if value < 0 { -value } else { value }
+}
+
+/// Returns the minimum of two values.
+pub fn min[T: Ordered](a: T, b: T) -> T {
+    if a.le(b) { a } else { b }
+}
+
+/// Returns the maximum of two values.
+pub fn max[T: Ordered](a: T, b: T) -> T {
+    if a.ge(b) { a } else { b }
+}
+
+/// Clamps a value to a range.
+pub fn clamp[T: Ordered](value: T, min_val: T, max_val: T) -> T {
+    if value.lt(min_val) {
+        min_val
+    } else if value.gt(max_val) {
+        max_val
+    } else {
+        value
+    }
+}

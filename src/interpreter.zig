@@ -25,6 +25,9 @@ pub const Interpreter = struct {
     current_env: *Environment,
     builder: ValueBuilder,
 
+    // Arena for runtime string allocations (freed all at once on deinit)
+    string_arena: std.heap.ArenaAllocator,
+
     // Control flow state
     return_value: ?Value,
     break_value: ?Value,
@@ -46,6 +49,7 @@ pub const Interpreter = struct {
             .global_env = global_env,
             .current_env = global_env,
             .builder = ValueBuilder.init(allocator),
+            .string_arena = std.heap.ArenaAllocator.init(allocator),
             .return_value = null,
             .break_value = null,
             .is_breaking = false,
@@ -59,6 +63,9 @@ pub const Interpreter = struct {
     }
 
     pub fn deinit(self: *Interpreter) void {
+        // Free the string arena (frees all runtime-allocated strings at once)
+        self.string_arena.deinit();
+
         self.output.deinit(self.allocator);
 
         // Free user-defined functions
@@ -81,8 +88,22 @@ pub const Interpreter = struct {
         if (self.global_env.get("assert_eq")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
+        if (self.global_env.get("panic")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("len")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("type_of")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
         self.global_env.deinit();
         self.allocator.destroy(self.global_env);
+    }
+
+    /// Get the allocator for runtime string allocations (uses arena)
+    fn stringAllocator(self: *Interpreter) Allocator {
+        return self.string_arena.allocator();
     }
 
     fn initBuiltins(self: *Interpreter) !void {
@@ -102,6 +123,18 @@ pub const Interpreter = struct {
         const assert_eq_fn = try self.allocator.create(values.BuiltinFunction);
         assert_eq_fn.* = .{ .name = "assert_eq", .func = &builtinAssertEq };
         try self.global_env.define("assert_eq", .{ .builtin = assert_eq_fn }, false);
+
+        const panic_fn = try self.allocator.create(values.BuiltinFunction);
+        panic_fn.* = .{ .name = "panic", .func = &builtinPanic };
+        try self.global_env.define("panic", .{ .builtin = panic_fn }, false);
+
+        const len_fn = try self.allocator.create(values.BuiltinFunction);
+        len_fn.* = .{ .name = "len", .func = &builtinLen };
+        try self.global_env.define("len", .{ .builtin = len_fn }, false);
+
+        const type_of_fn = try self.allocator.create(values.BuiltinFunction);
+        type_of_fn.* = .{ .name = "type_of", .func = &builtinTypeOf };
+        try self.global_env.define("type_of", .{ .builtin = type_of_fn }, false);
     }
 
     // ========================================================================
@@ -170,6 +203,30 @@ pub const Interpreter = struct {
     }
 
     fn evalBinary(self: *Interpreter, bin: *ast.Binary) RuntimeError!Value {
+        // Handle assignment operations first
+        switch (bin.op) {
+            .assign => {
+                const value = try self.evaluate(bin.right);
+                try self.assignToExpr(bin.left, value);
+                return value;
+            },
+            .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign => {
+                const current = try self.evaluate(bin.left);
+                const rhs = try self.evaluate(bin.right);
+                const new_value = switch (bin.op) {
+                    .add_assign => try self.intArithmetic(current, rhs, .add, .trap),
+                    .sub_assign => try self.intArithmetic(current, rhs, .sub, .trap),
+                    .mul_assign => try self.intArithmetic(current, rhs, .mul, .trap),
+                    .div_assign => try self.intArithmetic(current, rhs, .div, .trap),
+                    .mod_assign => try self.intArithmetic(current, rhs, .mod, .trap),
+                    else => unreachable,
+                };
+                try self.assignToExpr(bin.left, new_value);
+                return new_value;
+            },
+            else => {},
+        }
+
         // Short-circuit evaluation for logical operators
         switch (bin.op) {
             .and_ => {
@@ -233,6 +290,25 @@ pub const Interpreter = struct {
         }
     }
 
+    fn assignToExpr(self: *Interpreter, expr: ast.Expr, value: Value) RuntimeError!void {
+        switch (expr) {
+            .identifier => |id| {
+                try self.current_env.set(id.name, value);
+            },
+            .index => |idx| {
+                // TODO: implement array index assignment
+                _ = idx;
+                return RuntimeError.InvalidOperation;
+            },
+            .field => |fld| {
+                // TODO: implement field assignment
+                _ = fld;
+                return RuntimeError.InvalidOperation;
+            },
+            else => return RuntimeError.InvalidOperation,
+        }
+    }
+
     const ArithOp = enum { add, sub, mul, div, mod };
     const OverflowBehavior = enum { trap, wrap, saturate };
 
@@ -280,7 +356,7 @@ pub const Interpreter = struct {
 
         // String concatenation
         if (left == .string and right == .string and op == .add) {
-            const combined = try std.mem.concat(self.allocator, u8, &.{ left.string, right.string });
+            const combined = try std.mem.concat(self.stringAllocator(), u8, &.{ left.string, right.string });
             return self.builder.string(combined);
         }
 
@@ -497,7 +573,7 @@ pub const Interpreter = struct {
 
         // Call builtin function
         if (callee == .builtin) {
-            return callee.builtin.func(self.allocator, args.items);
+            return callee.builtin.func(self.stringAllocator(), args.items);
         }
 
         // Call user function
@@ -638,10 +714,27 @@ pub const Interpreter = struct {
     fn evalMethodCall(self: *Interpreter, method: *ast.MethodCall) RuntimeError!Value {
         const object = try self.evaluate(method.object);
 
-        // Built-in methods
+        // Evaluate arguments
+        var args = std.ArrayListUnmanaged(Value){};
+        defer args.deinit(self.allocator);
+        for (method.args) |arg| {
+            const value = try self.evaluate(arg);
+            args.append(self.allocator, value) catch return RuntimeError.OutOfMemory;
+        }
+
+        // Built-in methods on all types
+        if (std.mem.eql(u8, method.method_name, "to_string")) {
+            const str = values.valueToString(self.stringAllocator(), object) catch return RuntimeError.OutOfMemory;
+            return self.builder.string(str);
+        }
+
+        // Array/Tuple/String len method
         if (std.mem.eql(u8, method.method_name, "len")) {
             if (object == .array) {
                 return self.builder.int(@intCast(object.array.elements.len), .usize_);
+            }
+            if (object == .tuple) {
+                return self.builder.int(@intCast(object.tuple.elements.len), .usize_);
             }
             if (object == .string) {
                 return self.builder.int(@intCast(object.string.len), .usize_);
@@ -649,9 +742,199 @@ pub const Interpreter = struct {
             return RuntimeError.InvalidOperation;
         }
 
-        if (std.mem.eql(u8, method.method_name, "to_string")) {
-            const str = values.valueToString(self.allocator, object) catch return RuntimeError.OutOfMemory;
-            return self.builder.string(str);
+        // String methods
+        if (object == .string) {
+            const str = object.string;
+
+            if (std.mem.eql(u8, method.method_name, "is_empty")) {
+                return self.builder.boolean(str.len == 0);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "contains")) {
+                if (args.items.len != 1 or args.items[0] != .string) {
+                    return RuntimeError.InvalidOperation;
+                }
+                const needle = args.items[0].string;
+                const found = std.mem.indexOf(u8, str, needle) != null;
+                return self.builder.boolean(found);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "starts_with")) {
+                if (args.items.len != 1 or args.items[0] != .string) {
+                    return RuntimeError.InvalidOperation;
+                }
+                const prefix = args.items[0].string;
+                const starts = std.mem.startsWith(u8, str, prefix);
+                return self.builder.boolean(starts);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "ends_with")) {
+                if (args.items.len != 1 or args.items[0] != .string) {
+                    return RuntimeError.InvalidOperation;
+                }
+                const suffix = args.items[0].string;
+                const ends = std.mem.endsWith(u8, str, suffix);
+                return self.builder.boolean(ends);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "trim")) {
+                const trimmed = std.mem.trim(u8, str, " \t\n\r");
+                return self.builder.string(trimmed);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "to_uppercase")) {
+                var upper = self.stringAllocator().alloc(u8, str.len) catch return RuntimeError.OutOfMemory;
+                for (str, 0..) |c, i| {
+                    upper[i] = std.ascii.toUpper(c);
+                }
+                return self.builder.string(upper);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "to_lowercase")) {
+                var lower = self.stringAllocator().alloc(u8, str.len) catch return RuntimeError.OutOfMemory;
+                for (str, 0..) |c, i| {
+                    lower[i] = std.ascii.toLower(c);
+                }
+                return self.builder.string(lower);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "chars")) {
+                // Return array of characters
+                var chars = std.ArrayListUnmanaged(Value){};
+                var i: usize = 0;
+                while (i < str.len) {
+                    const cp_len = std.unicode.utf8ByteSequenceLength(str[i]) catch 1;
+                    const end = @min(i + cp_len, str.len);
+                    if (std.unicode.utf8Decode(str[i..end])) |cp| {
+                        chars.append(self.allocator, self.builder.char(cp)) catch return RuntimeError.OutOfMemory;
+                    } else |_| {
+                        // Invalid UTF-8, add replacement char
+                        chars.append(self.allocator, self.builder.char(0xFFFD)) catch return RuntimeError.OutOfMemory;
+                    }
+                    i = end;
+                }
+                return self.builder.array(chars.items);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "bytes")) {
+                // Return array of bytes
+                var bytes = std.ArrayListUnmanaged(Value){};
+                bytes.ensureTotalCapacity(self.allocator, str.len) catch return RuntimeError.OutOfMemory;
+                for (str) |b| {
+                    bytes.appendAssumeCapacity(self.builder.int(@intCast(b), .u8_));
+                }
+                return self.builder.array(bytes.items);
+            }
+        }
+
+        // Array methods
+        if (object == .array) {
+            const arr = object.array;
+
+            if (std.mem.eql(u8, method.method_name, "is_empty")) {
+                return self.builder.boolean(arr.elements.len == 0);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "first")) {
+                if (arr.elements.len == 0) {
+                    return self.builder.none();
+                }
+                return self.builder.some(arr.elements[0]);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "last")) {
+                if (arr.elements.len == 0) {
+                    return self.builder.none();
+                }
+                return self.builder.some(arr.elements[arr.elements.len - 1]);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "get")) {
+                if (args.items.len != 1 or args.items[0] != .int) {
+                    return RuntimeError.InvalidOperation;
+                }
+                const idx = args.items[0].int.value;
+                if (idx < 0 or idx >= arr.elements.len) {
+                    return self.builder.none();
+                }
+                return self.builder.some(arr.elements[@intCast(idx)]);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "contains")) {
+                if (args.items.len != 1) return RuntimeError.InvalidOperation;
+                for (arr.elements) |elem| {
+                    if (elem.eql(args.items[0])) return self.builder.boolean(true);
+                }
+                return self.builder.boolean(false);
+            }
+        }
+
+        // Integer methods
+        if (object == .int) {
+            const int = object.int;
+
+            if (std.mem.eql(u8, method.method_name, "abs")) {
+                const abs_val = if (int.value < 0) -int.value else int.value;
+                return self.builder.int(abs_val, int.type_);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "min")) {
+                if (args.items.len != 1 or args.items[0] != .int) {
+                    return RuntimeError.InvalidOperation;
+                }
+                const other = args.items[0].int.value;
+                return self.builder.int(@min(int.value, other), int.type_);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "max")) {
+                if (args.items.len != 1 or args.items[0] != .int) {
+                    return RuntimeError.InvalidOperation;
+                }
+                const other = args.items[0].int.value;
+                return self.builder.int(@max(int.value, other), int.type_);
+            }
+        }
+
+        // Optional methods
+        if (object == .optional) {
+            const opt = object.optional;
+
+            if (std.mem.eql(u8, method.method_name, "is_some")) {
+                return self.builder.boolean(opt.value != null);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "is_none")) {
+                return self.builder.boolean(opt.value == null);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "unwrap")) {
+                if (opt.value) |v| {
+                    return v.*;
+                }
+                return RuntimeError.NullUnwrap;
+            }
+
+            if (std.mem.eql(u8, method.method_name, "unwrap_or")) {
+                if (args.items.len != 1) return RuntimeError.InvalidOperation;
+                if (opt.value) |v| {
+                    return v.*;
+                }
+                return args.items[0];
+            }
+
+            if (std.mem.eql(u8, method.method_name, "expect")) {
+                if (opt.value) |v| {
+                    return v.*;
+                }
+                // Print error message and panic
+                if (args.items.len == 1 and args.items[0] == .string) {
+                    const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+                    stderr.writeAll("panic: ") catch {};
+                    stderr.writeAll(args.items[0].string) catch {};
+                    stderr.writeAll("\n") catch {};
+                }
+                return RuntimeError.Panic;
+            }
         }
 
         // Type conversion methods handled in type checker, just return the value
@@ -810,10 +1093,175 @@ pub const Interpreter = struct {
     fn evalTypeCast(self: *Interpreter, cast: *ast.TypeCast) RuntimeError!Value {
         const value = try self.evaluate(cast.expr);
 
-        // For now, just return the value - real type conversion would happen here
-        // The type checker validates conversions at compile time
-        _ = cast.cast_kind;
+        // Get target type from type expression
+        const target_type_name: []const u8 = switch (cast.target_type) {
+            .named => |n| n.name,
+            else => return value, // Non-named types just pass through for now
+        };
+
+        // Map type name to integer type
+        const target_int_type = getIntegerType(target_type_name);
+        const target_float_type = getFloatType(target_type_name);
+
+        // Handle integer conversions
+        if (value == .int) {
+            if (target_int_type) |int_type| {
+                return self.convertInteger(value.int, int_type, cast.cast_kind);
+            }
+            if (target_float_type) |float_type| {
+                // Integer to float conversion
+                const float_val: f64 = @floatFromInt(value.int.value);
+                return self.builder.float(float_val, float_type);
+            }
+            if (std.mem.eql(u8, target_type_name, "string")) {
+                // Integer to string
+                const str = values.valueToString(self.stringAllocator(), value) catch return RuntimeError.OutOfMemory;
+                return self.builder.string(str);
+            }
+        }
+
+        // Handle float conversions
+        if (value == .float) {
+            if (target_float_type) |float_type| {
+                return self.builder.float(value.float.value, float_type);
+            }
+            if (target_int_type) |int_type| {
+                // Float to integer conversion
+                return self.convertFloatToInt(value.float.value, int_type, cast.cast_kind);
+            }
+            if (std.mem.eql(u8, target_type_name, "string")) {
+                const str = values.valueToString(self.stringAllocator(), value) catch return RuntimeError.OutOfMemory;
+                return self.builder.string(str);
+            }
+        }
+
+        // Handle bool to string
+        if (value == .bool_ and std.mem.eql(u8, target_type_name, "string")) {
+            return self.builder.string(if (value.bool_) "true" else "false");
+        }
+
+        // Handle char to string
+        if (value == .char_ and std.mem.eql(u8, target_type_name, "string")) {
+            var buf: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(value.char_, &buf) catch return RuntimeError.InvalidCast;
+            const str = self.stringAllocator().dupe(u8, buf[0..len]) catch return RuntimeError.OutOfMemory;
+            return self.builder.string(str);
+        }
+
+        // Handle char to integer
+        if (value == .char_ and target_int_type != null) {
+            return self.builder.int(@intCast(value.char_), target_int_type.?);
+        }
+
+        // Handle integer to char
+        if (value == .int and std.mem.eql(u8, target_type_name, "char")) {
+            if (value.int.value < 0 or value.int.value > 0x10FFFF) {
+                return switch (cast.cast_kind) {
+                    .as => RuntimeError.InvalidCast,
+                    .to => RuntimeError.InvalidCast,
+                    .trunc => self.builder.char(@truncate(@as(u32, @intCast(@as(u128, @bitCast(value.int.value)) & 0x1FFFFF)))),
+                };
+            }
+            return self.builder.char(@intCast(value.int.value));
+        }
+
+        // Fallback: return value unchanged
         return value;
+    }
+
+    fn getIntegerType(name: []const u8) ?Integer.IntegerType {
+        const map = std.StaticStringMap(Integer.IntegerType).initComptime(.{
+            .{ "i8", .i8_ },
+            .{ "i16", .i16_ },
+            .{ "i32", .i32_ },
+            .{ "i64", .i64_ },
+            .{ "i128", .i128_ },
+            .{ "isize", .isize_ },
+            .{ "u8", .u8_ },
+            .{ "u16", .u16_ },
+            .{ "u32", .u32_ },
+            .{ "u64", .u64_ },
+            .{ "u128", .u128_ },
+            .{ "usize", .usize_ },
+        });
+        return map.get(name);
+    }
+
+    fn getFloatType(name: []const u8) ?Float.FloatType {
+        if (std.mem.eql(u8, name, "f32")) return .f32_;
+        if (std.mem.eql(u8, name, "f64")) return .f64_;
+        return null;
+    }
+
+    fn convertInteger(self: *Interpreter, int_val: Integer, target_type: Integer.IntegerType, kind: ast.CastKind) RuntimeError!Value {
+        const val = int_val.value;
+        const min = target_type.minValue();
+        const max = target_type.maxValue();
+
+        return switch (kind) {
+            .as => {
+                // Safe widening - must fit
+                if (val >= min and val <= max) {
+                    return self.builder.int(val, target_type);
+                }
+                return RuntimeError.InvalidCast;
+            },
+            .to => {
+                // Checked narrowing - trap on overflow
+                if (val < min or val > max) {
+                    return RuntimeError.InvalidCast;
+                }
+                return self.builder.int(val, target_type);
+            },
+            .trunc => {
+                // Truncating - wrap the value to fit
+                if (val >= min and val <= max) {
+                    return self.builder.int(val, target_type);
+                }
+                // Wrap the value
+                const range = max - min + 1;
+                const wrapped = @mod(val - min, range) + min;
+                return self.builder.int(wrapped, target_type);
+            },
+        };
+    }
+
+    fn convertFloatToInt(self: *Interpreter, float_val: f64, target_type: Integer.IntegerType, kind: ast.CastKind) RuntimeError!Value {
+        const min = target_type.minValue();
+        const max = target_type.maxValue();
+
+        // Check for NaN or infinity
+        if (std.math.isNan(float_val) or std.math.isInf(float_val)) {
+            return RuntimeError.InvalidCast;
+        }
+
+        const int_val: i128 = @intFromFloat(@trunc(float_val));
+
+        return switch (kind) {
+            .as => {
+                // Safe conversion (should not be used float->int, but handle gracefully)
+                if (int_val >= min and int_val <= max) {
+                    return self.builder.int(int_val, target_type);
+                }
+                return RuntimeError.InvalidCast;
+            },
+            .to => {
+                // Checked narrowing
+                if (int_val < min or int_val > max) {
+                    return RuntimeError.InvalidCast;
+                }
+                return self.builder.int(int_val, target_type);
+            },
+            .trunc => {
+                // Truncating
+                if (int_val >= min and int_val <= max) {
+                    return self.builder.int(int_val, target_type);
+                }
+                const range = max - min + 1;
+                const wrapped = @mod(int_val - min, range) + min;
+                return self.builder.int(wrapped, target_type);
+            },
+        };
     }
 
     // ========================================================================
@@ -1207,6 +1655,80 @@ fn builtinAssertEq(allocator: Allocator, args: []const Value) RuntimeError!Value
     }
 
     return .void_;
+}
+
+fn builtinPanic(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+
+    // Print panic message to stderr
+    const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+    stderr.writeAll("panic: ") catch {};
+
+    switch (args[0]) {
+        .string => |s| stderr.writeAll(s) catch {},
+        else => stderr.writeAll("(non-string value)") catch {},
+    }
+    stderr.writeAll("\n") catch {};
+
+    return RuntimeError.Panic;
+}
+
+fn builtinLen(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+
+    const len: i128 = switch (args[0]) {
+        .array => |a| @intCast(a.elements.len),
+        .tuple => |t| @intCast(t.elements.len),
+        .string => |s| @intCast(s.len),
+        else => return RuntimeError.TypeError,
+    };
+
+    return .{ .int = .{ .value = len, .type_ = .usize_ } };
+}
+
+fn builtinTypeOf(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+
+    const type_name: []const u8 = switch (args[0]) {
+        .int => |i| switch (i.type_) {
+            .i8_ => "i8",
+            .i16_ => "i16",
+            .i32_ => "i32",
+            .i64_ => "i64",
+            .i128_ => "i128",
+            .isize_ => "isize",
+            .u8_ => "u8",
+            .u16_ => "u16",
+            .u32_ => "u32",
+            .u64_ => "u64",
+            .u128_ => "u128",
+            .usize_ => "usize",
+        },
+        .float => |f| switch (f.type_) {
+            .f32_ => "f32",
+            .f64_ => "f64",
+        },
+        .bool_ => "bool",
+        .char_ => "char",
+        .string => "string",
+        .array => "[T]",
+        .tuple => "(T...)",
+        .struct_ => |s| s.type_name,
+        .enum_ => |e| e.type_name,
+        .optional => "?T",
+        .result => "Result[T, E]",
+        .reference => "&T",
+        .function => "fn",
+        .closure => "closure",
+        .builtin => "builtin",
+        .void_ => "void",
+        .never => "!",
+    };
+
+    return .{ .string = type_name };
 }
 
 // ============================================================================

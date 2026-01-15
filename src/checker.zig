@@ -681,7 +681,7 @@ pub const TypeChecker = struct {
     fn checkMethodCall(self: *TypeChecker, method: *ast.MethodCall) Type {
         const object_type = self.checkExpr(method.object);
 
-        // Check for built-in methods
+        // Check for type conversion methods
         if (std.mem.eql(u8, method.method_name, "as") or
             std.mem.eql(u8, method.method_name, "to") or
             std.mem.eql(u8, method.method_name, "trunc"))
@@ -696,8 +696,97 @@ pub const TypeChecker = struct {
             return self.type_builder.unknownType();
         }
 
+        // Check for built-in methods on all types
+        if (std.mem.eql(u8, method.method_name, "to_string")) {
+            return self.type_builder.stringType();
+        }
+
+        // Check for len method on arrays, tuples, strings
+        if (std.mem.eql(u8, method.method_name, "len")) {
+            if (object_type == .primitive and object_type.primitive == .string_) {
+                return .{ .primitive = .usize_ };
+            }
+            if (object_type == .array or object_type == .slice or object_type == .tuple) {
+                return .{ .primitive = .usize_ };
+            }
+            self.addError(.undefined_method, method.span, "len() requires array, tuple, or string", .{});
+            return self.type_builder.unknownType();
+        }
+
+        // Check for is_empty method on strings, arrays
+        if (std.mem.eql(u8, method.method_name, "is_empty")) {
+            if (object_type == .primitive and object_type.primitive == .string_) {
+                return self.type_builder.boolType();
+            }
+            if (object_type == .array or object_type == .slice) {
+                return self.type_builder.boolType();
+            }
+        }
+
+        // String methods
+        if (object_type == .primitive and object_type.primitive == .string_) {
+            if (std.mem.eql(u8, method.method_name, "contains") or
+                std.mem.eql(u8, method.method_name, "starts_with") or
+                std.mem.eql(u8, method.method_name, "ends_with"))
+            {
+                return self.type_builder.boolType();
+            }
+            if (std.mem.eql(u8, method.method_name, "trim") or
+                std.mem.eql(u8, method.method_name, "to_uppercase") or
+                std.mem.eql(u8, method.method_name, "to_lowercase"))
+            {
+                return self.type_builder.stringType();
+            }
+            if (std.mem.eql(u8, method.method_name, "chars")) {
+                // Return array of char - for now return unknown
+                return self.type_builder.unknownType();
+            }
+            if (std.mem.eql(u8, method.method_name, "bytes")) {
+                // Return array of u8 - for now return unknown
+                return self.type_builder.unknownType();
+            }
+        }
+
+        // Integer methods
+        if (object_type.isInteger()) {
+            if (std.mem.eql(u8, method.method_name, "abs") or
+                std.mem.eql(u8, method.method_name, "min") or
+                std.mem.eql(u8, method.method_name, "max"))
+            {
+                return object_type;
+            }
+        }
+
+        // Array methods
+        if (object_type == .array or object_type == .slice) {
+            if (std.mem.eql(u8, method.method_name, "first") or
+                std.mem.eql(u8, method.method_name, "last") or
+                std.mem.eql(u8, method.method_name, "get"))
+            {
+                // Returns Optional[element_type] - for now return unknown
+                return self.type_builder.unknownType();
+            }
+            if (std.mem.eql(u8, method.method_name, "contains")) {
+                return self.type_builder.boolType();
+            }
+        }
+
+        // Optional methods
+        if (object_type == .optional) {
+            if (std.mem.eql(u8, method.method_name, "is_some") or
+                std.mem.eql(u8, method.method_name, "is_none"))
+            {
+                return self.type_builder.boolType();
+            }
+            if (std.mem.eql(u8, method.method_name, "unwrap") or
+                std.mem.eql(u8, method.method_name, "unwrap_or") or
+                std.mem.eql(u8, method.method_name, "expect"))
+            {
+                return object_type.optional.*;
+            }
+        }
+
         // TODO: look up method on type's impl or trait
-        _ = object_type;
         self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
         return self.type_builder.unknownType();
     }

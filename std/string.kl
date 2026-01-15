@@ -1,0 +1,215 @@
+//! std/string.kl - String utilities
+//!
+//! Extended string operations beyond the built-in methods.
+
+module std.string
+
+import std.core
+
+// ============================================================================
+// String Type Extensions
+// ============================================================================
+
+// Note: The `string` type is built-in with these methods:
+// - len() -> usize
+// - is_empty() -> bool
+// - contains(pattern: string) -> bool
+// - starts_with(prefix: string) -> bool
+// - ends_with(suffix: string) -> bool
+// - trim() -> string
+// - to_uppercase() -> string
+// - to_lowercase() -> string
+// - chars() -> [char]
+// - bytes() -> [u8]
+
+// ============================================================================
+// StringBuilder
+// ============================================================================
+
+/// Efficiently build strings by appending parts.
+struct StringBuilder {
+    parts: [string]
+}
+
+impl StringBuilder {
+    /// Create a new empty StringBuilder.
+    pub fn new() -> StringBuilder {
+        StringBuilder { parts: [] }
+    }
+
+    /// Create a StringBuilder with initial capacity hint.
+    pub fn with_capacity(cap: usize) -> StringBuilder {
+        StringBuilder { parts: [] }
+    }
+
+    /// Append a string.
+    pub fn append(self: &mut Self, s: string) -> &mut Self {
+        // Implementation would push to parts array
+        self
+    }
+
+    /// Append a character.
+    pub fn append_char(self: &mut Self, c: char) -> &mut Self {
+        self
+    }
+
+    /// Build the final string.
+    pub fn build(self) -> string {
+        // Implementation would join all parts
+        ""
+    }
+
+    /// Get current length.
+    pub fn len(self) -> usize {
+        var total = 0
+        for part in self.parts {
+            total = total + part.len()
+        }
+        total
+    }
+
+    /// Check if empty.
+    pub fn is_empty(self) -> bool {
+        self.parts.len() == 0
+    }
+
+    /// Clear the builder.
+    pub fn clear(self: &mut Self) {
+        // Implementation would clear parts
+    }
+}
+
+// ============================================================================
+// Parsing Functions
+// ============================================================================
+
+/// Parse a string as an integer.
+pub fn parse_int(s: string) -> Result[i64, ParseError] {
+    // Built-in implementation
+}
+
+/// Parse a string as an unsigned integer.
+pub fn parse_uint(s: string) -> Result[u64, ParseError] {
+    // Built-in implementation
+}
+
+/// Parse a string as a float.
+pub fn parse_float(s: string) -> Result[f64, ParseError] {
+    // Built-in implementation
+}
+
+/// Parse a string as a boolean.
+pub fn parse_bool(s: string) -> Result[bool, ParseError] {
+    s match {
+        "true" | "True" | "TRUE" | "1" => Ok(true)
+        "false" | "False" | "FALSE" | "0" => Ok(false)
+        _ => Err(ParseError.InvalidFormat)
+    }
+}
+
+enum ParseError {
+    InvalidFormat
+    Overflow
+    Empty
+}
+
+// ============================================================================
+// String Utilities
+// ============================================================================
+
+/// Join an array of strings with a separator.
+pub fn join(parts: [string], separator: string) -> string {
+    if parts.len() == 0 {
+        return ""
+    }
+    var result = parts[0]
+    for i in 1..parts.len() {
+        result = result + separator + parts[i]
+    }
+    result
+}
+
+/// Split a string by a separator.
+pub fn split(s: string, separator: string) -> [string] {
+    // Built-in implementation
+    []
+}
+
+/// Repeat a string n times.
+pub fn repeat(s: string, n: usize) -> string {
+    var result = ""
+    for i in 0..n {
+        result = result + s
+    }
+    result
+}
+
+/// Pad a string to a minimum length with spaces on the left.
+pub fn pad_left(s: string, width: usize) -> string {
+    if s.len() >= width {
+        return s
+    }
+    repeat(" ", width - s.len()) + s
+}
+
+/// Pad a string to a minimum length with spaces on the right.
+pub fn pad_right(s: string, width: usize) -> string {
+    if s.len() >= width {
+        return s
+    }
+    s + repeat(" ", width - s.len())
+}
+
+/// Check if a string contains only whitespace.
+pub fn is_whitespace(s: string) -> bool {
+    for c in s.chars() {
+        if c != ' ' and c != '\t' and c != '\n' and c != '\r' {
+            return false
+        }
+    }
+    true
+}
+
+/// Check if a string contains only digits.
+pub fn is_numeric(s: string) -> bool {
+    if s.is_empty() {
+        return false
+    }
+    for c in s.chars() {
+        if c < '0' or c > '9' {
+            return false
+        }
+    }
+    true
+}
+
+/// Check if a string contains only alphabetic characters.
+pub fn is_alphabetic(s: string) -> bool {
+    if s.is_empty() {
+        return false
+    }
+    for c in s.chars() {
+        let is_lower = c >= 'a' and c <= 'z'
+        let is_upper = c >= 'A' and c <= 'Z'
+        if not is_lower and not is_upper {
+            return false
+        }
+    }
+    true
+}
+
+/// Check if a string contains only alphanumeric characters.
+pub fn is_alphanumeric(s: string) -> bool {
+    if s.is_empty() {
+        return false
+    }
+    for c in s.chars() {
+        let is_lower = c >= 'a' and c <= 'z'
+        let is_upper = c >= 'A' and c <= 'Z'
+        let is_digit = c >= '0' and c <= '9'
+        if not is_lower and not is_upper and not is_digit {
+            return false
+        }
+    }
+    true
+}
