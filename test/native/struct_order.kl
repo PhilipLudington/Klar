@@ -1,0 +1,14 @@
+// test_struct_order.kl - Test struct field ordering (fields in literal can be in any order)
+
+struct Triple {
+    a: i32,
+    b: i32,
+    c: i32,
+}
+
+fn main() -> i32 {
+    // Note: fields in literal in different order than declaration
+    let t = Triple { c: 30, a: 10, b: 2 }
+    // Should return: 10 + 2 + 30 = 42
+    t.a + t.b + t.c
+}

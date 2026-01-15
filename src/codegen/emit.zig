@@ -67,6 +67,8 @@ pub const Emitter = struct {
         is_alloca: bool,
         ty: llvm.TypeRef,
         is_signed: bool,
+        /// For struct variables, the name of the struct type for field resolution.
+        struct_type_name: ?[]const u8 = null,
     };
 
     const LoopContext = struct {
@@ -129,7 +131,15 @@ pub const Emitter = struct {
 
     /// Emit a complete module.
     pub fn emitModule(self: *Emitter, module: ast.Module) EmitError!void {
-        // First pass: declare all functions
+        // First pass: collect struct declarations for field name resolution
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .struct_decl => |s| try self.registerStructDecl(s),
+                else => {},
+            }
+        }
+
+        // Second pass: declare all functions
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| try self.declareFunction(f),
@@ -137,7 +147,7 @@ pub const Emitter = struct {
             }
         }
 
-        // Second pass: emit function bodies
+        // Third pass: emit function bodies
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
@@ -148,6 +158,17 @@ pub const Emitter = struct {
                 else => {},
             }
         }
+    }
+
+    /// Register a struct declaration for later field name resolution.
+    fn registerStructDecl(self: *Emitter, struct_decl: *ast.StructDecl) EmitError!void {
+        // Skip if already registered
+        if (self.struct_types.contains(struct_decl.name)) {
+            return;
+        }
+
+        // Use getOrCreateStructType to register the struct with field names
+        _ = try self.getOrCreateStructType(struct_decl.name, struct_decl.fields);
     }
 
     fn declareFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
@@ -262,11 +283,14 @@ pub const Emitter = struct {
                 const alloca = self.builder.buildAlloca(ty, name);
                 _ = self.builder.buildStore(value, alloca);
                 const is_signed = if (decl.type_) |t| self.isTypeSigned(t) else true;
+                // Extract struct type name if this is a struct literal
+                const struct_type_name = self.getStructTypeName(decl.value);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
                     .ty = ty,
                     .is_signed = is_signed,
+                    .struct_type_name = struct_type_name,
                 }) catch return EmitError.OutOfMemory;
             },
             .var_decl => |decl| {
@@ -277,11 +301,14 @@ pub const Emitter = struct {
                 const alloca = self.builder.buildAlloca(ty, name);
                 _ = self.builder.buildStore(value, alloca);
                 const is_signed = if (decl.type_) |t| self.isTypeSigned(t) else true;
+                // Extract struct type name if this is a struct literal
+                const struct_type_name = self.getStructTypeName(decl.value);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
                     .ty = ty,
                     .is_signed = is_signed,
+                    .struct_type_name = struct_type_name,
                 }) catch return EmitError.OutOfMemory;
             },
             .return_stmt => |ret| {
@@ -1118,6 +1145,34 @@ pub const Emitter = struct {
         try self.module.verify();
     }
 
+    /// Extract struct type name from an expression if it's a struct literal.
+    fn getStructTypeName(_: *Emitter, expr: ast.Expr) ?[]const u8 {
+        return switch (expr) {
+            .struct_literal => |lit| {
+                if (lit.type_name) |type_name| {
+                    return switch (type_name) {
+                        .named => |n| n.name,
+                        else => null,
+                    };
+                }
+                return null;
+            },
+            else => null,
+        };
+    }
+
+    /// Look up a field index by name for a struct type.
+    fn lookupFieldIndex(self: *Emitter, struct_type_name: []const u8, field_name: []const u8) ?u32 {
+        if (self.struct_types.get(struct_type_name)) |info| {
+            for (info.field_names, 0..) |name, i| {
+                if (std.mem.eql(u8, name, field_name)) {
+                    return info.field_indices[i];
+                }
+            }
+        }
+        return null;
+    }
+
     // =========================================================================
     // Composite Type Support
     // =========================================================================
@@ -1167,23 +1222,74 @@ pub const Emitter = struct {
             else => return EmitError.UnsupportedFeature,
         };
 
-        // For now, we need to know the struct definition to emit properly.
-        // Create a simple struct type based on the field initializers.
+        // Check if we have a registered struct type (from struct declaration)
+        if (self.struct_types.get(type_name)) |struct_info| {
+            // Use the registered struct type - store fields in correct order
+            const struct_type = struct_info.llvm_type;
+
+            // Allocate stack space for the struct
+            const type_name_z = self.allocator.dupeZ(u8, type_name) catch return EmitError.OutOfMemory;
+            defer self.allocator.free(type_name_z);
+            const alloca = self.builder.buildAlloca(struct_type, type_name_z);
+
+            // Store each field value by looking up field name -> index
+            for (lit.fields) |field_init| {
+                // Find the field index by name
+                const field_idx = self.lookupFieldIndex(type_name, field_init.name) orelse
+                    return EmitError.InvalidAST;
+
+                const value = try self.emitExpr(field_init.value);
+                var indices = [_]llvm.ValueRef{
+                    llvm.Const.int32(self.ctx, 0),
+                    llvm.Const.int32(self.ctx, @intCast(field_idx)),
+                };
+                const field_ptr = self.builder.buildGEP(struct_type, alloca, &indices, "field.ptr");
+                _ = self.builder.buildStore(value, field_ptr);
+            }
+
+            // Load and return the complete struct value
+            return self.builder.buildLoad(struct_type, alloca, "struct.val");
+        }
+
+        // Fallback: Create a simple struct type based on the field initializers (in order).
+        // This is used when no struct declaration is available.
         var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
         defer field_types.deinit(self.allocator);
 
         var field_values = std.ArrayListUnmanaged(llvm.ValueRef){};
         defer field_values.deinit(self.allocator);
 
+        var field_names = std.ArrayListUnmanaged([]const u8){};
+        defer field_names.deinit(self.allocator);
+
         for (lit.fields) |field_init| {
             const value = try self.emitExpr(field_init.value);
             const value_type = llvm.typeOf(value);
             field_types.append(self.allocator, value_type) catch return EmitError.OutOfMemory;
             field_values.append(self.allocator, value) catch return EmitError.OutOfMemory;
+            field_names.append(self.allocator, field_init.name) catch return EmitError.OutOfMemory;
         }
 
-        // Create struct type
+        // Create struct type and register it for field access
         const struct_type = llvm.Types.struct_(self.ctx, field_types.items, false);
+
+        // Register the struct type info for later field access
+        const field_indices = self.allocator.alloc(u32, lit.fields.len) catch return EmitError.OutOfMemory;
+        errdefer self.allocator.free(field_indices);
+        for (field_indices, 0..) |*idx, i| {
+            idx.* = @intCast(i);
+        }
+        const field_names_owned = self.allocator.alloc([]const u8, lit.fields.len) catch return EmitError.OutOfMemory;
+        errdefer self.allocator.free(field_names_owned);
+        for (field_names_owned, field_names.items) |*dst, src| {
+            dst.* = src;
+        }
+
+        self.struct_types.put(type_name, .{
+            .llvm_type = struct_type,
+            .field_indices = field_indices,
+            .field_names = field_names_owned,
+        }) catch return EmitError.OutOfMemory;
 
         // Allocate stack space for the struct
         const type_name_z = self.allocator.dupeZ(u8, type_name) catch return EmitError.OutOfMemory;
@@ -1292,7 +1398,7 @@ pub const Emitter = struct {
             const id = field.object.identifier;
             if (self.named_values.get(id.name)) |local| {
                 if (local.is_alloca) {
-                    // Get the field pointer directly from the variable's alloca
+                    // First try numeric index (for tuples)
                     if (field_index) |idx| {
                         var indices = [_]llvm.ValueRef{
                             llvm.Const.int32(self.ctx, 0),
@@ -1303,8 +1409,20 @@ pub const Emitter = struct {
                         const field_type = llvm.c.LLVMStructGetTypeAtIndex(local.ty, idx);
                         return self.builder.buildLoad(field_type, field_ptr, "field.val");
                     }
-                    // Named field access - need to find the field index
-                    // For now, return error - proper implementation needs type info
+
+                    // Named field access - look up field index from struct type name
+                    if (local.struct_type_name) |struct_name| {
+                        if (self.lookupFieldIndex(struct_name, field.field_name)) |idx| {
+                            var indices = [_]llvm.ValueRef{
+                                llvm.Const.int32(self.ctx, 0),
+                                llvm.Const.int32(self.ctx, @intCast(idx)),
+                            };
+                            const field_ptr = self.builder.buildGEP(local.ty, local.value, &indices, "field.ptr");
+                            const field_type = llvm.c.LLVMStructGetTypeAtIndex(local.ty, idx);
+                            return self.builder.buildLoad(field_type, field_ptr, "field.val");
+                        }
+                    }
+
                     return EmitError.UnsupportedFeature;
                 }
             }
@@ -1331,7 +1449,8 @@ pub const Emitter = struct {
                 const field_type = llvm.c.LLVMStructGetTypeAtIndex(obj_type, idx);
                 return self.builder.buildLoad(field_type, field_ptr, "field.val");
             } else {
-                // Named field access - for now, try to find by searching struct types
+                // Named field access on non-identifier struct - need type context from expression
+                // For now, search all registered struct types to find a match by field count
                 return EmitError.UnsupportedFeature;
             }
         }
@@ -1351,6 +1470,47 @@ pub const Emitter = struct {
         const obj_type_kind = llvm.getTypeKind(obj_type);
 
         if (obj_type_kind == llvm.c.LLVMArrayTypeKind) {
+            // Array access with bounds checking
+
+            // Get array length
+            const array_len = llvm.Types.getArrayLength(obj_type);
+            const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
+
+            // Zero-extend or sign-extend index to i64 for comparison
+            const index_type = llvm.typeOf(index_val);
+            const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
+            const i64_type = llvm.Types.int64(self.ctx);
+
+            const index_i64 = if (index_bits < 64)
+                self.builder.buildZExt(index_val, i64_type, "idx.ext")
+            else if (index_bits > 64)
+                self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
+            else
+                index_val;
+
+            // Bounds check: index < length (unsigned comparison)
+            const in_bounds = self.builder.buildICmp(
+                llvm.c.LLVMIntULT,
+                index_i64,
+                len_val,
+                "bounds.check",
+            );
+
+            // Create blocks for bounds check
+            const func = self.current_function orelse return EmitError.InvalidAST;
+            const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
+            const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
+
+            // Branch based on bounds check
+            _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+            // Fail block: trap/unreachable
+            self.builder.positionAtEnd(fail_block);
+            _ = self.builder.buildUnreachable();
+
+            // Continue in OK block
+            self.builder.positionAtEnd(ok_block);
+
             // Array access - store to temp for GEP
             const alloca = self.builder.buildAlloca(obj_type, "arr.tmp");
             _ = self.builder.buildStore(obj, alloca);

@@ -398,6 +398,11 @@ pub const Types = struct {
         return c.LLVMArrayType2(elem_type, count);
     }
 
+    /// Get the length of an array type.
+    pub fn getArrayLength(array_type: TypeRef) u64 {
+        return c.LLVMGetArrayLength2(array_type);
+    }
+
     pub fn struct_(ctx: Context, elem_types: []const TypeRef, is_packed: bool) TypeRef {
         return c.LLVMStructTypeInContext(
             ctx.ref,
