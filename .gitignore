@@ -6,3 +6,11 @@ zig-out/
 
 # Temporary test files
 test_io
+
+# LLVM IR output files
+*.ll
+
+# GitStat result files
+.build-results.json
+.test-results.json
+.native-test-results.json
