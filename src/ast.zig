@@ -51,6 +51,7 @@ pub const Expr = union(enum) {
     tuple_literal: *TupleLiteral,
     type_cast: *TypeCast,
     grouped: *Grouped,
+    interpolated_string: *InterpolatedString,
 
     pub fn span(self: Expr) Span {
         return switch (self) {
@@ -73,6 +74,7 @@ pub const Expr = union(enum) {
             .tuple_literal => |t| t.span,
             .type_cast => |t| t.span,
             .grouped => |g| g.span,
+            .interpolated_string => |i| i.span,
         };
     }
 };
@@ -329,6 +331,18 @@ pub const CastKind = enum {
 pub const Grouped = struct {
     expr: Expr,
     span: Span,
+};
+
+/// Interpolated string like "Hello, {name}!"
+/// Parts alternate between string segments and expressions.
+pub const InterpolatedString = struct {
+    parts: []const InterpolatedPart,
+    span: Span,
+};
+
+pub const InterpolatedPart = union(enum) {
+    string: []const u8,
+    expr: Expr,
 };
 
 // ============================================================================

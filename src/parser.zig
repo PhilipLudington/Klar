@@ -388,10 +388,75 @@ pub const Parser = struct {
         // Strip quotes (simple approach - full impl would process escapes)
         const content = if (text.len >= 2) text[1 .. text.len - 1] else text;
 
+        // Check for interpolation (contains unescaped {)
+        if (std.mem.indexOfScalar(u8, content, '{')) |_| {
+            return self.parseInterpolatedString(content, span);
+        }
+
         return .{ .literal = .{
             .kind = .{ .string = content },
             .span = span,
         } };
+    }
+
+    fn parseInterpolatedString(self: *Parser, content: []const u8, span: ast.Span) ParseError!ast.Expr {
+        var parts = std.ArrayListUnmanaged(ast.InterpolatedPart){};
+        var pos: usize = 0;
+
+        while (pos < content.len) {
+            // Find next '{'
+            if (std.mem.indexOfScalarPos(u8, content, pos, '{')) |brace_start| {
+                // Add string segment before the brace (if any)
+                if (brace_start > pos) {
+                    try parts.append(self.allocator, .{ .string = content[pos..brace_start] });
+                }
+
+                // Find matching '}'
+                var brace_depth: usize = 1;
+                var expr_end: usize = brace_start + 1;
+                while (expr_end < content.len and brace_depth > 0) {
+                    if (content[expr_end] == '{') {
+                        brace_depth += 1;
+                    } else if (content[expr_end] == '}') {
+                        brace_depth -= 1;
+                    }
+                    if (brace_depth > 0) expr_end += 1;
+                }
+
+                if (brace_depth != 0) {
+                    try self.reportError("unmatched '{' in string interpolation");
+                    return ParseError.UnterminatedString;
+                }
+
+                // Parse the expression inside { }
+                const expr_text = content[brace_start + 1 .. expr_end];
+                const expr = try self.parseExpressionFromString(expr_text);
+                try parts.append(self.allocator, .{ .expr = expr });
+
+                pos = expr_end + 1;
+            } else {
+                // No more braces, add remaining string
+                if (pos < content.len) {
+                    try parts.append(self.allocator, .{ .string = content[pos..] });
+                }
+                break;
+            }
+        }
+
+        const interp = try self.create(ast.InterpolatedString, .{
+            .parts = try self.dupeSlice(ast.InterpolatedPart, parts.items),
+            .span = span,
+        });
+        return .{ .interpolated_string = interp };
+    }
+
+    fn parseExpressionFromString(self: *Parser, expr_text: []const u8) ParseError!ast.Expr {
+        // Create a sub-lexer and sub-parser for the expression
+        var lexer = Lexer.init(expr_text);
+        var sub_parser = Parser.init(self.allocator, &lexer, expr_text);
+        defer sub_parser.deinit();
+
+        return sub_parser.parseExpression();
     }
 
     fn parseCharLiteral(self: *Parser) ParseError!ast.Expr {

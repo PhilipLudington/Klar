@@ -410,6 +410,7 @@ pub const TypeChecker = struct {
             .tuple_literal => |t| self.checkTupleLiteral(t),
             .type_cast => |tc| self.checkTypeCast(tc),
             .grouped => |g| self.checkExpr(g.expr),
+            .interpolated_string => |is| self.checkInterpolatedString(is),
         };
     }
 
@@ -421,6 +422,18 @@ pub const TypeChecker = struct {
             .char => self.type_builder.charType(),
             .bool_ => self.type_builder.boolType(),
         };
+    }
+
+    fn checkInterpolatedString(self: *TypeChecker, interp: *ast.InterpolatedString) Type {
+        // Type-check all embedded expressions (any type is allowed, will be converted to string)
+        for (interp.parts) |part| {
+            switch (part) {
+                .string => {},
+                .expr => |e| _ = self.checkExpr(e),
+            }
+        }
+        // Interpolated strings always produce a string
+        return self.type_builder.stringType();
     }
 
     fn checkIdentifier(self: *TypeChecker, id: ast.Identifier) Type {

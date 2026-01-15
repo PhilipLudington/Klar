@@ -601,7 +601,7 @@ Ready for Phase 2 (Bytecode VM) or additional language features.
   - Stack-based or register-based VM
   - Garbage collection strategy
 - Consider adding before Phase 2:
-  - String interpolation (`"value: {x}"`)
+  - ~~String interpolation (`"value: {x}"`)~~ ✓ Implemented
   - More collection methods (map, filter, reduce)
   - Import/module system implementation
   - REPL mode

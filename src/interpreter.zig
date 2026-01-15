@@ -182,6 +182,7 @@ pub const Interpreter = struct {
             .tuple_literal => |t| self.evalTupleLiteral(t),
             .type_cast => |tc| self.evalTypeCast(tc),
             .grouped => |g| self.evaluate(g.expr),
+            .interpolated_string => |is| self.evalInterpolatedString(is),
         };
     }
 
@@ -193,6 +194,32 @@ pub const Interpreter = struct {
             .char => |c| self.builder.char(c),
             .bool_ => |b| self.builder.boolean(b),
         };
+    }
+
+    fn evalInterpolatedString(self: *Interpreter, interp: *ast.InterpolatedString) RuntimeError!Value {
+        // Build the result string by concatenating parts
+        var result = std.ArrayListUnmanaged(u8){};
+        const arena_alloc = self.stringAllocator();
+
+        for (interp.parts) |part| {
+            switch (part) {
+                .string => |s| {
+                    result.appendSlice(arena_alloc, s) catch return RuntimeError.OutOfMemory;
+                },
+                .expr => |e| {
+                    const value = try self.evaluate(e);
+                    // For strings, use the raw value without quotes
+                    if (value == .string) {
+                        result.appendSlice(arena_alloc, value.string) catch return RuntimeError.OutOfMemory;
+                    } else {
+                        const str = values.valueToString(arena_alloc, value) catch return RuntimeError.OutOfMemory;
+                        result.appendSlice(arena_alloc, str) catch return RuntimeError.OutOfMemory;
+                    }
+                },
+            }
+        }
+
+        return self.builder.string(result.items);
     }
 
     fn evalIdentifier(self: *Interpreter, id: ast.Identifier) RuntimeError!Value {
