@@ -448,6 +448,26 @@ pub const TypeChecker = struct {
                         const inner = try self.resolveTypeExpr(g.args[0]);
                         return try self.type_builder.weakRcType(inner);
                     }
+
+                    // Arc[T] - atomic reference-counted type (thread-safe)
+                    if (std.mem.eql(u8, base_name, "Arc")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "Arc expects exactly 1 type argument", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner = try self.resolveTypeExpr(g.args[0]);
+                        return try self.type_builder.arcType(inner);
+                    }
+
+                    // WeakArc[T] - weak atomic reference type (thread-safe)
+                    if (std.mem.eql(u8, base_name, "WeakArc")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "WeakArc expects exactly 1 type argument", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner = try self.resolveTypeExpr(g.args[0]);
+                        return try self.type_builder.weakArcType(inner);
+                    }
                 }
 
                 // Generic user-defined type
@@ -824,6 +844,22 @@ pub const TypeChecker = struct {
                 return self.type_builder.unknownType();
             }
 
+            // Arc.new(value) -> Arc[T] where T is the type of value (thread-safe)
+            if (std.mem.eql(u8, obj_name, "Arc") and std.mem.eql(u8, method.method_name, "new")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "Arc.new() expects exactly 1 argument", .{});
+                    return self.type_builder.unknownType();
+                }
+                const value_type = self.checkExpr(method.args[0]);
+                return self.type_builder.arcType(value_type) catch self.type_builder.unknownType();
+            }
+
+            // WeakArc.new() is not valid - WeakArc can only be created from Arc.downgrade()
+            if (std.mem.eql(u8, obj_name, "WeakArc") and std.mem.eql(u8, method.method_name, "new")) {
+                self.addError(.invalid_call, method.span, "WeakArc cannot be created directly; use arc_value.downgrade()", .{});
+                return self.type_builder.unknownType();
+            }
+
             // Cell.new(value) -> Cell[T] where T is the type of value
             // Cell provides interior mutability for Copy types
             if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, method.method_name, "new")) {
@@ -1077,6 +1113,84 @@ pub const TypeChecker = struct {
                 }
                 const rc_type = self.type_builder.rcType(inner_type) catch return self.type_builder.unknownType();
                 return self.type_builder.optionalType(rc_type) catch self.type_builder.unknownType();
+            }
+
+            // strong_count() -> usize
+            if (std.mem.eql(u8, method.method_name, "strong_count")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "strong_count() takes no arguments", .{});
+                }
+                return .{ .primitive = .usize_ };
+            }
+
+            // weak_count() -> usize
+            if (std.mem.eql(u8, method.method_name, "weak_count")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "weak_count() takes no arguments", .{});
+                }
+                return .{ .primitive = .usize_ };
+            }
+        }
+
+        // Arc methods (thread-safe atomic reference counting)
+        if (object_type == .arc) {
+            const inner_type = object_type.arc.inner;
+
+            // clone() -> Arc[T] (atomically increments reference count)
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
+                }
+                return object_type; // Returns same Arc[T] type
+            }
+
+            // downgrade() -> WeakArc[T] (creates weak reference)
+            if (std.mem.eql(u8, method.method_name, "downgrade")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "downgrade() takes no arguments", .{});
+                }
+                return self.type_builder.weakArcType(inner_type) catch self.type_builder.unknownType();
+            }
+
+            // strong_count() -> usize
+            if (std.mem.eql(u8, method.method_name, "strong_count")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "strong_count() takes no arguments", .{});
+                }
+                return .{ .primitive = .usize_ };
+            }
+
+            // weak_count() -> usize
+            if (std.mem.eql(u8, method.method_name, "weak_count")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "weak_count() takes no arguments", .{});
+                }
+                return .{ .primitive = .usize_ };
+            }
+
+            // To access the inner value of Arc, use Arc.new(Cell.new(value))
+            // then call cell.get() and cell.set() for interior mutability
+        }
+
+        // WeakArc methods (thread-safe weak references)
+        if (object_type == .weak_arc) {
+            const inner_type = object_type.weak_arc.inner;
+
+            // clone() -> WeakArc[T] (atomically increments weak count)
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
+                }
+                return object_type; // Returns same WeakArc[T] type
+            }
+
+            // upgrade() -> ?Arc[T] (attempts to atomically get strong reference)
+            if (std.mem.eql(u8, method.method_name, "upgrade")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "upgrade() takes no arguments", .{});
+                }
+                const arc_type = self.type_builder.arcType(inner_type) catch return self.type_builder.unknownType();
+                return self.type_builder.optionalType(arc_type) catch self.type_builder.unknownType();
             }
 
             // strong_count() -> usize

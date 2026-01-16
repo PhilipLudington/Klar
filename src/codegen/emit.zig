@@ -97,8 +97,10 @@ pub const Emitter = struct {
         is_signed: bool,
         /// For struct variables, the name of the struct type for field resolution.
         struct_type_name: ?[]const u8 = null,
-        /// For Rc[T] or reference types, the inner type that can be dereferenced.
+        /// For Rc[T] or Arc[T], the inner type that can be dereferenced.
         inner_type: ?llvm.TypeRef = null,
+        /// True if this is an Arc type (uses atomic operations).
+        is_arc: bool = false,
     };
 
     const LoopContext = struct {
@@ -111,8 +113,10 @@ pub const Emitter = struct {
         name: []const u8,
         alloca: llvm.ValueRef,
         inner_type: llvm.TypeRef,
-        /// True if this is an Rc type (needs klar_rc_drop).
+        /// True if this is an Rc/Arc type (needs ref-counted drop).
         is_rc: bool,
+        /// True if this is an Arc type (uses atomic operations).
+        is_arc: bool = false,
     };
 
     /// Info about a scope for drop tracking.
@@ -530,8 +534,9 @@ pub const Emitter = struct {
                 const is_signed = if (decl.type_) |t| self.isTypeSigned(t) else true;
                 // Extract struct type name if this is a struct literal
                 const struct_type_name = self.getStructTypeName(decl.value);
-                // For Rc types, track the inner type for dereferencing
+                // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
+                const is_arc = self.isArcType(decl.value);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -539,11 +544,12 @@ pub const Emitter = struct {
                     .is_signed = is_signed,
                     .struct_type_name = struct_type_name,
                     .inner_type = inner_type,
+                    .is_arc = is_arc,
                 }) catch return EmitError.OutOfMemory;
 
-                // Register Rc variables for automatic dropping
+                // Register Rc/Arc variables for automatic dropping
                 if (inner_type) |it| {
-                    try self.registerDroppable(decl.name, alloca, it, true);
+                    try self.registerDroppable(decl.name, alloca, it, true, is_arc);
                 }
             },
             .var_decl => |decl| {
@@ -556,8 +562,9 @@ pub const Emitter = struct {
                 const is_signed = if (decl.type_) |t| self.isTypeSigned(t) else true;
                 // Extract struct type name if this is a struct literal
                 const struct_type_name = self.getStructTypeName(decl.value);
-                // For Rc types, track the inner type for dereferencing
+                // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
+                const is_arc = self.isArcType(decl.value);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -565,11 +572,12 @@ pub const Emitter = struct {
                     .is_signed = is_signed,
                     .struct_type_name = struct_type_name,
                     .inner_type = inner_type,
+                    .is_arc = is_arc,
                 }) catch return EmitError.OutOfMemory;
 
-                // Register Rc variables for automatic dropping
+                // Register Rc/Arc variables for automatic dropping
                 if (inner_type) |it| {
-                    try self.registerDroppable(decl.name, alloca, it, true);
+                    try self.registerDroppable(decl.name, alloca, it, true, is_arc);
                 }
             },
             .return_stmt => |ret| {
@@ -1269,16 +1277,22 @@ pub const Emitter = struct {
         return llvm.Types.int32(self.ctx);
     }
 
-    /// Try to get the inner type of an Rc or Cell expression.
-    /// Returns null if the expression is not an Rc or Cell type.
+    /// Try to get the inner type of an Rc, Arc, or Cell expression.
+    /// Returns null if the expression is not an Rc, Arc, or Cell type.
     fn tryGetRcInnerType(self: *Emitter, expr: ast.Expr) ?llvm.TypeRef {
-        // Check for Rc.new(value) or Cell.new(value) - inner type is type of value
+        // Check for Rc.new(value), Arc.new(value), or Cell.new(value) - inner type is type of value
         if (expr == .method_call) {
             const method = expr.method_call;
             if (method.object == .identifier) {
                 const obj_name = method.object.identifier.name;
                 // Rc.new(value)
                 if (std.mem.eql(u8, obj_name, "Rc") and std.mem.eql(u8, method.method_name, "new")) {
+                    if (method.args.len > 0) {
+                        return self.inferExprType(method.args[0]) catch null;
+                    }
+                }
+                // Arc.new(value)
+                if (std.mem.eql(u8, obj_name, "Arc") and std.mem.eql(u8, method.method_name, "new")) {
                     if (method.args.len > 0) {
                         return self.inferExprType(method.args[0]) catch null;
                     }
@@ -1296,7 +1310,7 @@ pub const Emitter = struct {
             }
         }
 
-        // Check for identifier that is already an Rc or Cell
+        // Check for identifier that is already an Rc, Arc, or Cell
         if (expr == .identifier) {
             const id = expr.identifier;
             if (self.named_values.get(id.name)) |local| {
@@ -1305,6 +1319,33 @@ pub const Emitter = struct {
         }
 
         return null;
+    }
+
+    /// Check if an expression represents an Arc type.
+    fn isArcType(self: *Emitter, expr: ast.Expr) bool {
+        if (expr == .method_call) {
+            const method = expr.method_call;
+            if (method.object == .identifier) {
+                const obj_name = method.object.identifier.name;
+                if (std.mem.eql(u8, obj_name, "Arc") and std.mem.eql(u8, method.method_name, "new")) {
+                    return true;
+                }
+            }
+            // For clone(), check the receiver
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                return self.isArcType(method.object);
+            }
+        }
+
+        // Check for identifier that is already an Arc
+        if (expr == .identifier) {
+            const id = expr.identifier;
+            if (self.named_values.get(id.name)) |local| {
+                return local.is_arc;
+            }
+        }
+
+        return false;
     }
 
     fn emitCall(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
@@ -1747,11 +1788,15 @@ pub const Emitter = struct {
                 return operand_type;
             },
             .method_call => |m| {
-                // Check for special Rc and Cell methods that return pointers
+                // Check for special Rc, Arc, and Cell methods that return pointers
                 if (m.object == .identifier) {
                     const obj_name = m.object.identifier.name;
                     if (std.mem.eql(u8, obj_name, "Rc") and std.mem.eql(u8, m.method_name, "new")) {
                         // Rc.new() returns a pointer (Rc[T])
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                    if (std.mem.eql(u8, obj_name, "Arc") and std.mem.eql(u8, m.method_name, "new")) {
+                        // Arc.new() returns a pointer (Arc[T])
                         return llvm.Types.pointer(self.ctx);
                     }
                     if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, m.method_name, "new")) {
@@ -2494,6 +2539,10 @@ pub const Emitter = struct {
                 return self.emitRcNew(method);
             }
 
+            if (std.mem.eql(u8, obj_name, "Arc") and std.mem.eql(u8, method.method_name, "new")) {
+                return self.emitArcNew(method);
+            }
+
             if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitCellNew(method);
             }
@@ -2530,19 +2579,28 @@ pub const Emitter = struct {
             return self.emitCellReplace(method, object, object_type);
         }
 
-        // Check for Rc methods
+        // Check for Rc/Arc methods
         if (std.mem.eql(u8, method.method_name, "clone")) {
-            // For Rc, clone increments reference count and returns same pointer
-            return self.emitRcClone(object, object_type);
+            // Check if this is an Arc or Rc and dispatch accordingly
+            if (self.isArcType(method.object)) {
+                return self.emitArcClone(object, object_type);
+            } else {
+                return self.emitRcClone(object, object_type);
+            }
         }
 
         if (std.mem.eql(u8, method.method_name, "downgrade")) {
-            // Rc.downgrade() creates a Weak reference
-            return self.emitRcDowngrade(object, object_type);
+            // Check if this is an Arc or Rc and dispatch accordingly
+            if (self.isArcType(method.object)) {
+                return self.emitArcDowngrade(object, object_type);
+            } else {
+                return self.emitRcDowngrade(object, object_type);
+            }
         }
 
         if (std.mem.eql(u8, method.method_name, "upgrade")) {
-            // Weak.upgrade() attempts to get an Rc back
+            // Check if this is a WeakArc or Weak and dispatch accordingly
+            // For now, assume Weak (non-atomic) - WeakArc needs separate tracking
             return self.emitWeakUpgrade(object, object_type);
         }
 
@@ -2673,6 +2731,133 @@ pub const Emitter = struct {
             weak_upgrade_fn,
             &args,
             "weak.upgrade",
+        );
+
+        // Convert to optional: check if null
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, result_ptr, llvm.c.LLVMConstNull(llvm.typeOf(result_ptr)), "is.null");
+
+        // Create optional struct { i1, ptr }
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var struct_types = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ptr_type };
+        const opt_type = llvm.c.LLVMStructTypeInContext(self.ctx.ref, &struct_types, 2, 0);
+
+        const opt_alloca = self.builder.buildAlloca(opt_type, "upgrade.opt");
+
+        // Set tag: 1 if not null (Some), 0 if null (None)
+        const tag = self.builder.buildNot(is_null, "tag");
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(opt_type, opt_alloca, &tag_indices, "opt.tag.ptr");
+        _ = self.builder.buildStore(tag, tag_ptr);
+
+        // Set value (the pointer)
+        var val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const val_ptr = self.builder.buildGEP(opt_type, opt_alloca, &val_indices, "opt.val.ptr");
+        _ = self.builder.buildStore(result_ptr, val_ptr);
+
+        // Load and return the optional
+        return self.builder.buildLoad(opt_type, opt_alloca, "upgrade.result");
+    }
+
+    // ========================================================================
+    // Arc (Atomic Reference Counting) - Thread-safe shared ownership
+    // ========================================================================
+
+    /// Emit Arc.new(value) - allocates an Arc with atomic reference counts.
+    fn emitArcNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        // Emit the value to be wrapped
+        const value = try self.emitExpr(method.args[0]);
+        const value_type = llvm.typeOf(value);
+
+        // Declare the Arc runtime function if not already
+        const arc_alloc_fn = self.getOrDeclareArcAlloc();
+
+        // Calculate value size based on type
+        const value_size: u64 = switch (llvm.getTypeKind(value_type)) {
+            llvm.c.LLVMIntegerTypeKind => @as(u64, llvm.c.LLVMGetIntTypeWidth(value_type)) / 8,
+            llvm.c.LLVMFloatTypeKind => 4,
+            llvm.c.LLVMDoubleTypeKind => 8,
+            llvm.c.LLVMPointerTypeKind => 8, // Assume 64-bit pointers
+            else => 8, // Default to 8 bytes
+        };
+        const value_align: u64 = value_size; // Assume natural alignment
+
+        var args = [_]llvm.ValueRef{
+            llvm.Const.int64(self.ctx, @intCast(value_size)),
+            llvm.Const.int64(self.ctx, @intCast(value_align)),
+        };
+        const fn_type = llvm.c.LLVMGlobalGetValueType(arc_alloc_fn);
+        const ptr = self.builder.buildCall(
+            fn_type,
+            arc_alloc_fn,
+            &args,
+            "arc.alloc",
+        );
+
+        // Store the value at the returned pointer
+        _ = self.builder.buildStore(value, ptr);
+
+        // Return the pointer (Arc[T] is represented as a pointer)
+        return ptr;
+    }
+
+    /// Emit arc.clone() - atomically increments reference count.
+    fn emitArcClone(self: *Emitter, object: llvm.ValueRef, object_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        _ = object_type;
+
+        // Declare the runtime function
+        const arc_clone_fn = self.getOrDeclareArcClone();
+
+        // Call klar_arc_clone(ptr)
+        var args = [_]llvm.ValueRef{object};
+        return self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(arc_clone_fn),
+            arc_clone_fn,
+            &args,
+            "arc.clone",
+        );
+    }
+
+    /// Emit arc.downgrade() - creates a WeakArc reference.
+    fn emitArcDowngrade(self: *Emitter, object: llvm.ValueRef, object_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        _ = object_type;
+
+        // Declare the runtime function
+        const arc_downgrade_fn = self.getOrDeclareArcDowngrade();
+
+        // Call klar_arc_downgrade(ptr)
+        var args = [_]llvm.ValueRef{object};
+        return self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(arc_downgrade_fn),
+            arc_downgrade_fn,
+            &args,
+            "arc.downgrade",
+        );
+    }
+
+    /// Emit weak_arc.upgrade() - attempts to atomically get an Arc from WeakArc.
+    fn emitWeakArcUpgrade(self: *Emitter, object: llvm.ValueRef, object_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        _ = object_type;
+
+        // Declare the runtime function
+        const weak_arc_upgrade_fn = self.getOrDeclareWeakArcUpgrade();
+
+        // Call klar_weak_arc_upgrade(ptr) - returns null if Arc is gone
+        var args = [_]llvm.ValueRef{object};
+        const result_ptr = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(weak_arc_upgrade_fn),
+            weak_arc_upgrade_fn,
+            &args,
+            "weak_arc.upgrade",
         );
 
         // Convert to optional: check if null
@@ -3397,6 +3582,462 @@ pub const Emitter = struct {
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
+    // ========================================================================
+    // Arc (Atomic Reference Counting) Runtime Function Implementations
+    // ========================================================================
+    // These implement thread-safe atomic reference counting using LLVM atomics.
+    // Arc uses the same memory layout as Rc: [strong_count:i64][weak_count:i64][value]
+    // but uses atomic operations for thread safety.
+
+    fn getOrDeclareArcAlloc(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_arc_alloc";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Define: *anyopaque klar_arc_alloc(usize value_size, usize value_align)
+        // Same layout as Rc: [strong_count:i64][weak_count:i64][value:value_size]
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ i64_type, i64_type };
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 2, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Create function body
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+
+        // Parameters
+        const value_size = llvm.c.LLVMGetParam(func, 0);
+        _ = llvm.c.LLVMGetParam(func, 1); // value_align (unused for now)
+
+        // Calculate total size: 16 (header) + value_size
+        const header_size = llvm.Const.int64(self.ctx, 16);
+        const total_size = llvm.c.LLVMBuildAdd(self.builder.ref, header_size, value_size, "total_size");
+
+        // Call malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{total_size};
+        const raw_ptr = llvm.c.LLVMBuildCall2(self.builder.ref, llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, 1, "malloc_result");
+
+        // Store strong_count = 1 at offset 0 (using atomic store for consistency)
+        const strong_ptr = llvm.c.LLVMBuildBitCast(self.builder.ref, raw_ptr, llvm.c.LLVMPointerType(i64_type, 0), "strong_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int64(self.ctx, 1), strong_ptr);
+
+        // Store weak_count = 1 at offset 8
+        const eight = llvm.Const.int64(self.ctx, 8);
+        const weak_ptr_int = llvm.c.LLVMBuildAdd(self.builder.ref, llvm.c.LLVMBuildPtrToInt(self.builder.ref, raw_ptr, i64_type, "ptr_int"), eight, "weak_off");
+        const weak_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, weak_ptr_int, llvm.c.LLVMPointerType(i64_type, 0), "weak_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int64(self.ctx, 1), weak_ptr);
+
+        // Return pointer to value (offset 16)
+        const sixteen = llvm.Const.int64(self.ctx, 16);
+        const val_ptr_int = llvm.c.LLVMBuildAdd(self.builder.ref, llvm.c.LLVMBuildPtrToInt(self.builder.ref, raw_ptr, i64_type, "ptr_int2"), sixteen, "val_off");
+        const val_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, val_ptr_int, ptr_type, "val_ptr");
+
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, val_ptr);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
+    fn getOrDeclareArcClone(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_arc_clone";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Define: *anyopaque klar_arc_clone(*anyopaque ptr)
+        // Atomically increments strong_count and returns ptr
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, param_types.len, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Create function body
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+
+        // Get value pointer parameter
+        const value_ptr = llvm.c.LLVMGetParam(func, 0);
+
+        // Calculate header address: value_ptr - 16
+        const ptr_int = llvm.c.LLVMBuildPtrToInt(self.builder.ref, value_ptr, i64_type, "ptr_int");
+        const header_off = llvm.c.LLVMBuildSub(self.builder.ref, ptr_int, llvm.Const.int64(self.ctx, 16), "header_off");
+        const strong_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, header_off, llvm.c.LLVMPointerType(i64_type, 0), "strong_ptr");
+
+        // Atomic increment: atomicrmw add i64* %strong_ptr, i64 1 monotonic
+        _ = llvm.c.LLVMBuildAtomicRMW(
+            self.builder.ref,
+            llvm.c.LLVMAtomicRMWBinOpAdd,
+            strong_ptr,
+            llvm.Const.int64(self.ctx, 1),
+            llvm.c.LLVMAtomicOrderingMonotonic,
+            0, // not single threaded
+        );
+
+        // Return the original pointer
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, value_ptr);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
+    fn getOrDeclareArcDowngrade(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_arc_downgrade";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Define: *anyopaque klar_arc_downgrade(*anyopaque ptr)
+        // Atomically increments weak_count (at header offset -8 from value ptr) and returns ptr
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, param_types.len, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Create function body
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+
+        // Get value pointer parameter
+        const value_ptr = llvm.c.LLVMGetParam(func, 0);
+
+        // Calculate weak_count address: value_ptr - 8
+        const ptr_int = llvm.c.LLVMBuildPtrToInt(self.builder.ref, value_ptr, i64_type, "ptr_int");
+        const weak_off = llvm.c.LLVMBuildSub(self.builder.ref, ptr_int, llvm.Const.int64(self.ctx, 8), "weak_off");
+        const weak_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, weak_off, llvm.c.LLVMPointerType(i64_type, 0), "weak_ptr");
+
+        // Atomic increment weak_count
+        _ = llvm.c.LLVMBuildAtomicRMW(
+            self.builder.ref,
+            llvm.c.LLVMAtomicRMWBinOpAdd,
+            weak_ptr,
+            llvm.Const.int64(self.ctx, 1),
+            llvm.c.LLVMAtomicOrderingMonotonic,
+            0,
+        );
+
+        // Return the original pointer
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, value_ptr);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
+    fn getOrDeclareWeakArcUpgrade(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_weak_arc_upgrade";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Define: *anyopaque klar_weak_arc_upgrade(*anyopaque ptr)
+        // Atomically increments strong_count if > 0, returns ptr or null
+        // This uses a compare-and-swap loop for thread safety
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, param_types.len, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Create basic blocks for CAS loop
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop");
+        const success_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "success");
+        const fail_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "fail");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+
+        // Get value pointer parameter
+        const value_ptr = llvm.c.LLVMGetParam(func, 0);
+
+        // Calculate strong_count address: value_ptr - 16
+        const ptr_int = llvm.c.LLVMBuildPtrToInt(self.builder.ref, value_ptr, i64_type, "ptr_int");
+        const header_off = llvm.c.LLVMBuildSub(self.builder.ref, ptr_int, llvm.Const.int64(self.ctx, 16), "header_off");
+        const strong_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, header_off, llvm.c.LLVMPointerType(i64_type, 0), "strong_ptr");
+
+        // Initial load with acquire ordering
+        const initial_count = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, strong_ptr, "initial_count");
+        llvm.c.LLVMSetOrdering(initial_count, llvm.c.LLVMAtomicOrderingAcquire);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
+
+        // Loop: check if count > 0 and try CAS
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_bb);
+        const current_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "current");
+
+        // Check if count > 0
+        const is_alive = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntUGT, current_phi, llvm.Const.int64(self.ctx, 0), "is_alive");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_alive, success_bb, fail_bb);
+
+        // Success: try to increment with CAS
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, success_bb);
+        const new_count = llvm.c.LLVMBuildAdd(self.builder.ref, current_phi, llvm.Const.int64(self.ctx, 1), "new_count");
+
+        // Use cmpxchg for thread-safe increment
+        const cmpxchg_result = llvm.c.LLVMBuildAtomicCmpXchg(
+            self.builder.ref,
+            strong_ptr,
+            current_phi,
+            new_count,
+            llvm.c.LLVMAtomicOrderingAcquireRelease,
+            llvm.c.LLVMAtomicOrderingMonotonic,
+            0, // not single threaded
+        );
+
+        // Extract success flag and value
+        const success_flag = llvm.c.LLVMBuildExtractValue(self.builder.ref, cmpxchg_result, 1, "success_flag");
+        const loaded_val = llvm.c.LLVMBuildExtractValue(self.builder.ref, cmpxchg_result, 0, "loaded_val");
+
+        // If CAS succeeded, return ptr; otherwise retry with loaded value
+        const ret_or_retry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "ret_success");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, success_flag, ret_or_retry_bb, loop_bb);
+
+        // Return success
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_or_retry_bb);
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, value_ptr);
+
+        // Fail: return null
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, fail_bb);
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, llvm.c.LLVMConstNull(ptr_type));
+
+        // Add phi incoming values
+        var phi_values = [_]llvm.ValueRef{ initial_count, loaded_val };
+        var phi_blocks = [_]llvm.c.LLVMBasicBlockRef{ entry_bb, success_bb };
+        llvm.c.LLVMAddIncoming(current_phi, &phi_values, &phi_blocks, 2);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
+    fn getOrDeclareArcDrop(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_arc_drop";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Define: void klar_arc_drop(*anyopaque ptr, usize size, usize align, *fn destructor)
+        // Atomically decrements strong_count. If 0, calls destructor, decrements weak_count.
+        // If weak_count also 0, frees the allocation.
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const void_type = llvm.Types.void_(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, i64_type, i64_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(void_type, &param_types, param_types.len, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Create basic blocks
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const strong_zero_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "strong_zero");
+        const call_dtor_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "call_dtor");
+        const after_dtor_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "after_dtor");
+        const free_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "free");
+        const done_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "done");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+
+        // Get parameters
+        const value_ptr = llvm.c.LLVMGetParam(func, 0);
+        _ = llvm.c.LLVMGetParam(func, 1); // value_size
+        _ = llvm.c.LLVMGetParam(func, 2); // value_align
+        const destructor = llvm.c.LLVMGetParam(func, 3);
+
+        // Calculate strong_count address: value_ptr - 16
+        const ptr_int = llvm.c.LLVMBuildPtrToInt(self.builder.ref, value_ptr, i64_type, "ptr_int");
+        const header_off = llvm.c.LLVMBuildSub(self.builder.ref, ptr_int, llvm.Const.int64(self.ctx, 16), "header_off");
+        const strong_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, header_off, llvm.c.LLVMPointerType(i64_type, 0), "strong_ptr");
+
+        // Atomic decrement with release ordering
+        const prev_strong = llvm.c.LLVMBuildAtomicRMW(
+            self.builder.ref,
+            llvm.c.LLVMAtomicRMWBinOpSub,
+            strong_ptr,
+            llvm.Const.int64(self.ctx, 1),
+            llvm.c.LLVMAtomicOrderingRelease,
+            0,
+        );
+
+        // Check if we were the last strong reference (prev was 1)
+        const was_one = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, prev_strong, llvm.Const.int64(self.ctx, 1), "was_one");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, was_one, strong_zero_bb, done_bb);
+
+        // strong_zero: acquire fence, call destructor if not null, decrement weak_count
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, strong_zero_bb);
+        // Acquire fence to synchronize with other threads' releases
+        _ = llvm.c.LLVMBuildFence(self.builder.ref, llvm.c.LLVMAtomicOrderingAcquire, 0, "");
+
+        const dtor_null = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, destructor, llvm.c.LLVMConstNull(ptr_type), "dtor_null");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, dtor_null, after_dtor_bb, call_dtor_bb);
+
+        // call_dtor: call destructor(value_ptr)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, call_dtor_bb);
+        var dtor_param_types = [_]llvm.TypeRef{ptr_type};
+        const dtor_fn_type = llvm.c.LLVMFunctionType(void_type, &dtor_param_types, 1, 0);
+        var dtor_args = [_]llvm.ValueRef{value_ptr};
+        _ = llvm.c.LLVMBuildCall2(self.builder.ref, dtor_fn_type, destructor, &dtor_args, 1, "");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, after_dtor_bb);
+
+        // after_dtor: atomic decrement weak_count
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, after_dtor_bb);
+        const weak_off = llvm.c.LLVMBuildSub(self.builder.ref, ptr_int, llvm.Const.int64(self.ctx, 8), "weak_off");
+        const weak_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, weak_off, llvm.c.LLVMPointerType(i64_type, 0), "weak_ptr");
+
+        const prev_weak = llvm.c.LLVMBuildAtomicRMW(
+            self.builder.ref,
+            llvm.c.LLVMAtomicRMWBinOpSub,
+            weak_ptr,
+            llvm.Const.int64(self.ctx, 1),
+            llvm.c.LLVMAtomicOrderingRelease,
+            0,
+        );
+
+        // Check if weak_count was 1 (now 0)
+        const weak_was_one = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, prev_weak, llvm.Const.int64(self.ctx, 1), "weak_was_one");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, weak_was_one, free_bb, done_bb);
+
+        // free: free the header pointer
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, free_bb);
+        // Acquire fence before freeing
+        _ = llvm.c.LLVMBuildFence(self.builder.ref, llvm.c.LLVMAtomicOrderingAcquire, 0, "");
+        const header_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, header_off, ptr_type, "header_ptr");
+        const free_fn = self.getOrDeclareFree();
+        var free_args = [_]llvm.ValueRef{header_ptr};
+        _ = llvm.c.LLVMBuildCall2(self.builder.ref, llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, 1, "");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, done_bb);
+
+        // done: return
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_bb);
+        _ = llvm.c.LLVMBuildRetVoid(self.builder.ref);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
+    fn getOrDeclareWeakArcDrop(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_weak_arc_drop";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Define: void klar_weak_arc_drop(*anyopaque ptr, usize size, usize align)
+        // Atomically decrements weak_count. If 0 and strong_count is 0, frees allocation.
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const void_type = llvm.Types.void_(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, i64_type, i64_type };
+        const fn_type = llvm.c.LLVMFunctionType(void_type, &param_types, 3, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Create basic blocks
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const check_strong_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "check_strong");
+        const free_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "free");
+        const done_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "done");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+
+        // Get parameters
+        const value_ptr = llvm.c.LLVMGetParam(func, 0);
+        _ = llvm.c.LLVMGetParam(func, 1); // value_size
+        _ = llvm.c.LLVMGetParam(func, 2); // value_align
+
+        // Calculate addresses
+        const ptr_int = llvm.c.LLVMBuildPtrToInt(self.builder.ref, value_ptr, i64_type, "ptr_int");
+        const weak_off = llvm.c.LLVMBuildSub(self.builder.ref, ptr_int, llvm.Const.int64(self.ctx, 8), "weak_off");
+        const weak_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, weak_off, llvm.c.LLVMPointerType(i64_type, 0), "weak_ptr");
+
+        // Atomic decrement weak_count
+        const prev_weak = llvm.c.LLVMBuildAtomicRMW(
+            self.builder.ref,
+            llvm.c.LLVMAtomicRMWBinOpSub,
+            weak_ptr,
+            llvm.Const.int64(self.ctx, 1),
+            llvm.c.LLVMAtomicOrderingRelease,
+            0,
+        );
+
+        // Check if weak_count was 1
+        const weak_was_one = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, prev_weak, llvm.Const.int64(self.ctx, 1), "weak_was_one");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, weak_was_one, check_strong_bb, done_bb);
+
+        // check_strong: check if strong_count is also 0
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_strong_bb);
+        // Acquire fence
+        _ = llvm.c.LLVMBuildFence(self.builder.ref, llvm.c.LLVMAtomicOrderingAcquire, 0, "");
+
+        const header_off = llvm.c.LLVMBuildSub(self.builder.ref, ptr_int, llvm.Const.int64(self.ctx, 16), "header_off");
+        const strong_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, header_off, llvm.c.LLVMPointerType(i64_type, 0), "strong_ptr");
+        const strong_count = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, strong_ptr, "strong_count");
+        llvm.c.LLVMSetOrdering(strong_count, llvm.c.LLVMAtomicOrderingAcquire);
+
+        const strong_zero = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, strong_count, llvm.Const.int64(self.ctx, 0), "strong_zero");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, strong_zero, free_bb, done_bb);
+
+        // free: free the header pointer
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, free_bb);
+        const header_ptr = llvm.c.LLVMBuildIntToPtr(self.builder.ref, header_off, ptr_type, "header_ptr");
+        const free_fn = self.getOrDeclareFree();
+        var free_args = [_]llvm.ValueRef{header_ptr};
+        _ = llvm.c.LLVMBuildCall2(self.builder.ref, llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, 1, "");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, done_bb);
+
+        // done: return
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_bb);
+        _ = llvm.c.LLVMBuildRetVoid(self.builder.ref);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
     /// Emit a print or println call using libc puts/printf
     fn emitPrint(self: *Emitter, args: []const ast.Expr, newline: bool) EmitError!llvm.ValueRef {
         if (args.len == 0) {
@@ -3909,7 +4550,7 @@ pub const Emitter = struct {
     /// Emit a drop call for a single variable.
     fn emitDropForVar(self: *Emitter, v: DroppableVar) void {
         if (v.is_rc) {
-            // Load the Rc pointer from the alloca
+            // Load the Rc/Arc pointer from the alloca
             const ptr_type = llvm.Types.pointer(self.ctx);
             const rc_ptr = self.builder.buildLoad(ptr_type, v.alloca, "rc_ptr_drop");
 
@@ -3924,8 +4565,8 @@ pub const Emitter = struct {
             // No destructor callback for primitive types (null pointer)
             const null_ptr = llvm.c.LLVMConstNull(ptr_type);
 
-            // Call klar_rc_drop
-            const drop_fn = self.getOrDeclareRcDrop();
+            // Call klar_rc_drop or klar_arc_drop depending on type
+            const drop_fn = if (v.is_arc) self.getOrDeclareArcDrop() else self.getOrDeclareRcDrop();
             var args = [_]llvm.ValueRef{ rc_ptr, size_val, align_val, null_ptr };
             _ = llvm.c.LLVMBuildCall2(
                 self.builder.ref,
@@ -3969,7 +4610,7 @@ pub const Emitter = struct {
     }
 
     /// Register a variable in the current scope as needing dropping.
-    fn registerDroppable(self: *Emitter, name: []const u8, alloca: llvm.ValueRef, inner_type: llvm.TypeRef, is_rc: bool) EmitError!void {
+    fn registerDroppable(self: *Emitter, name: []const u8, alloca: llvm.ValueRef, inner_type: llvm.TypeRef, is_rc: bool, is_arc: bool) EmitError!void {
         if (self.scope_stack.items.len == 0) return;
 
         const scope = &self.scope_stack.items[self.scope_stack.items.len - 1];
@@ -3978,6 +4619,7 @@ pub const Emitter = struct {
             .alloca = alloca,
             .inner_type = inner_type,
             .is_rc = is_rc,
+            .is_arc = is_arc,
         }) catch return EmitError.OutOfMemory;
     }
 };

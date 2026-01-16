@@ -1,0 +1,11 @@
+// Test basic Arc functionality
+// Arc provides thread-safe atomic reference counting
+
+fn main() -> i32 {
+    // Create an Arc-wrapped integer
+    let arc_value = Arc.new(42)
+
+    // Arc uses atomic operations for reference counting
+    // This is safe to share across threads
+    0
+}

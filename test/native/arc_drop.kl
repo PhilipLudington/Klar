@@ -1,0 +1,15 @@
+// Test Arc automatic drop at scope exit
+// Arc values are automatically dropped when they go out of scope
+
+fn main() -> i32 {
+    // Create an Arc-wrapped integer
+    let arc1 = Arc.new(42)
+
+    // Clone the Arc multiple times
+    let arc2 = arc1.clone()
+    let arc3 = arc1.clone()
+
+    // All three references are automatically dropped when function returns
+    // The value is freed when the last reference is dropped
+    42
+}

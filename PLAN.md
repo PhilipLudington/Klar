@@ -671,11 +671,11 @@ Result[T, E] layout:
 
 ---
 
-### Milestone 8: Reference Counting (Rc/Arc) 🚧
+### Milestone 8: Reference Counting (Rc/Arc) ✅
 
 **Objective:** Implement Rc and Arc for shared ownership scenarios.
 
-**Status:** Mostly Complete (January 2026) - Rc fully functional with automatic drop
+**Status:** Complete (January 2026) - Rc and Arc fully functional with automatic drop
 
 **Deliverables:**
 - [x] Implement Rc struct layout (count + value)
@@ -688,7 +688,7 @@ Result[T, E] layout:
 - [x] Implement address-of operator (`&`) for creating references
 - [x] Implement Cell[T] with .get()/.set()/.replace() for interior mutability
 - [x] Implement automatic Rc drop at scope exit (scope tracking, drop insertion at returns/breaks/continues)
-- [ ] Implement Arc with atomic operations for thread safety
+- [x] Implement Arc with atomic operations for thread safety
 - [ ] Add cycle detection in debug mode (optional)
 
 **Rc Layout:**
@@ -723,6 +723,9 @@ test/native/
 ├── rc_basic.kl         # Basic Rc.new() allocation ✅
 ├── rc_clone.kl         # Rc.clone() reference count increment ✅
 ├── rc_drop.kl          # Automatic Rc drop at scope exit ✅
+├── arc_basic.kl        # Basic Arc.new() allocation with atomic ops ✅
+├── arc_clone.kl        # Arc.clone() with atomic increment ✅
+├── arc_drop.kl         # Automatic Arc drop with atomic decrement ✅
 ├── ref_addr.kl         # Address-of operator and reference dereference ✅
 ├── cell_basic.kl       # Cell[T] with .get()/.set() for interior mutability ✅
 ```
@@ -748,6 +751,29 @@ fn main() -> i32 {
     // Both automatically dropped when function returns
     42
 }
+
+// test/native/arc_basic.kl - Basic Arc with atomic ops ✅
+fn main() -> i32 {
+    let arc_value = Arc.new(42)
+    // Arc uses atomic operations for reference counting
+    0
+}
+
+// test/native/arc_clone.kl - Arc clone with atomic increment ✅
+fn main() -> i32 {
+    let arc1 = Arc.new(42)
+    let arc2 = arc1.clone()  // Atomically increments reference count
+    0
+}
+
+// test/native/arc_drop.kl - Automatic Arc drop with atomic decrement ✅
+fn main() -> i32 {
+    let arc1 = Arc.new(42)
+    let arc2 = arc1.clone()
+    let arc3 = arc1.clone()
+    // All three references automatically dropped atomically when function returns
+    42
+}
 ```
 
 **Future Test (when print is implemented):**
@@ -769,6 +795,8 @@ fn main() {
 - ✅ References can be created with `&` operator
 - ✅ Cell[T] provides .get()/.set()/.replace() for interior mutability
 - ✅ Automatic Rc drop at scope exit (function return, early return, break, continue)
+- ✅ Arc with atomic operations for thread-safe reference counting
+- ✅ Automatic Arc drop with atomic decrement at scope exit
 - ✅ Memory freed exactly once when last reference dropped
 - ✅ No use-after-free (drop occurs before any code that could access freed memory)
 - ⏳ Arc works correctly across threads (future work)

@@ -34,6 +34,8 @@ pub const Type = union(enum) {
     // Reference-counted types
     rc: *RcType,
     weak_rc: *WeakRcType,
+    arc: *ArcType,
+    weak_arc: *WeakArcType,
 
     // Interior mutability types
     cell: *CellType,
@@ -85,6 +87,8 @@ pub const Type = union(enum) {
             },
             .rc => |r| r.inner.eql(other.rc.inner),
             .weak_rc => |w| w.inner.eql(other.weak_rc.inner),
+            .arc => |a| a.inner.eql(other.arc.inner),
+            .weak_arc => |w| w.inner.eql(other.weak_arc.inner),
             .cell => |c| c.inner.eql(other.cell.inner),
             .void_, .never, .unknown, .error_type => true,
         };
@@ -166,9 +170,10 @@ pub const Type = union(enum) {
             // - Result (may contain non-Copy ok/err types)
             // - Function types (closures may capture non-Copy data)
             // - Rc/Weak (must use .clone() explicitly to get new reference)
+            // - Arc/WeakArc (thread-safe reference counting, must use .clone())
             // - Cell (provides interior mutability, has move semantics)
             // - Unknown/error types (conservative)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .cell, .unknown, .error_type => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .unknown, .error_type => false,
         };
     }
 };
@@ -428,6 +433,7 @@ pub const AppliedType = struct {
 /// Reference-counted wrapper type (Rc[T])
 /// Provides shared ownership with automatic memory management.
 /// The value is freed when the last Rc reference is dropped.
+/// NOT thread-safe - use Arc for thread-safe reference counting.
 pub const RcType = struct {
     inner: Type, // The wrapped type
 };
@@ -436,6 +442,21 @@ pub const RcType = struct {
 /// Non-owning reference that doesn't prevent deallocation.
 /// Must be upgraded to Rc before accessing the value.
 pub const WeakRcType = struct {
+    inner: Type, // The wrapped type
+};
+
+/// Atomic reference-counted wrapper type (Arc[T])
+/// Thread-safe shared ownership with automatic memory management.
+/// Uses atomic operations for reference count updates.
+/// The value is freed when the last Arc reference is dropped.
+pub const ArcType = struct {
+    inner: Type, // The wrapped type
+};
+
+/// Weak atomic reference type (WeakArc[T])
+/// Thread-safe non-owning reference that doesn't prevent deallocation.
+/// Must be upgraded to Arc before accessing the value.
+pub const WeakArcType = struct {
     inner: Type, // The wrapped type
 };
 
@@ -596,6 +617,19 @@ pub const TypeBuilder = struct {
         return .{ .weak_rc = weak };
     }
 
+    // Atomic reference-counted type constructors
+    pub fn arcType(self: *TypeBuilder, inner: Type) !Type {
+        const arc = try self.arena.allocator().create(ArcType);
+        arc.* = .{ .inner = inner };
+        return .{ .arc = arc };
+    }
+
+    pub fn weakArcType(self: *TypeBuilder, inner: Type) !Type {
+        const weak = try self.arena.allocator().create(WeakArcType);
+        weak.* = .{ .inner = inner };
+        return .{ .weak_arc = weak };
+    }
+
     // Interior mutability type constructors
     pub fn cellType(self: *TypeBuilder, inner: Type) !Type {
         const cell = try self.arena.allocator().create(CellType);
@@ -677,6 +711,16 @@ pub fn formatType(writer: anytype, t: Type) !void {
         },
         .weak_rc => |w| {
             try writer.writeAll("Weak[");
+            try formatType(writer, w.inner);
+            try writer.writeAll("]");
+        },
+        .arc => |a| {
+            try writer.writeAll("Arc[");
+            try formatType(writer, a.inner);
+            try writer.writeAll("]");
+        },
+        .weak_arc => |w| {
+            try writer.writeAll("WeakArc[");
             try formatType(writer, w.inner);
             try writer.writeAll("]");
         },
@@ -925,4 +969,72 @@ test "Rc type formatting" {
     const rc_opt_str = try typeToString(testing.allocator, rc_opt);
     defer testing.allocator.free(rc_opt_str);
     try testing.expectEqualStrings("Rc[?i32]", rc_opt_str);
+}
+
+test "Arc type creation and equality" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // Create Arc types
+    const arc_i32 = try builder.arcType(builder.i32Type());
+    const arc_i32_2 = try builder.arcType(builder.i32Type());
+    const arc_bool = try builder.arcType(builder.boolType());
+
+    try testing.expect(arc_i32.eql(arc_i32_2));
+    try testing.expect(!arc_i32.eql(arc_bool));
+
+    // WeakArc types
+    const weak_i32 = try builder.weakArcType(builder.i32Type());
+    const weak_i32_2 = try builder.weakArcType(builder.i32Type());
+    try testing.expect(weak_i32.eql(weak_i32_2));
+
+    // Arc and WeakArc are different
+    try testing.expect(!arc_i32.eql(weak_i32));
+
+    // Arc and Rc are different
+    const rc_i32 = try builder.rcType(builder.i32Type());
+    try testing.expect(!arc_i32.eql(rc_i32));
+}
+
+test "Arc type formatting" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // Arc[i32]
+    const arc_t = try builder.arcType(builder.i32Type());
+    const arc_str = try typeToString(testing.allocator, arc_t);
+    defer testing.allocator.free(arc_str);
+    try testing.expectEqualStrings("Arc[i32]", arc_str);
+
+    // WeakArc[string]
+    const weak_t = try builder.weakArcType(builder.stringType());
+    const weak_str = try typeToString(testing.allocator, weak_t);
+    defer testing.allocator.free(weak_str);
+    try testing.expectEqualStrings("WeakArc[string]", weak_str);
+
+    // Nested: Arc[?i32]
+    const opt_i32 = try builder.optionalType(builder.i32Type());
+    const arc_opt = try builder.arcType(opt_i32);
+    const arc_opt_str = try typeToString(testing.allocator, arc_opt);
+    defer testing.allocator.free(arc_opt_str);
+    try testing.expectEqualStrings("Arc[?i32]", arc_opt_str);
+}
+
+test "Arc is not Copy" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // Arc types are NOT Copy (must use .clone())
+    const arc_t = try builder.arcType(builder.i32Type());
+    try testing.expect(!arc_t.isCopyType());
+
+    // WeakArc types are NOT Copy
+    const weak_t = try builder.weakArcType(builder.i32Type());
+    try testing.expect(!weak_t.isCopyType());
 }
