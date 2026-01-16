@@ -188,9 +188,24 @@ pub const TypeChecker = struct {
     /// Stack of type parameter scopes for generic functions/structs.
     /// Each scope maps type parameter names to their TypeVar types.
     type_param_scopes: std.ArrayListUnmanaged(std.StringHashMapUnmanaged(types.TypeVar)),
+    /// Cache of monomorphized function instances.
+    /// Maps (function_name, type_args hash) to MonomorphizedFunction info.
+    monomorphized_functions: std.ArrayListUnmanaged(MonomorphizedFunction),
 
     const CaptureInfo = struct {
         is_mutable: bool,
+    };
+
+    /// Information about a monomorphized function instance.
+    pub const MonomorphizedFunction = struct {
+        /// Original generic function name
+        original_name: []const u8,
+        /// Mangled name for this instantiation (e.g., "identity$i32")
+        mangled_name: []const u8,
+        /// The concrete type arguments used for this instantiation
+        type_args: []const Type,
+        /// The concrete function type after substitution
+        concrete_type: Type,
     };
 
     pub fn init(allocator: Allocator) TypeChecker {
@@ -209,6 +224,7 @@ pub const TypeChecker = struct {
             .closure_scope = null,
             .closure_captures = .{},
             .type_param_scopes = .{},
+            .monomorphized_functions = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -226,6 +242,7 @@ pub const TypeChecker = struct {
             scope.deinit(self.allocator);
         }
         self.type_param_scopes.deinit(self.allocator);
+        self.monomorphized_functions.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -445,6 +462,433 @@ pub const TypeChecker = struct {
             }
         }
         return null;
+    }
+
+    /// Generate a mangled name for a monomorphized function.
+    /// E.g., "identity" with [i32] becomes "identity$i32"
+    fn mangleFunctionName(self: *TypeChecker, base_name: []const u8, type_args: []const Type) ![]const u8 {
+        var buffer = std.ArrayListUnmanaged(u8){};
+        defer buffer.deinit(self.allocator);
+
+        try buffer.appendSlice(self.allocator, base_name);
+        try buffer.append(self.allocator, '$');
+
+        for (type_args, 0..) |arg, i| {
+            if (i > 0) try buffer.append(self.allocator, '_');
+            try self.appendTypeName(&buffer, arg);
+        }
+
+        return try self.allocator.dupe(u8, buffer.items);
+    }
+
+    /// Append a type's name to a buffer for mangling.
+    fn appendTypeName(self: *TypeChecker, buffer: *std.ArrayListUnmanaged(u8), typ: Type) !void {
+        switch (typ) {
+            .primitive => |p| {
+                const name = switch (p) {
+                    .i8_ => "i8",
+                    .i16_ => "i16",
+                    .i32_ => "i32",
+                    .i64_ => "i64",
+                    .i128_ => "i128",
+                    .isize_ => "isize",
+                    .u8_ => "u8",
+                    .u16_ => "u16",
+                    .u32_ => "u32",
+                    .u64_ => "u64",
+                    .u128_ => "u128",
+                    .usize_ => "usize",
+                    .f32_ => "f32",
+                    .f64_ => "f64",
+                    .bool_ => "bool",
+                    .char_ => "char",
+                    .string_ => "string",
+                };
+                try buffer.appendSlice(self.allocator, name);
+            },
+            .void_ => try buffer.appendSlice(self.allocator, "void"),
+            .struct_ => |s| try buffer.appendSlice(self.allocator, s.name),
+            .enum_ => |e| try buffer.appendSlice(self.allocator, e.name),
+            .optional => |inner| {
+                try buffer.appendSlice(self.allocator, "opt_");
+                try self.appendTypeName(buffer, inner.*);
+            },
+            .array => |arr| {
+                try buffer.appendSlice(self.allocator, "arr_");
+                try self.appendTypeName(buffer, arr.element);
+            },
+            .slice => |sl| {
+                try buffer.appendSlice(self.allocator, "slice_");
+                try self.appendTypeName(buffer, sl.element);
+            },
+            .rc => |rc| {
+                try buffer.appendSlice(self.allocator, "rc_");
+                try self.appendTypeName(buffer, rc.inner);
+            },
+            .tuple => |tup| {
+                try buffer.appendSlice(self.allocator, "tup");
+                for (tup.elements) |elem| {
+                    try buffer.append(self.allocator, '_');
+                    try self.appendTypeName(buffer, elem);
+                }
+            },
+            else => try buffer.appendSlice(self.allocator, "unknown"),
+        }
+    }
+
+    /// Record a monomorphized function instance and return its mangled name.
+    /// If the same instantiation already exists, returns the existing entry.
+    pub fn recordMonomorphization(
+        self: *TypeChecker,
+        func_name: []const u8,
+        type_args: []const Type,
+        concrete_type: Type,
+    ) ![]const u8 {
+        // Check if this instantiation already exists
+        for (self.monomorphized_functions.items) |existing| {
+            if (std.mem.eql(u8, existing.original_name, func_name) and
+                existing.type_args.len == type_args.len)
+            {
+                var matches = true;
+                for (existing.type_args, type_args) |e, t| {
+                    if (!e.eql(t)) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) {
+                    return existing.mangled_name;
+                }
+            }
+        }
+
+        // Create new entry
+        const mangled_name = try self.mangleFunctionName(func_name, type_args);
+        const type_args_copy = try self.allocator.dupe(Type, type_args);
+
+        try self.monomorphized_functions.append(self.allocator, .{
+            .original_name = func_name,
+            .mangled_name = mangled_name,
+            .type_args = type_args_copy,
+            .concrete_type = concrete_type,
+        });
+
+        return mangled_name;
+    }
+
+    /// Get all monomorphized function instances.
+    pub fn getMonomorphizedFunctions(self: *const TypeChecker) []const MonomorphizedFunction {
+        return self.monomorphized_functions.items;
+    }
+
+    /// Substitute type variables in a type using the given mapping.
+    /// The substitutions map TypeVar.id to the concrete Type to substitute.
+    /// Returns a new type with all type variables replaced.
+    pub fn substituteTypeParams(self: *TypeChecker, typ: Type, substitutions: std.AutoHashMapUnmanaged(u32, Type)) !Type {
+        return switch (typ) {
+            // Type variable - the core substitution case
+            .type_var => |tv| {
+                if (substitutions.get(tv.id)) |concrete_type| {
+                    return concrete_type;
+                }
+                // Type variable not in substitution map - return unchanged
+                return typ;
+            },
+
+            // Primitive types - no substitution needed
+            .primitive, .void_, .never, .unknown, .error_type => typ,
+
+            // Array - substitute element type
+            .array => |arr| {
+                const new_elem = try self.substituteTypeParams(arr.element, substitutions);
+                if (arr.element.eql(new_elem)) return typ;
+                return self.type_builder.arrayType(new_elem, arr.size);
+            },
+
+            // Slice - substitute element type
+            .slice => |sl| {
+                const new_elem = try self.substituteTypeParams(sl.element, substitutions);
+                if (sl.element.eql(new_elem)) return typ;
+                return self.type_builder.sliceType(new_elem);
+            },
+
+            // Tuple - substitute all element types
+            .tuple => |tup| {
+                var changed = false;
+                var new_elements = std.ArrayListUnmanaged(Type){};
+                defer new_elements.deinit(self.allocator);
+
+                for (tup.elements) |elem| {
+                    const new_elem = try self.substituteTypeParams(elem, substitutions);
+                    if (!elem.eql(new_elem)) changed = true;
+                    try new_elements.append(self.allocator, new_elem);
+                }
+
+                if (!changed) return typ;
+                return self.type_builder.tupleType(try self.allocator.dupe(Type, new_elements.items));
+            },
+
+            // Optional - substitute inner type
+            .optional => |inner| {
+                const new_inner = try self.substituteTypeParams(inner.*, substitutions);
+                if (inner.eql(new_inner)) return typ;
+                return self.type_builder.optionalType(new_inner);
+            },
+
+            // Result - substitute ok and err types
+            .result => |res| {
+                const new_ok = try self.substituteTypeParams(res.ok_type, substitutions);
+                const new_err = try self.substituteTypeParams(res.err_type, substitutions);
+                if (res.ok_type.eql(new_ok) and res.err_type.eql(new_err)) return typ;
+                return self.type_builder.resultType(new_ok, new_err);
+            },
+
+            // Function - substitute param and return types
+            .function => |func| {
+                var changed = false;
+                var new_params = std.ArrayListUnmanaged(Type){};
+                defer new_params.deinit(self.allocator);
+
+                for (func.params) |param_type| {
+                    const new_param_type = try self.substituteTypeParams(param_type, substitutions);
+                    if (!param_type.eql(new_param_type)) changed = true;
+                    try new_params.append(self.allocator, new_param_type);
+                }
+
+                const new_return = try self.substituteTypeParams(func.return_type, substitutions);
+                if (!func.return_type.eql(new_return)) changed = true;
+
+                if (!changed) return typ;
+                return self.type_builder.functionType(
+                    try self.allocator.dupe(Type, new_params.items),
+                    new_return,
+                );
+            },
+
+            // Reference - substitute inner type
+            .reference => |ref| {
+                const new_inner = try self.substituteTypeParams(ref.inner, substitutions);
+                if (ref.inner.eql(new_inner)) return typ;
+                return self.type_builder.referenceType(new_inner, ref.mutable);
+            },
+
+            // Applied type - substitute type arguments
+            .applied => |app| {
+                const new_base = try self.substituteTypeParams(app.base, substitutions);
+                var changed = !app.base.eql(new_base);
+
+                var new_args = std.ArrayListUnmanaged(Type){};
+                defer new_args.deinit(self.allocator);
+
+                for (app.args) |arg| {
+                    const new_arg = try self.substituteTypeParams(arg, substitutions);
+                    if (!arg.eql(new_arg)) changed = true;
+                    try new_args.append(self.allocator, new_arg);
+                }
+
+                if (!changed) return typ;
+                return self.type_builder.appliedType(new_base, try self.allocator.dupe(Type, new_args.items));
+            },
+
+            // Rc types - substitute inner type
+            .rc => |rc| {
+                const new_inner = try self.substituteTypeParams(rc.inner, substitutions);
+                if (rc.inner.eql(new_inner)) return typ;
+                return self.type_builder.rcType(new_inner);
+            },
+
+            .weak_rc => |wrc| {
+                const new_inner = try self.substituteTypeParams(wrc.inner, substitutions);
+                if (wrc.inner.eql(new_inner)) return typ;
+                return self.type_builder.weakRcType(new_inner);
+            },
+
+            .arc => |arc| {
+                const new_inner = try self.substituteTypeParams(arc.inner, substitutions);
+                if (arc.inner.eql(new_inner)) return typ;
+                return self.type_builder.arcType(new_inner);
+            },
+
+            .weak_arc => |warc| {
+                const new_inner = try self.substituteTypeParams(warc.inner, substitutions);
+                if (warc.inner.eql(new_inner)) return typ;
+                return self.type_builder.weakArcType(new_inner);
+            },
+
+            // Cell - substitute inner type
+            .cell => |c| {
+                const new_inner = try self.substituteTypeParams(c.inner, substitutions);
+                if (c.inner.eql(new_inner)) return typ;
+                return self.type_builder.cellType(new_inner);
+            },
+
+            // Struct/Enum/Trait - return as-is (monomorphization creates applied types)
+            .struct_, .enum_, .trait_ => typ,
+        };
+    }
+
+    /// Check if a type contains any type variables.
+    pub fn containsTypeVar(self: *TypeChecker, typ: Type) bool {
+        return switch (typ) {
+            .type_var => true,
+            .primitive, .void_, .never, .unknown, .error_type => false,
+            .array => |arr| self.containsTypeVar(arr.element),
+            .slice => |sl| self.containsTypeVar(sl.element),
+            .tuple => |tup| {
+                for (tup.elements) |elem| {
+                    if (self.containsTypeVar(elem)) return true;
+                }
+                return false;
+            },
+            .optional => |inner| self.containsTypeVar(inner.*),
+            .result => |res| self.containsTypeVar(res.ok_type) or self.containsTypeVar(res.err_type),
+            .function => |func| {
+                for (func.params) |param_type| {
+                    if (self.containsTypeVar(param_type)) return true;
+                }
+                return self.containsTypeVar(func.return_type);
+            },
+            .reference => |ref| self.containsTypeVar(ref.inner),
+            .applied => |app| {
+                if (self.containsTypeVar(app.base)) return true;
+                for (app.args) |arg| {
+                    if (self.containsTypeVar(arg)) return true;
+                }
+                return false;
+            },
+            .rc => |rc| self.containsTypeVar(rc.inner),
+            .weak_rc => |wrc| self.containsTypeVar(wrc.inner),
+            .arc => |arc| self.containsTypeVar(arc.inner),
+            .weak_arc => |warc| self.containsTypeVar(warc.inner),
+            .cell => |c| self.containsTypeVar(c.inner),
+            .struct_, .enum_, .trait_ => false,
+        };
+    }
+
+    /// Try to unify a type with type variables against a concrete type.
+    /// Returns true if unification succeeded, populating the substitutions map.
+    pub fn unifyTypes(
+        self: *TypeChecker,
+        pattern: Type,
+        concrete: Type,
+        substitutions: *std.AutoHashMapUnmanaged(u32, Type),
+    ) !bool {
+        switch (pattern) {
+            .type_var => |tv| {
+                // Check if we already have a binding for this type variable
+                if (substitutions.get(tv.id)) |existing| {
+                    // Must match the existing binding
+                    return existing.eql(concrete);
+                }
+                // New binding - add it
+                try substitutions.put(self.allocator, tv.id, concrete);
+                return true;
+            },
+
+            .primitive, .void_, .never, .unknown, .error_type => {
+                return pattern.eql(concrete);
+            },
+
+            .array => |arr| {
+                if (concrete != .array) return false;
+                const concrete_arr = concrete.array;
+                if (arr.size != concrete_arr.size) return false;
+                return self.unifyTypes(arr.element, concrete_arr.element, substitutions);
+            },
+
+            .slice => |sl| {
+                if (concrete != .slice) return false;
+                const concrete_sl = concrete.slice;
+                return self.unifyTypes(sl.element, concrete_sl.element, substitutions);
+            },
+
+            .tuple => |tup| {
+                if (concrete != .tuple) return false;
+                const concrete_tup = concrete.tuple;
+                if (tup.elements.len != concrete_tup.elements.len) return false;
+                for (tup.elements, concrete_tup.elements) |pat_elem, conc_elem| {
+                    if (!try self.unifyTypes(pat_elem, conc_elem, substitutions)) {
+                        return false;
+                    }
+                }
+                return true;
+            },
+
+            .optional => |inner| {
+                if (concrete != .optional) return false;
+                return self.unifyTypes(inner.*, concrete.optional.*, substitutions);
+            },
+
+            .result => |res| {
+                if (concrete != .result) return false;
+                const concrete_res = concrete.result;
+                return try self.unifyTypes(res.ok_type, concrete_res.ok_type, substitutions) and
+                    try self.unifyTypes(res.err_type, concrete_res.err_type, substitutions);
+            },
+
+            .function => |func| {
+                if (concrete != .function) return false;
+                const concrete_func = concrete.function;
+                if (func.params.len != concrete_func.params.len) return false;
+                for (func.params, concrete_func.params) |pat_param_type, conc_param_type| {
+                    if (!try self.unifyTypes(pat_param_type, conc_param_type, substitutions)) {
+                        return false;
+                    }
+                }
+                return self.unifyTypes(func.return_type, concrete_func.return_type, substitutions);
+            },
+
+            .reference => |ref| {
+                if (concrete != .reference) return false;
+                const concrete_ref = concrete.reference;
+                if (ref.mutable != concrete_ref.mutable) return false;
+                return self.unifyTypes(ref.inner, concrete_ref.inner, substitutions);
+            },
+
+            .rc => |rc| {
+                if (concrete != .rc) return false;
+                return self.unifyTypes(rc.inner, concrete.rc.inner, substitutions);
+            },
+
+            .weak_rc => |wrc| {
+                if (concrete != .weak_rc) return false;
+                return self.unifyTypes(wrc.inner, concrete.weak_rc.inner, substitutions);
+            },
+
+            .arc => |arc| {
+                if (concrete != .arc) return false;
+                return self.unifyTypes(arc.inner, concrete.arc.inner, substitutions);
+            },
+
+            .weak_arc => |warc| {
+                if (concrete != .weak_arc) return false;
+                return self.unifyTypes(warc.inner, concrete.weak_arc.inner, substitutions);
+            },
+
+            .cell => |c| {
+                if (concrete != .cell) return false;
+                return self.unifyTypes(c.inner, concrete.cell.inner, substitutions);
+            },
+
+            .applied => |app| {
+                if (concrete != .applied) return false;
+                const concrete_app = concrete.applied;
+                if (!try self.unifyTypes(app.base, concrete_app.base, substitutions)) {
+                    return false;
+                }
+                if (app.args.len != concrete_app.args.len) return false;
+                for (app.args, concrete_app.args) |pat_arg, conc_arg| {
+                    if (!try self.unifyTypes(pat_arg, conc_arg, substitutions)) {
+                        return false;
+                    }
+                }
+                return true;
+            },
+
+            .struct_, .enum_, .trait_ => {
+                return pattern.eql(concrete);
+            },
+        }
     }
 
     // ========================================================================
@@ -848,15 +1292,78 @@ pub const TypeChecker = struct {
             return func.return_type;
         }
 
-        // Check argument types
-        for (call.args, func.params) |arg, param| {
-            const arg_type = self.checkExpr(arg);
-            if (!arg_type.eql(param)) {
-                self.addError(.type_mismatch, arg.span(), "argument type mismatch", .{});
-            }
-        }
+        // Check if this is a generic function call (has type variables)
+        const is_generic = self.containsTypeVar(.{ .function = func });
 
-        return func.return_type;
+        if (is_generic) {
+            // Type inference for generic function calls
+            var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+            defer substitutions.deinit(self.allocator);
+
+            // First pass: check all argument types and try to infer type variables
+            var all_unified = true;
+            for (call.args, func.params) |arg, param_type| {
+                const arg_type = self.checkExpr(arg);
+                // Try to unify the parameter type (which may contain type vars)
+                // with the concrete argument type
+                const unified = self.unifyTypes(param_type, arg_type, &substitutions) catch {
+                    all_unified = false;
+                    continue;
+                };
+                if (!unified) {
+                    self.addError(.type_mismatch, arg.span(), "argument type mismatch", .{});
+                    all_unified = false;
+                }
+            }
+
+            if (all_unified) {
+                // Successfully inferred all type variables, substitute in return type
+                const concrete_return = self.substituteTypeParams(func.return_type, substitutions) catch {
+                    return func.return_type;
+                };
+
+                // Record monomorphization if callee is a named function
+                if (call.callee == .identifier) {
+                    const func_name = call.callee.identifier.name;
+
+                    // Collect inferred type arguments in order
+                    var type_args = std.ArrayListUnmanaged(Type){};
+                    defer type_args.deinit(self.allocator);
+
+                    // Collect all inferred types from the substitution map
+                    var iter = substitutions.iterator();
+                    while (iter.next()) |entry| {
+                        type_args.append(self.allocator, entry.value_ptr.*) catch {};
+                    }
+
+                    // Get the concrete function type
+                    const concrete_func_type = self.substituteTypeParams(.{ .function = func }, substitutions) catch {
+                        return concrete_return;
+                    };
+
+                    // Record this monomorphization
+                    _ = self.recordMonomorphization(
+                        func_name,
+                        type_args.items,
+                        concrete_func_type,
+                    ) catch {};
+                }
+
+                return concrete_return;
+            } else {
+                // Could not fully infer types, return the generic return type
+                return func.return_type;
+            }
+        } else {
+            // Non-generic call: check argument types directly
+            for (call.args, func.params) |arg, param_type| {
+                const arg_type = self.checkExpr(arg);
+                if (!arg_type.eql(param_type)) {
+                    self.addError(.type_mismatch, arg.span(), "argument type mismatch", .{});
+                }
+            }
+            return func.return_type;
+        }
     }
 
     fn checkIndex(self: *TypeChecker, idx: *ast.Index) Type {

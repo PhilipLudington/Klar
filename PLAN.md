@@ -28,43 +28,43 @@
 - [x] Add TypeParam scope tracking in checker.zig
 - [x] Store type parameters in function/struct context
 - [x] Implement type parameter lookup during type resolution
-- [ ] Handle nested generic scopes correctly
+- [x] Handle nested generic scopes correctly
 
 ### Type Parameter Substitution
-- [ ] Implement substituteTypeParams() for replacing type vars with concrete types
-- [ ] Handle recursive type substitution in nested generics
-- [ ] Create AppliedType representation for instantiated generic types
-- [ ] Support type parameter substitution in function signatures
+- [x] Implement substituteTypeParams() for replacing type vars with concrete types
+- [x] Handle recursive type substitution in nested generics
+- [x] Create AppliedType representation for instantiated generic types
+- [x] Support type parameter substitution in function signatures
 
 ### Monomorphization
-- [ ] Detect generic function call sites
-- [ ] Infer concrete types from arguments at call sites
-- [ ] Generate monomorphized function instances (e.g., swap_i32, swap_f64)
-- [ ] Cache monomorphized instances to avoid duplication
-- [ ] Mangle names for uniqueness (e.g., `swap$i32` or `swap_i32`)
+- [x] Detect generic function call sites
+- [x] Infer concrete types from arguments at call sites
+- [x] Generate monomorphized function instances (e.g., swap_i32, swap_f64)
+- [x] Cache monomorphized instances to avoid duplication
+- [x] Mangle names for uniqueness (e.g., `swap$i32` or `swap_i32`)
 
 ### Generic Structs
-- [ ] Support generic struct definitions: `struct Pair[A, B] { first: A, second: B }`
+- [x] Support generic struct definitions: `struct Pair[A, B] { first: A, second: B }`
 - [ ] Instantiate generic structs at usage sites
 - [ ] Generate monomorphized struct types for codegen
 - [ ] Handle generic struct methods
 
 ### Generic Enums
-- [ ] Support generic enum definitions: `enum Option[T] { Some(T), None }`
+- [x] Support generic enum definitions: `enum Option[T] { Some(T), None }`
 - [ ] Instantiate generic enums at usage sites
 - [ ] Handle generic enum variants in match expressions
 
 ### Type Inference at Call Sites
-- [ ] Infer type parameters from argument types
+- [x] Infer type parameters from argument types
 - [ ] Infer type parameters from return type context
 - [ ] Support partial type inference with explicit annotations
 - [ ] Report errors for ambiguous type inference
 
 ### Testing
-- [ ] Test: generic identity function works with multiple types
+- [x] Test: generic identity function works with multiple types
 - [ ] Test: generic Pair struct can hold different types
 - [ ] Test: no code bloat from unused instantiations
-- [ ] Test: type inference selects correct instantiation
+- [x] Test: type inference selects correct instantiation
 
 **Files to Modify:**
 - `src/checker.zig` - Add generic type checking, monomorphization

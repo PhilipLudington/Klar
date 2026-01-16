@@ -1,0 +1,53 @@
+// Test: Nested generic scopes
+// Verifies type parameters are correctly resolved in nested contexts
+
+// Basic generic function
+fn identity[T](x: T) -> T {
+    return x;
+}
+
+// Generic function with multiple type params
+fn first[A, B](a: A, b: B) -> A {
+    // Both A and B should be recognized here
+    return a;
+}
+
+// Generic function using type params in multiple positions
+fn apply[T, R](f: fn(T) -> R, x: T) -> R {
+    // T and R are used in function type and parameter
+    return f(x);
+}
+
+// Generic struct with field types using type params
+struct Container[T] {
+    value: T,
+    count: i32,
+}
+
+// Nested generic struct - inner type uses outer's type param
+struct Wrapper[T] {
+    inner: Container[T],  // Uses T from Wrapper in Container instantiation
+    label: string,
+}
+
+// Generic enum with type param in variant
+enum Tree[T] {
+    Leaf(T),
+    Node(T),  // Simplified - full tree would need Box/Rc
+}
+
+// Multiple type params with some being used in nested positions
+fn select[A, B](use_first: bool, a: A, b: B) -> A {
+    // B is in scope but A is the return type
+    return a;
+}
+
+// Type param used in both param and return
+fn double_param[T](x: T, y: T) -> T {
+    // Same type param used twice in parameters
+    return x;
+}
+
+fn main() {
+    println("Nested generic scopes test passed!");
+}
