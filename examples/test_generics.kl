@@ -1,0 +1,52 @@
+// Test: Generic function type parameter tracking
+// This verifies that type parameters are properly recognized during type checking
+
+// Generic identity function - T should be recognized in param and return type
+fn identity[T](x: T) -> T {
+    // The parameter 'x' should have type T, and return type should be T
+    // Type checking should pass without "undefined type 'T'" errors
+    return x;
+}
+
+// Generic function with multiple type parameters
+fn first[A, B](a: A, b: B) -> A {
+    // Both A and B should be recognized
+    // Return type is A, which matches parameter 'a'
+    return a;
+}
+
+// Generic swap function - demonstrates same type param used multiple times
+fn swap[T](a: T, b: T) -> T {
+    // Both parameters have the same type T
+    return b;
+}
+
+// Generic struct - type parameters used in field types
+struct Pair[T, U] {
+    first: T,    // Field type uses type parameter T
+    second: U,   // Field type uses type parameter U
+}
+
+// Generic enum (like Option) - type parameter used in variant payload
+enum Maybe[T] {
+    Just(T),     // Variant payload uses type parameter T
+    Nothing,
+}
+
+// Generic enum with multiple variants using type param
+enum Either[L, R] {
+    Left(L),
+    Right(R),
+}
+
+// This test function exercises basic operations that don't require
+// full monomorphization - just type parameter recognition
+fn main() {
+    // If we got here without type errors, the type parameters were recognized
+    println("Generic type parameter tracking test passed!");
+
+    // Basic sanity check - these should all type check correctly
+    let x: i32 = 42;
+    let s: string = "hello";
+    println(s);
+}

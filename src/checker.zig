@@ -185,6 +185,9 @@ pub const TypeChecker = struct {
     closure_scope: ?*Scope,
     /// Captured variables for the current closure being analyzed.
     closure_captures: std.StringHashMapUnmanaged(CaptureInfo),
+    /// Stack of type parameter scopes for generic functions/structs.
+    /// Each scope maps type parameter names to their TypeVar types.
+    type_param_scopes: std.ArrayListUnmanaged(std.StringHashMapUnmanaged(types.TypeVar)),
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -205,6 +208,7 @@ pub const TypeChecker = struct {
             .current_return_type = null,
             .closure_scope = null,
             .closure_captures = .{},
+            .type_param_scopes = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -217,6 +221,11 @@ pub const TypeChecker = struct {
         self.global_scope.deinit();
         self.allocator.destroy(self.global_scope);
         self.closure_captures.deinit(self.allocator);
+        // Clean up type parameter scopes
+        for (self.type_param_scopes.items) |*scope| {
+            scope.deinit(self.allocator);
+        }
+        self.type_param_scopes.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -397,6 +406,48 @@ pub const TypeChecker = struct {
     }
 
     // ========================================================================
+    // Type Parameter Scope Management
+    // ========================================================================
+
+    /// Push a new type parameter scope and register the given type parameters.
+    /// Returns the TypeVar types for each parameter, in order.
+    fn pushTypeParams(self: *TypeChecker, type_params: []const ast.TypeParam) ![]const types.TypeVar {
+        var scope = std.StringHashMapUnmanaged(types.TypeVar){};
+        var type_vars = std.ArrayListUnmanaged(types.TypeVar){};
+        defer type_vars.deinit(self.allocator);
+
+        for (type_params) |param| {
+            const type_var = try self.type_builder.newTypeVar(param.name);
+            try scope.put(self.allocator, param.name, type_var);
+            try type_vars.append(self.allocator, type_var);
+        }
+
+        try self.type_param_scopes.append(self.allocator, scope);
+        return try self.allocator.dupe(types.TypeVar, type_vars.items);
+    }
+
+    /// Pop the current type parameter scope.
+    fn popTypeParams(self: *TypeChecker) void {
+        if (self.type_param_scopes.pop()) |*scope| {
+            var s = scope.*;
+            s.deinit(self.allocator);
+        }
+    }
+
+    /// Look up a type parameter by name across all active scopes (innermost first).
+    fn lookupTypeParam(self: *const TypeChecker, name: []const u8) ?types.TypeVar {
+        // Search from innermost scope to outermost
+        var i: usize = self.type_param_scopes.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.type_param_scopes.items[i].get(name)) |type_var| {
+                return type_var;
+            }
+        }
+        return null;
+    }
+
+    // ========================================================================
     // Type Resolution (AST TypeExpr -> Type)
     // ========================================================================
 
@@ -415,6 +466,10 @@ pub const TypeChecker = struct {
                 if (std.mem.eql(u8, n.name, "Self")) {
                     // TODO: resolve Self in impl context
                     return self.type_builder.unknownType();
+                }
+                // Check for type parameters (e.g., T in fn foo[T](x: T))
+                if (self.lookupTypeParam(n.name)) |type_var| {
+                    return .{ .type_var = type_var };
                 }
                 // Look up user-defined type
                 if (self.current_scope.lookup(n.name)) |sym| {
@@ -1739,6 +1794,13 @@ pub const TypeChecker = struct {
     }
 
     fn checkFunction(self: *TypeChecker, func: *ast.FunctionDecl) void {
+        // Push type parameters into scope if this is a generic function
+        const has_type_params = func.type_params.len > 0;
+        if (has_type_params) {
+            _ = self.pushTypeParams(func.type_params) catch return;
+        }
+        defer if (has_type_params) self.popTypeParams();
+
         // Build function type
         var param_types: std.ArrayListUnmanaged(Type) = .{};
         defer param_types.deinit(self.allocator);
@@ -1791,6 +1853,14 @@ pub const TypeChecker = struct {
     }
 
     fn checkStruct(self: *TypeChecker, struct_decl: *ast.StructDecl) void {
+        // Push type parameters into scope if this is a generic struct
+        const has_type_params = struct_decl.type_params.len > 0;
+        var struct_type_params: []const types.TypeVar = &.{};
+        if (has_type_params) {
+            struct_type_params = self.pushTypeParams(struct_decl.type_params) catch return;
+        }
+        defer if (has_type_params) self.popTypeParams();
+
         var fields: std.ArrayListUnmanaged(types.StructField) = .{};
         defer fields.deinit(self.allocator);
 
@@ -1807,7 +1877,7 @@ pub const TypeChecker = struct {
         const struct_type = self.allocator.create(types.StructType) catch return;
         struct_type.* = .{
             .name = struct_decl.name,
-            .type_params = &.{},
+            .type_params = struct_type_params,
             .fields = fields.toOwnedSlice(self.allocator) catch &.{},
             .traits = &.{},
         };
@@ -1822,6 +1892,14 @@ pub const TypeChecker = struct {
     }
 
     fn checkEnum(self: *TypeChecker, enum_decl: *ast.EnumDecl) void {
+        // Push type parameters into scope if this is a generic enum
+        const has_type_params = enum_decl.type_params.len > 0;
+        var enum_type_params: []const types.TypeVar = &.{};
+        if (has_type_params) {
+            enum_type_params = self.pushTypeParams(enum_decl.type_params) catch return;
+        }
+        defer if (has_type_params) self.popTypeParams();
+
         var variants: std.ArrayListUnmanaged(types.EnumVariant) = .{};
         defer variants.deinit(self.allocator);
 
@@ -1860,7 +1938,7 @@ pub const TypeChecker = struct {
         const enum_type = self.allocator.create(types.EnumType) catch return;
         enum_type.* = .{
             .name = enum_decl.name,
-            .type_params = &.{},
+            .type_params = enum_type_params,
             .variants = variants.toOwnedSlice(self.allocator) catch &.{},
         };
 
@@ -2085,6 +2163,13 @@ pub const TypeChecker = struct {
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
+                    // Push type parameters for generic functions
+                    const has_type_params = f.type_params.len > 0;
+                    if (has_type_params) {
+                        _ = self.pushTypeParams(f.type_params) catch continue;
+                    }
+                    defer if (has_type_params) self.popTypeParams();
+
                     // Register function but don't check body yet
                     var param_types: std.ArrayListUnmanaged(Type) = .{};
                     defer param_types.deinit(self.allocator);
@@ -2119,6 +2204,13 @@ pub const TypeChecker = struct {
             switch (decl) {
                 .function => |f| {
                     if (f.body) |body| {
+                        // Push type parameters for generic functions
+                        const has_type_params = f.type_params.len > 0;
+                        if (has_type_params) {
+                            _ = self.pushTypeParams(f.type_params) catch continue;
+                        }
+                        defer if (has_type_params) self.popTypeParams();
+
                         _ = self.pushScope(.function) catch continue;
                         defer self.popScope();
 

@@ -25,9 +25,9 @@
 **Objective:** Implement full generic type checking with monomorphization.
 
 ### Type Parameter Tracking
-- [ ] Add TypeParam scope tracking in checker.zig
-- [ ] Store type parameters in function/struct context
-- [ ] Implement type parameter lookup during type resolution
+- [x] Add TypeParam scope tracking in checker.zig
+- [x] Store type parameters in function/struct context
+- [x] Implement type parameter lookup during type resolution
 - [ ] Handle nested generic scopes correctly
 
 ### Type Parameter Substitution
