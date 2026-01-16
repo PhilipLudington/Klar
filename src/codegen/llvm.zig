@@ -318,6 +318,14 @@ pub const Builder = struct {
         return c.LLVMBuildFPToUI(self.ref, value, dest_ty, name.ptr);
     }
 
+    pub fn buildFPExt(self: Builder, value: ValueRef, dest_ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFPExt(self.ref, value, dest_ty, name.ptr);
+    }
+
+    pub fn buildFPTrunc(self: Builder, value: ValueRef, dest_ty: TypeRef, name: [:0]const u8) ValueRef {
+        return c.LLVMBuildFPTrunc(self.ref, value, dest_ty, name.ptr);
+    }
+
     // Unsigned arithmetic
     pub fn buildUDiv(self: Builder, lhs: ValueRef, rhs: ValueRef, name: [:0]const u8) ValueRef {
         return c.LLVMBuildUDiv(self.ref, lhs, rhs, name.ptr);
@@ -667,6 +675,11 @@ pub fn getReturnType(fn_type: TypeRef) TypeRef {
 /// Check if a type is void.
 pub fn isVoidType(ty: TypeRef) bool {
     return c.LLVMGetTypeKind(ty) == c.LLVMVoidTypeKind;
+}
+
+/// Get the bit width of an integer type.
+pub fn getIntTypeWidth(ty: TypeRef) u32 {
+    return c.LLVMGetIntTypeWidth(ty);
 }
 
 /// Get the size of a type in bytes using target data.

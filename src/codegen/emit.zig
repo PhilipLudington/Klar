@@ -897,6 +897,7 @@ pub const Emitter = struct {
             .postfix => |p| try self.emitPostfix(p),
             .method_call => |m| try self.emitMethodCall(m),
             .closure => |c| try self.emitClosure(c),
+            .type_cast => |tc| try self.emitTypeCast(tc),
             else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
         };
     }
@@ -1240,6 +1241,132 @@ pub const Emitter = struct {
                 return try self.emitExpr(un.operand);
             },
         };
+    }
+
+    fn emitTypeCast(self: *Emitter, cast: *ast.TypeCast) EmitError!llvm.ValueRef {
+        const value = try self.emitExpr(cast.expr);
+        const src_type = llvm.typeOf(value);
+        const src_kind = llvm.getTypeKind(src_type);
+
+        // Get target type name
+        const target_type_name: []const u8 = switch (cast.target_type) {
+            .named => |n| n.name,
+            else => return value, // Non-named types pass through
+        };
+
+        // Get target LLVM type
+        const dest_type = self.getTypeByName(target_type_name) orelse return value;
+        const dest_kind = llvm.getTypeKind(dest_type);
+
+        // Same type - no conversion needed
+        if (src_type == dest_type) {
+            return value;
+        }
+
+        // Integer to Float
+        if ((src_kind == llvm.c.LLVMIntegerTypeKind) and
+            (dest_kind == llvm.c.LLVMFloatTypeKind or dest_kind == llvm.c.LLVMDoubleTypeKind))
+        {
+            // Check if source is signed (i8, i16, i32, i64, isize) or unsigned (u8, u16, u32, u64, usize)
+            const is_signed = self.isSignedIntType(cast.expr);
+            if (is_signed) {
+                return self.builder.buildSIToFP(value, dest_type, "sitofp");
+            } else {
+                return self.builder.buildUIToFP(value, dest_type, "uitofp");
+            }
+        }
+
+        // Float to Integer
+        if ((src_kind == llvm.c.LLVMFloatTypeKind or src_kind == llvm.c.LLVMDoubleTypeKind) and
+            dest_kind == llvm.c.LLVMIntegerTypeKind)
+        {
+            const is_signed = self.isSignedTypeName(target_type_name);
+            if (is_signed) {
+                return self.builder.buildFPToSI(value, dest_type, "fptosi");
+            } else {
+                return self.builder.buildFPToUI(value, dest_type, "fptoui");
+            }
+        }
+
+        // Float to Float (f32 <-> f64)
+        if ((src_kind == llvm.c.LLVMFloatTypeKind or src_kind == llvm.c.LLVMDoubleTypeKind) and
+            (dest_kind == llvm.c.LLVMFloatTypeKind or dest_kind == llvm.c.LLVMDoubleTypeKind))
+        {
+            const src_bits = if (src_kind == llvm.c.LLVMFloatTypeKind) @as(u32, 32) else @as(u32, 64);
+            const dest_bits = if (dest_kind == llvm.c.LLVMFloatTypeKind) @as(u32, 32) else @as(u32, 64);
+
+            if (dest_bits > src_bits) {
+                return self.builder.buildFPExt(value, dest_type, "fpext");
+            } else if (dest_bits < src_bits) {
+                return self.builder.buildFPTrunc(value, dest_type, "fptrunc");
+            }
+            return value;
+        }
+
+        // Integer to Integer
+        if (src_kind == llvm.c.LLVMIntegerTypeKind and dest_kind == llvm.c.LLVMIntegerTypeKind) {
+            const src_bits = llvm.getIntTypeWidth(src_type);
+            const dest_bits = llvm.getIntTypeWidth(dest_type);
+
+            if (dest_bits > src_bits) {
+                // Widening
+                const is_signed = self.isSignedIntType(cast.expr);
+                if (is_signed) {
+                    return self.builder.buildSExt(value, dest_type, "sext");
+                } else {
+                    return self.builder.buildZExt(value, dest_type, "zext");
+                }
+            } else if (dest_bits < src_bits) {
+                // Narrowing
+                return self.builder.buildTrunc(value, dest_type, "trunc");
+            }
+            return value;
+        }
+
+        // Fallback: return value unchanged
+        return value;
+    }
+
+    fn getTypeByName(self: *Emitter, name: []const u8) ?llvm.TypeRef {
+        if (std.mem.eql(u8, name, "i8")) return llvm.Types.int8(self.ctx);
+        if (std.mem.eql(u8, name, "i16")) return llvm.Types.int16(self.ctx);
+        if (std.mem.eql(u8, name, "i32")) return llvm.Types.int32(self.ctx);
+        if (std.mem.eql(u8, name, "i64")) return llvm.Types.int64(self.ctx);
+        if (std.mem.eql(u8, name, "i128")) return llvm.Types.int128(self.ctx);
+        if (std.mem.eql(u8, name, "isize")) return llvm.Types.int64(self.ctx); // Assume 64-bit
+        if (std.mem.eql(u8, name, "u8")) return llvm.Types.int8(self.ctx);
+        if (std.mem.eql(u8, name, "u16")) return llvm.Types.int16(self.ctx);
+        if (std.mem.eql(u8, name, "u32")) return llvm.Types.int32(self.ctx);
+        if (std.mem.eql(u8, name, "u64")) return llvm.Types.int64(self.ctx);
+        if (std.mem.eql(u8, name, "u128")) return llvm.Types.int128(self.ctx);
+        if (std.mem.eql(u8, name, "usize")) return llvm.Types.int64(self.ctx); // Assume 64-bit
+        if (std.mem.eql(u8, name, "f32")) return llvm.Types.float32(self.ctx);
+        if (std.mem.eql(u8, name, "f64")) return llvm.Types.float64(self.ctx);
+        if (std.mem.eql(u8, name, "bool")) return llvm.Types.int1(self.ctx);
+        return null;
+    }
+
+    fn isSignedTypeName(_: *Emitter, name: []const u8) bool {
+        return std.mem.startsWith(u8, name, "i") and !std.mem.eql(u8, name, "isize") or
+            std.mem.eql(u8, name, "isize");
+    }
+
+    fn isSignedIntType(self: *Emitter, expr: ast.Expr) bool {
+        _ = self;
+        // Try to determine signedness from expression
+        // For literals, check if the value is negative
+        if (expr == .literal) {
+            const lit = expr.literal;
+            if (lit.kind == .int) {
+                // Negative values are definitely signed
+                if (lit.kind.int < 0) return true;
+                // Default: integers are signed (i32) in Klar
+                return true;
+            }
+        }
+        // For identifiers, we'd need type info from the checker
+        // Default to signed for safety (i32 is the default int type)
+        return true;
     }
 
     /// Infer the type that results from dereferencing an expression.
