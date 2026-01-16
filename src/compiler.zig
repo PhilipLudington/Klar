@@ -126,6 +126,9 @@ const CompilerScope = struct {
     /// Stack of loop start offsets for continue.
     loop_starts: [256]usize,
 
+    /// Stack of scope depths at loop entry (for break cleanup).
+    loop_scope_depths: [256]i32,
+
     /// Stack of break jump locations to patch.
     break_jumps: std.ArrayListUnmanaged(usize),
 
@@ -141,6 +144,7 @@ const CompilerScope = struct {
             .enclosing = enclosing,
             .loop_depth = 0,
             .loop_starts = undefined,
+            .loop_scope_depths = undefined,
             .break_jumps = .{},
         };
 
@@ -423,6 +427,24 @@ pub const Compiler = struct {
             try self.compileExpr(value);
         }
 
+        // Pop locals that will go out of scope when we break.
+        // We need to restore to the scope depth at loop entry.
+        const target_scope_depth = self.current.loop_scope_depths[self.current.loop_depth - 1];
+        var i = self.current.local_count;
+        while (i > 0) {
+            i -= 1;
+            const local = &self.current.locals[i];
+            if (local.depth != -1 and local.depth > target_scope_depth) {
+                if (local.is_captured) {
+                    try self.emitOp(.op_close_upvalue, b.span.line);
+                } else {
+                    try self.emitOp(.op_pop, b.span.line);
+                }
+            } else {
+                break;
+            }
+        }
+
         // Emit a jump to be patched when the loop ends.
         const jump = try self.emitJump(.op_jump, b.span.line);
         try self.current.break_jumps.append(self.allocator, jump);
@@ -442,9 +464,10 @@ pub const Compiler = struct {
     fn compileWhileLoop(self: *Compiler, w: *ast.WhileLoop) Error!void {
         const line = w.span.line;
 
-        // Mark the loop start.
+        // Mark the loop start and scope depth for break cleanup.
         const loop_start = self.currentChunk().currentOffset();
         self.current.loop_starts[self.current.loop_depth] = loop_start;
+        self.current.loop_scope_depths[self.current.loop_depth] = self.current.scope_depth;
         self.current.loop_depth += 1;
 
         // Compile condition.
@@ -485,9 +508,10 @@ pub const Compiler = struct {
         try self.declareVariable("$iter", false, f.span);
         try self.defineVariable();
 
-        // Mark the loop start.
+        // Mark the loop start and scope depth for break cleanup.
         const loop_start = self.currentChunk().currentOffset();
         self.current.loop_starts[self.current.loop_depth] = loop_start;
+        self.current.loop_scope_depths[self.current.loop_depth] = self.current.scope_depth;
         self.current.loop_depth += 1;
 
         // Get next value from iterator.
@@ -523,9 +547,10 @@ pub const Compiler = struct {
     fn compileLoopStmt(self: *Compiler, l: *ast.LoopStmt) Error!void {
         const line = l.span.line;
 
-        // Mark the loop start.
+        // Mark the loop start and scope depth for break cleanup.
         const loop_start = self.currentChunk().currentOffset();
         self.current.loop_starts[self.current.loop_depth] = loop_start;
+        self.current.loop_scope_depths[self.current.loop_depth] = self.current.scope_depth;
         self.current.loop_depth += 1;
 
         // Compile body (no value produced by loop body).
@@ -1012,7 +1037,10 @@ pub const Compiler = struct {
     }
 
     /// Compile block statements without producing a value (for loop bodies).
+    /// Creates a new scope so local variables are properly cleaned up between iterations.
     fn compileBlockStatements(self: *Compiler, block: *ast.Block) Error!void {
+        self.beginScope();
+
         // Compile all statements.
         for (block.statements) |stmt| {
             try self.compileStmt(stmt);
@@ -1023,6 +1051,8 @@ pub const Compiler = struct {
             try self.compileExpr(final);
             try self.emitOp(.op_pop, block.span.line);
         }
+
+        self.endScope();
     }
 
     fn compileClosure(self: *Compiler, closure: *ast.Closure) Error!void {
