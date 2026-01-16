@@ -300,6 +300,8 @@ See the `benchmarks/` directory:
 - `sort.kl` — Sorting simulation
 - `rc_stress.kl` — Reference counting stress test
 
+For larger example applications, see [KlarReferenceApps](https://github.com/PhilipLudington/KlarReferenceApps).
+
 ## File Extension
 
 `.kl`

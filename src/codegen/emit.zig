@@ -448,7 +448,12 @@ pub const Emitter = struct {
                     }
                 }
 
-                if (result) |val| {
+                if (func.return_type == null) {
+                    // Void function - always emit void return, ignore any expression value
+                    // (e.g., if-without-else returns a placeholder that we discard)
+                    self.emitDropsForReturn();
+                    _ = self.builder.buildRetVoid();
+                } else if (result) |val| {
                     // If return type is optional and value isn't already optional, wrap in Some
                     if (self.current_return_type) |rt_info| {
                         if (rt_info.is_optional) {
@@ -470,9 +475,6 @@ pub const Emitter = struct {
                     }
                     self.emitDropsForReturn();
                     _ = self.builder.buildRet(val);
-                } else if (func.return_type == null) {
-                    self.emitDropsForReturn();
-                    _ = self.builder.buildRetVoid();
                 } else if (self.current_return_type) |rt_info| {
                     if (rt_info.is_optional) {
                         // Return None for optional type with no value
@@ -1661,6 +1663,15 @@ pub const Emitter = struct {
             return llvm.Const.int32(self.ctx, 0);
         }
 
+        // Check if this if-expression produces void (e.g., both branches are print() calls)
+        const result_type = self.inferExprType(ast.Expr{ .if_expr = if_expr }) catch llvm.Types.int32(self.ctx);
+        const is_void_result = llvm.isVoidType(result_type);
+
+        // For void results, don't create PHI - just return a placeholder
+        if (is_void_result) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
         const phi = self.builder.buildPhi(llvm.Types.int32(self.ctx), "iftmp");
         if (!then_has_term and !else_has_term) {
             var incoming_vals = [_]llvm.ValueRef{ then_val, else_val };
@@ -2019,6 +2030,21 @@ pub const Emitter = struct {
                     .named => |n| n.name,
                     else => return llvm.Types.int32(self.ctx),
                 }) orelse llvm.Types.int32(self.ctx);
+            },
+            .if_expr => |if_e| {
+                // If no else branch, result is void
+                if (if_e.else_branch == null) {
+                    return llvm.Types.void_(self.ctx);
+                }
+                // Otherwise infer from then branch (type checker ensures branches match)
+                return try self.inferExprType(if_e.then_branch);
+            },
+            .block => |blk| {
+                // Block type is the type of its final expression, or void if none
+                if (blk.final_expr) |final| {
+                    return try self.inferExprType(final);
+                }
+                return llvm.Types.void_(self.ctx);
             },
             else => llvm.Types.int32(self.ctx),
         };
