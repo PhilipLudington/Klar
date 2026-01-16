@@ -22,6 +22,7 @@ pub const CheckError = struct {
         undefined_type,
         undefined_field,
         undefined_method,
+        undefined_variant,
         invalid_operation,
         invalid_assignment,
         invalid_call,
@@ -199,6 +200,9 @@ pub const TypeChecker = struct {
     /// Cache of monomorphized struct instances.
     /// Maps (struct_name, type_args) to MonomorphizedStruct info.
     monomorphized_structs: std.ArrayListUnmanaged(MonomorphizedStruct),
+    /// Cache of monomorphized enum instances.
+    /// Maps (enum_name, type_args) to MonomorphizedEnum info.
+    monomorphized_enums: std.ArrayListUnmanaged(MonomorphizedEnum),
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -230,6 +234,18 @@ pub const TypeChecker = struct {
         concrete_type: *types.StructType,
     };
 
+    /// Information about a monomorphized enum instance.
+    pub const MonomorphizedEnum = struct {
+        /// Original generic enum name (e.g., "Option")
+        original_name: []const u8,
+        /// Mangled name for this instantiation (e.g., "Option$i32")
+        mangled_name: []const u8,
+        /// The concrete type arguments used for this instantiation
+        type_args: []const Type,
+        /// The concrete enum type with substituted variant payloads
+        concrete_type: *types.EnumType,
+    };
+
     pub fn init(allocator: Allocator) TypeChecker {
         // Allocate global scope on the heap so pointer remains stable
         const global_scope = allocator.create(Scope) catch @panic("Failed to allocate global scope");
@@ -250,6 +266,7 @@ pub const TypeChecker = struct {
             .generic_functions = .{},
             .call_resolutions = .{},
             .monomorphized_structs = .{},
+            .monomorphized_enums = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -271,6 +288,7 @@ pub const TypeChecker = struct {
         self.generic_functions.deinit(self.allocator);
         self.call_resolutions.deinit(self.allocator);
         self.monomorphized_structs.deinit(self.allocator);
+        self.monomorphized_enums.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -627,6 +645,11 @@ pub const TypeChecker = struct {
         return self.monomorphized_structs.items;
     }
 
+    /// Get all monomorphized enum instances.
+    pub fn getMonomorphizedEnums(self: *const TypeChecker) []const MonomorphizedEnum {
+        return self.monomorphized_enums.items;
+    }
+
     /// Record a monomorphized struct instance and return the concrete StructType.
     /// If the same instantiation already exists, returns the existing entry.
     pub fn recordStructMonomorphization(
@@ -715,6 +738,103 @@ pub const TypeChecker = struct {
         }
 
         return result.toOwnedSlice(self.allocator);
+    }
+
+    /// Record a monomorphized enum instance and return the concrete EnumType.
+    /// If the same instantiation already exists, returns the existing entry.
+    pub fn recordEnumMonomorphization(
+        self: *TypeChecker,
+        enum_name: []const u8,
+        original_enum: *types.EnumType,
+        type_args: []const Type,
+    ) !*types.EnumType {
+        // Check if this instantiation already exists
+        for (self.monomorphized_enums.items) |existing| {
+            if (std.mem.eql(u8, existing.original_name, enum_name) and
+                existing.type_args.len == type_args.len)
+            {
+                var matches = true;
+                for (existing.type_args, type_args) |e, t| {
+                    if (!e.eql(t)) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) {
+                    return existing.concrete_type;
+                }
+            }
+        }
+
+        // Create substitution map from type params to concrete types
+        var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+        defer substitutions.deinit(self.allocator);
+
+        for (original_enum.type_params, 0..) |type_param, i| {
+            if (i < type_args.len) {
+                try substitutions.put(self.allocator, type_param.id, type_args[i]);
+            }
+        }
+
+        // Create new enum type with substituted variant payloads
+        var concrete_variants = std.ArrayListUnmanaged(types.EnumVariant){};
+        defer concrete_variants.deinit(self.allocator);
+
+        for (original_enum.variants) |variant| {
+            const concrete_payload: ?types.VariantPayload = if (variant.payload) |payload| blk: {
+                break :blk switch (payload) {
+                    .tuple => |tuple_types| tup: {
+                        var new_types = std.ArrayListUnmanaged(Type){};
+                        defer new_types.deinit(self.allocator);
+                        for (tuple_types) |t| {
+                            const concrete_type = try self.substituteTypeParams(t, substitutions);
+                            try new_types.append(self.allocator, concrete_type);
+                        }
+                        break :tup .{ .tuple = try self.allocator.dupe(Type, new_types.items) };
+                    },
+                    .struct_ => |struct_fields| str: {
+                        var new_fields = std.ArrayListUnmanaged(types.StructField){};
+                        defer new_fields.deinit(self.allocator);
+                        for (struct_fields) |f| {
+                            const concrete_type = try self.substituteTypeParams(f.type_, substitutions);
+                            try new_fields.append(self.allocator, .{
+                                .name = f.name,
+                                .type_ = concrete_type,
+                                .is_pub = f.is_pub,
+                            });
+                        }
+                        break :str .{ .struct_ = try self.allocator.dupe(types.StructField, new_fields.items) };
+                    },
+                };
+            } else null;
+
+            try concrete_variants.append(self.allocator, .{
+                .name = variant.name,
+                .payload = concrete_payload,
+            });
+        }
+
+        // Generate mangled name (same pattern as structs)
+        const mangled_name = try self.mangleStructName(enum_name, type_args);
+
+        // Allocate and store the concrete enum type
+        const concrete_enum = try self.allocator.create(types.EnumType);
+        concrete_enum.* = .{
+            .name = mangled_name,
+            .type_params = &.{}, // No type params - this is a concrete type
+            .variants = try self.allocator.dupe(types.EnumVariant, concrete_variants.items),
+        };
+
+        const type_args_copy = try self.allocator.dupe(Type, type_args);
+
+        try self.monomorphized_enums.append(self.allocator, .{
+            .original_name = enum_name,
+            .mangled_name = mangled_name,
+            .type_args = type_args_copy,
+            .concrete_type = concrete_enum,
+        });
+
+        return concrete_enum;
     }
 
     /// Substitute type variables in a type using the given mapping.
@@ -1194,8 +1314,25 @@ pub const TypeChecker = struct {
                             self.addError(.type_mismatch, g.span, "wrong number of type arguments", .{});
                             return self.type_builder.unknownType();
                         }
-                        // For now, keep enums as applied types until we implement enum monomorphization
-                        return try self.type_builder.appliedType(base, args.items);
+                        // Check if any type args contain unresolved type variables
+                        var has_type_vars = false;
+                        for (args.items) |arg| {
+                            if (self.containsTypeVar(arg)) {
+                                has_type_vars = true;
+                                break;
+                            }
+                        }
+                        if (has_type_vars) {
+                            // Inside a generic context - return an applied type for later resolution
+                            return try self.type_builder.appliedType(base, args.items);
+                        }
+                        // All type args are concrete - monomorphize the enum
+                        const concrete_enum = self.recordEnumMonomorphization(
+                            enum_type.name,
+                            enum_type,
+                            args.items,
+                        ) catch return self.type_builder.unknownType();
+                        return .{ .enum_ = concrete_enum };
                     }
                 }
 
@@ -1230,6 +1367,7 @@ pub const TypeChecker = struct {
             .type_cast => |tc| self.checkTypeCast(tc),
             .grouped => |g| self.checkExpr(g.expr),
             .interpolated_string => |is| self.checkInterpolatedString(is),
+            .enum_literal => |e| self.checkEnumLiteral(e),
         };
     }
 
@@ -2284,6 +2422,85 @@ pub const TypeChecker = struct {
         }
 
         return target_type;
+    }
+
+    /// Type check enum literal construction: EnumType::VariantName(payload)
+    fn checkEnumLiteral(self: *TypeChecker, lit: *ast.EnumLiteral) Type {
+        // Resolve the enum type
+        const enum_type = self.resolveTypeExpr(lit.enum_type) catch return self.type_builder.unknownType();
+
+        if (enum_type != .enum_) {
+            self.addError(.type_mismatch, lit.span, "expected enum type", .{});
+            return self.type_builder.unknownType();
+        }
+
+        const enum_def = enum_type.enum_;
+
+        // Find the variant
+        var found_variant: ?types.EnumVariant = null;
+        for (enum_def.variants) |variant| {
+            if (std.mem.eql(u8, variant.name, lit.variant_name)) {
+                found_variant = variant;
+                break;
+            }
+        }
+
+        if (found_variant == null) {
+            self.addError(.undefined_variant, lit.span, "unknown variant '{s}'", .{lit.variant_name});
+            return self.type_builder.unknownType();
+        }
+
+        const variant = found_variant.?;
+
+        // Check payload matches variant definition
+        if (variant.payload) |payload| {
+            switch (payload) {
+                .tuple => |tuple_types| {
+                    if (lit.payload.len != tuple_types.len) {
+                        self.addError(.type_mismatch, lit.span, "expected {d} payload values, got {d}", .{ tuple_types.len, lit.payload.len });
+                    } else {
+                        for (lit.payload, tuple_types) |payload_expr, expected_type| {
+                            const actual_type = self.checkExpr(payload_expr);
+                            if (!actual_type.eql(expected_type)) {
+                                self.addError(.type_mismatch, payload_expr.span(), "payload type mismatch", .{});
+                            }
+                        }
+                    }
+                },
+                .struct_ => |fields| {
+                    // For struct payloads, check each field
+                    if (lit.payload.len != fields.len) {
+                        self.addError(.type_mismatch, lit.span, "expected {d} struct fields, got {d}", .{ fields.len, lit.payload.len });
+                    }
+                    // TODO: Proper struct field matching by name
+                },
+            }
+        } else {
+            // Unit variant - no payload expected
+            if (lit.payload.len > 0) {
+                self.addError(.type_mismatch, lit.span, "variant '{s}' takes no payload", .{lit.variant_name});
+            }
+        }
+
+        // If this is a generic enum, record the monomorphization
+        if (enum_def.type_params.len > 0) {
+            // Extract type arguments from the resolved enum type
+            if (lit.enum_type == .generic_apply) {
+                const generic = lit.enum_type.generic_apply;
+                var type_args = std.ArrayListUnmanaged(Type){};
+                defer type_args.deinit(self.allocator);
+
+                for (generic.args) |arg| {
+                    const resolved_arg = self.resolveTypeExpr(arg) catch continue;
+                    type_args.append(self.allocator, resolved_arg) catch {};
+                }
+
+                // Record enum monomorphization - pass original enum def
+                _ = self.recordEnumMonomorphization(enum_def.name, enum_def, type_args.items) catch {};
+            }
+        }
+
+        return enum_type;
     }
 
     // ========================================================================

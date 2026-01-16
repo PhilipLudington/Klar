@@ -13,7 +13,7 @@
 - 252x speedup for native vs VM
 
 **Gaps to Address:**
-- Generic functions and structs working (type checking + monomorphization + codegen); generic enums codegen pending
+- Generic functions, structs, and enums working (type checking + monomorphization); enum literal codegen pending
 - Traits parsed but not semantically checked
 - Single-file compilation only
 - No standard library beyond builtins (print, panic, assert)
@@ -24,7 +24,7 @@
 
 **Objective:** Implement full generic type checking with monomorphization.
 
-**Status:** Generic functions and structs complete (type checking, monomorphization, codegen). Generic enums and struct methods pending.
+**Status:** Generic functions, structs, and enums complete (type checking, monomorphization, codegen registration, enum literal construction). Generic struct methods and enum match expressions pending.
 
 ### Type Parameter Tracking
 - [x] Add TypeParam scope tracking in checker.zig
@@ -54,8 +54,10 @@
 
 ### Generic Enums
 - [x] Support generic enum definitions: `enum Option[T] { Some(T), None }`
-- [ ] Instantiate generic enums at usage sites
+- [x] Instantiate generic enums at usage sites (type checker + monomorphization)
+- [x] Generate monomorphized enum types for codegen
 - [ ] Handle generic enum variants in match expressions
+- [x] Emit generic enum literal construction in codegen (EnumType[T]::Variant(payload) syntax)
 
 ### Type Inference at Call Sites
 - [x] Infer type parameters from argument types
@@ -70,9 +72,9 @@
 - [x] Test: type inference selects correct instantiation
 
 **Files Modified:**
-- `src/checker.zig` - Generic type checking, monomorphization recording (functions + structs) ✓
+- `src/checker.zig` - Generic type checking, monomorphization recording (functions + structs + enums) ✓
 - `src/types.zig` - TypeVar handling ✓
-- `src/codegen/emit.zig` - Monomorphized function/struct emission ✓
+- `src/codegen/emit.zig` - Monomorphized function/struct/enum emission ✓
 - `src/parser.zig` - Generic struct literal parsing ✓
 - `src/main.zig` - Integration of type checker with emitter ✓
 - `test/native/generics_basic.kl` - Generic function test ✓

@@ -183,6 +183,11 @@ pub const Interpreter = struct {
             .type_cast => |tc| self.evalTypeCast(tc),
             .grouped => |g| self.evaluate(g.expr),
             .interpolated_string => |is| self.evalInterpolatedString(is),
+            .enum_literal => {
+                // TODO: Enum literal evaluation for interpreter
+                // For now, enum literals are only supported in native compilation
+                return error.NotImplemented;
+            },
         };
     }
 

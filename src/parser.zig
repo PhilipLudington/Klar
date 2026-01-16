@@ -508,7 +508,7 @@ pub const Parser = struct {
         // Check if this is an uppercase identifier (type name)
         const is_type_name = name.len > 0 and std.ascii.isUpper(name[0]);
 
-        // Check for generic struct literal: TypeName[T, U] { ... }
+        // Check for generic type: TypeName[T, U] ...
         if (is_type_name and self.check(.l_bracket)) {
             // Parse type arguments
             self.advance(); // consume '['
@@ -530,16 +530,25 @@ pub const Parser = struct {
             });
             const full_type: ast.TypeExpr = .{ .generic_apply = generic_type };
 
-            // Now check for struct literal with generic type: TypeName[T, U] { ... }
+            // Check for enum literal: TypeName[T]::VariantName or TypeName[T]::VariantName(payload)
+            if (self.check(.colon_colon)) {
+                return self.parseEnumLiteralWithType(full_type, start_span);
+            }
+
+            // Check for struct literal with generic type: TypeName[T, U] { ... }
             if (self.check(.l_brace)) {
                 return self.parseStructLiteralWithType(full_type, start_span);
             }
 
             // Otherwise, this is not a valid expression context for a generic type
-            // Fall through to return identifier (let the checker handle it)
-            // Actually, we should error here since TypeName[...] without { } is not a valid expression
-            try self.reportError("generic type application requires struct literal");
+            try self.reportError("generic type application requires struct literal or enum variant");
             return ParseError.UnexpectedToken;
+        }
+
+        // Check for enum literal: TypeName::VariantName or TypeName::VariantName(payload)
+        if (is_type_name and self.check(.colon_colon)) {
+            const base_type: ast.TypeExpr = .{ .named = .{ .name = name, .span = start_span } };
+            return self.parseEnumLiteralWithType(base_type, start_span);
         }
 
         // Check for struct literal: Identifier { ... }
@@ -554,6 +563,37 @@ pub const Parser = struct {
             .name = name,
             .span = start_span,
         } };
+    }
+
+    /// Parse enum literal: EnumType::VariantName or EnumType::VariantName(payload)
+    fn parseEnumLiteralWithType(self: *Parser, enum_type: ast.TypeExpr, start_span: ast.Span) ParseError!ast.Expr {
+        self.advance(); // consume '::'
+
+        // Parse variant name
+        const variant_name = try self.consumeIdentifier();
+
+        // Check for payload: (expr, ...) or ()
+        var payload = std.ArrayListUnmanaged(ast.Expr){};
+        if (self.match(.l_paren)) {
+            if (!self.check(.r_paren)) {
+                while (true) {
+                    try payload.append(self.allocator, try self.parseExpression());
+                    if (!self.match(.comma)) break;
+                }
+            }
+            try self.consume(.r_paren, "expected ')' after variant payload");
+        }
+
+        const end_span = self.spanFromToken(self.previous);
+
+        const enum_lit = try self.create(ast.EnumLiteral, .{
+            .enum_type = enum_type,
+            .variant_name = variant_name,
+            .payload = try self.dupeSlice(ast.Expr, payload.items),
+            .span = ast.Span.merge(start_span, end_span),
+        });
+
+        return .{ .enum_literal = enum_lit };
     }
 
     fn parseStructLiteralWithType(self: *Parser, type_expr: ast.TypeExpr, start_span: ast.Span) ParseError!ast.Expr {

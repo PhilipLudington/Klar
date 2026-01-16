@@ -289,7 +289,16 @@ pub const OwnershipChecker = struct {
             .type_cast => |tc| try self.analyzeTypeCast(tc),
             .grouped => |g| try self.analyzeExpr(g.expr),
             .interpolated_string => |i| try self.analyzeInterpolatedString(i),
+            .enum_literal => |e| try self.analyzeEnumLiteral(e),
         };
+    }
+
+    fn analyzeEnumLiteral(self: *OwnershipChecker, lit: *ast.EnumLiteral) !?*VariableState {
+        // Analyze each payload expression
+        for (lit.payload) |payload_expr| {
+            _ = try self.analyzeExpr(payload_expr);
+        }
+        return null;
     }
 
     fn analyzeIdentifier(self: *OwnershipChecker, id: ast.Identifier) !?*VariableState {

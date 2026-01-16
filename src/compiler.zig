@@ -670,6 +670,10 @@ pub const Compiler = struct {
             .type_cast => |tc| try self.compileTypeCast(tc),
             .grouped => |g| try self.compileExpr(g.expr),
             .interpolated_string => |i| try self.compileInterpolatedString(i),
+            .enum_literal => {
+                // TODO: Enum literal compilation for bytecode VM
+                // For now, enum literals are only supported in native compilation
+            },
         }
     }
 

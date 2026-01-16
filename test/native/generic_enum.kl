@@ -1,0 +1,18 @@
+// Test generic enum literal construction using :: syntax
+
+// Define a generic option-like enum
+enum MyOption[T] {
+    MySome(T),
+    MyNone,
+}
+
+fn main() -> i32 {
+    // Create MyOption[i32]::MySome(42)
+    let some_val = MyOption[i32]::MySome(42)
+
+    // Create MyOption[i32]::MyNone
+    let none_val = MyOption[i32]::MyNone
+
+    // Return 42 to verify the test works
+    42
+}

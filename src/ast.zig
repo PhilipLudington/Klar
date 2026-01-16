@@ -52,6 +52,7 @@ pub const Expr = union(enum) {
     type_cast: *TypeCast,
     grouped: *Grouped,
     interpolated_string: *InterpolatedString,
+    enum_literal: *EnumLiteral,
 
     pub fn span(self: Expr) Span {
         return switch (self) {
@@ -75,6 +76,7 @@ pub const Expr = union(enum) {
             .type_cast => |t| t.span,
             .grouped => |g| g.span,
             .interpolated_string => |i| i.span,
+            .enum_literal => |e| e.span,
         };
     }
 };
@@ -312,6 +314,17 @@ pub const StructLiteral = struct {
 pub const StructFieldInit = struct {
     name: []const u8,
     value: Expr,
+    span: Span,
+};
+
+/// Enum variant construction expression: EnumType::VariantName(payload) or EnumType[T]::VariantName(payload)
+pub const EnumLiteral = struct {
+    /// The enum type expression (may include type arguments for generics)
+    enum_type: TypeExpr,
+    /// The variant name being constructed
+    variant_name: []const u8,
+    /// The payload expression(s) - empty for unit variants, single for tuple(T), multiple for struct payloads
+    payload: []const Expr,
     span: Span,
 };
 

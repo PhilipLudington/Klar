@@ -922,6 +922,7 @@ pub const Emitter = struct {
             .method_call => |m| try self.emitMethodCall(m),
             .closure => |c| try self.emitClosure(c),
             .type_cast => |tc| try self.emitTypeCast(tc),
+            .enum_literal => |e| try self.emitEnumLiteral(e),
             else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
         };
     }
@@ -2842,6 +2843,181 @@ pub const Emitter = struct {
             err_type, // err_value
         };
         return llvm.Types.struct_(self.ctx, &result_fields, false);
+    }
+
+    /// Emit an enum literal: EnumType::VariantName(payload)
+    /// Generates code to construct a tagged union value.
+    fn emitEnumLiteral(self: *Emitter, lit: *ast.EnumLiteral) EmitError!llvm.ValueRef {
+        // Get the mangled enum type name
+        const mangled_name = try self.getMangledEnumName(lit.enum_type);
+
+        // Look up the registered enum type
+        const enum_info = self.struct_types.get(mangled_name) orelse {
+            // Enum type not registered - this might be a non-generic enum
+            // Try the base name if it's not a generic
+            const base_name = switch (lit.enum_type) {
+                .named => |n| n.name,
+                .generic_apply => |g| switch (g.base) {
+                    .named => |n| n.name,
+                    else => return EmitError.UnsupportedFeature,
+                },
+                else => return EmitError.UnsupportedFeature,
+            };
+
+            // Try base name lookup
+            if (self.struct_types.get(base_name)) |info| {
+                return self.emitEnumLiteralWithInfo(lit, info, base_name);
+            }
+            return EmitError.UnsupportedFeature;
+        };
+
+        return self.emitEnumLiteralWithInfo(lit, enum_info, mangled_name);
+    }
+
+    /// Helper to emit enum literal with resolved type info
+    fn emitEnumLiteralWithInfo(self: *Emitter, lit: *ast.EnumLiteral, enum_info: StructTypeInfo, enum_name: []const u8) EmitError!llvm.ValueRef {
+        // Find the variant index
+        var variant_index: ?u32 = null;
+        var variant_payload: ?types.VariantPayload = null;
+
+        // We need to look up the enum definition to find variant info
+        // For now, try to find it through the type checker's monomorphized enums
+        if (self.type_checker) |tc| {
+            const monos = tc.getMonomorphizedEnums();
+            for (monos) |mono| {
+                if (std.mem.eql(u8, mono.mangled_name, enum_name)) {
+                    for (mono.concrete_type.variants, 0..) |v, i| {
+                        if (std.mem.eql(u8, v.name, lit.variant_name)) {
+                            variant_index = @intCast(i);
+                            variant_payload = v.payload;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Also check non-monomorphized enums (registered directly)
+        if (variant_index == null) {
+            // For non-generic enums, look up in the regular enum registry
+            // This is a simplified path - could be enhanced
+            variant_index = 0; // Default for unit variants or simple cases
+        }
+
+        const idx = variant_index orelse return EmitError.InvalidAST;
+        const enum_type = enum_info.llvm_type;
+
+        // Allocate the enum value
+        const enum_alloca = self.builder.buildAlloca(enum_type, "enum.tmp");
+
+        // Determine tag type (i8 for small enums, i16 for larger)
+        const tag_type = llvm.Types.int8(self.ctx); // Assume small enums for now
+
+        // Set the tag field (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(enum_type, enum_alloca, &tag_indices, "enum.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int(tag_type, idx, false), tag_ptr);
+
+        // Set the payload if present
+        if (lit.payload.len > 0 and variant_payload != null) {
+            // Get pointer to payload field (index 1) - stored as byte array
+            var payload_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 1),
+                llvm.Const.int32(self.ctx, 0), // Start of the byte array
+            };
+            const payload_ptr = self.builder.buildGEP(enum_type, enum_alloca, &payload_indices, "enum.payload.ptr");
+
+            switch (variant_payload.?) {
+                .tuple => |tuple_types| {
+                    // For tuple payloads, store each element at its offset
+                    var offset: usize = 0;
+                    for (lit.payload, tuple_types) |payload_expr, payload_type| {
+                        const value = try self.emitExpr(payload_expr);
+
+                        // Get pointer at current offset in the byte array
+                        // In opaque pointer mode, we can store directly
+                        var elem_indices = [_]llvm.ValueRef{
+                            llvm.Const.int32(self.ctx, @intCast(offset)),
+                        };
+                        const elem_ptr = self.builder.buildGEP(
+                            llvm.Types.int8(self.ctx),
+                            payload_ptr,
+                            &elem_indices,
+                            "enum.payload.elem",
+                        );
+                        // Store the value - opaque pointers don't need bitcast
+                        _ = self.builder.buildStore(value, elem_ptr);
+
+                        offset += self.getTypeSize(payload_type);
+                    }
+                },
+                .struct_ => |fields| {
+                    // For struct payloads, store fields by offset
+                    var offset: usize = 0;
+                    for (lit.payload, fields) |payload_expr, field| {
+                        const value = try self.emitExpr(payload_expr);
+
+                        var elem_indices = [_]llvm.ValueRef{
+                            llvm.Const.int32(self.ctx, @intCast(offset)),
+                        };
+                        const elem_ptr = self.builder.buildGEP(
+                            llvm.Types.int8(self.ctx),
+                            payload_ptr,
+                            &elem_indices,
+                            "enum.payload.field",
+                        );
+                        _ = self.builder.buildStore(value, elem_ptr);
+
+                        offset += self.getTypeSize(field.type_);
+                    }
+                },
+            }
+        }
+
+        // Load and return the constructed enum value
+        return self.builder.buildLoad(enum_type, enum_alloca, "enum.result");
+    }
+
+    /// Get the mangled name for an enum type expression
+    fn getMangledEnumName(self: *Emitter, type_expr: ast.TypeExpr) EmitError![]const u8 {
+        return switch (type_expr) {
+            .named => |n| n.name,
+            .generic_apply => |g| blk: {
+                const base_name = switch (g.base) {
+                    .named => |n| n.name,
+                    else => return EmitError.UnsupportedFeature,
+                };
+
+                // Build mangled name: EnumName$Arg1$Arg2
+                var result = std.ArrayListUnmanaged(u8){};
+                errdefer result.deinit(self.allocator);
+
+                result.appendSlice(self.allocator, base_name) catch return EmitError.OutOfMemory;
+
+                for (g.args) |arg| {
+                    result.append(self.allocator, '$') catch return EmitError.OutOfMemory;
+                    const arg_name = try self.getTypeName(arg);
+                    result.appendSlice(self.allocator, arg_name) catch return EmitError.OutOfMemory;
+                }
+
+                break :blk result.toOwnedSlice(self.allocator) catch return EmitError.OutOfMemory;
+            },
+            else => return EmitError.UnsupportedFeature,
+        };
+    }
+
+    /// Get a string name for a type expression
+    fn getTypeName(self: *Emitter, type_expr: ast.TypeExpr) EmitError![]const u8 {
+        return switch (type_expr) {
+            .named => |n| n.name,
+            .generic_apply => try self.getMangledEnumName(type_expr),
+            else => "unknown", // For primitive types referenced in generic args
+        };
     }
 
     /// Emit a method call expression.
@@ -5286,6 +5462,123 @@ pub const Emitter = struct {
             .field_indices = field_indices,
             .field_names = field_names,
         }) catch return EmitError.OutOfMemory;
+    }
+
+    // =========================================================================
+    // Monomorphized Enum Registration
+    // =========================================================================
+
+    /// Register all monomorphized enum types from the type checker.
+    /// This tracks concrete enum instantiations for future codegen support.
+    pub fn registerMonomorphizedEnums(self: *Emitter, type_checker: *const TypeChecker) EmitError!void {
+        const monos = type_checker.getMonomorphizedEnums();
+
+        for (monos) |mono| {
+            try self.registerMonomorphizedEnum(mono);
+        }
+    }
+
+    /// Register a single monomorphized enum type.
+    /// Enums are represented as tagged unions: {tag: i8, payload_union}
+    fn registerMonomorphizedEnum(self: *Emitter, mono: TypeChecker.MonomorphizedEnum) EmitError!void {
+        // Skip if already registered (uses struct_types map since enum codegen
+        // will reuse struct infrastructure for tagged unions)
+        if (self.struct_types.contains(mono.mangled_name)) {
+            return;
+        }
+
+        // Calculate the maximum payload size across all variants
+        var max_payload_size: usize = 0;
+        for (mono.concrete_type.variants) |variant| {
+            if (variant.payload) |payload| {
+                const payload_size = switch (payload) {
+                    .tuple => |tuple_types| blk: {
+                        var size: usize = 0;
+                        for (tuple_types) |t| {
+                            size += self.getTypeSize(t);
+                        }
+                        break :blk size;
+                    },
+                    .struct_ => |struct_fields| blk: {
+                        var size: usize = 0;
+                        for (struct_fields) |f| {
+                            size += self.getTypeSize(f.type_);
+                        }
+                        break :blk size;
+                    },
+                };
+                if (payload_size > max_payload_size) {
+                    max_payload_size = payload_size;
+                }
+            }
+        }
+
+        // Create LLVM type: {tag: i8, payload: [max_size x i8]}
+        // This is a simple tagged union representation
+        const variant_count = mono.concrete_type.variants.len;
+        const tag_type = if (variant_count <= 256) llvm.Types.int8(self.ctx) else llvm.Types.int16(self.ctx);
+
+        var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer field_types.deinit(self.allocator);
+
+        // Tag field
+        field_types.append(self.allocator, tag_type) catch return EmitError.OutOfMemory;
+
+        // Payload field (if any variant has payload)
+        if (max_payload_size > 0) {
+            const payload_array = llvm.Types.array(llvm.Types.int8(self.ctx), @intCast(max_payload_size));
+            field_types.append(self.allocator, payload_array) catch return EmitError.OutOfMemory;
+        }
+
+        // Create LLVM struct type for the enum
+        const enum_type = llvm.Types.struct_(self.ctx, field_types.items, false);
+
+        // Allocate field tracking data
+        const field_count: usize = if (max_payload_size > 0) 2 else 1;
+        const field_indices = self.allocator.alloc(u32, field_count) catch return EmitError.OutOfMemory;
+        errdefer self.allocator.free(field_indices);
+
+        const field_names = self.allocator.alloc([]const u8, field_count) catch return EmitError.OutOfMemory;
+        errdefer self.allocator.free(field_names);
+
+        field_indices[0] = 0;
+        field_names[0] = "tag";
+        if (max_payload_size > 0) {
+            field_indices[1] = 1;
+            field_names[1] = "payload";
+        }
+
+        // Cache the enum type info (reusing struct infrastructure)
+        self.struct_types.put(mono.mangled_name, .{
+            .llvm_type = enum_type,
+            .field_indices = field_indices,
+            .field_names = field_names,
+        }) catch return EmitError.OutOfMemory;
+    }
+
+    /// Get the size in bytes for a type (simplified estimation for enum layout)
+    fn getTypeSize(self: *Emitter, typ: types.Type) usize {
+        return switch (typ) {
+            .primitive => |p| switch (p) {
+                .bool_ => 1,
+                .i8_, .u8_, .char_ => 1,
+                .i16_, .u16_ => 2,
+                .i32_, .u32_, .f32_ => 4,
+                .i64_, .u64_, .f64_, .isize_, .usize_ => 8,
+                .i128_, .u128_ => 16,
+                .string_ => 16, // Pointer + length
+            },
+            .void_ => 0,
+            .optional => 16, // Conservative: has_value flag + payload pointer
+            .struct_ => |s| blk: {
+                var size: usize = 0;
+                for (s.fields) |f| {
+                    size += self.getTypeSize(f.type_);
+                }
+                break :blk if (size == 0) 8 else size;
+            },
+            else => 8, // Default pointer size for complex types
+        };
     }
 
     // =========================================================================
