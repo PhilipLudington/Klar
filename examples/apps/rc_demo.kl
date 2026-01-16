@@ -1,0 +1,56 @@
+// Reference Counting Demo in Klar
+// Demonstrates: Rc (reference counting), Arc (atomic ref counting), clone
+
+fn main() {
+    println("=== Reference Counting Demo ===")
+    println("")
+
+    // Rc - single-threaded reference counting
+    println("Rc (Reference Counting):")
+    println("  Rc.new(value) creates a reference-counted pointer")
+    println("  .clone() creates a new reference to the same data")
+    println("  Memory is freed when last reference is dropped")
+    println("")
+
+    // Create Rc values
+    let rc1 = Rc.new(42)
+    println("  Created: let rc1 = Rc.new(42)")
+
+    let rc2 = rc1.clone()
+    println("  Cloned:  let rc2 = rc1.clone()")
+    println("  Both rc1 and rc2 point to the same value")
+    println("")
+
+    // Arc - thread-safe reference counting
+    println("Arc (Atomic Reference Counting):")
+    println("  Arc.new(value) creates an atomically ref-counted pointer")
+    println("  Safe to share across threads")
+    println("  Same API as Rc but with atomic operations")
+    println("")
+
+    let arc1 = Arc.new(100)
+    println("  Created: let arc1 = Arc.new(100)")
+
+    let arc2 = arc1.clone()
+    println("  Cloned:  let arc2 = arc1.clone()")
+    println("")
+
+    // Multiple clones
+    println("Multiple clones:")
+    let base = Rc.new(999)
+    let clone1 = base.clone()
+    let clone2 = base.clone()
+    let clone3 = base.clone()
+    println("  Created base Rc and 3 clones")
+    println("  All 4 references point to same value")
+    println("  Value freed when all 4 go out of scope")
+    println("")
+
+    println("Features Demonstrated:")
+    println("- Rc.new(value) - create Rc pointer")
+    println("- Arc.new(value) - create Arc pointer")
+    println("- .clone() - increment reference count")
+    println("- Automatic drop when references go out of scope")
+    println("")
+    println("Note: Getting inner value (.get()) not yet available")
+}

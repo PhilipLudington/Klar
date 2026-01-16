@@ -1,0 +1,142 @@
+// Closure Demo in Klar
+// Demonstrates: closures, capturing, higher-order functions
+
+// Higher-order function: applies a transformation
+fn transform(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+// Apply a function twice
+fn apply_twice(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(f(x))
+}
+
+fn main() {
+    println("=== Closure Demo ===")
+    println("")
+
+    // Simple closures
+    println("Simple closures:")
+    let double = |x: i32| x * 2
+    let square = |x: i32| x * x
+    let increment = |x: i32| x + 1
+
+    print("  double(5) = ")
+    print_num(double(5))
+    println(" (expected 10)")
+
+    print("  square(4) = ")
+    print_num(square(4))
+    println(" (expected 16)")
+
+    print("  increment(9) = ")
+    print_num(increment(9))
+    println(" (expected 10)")
+    println("")
+
+    // Closures with capture
+    println("Closures with capture:")
+    let factor = 7
+    let multiply_by_factor = |x: i32| x * factor
+
+    print("  factor = ")
+    print_num(factor)
+    println("")
+    print("  multiply_by_factor(6) = ")
+    print_num(multiply_by_factor(6))
+    println(" (expected 42)")
+
+    let offset = 100
+    let add_offset = |x: i32| x + offset
+
+    print("  offset = ")
+    print_num(offset)
+    println("")
+    print("  add_offset(23) = ")
+    print_num(add_offset(23))
+    println(" (expected 123)")
+    println("")
+
+    // Multi-capture
+    println("Multi-variable capture:")
+    let a = 10
+    let b = 20
+    let combine = |x: i32| x + a + b
+
+    print("  a = ")
+    print_num(a)
+    print(", b = ")
+    print_num(b)
+    println("")
+    print("  combine(2) = ")
+    print_num(combine(2))
+    println(" (expected 32)")
+    println("")
+
+    // Higher-order functions
+    println("Higher-order functions:")
+    print("  transform(double, 8) = ")
+    print_num(transform(double, 8))
+    println(" (expected 16)")
+
+    print("  transform(square, 5) = ")
+    print_num(transform(square, 5))
+    println(" (expected 25)")
+
+    print("  apply_twice(double, 3) = ")
+    print_num(apply_twice(double, 3))
+    println(" (expected 12)")
+
+    print("  apply_twice(increment, 5) = ")
+    print_num(apply_twice(increment, 5))
+    println(" (expected 7)")
+    println("")
+
+    // Chained operations
+    println("Chained operations:")
+    let result = transform(double, transform(square, 3))
+    print("  double(square(3)) = ")
+    print_num(result)
+    println(" (expected 18)")
+    println("")
+
+    println("Features Demonstrated:")
+    println("- Closure literals |x| expr")
+    println("- Typed closure params |x: i32|")
+    println("- Variable capture from outer scope")
+    println("- Multi-variable capture")
+    println("- Higher-order functions (fn as param)")
+    println("- Function composition")
+}
+
+// Helper to print numbers
+fn print_num(n: i32) {
+    if n < 0 {
+        print("-")
+        print_num(-n)
+    } else if n < 10 {
+        print_d(n)
+    } else if n < 100 {
+        print_d(n / 10)
+        print_d(n - (n / 10) * 10)
+    } else {
+        let h = n / 100
+        let rem = n - h * 100
+        print_d(h)
+        print_d(rem / 10)
+        print_d(rem - (rem / 10) * 10)
+    }
+}
+
+fn print_d(d: i32) {
+    if d == 0 { print("0") }
+    else if d == 1 { print("1") }
+    else if d == 2 { print("2") }
+    else if d == 3 { print("3") }
+    else if d == 4 { print("4") }
+    else if d == 5 { print("5") }
+    else if d == 6 { print("6") }
+    else if d == 7 { print("7") }
+    else if d == 8 { print("8") }
+    else if d == 9 { print("9") }
+}

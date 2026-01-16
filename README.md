@@ -305,6 +305,11 @@ See the `examples/apps/` directory for larger reference applications:
 - `collatz.kl` — Collatz conjecture visualizer
 - `fibonacci.kl` — Fibonacci sequence with bar chart
 - `array_demo.kl` — Array features demo
+- `struct_demo.kl` — Structs and tuples
+- `closure_demo.kl` — Closures and higher-order functions
+- `optional_demo.kl` — Optional types (?T)
+- `result_demo.kl` — Result types and error handling
+- `rc_demo.kl` — Reference counting (Rc/Arc)
 
 ## File Extension
 

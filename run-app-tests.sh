@@ -32,6 +32,11 @@ NATIVE_APPS=(
     "collatz"
     "fibonacci"
     "array_demo"
+    "struct_demo"
+    "closure_demo"
+    "optional_demo"
+    "result_demo"
+    "rc_demo"
 )
 
 # Apps that only work with VM (need features not yet in native)
