@@ -40,6 +40,25 @@ pub fn initializeNativeTarget() void {
     _ = c.LLVMInitializeNativeAsmParser();
 }
 
+/// Initialize all supported targets for cross-compilation.
+/// Note: LLVM_InitializeAllTargets, etc. are macros that expand to individual
+/// target initialization calls. We explicitly initialize the targets we care about.
+pub fn initializeAllTargets() void {
+    // Initialize X86 target
+    c.LLVMInitializeX86TargetInfo();
+    c.LLVMInitializeX86Target();
+    c.LLVMInitializeX86TargetMC();
+    c.LLVMInitializeX86AsmPrinter();
+    c.LLVMInitializeX86AsmParser();
+
+    // Initialize AArch64 (ARM64) target
+    c.LLVMInitializeAArch64TargetInfo();
+    c.LLVMInitializeAArch64Target();
+    c.LLVMInitializeAArch64TargetMC();
+    c.LLVMInitializeAArch64AsmPrinter();
+    c.LLVMInitializeAArch64AsmParser();
+}
+
 /// LLVM Context wrapper.
 pub const Context = struct {
     ref: ContextRef,

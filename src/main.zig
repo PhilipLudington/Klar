@@ -82,6 +82,7 @@ pub fn main() !void {
         var opt_level: opt.OptLevel = .O0;
         var verbose_opt = false;
         var debug_info = false;
+        var target_triple: ?[]const u8 = null;
 
         var i: usize = 3;
         while (i < args.len) : (i += 1) {
@@ -105,6 +106,11 @@ pub fn main() !void {
                 verbose_opt = true;
             } else if (std.mem.eql(u8, arg, "-g")) {
                 debug_info = true;
+            } else if (std.mem.eql(u8, arg, "--target") and i + 1 < args.len) {
+                target_triple = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--target=")) {
+                target_triple = arg["--target=".len..];
             }
         }
 
@@ -116,6 +122,7 @@ pub fn main() !void {
             .verbose_opt = verbose_opt,
             .debug_info = debug_info,
             .source_path = args[2],
+            .target_triple = target_triple,
         });
     } else if (std.mem.eql(u8, command, "check")) {
         if (args.len < 3) {
@@ -330,8 +337,29 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     }
 
-    // Initialize LLVM
+    // Initialize LLVM targets
     codegen.llvm.initializeNativeTarget();
+    // Also initialize all targets for cross-compilation
+    codegen.llvm.initializeAllTargets();
+
+    // Parse target triple if specified
+    var target_info: ?codegen.TargetInfo = null;
+    defer if (target_info) |ti| ti.deinit(allocator);
+
+    if (options.target_triple) |triple_str| {
+        target_info = codegen.TargetInfo.parse(allocator, triple_str) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Invalid target triple '{s}': {s}\n", .{ triple_str, @errorName(err) }) catch "Invalid target triple\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        if (target_info.?.isCrossCompile()) {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Cross-compiling for {s}\n", .{target_info.?.triple}) catch "Cross-compiling\n";
+            try stdout.writeAll(msg);
+        }
+    }
 
     // Determine base name for output files
     const base_name = std.fs.path.stem(path);
@@ -397,11 +425,11 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try stdout.writeAll(msg);
     }
 
-    // Get target info for assembly emission (needed before object generation)
-    const triple = codegen.target.getDefaultTriple();
+    // Get target info for code generation
+    const triple: [:0]const u8 = if (target_info) |ti| ti.triple else codegen.target.getDefaultTriple();
     const target_ref = codegen.llvm.getTargetFromTriple(triple) catch |err| {
         var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Failed to get target: {s}\n", .{@errorName(err)}) catch "Failed to get target\n";
+        const msg = std.fmt.bufPrint(&buf, "Failed to get target for '{s}': {s}\n", .{ triple, @errorName(err) }) catch "Failed to get target\n";
         try stderr.writeAll(msg);
         return;
     };
@@ -414,10 +442,16 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         .O3 => codegen.llvm.c.LLVMCodeGenLevelAggressive,
     };
 
+    // Use generic CPU for cross-compilation
+    const cpu = if (target_info != null and target_info.?.isCrossCompile())
+        "generic"
+    else
+        codegen.target.getDefaultCPU();
+
     const tm = codegen.llvm.createTargetMachine(
         target_ref,
         triple,
-        codegen.target.getDefaultCPU(),
+        cpu,
         codegen.target.getDefaultFeatures(),
         llvm_opt_level,
         codegen.llvm.c.LLVMRelocDefault,
@@ -482,9 +516,21 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     // Link to create executable
     const exe_path = options.output_path orelse base_name;
 
-    codegen.linker.link(allocator, obj_path, exe_path) catch |err| {
+    // Use cross-compilation linker if target specified
+    const link_result = if (target_info) |ti|
+        codegen.linker.linkForTarget(allocator, obj_path, exe_path, ti)
+    else
+        codegen.linker.link(allocator, obj_path, exe_path);
+
+    link_result catch |err| {
         var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Linker failed: {s}\n", .{@errorName(err)}) catch "Linker failed\n";
+        const err_msg = switch (err) {
+            error.CrossCompilationNotSupported => "Cross-compilation not supported for this target. Install the appropriate cross-toolchain.",
+            error.LinkerNotFound => "Linker not found. Make sure the appropriate toolchain is installed.",
+            error.LinkerFailed => "Linker failed. Check that all required libraries are available.",
+            else => @errorName(err),
+        };
+        const msg = std.fmt.bufPrint(&buf, "Linker error: {s}\n", .{err_msg}) catch "Linker failed\n";
         try stderr.writeAll(msg);
         // Clean up object file
         std.fs.cwd().deleteFile(obj_path) catch {};
@@ -1008,30 +1054,38 @@ fn printUsage() !void {
         \\  help                 Show this help
         \\  version              Show version
         \\
-        \\Options:
-        \\  --debug              Enable instruction tracing
-        \\  --interpret          Use tree-walking interpreter instead of VM
-        \\  --emit-llvm          Output LLVM IR (.ll file)
-        \\  --emit-asm           Output assembly (.s file)
-        \\  -g                   Generate debug information (DWARF)
+        \\Build Options:
         \\  -o <name>            Output file name
+        \\  --target <triple>    Cross-compile for target (e.g., x86_64-linux-gnu)
         \\  -O0                  No optimizations (default)
         \\  -O1                  Basic optimizations (constant folding, DCE)
         \\  -O2                  Standard optimizations (O1 + simplification)
         \\  -O3                  Aggressive optimizations (O2 + LLVM aggressive)
+        \\  -g                   Generate debug information (DWARF)
+        \\  --emit-llvm          Output LLVM IR (.ll file)
+        \\  --emit-asm           Output assembly (.s file)
         \\  --verbose-opt        Show optimization statistics
+        \\
+        \\Run Options:
+        \\  --debug              Enable instruction tracing
+        \\  --interpret          Use tree-walking interpreter instead of VM
+        \\
+        \\Target Triples:
+        \\  x86_64-linux-gnu     Linux on x86_64
+        \\  aarch64-linux-gnu    Linux on ARM64
+        \\  x86_64-apple-macosx  macOS on Intel
+        \\  arm64-apple-macosx   macOS on Apple Silicon
+        \\  x86_64-windows-msvc  Windows on x86_64
         \\
         \\Examples:
         \\  klar run hello.kl
         \\  klar run hello.kl --debug
-        \\  klar run hello.kl --interpret
         \\  klar build hello.kl
         \\  klar build hello.kl -o myapp
         \\  klar build hello.kl -O2
+        \\  klar build hello.kl --target x86_64-linux-gnu
         \\  klar build hello.kl --emit-llvm
-        \\  klar tokenize example.kl
         \\  klar check example.kl
-        \\  klar disasm example.kl
         \\
     );
 }

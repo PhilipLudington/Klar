@@ -1,10 +1,255 @@
 //! Target platform configuration.
 //!
-//! Provides target triple generation and platform-specific settings.
+//! Provides target triple generation, parsing, and platform-specific settings.
+//! Supports cross-compilation via the --target flag.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const llvm = @import("llvm.zig");
+
+/// Parsed target information for cross-compilation.
+pub const TargetInfo = struct {
+    arch: Arch,
+    os: Os,
+    abi: Abi,
+    /// The LLVM target triple string (null-terminated).
+    triple: [:0]const u8,
+
+    pub const Arch = enum {
+        x86_64,
+        aarch64,
+        unknown,
+
+        pub fn fromString(s: []const u8) Arch {
+            if (std.mem.eql(u8, s, "x86_64") or std.mem.eql(u8, s, "x86-64")) return .x86_64;
+            if (std.mem.eql(u8, s, "aarch64") or std.mem.eql(u8, s, "arm64")) return .aarch64;
+            return .unknown;
+        }
+
+        pub fn toLinkerArch(self: Arch, os: Os) []const u8 {
+            return switch (os) {
+                .macos => switch (self) {
+                    .aarch64 => "arm64",
+                    .x86_64 => "x86_64",
+                    .unknown => "unknown",
+                },
+                else => switch (self) {
+                    .aarch64 => "aarch64",
+                    .x86_64 => "x86_64",
+                    .unknown => "unknown",
+                },
+            };
+        }
+    };
+
+    pub const Os = enum {
+        macos,
+        linux,
+        windows,
+        unknown,
+
+        pub fn fromString(s: []const u8) Os {
+            if (std.mem.eql(u8, s, "macos") or std.mem.eql(u8, s, "darwin") or
+                std.mem.eql(u8, s, "apple") or std.mem.startsWith(u8, s, "macosx"))
+            {
+                return .macos;
+            }
+            if (std.mem.eql(u8, s, "linux") or std.mem.startsWith(u8, s, "linux")) return .linux;
+            if (std.mem.eql(u8, s, "windows") or std.mem.eql(u8, s, "win32") or
+                std.mem.startsWith(u8, s, "windows"))
+            {
+                return .windows;
+            }
+            return .unknown;
+        }
+    };
+
+    pub const Abi = enum {
+        gnu,
+        msvc,
+        none,
+        unknown,
+
+        pub fn fromString(s: []const u8) Abi {
+            if (std.mem.eql(u8, s, "gnu")) return .gnu;
+            if (std.mem.eql(u8, s, "msvc")) return .msvc;
+            if (s.len == 0) return .none;
+            return .unknown;
+        }
+    };
+
+    /// Parse a target triple string like "x86_64-linux-gnu" or "aarch64-apple-darwin".
+    pub fn parse(allocator: std.mem.Allocator, triple_str: []const u8) !TargetInfo {
+        // Handle common shorthand forms
+        const normalized = normalizeTriple(triple_str);
+
+        // Split by '-'
+        var parts = std.mem.splitScalar(u8, normalized, '-');
+
+        const arch_str = parts.next() orelse return error.InvalidTarget;
+        const arch = Arch.fromString(arch_str);
+
+        // Second part could be vendor (apple, pc, unknown) or OS
+        const second = parts.next() orelse "";
+        var os: Os = .unknown;
+        var abi: Abi = .unknown;
+
+        // Check if second part is a vendor or OS
+        if (std.mem.eql(u8, second, "apple") or std.mem.eql(u8, second, "pc") or
+            std.mem.eql(u8, second, "unknown"))
+        {
+            // It's a vendor, next is OS
+            const os_str = parts.next() orelse "";
+            os = Os.fromString(os_str);
+
+            // Last part might be ABI
+            if (parts.next()) |abi_str| {
+                abi = Abi.fromString(abi_str);
+            } else {
+                abi = defaultAbi(os);
+            }
+        } else {
+            // Second part is the OS
+            os = Os.fromString(second);
+
+            // Third part might be ABI
+            if (parts.next()) |abi_str| {
+                abi = Abi.fromString(abi_str);
+            } else {
+                abi = defaultAbi(os);
+            }
+        }
+
+        // Generate the canonical LLVM triple
+        const triple = try generateTriple(allocator, arch, os, abi);
+
+        return .{
+            .arch = arch,
+            .os = os,
+            .abi = abi,
+            .triple = triple,
+        };
+    }
+
+    /// Get the host target info.
+    pub fn host(allocator: std.mem.Allocator) !TargetInfo {
+        const arch: Arch = switch (builtin.cpu.arch) {
+            .x86_64 => .x86_64,
+            .aarch64 => .aarch64,
+            else => .unknown,
+        };
+        const os: Os = switch (builtin.os.tag) {
+            .macos => .macos,
+            .linux => .linux,
+            .windows => .windows,
+            else => .unknown,
+        };
+        const abi = defaultAbi(os);
+        const triple = try generateTriple(allocator, arch, os, abi);
+
+        return .{
+            .arch = arch,
+            .os = os,
+            .abi = abi,
+            .triple = triple,
+        };
+    }
+
+    fn normalizeTriple(s: []const u8) []const u8 {
+        // Handle common shortcuts
+        // e.g., "linux" -> use host arch + linux
+        // For now, just return as-is
+        return s;
+    }
+
+    fn defaultAbi(os: Os) Abi {
+        return switch (os) {
+            .linux => .gnu,
+            .windows => .msvc,
+            .macos => .none,
+            .unknown => .unknown,
+        };
+    }
+
+    fn generateTriple(allocator: std.mem.Allocator, arch: Arch, os: Os, abi: Abi) ![:0]const u8 {
+        const arch_str = switch (arch) {
+            .x86_64 => "x86_64",
+            .aarch64 => switch (os) {
+                .macos => "arm64",
+                else => "aarch64",
+            },
+            .unknown => "unknown",
+        };
+
+        const os_str = switch (os) {
+            .macos => "apple-macosx",
+            .linux => "unknown-linux",
+            .windows => "pc-windows",
+            .unknown => "unknown-unknown",
+        };
+
+        const abi_str = switch (abi) {
+            .gnu => "-gnu",
+            .msvc => "-msvc",
+            .none => "",
+            .unknown => "",
+        };
+
+        // Format the triple string and add null terminator
+        const triple = try std.fmt.allocPrint(allocator, "{s}-{s}{s}", .{ arch_str, os_str, abi_str });
+
+        // Allocate with null terminator
+        const result = try allocator.allocSentinel(u8, triple.len, 0);
+        @memcpy(result, triple);
+        allocator.free(triple);
+
+        return result;
+    }
+
+    /// Convert to Platform struct for compatibility.
+    pub fn toPlatform(self: TargetInfo) Platform {
+        return .{
+            .os = switch (self.os) {
+                .macos => .macos,
+                .linux => .linux,
+                .windows => .windows,
+                .unknown => builtin.os.tag, // Fallback to host
+            },
+            .arch = switch (self.arch) {
+                .x86_64 => .x86_64,
+                .aarch64 => .aarch64,
+                .unknown => builtin.cpu.arch, // Fallback to host
+            },
+        };
+    }
+
+    /// Get the linker architecture string.
+    pub fn getLinkerArch(self: TargetInfo) []const u8 {
+        return self.arch.toLinkerArch(self.os);
+    }
+
+    /// Check if this is a cross-compilation (target != host).
+    pub fn isCrossCompile(self: TargetInfo) bool {
+        const host_arch: Arch = switch (builtin.cpu.arch) {
+            .x86_64 => .x86_64,
+            .aarch64 => .aarch64,
+            else => .unknown,
+        };
+        const host_os: Os = switch (builtin.os.tag) {
+            .macos => .macos,
+            .linux => .linux,
+            .windows => .windows,
+            else => .unknown,
+        };
+
+        return self.arch != host_arch or self.os != host_os;
+    }
+
+    /// Free the allocated triple string.
+    pub fn deinit(self: TargetInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.triple);
+    }
+};
 
 /// Get the default target triple for the host platform.
 pub fn getDefaultTriple() [:0]const u8 {

@@ -32,7 +32,6 @@ pub const CompileOptions = struct {
     emit_llvm_ir: bool = false,
     emit_assembly: bool = false,
     optimization_level: target.OptLevel = .none,
-    target_triple: ?[:0]const u8 = null,
     /// Klar IR optimization level (constant folding, DCE, simplification).
     opt_level: KlarOptLevel = .O0,
     /// Verbose output for optimization passes.
@@ -41,6 +40,9 @@ pub const CompileOptions = struct {
     debug_info: bool = false,
     /// Source file path (for debug info).
     source_path: ?[]const u8 = null,
+    /// Target triple for cross-compilation (e.g., "x86_64-linux-gnu").
+    /// If null, compiles for the host platform.
+    target_triple: ?[]const u8 = null,
 };
 
 /// Convenience re-exports
@@ -48,5 +50,6 @@ pub const Emitter = emit.Emitter;
 pub const EmitError = emit.EmitError;
 pub const Platform = target.Platform;
 pub const OptLevel = target.OptLevel;
+pub const TargetInfo = target.TargetInfo;
 pub const LayoutCalculator = layout.LayoutCalculator;
 pub const StructLayout = layout.StructLayout;

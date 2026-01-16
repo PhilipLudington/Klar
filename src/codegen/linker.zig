@@ -1,6 +1,7 @@
 //! System linker invocation.
 //!
 //! Invokes the platform's system linker to create native executables.
+//! Supports cross-compilation by using appropriate linker flags for target platforms.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -11,21 +12,58 @@ pub const LinkerError = error{
     LinkerNotFound,
     OutputWriteFailed,
     OutOfMemory,
+    CrossCompilationNotSupported,
 };
 
-/// Invoke the system linker to create an executable.
+/// Invoke the system linker to create an executable for the host platform.
 pub fn link(
     allocator: std.mem.Allocator,
     object_file: []const u8,
     output_file: []const u8,
 ) LinkerError!void {
     const platform = target.Platform.current();
+    return linkForPlatform(allocator, object_file, output_file, platform, null);
+}
+
+/// Invoke the system linker to create an executable for a specific target.
+pub fn linkForTarget(
+    allocator: std.mem.Allocator,
+    object_file: []const u8,
+    output_file: []const u8,
+    target_info: target.TargetInfo,
+) LinkerError!void {
+    const platform = target_info.toPlatform();
+    return linkForPlatform(allocator, object_file, output_file, platform, target_info);
+}
+
+/// Core linking implementation.
+fn linkForPlatform(
+    allocator: std.mem.Allocator,
+    object_file: []const u8,
+    output_file: []const u8,
+    platform: target.Platform,
+    target_info_opt: ?target.TargetInfo,
+) LinkerError!void {
+    // Check for cross-compilation scenarios
+    const is_cross = if (target_info_opt) |ti| ti.isCrossCompile() else false;
 
     var args = std.ArrayListUnmanaged([]const u8){};
     defer args.deinit(allocator);
 
     switch (platform.os) {
         .macos => {
+            if (is_cross and builtin.os.tag != .macos) {
+                // Cross-compiling to macOS from non-macOS requires special setup
+                // For now, only support native and macOS-to-macOS cross-arch compilation
+                return LinkerError.CrossCompilationNotSupported;
+            }
+
+            // Get the architecture from target_info or platform
+            const arch_str = if (target_info_opt) |ti|
+                ti.getLinkerArch()
+            else
+                platform.getLinkerArch();
+
             // macOS linker invocation
             args.appendSlice(allocator, &.{
                 "/usr/bin/ld",
@@ -36,7 +74,7 @@ pub fn link(
                 "-syslibroot",
                 findMacOSSDK(),
                 "-arch",
-                platform.getLinkerArch(),
+                arch_str,
                 "-platform_version",
                 "macos",
                 "11.0",
@@ -44,15 +82,63 @@ pub fn link(
             }) catch return LinkerError.OutOfMemory;
         },
         .linux => {
+            // Determine the right GCC to use
+            const gcc_name: []const u8 = if (target_info_opt) |ti| blk: {
+                const host_arch: target.TargetInfo.Arch = switch (builtin.cpu.arch) {
+                    .x86_64 => .x86_64,
+                    .aarch64 => .aarch64,
+                    else => .unknown,
+                };
+                const host_os: target.TargetInfo.Os = switch (builtin.os.tag) {
+                    .linux => .linux,
+                    else => .unknown,
+                };
+
+                // If not on Linux, or different architecture, use cross-compiler
+                if (host_os != .linux or ti.arch != host_arch) {
+                    break :blk switch (ti.arch) {
+                        .x86_64 => "x86_64-linux-gnu-gcc",
+                        .aarch64 => "aarch64-linux-gnu-gcc",
+                        .unknown => return LinkerError.CrossCompilationNotSupported,
+                    };
+                }
+                break :blk "gcc";
+            } else "gcc";
+
             // Linux linker invocation using gcc as frontend
-            // This handles CRT objects and library paths automatically
             args.appendSlice(allocator, &.{
-                "gcc",
+                gcc_name,
                 "-o",
                 output_file,
                 object_file,
                 "-no-pie",
             }) catch return LinkerError.OutOfMemory;
+        },
+        .windows => {
+            // Windows cross-compilation requires MinGW or MSVC cross-tools
+            if (is_cross or builtin.os.tag != .windows) {
+                // Try MinGW cross-compiler
+                const mingw_gcc = if (target_info_opt) |ti| switch (ti.arch) {
+                    .x86_64 => "x86_64-w64-mingw32-gcc",
+                    .aarch64 => "aarch64-w64-mingw32-gcc",
+                    .unknown => return LinkerError.CrossCompilationNotSupported,
+                } else "x86_64-w64-mingw32-gcc";
+
+                args.appendSlice(allocator, &.{
+                    mingw_gcc,
+                    "-o",
+                    output_file,
+                    object_file,
+                }) catch return LinkerError.OutOfMemory;
+            } else {
+                // Native Windows linking
+                args.appendSlice(allocator, &.{
+                    "link.exe",
+                    "/OUT:" ++ output_file,
+                    object_file,
+                    "/SUBSYSTEM:CONSOLE",
+                }) catch return LinkerError.OutOfMemory;
+            }
         },
         else => return LinkerError.LinkerNotFound,
     }

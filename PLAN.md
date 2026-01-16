@@ -1061,40 +1061,70 @@ c.LLVMSetCurrentDebugLocation2(builder, location);
 
 ---
 
-### Milestone 13: Multi-Platform Support
+### Milestone 13: Multi-Platform Support 🚧
 
 **Objective:** Support multiple target platforms.
 
+**Status:** Partially Complete (January 2026)
+
 **Deliverables:**
-- [ ] Complete x86_64 Linux support (ELF)
-- [ ] Complete ARM64 macOS support (Mach-O)
-- [ ] Complete x86_64 macOS support (Mach-O)
-- [ ] Complete x86_64 Windows support (PE/COFF) - stretch goal
-- [ ] Implement cross-compilation (`--target` flag)
+- [x] Complete ARM64 macOS support (Mach-O) - primary development platform
+- [x] Complete x86_64 macOS support (Mach-O) - cross-compilation from ARM64
+- [x] Implement cross-compilation (`--target` flag)
+- [x] Add target triple parsing (arch-vendor-os-abi format)
+- [x] Initialize all LLVM targets (X86, AArch64) for cross-compilation
+- [x] Generate correct object code for non-native architectures
+- [ ] Complete x86_64 Linux support (ELF) - requires cross-toolchain for linking
+- [ ] Complete ARM64 Linux support (ELF) - requires cross-toolchain for linking
+- [ ] Complete x86_64 Windows support (PE/COFF) - stretch goal, requires MinGW
 - [ ] Add platform-specific runtime variants
+
+**Files Modified:**
+```
+src/main.zig             # Added --target flag parsing and handling
+src/codegen/target.zig   # Added TargetInfo struct with parse(), host(), etc.
+src/codegen/linker.zig   # Added linkForTarget() with cross-compiler detection
+src/codegen/llvm.zig     # Added initializeAllTargets() for X86, AArch64
+src/codegen/mod.zig      # Added target_triple option, exported TargetInfo
+```
+
+**Supported Target Triples:**
+```
+x86_64-linux-gnu         # Linux on x86_64
+aarch64-linux-gnu        # Linux on ARM64
+x86_64-apple-macosx      # macOS on Intel
+arm64-apple-macosx       # macOS on Apple Silicon
+x86_64-windows-msvc      # Windows on x86_64 (needs MinGW)
+```
 
 **Platform Matrix:**
 
-| Platform | Architecture | Object Format | Priority |
-|----------|--------------|---------------|----------|
-| Linux | x86_64 | ELF | Primary |
-| macOS | ARM64 | Mach-O | Primary |
-| macOS | x86_64 | Mach-O | Secondary |
-| Windows | x86_64 | PE/COFF | Stretch |
+| Platform | Architecture | Object Format | Status |
+|----------|--------------|---------------|--------|
+| macOS | ARM64 | Mach-O | ✅ Native |
+| macOS | x86_64 | Mach-O | ✅ Cross-compile |
+| Linux | x86_64 | ELF | ⚠️ Object only (needs toolchain) |
+| Linux | ARM64 | ELF | ⚠️ Object only (needs toolchain) |
+| Windows | x86_64 | PE/COFF | ⚠️ Object only (needs MinGW) |
 
-**Cross-Compilation:**
+**Cross-Compilation Usage:**
 ```bash
-# Compile for Linux from macOS
-klar build --target=x86_64-linux-gnu program.kl
-
 # Compile for macOS Intel from ARM
-klar build --target=x86_64-apple-darwin program.kl
+klar build --target x86_64-apple-macosx program.kl
+
+# Compile for Linux x86_64 (generates object file, linking needs toolchain)
+klar build --target x86_64-linux-gnu program.kl --emit-asm
+
+# Both flag formats work
+klar build --target=aarch64-linux-gnu program.kl
+klar build --target aarch64-linux-gnu program.kl
 ```
 
 **Success Criteria:**
-- Same Klar program compiles on Linux and macOS
-- Cross-compilation produces working binaries
-- Executables run correctly on target platform
+- ✅ Same Klar program compiles on different architectures
+- ✅ Cross-compilation to x86_64 macOS produces working binaries
+- ⚠️ Cross-compilation to Linux/Windows requires external toolchains for linking
+- ✅ Generated assembly is architecture-appropriate
 
 ---
 
