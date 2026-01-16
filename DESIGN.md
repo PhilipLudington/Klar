@@ -20,6 +20,9 @@ Klar is a systems programming language designed for clarity, safety, and simplic
 10. [Module and Package System](#module-and-package-system)
 11. [Implementation Strategy](#implementation-strategy)
 12. [Zig Implementation Code](#zig-implementation-code)
+13. [Phase 4: Language Completion Plan](#phase-4-language-completion-plan)
+14. [Phase 5: C Interoperability](#phase-5-c-interoperability)
+15. [Phase 6: Bootstrap and Self-Hosting](#phase-6-bootstrap-and-self-hosting)
 
 ---
 
@@ -2823,5 +2826,1442 @@ These are valuable but not required for Phase 4 completion:
 
 ---
 
-*Document version: 2.0*
+## Phase 5: C Interoperability
+
+> **Goal:** Enable Klar programs to call C libraries like SDL3, OpenGL, SQLite, and system APIs.
+
+### Executive Summary
+
+Phase 5 adds Foreign Function Interface (FFI) capabilities to Klar, allowing seamless interoperability with C libraries. This unlocks access to the vast ecosystem of existing C code including graphics (SDL3, OpenGL, Vulkan), databases (SQLite, PostgreSQL), compression (zlib), cryptography (OpenSSL), and operating system APIs.
+
+**Why C Interop?**
+- Graphics/multimedia libraries are written in C (SDL3, OpenGL, Vulkan)
+- System APIs are C-based (POSIX, Win32)
+- Performance-critical libraries exist in C
+- Gradual migration path from C codebases
+
+**Design Philosophy:**
+- Explicit is better than implicit - C calls are clearly marked
+- Safety at the boundary - validate C data entering Klar
+- Zero-overhead when possible - direct calls, no wrappers for simple cases
+- Ergonomic bindings - high-level Klar APIs wrap low-level C
+
+---
+
+### Phase 5 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      KLAR PHASE 5: C INTEROP                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Klar Source (.kl)              C Headers (.h)                         │
+│        │                              │                                 │
+│        ▼                              ▼                                 │
+│   ┌─────────────┐              ┌─────────────┐                          │
+│   │   Parser    │              │  Bindgen    │  ← NEW: Generate Klar    │
+│   │             │              │   Tool      │    bindings from headers │
+│   └──────┬──────┘              └──────┬──────┘                          │
+│          │                            │                                 │
+│          │ AST with extern fns        │ Generated .kl bindings          │
+│          │                            │                                 │
+│          └──────────┬─────────────────┘                                 │
+│                     ▼                                                   │
+│              ┌─────────────┐                                            │
+│              │   Checker   │  ← ENHANCED: Validate C type mappings      │
+│              └──────┬──────┘                                            │
+│                     │                                                   │
+│                     ▼                                                   │
+│              ┌─────────────┐                                            │
+│              │   Codegen   │  ← ENHANCED: C calling conventions,        │
+│              └──────┬──────┘    symbol linkage, ABI compatibility       │
+│                     │                                                   │
+│                     ▼                                                   │
+│              ┌─────────────┐                                            │
+│              │   Linker    │  ← ENHANCED: Link C libraries              │
+│              └──────┬──────┘    (.a, .so, .dylib, .dll)                 │
+│                     │                                                   │
+│                     ▼                                                   │
+│              Native Binary + C libraries                                │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Milestone 1: Extern Functions
+
+**Objective:** Allow Klar to declare and call C functions.
+
+**Deliverables:**
+- [ ] `extern fn` declarations for C functions
+- [ ] C calling convention support
+- [ ] Symbol name specification with `@link_name`
+- [ ] Variadic function support (`...`)
+- [ ] Proper ABI handling (System V AMD64, Win64, ARM64)
+
+**Extern Function Syntax:**
+```klar
+// Declare C functions
+extern fn printf(format: *const u8, ...) -> i32
+extern fn malloc(size: usize) -> *mut void
+extern fn free(ptr: *mut void)
+
+// With explicit link name (for name mangling)
+@link_name("SDL_Init")
+extern fn sdl_init(flags: u32) -> i32
+
+// In a block for organization
+extern "C" {
+    fn puts(s: *const u8) -> i32
+    fn getenv(name: *const u8) -> *const u8
+    fn exit(status: i32) -> !
+}
+```
+
+**Usage:**
+```klar
+import std.ffi.{ CString }
+
+fn main() {
+    let msg = CString.from("Hello from C!\n")
+    unsafe {
+        printf(msg.as_ptr())
+    }
+}
+```
+
+**Calling Convention:**
+```klar
+// Default is C calling convention
+extern fn foo() -> i32
+
+// Explicit conventions for platform APIs
+@calling_convention("stdcall")
+extern fn MessageBoxA(hwnd: *void, text: *const u8, caption: *const u8, type_: u32) -> i32
+```
+
+**Files to Modify:**
+```
+src/ast.zig              # Add ExternFn node
+src/parser.zig           # Parse extern declarations
+src/checker.zig          # Validate extern signatures
+src/codegen/emit.zig     # Emit with C ABI
+src/token.zig            # Add 'extern' keyword
+```
+
+**Success Criteria:**
+- Can call `printf` from Klar
+- Can call SDL_Init and other SDL functions
+- Proper handling of different calling conventions
+
+---
+
+### Milestone 2: C-Compatible Types
+
+**Objective:** Define Klar types that map directly to C types.
+
+**Deliverables:**
+- [ ] Raw pointer types: `*T`, `*mut T`, `*const T`
+- [ ] Void pointer: `*void`, `*mut void`
+- [ ] C integer types: `c_int`, `c_long`, `c_size_t`, etc.
+- [ ] Null pointer constant: `null`
+- [ ] Pointer arithmetic in unsafe blocks
+- [ ] Array-to-pointer decay for C interop
+
+**Pointer Types:**
+```klar
+// Immutable pointer (like const T* in C)
+let ptr: *const i32 = &value
+
+// Mutable pointer (like T* in C)
+let ptr: *mut i32 = &mut value
+
+// Void pointer (like void* in C)
+let ptr: *void = raw_ptr
+let ptr: *mut void = raw_mut_ptr
+
+// Nullable pointer (optional pointer)
+let maybe_ptr: ?*i32 = get_optional_ptr()
+
+// Pointer to many (like T* array in C)
+let arr_ptr: [*]i32 = get_array_ptr()
+let arr_ptr: [*:0]u8 = get_null_terminated_string()  // Sentinel-terminated
+```
+
+**C Type Aliases:**
+```klar
+// std/ffi/ctypes.kl - Platform-specific C types
+pub type c_char = i8       // or u8 on some platforms
+pub type c_short = i16
+pub type c_int = i32
+pub type c_long = i64      // platform-dependent
+pub type c_longlong = i64
+pub type c_uchar = u8
+pub type c_ushort = u16
+pub type c_uint = u32
+pub type c_ulong = u64
+pub type c_ulonglong = u64
+pub type c_size_t = usize
+pub type c_ssize_t = isize
+pub type c_float = f32
+pub type c_double = f64
+```
+
+**Pointer Operations (unsafe):**
+```klar
+unsafe {
+    // Dereference
+    let value = *ptr
+    *mut_ptr = 42
+
+    // Pointer arithmetic
+    let next = ptr.offset(1)
+    let prev = ptr.offset(-1)
+
+    // Cast between pointer types
+    let void_ptr: *void = ptr.cast()
+    let int_ptr: *i32 = void_ptr.cast()
+
+    // Pointer to integer and back
+    let addr: usize = ptr.to_int()
+    let ptr2: *i32 = Ptr.from_int(addr)
+
+    // Null check
+    if ptr != null {
+        use(*ptr)
+    }
+}
+```
+
+**Files to Create/Modify:**
+```
+src/types.zig            # Add raw pointer types
+std/ffi/
+├── mod.kl               # FFI module root
+├── ctypes.kl            # C type aliases
+├── ptr.kl               # Pointer utilities
+└── cstring.kl           # C string handling
+```
+
+**Success Criteria:**
+- Can represent any C pointer type
+- Pointer arithmetic works correctly
+- Platform-specific C types have correct sizes
+
+---
+
+### Milestone 3: C Structs and Unions
+
+**Objective:** Define structs and unions with C-compatible memory layout.
+
+**Deliverables:**
+- [ ] `@repr(C)` attribute for C-compatible layout
+- [ ] `@packed` attribute for packed structs
+- [ ] Union types
+- [ ] Opaque types for incomplete C types
+- [ ] Bitfields (basic support)
+
+**C-Compatible Structs:**
+```klar
+// C-compatible layout (fields in declaration order, C alignment)
+@repr(C)
+struct SDL_Rect {
+    x: c_int
+    y: c_int
+    w: c_int
+    h: c_int
+}
+
+// Packed struct (no padding)
+@repr(C)
+@packed
+struct PackedData {
+    flag: u8
+    value: u32  // No padding before this
+}
+
+// Matches C struct exactly
+@repr(C)
+struct SDL_Event {
+    type_: u32
+    padding: [52]u8  // Union simulation for now
+}
+```
+
+**Unions:**
+```klar
+@repr(C)
+union Value {
+    i: i64
+    f: f64
+    p: *void
+}
+
+// Access requires unsafe
+let v = Value { i: 42 }
+unsafe {
+    let as_float = v.f  // Reinterpret bits
+}
+```
+
+**Opaque Types:**
+```klar
+// For C types we don't need to know the layout of
+@opaque
+struct SDL_Window
+
+@opaque
+struct SDL_Renderer
+
+// Used only through pointers
+extern fn SDL_CreateWindow(
+    title: *const u8,
+    x: c_int, y: c_int,
+    w: c_int, h: c_int,
+    flags: u32
+) -> ?*SDL_Window
+
+extern fn SDL_DestroyWindow(window: *SDL_Window)
+```
+
+**Alignment Control:**
+```klar
+@repr(C)
+@align(16)
+struct AlignedData {
+    data: [64]u8
+}
+```
+
+**Files to Modify:**
+```
+src/ast.zig              # Add repr, packed, opaque attributes
+src/parser.zig           # Parse attributes
+src/checker.zig          # Compute C-compatible layouts
+src/codegen/emit.zig     # Emit with correct alignment/padding
+```
+
+**Success Criteria:**
+- SDL_Rect has same memory layout as C version
+- Can pass structs to C functions
+- Opaque types prevent invalid access
+
+---
+
+### Milestone 4: Library Linking
+
+**Objective:** Link Klar programs with C libraries.
+
+**Deliverables:**
+- [ ] `@link` attribute to specify libraries
+- [ ] Static library linking (`.a`, `.lib`)
+- [ ] Dynamic library linking (`.so`, `.dylib`, `.dll`)
+- [ ] System library paths
+- [ ] pkg-config integration
+- [ ] Build system support in `klar.toml`
+
+**Link Attribute:**
+```klar
+// Link with SDL3
+@link("SDL3")
+extern fn SDL_Init(flags: u32) -> c_int
+
+@link("SDL3")
+extern fn SDL_Quit()
+
+// Multiple libraries
+@link("ssl")
+@link("crypto")
+extern fn SSL_library_init() -> c_int
+
+// Framework on macOS
+@link(framework: "Cocoa")
+extern fn NSApplicationMain(argc: c_int, argv: *const *const u8) -> c_int
+```
+
+**Build Configuration:**
+```toml
+# klar.toml
+[package]
+name = "my-game"
+version = "0.1.0"
+
+[dependencies]
+# Klar packages...
+
+[native-dependencies]
+# C library dependencies
+SDL3 = { pkg-config = "sdl3" }
+opengl = { system = true }
+
+[native-dependencies.custom-lib]
+include = ["vendor/include"]
+lib-path = ["vendor/lib"]
+lib = ["mylib"]
+
+# Platform-specific
+[native-dependencies.platform.linux]
+lib = ["GL", "X11"]
+
+[native-dependencies.platform.macos]
+frameworks = ["OpenGL", "Cocoa"]
+
+[native-dependencies.platform.windows]
+lib = ["opengl32", "user32", "gdi32"]
+```
+
+**CLI Support:**
+```bash
+# Link with library
+klar build --link SDL3
+
+# Add library path
+klar build --lib-path /usr/local/lib --link mylib
+
+# Use pkg-config
+klar build --pkg-config sdl3
+```
+
+**Files to Create/Modify:**
+```
+src/linker.zig           # NEW: Library linking logic
+src/package/manifest.zig # Parse native-dependencies
+src/build.zig            # Pass link flags to LLVM/system linker
+```
+
+**Success Criteria:**
+- Can link with SDL3 and create a window
+- pkg-config integration works
+- Cross-platform library resolution
+
+---
+
+### Milestone 5: Binding Generator
+
+**Objective:** Automatically generate Klar bindings from C headers.
+
+**Deliverables:**
+- [ ] `klar bindgen` command
+- [ ] Parse C headers using libclang
+- [ ] Generate `extern fn` declarations
+- [ ] Generate `@repr(C)` struct definitions
+- [ ] Generate type aliases
+- [ ] Handle preprocessor macros (constants)
+- [ ] Configurable naming conventions
+
+**Bindgen Usage:**
+```bash
+# Generate bindings for SDL3
+klar bindgen SDL3/SDL.h -o src/sdl3.kl
+
+# With configuration
+klar bindgen SDL3/SDL.h \
+    --config bindgen.toml \
+    --include /usr/include/SDL3 \
+    -o src/sdl3.kl
+```
+
+**Bindgen Configuration:**
+```toml
+# bindgen.toml
+[options]
+# Rename SDL_ prefix
+remove-prefix = "SDL_"
+
+# Only include functions matching pattern
+allowlist-function = "SDL_.*"
+allowlist-type = "SDL_.*"
+
+# Block certain items
+blocklist-function = "SDL_main"
+
+# Type mappings
+[type-map]
+"Uint32" = "u32"
+"Sint32" = "i32"
+```
+
+**Generated Output Example:**
+```klar
+// Auto-generated by klar bindgen
+// Source: SDL3/SDL.h
+
+@link("SDL3")
+module sdl3
+
+// Constants
+pub const INIT_VIDEO: u32 = 0x00000020
+pub const INIT_AUDIO: u32 = 0x00000010
+
+// Opaque types
+@opaque
+pub struct Window
+
+@opaque
+pub struct Renderer
+
+// Structs
+@repr(C)
+pub struct Rect {
+    pub x: c_int
+    pub y: c_int
+    pub w: c_int
+    pub h: c_int
+}
+
+// Functions
+pub extern fn Init(flags: u32) -> c_int
+pub extern fn Quit()
+pub extern fn CreateWindow(
+    title: *const u8,
+    x: c_int, y: c_int,
+    w: c_int, h: c_int,
+    flags: u32
+) -> ?*Window
+pub extern fn DestroyWindow(window: *Window)
+```
+
+**Files to Create:**
+```
+tools/bindgen/
+├── main.zig             # CLI entry point
+├── clang.zig            # libclang bindings
+├── parser.zig           # Parse C declarations
+├── generator.zig        # Generate Klar code
+└── config.zig           # Configuration handling
+```
+
+**Success Criteria:**
+- Can generate SDL3 bindings automatically
+- Generated code compiles and works
+- Handles complex headers (nested structs, function pointers)
+
+---
+
+### Milestone 6: Safe Wrappers
+
+**Objective:** Provide idiomatic Klar wrappers around C APIs.
+
+**Deliverables:**
+- [ ] RAII wrappers for C resources
+- [ ] Error handling integration
+- [ ] Slice-to-pointer conversions
+- [ ] String conversions (Klar string ↔ C string)
+- [ ] Callback wrappers
+- [ ] Standard wrapper patterns documentation
+
+**Resource Management:**
+```klar
+// Safe wrapper around SDL_Window
+pub struct Window {
+    ptr: *sdl.Window
+}
+
+impl Window {
+    pub fn create(title: &str, width: i32, height: i32) -> Result[Window, SdlError] {
+        let c_title = CString.from(title)
+        let ptr = unsafe {
+            sdl.CreateWindow(
+                c_title.as_ptr(),
+                sdl.WINDOWPOS_CENTERED,
+                sdl.WINDOWPOS_CENTERED,
+                width, height,
+                sdl.WINDOW_SHOWN
+            )
+        }
+        match ptr {
+            Some(p) => Ok(Window { ptr: p })
+            None => Err(SdlError.from_last())
+        }
+    }
+}
+
+impl Window: Drop {
+    fn drop(self: &mut Self) {
+        unsafe { sdl.DestroyWindow(self.ptr) }
+    }
+}
+
+// Usage - automatically cleaned up
+fn main() -> Result[void, Error] {
+    let window = Window.create("My Game", 800, 600)?
+    // window.drop() called automatically at end of scope
+}
+```
+
+**String Conversions:**
+```klar
+// std/ffi/cstring.kl
+pub struct CString {
+    data: List[u8]
+}
+
+impl CString {
+    // Create null-terminated C string from Klar string
+    pub fn from(s: &str) -> CString {
+        let mut data = List.with_capacity(s.len() + 1)
+        data.extend(s.bytes())
+        data.push(0)  // Null terminator
+        CString { data }
+    }
+
+    pub fn as_ptr(self) -> *const u8 {
+        self.data.as_ptr()
+    }
+}
+
+// Convert C string to Klar string (copies data)
+pub fn from_c_str(ptr: *const u8) -> String {
+    unsafe {
+        let len = c_strlen(ptr)
+        let slice = Slice.from_raw_parts(ptr, len)
+        String.from_utf8(slice)
+    }
+}
+```
+
+**Callback Wrappers:**
+```klar
+// Wrap Klar closure as C function pointer
+extern fn qsort(
+    base: *mut void,
+    num: usize,
+    size: usize,
+    compare: extern fn(*const void, *const void) -> c_int
+)
+
+fn sort_integers(arr: &mut [i32]) {
+    // Create C-compatible comparison function
+    extern fn compare(a: *const void, b: *const void) -> c_int {
+        unsafe {
+            let a = *(a as *const i32)
+            let b = *(b as *const i32)
+            if a < b { -1 } else if a > b { 1 } else { 0 }
+        }
+    }
+
+    unsafe {
+        qsort(
+            arr.as_mut_ptr() as *mut void,
+            arr.len(),
+            @sizeOf(i32),
+            compare
+        )
+    }
+}
+```
+
+**Slice/Array Conversions:**
+```klar
+impl [T] {
+    // Get raw pointer to slice data
+    pub fn as_ptr(self) -> *const T {
+        // Internal implementation
+    }
+
+    pub fn as_mut_ptr(self: &mut Self) -> *mut T {
+        // Internal implementation
+    }
+}
+
+// Create slice from C pointer and length
+pub unsafe fn slice_from_raw[T](ptr: *const T, len: usize) -> &[T]
+pub unsafe fn slice_from_raw_mut[T](ptr: *mut T, len: usize) -> &mut [T]
+```
+
+**Files to Create:**
+```
+std/ffi/
+├── cstring.kl           # C string utilities
+├── slice.kl             # Slice/pointer conversions
+├── callback.kl          # Callback helpers
+└── resource.kl          # RAII wrapper utilities
+
+packages/sdl3/           # Example: SDL3 safe wrapper package
+├── klar.toml
+├── src/
+│   ├── lib.kl
+│   ├── window.kl
+│   ├── renderer.kl
+│   ├── event.kl
+│   └── raw.kl           # Raw bindings (generated)
+└── examples/
+    └── hello_sdl.kl
+```
+
+**Success Criteria:**
+- SDL3 wrapper provides safe, idiomatic API
+- Resources are automatically cleaned up
+- No memory leaks or dangling pointers in safe code
+
+---
+
+### SDL3 Example Program
+
+**Goal:** Demonstrate complete SDL3 integration with Phase 5 features.
+
+```klar
+// hello_sdl.kl
+module hello_sdl
+
+import sdl3.{ Sdl, Window, Renderer, Event, Color }
+import std.time.Duration
+
+fn main() -> Result[void, Error] {
+    // Initialize SDL (RAII - automatically quits on drop)
+    let sdl = Sdl.init(.{ video: true })?
+
+    // Create window (RAII - automatically destroyed on drop)
+    let window = Window.create(
+        "Hello SDL3 from Klar!",
+        .{ width: 800, height: 600 }
+    )?
+
+    // Create renderer (RAII)
+    let mut renderer = Renderer.create(&window)?
+
+    // Main loop
+    var running = true
+    while running {
+        // Process events
+        for event in sdl.poll_events() {
+            match event {
+                Event.Quit => running = false
+                Event.KeyDown { key: .Escape } => running = false
+                _ => {}
+            }
+        }
+
+        // Clear screen
+        renderer.set_draw_color(Color.rgb(64, 64, 64))
+        renderer.clear()
+
+        // Draw a rectangle
+        renderer.set_draw_color(Color.rgb(255, 0, 0))
+        renderer.fill_rect(.{ x: 100, y: 100, w: 200, h: 150 })
+
+        // Present
+        renderer.present()
+
+        // Cap frame rate
+        std.time.sleep(Duration.from_millis(16))
+    }
+
+    Ok(())
+    // sdl, window, renderer automatically cleaned up here
+}
+```
+
+**Build Configuration:**
+```toml
+# klar.toml
+[package]
+name = "hello-sdl"
+version = "0.1.0"
+
+[dependencies]
+sdl3 = "0.1"  # Klar SDL3 wrapper package
+
+[native-dependencies]
+SDL3 = { pkg-config = "sdl3" }
+```
+
+**Build and Run:**
+```bash
+klar build
+klar run
+```
+
+---
+
+### Phase 5 Dependency Graph
+
+```
+Milestone 1: Extern Functions
+    │
+    ├──► Milestone 2: C-Compatible Types
+    │         │
+    │         └──► Milestone 3: C Structs/Unions
+    │                   │
+    │                   └──► Milestone 6: Safe Wrappers
+    │
+    ├──► Milestone 4: Library Linking (parallel)
+    │
+    └──► Milestone 5: Binding Generator (needs 1-3)
+```
+
+**Recommended Order:**
+1. Extern Functions (Milestone 1)
+2. C-Compatible Types (Milestone 2)
+3. Library Linking (Milestone 4) - can start in parallel
+4. C Structs/Unions (Milestone 3)
+5. Binding Generator (Milestone 5)
+6. Safe Wrappers (Milestone 6)
+
+---
+
+### Phase 5 Timeline Estimate
+
+| Milestone | Effort | Dependencies |
+|-----------|--------|--------------|
+| 1. Extern Functions | Medium | Phase 4 complete |
+| 2. C-Compatible Types | Medium | Milestone 1 |
+| 3. C Structs/Unions | Medium | Milestone 2 |
+| 4. Library Linking | Medium | Milestone 1 |
+| 5. Binding Generator | Large | Milestones 1-3 |
+| 6. Safe Wrappers | Medium | Milestones 1-4 |
+
+---
+
+### Phase 5 Success Metrics
+
+**Phase 5 is complete when:**
+
+1. **C Interop Works**
+   - [ ] Can call C functions with correct ABI
+   - [ ] Pointers work correctly across boundary
+   - [ ] Structs have C-compatible layout
+   - [ ] Libraries link correctly on all platforms
+
+2. **SDL3 Integration**
+   - [ ] Can create SDL3 window from Klar
+   - [ ] Can handle SDL3 events
+   - [ ] Can render graphics with SDL3
+   - [ ] Safe wrappers prevent common errors
+
+3. **Developer Experience**
+   - [ ] Bindgen generates usable bindings
+   - [ ] Error messages help debug FFI issues
+   - [ ] Documentation covers common patterns
+
+4. **Example Programs**
+   - [ ] SDL3 hello world (window + events)
+   - [ ] SDL3 game loop with rendering
+   - [ ] SQLite database access
+   - [ ] System API usage (file dialogs, etc.)
+
+---
+
+### Phase 5 Stretch Goals
+
+1. **C++ Interop** - Basic C++ class binding (vtables)
+2. **Inline C** - Embed C code in Klar source
+3. **Dynamic Loading** - `dlopen`/`LoadLibrary` support
+4. **CFFI** - Call Klar from C (export functions)
+5. **WebAssembly FFI** - JavaScript interop for WASM target
+
+---
+
+## Phase 6: Bootstrap and Self-Hosting
+
+> **Goal:** Rewrite the Klar compiler in Klar itself, achieving self-hosting.
+
+### Executive Summary
+
+Phase 6 marks the maturation of Klar from a language implemented in Zig to a fully self-hosting language. The Klar compiler will be rewritten in Klar, proving the language is capable of implementing complex systems software. This is both a practical milestone (the compiler becomes a first-class Klar project) and a symbolic one (the language can sustain itself).
+
+**Why Self-Host?**
+- Proves the language is production-ready for systems programming
+- Dogfooding surfaces language design issues
+- Compiler becomes the largest Klar codebase, driving improvements
+- Reduces dependency on Zig toolchain for development
+- Attracts contributors who prefer writing Klar over Zig
+
+**Prerequisites:**
+- Phase 4 complete (generics, traits, modules, std library)
+- Phase 5 complete (C interop for LLVM/Cranelift, system APIs)
+
+**Design Philosophy:**
+- Incremental migration - component by component, not big-bang rewrite
+- Zig version remains authoritative until Klar version passes all tests
+- Maintain feature parity - no regressions during transition
+- Use bootstrap as stress test for language ergonomics
+
+---
+
+### Phase 6 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    KLAR PHASE 6: BOOTSTRAP STRATEGY                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Stage 0: Zig Compiler (current)                                       │
+│   ┌─────────────────────────────────────────────────────────────────┐   │
+│   │  Lexer → Parser → Checker → VM/Codegen  (all Zig)               │   │
+│   └─────────────────────────────────────────────────────────────────┘   │
+│                              │                                          │
+│                              ▼                                          │
+│   Stage 1: Partial Bootstrap                                            │
+│   ┌─────────────────────────────────────────────────────────────────┐   │
+│   │  Lexer.kl → Parser.kl → Checker.kl → Codegen (Zig+LLVM)         │   │
+│   │       ▲                                    │                    │   │
+│   │       │         Compiled by Stage 0        │                    │   │
+│   │       └────────────────────────────────────┘                    │   │
+│   └─────────────────────────────────────────────────────────────────┘   │
+│                              │                                          │
+│                              ▼                                          │
+│   Stage 2: Full Bootstrap                                               │
+│   ┌─────────────────────────────────────────────────────────────────┐   │
+│   │  Lexer.kl → Parser.kl → Checker.kl → Codegen.kl (LLVM via FFI)  │   │
+│   │       ▲                                    │                    │   │
+│   │       │         Compiled by Stage 1        │                    │   │
+│   │       └────────────────────────────────────┘                    │   │
+│   └─────────────────────────────────────────────────────────────────┘   │
+│                              │                                          │
+│                              ▼                                          │
+│   Stage 3: Self-Sustaining                                              │
+│   ┌─────────────────────────────────────────────────────────────────┐   │
+│   │  klarc (Klar) compiles itself                                   │   │
+│   │  Zig compiler archived as historical reference                  │   │
+│   └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Milestone 1: Compiler Infrastructure in Klar
+
+**Objective:** Port foundational data structures and utilities to Klar.
+
+**Deliverables:**
+- [ ] String interning / symbol table
+- [ ] Source location tracking
+- [ ] Diagnostic/error reporting system
+- [ ] Arena allocator for AST nodes
+- [ ] File I/O for source reading
+- [ ] Command-line argument parsing
+
+**Key Files:**
+```
+src/klar/
+├── intern.kl          # String interning
+├── source.kl          # Source locations, spans
+├── diagnostics.kl     # Error/warning reporting
+├── arena.kl           # Arena allocator
+└── cli.kl             # Argument parsing
+```
+
+**Example - String Interning:**
+```klar
+pub struct Interner {
+    strings: Map[string, u32]
+    by_id: List[string]
+}
+
+impl Interner {
+    pub fn new() -> Interner {
+        Interner {
+            strings: Map.new(),
+            by_id: List.new(),
+        }
+    }
+
+    pub fn intern(self: &mut Self, s: string) -> Symbol {
+        match self.strings.get(&s) {
+            Some(id) => Symbol(id)
+            None => {
+                let id = self.by_id.len().as[u32]
+                self.by_id.push(s.clone())
+                self.strings.insert(s, id)
+                Symbol(id)
+            }
+        }
+    }
+
+    pub fn resolve(self: &Self, sym: Symbol) -> &string {
+        &self.by_id[sym.0.as[usize]]
+    }
+}
+
+pub struct Symbol(u32)
+```
+
+**Success Criteria:**
+- Infrastructure compiles with Stage 0 (Zig) compiler
+- All unit tests pass
+- Performance comparable to Zig implementation
+
+---
+
+### Milestone 2: Lexer in Klar
+
+**Objective:** Rewrite the lexer in Klar.
+
+**Deliverables:**
+- [ ] Token definitions
+- [ ] Lexer state machine
+- [ ] String/number literal parsing
+- [ ] Comment handling
+- [ ] Error recovery and diagnostics
+
+**Key Files:**
+```
+src/klar/
+├── token.kl           # Token enum and spans
+└── lexer.kl           # Lexer implementation
+```
+
+**Example - Token Definition:**
+```klar
+pub enum TokenKind {
+    // Literals
+    Integer(i64)
+    Float(f64)
+    String(string)
+    Char(char)
+
+    // Identifiers and keywords
+    Identifier(Symbol)
+    Keyword(Keyword)
+
+    // Operators
+    Plus
+    Minus
+    Star
+    Slash
+    // ... etc
+
+    // Delimiters
+    LParen
+    RParen
+    LBrace
+    RBrace
+    // ... etc
+
+    // Special
+    Newline
+    Eof
+    Error(string)
+}
+
+pub struct Token {
+    pub kind: TokenKind
+    pub span: Span
+}
+
+pub struct Lexer {
+    source: string
+    pos: usize
+    line: u32
+    col: u32
+    interner: &mut Interner
+}
+
+impl Lexer {
+    pub fn new(source: string, interner: &mut Interner) -> Lexer {
+        Lexer {
+            source: source,
+            pos: 0,
+            line: 1,
+            col: 1,
+            interner: interner,
+        }
+    }
+
+    pub fn next_token(self: &mut Self) -> Token {
+        self.skip_whitespace()
+        // ... lexing logic
+    }
+}
+```
+
+**Validation:**
+- Lex entire Klar standard library
+- Compare token output with Zig lexer (should be identical)
+- Benchmark: within 2x of Zig lexer performance
+
+---
+
+### Milestone 3: AST and Parser in Klar
+
+**Objective:** Rewrite the parser and AST definitions in Klar.
+
+**Deliverables:**
+- [ ] Complete AST node definitions
+- [ ] Recursive descent parser
+- [ ] Operator precedence parsing (Pratt parser)
+- [ ] Error recovery with synchronization
+- [ ] Source location preservation
+
+**Key Files:**
+```
+src/klar/
+├── ast.kl             # AST node definitions
+├── parser.kl          # Parser implementation
+└── precedence.kl      # Operator precedence table
+```
+
+**Example - AST Nodes:**
+```klar
+pub enum Expr {
+    Literal(LiteralExpr)
+    Identifier(Symbol, Span)
+    Binary(Rc[BinaryExpr])
+    Unary(Rc[UnaryExpr])
+    Call(Rc[CallExpr])
+    If(Rc[IfExpr])
+    Match(Rc[MatchExpr])
+    Block(Rc[BlockExpr])
+    // ... etc
+}
+
+pub struct BinaryExpr {
+    pub left: Expr
+    pub op: BinaryOp
+    pub right: Expr
+    pub span: Span
+}
+
+pub enum Stmt {
+    Let(LetStmt)
+    Var(VarStmt)
+    Expr(Expr)
+    Return(ReturnStmt)
+    // ... etc
+}
+
+pub enum Decl {
+    Function(FnDecl)
+    Struct(StructDecl)
+    Enum(EnumDecl)
+    Impl(ImplDecl)
+    // ... etc
+}
+```
+
+**Validation:**
+- Parse entire Klar standard library
+- Round-trip test: parse → pretty-print → parse → compare AST
+- Error messages match Zig parser quality
+
+---
+
+### Milestone 4: Type Checker in Klar
+
+**Objective:** Rewrite the type checker and semantic analysis in Klar.
+
+**Deliverables:**
+- [ ] Type representation and equality
+- [ ] Type inference engine
+- [ ] Generic instantiation
+- [ ] Trait resolution
+- [ ] Borrow checking (if applicable)
+- [ ] Semantic error reporting
+
+**Key Files:**
+```
+src/klar/
+├── types.kl           # Type representation
+├── checker.kl         # Type checking logic
+├── infer.kl           # Type inference
+├── traits.kl          # Trait resolution
+└── scope.kl           # Scope/symbol management
+```
+
+**Example - Type Representation:**
+```klar
+pub enum Type {
+    // Primitives
+    I8, I16, I32, I64, I128
+    U8, U16, U32, U64, U128
+    F32, F64
+    Bool
+    Char
+    String
+    Void
+    Never
+
+    // Compound
+    Array(Rc[Type], usize)
+    Slice(Rc[Type])
+    Option(Rc[Type])
+    Result(Rc[Type], Rc[Type])
+    Tuple(List[Type])
+    Function(Rc[FnType])
+    Struct(StructId)
+    Enum(EnumId)
+
+    // References
+    Ref(Rc[Type])
+    RefMut(Rc[Type])
+
+    // Generics
+    TypeVar(TypeVarId)
+    Generic(GenericId, List[Type])
+
+    // Special
+    Infer(InferId)
+    Error
+}
+```
+
+**Validation:**
+- Type-check entire Klar standard library
+- All existing test cases pass
+- Error messages are clear and actionable
+
+---
+
+### Milestone 5: Code Generator in Klar
+
+**Objective:** Rewrite native code generation in Klar using LLVM via FFI.
+
+**Deliverables:**
+- [ ] LLVM C API bindings (via Phase 5 FFI)
+- [ ] IR generation from typed AST
+- [ ] Function codegen with proper ABI
+- [ ] Struct layout and access
+- [ ] Control flow (if, match, loops)
+- [ ] Optimization pipeline integration
+
+**Key Files:**
+```
+src/klar/
+├── codegen/
+│   ├── llvm.kl        # LLVM FFI bindings
+│   ├── emit.kl        # IR emission
+│   ├── abi.kl         # Calling convention handling
+│   └── layout.kl      # Type layout computation
+```
+
+**Example - LLVM Bindings:**
+```klar
+// Bindings generated via Phase 5 bindgen
+extern "C" {
+    fn LLVMContextCreate() -> *mut LLVMContext
+    fn LLVMModuleCreateWithNameInContext(name: *const u8, ctx: *mut LLVMContext) -> *mut LLVMModule
+    fn LLVMCreateBuilderInContext(ctx: *mut LLVMContext) -> *mut LLVMBuilder
+    fn LLVMBuildAdd(builder: *mut LLVMBuilder, lhs: *mut LLVMValue, rhs: *mut LLVMValue, name: *const u8) -> *mut LLVMValue
+    // ... etc
+}
+
+pub struct CodeGen {
+    ctx: *mut LLVMContext
+    module: *mut LLVMModule
+    builder: *mut LLVMBuilder
+    // ...
+}
+
+impl CodeGen {
+    pub fn new(module_name: string) -> CodeGen {
+        unsafe {
+            let ctx = LLVMContextCreate()
+            let name = CString.from(module_name)
+            let module = LLVMModuleCreateWithNameInContext(name.as_ptr(), ctx)
+            let builder = LLVMCreateBuilderInContext(ctx)
+            CodeGen { ctx, module, builder }
+        }
+    }
+
+    pub fn emit_expr(self: &mut Self, expr: &TypedExpr) -> *mut LLVMValue {
+        match expr {
+            TypedExpr.Binary(bin) => self.emit_binary(bin)
+            TypedExpr.Call(call) => self.emit_call(call)
+            // ...
+        }
+    }
+}
+```
+
+**Validation:**
+- Compile and run all native test programs
+- Generated code matches Zig compiler output quality
+- Benchmark within 10% of Zig compiler performance
+
+---
+
+### Milestone 6: Bootstrap Validation
+
+**Objective:** Prove the Klar compiler can compile itself.
+
+**Deliverables:**
+- [ ] Stage 1 compiler (Klar compiler compiled by Zig compiler)
+- [ ] Stage 2 compiler (Klar compiler compiled by Stage 1)
+- [ ] Stage 3 compiler (Klar compiler compiled by Stage 2)
+- [ ] Binary comparison: Stage 2 == Stage 3 (fixed point)
+- [ ] Full test suite passes on all stages
+
+**Bootstrap Process:**
+```
+# Build Stage 1: Zig compiles Klar compiler
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/klarc src/klar/main.kl -o stage1
+
+# Build Stage 2: Stage 1 compiles Klar compiler
+./stage1 src/klar/main.kl -o stage2
+
+# Build Stage 3: Stage 2 compiles Klar compiler
+./stage2 src/klar/main.kl -o stage3
+
+# Verify fixed point (Stage 2 and Stage 3 should be identical)
+diff stage2 stage3 && echo "Bootstrap successful!"
+
+# Run full test suite with Stage 2
+./stage2 test
+```
+
+**Validation Criteria:**
+- All three stages produce working compilers
+- Stage 2 and Stage 3 binaries are byte-identical
+- Full test suite passes on Stage 2 compiler
+- Compilation time reasonable (< 2x Zig compiler)
+
+---
+
+### Milestone 7: Transition to Self-Hosting
+
+**Objective:** Make the Klar compiler the primary/official implementation.
+
+**Deliverables:**
+- [ ] CI/CD builds using Klar compiler
+- [ ] Distribution packages built with Klar compiler
+- [ ] Documentation updated for self-hosted workflow
+- [ ] Zig implementation archived
+- [ ] Contributing guide for Klar-based development
+
+**Repository Structure (Post-Bootstrap):**
+```
+klar/
+├── src/                    # Klar compiler source (in Klar)
+│   ├── main.kl
+│   ├── lexer.kl
+│   ├── parser.kl
+│   ├── checker.kl
+│   └── codegen/
+├── std/                    # Standard library (in Klar)
+├── bootstrap/              # Prebuilt binaries for bootstrapping
+│   ├── klarc-linux-x64
+│   ├── klarc-macos-x64
+│   ├── klarc-macos-arm64
+│   └── klarc-windows-x64.exe
+├── archive/                # Historical Zig implementation
+│   └── zig-compiler/
+└── test/
+```
+
+**Bootstrap from Source:**
+```bash
+# For users without a Klar compiler
+./bootstrap/klarc-$(uname -s | tr A-Z a-z)-$(uname -m) \
+    src/main.kl -o klarc
+
+# Verify
+./klarc --version
+```
+
+---
+
+### Phase 6 Dependency Graph
+
+```
+Milestone 1: Compiler Infrastructure
+    │
+    ├──► Milestone 2: Lexer (needs infrastructure)
+    │        │
+    │        ▼
+    │    Milestone 3: Parser (needs lexer)
+    │        │
+    │        ▼
+    │    Milestone 4: Type Checker (needs parser)
+    │        │
+    │        ▼
+    │    Milestone 5: Code Generator (needs checker + Phase 5 FFI)
+    │        │
+    │        ▼
+    └──► Milestone 6: Bootstrap Validation (needs all above)
+             │
+             ▼
+         Milestone 7: Transition (needs validated bootstrap)
+```
+
+**Critical Path:**
+1. Infrastructure (Milestone 1)
+2. Lexer (Milestone 2)
+3. Parser (Milestone 3)
+4. Type Checker (Milestone 4)
+5. Code Generator (Milestone 5)
+6. Bootstrap Validation (Milestone 6)
+7. Transition (Milestone 7)
+
+---
+
+### Phase 6 Timeline Estimate
+
+| Milestone | Effort | Dependencies |
+|-----------|--------|--------------|
+| 1. Infrastructure | Medium | Phase 5 complete |
+| 2. Lexer | Small | Milestone 1 |
+| 3. Parser | Large | Milestone 2 |
+| 4. Type Checker | Large | Milestone 3 |
+| 5. Code Generator | Large | Milestone 4, Phase 5 |
+| 6. Bootstrap Validation | Medium | Milestone 5 |
+| 7. Transition | Small | Milestone 6 |
+
+---
+
+### Phase 6 Success Metrics
+
+**Phase 6 is complete when:**
+
+1. **Bootstrap Achieved**
+   - [ ] Klar compiler compiles itself
+   - [ ] Stage 2 == Stage 3 (fixed point reached)
+   - [ ] All tests pass on self-compiled compiler
+
+2. **Production Ready**
+   - [ ] CI/CD uses self-hosted compiler
+   - [ ] Release binaries built with Klar compiler
+   - [ ] No regressions from Zig implementation
+
+3. **Performance Acceptable**
+   - [ ] Compilation speed within 2x of Zig implementation
+   - [ ] Memory usage reasonable for large projects
+   - [ ] Generated code quality unchanged
+
+4. **Developer Experience**
+   - [ ] Clear bootstrap instructions in README
+   - [ ] Prebuilt binaries for major platforms
+   - [ ] Contributing guide updated for Klar development
+
+---
+
+### Phase 6 Stretch Goals
+
+1. **Incremental Compilation** - Only recompile changed modules
+2. **Parallel Compilation** - Multi-threaded frontend and codegen
+3. **Self-Hosted Standard Library** - Rewrite std in pure Klar where possible
+4. **Debug Info** - DWARF/CodeView debug information generation
+5. **Cross-Compilation** - Compile for other targets from Klar compiler
+6. **Language Server** - LSP implementation in Klar
+
+---
+
+### Bootstrapping FAQ
+
+**Q: Why not bootstrap earlier (before Phase 5)?**
+
+A: The compiler needs C interop to use LLVM for native code generation. Without Phase 5, we'd either need to write a native backend from scratch or keep parts in Zig permanently.
+
+**Q: What if we find language design issues during bootstrap?**
+
+A: This is expected and valuable! Issues found will be fixed in both compilers (Zig and Klar) until the Klar version is authoritative.
+
+**Q: How do new users build without a Klar compiler?**
+
+A: Prebuilt bootstrap binaries are provided for major platforms. These are updated with each release.
+
+**Q: Can we still use the Zig compiler after bootstrap?**
+
+A: Yes, it's archived and can be used for debugging or if issues arise. However, the Klar compiler becomes the official implementation.
+
+**Q: What about compile times?**
+
+A: Initial Klar compiler may be slower than Zig version. Optimization is a stretch goal. The priority is correctness first.
+
+---
+
+*Document version: 2.2*
 *Last updated: January 2026*
