@@ -1,0 +1,11 @@
+// Test len builtin with string
+fn main() -> i32 {
+    let s = "hello"
+    let length = len(s)
+    // "hello" has 5 characters - return 0 if length is 5
+    if length == 5 {
+        0
+    } else {
+        1
+    }
+}

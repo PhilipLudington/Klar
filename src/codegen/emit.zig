@@ -1365,6 +1365,14 @@ pub const Emitter = struct {
                 return self.emitPanic(call.args);
             } else if (std.mem.eql(u8, name, "assert")) {
                 return self.emitAssert(call.args);
+            } else if (std.mem.eql(u8, name, "assert_eq")) {
+                return self.emitAssertEq(call.args);
+            } else if (std.mem.eql(u8, name, "dbg")) {
+                return self.emitDbg(call.args);
+            } else if (std.mem.eql(u8, name, "type_name")) {
+                return self.emitTypeName(call.args);
+            } else if (std.mem.eql(u8, name, "len")) {
+                return self.emitLen(call.args);
             } else if (std.mem.eql(u8, name, "Ok")) {
                 // Result::Ok(value) constructor
                 return self.emitOkCall(call.args);
@@ -4174,6 +4182,213 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(continue_bb);
 
         return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit assert_eq that compares two values and panics with details on failure
+    fn emitAssertEq(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 2) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Evaluate both arguments
+        const left = try self.emitExpr(args[0]);
+        const right = try self.emitExpr(args[1]);
+
+        // Get the type for comparison
+        const left_type = llvm.typeOf(left);
+        const type_kind = llvm.c.LLVMGetTypeKind(left_type);
+
+        // Create comparison based on type
+        const cond = switch (type_kind) {
+            llvm.c.LLVMIntegerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntEQ, left, right, "assert_eq.cmp"),
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildFCmp(llvm.c.LLVMRealOEQ, left, right, "assert_eq.cmp"),
+            llvm.c.LLVMPointerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntEQ, left, right, "assert_eq.cmp"),
+            else => self.builder.buildICmp(llvm.c.LLVMIntEQ, left, right, "assert_eq.cmp"),
+        };
+
+        // Create blocks
+        const fail_bb = llvm.appendBasicBlock(self.ctx, func, "assert_eq.fail");
+        const continue_bb = llvm.appendBasicBlock(self.ctx, func, "assert_eq.continue");
+
+        // Branch based on condition
+        _ = self.builder.buildCondBr(cond, continue_bb, fail_bb);
+
+        // Emit failure block
+        self.builder.positionAtEnd(fail_bb);
+
+        // Print assertion failure message to stderr with values
+        const fprintf_fn = self.getOrDeclareFprintf();
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr");
+
+        // Format string based on type
+        const fmt_str = switch (type_kind) {
+            llvm.c.LLVMIntegerTypeKind => self.builder.buildGlobalStringPtr("assertion failed: left = %lld, right = %lld\n", "assert_eq_fmt"),
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildGlobalStringPtr("assertion failed: left = %g, right = %g\n", "assert_eq_fmt"),
+            llvm.c.LLVMPointerTypeKind => self.builder.buildGlobalStringPtr("assertion failed: left = %p, right = %p\n", "assert_eq_fmt"),
+            else => self.builder.buildGlobalStringPtr("assertion failed: values not equal\n", "assert_eq_fmt"),
+        };
+
+        // For integer types, extend to i64 for printf compatibility
+        var left_val = left;
+        var right_val = right;
+        if (type_kind == llvm.c.LLVMIntegerTypeKind) {
+            const i64_type = llvm.Types.int64(self.ctx);
+            const bit_width = llvm.c.LLVMGetIntTypeWidth(left_type);
+            if (bit_width < 64) {
+                left_val = llvm.c.LLVMBuildSExt(self.builder.ref, left, i64_type, "left_ext");
+                right_val = llvm.c.LLVMBuildSExt(self.builder.ref, right, i64_type, "right_ext");
+            }
+        }
+
+        var fail_args = [_]llvm.ValueRef{ stderr, fmt_str, left_val, right_val };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fail_args, "");
+
+        // Call abort
+        const abort_fn = self.getOrDeclareAbort();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(abort_fn), abort_fn, &[_]llvm.ValueRef{}, "");
+        _ = self.builder.buildUnreachable();
+
+        // Continue block - assertion passed
+        self.builder.positionAtEnd(continue_bb);
+
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit dbg(value) - prints value with debug info and returns value
+    fn emitDbg(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 1) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        // Emit the argument
+        const value = try self.emitExpr(args[0]);
+        const value_type = llvm.typeOf(value);
+        const type_kind = llvm.c.LLVMGetTypeKind(value_type);
+
+        // Print to stderr
+        const fprintf_fn = self.getOrDeclareFprintf();
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr");
+
+        // Format string based on type
+        const fmt_str = switch (type_kind) {
+            llvm.c.LLVMIntegerTypeKind => blk: {
+                const bit_width = llvm.c.LLVMGetIntTypeWidth(value_type);
+                if (bit_width == 1) {
+                    break :blk self.builder.buildGlobalStringPtr("[dbg] %s\n", "dbg_fmt");
+                }
+                break :blk self.builder.buildGlobalStringPtr("[dbg] %lld\n", "dbg_fmt");
+            },
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildGlobalStringPtr("[dbg] %g\n", "dbg_fmt"),
+            llvm.c.LLVMPointerTypeKind => self.builder.buildGlobalStringPtr("[dbg] %p\n", "dbg_fmt"),
+            else => self.builder.buildGlobalStringPtr("[dbg] <value>\n", "dbg_fmt"),
+        };
+
+        // For integer types, extend to i64 for printf compatibility (except bool)
+        var print_val = value;
+        if (type_kind == llvm.c.LLVMIntegerTypeKind) {
+            const bit_width = llvm.c.LLVMGetIntTypeWidth(value_type);
+            if (bit_width == 1) {
+                // Bool - use conditional to select "true" or "false"
+                const true_str = self.builder.buildGlobalStringPtr("true", "true_str");
+                const false_str = self.builder.buildGlobalStringPtr("false", "false_str");
+                print_val = self.builder.buildSelect(value, true_str, false_str, "bool_str");
+            } else if (bit_width < 64) {
+                const i64_type = llvm.Types.int64(self.ctx);
+                print_val = llvm.c.LLVMBuildSExt(self.builder.ref, value, i64_type, "val_ext");
+            }
+        }
+
+        var dbg_args = [_]llvm.ValueRef{ stderr, fmt_str, print_val };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &dbg_args, "");
+
+        // Return the original value (pass-through)
+        return value;
+    }
+
+    /// Emit type_name(value) - returns the type name as a string
+    fn emitTypeName(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 1) {
+            return self.builder.buildGlobalStringPtr("unknown", "type_name");
+        }
+
+        // Emit the argument to get its type
+        const value = try self.emitExpr(args[0]);
+        const value_type = llvm.typeOf(value);
+        const type_kind = llvm.c.LLVMGetTypeKind(value_type);
+
+        // Return type name string based on LLVM type
+        const type_name = switch (type_kind) {
+            llvm.c.LLVMIntegerTypeKind => blk: {
+                const bit_width = llvm.c.LLVMGetIntTypeWidth(value_type);
+                break :blk switch (bit_width) {
+                    1 => "bool",
+                    8 => "i8",
+                    16 => "i16",
+                    32 => "i32",
+                    64 => "i64",
+                    128 => "i128",
+                    else => "int",
+                };
+            },
+            llvm.c.LLVMFloatTypeKind => "f32",
+            llvm.c.LLVMDoubleTypeKind => "f64",
+            llvm.c.LLVMPointerTypeKind => "ptr",
+            llvm.c.LLVMStructTypeKind => "struct",
+            llvm.c.LLVMArrayTypeKind => "array",
+            llvm.c.LLVMVoidTypeKind => "void",
+            else => "unknown",
+        };
+
+        return self.builder.buildGlobalStringPtr(type_name, "type_name_str");
+    }
+
+    /// Emit len(value) - returns the length of a string or array
+    fn emitLen(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 1) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        // Emit the argument
+        const value = try self.emitExpr(args[0]);
+        const value_type = llvm.typeOf(value);
+        const type_kind = llvm.c.LLVMGetTypeKind(value_type);
+
+        // For arrays, return the compile-time length
+        if (type_kind == llvm.c.LLVMArrayTypeKind) {
+            const arr_len = llvm.c.LLVMGetArrayLength2(value_type);
+            return llvm.Const.int32(self.ctx, @intCast(arr_len));
+        }
+
+        // For strings (pointers), use strlen and truncate to i32
+        if (type_kind == llvm.c.LLVMPointerTypeKind) {
+            const strlen_fn = self.getOrDeclareStrlen();
+            var strlen_args = [_]llvm.ValueRef{value};
+            const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "strlen");
+            // Truncate from size_t (i64) to i32
+            const i32_type = llvm.Types.int32(self.ctx);
+            return llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "strlen_i32");
+        }
+
+        // For other types, return 0
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    fn getOrDeclareStrlen(self: *Emitter) llvm.ValueRef {
+        const fn_name = "strlen";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // size_t strlen(const char *s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const size_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(size_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
     /// Emit Ok(value) - Result::Ok constructor.

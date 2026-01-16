@@ -1,0 +1,7 @@
+// Test type_name builtin
+// type_name returns a string - just call it and verify it compiles
+fn main() -> i32 {
+    // Call type_name directly in println
+    println(type_name(42))
+    0
+}

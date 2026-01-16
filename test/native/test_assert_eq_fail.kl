@@ -1,0 +1,5 @@
+// Test assert_eq when values are not equal (should fail/abort)
+fn main() -> i32 {
+    assert_eq(42, 99)
+    0
+}

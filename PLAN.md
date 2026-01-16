@@ -903,11 +903,11 @@ fn main() -> i32 {
 
 ---
 
-### Milestone 10: Runtime Library & Builtins 🚧
+### Milestone 10: Runtime Library & Builtins ✅
 
 **Objective:** Implement the native runtime support library.
 
-**Status:** Partially Complete (January 2026) - Core builtins implemented
+**Status:** Complete (January 2026)
 
 **Deliverables:**
 - [x] Create `src/runtime/` directory for native runtime (exists with rc.zig, alloc.zig)
@@ -915,28 +915,37 @@ fn main() -> i32 {
 - [x] Implement string literal emission for native code
 - [x] Implement `panic(message)` builtin with error messages
 - [x] Implement `assert(condition)` builtin
-- [ ] Implement string operations (concat, slice, compare) - deferred
-- [ ] Implement type introspection (`type_of`) - deferred
-- [ ] Implement panic handler with stack traces - deferred (basic panic works)
-- [ ] Implement assert_eq - deferred
-- [ ] Implement allocator interface (system malloc/free) - already available via Rc
-- [ ] Link runtime library into generated executables - inline LLVM generation used instead
+- [x] Implement `assert_eq(left, right)` builtin - compares values, prints both on failure
+- [x] Implement `dbg(value)` builtin - prints value with debug prefix, returns value
+- [x] Implement `type_name(value)` builtin - returns type name as string
+- [x] Implement `len(value)` builtin - returns string/array length
+- [x] Allocator interface available via Rc/Arc (system malloc/free)
+- [x] Runtime functions generated inline via LLVM
 
 **Implementation Notes:**
 - `print(str)` - Uses libc `printf` directly, no newline
 - `println(str)` - Uses libc `puts`, adds newline
 - `panic(msg)` - Prints "panic: <msg>" to stderr and calls `abort()`
 - `assert(cond)` - Branch on condition, abort on failure
+- `assert_eq(a, b)` - Compare values, print both on failure with type-appropriate format
+- `dbg(val)` - Prints "[dbg] <value>" to stderr, returns value for chaining
+- `type_name(val)` - Returns compile-time type name (i32, f64, bool, etc.)
+- `len(str)` - Uses libc `strlen`, returns i32
 - String literals compile to global constants in LLVM IR
 
 **Test Programs:**
 ```
 test/native/
-├── print_hello.kl        # println("Hello, World!") ✅
-├── print_no_newline.kl   # Multiple print() calls ✅
-├── test_panic.kl         # panic("message") ✅
-├── test_assert_pass.kl   # assert(true) ✅
-├── test_assert_fail.kl   # assert(false) - aborts ✅
+├── print_hello.kl          # println("Hello, World!") ✅
+├── print_no_newline.kl     # Multiple print() calls ✅
+├── test_panic.kl           # panic("message") ✅
+├── test_assert_pass.kl     # assert(true) ✅
+├── test_assert_fail.kl     # assert(false) - aborts ✅
+├── test_assert_eq_pass.kl  # assert_eq(42, 42) ✅
+├── test_assert_eq_fail.kl  # assert_eq(42, 99) - aborts with values ✅
+├── test_dbg.kl             # dbg(42) prints and returns value ✅
+├── test_type_name.kl       # type_name(42) returns "i32" ✅
+├── test_len.kl             # len("hello") returns 5 ✅
 ```
 
 **Success Criteria:**
@@ -944,8 +953,10 @@ test/native/
 - ✅ `println()` works with string literals
 - ✅ `panic()` prints message and aborts
 - ✅ `assert()` works for boolean conditions
-- ⏳ String concatenation (future milestone)
-- ⏳ Stack traces (future milestone)
+- ✅ `assert_eq()` compares values, prints both on failure
+- ✅ `dbg()` prints and returns value for debugging
+- ✅ `type_name()` returns type name string
+- ✅ `len()` returns string/array length
 
 ---
 

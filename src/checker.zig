@@ -289,6 +289,46 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
+        // assert_eq(left: T, right: T) -> void - compares two values, panics with details on failure
+        const assert_eq_type = try self.type_builder.functionType(&.{ self.type_builder.i32Type(), self.type_builder.i32Type() }, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_eq",
+            .type_ = assert_eq_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // dbg(value: T) -> T - prints value with debug info and returns it
+        const dbg_type = try self.type_builder.functionType(&.{self.type_builder.i32Type()}, self.type_builder.i32Type());
+        try self.current_scope.define(.{
+            .name = "dbg",
+            .type_ = dbg_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // type_name(value: T) -> string - returns the type name as a string
+        const type_name_type = try self.type_builder.functionType(&.{self.type_builder.i32Type()}, self.type_builder.stringType());
+        try self.current_scope.define(.{
+            .name = "type_name",
+            .type_ = type_name_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // len(value: T) -> i32 - returns the length of a string or array
+        const len_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, self.type_builder.i32Type());
+        try self.current_scope.define(.{
+            .name = "len",
+            .type_ = len_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
         // Ok(value: T) -> Result[T, E] - Result constructor for success values
         // For now, use i32 -> Result[i32, i32] as a simple type
         // Full generic support would infer T from the argument

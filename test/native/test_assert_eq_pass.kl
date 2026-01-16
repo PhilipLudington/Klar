@@ -1,0 +1,7 @@
+// Test assert_eq when values are equal (should pass)
+fn main() -> i32 {
+    assert_eq(42, 42)
+    assert_eq(0, 0)
+    assert_eq(100, 100)
+    0
+}
