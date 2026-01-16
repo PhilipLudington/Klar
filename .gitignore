@@ -1,14 +1,11 @@
 .DS_Store
 
+# Build artifacts (all build outputs go here)
+build/
+
 # Zig build artifacts
 .zig-cache/
 zig-out/
-
-# Temporary test files
-test_io
-
-# LLVM IR output files
-*.ll
 
 # GitStat result files
 .build-results.json
@@ -16,6 +13,5 @@ test_io
 .native-test-results.json
 .benchmark-results.json
 
-# Compiled native test binaries
-test/native/*
-!test/native/*.kl
+# LLVM IR output (when debugging)
+*.ll
