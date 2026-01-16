@@ -81,6 +81,9 @@ pub const Emitter = struct {
     /// Reference to type checker for call resolution (generic functions).
     type_checker: ?*const TypeChecker,
 
+    /// Cache of allocated mangled enum names (for cleanup).
+    mangled_enum_names: std.ArrayListUnmanaged([]const u8),
+
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
 
     const ReturnTypeInfo = struct {
@@ -183,6 +186,7 @@ pub const Emitter = struct {
             .di_file = null,
             .di_scope = null,
             .type_checker = null,
+            .mangled_enum_names = .{},
         };
     }
 
@@ -255,6 +259,11 @@ pub const Emitter = struct {
             self.allocator.free(info.capture_names);
         }
         self.closure_types.deinit();
+        // Free allocated mangled enum names
+        for (self.mangled_enum_names.items) |name| {
+            self.allocator.free(name);
+        }
+        self.mangled_enum_names.deinit(self.allocator);
         self.layout_calc.deinit();
         self.builder.dispose();
         self.module.dispose();
@@ -3385,7 +3394,10 @@ pub const Emitter = struct {
                     result.appendSlice(self.allocator, arg_name) catch return EmitError.OutOfMemory;
                 }
 
-                break :blk result.toOwnedSlice(self.allocator) catch return EmitError.OutOfMemory;
+                const mangled_name = result.toOwnedSlice(self.allocator) catch return EmitError.OutOfMemory;
+                // Track allocation for cleanup in deinit
+                self.mangled_enum_names.append(self.allocator, mangled_name) catch return EmitError.OutOfMemory;
+                break :blk mangled_name;
             },
             else => return EmitError.UnsupportedFeature,
         };

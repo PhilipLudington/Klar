@@ -203,6 +203,10 @@ pub const TypeChecker = struct {
     /// Cache of monomorphized enum instances.
     /// Maps (enum_name, type_args) to MonomorphizedEnum info.
     monomorphized_enums: std.ArrayListUnmanaged(MonomorphizedEnum),
+    /// Track generic enum definitions for cleanup (created in checkEnum).
+    generic_enum_types: std.ArrayListUnmanaged(*types.EnumType),
+    /// Track generic struct definitions for cleanup (created in checkStruct).
+    generic_struct_types: std.ArrayListUnmanaged(*types.StructType),
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -267,6 +271,8 @@ pub const TypeChecker = struct {
             .call_resolutions = .{},
             .monomorphized_structs = .{},
             .monomorphized_enums = .{},
+            .generic_enum_types = .{},
+            .generic_struct_types = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -284,11 +290,73 @@ pub const TypeChecker = struct {
             scope.deinit(self.allocator);
         }
         self.type_param_scopes.deinit(self.allocator);
+
+        // Clean up monomorphized functions
+        for (self.monomorphized_functions.items) |func| {
+            self.allocator.free(func.mangled_name);
+            self.allocator.free(func.type_args);
+        }
         self.monomorphized_functions.deinit(self.allocator);
+
         self.generic_functions.deinit(self.allocator);
         self.call_resolutions.deinit(self.allocator);
+
+        // Clean up monomorphized structs
+        for (self.monomorphized_structs.items) |s| {
+            self.allocator.free(s.mangled_name);
+            self.allocator.free(s.type_args);
+            self.allocator.free(s.concrete_type.fields);
+            self.allocator.destroy(s.concrete_type);
+        }
         self.monomorphized_structs.deinit(self.allocator);
+
+        // Clean up monomorphized enums
+        for (self.monomorphized_enums.items) |e| {
+            self.allocator.free(e.mangled_name);
+            self.allocator.free(e.type_args);
+            // Free variant payloads
+            for (e.concrete_type.variants) |variant| {
+                if (variant.payload) |payload| {
+                    switch (payload) {
+                        .tuple => |tuple_types| self.allocator.free(tuple_types),
+                        .struct_ => |struct_fields| self.allocator.free(struct_fields),
+                    }
+                }
+            }
+            self.allocator.free(e.concrete_type.variants);
+            self.allocator.destroy(e.concrete_type);
+        }
         self.monomorphized_enums.deinit(self.allocator);
+
+        // Clean up generic enum definitions (from checkEnum)
+        for (self.generic_enum_types.items) |enum_type| {
+            // Free type params if any
+            if (enum_type.type_params.len > 0) {
+                self.allocator.free(enum_type.type_params);
+            }
+            // Free variant payloads
+            for (enum_type.variants) |variant| {
+                if (variant.payload) |payload| {
+                    switch (payload) {
+                        .tuple => |tuple_types| self.allocator.free(tuple_types),
+                        .struct_ => |struct_fields| self.allocator.free(struct_fields),
+                    }
+                }
+            }
+            self.allocator.free(enum_type.variants);
+            self.allocator.destroy(enum_type);
+        }
+        self.generic_enum_types.deinit(self.allocator);
+
+        // Clean up generic struct definitions (from checkStruct)
+        for (self.generic_struct_types.items) |struct_type| {
+            if (struct_type.type_params.len > 0) {
+                self.allocator.free(struct_type.type_params);
+            }
+            self.allocator.free(struct_type.fields);
+            self.allocator.destroy(struct_type);
+        }
+        self.generic_struct_types.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -2794,6 +2862,9 @@ pub const TypeChecker = struct {
             .traits = &.{},
         };
 
+        // Track for cleanup in deinit
+        self.generic_struct_types.append(self.allocator, struct_type) catch {};
+
         self.current_scope.define(.{
             .name = struct_decl.name,
             .type_ = .{ .struct_ = struct_type },
@@ -2853,6 +2924,9 @@ pub const TypeChecker = struct {
             .type_params = enum_type_params,
             .variants = variants.toOwnedSlice(self.allocator) catch &.{},
         };
+
+        // Track for cleanup in deinit
+        self.generic_enum_types.append(self.allocator, enum_type) catch {};
 
         self.current_scope.define(.{
             .name = enum_decl.name,
