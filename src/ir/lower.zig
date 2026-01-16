@@ -827,8 +827,8 @@ pub const Lowerer = struct {
     fn popScope(self: *Lowerer) LowerError!void {
         if (self.scope_stack.items.len == 0) return;
 
-        const scope = self.scope_stack.pop();
-        defer scope.variables.deinit(self.allocator);
+        const scope = self.scope_stack.pop() orelse return;
+        defer @constCast(&scope).variables.deinit(self.allocator);
 
         // Drop variables from this scope (ownership cleanup)
         for (scope.variables.items) |name| {

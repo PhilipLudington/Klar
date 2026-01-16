@@ -79,6 +79,7 @@ pub fn main() !void {
         var output_path: ?[]const u8 = null;
         var emit_llvm = false;
         var emit_asm = false;
+        var emit_ir = false;
         var opt_level: opt.OptLevel = .O0;
         var verbose_opt = false;
         var debug_info = false;
@@ -94,6 +95,8 @@ pub fn main() !void {
                 emit_llvm = true;
             } else if (std.mem.eql(u8, arg, "--emit-asm")) {
                 emit_asm = true;
+            } else if (std.mem.eql(u8, arg, "--emit-ir")) {
+                emit_ir = true;
             } else if (std.mem.eql(u8, arg, "-O0")) {
                 opt_level = .O0;
             } else if (std.mem.eql(u8, arg, "-O1")) {
@@ -118,6 +121,7 @@ pub fn main() !void {
             .output_path = output_path,
             .emit_llvm_ir = emit_llvm,
             .emit_assembly = emit_asm,
+            .emit_klar_ir = emit_ir,
             .opt_level = opt_level,
             .verbose_opt = verbose_opt,
             .debug_info = debug_info,
@@ -368,6 +372,53 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
     defer allocator.free(module_name);
+
+    // Emit Klar IR if requested
+    if (options.emit_klar_ir) {
+        var ir_module = ir.inst.Module.init(arena.allocator(), base_name);
+        var lowerer = ir.lower.Lowerer.init(arena.allocator(), &ir_module);
+        defer lowerer.deinit();
+
+        lowerer.lowerModule(module) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "IR lowering error: {s}\n", .{@errorName(err)}) catch "IR lowering error\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        // Write IR to file
+        const ir_path_str = std.fmt.allocPrint(allocator, "{s}.ir", .{base_name}) catch {
+            try stderr.writeAll("Out of memory\n");
+            return;
+        };
+        defer allocator.free(ir_path_str);
+
+        const ir_file = std.fs.cwd().createFile(ir_path_str, .{}) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to create IR file: {s}\n", .{@errorName(err)}) catch "Failed to create IR file\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+        defer ir_file.close();
+
+        // Write IR to string first, then to file
+        const ir_output = ir.printer.moduleToString(arena.allocator(), &ir_module) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to generate IR: {s}\n", .{@errorName(err)}) catch "Failed to generate IR\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+        ir_file.writeAll(ir_output) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to write IR: {s}\n", .{@errorName(err)}) catch "Failed to write IR\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Wrote Klar IR to {s}.ir\n", .{base_name}) catch "Wrote Klar IR\n";
+        try stdout.writeAll(msg);
+    }
 
     // Create emitter and emit LLVM IR
     var emitter = codegen.Emitter.init(allocator, module_name);
@@ -1064,6 +1115,7 @@ fn printUsage() !void {
         \\  -g                   Generate debug information (DWARF)
         \\  --emit-llvm          Output LLVM IR (.ll file)
         \\  --emit-asm           Output assembly (.s file)
+        \\  --emit-ir            Output Klar IR (.ir file)
         \\  --verbose-opt        Show optimization statistics
         \\
         \\Run Options:
@@ -1085,6 +1137,7 @@ fn printUsage() !void {
         \\  klar build hello.kl -O2
         \\  klar build hello.kl --target x86_64-linux-gnu
         \\  klar build hello.kl --emit-llvm
+        \\  klar build hello.kl --emit-ir
         \\  klar check example.kl
         \\
     );

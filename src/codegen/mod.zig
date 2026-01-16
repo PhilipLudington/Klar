@@ -31,6 +31,7 @@ pub const CompileOptions = struct {
     output_path: ?[]const u8 = null,
     emit_llvm_ir: bool = false,
     emit_assembly: bool = false,
+    emit_klar_ir: bool = false,
     optimization_level: target.OptLevel = .none,
     /// Klar IR optimization level (constant folding, DCE, simplification).
     opt_level: KlarOptLevel = .O0,
