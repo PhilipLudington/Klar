@@ -1,0 +1,102 @@
+// Array Demo in Klar
+// Demonstrates: array literals, indexing, len(), iteration display
+
+fn main() {
+    println("=== Klar Array Demo ===")
+    println("")
+
+    // Create arrays
+    let heights = [5, 2, 8, 1, 9, 3, 7, 4, 6]
+    let n = 9
+
+    // Display as bar chart
+    println("Bar Chart Visualization:")
+    var row = 9
+    while row > 0 {
+        var col = 0
+        while col < n {
+            if heights[col] >= row {
+                print("# ")
+            } else {
+                print("  ")
+            }
+            col = col + 1
+        }
+        println("")
+        row = row - 1
+    }
+
+    // Print separator
+    var sep = 0
+    while sep < n {
+        print("--")
+        sep = sep + 1
+    }
+    println("")
+    println("")
+
+    // Find max and min
+    var max = heights[0]
+    var min = heights[0]
+    var sum = 0
+    var idx = 0
+    while idx < n {
+        let val = heights[idx]
+        if val > max {
+            max = val
+        }
+        if val < min {
+            min = val
+        }
+        sum = sum + val
+        idx = idx + 1
+    }
+
+    // Print statistics
+    print("Max value: ")
+    print_digit(max)
+    println("")
+
+    print("Min value: ")
+    print_digit(min)
+    println("")
+
+    print("Sum: ")
+    print_num(sum)
+    println("")
+
+    println("")
+    println("Array Features Demonstrated:")
+    println("- Array literals: [5, 2, 8, ...]")
+    println("- Indexing: heights[i]")
+    println("- Iteration via while + index")
+    println("")
+    println("Note: Array mutation (arr[i] = x) not yet supported")
+}
+
+// Print a single digit
+fn print_digit(n: i32) {
+    if n == 0 { print("0") }
+    else if n == 1 { print("1") }
+    else if n == 2 { print("2") }
+    else if n == 3 { print("3") }
+    else if n == 4 { print("4") }
+    else if n == 5 { print("5") }
+    else if n == 6 { print("6") }
+    else if n == 7 { print("7") }
+    else if n == 8 { print("8") }
+    else if n == 9 { print("9") }
+    else { print("?") }
+}
+
+// Print a two-digit number
+fn print_num(n: i32) {
+    if n < 10 {
+        print_digit(n)
+    } else {
+        let tens = n / 10
+        let ones = n - tens * 10
+        print_digit(tens)
+        print_digit(ones)
+    }
+}

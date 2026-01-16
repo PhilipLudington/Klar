@@ -1,0 +1,84 @@
+// Fibonacci Sequence Visualizer in Klar
+// Demonstrates: recursion, functions with parameters and return values
+
+fn main() {
+    println("=== Fibonacci Sequence ===")
+    println("")
+
+    // Calculate and visualize first 15 Fibonacci numbers
+    var i = 0
+    while i < 15 {
+        let fib_val = fib(i)
+
+        // Print index
+        if i < 10 {
+            print(" ")
+            print_d(i)
+        } else {
+            print_d(i / 10)
+            print_d(i - (i / 10) * 10)
+        }
+        print(": ")
+
+        // Print bar (scaled logarithmically for visibility)
+        var bar = fib_val
+        if bar > 50 { bar = 50 }
+        var b = 0
+        while b < bar {
+            print("#")
+            b = b + 1
+        }
+
+        // Print value
+        print(" ")
+        print_num(fib_val)
+        println("")
+
+        i = i + 1
+    }
+
+    println("")
+    println("Klar Features Demonstrated:")
+    println("- Recursive functions")
+    println("- Functions with i32 parameters")
+    println("- Return values")
+    println("- While loops")
+}
+
+// Recursive Fibonacci
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+// Print a number up to 999
+fn print_num(n: i32) {
+    if n < 10 {
+        print_d(n)
+    } else if n < 100 {
+        print_d(n / 10)
+        print_d(n - (n / 10) * 10)
+    } else {
+        let h = n / 100
+        let rem = n - h * 100
+        print_d(h)
+        print_d(rem / 10)
+        print_d(rem - (rem / 10) * 10)
+    }
+}
+
+fn print_d(d: i32) {
+    if d == 0 { print("0") }
+    else if d == 1 { print("1") }
+    else if d == 2 { print("2") }
+    else if d == 3 { print("3") }
+    else if d == 4 { print("4") }
+    else if d == 5 { print("5") }
+    else if d == 6 { print("6") }
+    else if d == 7 { print("7") }
+    else if d == 8 { print("8") }
+    else if d == 9 { print("9") }
+}

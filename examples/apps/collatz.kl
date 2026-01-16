@@ -1,0 +1,110 @@
+// Collatz Conjecture Visualizer in Klar
+// The 3n+1 problem: for any n, repeatedly apply:
+//   - if even: n = n / 2
+//   - if odd:  n = 3n + 1
+// Eventually reaches 1
+
+fn main() {
+    println("=== Collatz Conjecture (3n+1) ===")
+    println("")
+
+    // Starting from 7
+    println("Starting from 7:")
+    var n = 7
+    var steps = 0
+
+    while n > 1 {
+        // Print bar proportional to value (scaled)
+        var bar = n / 2
+        if bar > 40 { bar = 40 }
+        var b = 0
+        while b < bar {
+            print("#")
+            b = b + 1
+        }
+
+        // Print the value
+        print(" ")
+        if n < 10 {
+            print_d(n)
+        } else if n < 100 {
+            print_d(n / 10)
+            print_d(n - (n / 10) * 10)
+        }
+        println("")
+
+        // Collatz step
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = n * 3 + 1
+        }
+        steps = steps + 1
+    }
+
+    print("# 1")
+    println("")
+    println("")
+    print("Reached 1 in ")
+    if steps < 10 {
+        print_d(steps)
+    } else {
+        print_d(steps / 10)
+        print_d(steps - (steps / 10) * 10)
+    }
+    println(" steps")
+    println("")
+
+    // Second example: starting from 27
+    println("Starting from 27 (long sequence!):")
+    n = 27
+    steps = 0
+
+    while n > 1 {
+        var bar = n / 4
+        if bar > 50 { bar = 50 }
+        var b = 0
+        while b < bar {
+            print("#")
+            b = b + 1
+        }
+        println("")
+
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = n * 3 + 1
+        }
+        steps = steps + 1
+    }
+    println("#")
+    println("")
+    print("Reached 1 in ")
+    if steps < 100 {
+        if steps < 10 {
+            print_d(steps)
+        } else {
+            print_d(steps / 10)
+            print_d(steps - (steps / 10) * 10)
+        }
+    } else {
+        print_d(steps / 100)
+        let rem = steps - (steps / 100) * 100
+        print_d(rem / 10)
+        print_d(rem - (rem / 10) * 10)
+    }
+    println(" steps")
+}
+
+fn print_d(d: i32) {
+    if d == 0 { print("0") }
+    else if d == 1 { print("1") }
+    else if d == 2 { print("2") }
+    else if d == 3 { print("3") }
+    else if d == 4 { print("4") }
+    else if d == 5 { print("5") }
+    else if d == 6 { print("6") }
+    else if d == 7 { print("7") }
+    else if d == 8 { print("8") }
+    else if d == 9 { print("9") }
+}

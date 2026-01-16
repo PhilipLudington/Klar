@@ -300,7 +300,11 @@ See the `benchmarks/` directory:
 - `sort.kl` — Sorting simulation
 - `rc_stress.kl` — Reference counting stress test
 
-For larger example applications, see [KlarReferenceApps](https://github.com/PhilipLudington/KlarReferenceApps).
+See the `examples/apps/` directory for larger reference applications:
+- `mandelbrot.kl` — ASCII Mandelbrot set renderer
+- `collatz.kl` — Collatz conjecture visualizer
+- `fibonacci.kl` — Fibonacci sequence with bar chart
+- `array_demo.kl` — Array features demo
 
 ## File Extension
 
