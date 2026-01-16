@@ -2126,18 +2126,702 @@ pub async fn main() -> Result[void, Error] {
 
 ---
 
-## Next Steps
+## Implementation Status
 
-1. Set up Zig project structure
-2. Implement lexer tests
-3. Build AST node types
-4. Implement recursive descent parser
-5. Add type checker
-6. Build tree-walking interpreter
-7. Add core builtins (print, assert)
-8. Run first programs
+### Completed Phases
+
+**Phase 1: Tree-Walking Interpreter** ✅
+- Lexer, parser, type checker
+- Tree-walking interpreter
+- Core builtins (print, assert)
+
+**Phase 2: Bytecode VM** ✅
+- Bytecode compiler
+- Stack-based virtual machine
+- Garbage collection
+
+**Phase 3: Native Compiler** ✅
+- LLVM-based code generation
+- Ownership-based memory management (Rc/Arc)
+- 252x speedup over VM for compute-bound code
+- Cross-compilation support
 
 ---
 
-*Document version: 1.0*
+## Phase 4: Language Completion Plan
+
+> **Goal:** Complete the Klar language with generics, traits, modules, and standard library.
+
+### Executive Summary
+
+Phase 4 transforms Klar from a working compiler into a complete, usable programming language. This phase implements the remaining language features specified above: **generics**, **traits**, **module system**, and **standard library**. The focus is on making Klar practical for real-world use.
+
+**Current State (Post Phase 3):**
+- ✅ Full compilation pipeline (lexer → parser → checker → LLVM → native)
+- ✅ Ownership-based memory management (Rc/Arc, automatic drop)
+- ✅ Basic types, structs, enums, closures, optionals, results
+- ⚠️ Parser supports generics/traits/modules but checker doesn't fully implement them
+- ⚠️ No standard library beyond builtins (print, panic, assert)
+- ⚠️ Single-file compilation only
+
+**Phase 4 Adds:**
+- Generic functions and types with monomorphization
+- Trait definitions, implementations, and bounds
+- Multi-file compilation with module system
+- Standard library (collections, I/O, strings)
+- Package manager and tooling
+
+**Design Philosophy Alignment:**
+- `comptime` blocks (replacing C preprocessor) - stretch goal for Phase 4
+- No macros - design uses `comptime` for metaprogramming instead
+- Word operators (`and`, `or`, `not`) - already implemented ✅
+- Explicit casts (`.as[T]`, `.to[T]`) - already implemented ✅
+
+---
+
+### Phase 4 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         KLAR PHASE 4 ADDITIONS                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   Source Files (.kl)                                                    │
+│        │                                                                │
+│        ▼                                                                │
+│   ┌─────────────┐                                                       │
+│   │   Module    │  ← NEW: Resolve imports, build dependency graph       │
+│   │  Resolver   │                                                       │
+│   └──────┬──────┘                                                       │
+│          │ module tree                                                  │
+│          ▼                                                              │
+│   ┌─────────────┐                                                       │
+│   │   Parser    │  ← existing (already parses generics/traits)          │
+│   └──────┬──────┘                                                       │
+│          │ AST with generics                                            │
+│          ▼                                                              │
+│   ┌─────────────┐                                                       │
+│   │   Checker   │  ← ENHANCED: Generic instantiation, trait resolution  │
+│   └──────┬──────┘                                                       │
+│          │ monomorphized AST                                            │
+│          ▼                                                              │
+│   ┌─────────────┐                                                       │
+│   │   Codegen   │  ← existing (works on monomorphized code)             │
+│   └──────┬──────┘                                                       │
+│          │                                                              │
+│          ▼                                                              │
+│   Native Binary + std library                                           │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Milestone 1: Generic Type Checking
+
+**Objective:** Implement full generic type checking with monomorphization.
+
+**Current State:** Parser accepts `fn foo[T](x: T)` syntax, but checker treats type parameters as unknown types.
+
+**Deliverables:**
+- [ ] Track type parameters in checker scope
+- [ ] Implement type parameter substitution
+- [ ] Implement monomorphization (generate concrete types at call sites)
+- [ ] Support generic structs: `struct Pair[A, B] { first: A, second: B }`
+- [ ] Support generic enums: `enum Option[T] { Some(T), None }`
+- [ ] Support generic functions: `fn swap[T](a: &mut T, b: &mut T)`
+- [ ] Implement type inference at call sites
+- [ ] Cache monomorphized instances to avoid duplication
+
+**Type Inference Example:**
+```klar
+fn identity[T](x: T) -> T { x }
+
+let a = identity(42)        // T inferred as i32
+let b = identity("hello")   // T inferred as string
+let c: f64 = identity(3.14) // T inferred as f64 from context
+```
+
+**Monomorphization Strategy:**
+```
+Source:
+  fn swap[T](a: &mut T, b: &mut T) { ... }
+  swap(&mut x, &mut y)  // x, y are i32
+  swap(&mut p, &mut q)  // p, q are f64
+
+Generated:
+  fn swap_i32(a: &mut i32, b: &mut i32) { ... }
+  fn swap_f64(a: &mut f64, b: &mut f64) { ... }
+```
+
+**Files to Modify:**
+```
+src/checker.zig          # Add generic type checking, monomorphization
+src/types.zig            # Enhance TypeVar, AppliedType handling
+src/codegen/emit.zig     # Emit monomorphized functions
+```
+
+**Success Criteria:**
+- Generic identity function works with multiple types
+- Generic Pair struct can hold different types
+- No code bloat from unused instantiations
+
+---
+
+### Milestone 2: Trait System
+
+**Objective:** Implement trait definitions, implementations, and bounds.
+
+**Deliverables:**
+- [ ] Trait definition parsing (already done) and checking
+- [ ] Trait implementation (`impl Type: Trait { ... }`)
+- [ ] Trait bounds on generics (`fn sort[T: Ordered](list: List[T])`)
+- [ ] Multiple trait bounds (`T: Ordered + Clone`)
+- [ ] Default method implementations
+- [ ] Associated types (`type Item` in traits)
+- [ ] `Self` type in trait methods
+- [ ] Derive macro basics (`#[derive(Eq, Clone)]`)
+
+**Core Traits to Implement:**
+```klar
+trait Eq {
+    fn eq(self, other: Self) -> bool
+}
+
+trait Ordered: Eq {
+    fn compare(self, other: Self) -> Ordering
+}
+
+trait Clone {
+    fn clone(self) -> Self
+}
+
+trait Drop {
+    fn drop(self: &mut Self)
+}
+
+trait Default {
+    fn default() -> Self
+}
+
+trait Hash {
+    fn hash(self) -> u64
+}
+```
+
+**Trait Resolution:**
+```klar
+trait Printable {
+    fn to_string(self) -> String
+}
+
+impl i32: Printable {
+    fn to_string(self) -> String {
+        // integer to string conversion
+    }
+}
+
+fn print_value[T: Printable](value: T) {
+    println(value.to_string())
+}
+
+print_value(42)  // Resolves to i32's Printable impl
+```
+
+**Files to Create/Modify:**
+```
+src/traits.zig           # NEW: Trait registry, resolution
+src/checker.zig          # Add trait checking, impl validation
+src/types.zig            # Add trait bounds to type system
+```
+
+**Success Criteria:**
+- Can define and implement traits
+- Trait bounds restrict generic parameters
+- Method calls resolve to correct implementation
+
+---
+
+### Milestone 3: Module System
+
+**Objective:** Implement multi-file compilation with imports and exports.
+
+**Deliverables:**
+- [ ] Module declaration (`module math.vector`)
+- [ ] Import resolution (`import std.collections.List`)
+- [ ] Selective imports (`import std.io.{ read, write }`)
+- [ ] Glob imports (`import std.collections.*`)
+- [ ] Relative imports (`import .sibling`, `import ..parent.child`)
+- [ ] Visibility modifiers (`pub fn`, `pub struct`)
+- [ ] Module dependency graph construction
+- [ ] Cycle detection in imports
+- [ ] Compile multiple files into single binary
+
+**Module Resolution Rules:**
+```
+import std.collections.List
+  → Look in: std/collections.kl or std/collections/mod.kl
+  → Find: pub struct List[T] { ... }
+
+import .utils
+  → Look in: ./utils.kl (relative to current file)
+
+import ..parent.helper
+  → Look in: ../parent/helper.kl
+```
+
+**Project Structure Example:**
+```
+myproject/
+├── klar.toml           # Package manifest
+├── src/
+│   ├── main.kl         # module main
+│   ├── utils.kl        # module utils
+│   └── models/
+│       ├── mod.kl      # module models
+│       └── user.kl     # module models.user
+└── std/                # Standard library (symlinked or copied)
+```
+
+**Files to Create:**
+```
+src/module_resolver.zig  # NEW: Module discovery, import resolution
+src/project.zig          # NEW: Project/package handling
+```
+
+**Success Criteria:**
+- Can compile multi-file projects
+- Imports resolve correctly
+- Circular imports detected and reported
+
+---
+
+### Milestone 4: Standard Library - Core
+
+**Objective:** Implement core standard library types.
+
+**Deliverables:**
+- [ ] `Option[T]` - replaces built-in `?T` with stdlib type
+- [ ] `Result[T, E]` - replaces built-in with richer API
+- [ ] `String` - owned, growable string type
+- [ ] `List[T]` - dynamic array (like Vec in Rust)
+- [ ] `Map[K, V]` - hash map
+- [ ] `Set[T]` - hash set
+- [ ] `Range` - iteration support
+
+**String Type:**
+```klar
+// std/string.kl
+pub struct String {
+    data: Rc[List[u8]]
+    len: usize
+}
+
+impl String {
+    pub fn new() -> String
+    pub fn from(s: &str) -> String
+    pub fn len(self) -> usize
+    pub fn push(self: &mut Self, c: char)
+    pub fn concat(self, other: &String) -> String
+    pub fn slice(self, start: usize, end: usize) -> &str
+    pub fn chars(self) -> Iterator[char]
+}
+
+impl String: Eq + Clone + Hash + Printable
+```
+
+**List Type:**
+```klar
+// std/collections/list.kl
+pub struct List[T] {
+    data: *mut T
+    len: usize
+    capacity: usize
+}
+
+impl List[T] {
+    pub fn new() -> List[T]
+    pub fn with_capacity(cap: usize) -> List[T]
+    pub fn push(self: &mut Self, value: T)
+    pub fn pop(self: &mut Self) -> Option[T]
+    pub fn get(self, index: usize) -> Option[&T]
+    pub fn len(self) -> usize
+    pub fn iter(self) -> Iterator[&T]
+}
+
+impl List[T]: Clone where T: Clone
+impl List[T]: Drop  // Drops all elements
+```
+
+**Files to Create:**
+```
+std/
+├── core/
+│   ├── mod.kl          # Re-exports
+│   ├── option.kl       # Option[T]
+│   ├── result.kl       # Result[T, E]
+│   └── ordering.kl     # Ordering enum
+├── string.kl           # String type
+├── collections/
+│   ├── mod.kl
+│   ├── list.kl         # List[T]
+│   ├── map.kl          # Map[K, V]
+│   └── set.kl          # Set[T]
+└── prelude.kl          # Auto-imported types
+```
+
+**Success Criteria:**
+- Can create and manipulate strings
+- Can use List for dynamic collections
+- Map and Set work with hashable keys
+
+---
+
+### Milestone 5: Standard Library - I/O
+
+**Objective:** Implement file and console I/O.
+
+**Deliverables:**
+- [ ] `File` type with read/write
+- [ ] `stdin`, `stdout`, `stderr` handles
+- [ ] `Read` and `Write` traits
+- [ ] `BufReader` and `BufWriter`
+- [ ] Path manipulation
+- [ ] Directory operations
+
+**I/O Traits:**
+```klar
+// std/io/traits.kl
+pub trait Read {
+    fn read(self: &mut Self, buf: &mut [u8]) -> Result[usize, IoError]
+}
+
+pub trait Write {
+    fn write(self: &mut Self, buf: &[u8]) -> Result[usize, IoError]
+    fn flush(self: &mut Self) -> Result[void, IoError]
+}
+```
+
+**File API:**
+```klar
+// std/fs.kl
+pub struct File { ... }
+
+impl File {
+    pub fn open(path: &Path) -> Result[File, IoError]
+    pub fn create(path: &Path) -> Result[File, IoError]
+}
+
+impl File: Read + Write
+
+// Usage
+let file = File.open("data.txt")?
+let contents = file.read_to_string()?
+```
+
+**Files to Create:**
+```
+std/
+├── io/
+│   ├── mod.kl
+│   ├── traits.kl       # Read, Write
+│   ├── stdio.kl        # stdin, stdout, stderr
+│   └── buffer.kl       # BufReader, BufWriter
+├── fs.kl               # File, directory operations
+└── path.kl             # Path type
+```
+
+**Success Criteria:**
+- Can read and write files
+- Buffered I/O works correctly
+- Proper error handling with Result
+
+---
+
+### Milestone 6: Iterator Protocol
+
+**Objective:** Implement iterators and for-loop integration.
+
+**Deliverables:**
+- [ ] `Iterator` trait with `next()` method
+- [ ] `IntoIterator` trait for for-loop support
+- [ ] Iterator adapters: `map`, `filter`, `take`, `skip`
+- [ ] `collect()` to gather into collections
+- [ ] Range iterators (`0..10`, `0..=10`)
+
+**Iterator Trait:**
+```klar
+pub trait Iterator {
+    type Item
+    fn next(self: &mut Self) -> Option[Self.Item]
+
+    // Default implementations
+    fn map[B](self, f: fn(Self.Item) -> B) -> Map[Self, B]
+    fn filter(self, pred: fn(&Self.Item) -> bool) -> Filter[Self]
+    fn collect[C: FromIterator[Self.Item]](self) -> C
+}
+
+pub trait IntoIterator {
+    type Item
+    type IntoIter: Iterator[Item = Self.Item]
+    fn into_iter(self) -> Self.IntoIter
+}
+```
+
+**For Loop Desugaring:**
+```klar
+// Source
+for x in collection {
+    process(x)
+}
+
+// Desugared to
+let mut iter = collection.into_iter()
+while let Some(x) = iter.next() {
+    process(x)
+}
+```
+
+**Success Criteria:**
+- For loops work with any IntoIterator
+- Iterator chains are lazy
+- Can collect into List, Set, etc.
+
+---
+
+### Milestone 7: Error Handling Improvements
+
+**Objective:** Complete the `?` operator and improve error handling.
+
+**Deliverables:**
+- [ ] Full `?` operator implementation (early return on Err/None)
+- [ ] `try` blocks for localized error handling
+- [ ] Error conversion with `From` trait
+- [ ] `anyhow`-style error boxing
+- [ ] Stack traces in debug mode
+
+**Error Propagation:**
+```klar
+fn read_config() -> Result[Config, Error] {
+    let file = File.open("config.toml")?  // Returns Err if fails
+    let contents = file.read_to_string()?
+    let config = parse_toml(contents)?
+    Ok(config)
+}
+```
+
+**Error Conversion:**
+```klar
+trait From[T] {
+    fn from(value: T) -> Self
+}
+
+// Automatic conversion via ?
+impl Error: From[IoError] { ... }
+impl Error: From[ParseError] { ... }
+
+fn example() -> Result[void, Error] {
+    let file = File.open("x")?  // IoError → Error via From
+    Ok(())
+}
+```
+
+**Success Criteria:**
+- `?` operator properly propagates errors
+- Error types can be converted automatically
+- Clear error messages with context
+
+---
+
+### Milestone 8: Package Manager
+
+**Objective:** Implement basic package management.
+
+**Deliverables:**
+- [ ] `klar.toml` manifest format
+- [ ] `klar init` - create new project
+- [ ] `klar build` - build project (already exists, enhance)
+- [ ] `klar run` - build and run
+- [ ] `klar test` - run tests
+- [ ] `klar add <package>` - add dependency
+- [ ] Dependency resolution
+- [ ] Package registry integration (optional)
+
+**Manifest Format:**
+```toml
+# klar.toml
+[package]
+name = "myapp"
+version = "0.1.0"
+authors = ["Alice <alice@example.com>"]
+
+[dependencies]
+json = "1.0"
+http = { git = "https://github.com/klar/http" }
+
+[dev-dependencies]
+test-utils = "0.1"
+```
+
+**CLI Commands:**
+```bash
+klar init myproject          # Create new project
+klar build                   # Build current project
+klar build --release         # Build with optimizations
+klar run                     # Build and run
+klar test                    # Run tests
+klar add json                # Add dependency
+klar update                  # Update dependencies
+```
+
+**Files to Create:**
+```
+src/package/
+├── mod.zig                  # Package management entry
+├── manifest.zig             # klar.toml parsing
+├── resolver.zig             # Dependency resolution
+└── registry.zig             # Package registry client
+```
+
+**Success Criteria:**
+- Can create and build projects
+- Dependencies resolved correctly
+- Reproducible builds with lockfile
+
+---
+
+### Milestone 9: Tooling
+
+**Objective:** Developer tooling for productive Klar development.
+
+**Deliverables:**
+- [ ] `klar fmt` - code formatter
+- [ ] `klar check` - type check without compiling (already exists, enhance)
+- [ ] `klar doc` - documentation generator
+- [ ] Language Server Protocol (LSP) implementation
+- [ ] Syntax highlighting definitions (VS Code, etc.)
+
+**Language Server Features:**
+- Go to definition
+- Find references
+- Hover for type info
+- Autocomplete
+- Diagnostics (errors/warnings)
+- Code actions (quick fixes)
+
+**Files to Create:**
+```
+src/lsp/
+├── mod.zig                  # LSP entry point
+├── server.zig               # JSON-RPC server
+├── handlers.zig             # Request handlers
+└── protocol.zig             # LSP protocol types
+
+tools/
+├── klar-fmt/                # Formatter
+└── vscode-klar/             # VS Code extension
+```
+
+**Success Criteria:**
+- Formatter produces consistent output
+- LSP provides go-to-definition and autocomplete
+- VS Code extension available
+
+---
+
+### Phase 4 Dependency Graph
+
+```
+Milestone 1: Generics
+    │
+    ├──► Milestone 2: Traits (needs generics for bounds)
+    │         │
+    │         ├──► Milestone 6: Iterators (needs Iterator trait)
+    │         │
+    │         └──► Milestone 7: Error Handling (needs From trait)
+    │
+    ├──► Milestone 3: Modules (parallel, foundation)
+    │         │
+    │         └──► Milestone 4: Stdlib Core (needs modules)
+    │                   │
+    │                   └──► Milestone 5: Stdlib I/O (needs core)
+    │
+    └──► Milestone 8: Package Manager (needs modules)
+              │
+              └──► Milestone 9: Tooling (needs stable language)
+```
+
+**Recommended Order:**
+1. Generics (Milestone 1)
+2. Modules (Milestone 3) - can start in parallel
+3. Traits (Milestone 2)
+4. Stdlib Core (Milestone 4)
+5. Iterators (Milestone 6)
+6. Error Handling (Milestone 7)
+7. Stdlib I/O (Milestone 5)
+8. Package Manager (Milestone 8)
+9. Tooling (Milestone 9)
+
+---
+
+### Phase 4 Timeline Estimate
+
+| Milestone | Effort | Dependencies |
+|-----------|--------|--------------|
+| 1. Generics | Large | None |
+| 2. Traits | Large | Generics |
+| 3. Modules | Medium | None |
+| 4. Stdlib Core | Medium | Generics, Traits, Modules |
+| 5. Stdlib I/O | Medium | Stdlib Core |
+| 6. Iterators | Medium | Traits |
+| 7. Error Handling | Small | Traits |
+| 8. Package Manager | Medium | Modules |
+| 9. Tooling | Large | All above |
+
+---
+
+### Phase 4 Success Metrics
+
+**Phase 4 is complete when:**
+
+1. **Language Completeness**
+   - [ ] Generic functions and types work
+   - [ ] Traits can be defined and implemented
+   - [ ] Multi-file projects compile
+   - [ ] Standard library provides core functionality
+
+2. **Usability**
+   - [ ] Can write non-trivial programs (HTTP server, CLI tools)
+   - [ ] Error messages are helpful
+   - [ ] Documentation exists
+
+3. **Tooling**
+   - [ ] Package manager works
+   - [ ] IDE support via LSP
+   - [ ] Code formatter available
+
+4. **Example Programs**
+   - [ ] JSON parser using generics
+   - [ ] HTTP client using async (stretch)
+   - [ ] File processing utility
+
+---
+
+### Stretch Goals
+
+These are valuable but not required for Phase 4 completion:
+
+1. **Async/Await** - Designed above but complex to implement
+2. **Comptime** - Compile-time evaluation (replaces C preprocessor per design philosophy)
+3. **Self-Hosting** - Compiler written in Klar
+4. **REPL** - Interactive Klar shell
+5. **WebAssembly Target** - Compile to WASM
+
+> **Note:** The design philosophy specifically calls for `comptime` blocks instead of macros.
+> `macro` is a reserved keyword for potential future use, but `comptime` is the intended
+> mechanism for metaprogramming and compile-time code generation.
+
+---
+
+*Document version: 2.0*
 *Last updated: January 2026*
