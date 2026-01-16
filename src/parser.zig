@@ -505,17 +505,96 @@ pub const Parser = struct {
         const name = self.tokenText(self.current);
         self.advance();
 
+        // Check if this is an uppercase identifier (type name)
+        const is_type_name = name.len > 0 and std.ascii.isUpper(name[0]);
+
+        // Check for generic struct literal: TypeName[T, U] { ... }
+        if (is_type_name and self.check(.l_bracket)) {
+            // Parse type arguments
+            self.advance(); // consume '['
+
+            var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
+            while (!self.check(.r_bracket) and !self.check(.eof)) {
+                const type_arg = try self.parseType();
+                try type_args.append(self.allocator, type_arg);
+                if (!self.match(.comma)) break;
+            }
+            try self.consume(.r_bracket, "expected ']' after type arguments");
+
+            // Create GenericApply type expression
+            const base_type: ast.TypeExpr = .{ .named = .{ .name = name, .span = start_span } };
+            const generic_type = try self.create(ast.GenericApply, .{
+                .base = base_type,
+                .args = try self.dupeSlice(ast.TypeExpr, type_args.items),
+                .span = ast.Span.merge(start_span, self.spanFromToken(self.previous)),
+            });
+            const full_type: ast.TypeExpr = .{ .generic_apply = generic_type };
+
+            // Now check for struct literal with generic type: TypeName[T, U] { ... }
+            if (self.check(.l_brace)) {
+                return self.parseStructLiteralWithType(full_type, start_span);
+            }
+
+            // Otherwise, this is not a valid expression context for a generic type
+            // Fall through to return identifier (let the checker handle it)
+            // Actually, we should error here since TypeName[...] without { } is not a valid expression
+            try self.reportError("generic type application requires struct literal");
+            return ParseError.UnexpectedToken;
+        }
+
         // Check for struct literal: Identifier { ... }
         // Only parse as struct literal if the identifier starts with uppercase (type convention)
         // This prevents `x { ... }` from being parsed as struct literal in contexts like `if x { }`
-        if (self.check(.l_brace) and name.len > 0 and std.ascii.isUpper(name[0])) {
-            return self.parseStructLiteralWithName(name, start_span);
+        if (self.check(.l_brace) and is_type_name) {
+            const base_type: ast.TypeExpr = .{ .named = .{ .name = name, .span = start_span } };
+            return self.parseStructLiteralWithType(base_type, start_span);
         }
 
         return .{ .identifier = .{
             .name = name,
             .span = start_span,
         } };
+    }
+
+    fn parseStructLiteralWithType(self: *Parser, type_expr: ast.TypeExpr, start_span: ast.Span) ParseError!ast.Expr {
+        self.advance(); // consume '{'
+
+        var fields = std.ArrayListUnmanaged(ast.StructFieldInit){};
+        var spread: ?ast.Expr = null;
+
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            // Check for spread: ..expr
+            if (self.match(.dot_dot)) {
+                spread = try self.parseExpression();
+                _ = self.match(.comma);
+                break;
+            }
+
+            const field_name = try self.consumeIdentifier();
+            const field_span = self.spanFromToken(self.previous);
+
+            try self.consume(.colon, "expected ':' after field name");
+            const value = try self.parseExpression();
+
+            try fields.append(self.allocator, .{
+                .name = field_name,
+                .value = value,
+                .span = field_span,
+            });
+
+            if (!self.match(.comma)) break;
+        }
+
+        try self.consume(.r_brace, "expected '}' after struct fields");
+        const end_span = self.spanFromToken(self.previous);
+
+        const struct_lit = try self.create(ast.StructLiteral, .{
+            .type_name = type_expr,
+            .fields = try self.dupeSlice(ast.StructFieldInit, fields.items),
+            .spread = spread,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .struct_literal = struct_lit };
     }
 
     // ========================================================================
@@ -598,47 +677,6 @@ pub const Parser = struct {
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .array_literal = arr };
-    }
-
-    fn parseStructLiteralWithName(self: *Parser, name: []const u8, start_span: ast.Span) ParseError!ast.Expr {
-        self.advance(); // consume '{'
-
-        var fields = std.ArrayListUnmanaged(ast.StructFieldInit){};
-        var spread: ?ast.Expr = null;
-
-        while (!self.check(.r_brace) and !self.check(.eof)) {
-            // Check for spread: ..expr
-            if (self.match(.dot_dot)) {
-                spread = try self.parseExpression();
-                _ = self.match(.comma);
-                break;
-            }
-
-            const field_name = try self.consumeIdentifier();
-            const field_span = self.spanFromToken(self.previous);
-
-            try self.consume(.colon, "expected ':' after field name");
-            const value = try self.parseExpression();
-
-            try fields.append(self.allocator, .{
-                .name = field_name,
-                .value = value,
-                .span = field_span,
-            });
-
-            if (!self.match(.comma)) break;
-        }
-
-        try self.consume(.r_brace, "expected '}' after struct fields");
-        const end_span = self.spanFromToken(self.previous);
-
-        const struct_lit = try self.create(ast.StructLiteral, .{
-            .type_name = .{ .named = .{ .name = name, .span = start_span } },
-            .fields = try self.dupeSlice(ast.StructFieldInit, fields.items),
-            .spread = spread,
-            .span = ast.Span.merge(start_span, end_span),
-        });
-        return .{ .struct_literal = struct_lit };
     }
 
     fn parseBlockExpr(self: *Parser) ParseError!ast.Expr {

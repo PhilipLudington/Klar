@@ -13,7 +13,7 @@
 - 252x speedup for native vs VM
 
 **Gaps to Address:**
-- Generic functions working (type checking + monomorphization + codegen); generic structs/enums codegen pending
+- Generic functions and structs working (type checking + monomorphization + codegen); generic enums codegen pending
 - Traits parsed but not semantically checked
 - Single-file compilation only
 - No standard library beyond builtins (print, panic, assert)
@@ -24,7 +24,7 @@
 
 **Objective:** Implement full generic type checking with monomorphization.
 
-**Status:** Generic functions complete (type checking, monomorphization, codegen). Generic structs/enums pending.
+**Status:** Generic functions and structs complete (type checking, monomorphization, codegen). Generic enums and struct methods pending.
 
 ### Type Parameter Tracking
 - [x] Add TypeParam scope tracking in checker.zig
@@ -48,8 +48,8 @@
 
 ### Generic Structs
 - [x] Support generic struct definitions: `struct Pair[A, B] { first: A, second: B }`
-- [ ] Instantiate generic structs at usage sites
-- [ ] Generate monomorphized struct types for codegen
+- [x] Instantiate generic structs at usage sites
+- [x] Generate monomorphized struct types for codegen
 - [ ] Handle generic struct methods
 
 ### Generic Enums
@@ -65,16 +65,18 @@
 
 ### Testing
 - [x] Test: generic identity function works with multiple types
-- [ ] Test: generic Pair struct can hold different types
+- [x] Test: generic Pair struct can hold different types
 - [ ] Test: no code bloat from unused instantiations
 - [x] Test: type inference selects correct instantiation
 
 **Files Modified:**
-- `src/checker.zig` - Generic type checking, monomorphization recording, call resolution ✓
+- `src/checker.zig` - Generic type checking, monomorphization recording (functions + structs) ✓
 - `src/types.zig` - TypeVar handling ✓
-- `src/codegen/emit.zig` - Monomorphized function emission ✓
+- `src/codegen/emit.zig` - Monomorphized function/struct emission ✓
+- `src/parser.zig` - Generic struct literal parsing ✓
 - `src/main.zig` - Integration of type checker with emitter ✓
-- `tests/native/generics_basic.kl` - Generic function test ✓
+- `test/native/generics_basic.kl` - Generic function test ✓
+- `test/native/generic_struct.kl` - Generic struct test ✓
 
 ---
 

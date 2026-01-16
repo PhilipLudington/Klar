@@ -2106,12 +2106,26 @@ pub const Emitter = struct {
     }
 
     /// Extract struct type name from an expression if it's a struct literal.
-    fn getStructTypeName(_: *Emitter, expr: ast.Expr) ?[]const u8 {
+    fn getStructTypeName(self: *Emitter, expr: ast.Expr) ?[]const u8 {
         return switch (expr) {
             .struct_literal => |lit| {
                 if (lit.type_name) |type_name| {
                     return switch (type_name) {
                         .named => |n| n.name,
+                        .generic_apply => |g| blk: {
+                            // Build mangled name for generic struct
+                            const base_name = switch (g.base) {
+                                .named => |n| n.name,
+                                else => break :blk null,
+                            };
+                            var mangled = std.ArrayListUnmanaged(u8){};
+                            mangled.appendSlice(self.allocator, base_name) catch break :blk null;
+                            for (g.args) |arg| {
+                                mangled.append(self.allocator, '$') catch break :blk null;
+                                self.appendTypeNameForMangling(&mangled, arg) catch break :blk null;
+                            }
+                            break :blk mangled.toOwnedSlice(self.allocator) catch null;
+                        },
                         else => null,
                     };
                 }
@@ -2131,6 +2145,49 @@ pub const Emitter = struct {
             }
         }
         return null;
+    }
+
+    /// Append a type name to a buffer for name mangling (works with AST TypeExpr).
+    fn appendTypeNameForMangling(self: *Emitter, buf: *std.ArrayListUnmanaged(u8), type_expr: ast.TypeExpr) !void {
+        switch (type_expr) {
+            .named => |n| try buf.appendSlice(self.allocator, n.name),
+            .array => |a| {
+                try buf.appendSlice(self.allocator, "arr_");
+                try self.appendTypeNameForMangling(buf, a.element);
+            },
+            .slice => |s| {
+                try buf.appendSlice(self.allocator, "slice_");
+                try self.appendTypeNameForMangling(buf, s.element);
+            },
+            .optional => |o| {
+                try buf.appendSlice(self.allocator, "opt_");
+                try self.appendTypeNameForMangling(buf, o.inner);
+            },
+            .reference => |r| {
+                try buf.appendSlice(self.allocator, if (r.mutable) "mutref_" else "ref_");
+                try self.appendTypeNameForMangling(buf, r.inner);
+            },
+            .generic_apply => |g| {
+                try self.appendTypeNameForMangling(buf, g.base);
+                for (g.args) |arg| {
+                    try buf.append(self.allocator, '_');
+                    try self.appendTypeNameForMangling(buf, arg);
+                }
+            },
+            .tuple => |t| {
+                try buf.appendSlice(self.allocator, "tup");
+                for (t.elements) |elem| {
+                    try buf.append(self.allocator, '_');
+                    try self.appendTypeNameForMangling(buf, elem);
+                }
+            },
+            .result => {
+                try buf.appendSlice(self.allocator, "result");
+            },
+            .function => {
+                try buf.appendSlice(self.allocator, "fn");
+            },
+        }
     }
 
     // =========================================================================
@@ -2176,9 +2233,28 @@ pub const Emitter = struct {
 
     /// Emit a struct literal expression.
     fn emitStructLiteral(self: *Emitter, lit: *ast.StructLiteral) EmitError!llvm.ValueRef {
-        // Get the struct type name
-        const type_name = switch (lit.type_name orelse return EmitError.InvalidAST) {
+        // Get the struct type name - could be simple or generic
+        const type_expr = lit.type_name orelse return EmitError.InvalidAST;
+        const type_name = switch (type_expr) {
             .named => |n| n.name,
+            .generic_apply => |g| blk: {
+                // For generic types, we need to use the mangled name
+                // The type checker has registered monomorphized structs with mangled names
+                // We need to reconstruct the mangled name here
+                const base_name = switch (g.base) {
+                    .named => |n| n.name,
+                    else => return EmitError.UnsupportedFeature,
+                };
+                // Build mangled name: BaseName$Type1$Type2...
+                var mangled = std.ArrayListUnmanaged(u8){};
+                errdefer mangled.deinit(self.allocator);
+                mangled.appendSlice(self.allocator, base_name) catch return EmitError.OutOfMemory;
+                for (g.args) |arg| {
+                    mangled.append(self.allocator, '$') catch return EmitError.OutOfMemory;
+                    self.appendTypeNameForMangling(&mangled, arg) catch return EmitError.OutOfMemory;
+                }
+                break :blk mangled.toOwnedSlice(self.allocator) catch return EmitError.OutOfMemory;
+            },
             else => return EmitError.UnsupportedFeature,
         };
 
@@ -5160,6 +5236,56 @@ pub const Emitter = struct {
             },
             else => true, // Default to signed
         };
+    }
+
+    // =========================================================================
+    // Monomorphized Struct Registration
+    // =========================================================================
+
+    /// Register all monomorphized struct types from the type checker.
+    /// Must be called BEFORE emitModule so that struct literals can find the types.
+    pub fn registerMonomorphizedStructs(self: *Emitter, type_checker: *const TypeChecker) EmitError!void {
+        const monos = type_checker.getMonomorphizedStructs();
+
+        for (monos) |mono| {
+            try self.registerMonomorphizedStruct(mono);
+        }
+    }
+
+    /// Register a single monomorphized struct type.
+    fn registerMonomorphizedStruct(self: *Emitter, mono: TypeChecker.MonomorphizedStruct) EmitError!void {
+        // Skip if already registered
+        if (self.struct_types.contains(mono.mangled_name)) {
+            return;
+        }
+
+        // Build LLVM field types from the concrete struct type
+        var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer field_types.deinit(self.allocator);
+
+        const field_count = mono.concrete_type.fields.len;
+        var field_indices = self.allocator.alloc(u32, field_count) catch return EmitError.OutOfMemory;
+        errdefer self.allocator.free(field_indices);
+
+        var field_names = self.allocator.alloc([]const u8, field_count) catch return EmitError.OutOfMemory;
+        errdefer self.allocator.free(field_names);
+
+        for (mono.concrete_type.fields, 0..) |field, i| {
+            const field_llvm_type = self.typeToLLVM(field.type_);
+            field_types.append(self.allocator, field_llvm_type) catch return EmitError.OutOfMemory;
+            field_indices[i] = @intCast(i);
+            field_names[i] = field.name;
+        }
+
+        // Create LLVM struct type
+        const struct_type = llvm.Types.struct_(self.ctx, field_types.items, false);
+
+        // Cache the struct type info
+        self.struct_types.put(mono.mangled_name, .{
+            .llvm_type = struct_type,
+            .field_indices = field_indices,
+            .field_names = field_names,
+        }) catch return EmitError.OutOfMemory;
     }
 
     // =========================================================================

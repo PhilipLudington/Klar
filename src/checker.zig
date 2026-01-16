@@ -196,6 +196,9 @@ pub const TypeChecker = struct {
     /// Maps call expression pointers to resolved mangled function names.
     /// Used by codegen to emit calls to monomorphized functions.
     call_resolutions: std.AutoHashMapUnmanaged(*ast.Call, []const u8),
+    /// Cache of monomorphized struct instances.
+    /// Maps (struct_name, type_args) to MonomorphizedStruct info.
+    monomorphized_structs: std.ArrayListUnmanaged(MonomorphizedStruct),
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -213,6 +216,18 @@ pub const TypeChecker = struct {
         concrete_type: Type,
         /// Reference to the original generic function declaration (for codegen)
         original_decl: *ast.FunctionDecl,
+    };
+
+    /// Information about a monomorphized struct instance.
+    pub const MonomorphizedStruct = struct {
+        /// Original generic struct name (e.g., "Pair")
+        original_name: []const u8,
+        /// Mangled name for this instantiation (e.g., "Pair$i32$string")
+        mangled_name: []const u8,
+        /// The concrete type arguments used for this instantiation
+        type_args: []const Type,
+        /// The concrete struct type with substituted field types
+        concrete_type: *types.StructType,
     };
 
     pub fn init(allocator: Allocator) TypeChecker {
@@ -234,6 +249,7 @@ pub const TypeChecker = struct {
             .monomorphized_functions = .{},
             .generic_functions = .{},
             .call_resolutions = .{},
+            .monomorphized_structs = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -254,6 +270,7 @@ pub const TypeChecker = struct {
         self.monomorphized_functions.deinit(self.allocator);
         self.generic_functions.deinit(self.allocator);
         self.call_resolutions.deinit(self.allocator);
+        self.monomorphized_structs.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -603,6 +620,101 @@ pub const TypeChecker = struct {
     /// Returns null if the call is not to a generic function.
     pub fn getCallResolution(self: *const TypeChecker, call: *ast.Call) ?[]const u8 {
         return self.call_resolutions.get(call);
+    }
+
+    /// Get all monomorphized struct instances.
+    pub fn getMonomorphizedStructs(self: *const TypeChecker) []const MonomorphizedStruct {
+        return self.monomorphized_structs.items;
+    }
+
+    /// Record a monomorphized struct instance and return the concrete StructType.
+    /// If the same instantiation already exists, returns the existing entry.
+    pub fn recordStructMonomorphization(
+        self: *TypeChecker,
+        struct_name: []const u8,
+        original_struct: *types.StructType,
+        type_args: []const Type,
+    ) !*types.StructType {
+        // Check if this instantiation already exists
+        for (self.monomorphized_structs.items) |existing| {
+            if (std.mem.eql(u8, existing.original_name, struct_name) and
+                existing.type_args.len == type_args.len)
+            {
+                var matches = true;
+                for (existing.type_args, type_args) |e, t| {
+                    if (!e.eql(t)) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) {
+                    return existing.concrete_type;
+                }
+            }
+        }
+
+        // Create substitution map from type params to concrete types
+        var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+        defer substitutions.deinit(self.allocator);
+
+        for (original_struct.type_params, 0..) |type_param, i| {
+            if (i < type_args.len) {
+                try substitutions.put(self.allocator, type_param.id, type_args[i]);
+            }
+        }
+
+        // Create new struct type with substituted field types
+        var concrete_fields = std.ArrayListUnmanaged(types.StructField){};
+        defer concrete_fields.deinit(self.allocator);
+
+        for (original_struct.fields) |field| {
+            const concrete_field_type = try self.substituteTypeParams(field.type_, substitutions);
+            try concrete_fields.append(self.allocator, .{
+                .name = field.name,
+                .type_ = concrete_field_type,
+                .is_pub = field.is_pub,
+            });
+        }
+
+        // Generate mangled name
+        const mangled_name = try self.mangleStructName(struct_name, type_args);
+
+        // Allocate and store the concrete struct type
+        const concrete_struct = try self.allocator.create(types.StructType);
+        concrete_struct.* = .{
+            .name = mangled_name,
+            .type_params = &.{}, // No type params - this is a concrete type
+            .fields = try self.allocator.dupe(types.StructField, concrete_fields.items),
+            .traits = original_struct.traits,
+            .is_copy = original_struct.is_copy,
+        };
+
+        const type_args_copy = try self.allocator.dupe(Type, type_args);
+
+        try self.monomorphized_structs.append(self.allocator, .{
+            .original_name = struct_name,
+            .mangled_name = mangled_name,
+            .type_args = type_args_copy,
+            .concrete_type = concrete_struct,
+        });
+
+        return concrete_struct;
+    }
+
+    /// Generate a mangled name for a struct instantiation.
+    /// E.g., "Pair" with [i32, string] -> "Pair$i32$string"
+    fn mangleStructName(self: *TypeChecker, struct_name: []const u8, type_args: []const Type) ![]const u8 {
+        var result = std.ArrayListUnmanaged(u8){};
+        errdefer result.deinit(self.allocator);
+
+        try result.appendSlice(self.allocator, struct_name);
+
+        for (type_args) |arg| {
+            try result.append(self.allocator, '$');
+            try self.appendTypeName(&result, arg);
+        }
+
+        return result.toOwnedSlice(self.allocator);
     }
 
     /// Substitute type variables in a type using the given mapping.
@@ -1040,6 +1152,53 @@ pub const TypeChecker = struct {
                 for (g.args) |arg| {
                     try args.append(self.allocator, try self.resolveTypeExpr(arg));
                 }
+
+                // Check if base is a generic struct that needs monomorphization
+                if (base == .struct_) {
+                    const struct_type = base.struct_;
+                    // Only monomorphize if this struct has type parameters
+                    if (struct_type.type_params.len > 0) {
+                        // Validate argument count
+                        if (args.items.len != struct_type.type_params.len) {
+                            self.addError(.type_mismatch, g.span, "wrong number of type arguments", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        // Check if any type args contain unresolved type variables
+                        var has_type_vars = false;
+                        for (args.items) |arg| {
+                            if (self.containsTypeVar(arg)) {
+                                has_type_vars = true;
+                                break;
+                            }
+                        }
+                        if (has_type_vars) {
+                            // Inside a generic context - return an applied type for later resolution
+                            return try self.type_builder.appliedType(base, args.items);
+                        }
+                        // All type args are concrete - monomorphize the struct
+                        const concrete_struct = self.recordStructMonomorphization(
+                            struct_type.name,
+                            struct_type,
+                            args.items,
+                        ) catch return self.type_builder.unknownType();
+                        return .{ .struct_ = concrete_struct };
+                    }
+                }
+
+                // Check if base is a generic enum that needs monomorphization
+                if (base == .enum_) {
+                    const enum_type = base.enum_;
+                    if (enum_type.type_params.len > 0) {
+                        // Validate argument count
+                        if (args.items.len != enum_type.type_params.len) {
+                            self.addError(.type_mismatch, g.span, "wrong number of type arguments", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        // For now, keep enums as applied types until we implement enum monomorphization
+                        return try self.type_builder.appliedType(base, args.items);
+                    }
+                }
+
                 return try self.type_builder.appliedType(base, args.items);
             },
         }

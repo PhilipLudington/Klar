@@ -1,0 +1,18 @@
+// Test generic struct instantiation and field access
+
+// Generic Pair struct with two type parameters
+struct Pair[A, B] {
+    first: A,
+    second: B,
+}
+
+fn main() -> i32 {
+    // Create a Pair[i32, i32]
+    let p1 = Pair[i32, i32] { first: 10, second: 32 }
+    let sum = p1.first + p1.second
+
+    // Create another Pair with same types - should reuse monomorphization
+    let p2 = Pair[i32, i32] { first: 100, second: 200 }
+
+    sum  // Should return 42
+}
