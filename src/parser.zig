@@ -1325,41 +1325,87 @@ pub const Parser = struct {
     }
 
     fn parseBindingOrVariant(self: *Parser) ParseError!ast.Pattern {
-        const span = self.spanFromToken(self.current);
+        const start_span = self.spanFromToken(self.current);
         const name = self.tokenText(self.current);
         self.advance();
 
         // Check for wildcard
         if (std.mem.eql(u8, name, "_")) {
-            return .{ .wildcard = .{ .span = span } };
+            return .{ .wildcard = .{ .span = start_span } };
         }
 
-        // Check for variant: Type.Variant or just Variant(payload)
-        if (self.match(.dot)) {
-            const variant_name = try self.consumeIdentifier();
-            var payload: ?ast.Pattern = null;
+        // Check if this looks like a type name (starts with uppercase)
+        const is_type_name = name.len > 0 and std.ascii.isUpper(name[0]);
 
-            if (self.match(.l_paren)) {
-                payload = try self.parsePattern();
-                try self.consume(.r_paren, "expected ')' after variant payload");
+        // Check for generic type pattern: Type[T]::Variant or Type[T].Variant
+        if (is_type_name and self.check(.l_bracket)) {
+            // Parse type arguments
+            self.advance(); // consume '['
+
+            var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
+            while (!self.check(.r_bracket) and !self.check(.eof)) {
+                const type_arg = try self.parseType();
+                try type_args.append(self.allocator, type_arg);
+                if (!self.match(.comma)) break;
+            }
+            try self.consume(.r_bracket, "expected ']' after type arguments");
+
+            // Create GenericApply type expression
+            const base_type: ast.TypeExpr = .{ .named = .{ .name = name, .span = start_span } };
+            const generic_type = try self.create(ast.GenericApply, .{
+                .base = base_type,
+                .args = try self.dupeSlice(ast.TypeExpr, type_args.items),
+                .span = ast.Span.merge(start_span, self.spanFromToken(self.previous)),
+            });
+            const full_type: ast.TypeExpr = .{ .generic_apply = generic_type };
+
+            // Must be followed by :: or . for variant pattern
+            if (self.match(.colon_colon) or self.match(.dot)) {
+                return self.parseVariantPatternWithType(full_type, start_span);
             }
 
-            const end_span = self.spanFromToken(self.previous);
-            const variant = try self.create(ast.VariantPattern, .{
-                .type_name = name,
-                .variant_name = variant_name,
-                .payload = payload,
-                .span = ast.Span.merge(span, end_span),
-            });
-            return .{ .variant = variant };
+            try self.reportError("expected '::' or '.' after generic type in pattern");
+            return ParseError.UnexpectedToken;
+        }
+
+        // Check for variant with :: syntax: Type::Variant
+        if (is_type_name and self.match(.colon_colon)) {
+            const base_type: ast.TypeExpr = .{ .named = .{ .name = name, .span = start_span } };
+            return self.parseVariantPatternWithType(base_type, start_span);
+        }
+
+        // Check for variant with . syntax (legacy): Type.Variant
+        if (self.match(.dot)) {
+            const base_type: ast.TypeExpr = .{ .named = .{ .name = name, .span = start_span } };
+            return self.parseVariantPatternWithType(base_type, start_span);
         }
 
         // Simple binding
         return .{ .binding = .{
             .name = name,
             .mutable = false,
-            .span = span,
+            .span = start_span,
         } };
+    }
+
+    /// Parse variant pattern after the type expression and :: or . have been consumed
+    fn parseVariantPatternWithType(self: *Parser, type_expr: ast.TypeExpr, start_span: ast.Span) ParseError!ast.Pattern {
+        const variant_name = try self.consumeIdentifier();
+        var payload: ?ast.Pattern = null;
+
+        if (self.match(.l_paren)) {
+            payload = try self.parsePattern();
+            try self.consume(.r_paren, "expected ')' after variant payload");
+        }
+
+        const end_span = self.spanFromToken(self.previous);
+        const variant = try self.create(ast.VariantPattern, .{
+            .type_expr = type_expr,
+            .variant_name = variant_name,
+            .payload = payload,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .variant = variant };
     }
 
     fn parsePatternLiteral(self: *Parser) ParseError!ast.Pattern {

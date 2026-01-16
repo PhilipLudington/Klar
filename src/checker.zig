@@ -2931,11 +2931,87 @@ pub const TypeChecker = struct {
                 }) catch {};
             },
             .variant => |v| {
-                if (expected_type != .enum_) {
+                // Determine the enum type - either from pattern or from expected type
+                var enum_type = expected_type;
+
+                if (v.type_expr) |type_expr| {
+                    // Pattern specifies a type - resolve it
+                    enum_type = self.resolveTypeExpr(type_expr) catch {
+                        self.addError(.undefined_type, v.span, "unknown type in pattern", .{});
+                        return;
+                    };
+                }
+
+                if (enum_type != .enum_) {
                     self.addError(.invalid_pattern, v.span, "variant pattern requires enum type", .{});
                     return;
                 }
-                // TODO: check variant exists and payload matches
+
+                const enum_def = enum_type.enum_;
+
+                // Find the variant
+                var found_variant: ?types.EnumVariant = null;
+                for (enum_def.variants) |variant| {
+                    if (std.mem.eql(u8, variant.name, v.variant_name)) {
+                        found_variant = variant;
+                        break;
+                    }
+                }
+
+                if (found_variant == null) {
+                    self.addError(.undefined_variant, v.span, "unknown variant '{s}'", .{v.variant_name});
+                    return;
+                }
+
+                const variant = found_variant.?;
+
+                // Check and bind payload pattern
+                if (variant.payload) |payload| {
+                    if (v.payload) |payload_pattern| {
+                        switch (payload) {
+                            .tuple => |tuple_types| {
+                                if (tuple_types.len == 1) {
+                                    // Single-element tuple: bind directly
+                                    self.checkPattern(payload_pattern, tuple_types[0]);
+                                } else {
+                                    // Multi-element tuple: expect tuple pattern
+                                    const payload_type = self.type_builder.tupleType(tuple_types) catch self.type_builder.unknownType();
+                                    self.checkPattern(payload_pattern, payload_type);
+                                }
+                            },
+                            .struct_ => |fields| {
+                                // Build struct type for the payload
+                                // For now, treat as unknown - struct patterns need more work
+                                _ = fields;
+                                self.checkPattern(payload_pattern, self.type_builder.unknownType());
+                            },
+                        }
+                    } else {
+                        self.addError(.invalid_pattern, v.span, "variant '{s}' expects payload", .{v.variant_name});
+                    }
+                } else {
+                    // Unit variant - no payload expected
+                    if (v.payload != null) {
+                        self.addError(.invalid_pattern, v.span, "variant '{s}' takes no payload", .{v.variant_name});
+                    }
+                }
+
+                // If this is a generic enum from pattern, record monomorphization
+                if (v.type_expr) |type_expr| {
+                    if (type_expr == .generic_apply and enum_def.type_params.len > 0) {
+                        const generic = type_expr.generic_apply;
+                        var type_args = std.ArrayListUnmanaged(Type){};
+                        defer type_args.deinit(self.allocator);
+
+                        for (generic.args) |arg| {
+                            const resolved_arg = self.resolveTypeExpr(arg) catch continue;
+                            type_args.append(self.allocator, resolved_arg) catch {};
+                        }
+
+                        // Record enum monomorphization
+                        _ = self.recordEnumMonomorphization(enum_def.name, enum_def, type_args.items) catch {};
+                    }
+                }
             },
             .struct_pattern => |s| {
                 if (expected_type != .struct_) {
@@ -2986,6 +3062,7 @@ pub const TypeChecker = struct {
     fn bindPattern(self: *TypeChecker, pattern: ast.Pattern, t: Type) void {
         switch (pattern) {
             .wildcard => {},
+            .literal => {},
             .binding => |bind| {
                 self.current_scope.define(.{
                     .name = bind.name,
@@ -2994,6 +3071,53 @@ pub const TypeChecker = struct {
                     .mutable = bind.mutable,
                     .span = bind.span,
                 }) catch {};
+            },
+            .variant => |v| {
+                // Determine the enum type
+                var enum_type = t;
+                if (v.type_expr) |type_expr| {
+                    enum_type = self.resolveTypeExpr(type_expr) catch return;
+                }
+
+                if (enum_type != .enum_) return;
+                const enum_def = enum_type.enum_;
+
+                // Find the variant
+                var found_variant: ?types.EnumVariant = null;
+                for (enum_def.variants) |variant| {
+                    if (std.mem.eql(u8, variant.name, v.variant_name)) {
+                        found_variant = variant;
+                        break;
+                    }
+                }
+
+                if (found_variant) |variant| {
+                    if (variant.payload) |payload| {
+                        if (v.payload) |payload_pattern| {
+                            switch (payload) {
+                                .tuple => |tuple_types| {
+                                    if (tuple_types.len == 1) {
+                                        // Single-element: bind directly
+                                        self.bindPattern(payload_pattern, tuple_types[0]);
+                                    } else {
+                                        // Multi-element: build tuple type
+                                        const payload_type = self.type_builder.tupleType(tuple_types) catch return;
+                                        self.bindPattern(payload_pattern, payload_type);
+                                    }
+                                },
+                                .struct_ => |fields| {
+                                    _ = fields;
+                                    // Struct payloads - handled by struct pattern binding
+                                    self.bindPattern(payload_pattern, self.type_builder.unknownType());
+                                },
+                            }
+                        }
+                    }
+                }
+            },
+            .struct_pattern => |s| {
+                // TODO: bind struct field patterns
+                _ = s;
             },
             .tuple_pattern => |tup| {
                 if (t == .tuple) {
@@ -3005,7 +3129,15 @@ pub const TypeChecker = struct {
                     }
                 }
             },
-            else => {},
+            .or_pattern => |o| {
+                // Bind variables from first alternative (all should have same bindings)
+                if (o.alternatives.len > 0) {
+                    self.bindPattern(o.alternatives[0], t);
+                }
+            },
+            .guarded => |g| {
+                self.bindPattern(g.pattern, t);
+            },
         }
     }
 

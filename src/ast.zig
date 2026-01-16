@@ -406,7 +406,7 @@ pub const Binding = struct {
 };
 
 pub const VariantPattern = struct {
-    type_name: ?[]const u8,
+    type_expr: ?TypeExpr,
     variant_name: []const u8,
     payload: ?Pattern,
     span: Span,
