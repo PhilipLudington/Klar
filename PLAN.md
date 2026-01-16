@@ -13,7 +13,7 @@
 - 252x speedup for native vs VM
 
 **Gaps to Address:**
-- Checker doesn't fully implement generics (type parameters treated as unknown)
+- Generic type checking implemented; codegen for monomorphized functions pending
 - Traits parsed but not semantically checked
 - Single-file compilation only
 - No standard library beyond builtins (print, panic, assert)
@@ -33,15 +33,16 @@
 ### Type Parameter Substitution
 - [x] Implement substituteTypeParams() for replacing type vars with concrete types
 - [x] Handle recursive type substitution in nested generics
-- [x] Create AppliedType representation for instantiated generic types
+- [ ] Create AppliedType representation for instantiated generic types
 - [x] Support type parameter substitution in function signatures
 
 ### Monomorphization
 - [x] Detect generic function call sites
 - [x] Infer concrete types from arguments at call sites
-- [x] Generate monomorphized function instances (e.g., swap_i32, swap_f64)
+- [x] Record monomorphized function instances (e.g., identity$i32)
 - [x] Cache monomorphized instances to avoid duplication
 - [x] Mangle names for uniqueness (e.g., `swap$i32` or `swap_i32`)
+- [ ] Generate monomorphized functions in codegen (emit.zig)
 
 ### Generic Structs
 - [x] Support generic struct definitions: `struct Pair[A, B] { first: A, second: B }`
