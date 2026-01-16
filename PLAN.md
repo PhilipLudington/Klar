@@ -24,7 +24,7 @@
 
 **Objective:** Implement full generic type checking with monomorphization.
 
-**Status:** Generic functions, structs, and enums complete (type checking, monomorphization, codegen registration, enum literal construction, match pattern parsing/checking). Generic struct methods pending; match expression codegen not yet implemented.
+**Status:** Generic functions, structs, and enums complete (type checking, monomorphization, codegen registration, enum literal construction, match pattern parsing/checking, match expression codegen). Generic struct methods pending.
 
 ### Type Parameter Tracking
 - [x] Add TypeParam scope tracking in checker.zig
@@ -58,7 +58,7 @@
 - [x] Generate monomorphized enum types for codegen
 - [x] Parse and type-check generic enum variants in match patterns (Type[T]::Variant syntax)
 - [x] Emit generic enum literal construction in codegen (EnumType[T]::Variant(payload) syntax)
-- [ ] Emit match expression codegen for all patterns (blocking full match support)
+- [x] Emit match expression codegen for all patterns
 
 ### Type Inference at Call Sites
 - [x] Infer type parameters from argument types

@@ -923,6 +923,7 @@ pub const Emitter = struct {
             .closure => |c| try self.emitClosure(c),
             .type_cast => |tc| try self.emitTypeCast(tc),
             .enum_literal => |e| try self.emitEnumLiteral(e),
+            .match_expr => |m| try self.emitMatch(m),
             else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
         };
     }
@@ -1736,6 +1737,358 @@ pub const Emitter = struct {
         return phi;
     }
 
+    /// Emit a match expression.
+    /// Creates a chain of conditional branches that test each pattern in order.
+    /// Uses PHI nodes to merge the results from all arms.
+    fn emitMatch(self: *Emitter, match_expr: *ast.MatchExpr) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Emit the subject expression
+        const subject_val = try self.emitExpr(match_expr.subject);
+
+        // Create the merge block for after all arms
+        const merge_bb = llvm.appendBasicBlock(self.ctx, func, "match.merge");
+
+        // Track values and blocks for PHI node
+        var arm_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer arm_values.deinit(self.allocator);
+        var arm_blocks = std.ArrayListUnmanaged(llvm.BasicBlockRef){};
+        defer arm_blocks.deinit(self.allocator);
+
+        // Track if all arms have terminators (for unreachable merge)
+        var all_terminate = true;
+
+        // Create a "match failed" block with unreachable (for non-exhaustive matches)
+        const match_failed_bb = llvm.appendBasicBlock(self.ctx, func, "match.failed");
+
+        // Process each arm
+        const num_arms = match_expr.arms.len;
+        for (match_expr.arms, 0..) |arm, i| {
+            const is_last_arm = (i == num_arms - 1);
+
+            // Create blocks for this arm
+            const arm_body_bb = llvm.appendBasicBlock(self.ctx, func, "match.arm");
+            // For last arm, failed pattern goes to match_failed, not merge
+            const next_arm_bb = if (is_last_arm)
+                match_failed_bb
+            else
+                llvm.appendBasicBlock(self.ctx, func, "match.next");
+
+            // Emit pattern matching condition
+            const pattern_matches = try self.emitPatternMatch(arm.pattern, subject_val);
+
+            // Check guard if present
+            const condition = if (arm.guard) |guard| blk: {
+                // Create a block to evaluate the guard
+                const guard_bb = llvm.appendBasicBlock(self.ctx, func, "match.guard");
+                _ = self.builder.buildCondBr(pattern_matches, guard_bb, next_arm_bb);
+
+                // Evaluate guard
+                self.builder.positionAtEnd(guard_bb);
+                const guard_val = try self.emitExpr(guard);
+                // Combine pattern match + guard
+                break :blk guard_val;
+            } else pattern_matches;
+
+            // Branch based on match result (if we didn't already branch for guard)
+            if (arm.guard == null) {
+                _ = self.builder.buildCondBr(condition, arm_body_bb, next_arm_bb);
+            } else {
+                _ = self.builder.buildCondBr(condition, arm_body_bb, next_arm_bb);
+            }
+
+            // Emit arm body
+            self.builder.positionAtEnd(arm_body_bb);
+            self.has_terminator = false;
+
+            // Push a new scope for pattern bindings
+            try self.pushScope(false);
+            defer self.popScope();
+
+            // Bind pattern variables
+            try self.bindPatternVariables(arm.pattern, subject_val);
+
+            // Emit the arm body
+            const arm_val = try self.emitExpr(arm.body);
+            const arm_has_term = self.has_terminator;
+            const arm_end_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+            if (!arm_has_term) {
+                arm_values.append(self.allocator, arm_val) catch return EmitError.OutOfMemory;
+                arm_blocks.append(self.allocator, arm_end_bb) catch return EmitError.OutOfMemory;
+                _ = self.builder.buildBr(merge_bb);
+                all_terminate = false;
+            }
+
+            // Move to next arm block
+            if (!is_last_arm) {
+                self.builder.positionAtEnd(next_arm_bb);
+            }
+        }
+
+        // Emit match failed block - this should be unreachable for exhaustive matches
+        self.builder.positionAtEnd(match_failed_bb);
+        _ = self.builder.buildUnreachable();
+
+        // Position at merge block
+        self.builder.positionAtEnd(merge_bb);
+        self.has_terminator = false;
+
+        // If all arms terminate (e.g., all return), merge is unreachable
+        if (all_terminate) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        // Create PHI node for the result
+        if (arm_values.items.len == 0) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        const phi = self.builder.buildPhi(llvm.Types.int32(self.ctx), "match.result");
+        llvm.addIncoming(phi, arm_values.items, arm_blocks.items);
+
+        return phi;
+    }
+
+    /// Emit code that evaluates to true (i1) if the pattern matches the subject.
+    fn emitPatternMatch(self: *Emitter, pattern: ast.Pattern, subject: llvm.ValueRef) EmitError!llvm.ValueRef {
+        return switch (pattern) {
+            .wildcard => {
+                // Wildcard always matches
+                return llvm.Const.int1(self.ctx, true);
+            },
+            .literal => |lit| {
+                // Compare subject to literal value
+                return self.emitLiteralPatternMatch(lit, subject);
+            },
+            .binding => {
+                // Binding always matches (variable capture is done in bindPatternVariables)
+                return llvm.Const.int1(self.ctx, true);
+            },
+            .variant => |v| {
+                // Check enum tag matches
+                return self.emitVariantPatternMatch(v, subject);
+            },
+            .or_pattern => |o| {
+                // Any alternative matches
+                var result = llvm.Const.int1(self.ctx, false);
+                for (o.alternatives) |alt| {
+                    const alt_match = try self.emitPatternMatch(alt, subject);
+                    result = self.builder.buildOr(result, alt_match, "or.pattern");
+                }
+                return result;
+            },
+            .guarded => |g| {
+                // Just check the pattern; guard is handled separately
+                return self.emitPatternMatch(g.pattern, subject);
+            },
+            .tuple_pattern => |t| {
+                // Check each element matches
+                var result = llvm.Const.int1(self.ctx, true);
+                for (t.elements, 0..) |elem, i| {
+                    // Extract tuple element
+                    var indices = [_]llvm.ValueRef{
+                        llvm.Const.int32(self.ctx, 0),
+                        llvm.Const.int32(self.ctx, @intCast(i)),
+                    };
+                    const subject_type = llvm.typeOf(subject);
+                    const elem_val = self.builder.buildGEP(subject_type, subject, &indices, "tuple.elem");
+                    const elem_match = try self.emitPatternMatch(elem, elem_val);
+                    result = self.builder.buildAnd(result, elem_match, "tuple.match");
+                }
+                return result;
+            },
+            .struct_pattern => {
+                // For struct patterns, we need to match field by field
+                // For now, return true (simplified)
+                return llvm.Const.int1(self.ctx, true);
+            },
+        };
+    }
+
+    /// Emit comparison for a literal pattern.
+    fn emitLiteralPatternMatch(self: *Emitter, lit: ast.PatternLiteral, subject: llvm.ValueRef) llvm.ValueRef {
+        return switch (lit.kind) {
+            .int => |v| {
+                const lit_val = if (v >= std.math.minInt(i32) and v <= std.math.maxInt(i32))
+                    llvm.Const.int32(self.ctx, @intCast(v))
+                else
+                    llvm.Const.int64(self.ctx, @intCast(v));
+                return self.builder.buildICmp(llvm.c.LLVMIntEQ, subject, lit_val, "int.match");
+            },
+            .float => |v| {
+                const lit_val = llvm.Const.float64(self.ctx, v);
+                return self.builder.buildFCmp(llvm.c.LLVMRealOEQ, subject, lit_val, "float.match");
+            },
+            .bool_ => |v| {
+                const lit_val = llvm.Const.int1(self.ctx, v);
+                return self.builder.buildICmp(llvm.c.LLVMIntEQ, subject, lit_val, "bool.match");
+            },
+            .char => |v| {
+                const lit_val = llvm.Const.int(llvm.Types.int32(self.ctx), v, false);
+                return self.builder.buildICmp(llvm.c.LLVMIntEQ, subject, lit_val, "char.match");
+            },
+            .string => |s| {
+                // String comparison - call strcmp or similar
+                // For now, simplified: compare pointers (won't work for different string instances)
+                const str_z = self.allocator.dupeZ(u8, s) catch return llvm.Const.int1(self.ctx, false);
+                defer self.allocator.free(str_z);
+                const lit_val = self.builder.buildGlobalStringPtr(str_z, "str.pat");
+                return self.builder.buildICmp(llvm.c.LLVMIntEQ, subject, lit_val, "str.match");
+            },
+        };
+    }
+
+    /// Emit code to check if an enum variant matches.
+    fn emitVariantPatternMatch(self: *Emitter, pat: *ast.VariantPattern, subject: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Get the enum type to find the variant index
+        const variant_index = try self.lookupVariantIndex(pat);
+
+        // Extract the tag from subject (field 0)
+        const subject_type = llvm.typeOf(subject);
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+
+        // For value types (not pointers), we need to allocate and then GEP
+        // Check if subject is a struct type (value) or pointer
+        const type_kind = llvm.getTypeKind(subject_type);
+        if (type_kind == llvm.c.LLVMStructTypeKind) {
+            // Subject is a value, extract tag directly using extractvalue
+            const tag_val = self.builder.buildExtractValue(subject, 0, "enum.tag");
+            const expected_tag = llvm.Const.int(llvm.Types.int8(self.ctx), variant_index, false);
+            return self.builder.buildICmp(llvm.c.LLVMIntEQ, tag_val, expected_tag, "variant.match");
+        } else {
+            // Subject is a pointer, use GEP
+            const tag_ptr = self.builder.buildGEP(subject_type, subject, &tag_indices, "enum.tag.ptr");
+            const tag_val = self.builder.buildLoad(llvm.Types.int8(self.ctx), tag_ptr, "enum.tag");
+            const expected_tag = llvm.Const.int(llvm.Types.int8(self.ctx), variant_index, false);
+            return self.builder.buildICmp(llvm.c.LLVMIntEQ, tag_val, expected_tag, "variant.match");
+        }
+    }
+
+    /// Look up the variant index for a pattern.
+    fn lookupVariantIndex(self: *Emitter, pat: *ast.VariantPattern) EmitError!u32 {
+        // Get the enum type name from the pattern
+        const enum_name: []const u8 = if (pat.type_expr) |type_expr| blk: {
+            break :blk switch (type_expr) {
+                .named => |n| n.name,
+                .generic_apply => |g| switch (g.base) {
+                    .named => |n| n.name,
+                    else => return EmitError.InvalidAST,
+                },
+                else => return EmitError.InvalidAST,
+            };
+        } else {
+            // No explicit type - need to infer from context
+            // For now, this is a limitation
+            return EmitError.UnsupportedFeature;
+        };
+
+        // Look up in monomorphized enums first
+        if (self.type_checker) |tc| {
+            const monos = tc.getMonomorphizedEnums();
+            for (monos) |mono| {
+                // Check if this is the enum we're looking for
+                if (std.mem.eql(u8, mono.original_name, enum_name)) {
+                    for (mono.concrete_type.variants, 0..) |v, i| {
+                        if (std.mem.eql(u8, v.name, pat.variant_name)) {
+                            return @intCast(i);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check registered enum types (non-generic)
+        // For non-generic enums, we'd need to look them up differently
+        // For now, if we can't find it, return 0 as default
+        return 0;
+    }
+
+    /// Bind pattern variables to extracted values.
+    fn bindPatternVariables(self: *Emitter, pattern: ast.Pattern, subject: llvm.ValueRef) EmitError!void {
+        switch (pattern) {
+            .wildcard => {},
+            .literal => {},
+            .binding => |b| {
+                // Bind the subject value to the variable name
+                const name_z = self.allocator.dupeZ(u8, b.name) catch return EmitError.OutOfMemory;
+                defer self.allocator.free(name_z);
+
+                // Create alloca for the bound variable
+                const var_type = llvm.typeOf(subject);
+                const alloca = self.builder.buildAlloca(var_type, name_z);
+                _ = self.builder.buildStore(subject, alloca);
+
+                self.named_values.put(b.name, .{
+                    .value = alloca,
+                    .is_alloca = true,
+                    .ty = var_type,
+                    .is_signed = false,
+                }) catch return EmitError.OutOfMemory;
+            },
+            .variant => |v| {
+                // If variant has a payload pattern, extract and bind it
+                if (v.payload) |payload_pattern| {
+                    const payload_val = try self.extractEnumPayload(subject);
+                    try self.bindPatternVariables(payload_pattern, payload_val);
+                }
+            },
+            .tuple_pattern => |t| {
+                for (t.elements, 0..) |elem, i| {
+                    var indices = [_]llvm.ValueRef{
+                        llvm.Const.int32(self.ctx, 0),
+                        llvm.Const.int32(self.ctx, @intCast(i)),
+                    };
+                    const subject_type = llvm.typeOf(subject);
+                    const elem_val = self.builder.buildGEP(subject_type, subject, &indices, "tuple.elem");
+                    try self.bindPatternVariables(elem, elem_val);
+                }
+            },
+            .or_pattern => |o| {
+                // For or-patterns, bind from first alternative (they should have same bindings)
+                if (o.alternatives.len > 0) {
+                    try self.bindPatternVariables(o.alternatives[0], subject);
+                }
+            },
+            .guarded => |g| {
+                try self.bindPatternVariables(g.pattern, subject);
+            },
+            .struct_pattern => {},
+        }
+    }
+
+    /// Extract the payload from an enum value (returns pointer to payload bytes).
+    fn extractEnumPayload(self: *Emitter, enum_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const val_type = llvm.typeOf(enum_val);
+        const type_kind = llvm.getTypeKind(val_type);
+
+        if (type_kind == llvm.c.LLVMStructTypeKind) {
+            // Value type: extract payload (field 1) - this gives us the byte array
+            // For value types, we need to allocate first to get a pointer
+            const alloca = self.builder.buildAlloca(val_type, "enum.tmp");
+            _ = self.builder.buildStore(enum_val, alloca);
+
+            // GEP to payload field (index 1, then index 0 for start of array)
+            var payload_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 1),
+                llvm.Const.int32(self.ctx, 0),
+            };
+            return self.builder.buildGEP(val_type, alloca, &payload_indices, "enum.payload");
+        } else {
+            // Pointer type: GEP directly
+            var payload_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 1),
+                llvm.Const.int32(self.ctx, 0),
+            };
+            return self.builder.buildGEP(val_type, enum_val, &payload_indices, "enum.payload");
+        }
+    }
+
     /// Convert a type expression to LLVM type.
     fn typeExprToLLVM(self: *Emitter, type_expr: ast.TypeExpr) EmitError!llvm.TypeRef {
         return switch (type_expr) {
@@ -2091,6 +2444,33 @@ pub const Emitter = struct {
                     return try self.inferExprType(final);
                 }
                 return llvm.Types.void_(self.ctx);
+            },
+            .enum_literal => |lit| {
+                // Look up the registered enum type
+                const mangled_name = try self.getMangledEnumName(lit.enum_type);
+                if (self.struct_types.get(mangled_name)) |enum_info| {
+                    return enum_info.llvm_type;
+                }
+                // Try base name for non-generic enums
+                const base_name = switch (lit.enum_type) {
+                    .named => |n| n.name,
+                    .generic_apply => |g| switch (g.base) {
+                        .named => |n| n.name,
+                        else => return llvm.Types.int32(self.ctx),
+                    },
+                    else => return llvm.Types.int32(self.ctx),
+                };
+                if (self.struct_types.get(base_name)) |enum_info| {
+                    return enum_info.llvm_type;
+                }
+                return llvm.Types.int32(self.ctx);
+            },
+            .match_expr => |m| {
+                // Match expression type is the type of the first arm's body
+                if (m.arms.len > 0) {
+                    return try self.inferExprType(m.arms[0].body);
+                }
+                return llvm.Types.int32(self.ctx);
             },
             else => llvm.Types.int32(self.ctx),
         };

@@ -1,8 +1,6 @@
 // Test generic enum pattern matching
-// Note: Match expression codegen is not yet implemented.
-// This test verifies that generic enum patterns can be parsed and type-checked.
-// Expected exit: 0 (match codegen returns placeholder)
-// Will return 100 once match codegen is implemented.
+// Tests that match expressions with generic enum variant patterns work correctly.
+// Expected exit: 100 (MyNone variant match)
 
 enum MyOption[T] {
     MySome(T),
