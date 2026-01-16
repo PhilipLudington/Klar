@@ -1,0 +1,8 @@
+// test_result_unwrap_err.kl - Test Result.unwrap_err() method with Err
+// Tests: unwrap_err() returns the error value for Err
+// Expected exit code: 99
+
+fn main() -> i32 {
+    let result = Err(99)
+    result.unwrap_err()
+}

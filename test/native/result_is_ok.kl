@@ -1,0 +1,12 @@
+// test_result_is_ok.kl - Test Result.is_ok() method
+// Tests: is_ok() returns true for Ok values
+// Expected exit code: 1 (is_ok returns true as i1, which is 1)
+
+fn main() -> i32 {
+    let result = Ok(42)
+    if result.is_ok() {
+        1
+    } else {
+        0
+    }
+}

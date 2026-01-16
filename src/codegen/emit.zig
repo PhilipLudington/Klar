@@ -1324,6 +1324,12 @@ pub const Emitter = struct {
                 return self.emitPanic(call.args);
             } else if (std.mem.eql(u8, name, "assert")) {
                 return self.emitAssert(call.args);
+            } else if (std.mem.eql(u8, name, "Ok")) {
+                // Result::Ok(value) constructor
+                return self.emitOkCall(call.args);
+            } else if (std.mem.eql(u8, name, "Err")) {
+                // Result::Err(error) constructor
+                return self.emitErrCall(call.args);
             }
         }
 
@@ -1537,7 +1543,19 @@ pub const Emitter = struct {
                 // This is the same layout used in emitClosure
                 return self.getClosureStructType();
             },
-            .result, .generic_apply => {
+            .result => |res| {
+                // Result[T, E] is a struct of { tag: i1, ok_value: T, err_value: E }
+                // tag: 1 = Ok, 0 = Err
+                const ok_type = try self.typeExprToLLVM(res.ok_type);
+                const err_type = try self.typeExprToLLVM(res.err_type);
+                var result_fields = [_]llvm.TypeRef{
+                    llvm.Types.int1(self.ctx), // tag (0 = err, 1 = ok)
+                    ok_type, // ok_value
+                    err_type, // err_value
+                };
+                return llvm.Types.struct_(self.ctx, &result_fields, false);
+            },
+            .generic_apply => {
                 // Complex types - return pointer as placeholder
                 return llvm.Types.pointer(self.ctx);
             },
@@ -1685,6 +1703,28 @@ pub const Emitter = struct {
                     .identifier => |id| id.name,
                     else => return llvm.Types.int32(self.ctx),
                 };
+
+                // Handle builtin Result constructors: Ok(value) and Err(error)
+                if (std.mem.eql(u8, func_name, "Ok")) {
+                    // Ok(value) returns Result[T, i32] where T is inferred from argument
+                    if (call.args.len == 1) {
+                        const ok_type = try self.inferExprType(call.args[0]);
+                        const err_type = llvm.Types.int32(self.ctx);
+                        return self.getResultType(ok_type, err_type);
+                    }
+                    return llvm.Types.int32(self.ctx);
+                }
+
+                if (std.mem.eql(u8, func_name, "Err")) {
+                    // Err(error) returns Result[i32, E] where E is inferred from argument
+                    if (call.args.len == 1) {
+                        const err_type = try self.inferExprType(call.args[0]);
+                        const ok_type = llvm.Types.int32(self.ctx);
+                        return self.getResultType(ok_type, err_type);
+                    }
+                    return llvm.Types.int32(self.ctx);
+                }
+
                 const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(name);
 
@@ -2171,17 +2211,21 @@ pub const Emitter = struct {
     }
 
     // =========================================================================
-    // Optional Type Support
+    // Optional and Result Type Support
     // =========================================================================
 
     /// Emit a postfix operator expression (? for safe unwrap, ! for force unwrap).
+    /// Works for both Optional[T] and Result[T, E] types:
+    /// - Optional layout: { i1 tag, T value } where tag: 0=None, 1=Some
+    /// - Result layout: { i1 tag, T ok_value, E err_value } where tag: 0=Err, 1=Ok
+    /// The ! operator traps on None/Err and returns the value/ok_value at index 1.
     fn emitPostfix(self: *Emitter, post: *ast.Postfix) EmitError!llvm.ValueRef {
-        // Emit the operand (should be an optional type)
+        // Emit the operand (should be an optional or result type)
         const operand = try self.emitExpr(post.operand);
         const operand_type = llvm.typeOf(operand);
 
-        // Optional type layout is { i1, T } where i1 is the tag (0=None, 1=Some)
-        // First, check if operand is a struct type (our optional representation)
+        // Optional/Result type layout is { i1, T, ... } where i1 is the tag (0=None/Err, 1=Some/Ok)
+        // First, check if operand is a struct type (our optional/result representation)
         const type_kind = llvm.getTypeKind(operand_type);
         if (type_kind != llvm.c.LLVMStructTypeKind) {
             return EmitError.UnsupportedFeature;
@@ -2363,10 +2407,86 @@ pub const Emitter = struct {
         return self.builder.buildLoad(opt_type, opt_alloca, "none.val");
     }
 
+    /// Create a Result Ok value: Result[T, E] = { tag: 1, ok_value: value, err_value: undef }
+    fn emitOk(self: *Emitter, value: llvm.ValueRef, ok_type: llvm.TypeRef, err_type: llvm.TypeRef) llvm.ValueRef {
+        // Result type is { i1, T, E }
+        var result_fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag
+            ok_type, // ok_value
+            err_type, // err_value
+        };
+        const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
+
+        // Allocate and populate
+        const result_alloca = self.builder.buildAlloca(result_type, "ok.tmp");
+
+        // Set tag to 1 (Ok)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(result_type, result_alloca, &tag_indices, "ok.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+        // Set ok_value
+        var val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const val_ptr = self.builder.buildGEP(result_type, result_alloca, &val_indices, "ok.val.ptr");
+        _ = self.builder.buildStore(value, val_ptr);
+
+        // Load and return (err_value field is undefined/uninitialized)
+        return self.builder.buildLoad(result_type, result_alloca, "ok.result");
+    }
+
+    /// Create a Result Err value: Result[T, E] = { tag: 0, ok_value: undef, err_value: error }
+    fn emitErr(self: *Emitter, error_val: llvm.ValueRef, ok_type: llvm.TypeRef, err_type: llvm.TypeRef) llvm.ValueRef {
+        // Result type is { i1, T, E }
+        var result_fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag
+            ok_type, // ok_value
+            err_type, // err_value
+        };
+        const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
+
+        // Allocate and populate
+        const result_alloca = self.builder.buildAlloca(result_type, "err.tmp");
+
+        // Set tag to 0 (Err)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(result_type, result_alloca, &tag_indices, "err.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+
+        // Set err_value (index 2)
+        var err_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 2),
+        };
+        const err_ptr = self.builder.buildGEP(result_type, result_alloca, &err_indices, "err.err.ptr");
+        _ = self.builder.buildStore(error_val, err_ptr);
+
+        // Load and return (ok_value field is undefined/uninitialized)
+        return self.builder.buildLoad(result_type, result_alloca, "err.result");
+    }
+
+    /// Get the Result type from ok_type and err_type.
+    fn getResultType(self: *Emitter, ok_type: llvm.TypeRef, err_type: llvm.TypeRef) llvm.TypeRef {
+        var result_fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag
+            ok_type, // ok_value
+            err_type, // err_value
+        };
+        return llvm.Types.struct_(self.ctx, &result_fields, false);
+    }
+
     /// Emit a method call expression.
-    /// Handles special methods like Rc.new(), Cell.new(), .clone(), .downgrade(), etc.
+    /// Handles special methods like Rc.new(), Cell.new(), Ok(), Err(), .clone(), .downgrade(), etc.
     fn emitMethodCall(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
-        // Check for static constructors: Rc.new(value), Cell.new(value)
+        // Check for static constructors: Rc.new(value), Cell.new(value), Ok(value), Err(error)
         if (method.object == .identifier) {
             const obj_name = method.object.identifier.name;
 
@@ -2376,6 +2496,17 @@ pub const Emitter = struct {
 
             if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitCellNew(method);
+            }
+
+            // Result type constructors: Ok(value), Err(error)
+            // These are parsed as method calls like Ok.new(value) style, but we handle them specially
+            if (std.mem.eql(u8, obj_name, "Result")) {
+                if (std.mem.eql(u8, method.method_name, "ok") or std.mem.eql(u8, method.method_name, "Ok")) {
+                    return self.emitResultOk(method);
+                }
+                if (std.mem.eql(u8, method.method_name, "err") or std.mem.eql(u8, method.method_name, "Err")) {
+                    return self.emitResultErr(method);
+                }
             }
         }
 
@@ -2413,6 +2544,37 @@ pub const Emitter = struct {
         if (std.mem.eql(u8, method.method_name, "upgrade")) {
             // Weak.upgrade() attempts to get an Rc back
             return self.emitWeakUpgrade(object, object_type);
+        }
+
+        // Check for Result/Optional methods: is_ok, is_err, is_some, is_none
+        if (std.mem.eql(u8, method.method_name, "is_ok")) {
+            // Result.is_ok() - return true if tag == 1
+            return self.emitResultIsOk(object, object_type);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "is_err")) {
+            // Result.is_err() - return true if tag == 0
+            return self.emitResultIsErr(object, object_type);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "is_some")) {
+            // Optional.is_some() - return true if tag == 1
+            return self.emitOptionalIsSome(object, object_type);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "is_none")) {
+            // Optional.is_none() - return true if tag == 0
+            return self.emitOptionalIsNone(object, object_type);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "unwrap")) {
+            // Result.unwrap() or Optional.unwrap() - same as ! operator
+            return self.emitResultUnwrap(object, object_type);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "unwrap_err")) {
+            // Result.unwrap_err() - return error value, trap if Ok
+            return self.emitResultUnwrapErr(object, object_type);
         }
 
         // For other methods, fall back to a placeholder for now
@@ -3371,6 +3533,218 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(continue_bb);
 
         return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit Ok(value) - Result::Ok constructor.
+    /// For now, we infer error type as i32 (simple error codes).
+    /// Type annotation will provide actual types in full implementation.
+    fn emitOkCall(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        // Emit the value
+        const value = try self.emitExpr(args[0]);
+        const ok_type = llvm.typeOf(value);
+
+        // Default error type to i32 (can be refined with type inference)
+        const err_type = llvm.Types.int32(self.ctx);
+
+        return self.emitOk(value, ok_type, err_type);
+    }
+
+    /// Emit Err(error) - Result::Err constructor.
+    /// For now, we infer ok type as i32 (placeholder).
+    /// Type annotation will provide actual types in full implementation.
+    fn emitErrCall(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        // Emit the error value
+        const error_val = try self.emitExpr(args[0]);
+        const err_type = llvm.typeOf(error_val);
+
+        // Default ok type to i32 (can be refined with type inference)
+        const ok_type = llvm.Types.int32(self.ctx);
+
+        return self.emitErr(error_val, ok_type, err_type);
+    }
+
+    /// Emit Result.ok(value) via method call syntax.
+    fn emitResultOk(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        const value = try self.emitExpr(method.args[0]);
+        const ok_type = llvm.typeOf(value);
+        const err_type = llvm.Types.int32(self.ctx);
+
+        return self.emitOk(value, ok_type, err_type);
+    }
+
+    /// Emit Result.err(error) via method call syntax.
+    fn emitResultErr(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        const error_val = try self.emitExpr(method.args[0]);
+        const err_type = llvm.typeOf(error_val);
+        const ok_type = llvm.Types.int32(self.ctx);
+
+        return self.emitErr(error_val, ok_type, err_type);
+    }
+
+    /// Emit Result.is_ok() - returns true if tag == 1 (Ok).
+    fn emitResultIsOk(self: *Emitter, result_val: llvm.ValueRef, result_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        // Store result to temp for GEP access
+        const result_alloca = self.builder.buildAlloca(result_type, "result.is_ok.tmp");
+        _ = self.builder.buildStore(result_val, result_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(result_type, result_alloca, &tag_indices, "result.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "result.tag");
+
+        // Tag == 1 means Ok
+        return tag;
+    }
+
+    /// Emit Result.is_err() - returns true if tag == 0 (Err).
+    fn emitResultIsErr(self: *Emitter, result_val: llvm.ValueRef, result_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        // Store result to temp for GEP access
+        const result_alloca = self.builder.buildAlloca(result_type, "result.is_err.tmp");
+        _ = self.builder.buildStore(result_val, result_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(result_type, result_alloca, &tag_indices, "result.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "result.tag");
+
+        // Tag == 0 means Err, so NOT tag
+        return self.builder.buildNot(tag, "result.is_err");
+    }
+
+    /// Emit Optional.is_some() - returns true if tag == 1 (Some).
+    fn emitOptionalIsSome(self: *Emitter, opt_val: llvm.ValueRef, opt_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        // Store optional to temp for GEP access
+        const opt_alloca = self.builder.buildAlloca(opt_type, "opt.is_some.tmp");
+        _ = self.builder.buildStore(opt_val, opt_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(opt_type, opt_alloca, &tag_indices, "opt.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "opt.tag");
+
+        // Tag == 1 means Some
+        return tag;
+    }
+
+    /// Emit Optional.is_none() - returns true if tag == 0 (None).
+    fn emitOptionalIsNone(self: *Emitter, opt_val: llvm.ValueRef, opt_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        // Store optional to temp for GEP access
+        const opt_alloca = self.builder.buildAlloca(opt_type, "opt.is_none.tmp");
+        _ = self.builder.buildStore(opt_val, opt_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(opt_type, opt_alloca, &tag_indices, "opt.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "opt.tag");
+
+        // Tag == 0 means None, so NOT tag
+        return self.builder.buildNot(tag, "opt.is_none");
+    }
+
+    /// Emit Result.unwrap() / Optional.unwrap() - traps if Err/None, returns value if Ok/Some.
+    fn emitResultUnwrap(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store to temp for GEP access
+        const val_alloca = self.builder.buildAlloca(value_type, "unwrap.tmp");
+        _ = self.builder.buildStore(value, val_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(value_type, val_alloca, &tag_indices, "unwrap.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "unwrap.tag");
+
+        // Get the value (index 1)
+        var val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const inner_ptr = self.builder.buildGEP(value_type, val_alloca, &val_indices, "unwrap.val.ptr");
+        const inner_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 1);
+
+        const ok_block = llvm.appendBasicBlock(self.ctx, func, "unwrap.ok");
+        const fail_block = llvm.appendBasicBlock(self.ctx, func, "unwrap.fail");
+
+        // Branch based on tag
+        _ = self.builder.buildCondBr(tag, ok_block, fail_block);
+
+        // Fail block: trap
+        self.builder.positionAtEnd(fail_block);
+        _ = self.builder.buildUnreachable();
+
+        // Ok block: return value
+        self.builder.positionAtEnd(ok_block);
+        return self.builder.buildLoad(inner_type, inner_ptr, "unwrap.val");
+    }
+
+    /// Emit Result.unwrap_err() - traps if Ok, returns error value if Err.
+    fn emitResultUnwrapErr(self: *Emitter, result_val: llvm.ValueRef, result_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store to temp for GEP access
+        const result_alloca = self.builder.buildAlloca(result_type, "unwrap_err.tmp");
+        _ = self.builder.buildStore(result_val, result_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(result_type, result_alloca, &tag_indices, "unwrap_err.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "unwrap_err.tag");
+
+        // Get the error value (index 2 for Result)
+        var err_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 2),
+        };
+        const err_ptr = self.builder.buildGEP(result_type, result_alloca, &err_indices, "unwrap_err.err.ptr");
+        const err_type = llvm.c.LLVMStructGetTypeAtIndex(result_type, 2);
+
+        const err_block = llvm.appendBasicBlock(self.ctx, func, "unwrap_err.err");
+        const fail_block = llvm.appendBasicBlock(self.ctx, func, "unwrap_err.fail");
+
+        // Branch based on tag: tag==0 means Err, tag==1 means Ok
+        _ = self.builder.buildCondBr(tag, fail_block, err_block);
+
+        // Fail block (Ok case): trap
+        self.builder.positionAtEnd(fail_block);
+        _ = self.builder.buildUnreachable();
+
+        // Err block: return error value
+        self.builder.positionAtEnd(err_block);
+        return self.builder.buildLoad(err_type, err_ptr, "unwrap_err.val");
     }
 
     fn getOrDeclareFprintf(self: *Emitter) llvm.ValueRef {

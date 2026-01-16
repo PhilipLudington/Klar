@@ -288,6 +288,35 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
+
+        // Ok(value: T) -> Result[T, E] - Result constructor for success values
+        // For now, use i32 -> Result[i32, i32] as a simple type
+        // Full generic support would infer T from the argument
+        const ok_type = try self.type_builder.functionType(
+            &.{self.type_builder.i32Type()},
+            try self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.i32Type()),
+        );
+        try self.current_scope.define(.{
+            .name = "Ok",
+            .type_ = ok_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // Err(error: E) -> Result[T, E] - Result constructor for error values
+        // For now, use i32 -> Result[i32, i32] as a simple type
+        const err_type = try self.type_builder.functionType(
+            &.{self.type_builder.i32Type()},
+            try self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.i32Type()),
+        );
+        try self.current_scope.define(.{
+            .name = "Err",
+            .type_ = err_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
     }
 
     // ========================================================================
@@ -912,6 +941,80 @@ pub const TypeChecker = struct {
                 std.mem.eql(u8, method.method_name, "expect"))
             {
                 return object_type.optional.*;
+            }
+        }
+
+        // Result methods
+        if (object_type == .result) {
+            const result_type = object_type.result;
+
+            // is_ok() -> bool
+            if (std.mem.eql(u8, method.method_name, "is_ok")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "is_ok() takes no arguments", .{});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // is_err() -> bool
+            if (std.mem.eql(u8, method.method_name, "is_err")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "is_err() takes no arguments", .{});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // unwrap() -> T (panics on Err)
+            if (std.mem.eql(u8, method.method_name, "unwrap")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "unwrap() takes no arguments", .{});
+                }
+                return result_type.ok_type;
+            }
+
+            // unwrap_err() -> E (panics on Ok)
+            if (std.mem.eql(u8, method.method_name, "unwrap_err")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "unwrap_err() takes no arguments", .{});
+                }
+                return result_type.err_type;
+            }
+
+            // unwrap_or(default) -> T
+            if (std.mem.eql(u8, method.method_name, "unwrap_or")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "unwrap_or() takes exactly 1 argument", .{});
+                } else {
+                    const arg_type = self.checkExpr(method.args[0]);
+                    if (!arg_type.eql(result_type.ok_type)) {
+                        self.addError(.type_mismatch, method.span, "unwrap_or argument must match Ok type", .{});
+                    }
+                }
+                return result_type.ok_type;
+            }
+
+            // expect(msg) -> T (panics with message on Err)
+            if (std.mem.eql(u8, method.method_name, "expect")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "expect() takes exactly 1 argument", .{});
+                }
+                return result_type.ok_type;
+            }
+
+            // ok() -> ?T (converts to Optional)
+            if (std.mem.eql(u8, method.method_name, "ok")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "ok() takes no arguments", .{});
+                }
+                return self.type_builder.optionalType(result_type.ok_type) catch self.type_builder.unknownType();
+            }
+
+            // err() -> ?E (converts to Optional)
+            if (std.mem.eql(u8, method.method_name, "err")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "err() takes no arguments", .{});
+                }
+                return self.type_builder.optionalType(result_type.err_type) catch self.type_builder.unknownType();
             }
         }
 

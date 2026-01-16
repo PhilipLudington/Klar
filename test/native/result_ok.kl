@@ -1,0 +1,8 @@
+// test_result_ok.kl - Test Result type with Ok value
+// Tests: Ok(value) constructor and force unwrap with !
+// Expected exit code: 42
+
+fn main() -> i32 {
+    let result = Ok(42)
+    result!  // Force unwrap - should return 42
+}

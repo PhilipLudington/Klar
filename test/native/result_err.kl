@@ -1,0 +1,12 @@
+// test_result_err.kl - Test Result type with Err value
+// Tests: Err(error) constructor and is_err() method
+// Expected exit code: 1 (is_err returns true as i1, which is 1)
+
+fn main() -> i32 {
+    let result = Err(99)
+    if result.is_err() {
+        1
+    } else {
+        0
+    }
+}

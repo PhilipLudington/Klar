@@ -1,0 +1,8 @@
+// test_result_unwrap_ok.kl - Test Result.unwrap() method with Ok
+// Tests: unwrap() returns the value for Ok
+// Expected exit code: 42
+
+fn main() -> i32 {
+    let result = Ok(42)
+    result.unwrap()
+}
