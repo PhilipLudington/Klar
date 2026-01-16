@@ -760,10 +760,16 @@ pub const VM = struct {
                 // -------------------------------------------------------------
                 // Type operations
                 // -------------------------------------------------------------
-                .op_cast_as, .op_cast_to, .op_cast_trunc => {
+                .op_cast => {
                     const target_tag: TypeTag = @enumFromInt(self.readByte());
                     const value = try self.pop();
-                    const result = try self.castValue(value, target_tag, op);
+                    const result = try self.castValue(value, target_tag, false);
+                    try self.push(result);
+                },
+                .op_cast_trunc => {
+                    const target_tag: TypeTag = @enumFromInt(self.readByte());
+                    const value = try self.pop();
+                    const result = try self.castValue(value, target_tag, true);
                     try self.push(result);
                 },
                 .op_type_of => {
@@ -1232,9 +1238,9 @@ pub const VM = struct {
     // Type casting
     // -------------------------------------------------------------------------
 
-    fn castValue(self: *VM, value: Value, target: TypeTag, op: OpCode) !Value {
+    fn castValue(self: *VM, value: Value, target: TypeTag, truncating: bool) !Value {
         _ = self;
-        _ = op;
+        _ = truncating; // VM uses i128 for all ints, so truncation semantics are handled at native level
 
         switch (target) {
             .i8_, .i16_, .i32_, .i64_, .i128_, .isize_, .u8_, .u16_, .u32_, .u64_, .u128_, .usize_ => {

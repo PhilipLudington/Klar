@@ -201,7 +201,7 @@ fn formatOperand1(op: OpCode, operand: u8, buf: []u8) []const u8 {
         .op_call, .op_tail_call => std.fmt.bufPrint(buf, "args {d}", .{operand}) catch "args ?",
         .op_tuple => std.fmt.bufPrint(buf, "elements {d}", .{operand}) catch "elements ?",
         .op_string_build => std.fmt.bufPrint(buf, "parts {d}", .{operand}) catch "parts ?",
-        .op_cast_as, .op_cast_to, .op_cast_trunc => blk: {
+        .op_cast, .op_cast_trunc => blk: {
             const type_tag: bytecode.TypeTag = @enumFromInt(operand);
             break :blk std.fmt.bufPrint(buf, "-> {s}", .{@tagName(type_tag)}) catch "-> ?";
         },

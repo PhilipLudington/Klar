@@ -956,13 +956,26 @@ pub const Emitter = struct {
             return self.emitNullCoalesce(bin);
         }
 
-        const lhs = try self.emitExpr(bin.left);
-        const rhs = try self.emitExpr(bin.right);
+        var lhs = try self.emitExpr(bin.left);
+        var rhs = try self.emitExpr(bin.right);
 
-        // Check if operands are floating-point
+        // Check if either operand is floating-point
         const lhs_ty = llvm.typeOf(lhs);
-        const is_float = llvm.getTypeKind(lhs_ty) == llvm.c.LLVMFloatTypeKind or
+        const rhs_ty = llvm.typeOf(rhs);
+        const lhs_is_float = llvm.getTypeKind(lhs_ty) == llvm.c.LLVMFloatTypeKind or
             llvm.getTypeKind(lhs_ty) == llvm.c.LLVMDoubleTypeKind;
+        const rhs_is_float = llvm.getTypeKind(rhs_ty) == llvm.c.LLVMFloatTypeKind or
+            llvm.getTypeKind(rhs_ty) == llvm.c.LLVMDoubleTypeKind;
+        const is_float = lhs_is_float or rhs_is_float;
+
+        // If mixed types, promote integer to float
+        if (is_float and !lhs_is_float) {
+            // lhs is int, rhs is float - convert lhs to float
+            lhs = self.builder.buildSIToFP(lhs, rhs_ty, "promote_lhs");
+        } else if (is_float and !rhs_is_float) {
+            // lhs is float, rhs is int - convert rhs to float
+            rhs = self.builder.buildSIToFP(rhs, lhs_ty, "promote_rhs");
+        }
 
         return switch (bin.op) {
             // Standard arithmetic (with overflow checking for integers)
@@ -1188,6 +1201,11 @@ pub const Emitter = struct {
         return switch (un.op) {
             .negate => {
                 const operand = try self.emitExpr(un.operand);
+                const op_ty = llvm.typeOf(operand);
+                const type_kind = llvm.getTypeKind(op_ty);
+                if (type_kind == llvm.c.LLVMFloatTypeKind or type_kind == llvm.c.LLVMDoubleTypeKind) {
+                    return self.builder.buildFNeg(operand, "fnegtmp");
+                }
                 return self.builder.buildNeg(operand, "negtmp");
             },
             .not => {
@@ -1814,7 +1832,16 @@ pub const Emitter = struct {
                         return llvm.Types.int1(self.ctx);
                     },
                     else => {
-                        return try self.inferExprType(bin.left);
+                        // For arithmetic, check both sides - if either is float, result is float
+                        const left_ty = try self.inferExprType(bin.left);
+                        const right_ty = try self.inferExprType(bin.right);
+                        const left_kind = llvm.getTypeKind(left_ty);
+                        const right_kind = llvm.getTypeKind(right_ty);
+                        const left_is_float = left_kind == llvm.c.LLVMFloatTypeKind or left_kind == llvm.c.LLVMDoubleTypeKind;
+                        const right_is_float = right_kind == llvm.c.LLVMFloatTypeKind or right_kind == llvm.c.LLVMDoubleTypeKind;
+                        if (left_is_float) return left_ty;
+                        if (right_is_float) return right_ty;
+                        return left_ty;
                     },
                 }
             },
@@ -1985,6 +2012,13 @@ pub const Emitter = struct {
                         return llvm.Types.pointer(self.ctx);
                     },
                 };
+            },
+            .type_cast => |tc| {
+                // Return the target type of the cast
+                return self.getTypeByName(switch (tc.target_type) {
+                    .named => |n| n.name,
+                    else => return llvm.Types.int32(self.ctx),
+                }) orelse llvm.Types.int32(self.ctx);
             },
             else => llvm.Types.int32(self.ctx),
         };

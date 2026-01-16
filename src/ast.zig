@@ -327,15 +327,9 @@ pub const TupleLiteral = struct {
 
 pub const TypeCast = struct {
     expr: Expr,
-    cast_kind: CastKind,
     target_type: TypeExpr,
+    truncating: bool, // true for .trunc[], false for .as[]
     span: Span,
-};
-
-pub const CastKind = enum {
-    as, // safe widening
-    to, // checked narrowing
-    trunc, // truncating
 };
 
 pub const Grouped = struct {

@@ -1519,27 +1519,18 @@ pub const TypeChecker = struct {
         const expr_type = self.checkExpr(cast.expr);
         const target_type = self.resolveTypeExpr(cast.target_type) catch return self.type_builder.unknownType();
 
-        switch (cast.cast_kind) {
-            .as => {
-                // Safe widening conversion
-                if (expr_type == .primitive and target_type == .primitive) {
-                    if (!expr_type.primitive.canWidenTo(target_type.primitive)) {
-                        self.addError(.invalid_conversion, cast.span, "'.as' requires widening conversion", .{});
-                    }
-                }
-            },
-            .to => {
-                // Checked narrowing conversion (may trap)
-                if (!expr_type.isNumeric() or !target_type.isNumeric()) {
-                    self.addError(.invalid_conversion, cast.span, "'.to' requires numeric types", .{});
-                }
-            },
-            .trunc => {
-                // Truncating conversion (no trap)
-                if (!expr_type.isInteger() or !target_type.isInteger()) {
-                    self.addError(.invalid_conversion, cast.span, "'.trunc' requires integer types", .{});
-                }
-            },
+        // Validate the cast is between compatible types (numeric to numeric, etc.)
+        const expr_numeric = expr_type.isNumeric();
+        const target_numeric = target_type.isNumeric();
+
+        if (expr_numeric and target_numeric) {
+            // Numeric conversions are always allowed with .as[]
+        } else if (expr_type == .primitive and target_type == .primitive) {
+            // Other primitive-to-primitive conversions
+        } else if (expr_type == .unknown or target_type == .unknown) {
+            // Allow casts involving unknown types (error already reported)
+        } else {
+            self.addError(.invalid_conversion, cast.span, "invalid type cast", .{});
         }
 
         return target_type;

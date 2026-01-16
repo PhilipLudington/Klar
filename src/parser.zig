@@ -964,14 +964,14 @@ pub const Parser = struct {
     fn parseFieldOrMethod(self: *Parser, object: ast.Expr) ParseError!ast.Expr {
         self.advance(); // consume '.'
 
-        // Check for type cast methods: .as[T], .to[T], .trunc[T]
+        // Check for type cast: .as[T] or .trunc[T]
         if (self.check(.as) or self.tokenText(self.current).len > 0) {
             const method_name = self.tokenText(self.current);
-            if (std.mem.eql(u8, method_name, "as") or
-                std.mem.eql(u8, method_name, "to") or
-                std.mem.eql(u8, method_name, "trunc"))
-            {
-                return self.parseTypeCast(object, method_name);
+            if (std.mem.eql(u8, method_name, "as")) {
+                return self.parseTypeCast(object, false);
+            }
+            if (std.mem.eql(u8, method_name, "trunc")) {
+                return self.parseTypeCast(object, true);
             }
         }
 
@@ -1006,26 +1006,19 @@ pub const Parser = struct {
         return .{ .field = field };
     }
 
-    fn parseTypeCast(self: *Parser, object: ast.Expr, method_name: []const u8) ParseError!ast.Expr {
-        self.advance(); // consume 'as'/'to'/'trunc'
+    fn parseTypeCast(self: *Parser, object: ast.Expr, truncating: bool) ParseError!ast.Expr {
+        self.advance(); // consume 'as' or 'trunc'
 
-        try self.consume(.l_bracket, "expected '[' after cast method");
+        try self.consume(.l_bracket, "expected '[' after cast");
         const target_type = try self.parseType();
         try self.consume(.r_bracket, "expected ']' after type");
 
         const end_span = self.spanFromToken(self.previous);
 
-        const cast_kind: ast.CastKind = if (std.mem.eql(u8, method_name, "as"))
-            .as
-        else if (std.mem.eql(u8, method_name, "to"))
-            .to
-        else
-            .trunc;
-
         const type_cast = try self.create(ast.TypeCast, .{
             .expr = object,
-            .cast_kind = cast_kind,
             .target_type = target_type,
+            .truncating = truncating,
             .span = ast.Span.merge(object.span(), end_span),
         });
         return .{ .type_cast = type_cast };

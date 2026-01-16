@@ -453,8 +453,8 @@ pub const Compiler = struct {
         // Jump out if false.
         const exit_jump = try self.emitJump(.op_jump_if_false, line);
 
-        // Compile body.
-        try self.compileBlock(w.body);
+        // Compile body (no value produced by loop body).
+        try self.compileBlockStatements(w.body);
 
         // Loop back to condition.
         try self.emitLoop(loop_start, line);
@@ -499,8 +499,8 @@ pub const Compiler = struct {
         // Bind the loop variable.
         try self.compilePattern(f.pattern, line);
 
-        // Compile body.
-        try self.compileBlock(f.body);
+        // Compile body (no value produced by loop body).
+        try self.compileBlockStatements(f.body);
 
         // Loop back.
         try self.emitLoop(loop_start, line);
@@ -528,8 +528,8 @@ pub const Compiler = struct {
         self.current.loop_starts[self.current.loop_depth] = loop_start;
         self.current.loop_depth += 1;
 
-        // Compile body.
-        try self.compileBlock(l.body);
+        // Compile body (no value produced by loop body).
+        try self.compileBlockStatements(l.body);
 
         // Loop back unconditionally.
         try self.emitLoop(loop_start, line);
@@ -571,6 +571,10 @@ pub const Compiler = struct {
 
         // Store to the target.
         try self.compileAssignmentTarget(a.target, line);
+
+        // Assignment statements don't produce a value, so pop the leftover.
+        // (op_set_local peeks rather than pops, leaving the value on stack)
+        try self.emitOp(.op_pop, line);
     }
 
     fn compileAssignmentTarget(self: *Compiler, target: ast.Expr, line: u32) Error!void {
@@ -1007,6 +1011,20 @@ pub const Compiler = struct {
         }
     }
 
+    /// Compile block statements without producing a value (for loop bodies).
+    fn compileBlockStatements(self: *Compiler, block: *ast.Block) Error!void {
+        // Compile all statements.
+        for (block.statements) |stmt| {
+            try self.compileStmt(stmt);
+        }
+
+        // If there's a final expression, compile it and discard the result.
+        if (block.final_expr) |final| {
+            try self.compileExpr(final);
+            try self.emitOp(.op_pop, block.span.line);
+        }
+    }
+
     fn compileClosure(self: *Compiler, closure: *ast.Closure) Error!void {
         const line = closure.span.line;
 
@@ -1139,13 +1157,8 @@ pub const Compiler = struct {
         // Determine target type tag.
         const type_tag = self.typeExprToTag(cast.target_type);
 
-        // Emit the appropriate cast instruction.
-        const op: OpCode = switch (cast.cast_kind) {
-            .as => .op_cast_as,
-            .to => .op_cast_to,
-            .trunc => .op_cast_trunc,
-        };
-
+        // Emit appropriate cast instruction.
+        const op: OpCode = if (cast.truncating) .op_cast_trunc else .op_cast;
         try self.emitOp1(op, @intFromEnum(type_tag), line);
     }
 

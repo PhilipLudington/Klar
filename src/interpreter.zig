@@ -1119,6 +1119,7 @@ pub const Interpreter = struct {
 
     fn evalTypeCast(self: *Interpreter, cast: *ast.TypeCast) RuntimeError!Value {
         const value = try self.evaluate(cast.expr);
+        const truncating = cast.truncating;
 
         // Get target type from type expression
         const target_type_name: []const u8 = switch (cast.target_type) {
@@ -1133,7 +1134,7 @@ pub const Interpreter = struct {
         // Handle integer conversions
         if (value == .int) {
             if (target_int_type) |int_type| {
-                return self.convertInteger(value.int, int_type, cast.cast_kind);
+                return self.convertInteger(value.int, int_type, truncating);
             }
             if (target_float_type) |float_type| {
                 // Integer to float conversion
@@ -1154,7 +1155,7 @@ pub const Interpreter = struct {
             }
             if (target_int_type) |int_type| {
                 // Float to integer conversion
-                return self.convertFloatToInt(value.float.value, int_type, cast.cast_kind);
+                return self.convertFloatToInt(value.float.value, int_type, truncating);
             }
             if (std.mem.eql(u8, target_type_name, "string")) {
                 const str = values.valueToString(self.stringAllocator(), value) catch return RuntimeError.OutOfMemory;
@@ -1183,11 +1184,10 @@ pub const Interpreter = struct {
         // Handle integer to char
         if (value == .int and std.mem.eql(u8, target_type_name, "char")) {
             if (value.int.value < 0 or value.int.value > 0x10FFFF) {
-                return switch (cast.cast_kind) {
-                    .as => RuntimeError.InvalidCast,
-                    .to => RuntimeError.InvalidCast,
-                    .trunc => self.builder.char(@truncate(@as(u32, @intCast(@as(u128, @bitCast(value.int.value)) & 0x1FFFFF)))),
-                };
+                if (truncating) {
+                    return self.builder.char(@truncate(@as(u32, @intCast(@as(u128, @bitCast(value.int.value)) & 0x1FFFFF))));
+                }
+                return RuntimeError.InvalidCast;
             }
             return self.builder.char(@intCast(value.int.value));
         }
@@ -1220,40 +1220,26 @@ pub const Interpreter = struct {
         return null;
     }
 
-    fn convertInteger(self: *Interpreter, int_val: Integer, target_type: Integer.IntegerType, kind: ast.CastKind) RuntimeError!Value {
+    fn convertInteger(self: *Interpreter, int_val: Integer, target_type: Integer.IntegerType, truncating: bool) RuntimeError!Value {
         const val = int_val.value;
         const min = target_type.minValue();
         const max = target_type.maxValue();
 
-        return switch (kind) {
-            .as => {
-                // Safe widening - must fit
-                if (val >= min and val <= max) {
-                    return self.builder.int(val, target_type);
-                }
-                return RuntimeError.InvalidCast;
-            },
-            .to => {
-                // Checked narrowing - trap on overflow
-                if (val < min or val > max) {
-                    return RuntimeError.InvalidCast;
-                }
-                return self.builder.int(val, target_type);
-            },
-            .trunc => {
-                // Truncating - wrap the value to fit
-                if (val >= min and val <= max) {
-                    return self.builder.int(val, target_type);
-                }
-                // Wrap the value
-                const range = max - min + 1;
-                const wrapped = @mod(val - min, range) + min;
-                return self.builder.int(wrapped, target_type);
-            },
-        };
+        // Check if value fits
+        if (val >= min and val <= max) {
+            return self.builder.int(val, target_type);
+        }
+
+        // Value doesn't fit - truncate or error
+        if (truncating) {
+            const range = max - min + 1;
+            const wrapped = @mod(val - min, range) + min;
+            return self.builder.int(wrapped, target_type);
+        }
+        return RuntimeError.InvalidCast;
     }
 
-    fn convertFloatToInt(self: *Interpreter, float_val: f64, target_type: Integer.IntegerType, kind: ast.CastKind) RuntimeError!Value {
+    fn convertFloatToInt(self: *Interpreter, float_val: f64, target_type: Integer.IntegerType, truncating: bool) RuntimeError!Value {
         const min = target_type.minValue();
         const max = target_type.maxValue();
 
@@ -1264,31 +1250,18 @@ pub const Interpreter = struct {
 
         const int_val: i128 = @intFromFloat(@trunc(float_val));
 
-        return switch (kind) {
-            .as => {
-                // Safe conversion (should not be used float->int, but handle gracefully)
-                if (int_val >= min and int_val <= max) {
-                    return self.builder.int(int_val, target_type);
-                }
-                return RuntimeError.InvalidCast;
-            },
-            .to => {
-                // Checked narrowing
-                if (int_val < min or int_val > max) {
-                    return RuntimeError.InvalidCast;
-                }
-                return self.builder.int(int_val, target_type);
-            },
-            .trunc => {
-                // Truncating
-                if (int_val >= min and int_val <= max) {
-                    return self.builder.int(int_val, target_type);
-                }
-                const range = max - min + 1;
-                const wrapped = @mod(int_val - min, range) + min;
-                return self.builder.int(wrapped, target_type);
-            },
-        };
+        // Check if value fits
+        if (int_val >= min and int_val <= max) {
+            return self.builder.int(int_val, target_type);
+        }
+
+        // Value doesn't fit - truncate or error
+        if (truncating) {
+            const range = max - min + 1;
+            const wrapped = @mod(int_val - min, range) + min;
+            return self.builder.int(wrapped, target_type);
+        }
+        return RuntimeError.InvalidCast;
     }
 
     // ========================================================================

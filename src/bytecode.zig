@@ -286,15 +286,11 @@ pub const OpCode = enum(u8) {
     // Type Operations
     // ------------------------------------------------------------------------
 
-    /// Type cast (checked widening).
+    /// Type cast (checked) - converts value to target type, errors on overflow.
     /// Operand: u8 target type tag
-    op_cast_as,
+    op_cast,
 
-    /// Type cast (checked narrowing, may trap).
-    /// Operand: u8 target type tag
-    op_cast_to,
-
-    /// Type cast (truncating).
+    /// Type cast (truncating) - converts value to target type, wraps on overflow.
     /// Operand: u8 target type tag
     op_cast_trunc,
 
@@ -463,8 +459,7 @@ pub const OpCode = enum(u8) {
             .op_call,
             .op_tail_call,
             .op_tuple,
-            .op_cast_as,
-            .op_cast_to,
+            .op_cast,
             .op_cast_trunc,
             .op_string_build,
             => 1,
