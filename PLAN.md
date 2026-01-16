@@ -13,7 +13,7 @@
 - 252x speedup for native vs VM
 
 **Gaps to Address:**
-- Generic type checking implemented; codegen for monomorphized functions pending
+- Generic functions working (type checking + monomorphization + codegen); generic structs/enums codegen pending
 - Traits parsed but not semantically checked
 - Single-file compilation only
 - No standard library beyond builtins (print, panic, assert)
@@ -23,6 +23,8 @@
 ## Milestone 1: Generic Type Checking
 
 **Objective:** Implement full generic type checking with monomorphization.
+
+**Status:** Generic functions complete (type checking, monomorphization, codegen). Generic structs/enums pending.
 
 ### Type Parameter Tracking
 - [x] Add TypeParam scope tracking in checker.zig
@@ -42,7 +44,7 @@
 - [x] Record monomorphized function instances (e.g., identity$i32)
 - [x] Cache monomorphized instances to avoid duplication
 - [x] Mangle names for uniqueness (e.g., `swap$i32` or `swap_i32`)
-- [ ] Generate monomorphized functions in codegen (emit.zig)
+- [x] Generate monomorphized functions in codegen (emit.zig)
 
 ### Generic Structs
 - [x] Support generic struct definitions: `struct Pair[A, B] { first: A, second: B }`
@@ -67,10 +69,12 @@
 - [ ] Test: no code bloat from unused instantiations
 - [x] Test: type inference selects correct instantiation
 
-**Files to Modify:**
-- `src/checker.zig` - Add generic type checking, monomorphization
-- `src/types.zig` - Enhance TypeVar, AppliedType handling
-- `src/codegen/emit.zig` - Emit monomorphized functions
+**Files Modified:**
+- `src/checker.zig` - Generic type checking, monomorphization recording, call resolution ✓
+- `src/types.zig` - TypeVar handling ✓
+- `src/codegen/emit.zig` - Monomorphized function emission ✓
+- `src/main.zig` - Integration of type checker with emitter ✓
+- `tests/native/generics_basic.kl` - Generic function test ✓
 
 ---
 

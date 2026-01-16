@@ -1,0 +1,18 @@
+// Test basic generic function monomorphization
+
+// Generic identity function
+fn identity[T](x: T) -> T {
+    x
+}
+
+fn main() {
+    // Test identity with i32
+    let x = identity(42)
+    assert_eq(x, 42)
+
+    // Test identity with i32 a second time (should use same monomorphization)
+    let y = identity(100)
+    assert_eq(y, 100)
+
+    println("Generics test passed!")
+}

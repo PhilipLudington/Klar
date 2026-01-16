@@ -191,6 +191,11 @@ pub const TypeChecker = struct {
     /// Cache of monomorphized function instances.
     /// Maps (function_name, type_args hash) to MonomorphizedFunction info.
     monomorphized_functions: std.ArrayListUnmanaged(MonomorphizedFunction),
+    /// Storage for generic function declarations (needed for codegen monomorphization).
+    generic_functions: std.StringHashMapUnmanaged(*ast.FunctionDecl),
+    /// Maps call expression pointers to resolved mangled function names.
+    /// Used by codegen to emit calls to monomorphized functions.
+    call_resolutions: std.AutoHashMapUnmanaged(*ast.Call, []const u8),
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -206,6 +211,8 @@ pub const TypeChecker = struct {
         type_args: []const Type,
         /// The concrete function type after substitution
         concrete_type: Type,
+        /// Reference to the original generic function declaration (for codegen)
+        original_decl: *ast.FunctionDecl,
     };
 
     pub fn init(allocator: Allocator) TypeChecker {
@@ -225,6 +232,8 @@ pub const TypeChecker = struct {
             .closure_captures = .{},
             .type_param_scopes = .{},
             .monomorphized_functions = .{},
+            .generic_functions = .{},
+            .call_resolutions = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -243,6 +252,8 @@ pub const TypeChecker = struct {
         }
         self.type_param_scopes.deinit(self.allocator);
         self.monomorphized_functions.deinit(self.allocator);
+        self.generic_functions.deinit(self.allocator);
+        self.call_resolutions.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -562,6 +573,12 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Look up the original generic function declaration
+        const original_decl = self.generic_functions.get(func_name) orelse {
+            // This shouldn't happen for valid generic function calls
+            return error.OutOfMemory; // Function not found in generic registry
+        };
+
         // Create new entry
         const mangled_name = try self.mangleFunctionName(func_name, type_args);
         const type_args_copy = try self.allocator.dupe(Type, type_args);
@@ -571,6 +588,7 @@ pub const TypeChecker = struct {
             .mangled_name = mangled_name,
             .type_args = type_args_copy,
             .concrete_type = concrete_type,
+            .original_decl = original_decl,
         });
 
         return mangled_name;
@@ -579,6 +597,12 @@ pub const TypeChecker = struct {
     /// Get all monomorphized function instances.
     pub fn getMonomorphizedFunctions(self: *const TypeChecker) []const MonomorphizedFunction {
         return self.monomorphized_functions.items;
+    }
+
+    /// Get the resolved mangled name for a call expression, if it's a generic call.
+    /// Returns null if the call is not to a generic function.
+    pub fn getCallResolution(self: *const TypeChecker, call: *ast.Call) ?[]const u8 {
+        return self.call_resolutions.get(call);
     }
 
     /// Substitute type variables in a type using the given mapping.
@@ -1341,12 +1365,17 @@ pub const TypeChecker = struct {
                         return concrete_return;
                     };
 
-                    // Record this monomorphization
-                    _ = self.recordMonomorphization(
+                    // Record this monomorphization and get the mangled name
+                    const mangled_name = self.recordMonomorphization(
                         func_name,
                         type_args.items,
                         concrete_func_type,
-                    ) catch {};
+                    ) catch {
+                        return concrete_return;
+                    };
+
+                    // Store the call resolution for codegen
+                    self.call_resolutions.put(self.allocator, call, mangled_name) catch {};
                 }
 
                 return concrete_return;
@@ -2674,6 +2703,8 @@ pub const TypeChecker = struct {
                     const has_type_params = f.type_params.len > 0;
                     if (has_type_params) {
                         _ = self.pushTypeParams(f.type_params) catch continue;
+                        // Store generic function declarations for later codegen monomorphization
+                        self.generic_functions.put(self.allocator, f.name, f) catch {};
                     }
                     defer if (has_type_params) self.popTypeParams();
 

@@ -7,6 +7,8 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
+const checker_mod = @import("../checker.zig");
+const TypeChecker = checker_mod.TypeChecker;
 const llvm = @import("llvm.zig");
 const target = @import("target.zig");
 const layout = @import("layout.zig");
@@ -75,6 +77,9 @@ pub const Emitter = struct {
     di_file: ?llvm.MetadataRef,
     /// Current scope for debug locations.
     di_scope: ?llvm.MetadataRef,
+
+    /// Reference to type checker for call resolution (generic functions).
+    type_checker: ?*const TypeChecker,
 
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
 
@@ -177,6 +182,7 @@ pub const Emitter = struct {
             .di_compile_unit = null,
             .di_file = null,
             .di_scope = null,
+            .type_checker = null,
         };
     }
 
@@ -216,6 +222,12 @@ pub const Emitter = struct {
         if (self.di_builder) |di_builder| {
             di_builder.finalize();
         }
+    }
+
+    /// Set the type checker reference for call resolution.
+    /// Must be called before emitModule if you want generic function calls to be resolved.
+    pub fn setTypeChecker(self: *Emitter, checker: *const TypeChecker) void {
+        self.type_checker = checker;
     }
 
     pub fn deinit(self: *Emitter) void {
@@ -292,6 +304,11 @@ pub const Emitter = struct {
     }
 
     fn declareFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
+        // Skip generic functions - they are handled via monomorphization
+        if (func.type_params.len > 0) {
+            return;
+        }
+
         // Build parameter types
         var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
         defer param_types.deinit(self.allocator);
@@ -317,6 +334,11 @@ pub const Emitter = struct {
     }
 
     fn emitFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
+        // Skip generic functions - they are handled via monomorphization
+        if (func.type_params.len > 0) {
+            return;
+        }
+
         const name = self.allocator.dupeZ(u8, func.name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
 
@@ -1526,6 +1548,29 @@ pub const Emitter = struct {
             } else if (std.mem.eql(u8, name, "Err")) {
                 // Result::Err(error) constructor
                 return self.emitErrCall(call.args);
+            }
+        }
+
+        // Check if this is a monomorphized generic function call
+        if (self.type_checker) |checker| {
+            if (checker.getCallResolution(call)) |mangled_name| {
+                const mangled_z = self.allocator.dupeZ(u8, mangled_name) catch return EmitError.OutOfMemory;
+                defer self.allocator.free(mangled_z);
+
+                if (self.module.getNamedFunction(mangled_z)) |func| {
+                    // Call the monomorphized function
+                    var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                    defer args.deinit(self.allocator);
+
+                    for (call.args) |arg| {
+                        args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                    }
+
+                    const fn_type = llvm.getGlobalValueType(func);
+                    const return_type = llvm.getReturnType(fn_type);
+                    const call_name_str: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
+                    return self.builder.buildCall(fn_type, func, args.items, call_name_str);
+                }
             }
         }
 
@@ -5023,5 +5068,245 @@ pub const Emitter = struct {
             .is_rc = is_rc,
             .is_arc = is_arc,
         }) catch return EmitError.OutOfMemory;
+    }
+
+    // =========================================================================
+    // Type Conversion from Checker Types
+    // =========================================================================
+
+    /// Convert a checker Type to an LLVM type.
+    /// Used for monomorphization when we have concrete types from type inference.
+    fn typeToLLVM(self: *Emitter, ty: types.Type) llvm.TypeRef {
+        return switch (ty) {
+            .primitive => |prim| switch (prim) {
+                .i8_, .u8_ => llvm.Types.int8(self.ctx),
+                .i16_, .u16_ => llvm.Types.int16(self.ctx),
+                .i32_, .u32_ => llvm.Types.int32(self.ctx),
+                .i64_, .u64_, .isize_, .usize_ => llvm.Types.int64(self.ctx),
+                .i128_, .u128_ => llvm.Types.int128(self.ctx),
+                .f32_ => llvm.Types.float32(self.ctx),
+                .f64_ => llvm.Types.float64(self.ctx),
+                .bool_ => llvm.Types.int1(self.ctx),
+                .char_ => llvm.Types.int32(self.ctx), // Unicode codepoint
+                .string_ => llvm.Types.pointer(self.ctx),
+            },
+            .void_ => llvm.Types.void_(self.ctx),
+            .never, .unknown, .error_type => llvm.Types.void_(self.ctx),
+            .array => |arr| {
+                const elem_ty = self.typeToLLVM(arr.element);
+                return llvm.Types.array(elem_ty, @intCast(arr.size));
+            },
+            .slice => {
+                // Slice is {ptr, len}
+                var fields = [_]llvm.TypeRef{
+                    llvm.Types.pointer(self.ctx),
+                    llvm.Types.int64(self.ctx),
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
+            .tuple => |tup| {
+                var elem_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+                defer elem_types.deinit(self.allocator);
+                for (tup.elements) |elem| {
+                    elem_types.append(self.allocator, self.typeToLLVM(elem)) catch {
+                        return llvm.Types.int32(self.ctx);
+                    };
+                }
+                return llvm.Types.struct_(self.ctx, elem_types.items, false);
+            },
+            .optional => |opt| {
+                // Optional is {tag: i1, value}, opt is *Type
+                const inner_ty = self.typeToLLVM(opt.*);
+                var fields = [_]llvm.TypeRef{
+                    llvm.Types.int1(self.ctx),
+                    inner_ty,
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
+            .result => |res| {
+                // Result is {tag: i1, ok_value, err_value}
+                const ok_ty = self.typeToLLVM(res.ok_type);
+                const err_ty = self.typeToLLVM(res.err_type);
+                var fields = [_]llvm.TypeRef{
+                    llvm.Types.int1(self.ctx),
+                    ok_ty,
+                    err_ty,
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
+            .function => {
+                // Function types use closure representation
+                return self.getClosureStructType();
+            },
+            .reference => llvm.Types.pointer(self.ctx),
+            .struct_, .enum_, .trait_, .type_var, .applied => {
+                // Complex types default to pointer
+                return llvm.Types.pointer(self.ctx);
+            },
+            .rc, .arc, .weak_rc, .weak_arc => {
+                // Reference-counted types are pointers
+                return llvm.Types.pointer(self.ctx);
+            },
+            .cell => llvm.Types.pointer(self.ctx),
+        };
+    }
+
+    /// Check if a checker Type is signed.
+    fn isCheckerTypeSigned(_: *Emitter, ty: types.Type) bool {
+        return switch (ty) {
+            .primitive => |prim| switch (prim) {
+                .u8_, .u16_, .u32_, .u64_, .u128_, .usize_ => false,
+                else => true,
+            },
+            else => true, // Default to signed
+        };
+    }
+
+    // =========================================================================
+    // Monomorphized Function Emission
+    // =========================================================================
+
+    /// Declare all monomorphized function signatures from the type checker.
+    /// Must be called BEFORE emitModule so that call sites can find the functions.
+    pub fn declareMonomorphizedFunctions(self: *Emitter, type_checker: *const TypeChecker) EmitError!void {
+        const monos = type_checker.getMonomorphizedFunctions();
+
+        for (monos) |mono| {
+            // Skip if this function has no body (extern declaration)
+            if (mono.original_decl.body == null) continue;
+
+            // Declare the monomorphized function with its mangled name
+            try self.declareMonomorphizedFunction(mono);
+        }
+    }
+
+    /// Emit all monomorphized function bodies from the type checker.
+    /// Must be called AFTER emitModule (or at least after declarations are done).
+    pub fn emitMonomorphizedFunctions(self: *Emitter, type_checker: *const TypeChecker) EmitError!void {
+        const monos = type_checker.getMonomorphizedFunctions();
+
+        for (monos) |mono| {
+            // Skip if this function has no body (extern declaration)
+            if (mono.original_decl.body == null) continue;
+
+            // Emit the function body
+            try self.emitMonomorphizedFunction(mono);
+        }
+    }
+
+    /// Declare a monomorphized function without emitting its body.
+    fn declareMonomorphizedFunction(self: *Emitter, mono: TypeChecker.MonomorphizedFunction) EmitError!void {
+        const func_type = mono.concrete_type.function;
+
+        // Build parameter types from the concrete function type
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer param_types.deinit(self.allocator);
+
+        for (func_type.params) |param_ty| {
+            const llvm_param_ty = self.typeToLLVM(param_ty);
+            param_types.append(self.allocator, llvm_param_ty) catch return EmitError.OutOfMemory;
+        }
+
+        // Get return type
+        const return_type = self.typeToLLVM(func_type.return_type);
+
+        // Create LLVM function type
+        const fn_type = llvm.Types.function(return_type, param_types.items, false);
+
+        // Create function with mangled name
+        const mangled_name = self.allocator.dupeZ(u8, mono.mangled_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(mangled_name);
+
+        const llvm_func = llvm.addFunction(self.module, mangled_name, fn_type);
+
+        // Set the calling convention
+        llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
+    }
+
+    /// Emit a monomorphized function body.
+    fn emitMonomorphizedFunction(self: *Emitter, mono: TypeChecker.MonomorphizedFunction) EmitError!void {
+        const func = mono.original_decl;
+        const func_type = mono.concrete_type.function;
+
+        // Get the declared function
+        const mangled_name = self.allocator.dupeZ(u8, mono.mangled_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(mangled_name);
+
+        const function = self.module.getNamedFunction(mangled_name) orelse return EmitError.InvalidAST;
+        self.current_function = function;
+
+        // Set up return type info
+        const return_llvm_type = self.typeToLLVM(func_type.return_type);
+        const is_optional = func_type.return_type == .optional;
+        self.current_return_type = .{
+            .llvm_type = return_llvm_type,
+            .is_optional = is_optional,
+            .inner_type = if (is_optional) self.typeToLLVM(func_type.return_type.optional.*) else null,
+        };
+        defer self.current_return_type = null;
+
+        // Create entry block
+        const entry = llvm.appendBasicBlock(self.ctx, function, "entry");
+        self.builder.positionAtEnd(entry);
+        self.has_terminator = false;
+
+        // Clear named values
+        self.named_values.clearRetainingCapacity();
+
+        // Add parameters to named values with concrete types
+        for (func.params, 0..) |param, i| {
+            const param_value = llvm.getParam(function, @intCast(i));
+            const param_ty = self.typeToLLVM(func_type.params[i]);
+
+            const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
+            defer self.allocator.free(param_name);
+
+            const alloca = self.builder.buildAlloca(param_ty, param_name);
+            _ = self.builder.buildStore(param_value, alloca);
+
+            const is_signed = self.isCheckerTypeSigned(func_type.params[i]);
+            self.named_values.put(param.name, .{
+                .value = alloca,
+                .is_alloca = true,
+                .ty = param_ty,
+                .is_signed = is_signed,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // Emit function body
+        if (func.body) |body| {
+            try self.pushScope(false);
+
+            const result = try self.emitBlock(body);
+
+            // Handle return
+            if (!self.has_terminator) {
+                if (func.return_type == null) {
+                    self.emitDropsForReturn();
+                    _ = self.builder.buildRetVoid();
+                } else if (result) |val| {
+                    if (self.current_return_type) |rt_info| {
+                        if (rt_info.is_optional) {
+                            self.emitDropsForReturn();
+                            const wrapped = self.emitSome(val, rt_info.inner_type.?);
+                            _ = self.builder.buildRet(wrapped);
+                        } else {
+                            self.emitDropsForReturn();
+                            _ = self.builder.buildRet(val);
+                        }
+                    } else {
+                        self.emitDropsForReturn();
+                        _ = self.builder.buildRet(val);
+                    }
+                } else {
+                    self.emitDropsForReturn();
+                    _ = self.builder.buildRetVoid();
+                }
+            }
+
+            self.popScope();
+        }
+
+        self.current_function = null;
     }
 };
