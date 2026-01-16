@@ -1,0 +1,39 @@
+// Benchmark: Bubble Sort Simulation
+// Simulates sorting operations using recursion
+// Tests function call overhead and comparisons
+
+fn compare_and_count(a: i32, b: i32) -> i32 {
+    if a > b {
+        1
+    } else {
+        0
+    }
+}
+
+fn bubble_pass(n: i32, swaps: i32) -> i32 {
+    // Simulate n comparisons, counting how many would swap
+    if n <= 0 {
+        swaps
+    } else {
+        // Simulate comparing elements (using n as pseudo-random data)
+        let swap = compare_and_count(n * 7 - 1, (n - 1) * 7 - 1)
+        bubble_pass(n - 1, swaps + swap)
+    }
+}
+
+fn bubble_sort_iterations(iterations: i32, total_swaps: i32) -> i32 {
+    if iterations <= 0 {
+        total_swaps
+    } else {
+        let swaps = bubble_pass(100, 0)
+        bubble_sort_iterations(iterations - 1, total_swaps + swaps)
+    }
+}
+
+fn main() -> i32 {
+    // Run 50 iterations of bubble sort simulation
+    // Each pass processes 100 elements
+    let result = bubble_sort_iterations(50, 0)
+    // Return result mod 256
+    result - (result / 256) * 256
+}

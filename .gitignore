@@ -14,6 +14,7 @@ test_io
 .build-results.json
 .test-results.json
 .native-test-results.json
+.benchmark-results.json
 
 # Compiled native test binaries
 test/native/*

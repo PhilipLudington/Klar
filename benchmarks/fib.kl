@@ -1,0 +1,17 @@
+// Benchmark: Recursive Fibonacci
+// Calculates fib(35) = 9227465
+// This is a classic benchmark for function call overhead and recursion
+
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn main() -> i32 {
+    let result = fib(35)
+    // Return result mod 256 as exit code
+    result - (result / 256) * 256
+}

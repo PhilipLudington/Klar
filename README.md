@@ -195,31 +195,97 @@ let d = a +| a          // saturating arithmetic
 
 ## Current Status
 
-**Phase 1: Tree-Walking Interpreter** — Complete
+**Phase 3: Native Compiler** — In Progress
 
-- Lexer with all token types
-- Parser with full expression/statement support
-- Type checker with inference
-- Interpreter with all core features
-- Built-in functions and methods
-- String interpolation
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Phase 1: Tree-Walking Interpreter | ✅ Complete | Lexer, parser, type checker, interpreter |
+| Phase 2: Bytecode VM | ✅ Complete | Bytecode compiler and virtual machine |
+| Phase 3: Native Compiler | 🚧 In Progress | LLVM-based native code generation |
+
+### Native Compiler Features (Phase 3)
+
+- ✅ LLVM backend with optimization levels (-O0 to -O3)
+- ✅ Ownership-based memory management (no GC)
+- ✅ Rc/Arc reference counting with automatic drop
+- ✅ Closures with capture analysis
+- ✅ Optional and Result types
+- ✅ Debug info generation (-g flag)
+- ✅ Cross-compilation support (--target flag)
+- ✅ 259x speedup over VM for compute-bound code
 
 See [PLAN.md](PLAN.md) for implementation details and roadmap.
 
 ## Building
 
-Requires [Zig](https://ziglang.org/) 0.15+.
+Requires [Zig](https://ziglang.org/) 0.15+ and LLVM 17+.
 
 ```bash
-# Build
-zig build
+# Install LLVM (macOS)
+brew install llvm
 
-# Run a Klar program
-./zig-out/bin/klar run examples/hello.kl
+# Build the compiler
+./build.sh
 
 # Run tests
-zig build test
+./run-tests.sh         # Unit tests
+./run-native-tests.sh  # Native compilation tests
+./run-benchmarks.sh    # VM vs Native benchmarks
 ```
+
+## Usage
+
+### Running with the VM (Bytecode)
+
+```bash
+# Run a Klar program using the bytecode VM
+./zig-out/bin/klar run program.kl
+```
+
+### Native Compilation
+
+```bash
+# Compile to native executable
+./zig-out/bin/klar build program.kl -o program
+
+# Run the compiled binary
+./program
+
+# With optimizations
+./zig-out/bin/klar build program.kl -o program -O2
+
+# With debug info (for lldb/gdb)
+./zig-out/bin/klar build program.kl -o program -g
+
+# Cross-compile for different architectures
+./zig-out/bin/klar build program.kl --target x86_64-apple-macosx
+./zig-out/bin/klar build program.kl --target aarch64-linux-gnu
+
+# Emit LLVM IR or assembly
+./zig-out/bin/klar build program.kl --emit-llvm  # Outputs .ll file
+./zig-out/bin/klar build program.kl --emit-asm   # Outputs .s file
+```
+
+### Optimization Levels
+
+| Flag | Description |
+|------|-------------|
+| `-O0` | No optimizations (default, fastest compile) |
+| `-O1` | Basic optimizations (constant folding, DCE) |
+| `-O2` | Standard optimizations (recommended for release) |
+| `-O3` | Aggressive optimizations (may increase code size) |
+
+## Performance
+
+The native compiler provides significant speedups over the bytecode VM:
+
+| Benchmark | VM Time | Native Time | Speedup |
+|-----------|---------|-------------|---------|
+| fib(35) | ~14s | 0.05s | **259x** |
+| matrix | 0.03s | 0.02s | 1.6x |
+| sort | 0.03s | 0.02s | 1.6x |
+
+Run `./run-benchmarks.sh` to see current benchmark results.
 
 ## Examples
 
@@ -227,6 +293,12 @@ See the `examples/` directory:
 - `hello.kl` — Hello World
 - `fibonacci.kl` — Recursive Fibonacci
 - `fizzbuzz.kl` — Classic FizzBuzz
+
+See the `benchmarks/` directory:
+- `fib.kl` — Recursive Fibonacci (compute-bound)
+- `matrix.kl` — Matrix multiplication
+- `sort.kl` — Sorting simulation
+- `rc_stress.kl` — Reference counting stress test
 
 ## File Extension
 

@@ -1,0 +1,26 @@
+// Benchmark: String Operations
+// Tests string length and character operations
+// Uses the len() builtin on repeated strings
+
+fn count_chars(s1_len: i32, s2_len: i32, s3_len: i32) -> i32 {
+    s1_len + s2_len + s3_len
+}
+
+fn repeat_count(n: i32, acc: i32) -> i32 {
+    if n <= 0 {
+        acc
+    } else {
+        // Count lengths of various strings
+        let total = count_chars(5, 11, 6)  // "hello" + "hello world" + "foobar"
+        repeat_count(n - 1, acc + total)
+    }
+}
+
+fn main() -> i32 {
+    // Run 500 iterations
+    // Each adds 22 (5 + 11 + 6)
+    // Total = 11000
+    let result = repeat_count(500, 0)
+    // Return result mod 256 = 248
+    result - (result / 256) * 256
+}

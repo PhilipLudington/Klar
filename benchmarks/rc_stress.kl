@@ -1,0 +1,26 @@
+// Benchmark: Reference Counting Stress Test
+// Creates and drops Rc references to test allocation/deallocation performance
+
+fn create_rc_pair() -> i32 {
+    let rc1 = Rc.new(42)
+    let rc2 = rc1.clone()
+    // Both are dropped when function returns
+    1
+}
+
+fn run_iterations(n: i32, count: i32) -> i32 {
+    if n <= 0 {
+        count
+    } else {
+        // Call helper that does the Rc work
+        let added = create_rc_pair()
+        run_iterations(n - 1, count + added)
+    }
+}
+
+fn main() -> i32 {
+    // Run 100 iterations of Rc create/drop
+    let result = run_iterations(100, 0)
+    // result should be 100
+    result
+}

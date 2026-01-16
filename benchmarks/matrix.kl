@@ -1,0 +1,48 @@
+// Benchmark: Matrix Multiplication
+// Performs repeated scalar multiplications and additions
+// Tests arithmetic operations and nested loops
+
+fn dot_product(a1: i32, a2: i32, a3: i32, b1: i32, b2: i32, b3: i32) -> i32 {
+    a1 * b1 + a2 * b2 + a3 * b3
+}
+
+fn matrix_mul_element(
+    m1_r1c1: i32, m1_r1c2: i32, m1_r1c3: i32,
+    m1_r2c1: i32, m1_r2c2: i32, m1_r2c3: i32,
+    m1_r3c1: i32, m1_r3c2: i32, m1_r3c3: i32,
+    m2_r1c1: i32, m2_r1c2: i32, m2_r1c3: i32,
+    m2_r2c1: i32, m2_r2c2: i32, m2_r2c3: i32,
+    m2_r3c1: i32, m2_r3c2: i32, m2_r3c3: i32
+) -> i32 {
+    // Compute trace of result matrix (sum of diagonal elements)
+    let r11 = dot_product(m1_r1c1, m1_r1c2, m1_r1c3, m2_r1c1, m2_r2c1, m2_r3c1)
+    let r22 = dot_product(m1_r2c1, m1_r2c2, m1_r2c3, m2_r1c2, m2_r2c2, m2_r3c2)
+    let r33 = dot_product(m1_r3c1, m1_r3c2, m1_r3c3, m2_r1c3, m2_r2c3, m2_r3c3)
+    r11 + r22 + r33
+}
+
+fn compute_iterations(n: i32, acc: i32) -> i32 {
+    if n <= 0 {
+        acc
+    } else {
+        // Identity matrix multiplication (result is same)
+        let result = matrix_mul_element(
+            1, 0, 0,
+            0, 1, 0,
+            0, 0, 1,
+            1, 0, 0,
+            0, 1, 0,
+            0, 0, 1
+        )
+        compute_iterations(n - 1, acc + result)
+    }
+}
+
+fn main() -> i32 {
+    // Run 1000 iterations of matrix trace computation
+    // Each iteration returns 3 (trace of identity matrix)
+    // Total = 3000
+    let result = compute_iterations(1000, 0)
+    // Return result mod 256 = 184
+    result - (result / 256) * 256
+}
