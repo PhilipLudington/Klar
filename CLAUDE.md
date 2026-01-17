@@ -10,6 +10,7 @@ Klar is a systems programming language designed for AI code generation. The core
 - No undefined behavior - explicit overflow operators (`+%` wrapping, `+|` saturating)
 - Ownership-based memory safety without lifetime annotations
 - No implicit type conversions (requires `.as[]`, `.to[]`, `.trunc[]`)
+- **Explicit types required** - all `let`, `var`, and `for` declarations require type annotations
 
 Klar targets application-level programming (like C#/Go), not bare-metal systems (like C/Rust/Zig). This is why `.len()` returns `i32` for ergonomic loop counter usage.
 
@@ -21,7 +22,7 @@ Klar targets application-level programming (like C#/Go), not bare-metal systems 
 
 # Run tests (ALWAYS use wrapper scripts for GitStat integration)
 ./run-tests.sh           # Zig unit tests
-./run-native-tests.sh    # Native compilation tests (77 tests in test/native/)
+./run-native-tests.sh    # Native compilation tests (test/native/)
 ./run-benchmarks.sh      # VM vs native benchmarks
 
 # DO NOT run `zig build` or `zig build test` directly
@@ -40,6 +41,9 @@ Klar targets application-level programming (like C#/Go), not bare-metal systems 
 ./zig-out/bin/klar build program.kl -o program
 ./zig-out/bin/klar build program.kl -o program -O2      # Optimized
 ./zig-out/bin/klar build program.kl -o program -g       # Debug info
+
+# Test a single file (useful for debugging)
+./zig-out/bin/klar build test/native/hello.kl -o /tmp/test && /tmp/test
 
 # Debug output
 ./zig-out/bin/klar build program.kl --emit-llvm         # Output .ll file
@@ -89,7 +93,7 @@ Source (.kl) → Lexer → Parser → AST → Type Checker → [Backend]
 
 ## Current Implementation Status
 
-**Phase 4: Language Completion** (in progress)
+**Phase 4: Language Completion** (in progress) - See `PLAN.md` for full roadmap.
 
 | Feature | Status |
 |---------|--------|
@@ -102,6 +106,8 @@ Source (.kl) → Lexer → Parser → AST → Type Checker → [Backend]
 | Associated types | ❌ Not started |
 | Module system (imports) | ❌ Not started |
 | Standard library | ❌ Not started |
+
+**Note:** `Option[T]` and `Result[T, E]` are built-in generic enums handled by the compiler, not yet user-definable types.
 
 ## Language Syntax Quick Reference
 
