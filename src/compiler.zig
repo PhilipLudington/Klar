@@ -639,14 +639,13 @@ pub const Compiler = struct {
                 }
             },
             .index => |idx| {
-                // Compile object and index, value is already on stack.
-                // We need to swap to get: object, index, value
-                try self.compileExpr(idx.object);
-                try self.compileExpr(idx.index);
-                try self.emitOp(.op_swap, line); // Now: value, object, index
-                // Actually need different approach - value should be TOS
-                // Let me reconsider: stack should be object, index, value for set_index
-                // We have value on stack, need to emit object, index, then swap
+                // Value is already on stack from compileAssignmentStatement.
+                // Stack: [value]
+                // Compile object and index, then swap to get correct order for op_set_index.
+                try self.compileExpr(idx.object); // Stack: [value, object]
+                try self.compileExpr(idx.index); // Stack: [value, object, index]
+                try self.emitOp(.op_swap, line); // Stack: [value, index, object]
+                // op_set_index expects: [value, index, container] with container on top
                 try self.emitOp(.op_set_index, line);
             },
             .field => |fld| {

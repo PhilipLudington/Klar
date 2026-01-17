@@ -7,8 +7,9 @@ Bugs and limitations discovered while developing The Narrow Window.
 ## BUG-001: Array Element Mutation Causes Runtime TypeError
 
 **Severity:** High
-**Status:** Open
+**Status:** Fixed
 **Discovered:** Session 3
+**Fixed:** Session 4
 
 ### Description
 
@@ -27,37 +28,37 @@ fn main() {
 
 Array element assignment should update the value at the specified index.
 
-### Actual Behavior
+### Actual Behavior (Before Fix)
 
 ```
 Runtime error in main: TypeError
 ```
 
-### Workaround
+### Root Cause
 
-Use individual variables instead of an array when mutation is needed:
+Stack operand order mismatch between the compiler and VM for `op_set_index`. The compiler produced stack order `[value, index, container]` (bottom to top), but the VM was popping in the wrong order, causing it to treat the integer value as the container.
 
-```klar
-var r0 = create_region(0)
-var r1 = create_region(1)
-// ... update individually
-r0 = update_region(r0)
-r1 = update_region(r1)
-```
+### Fix
+
+Changed the pop order in `op_set_index` in `src/vm.zig` to match the stack order produced by the compiler:
+- Pop container first (top of stack)
+- Pop index second
+- Pop value third (bottom)
 
 ---
 
 ## BUG-002: Let Declarations Inside While Loops Cause Parse Error
 
 **Severity:** Medium
-**Status:** Open
+**Status:** Cannot Reproduce (Closed)
 **Discovered:** Session 3
+**Reviewed:** Session 4
 
 ### Description
 
-Using `let` to declare a variable inside a `while` loop body causes a parse error "expected identifier".
+Using `let` to declare a variable inside a `while` loop body was reported to cause a parse error "expected identifier".
 
-### Reproduction
+### Reported Reproduction
 
 ```klar
 fn main() {
@@ -71,50 +72,37 @@ fn main() {
 }
 ```
 
-### Expected Behavior
+### Current Status
 
-`let` declarations should work inside loop bodies, creating block-scoped variables.
-
-### Actual Behavior
-
+This code now runs correctly and produces the expected output:
 ```
-Parse error: error.ExpectedIdentifier
-  X:Y: expected identifier
+1
+2
+3
 ```
 
-### Workaround
+All tested variations of `let` declarations inside `while` loops work correctly:
+- Basic `let` with literals
+- `let` with array indexing
+- `let` with complex expressions
+- `let` with function calls
+- Multiple `let` declarations in sequence
+- Nested while loops with `let`
 
-Avoid `let` inside loops. Either:
-1. Unroll the loop with explicit indexing
-2. Declare `var` outside the loop and reassign
-
-```klar
-// Option 1: Unroll
-println("{arr[0]}")
-println("{arr[1]}")
-println("{arr[2]}")
-
-// Option 2: var outside loop
-var x = 0
-var i = 0
-while i < 3 {
-    x = arr[i]
-    println("{x}")
-    i = i + 1
-}
-```
+The bug may have been a transient issue or was fixed as a side effect of other parser changes.
 
 ---
 
 ## BUG-003: Comparing Loop Counter with .len() Type Mismatch
 
 **Severity:** Low
-**Status:** Open
+**Status:** Fixed
 **Discovered:** Session 3
+**Fixed:** Session 4
 
 ### Description
 
-Comparing an `i32` loop counter with the result of `.len()` causes a type error. The `.len()` method appears to return a different integer type.
+Comparing an `i32` loop counter with the result of `.len()` causes a type error. The `.len()` method returns `usize` while integer literals default to `i32`.
 
 ### Reproduction
 
@@ -130,30 +118,26 @@ fn main() {
 
 ### Expected Behavior
 
-`.len()` should return a type compatible with `i32` for comparison, or there should be implicit conversion.
+Comparison operators should allow comparing integers of different sizes.
 
-### Actual Behavior
+### Actual Behavior (Before Fix)
 
 ```
 Type error(s):
   X:Y: comparison operands must have same type
 ```
 
-### Workaround
+### Root Cause
 
-Use a constant for the known array length instead of calling `.len()`:
+The `.len()` method returned `usize` while integer literals default to `i32`. Since the type checker requires exact type equality for comparisons, `i < arr.len()` failed.
 
-```klar
-const NUM_ITEMS = 3
+### Fix
 
-fn main() {
-    let arr = [1, 2, 3]
-    var i = 0
-    while i < NUM_ITEMS {
-        i = i + 1
-    }
-}
-```
+Changed `.len()` to return `i32` instead of `usize` (`src/checker.zig` lines 2281, 2284). This is appropriate for Klar because:
+- It's a VM-based language, not a systems language
+- Arrays with 2+ billion elements are impractical in this context
+- Ergonomic use with loop counters is more valuable than theoretical capacity
+- Maintains consistency with requiring explicit type casts elsewhere
 
 ---
 

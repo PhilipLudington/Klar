@@ -2275,12 +2275,13 @@ pub const TypeChecker = struct {
         }
 
         // Check for len method on arrays, tuples, strings
+        // Returns i32 for ergonomic use with loop counters
         if (std.mem.eql(u8, method.method_name, "len")) {
             if (object_type == .primitive and object_type.primitive == .string_) {
-                return .{ .primitive = .usize_ };
+                return .{ .primitive = .i32_ };
             }
             if (object_type == .array or object_type == .slice or object_type == .tuple) {
-                return .{ .primitive = .usize_ };
+                return .{ .primitive = .i32_ };
             }
             self.addError(.undefined_method, method.span, "len() requires array, tuple, or string", .{});
             return self.type_builder.unknownType();

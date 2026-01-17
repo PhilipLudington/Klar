@@ -646,9 +646,11 @@ pub const VM = struct {
                     }
                 },
                 .op_set_index => {
-                    const value = try self.pop();
-                    const index_val = try self.pop();
+                    // Stack order from compiler: [value, index, container] (bottom to top)
+                    // Pop order: container (top), index, value (bottom)
                     const container = try self.pop();
+                    const index_val = try self.pop();
+                    const value = try self.pop();
 
                     switch (container) {
                         .array => |arr| {

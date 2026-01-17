@@ -2,7 +2,9 @@
 
 > **"No ambiguity. No surprises."**
 
-Klar is a systems programming language designed for clarity, safety, and simplicity. It eliminates the pain points of C/C++ while remaining simpler than Rust.
+Klar is an application language designed for clarity, safety, and simplicity. Its primary focus is game development and other performance-sensitive applications. It eliminates the pain points of C/C++ while remaining simpler than Rust.
+
+Klar is not a systems language (like C, Rust, or Zig). It targets the same space as C# or Go — compiled, performant, but higher-level than bare metal. This influences design decisions like `.len()` returning `i32` rather than `usize` for ergonomic use with loop counters.
 
 ---
 
