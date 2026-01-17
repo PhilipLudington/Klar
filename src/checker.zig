@@ -3666,7 +3666,8 @@ pub const TypeChecker = struct {
                     for (methods_list.items) |impl_method| {
                         if (std.mem.eql(u8, impl_method.name, trait_method.name)) {
                             found = true;
-                            // TODO: Verify method signature matches trait signature
+                            // Verify method signature matches trait signature
+                            _ = self.verifyMethodSignature(impl_method, trait_method, target_type, impl_decl.span);
                             break;
                         }
                     }
@@ -3703,6 +3704,75 @@ pub const TypeChecker = struct {
         const key = self.makeTraitImplKey(type_name, trait_name);
         defer self.allocator.free(key);
         return self.trait_impls.get(key) != null;
+    }
+
+    /// Verify that an impl method signature matches the trait method signature.
+    /// Returns true if signatures match, false otherwise.
+    /// The trait method uses 'unknown' type for Self, which matches any type in the impl.
+    fn verifyMethodSignature(
+        self: *TypeChecker,
+        impl_method: StructMethod,
+        trait_method: types.TraitMethod,
+        impl_type: Type,
+        span: Span,
+    ) bool {
+        const impl_func = impl_method.func_type.function;
+        const trait_sig = &trait_method.signature;
+
+        // Check parameter count
+        if (impl_func.params.len != trait_sig.params.len) {
+            self.addError(.type_mismatch, span, "method '{s}' has {d} parameters, but trait requires {d}", .{
+                trait_method.name,
+                impl_func.params.len,
+                trait_sig.params.len,
+            });
+            return false;
+        }
+
+        // Check each parameter type
+        for (impl_func.params, trait_sig.params, 0..) |impl_param, trait_param, idx| {
+            // The trait method uses 'unknown' type for Self parameter
+            // which should match the implementing type
+            if (trait_param == .unknown) {
+                // Self parameter - impl should use the implementing type (or compatible ref)
+                // For self parameter (idx 0), allow impl_type or reference to impl_type
+                if (idx == 0) {
+                    // Accept: impl_type, &impl_type, &mut impl_type
+                    const matches = impl_param.eql(impl_type) or
+                        (impl_param == .reference and impl_param.reference.inner.eql(impl_type));
+                    if (!matches) {
+                        self.addError(.type_mismatch, span, "method '{s}' parameter {d} should be Self type", .{
+                            trait_method.name,
+                            idx,
+                        });
+                        return false;
+                    }
+                }
+                continue;
+            }
+
+            // Regular parameter - types should match exactly
+            if (!impl_param.eql(trait_param)) {
+                self.addError(.type_mismatch, span, "method '{s}' parameter {d} type mismatch", .{
+                    trait_method.name,
+                    idx,
+                });
+                return false;
+            }
+        }
+
+        // Check return type
+        // Handle unknown return type (Self) from trait
+        if (trait_sig.return_type != .unknown) {
+            if (!impl_func.return_type.eql(trait_sig.return_type)) {
+                self.addError(.type_mismatch, span, "method '{s}' return type mismatch", .{
+                    trait_method.name,
+                });
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// Check if a concrete type satisfies all trait bounds.

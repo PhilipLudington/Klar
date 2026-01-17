@@ -19,6 +19,7 @@
 - No standard library beyond builtins (print, panic, assert)
 
 **Near-term Fixes (discovered via TheNarrowWindow game):**
+- [ ] **PRIORITY** VM: struct field access fails with "UndefinedField" for all structs (blocks game from running)
 - [x] Native codegen: struct parameters to functions (fixed - track struct_type_name for parameters)
 - [x] Native codegen: mutable struct variables (`var s = struct_value`) - already working
 - [x] VM: struct field mutation crashes (hash map panic in ObjStruct.setField) - fixed by making setField duplicate keys
@@ -111,7 +112,7 @@
 ### Trait Implementation
 - [x] Parse and check `impl Type: Trait { ... }` blocks
 - [x] Verify all required methods are implemented
-- [ ] Check method signatures match trait definition (TODO)
+- [x] Check method signatures match trait definition (parameter count, types, return type)
 - [x] Allow default method overrides (detected, not yet used for defaults)
 - [x] Handle impl blocks for generic types
 
