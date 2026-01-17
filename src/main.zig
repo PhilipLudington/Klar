@@ -437,6 +437,15 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     // Set the type checker for generic function call resolution
     emitter.setTypeChecker(&checker);
 
+    // Register all struct declarations first so their types are available
+    // when declaring monomorphized function signatures
+    emitter.registerAllStructDecls(module) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Codegen error (struct registration): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
     // Register monomorphized struct types BEFORE emitModule
     // so struct literals can find them
     emitter.registerMonomorphizedStructs(&checker) catch |err| {

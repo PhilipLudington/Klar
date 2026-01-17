@@ -1,0 +1,45 @@
+// Test calling trait methods through generic type parameter bounds
+// This should work: calling a trait method on a type parameter with bounds
+
+trait Summable {
+    fn sum(self: Self) -> i32
+}
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+impl Point: Summable {
+    fn sum(self: Point) -> i32 {
+        self.x + self.y
+    }
+}
+
+struct Rectangle {
+    width: i32,
+    height: i32,
+}
+
+impl Rectangle: Summable {
+    fn sum(self: Rectangle) -> i32 {
+        self.width + self.height
+    }
+}
+
+// Generic function that calls trait method through the bound
+fn get_sum[T: Summable](item: T) -> i32 {
+    item.sum()
+}
+
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 }
+    let r = Rectangle { width: 5, height: 7 }
+
+    let point_sum = get_sum(p)
+    let rect_sum = get_sum(r)
+
+    // point_sum should be 30, rect_sum should be 12
+    // Total: 42
+    point_sum + rect_sum
+}

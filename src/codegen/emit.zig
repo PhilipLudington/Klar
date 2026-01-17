@@ -314,6 +314,18 @@ pub const Emitter = struct {
         _ = try self.getOrCreateStructType(struct_decl.name, struct_decl.fields);
     }
 
+    /// Register all struct declarations from a module.
+    /// This should be called early, before monomorphized function declarations,
+    /// so that struct types are available when building function signatures.
+    pub fn registerAllStructDecls(self: *Emitter, module: ast.Module) EmitError!void {
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .struct_decl => |s| try self.registerStructDecl(s),
+                else => {},
+            }
+        }
+    }
+
     fn declareFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
         // Skip generic functions - they are handled via monomorphization
         if (func.type_params.len > 0) {

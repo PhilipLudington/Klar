@@ -225,6 +225,8 @@ pub const TypeChecker = struct {
     type_var_slices: std.ArrayListUnmanaged([]const types.TypeVar),
     /// Track Type slices allocated by substituteTypeParams for cleanup.
     substituted_type_slices: std.ArrayListUnmanaged([]const Type),
+    /// Track trait method calls through bounds for monomorphization.
+    trait_method_calls: std.ArrayListUnmanaged(TraitMethodCall),
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -320,6 +322,18 @@ pub const TypeChecker = struct {
         concrete_type: *types.EnumType,
     };
 
+    /// Information about a trait method call through a generic bound.
+    /// Used to track which trait methods are called on type variables,
+    /// so codegen can emit the correct monomorphized method calls.
+    pub const TraitMethodCall = struct {
+        /// Name of the type variable (e.g., "T")
+        type_var_name: []const u8,
+        /// Name of the trait providing the method
+        trait_name: []const u8,
+        /// Name of the method being called
+        method_name: []const u8,
+    };
+
     pub fn init(allocator: Allocator) TypeChecker {
         // Allocate global scope on the heap so pointer remains stable
         const global_scope = allocator.create(Scope) catch @panic("Failed to allocate global scope");
@@ -350,6 +364,7 @@ pub const TypeChecker = struct {
             .trait_impls = .{},
             .type_var_slices = .{},
             .substituted_type_slices = .{},
+            .trait_method_calls = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -494,6 +509,9 @@ pub const TypeChecker = struct {
             self.allocator.free(slice);
         }
         self.substituted_type_slices.deinit(self.allocator);
+
+        // Clean up trait method calls
+        self.trait_method_calls.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -2498,6 +2516,75 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Handle method calls on type variables with trait bounds
+        // When T: SomeTrait, calling item.method() on an item: T should resolve
+        // to the trait method from SomeTrait
+        if (object_type == .type_var) {
+            const type_var = object_type.type_var;
+
+            // Search all trait bounds for the method
+            var found_trait: ?*types.TraitType = null;
+            var found_method: ?types.TraitMethod = null;
+            var ambiguous = false;
+
+            for (type_var.bounds) |trait| {
+                for (trait.methods) |trait_method| {
+                    if (std.mem.eql(u8, trait_method.name, method.method_name)) {
+                        if (found_method != null) {
+                            // Method found in multiple traits - ambiguous
+                            ambiguous = true;
+                        } else {
+                            found_trait = trait;
+                            found_method = trait_method;
+                        }
+                    }
+                }
+            }
+
+            if (ambiguous) {
+                self.addError(.type_mismatch, method.span, "method '{s}' is ambiguous: found in multiple trait bounds", .{method.method_name});
+                return self.type_builder.unknownType();
+            }
+
+            if (found_method) |trait_method| {
+                // Found the method in a trait bound
+                // Check argument count (excluding self)
+                const expected_args = if (trait_method.signature.params.len > 0)
+                    trait_method.signature.params.len - 1 // First param is self
+                else
+                    0;
+
+                if (method.args.len != expected_args) {
+                    self.addError(.invalid_call, method.span, "method expects {d} argument(s), got {d}", .{ expected_args, method.args.len });
+                }
+
+                // Type check arguments (skip self parameter at index 0)
+                for (method.args, 0..) |arg, i| {
+                    const arg_type = self.checkExpr(arg);
+                    const param_idx = i + 1; // Skip self
+                    if (param_idx < trait_method.signature.params.len) {
+                        const expected_type = trait_method.signature.params[param_idx];
+                        // Type vars in params need special handling
+                        if (expected_type != .type_var and !arg_type.eql(expected_type)) {
+                            self.addError(.type_mismatch, method.span, "argument type mismatch", .{});
+                        }
+                    }
+                }
+
+                // Record this trait method call for monomorphization
+                // Store: type_var name, trait name, method name
+                self.recordTraitMethodCall(type_var.name, found_trait.?.name, method.method_name) catch {};
+
+                // Return the trait method's return type
+                // Note: If return type is Self, it should resolve to the type_var
+                const return_type = trait_method.signature.return_type;
+                if (return_type == .type_var and std.mem.eql(u8, return_type.type_var.name, "Self")) {
+                    return object_type; // Self becomes the bounded type
+                }
+                return return_type;
+            }
+        }
+
         self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
         return self.type_builder.unknownType();
     }
@@ -2576,6 +2663,28 @@ pub const TypeChecker = struct {
             .type_args = try self.allocator.dupe(Type, type_args),
             .concrete_type = concrete_func_type,
             .original_decl = method.decl,
+        });
+    }
+
+    /// Record a trait method call through a generic bound.
+    /// This tracks when a trait method is called on a type variable (e.g., T.method())
+    /// so that codegen can emit the correct concrete method call for each monomorphization.
+    fn recordTraitMethodCall(self: *TypeChecker, type_var_name: []const u8, trait_name: []const u8, method_name: []const u8) !void {
+        // Check if this call is already recorded
+        for (self.trait_method_calls.items) |existing| {
+            if (std.mem.eql(u8, existing.type_var_name, type_var_name) and
+                std.mem.eql(u8, existing.trait_name, trait_name) and
+                std.mem.eql(u8, existing.method_name, method_name))
+            {
+                // Already recorded
+                return;
+            }
+        }
+
+        try self.trait_method_calls.append(self.allocator, .{
+            .type_var_name = type_var_name,
+            .trait_name = trait_name,
+            .method_name = method_name,
         });
     }
 

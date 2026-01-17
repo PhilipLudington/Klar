@@ -130,7 +130,7 @@
 ### Method Resolution
 - [x] Resolve trait method calls on concrete types (via struct_methods)
 - [x] Look up correct implementation for method dispatch
-- [ ] Handle method calls through trait bounds in generics (needs trait method table)
+- [x] Handle method calls through trait bounds in generics (type_var handling in checkMethodCall)
 - [ ] Support UFCS (Uniform Function Call Syntax)
 
 ### Core Traits
@@ -151,11 +151,14 @@
 - [x] Test: can define and implement traits (trait_basic.kl)
 - [x] Test: trait bounds restrict generic parameters (trait_bounds.kl)
 - [x] Test: method calls resolve to correct implementation (trait_default.kl)
+- [x] Test: trait method calls through generic bounds (trait_method_through_bounds.kl, trait_method_with_args.kl)
 - [ ] Test: associated types work correctly
 
 **Files Modified:**
-- `src/checker.zig` - Trait checking, impl validation, trait registry ✓
+- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds ✓
 - `src/types.zig` - Trait bounds to type system ✓
+- `src/codegen/emit.zig` - Early struct registration for monomorphized function signatures ✓
+- `src/main.zig` - Call struct registration before monomorphized function declarations ✓
 
 ---
 
