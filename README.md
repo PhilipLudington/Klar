@@ -50,34 +50,40 @@ fn main() {
 ### Variables and Types
 
 ```klar
-let x = 42              // immutable, type inferred (i32)
-let y: i64 = 100        // explicit type
-var counter = 0         // mutable
+let x: i32 = 42         // immutable, explicit type required
+let y: i64 = 100        // all types must be declared
+var counter: i32 = 0    // mutable
 
 // No implicit conversions
-let wide = x.as[i64]    // safe widening
-let narrow = y.to[i32]  // checked narrowing (traps on overflow)
+let wide: i64 = x.as[i64]    // safe widening
+let narrow: i32 = y.to[i32]  // checked narrowing (traps on overflow)
 ```
 
 ### String Interpolation
 
 ```klar
-let name = "World"
-let count = 42
+let name: string = "World"
+let count: i32 = 42
 println("Hello, {name}! Count: {count}")
 ```
 
 ### Control Flow
 
 ```klar
-// If expressions (produce values)
-let max = if a > b { a } else { b }
+// If statements (not expressions)
+var max: i32
+if a > b {
+    max = a
+} else {
+    max = b
+}
 
-// Pattern matching
-let result = match status {
-    Status.Ok => "success"
-    Status.Error(msg) => "failed: {msg}"
-    _ => "unknown"
+// Pattern matching (statement-based)
+var result: string
+match status {
+    Status.Ok => { result = "success" }
+    Status.Error(msg) => { result = "failed: {msg}" }
+    _ => { result = "unknown" }
 }
 
 // Loops
@@ -85,7 +91,7 @@ for item in collection {
     process(item)
 }
 
-for i in 0..10 {
+for i: i32 in 0..10 {
     println("{i}")
 }
 
@@ -117,16 +123,18 @@ fn max[T: Ordered](a: T, b: T) -> T {
 ### Closures
 
 ```klar
-let double = |x| x * 2
-let add = |a: i32, b: i32| a + b
-let process = |x: i32| -> i32 {
-    let y = x * 2
-    y + 1
+// Closures require explicit types and return
+let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
+let add: fn(i32, i32) -> i32 = |a: i32, b: i32| -> i32 { return a + b }
+
+let process: fn(i32) -> i32 = |x: i32| -> i32 {
+    let y: i32 = x * 2
+    return y + 1
 }
 
 // With capturing
-let factor = 10
-let scale = |x| x * factor
+let factor: i32 = 10
+let scale: fn(i32) -> i32 = |x: i32| -> i32 { return x * factor }
 ```
 
 ### Structs and Enums
@@ -154,13 +162,13 @@ enum Message {
 ```klar
 // Optional types
 let maybe: ?i32 = Some(42)
-let value = maybe ?? 0          // default if None
-let forced = maybe!             // trap if None
+let value: i32 = maybe ?? 0          // default if None
+let forced: i32 = maybe!             // trap if None
 
 // Result types with propagation
 fn read_config() -> Result[Config, Error] {
-    let content = read_file(path)?   // propagate error
-    let parsed = parse(content)?
+    let content: string = read_file(path)?   // propagate error
+    let parsed: Config = parse(content)?
     return Ok(parsed)
 }
 ```
@@ -169,9 +177,9 @@ fn read_config() -> Result[Config, Error] {
 
 ```klar
 let a: i32 = 2_000_000_000
-let b = a + a           // trap on overflow (default, safe)
-let c = a +% a          // wrapping arithmetic
-let d = a +| a          // saturating arithmetic
+let b: i32 = a + a           // trap on overflow (default, safe)
+let c: i32 = a +% a          // wrapping arithmetic
+let d: i32 = a +| a          // saturating arithmetic
 ```
 
 ## Key Features

@@ -2,7 +2,7 @@
 
 > **"No ambiguity. No surprises."**
 
-Klar is an application language designed for clarity, safety, and simplicity. Its primary focus is game development and other performance-sensitive applications. It eliminates the pain points of C/C++ while remaining simpler than Rust.
+Klar is an application language designed for clarity, safety, and simplicity. It is optimized for AI code generation—specifically Claude Code—prioritizing unambiguous syntax and predictable semantics.
 
 Klar is not a systems language (like C, Rust, or Zig). It targets the same space as C# or Go — compiled, performant, but higher-level than bare metal. This influences design decisions like `.len()` returning `i32` rather than `usize` for ergonomic use with loop counters.
 
@@ -31,9 +31,10 @@ Klar is not a systems language (like C, Rust, or Zig). It targets the same space
 2. **No undefined behavior** — every operation has defined semantics
 3. **Memory safe by default** — with opt-out for performance
 4. **Modules, not headers** — single source of truth
-5. **Explicit over implicit** — no silent conversions
-6. **One obvious way** — minimize redundant features
+5. **Explicit over implicit** — no type inference, explicit `return`, statement-based control flow
+6. **One obvious way** — single syntax form for each construct
 7. **Build-aware** — no separate build system needed
+8. **AI-first design** — optimized for AI code generation clarity
 
 ### Problems Solved (vs C/C++)
 
@@ -209,12 +210,13 @@ async fn fetch(url: string) -> Result[Response, HttpError] {
 
 ### Variables
 
+All variables require explicit type annotations. This follows the "explicit over implicit" principle—AI code generation benefits from clarity over brevity.
+
 ```klar
 let x: i32 = 5          // immutable
 var y: i32 = 10         // mutable
-
-let inferred = 42       // type inferred as i32
-var list = List.new()   // type inferred
+let name: string = "Alice"
+var items: List[i32] = List.new()
 ```
 
 ### Structs
@@ -237,8 +239,8 @@ struct Counter: Clone + Eq {
 }
 
 // Instantiation
-let p = Point { x: 1.0, y: 2.0 }
-let p2 = Point { x: 3.0, ..p }  // spread
+let p: Point = Point { x: 1.0, y: 2.0 }
+let p2: Point = Point { x: 3.0, ..p }  // spread
 ```
 
 ### Enums
@@ -272,24 +274,33 @@ enum Message {
 
 ### Control Flow
 
-```klar
-// If expression
-let max = if a > b { a } else { b }
+Control flow constructs are statements, not expressions. This follows the "explicit over implicit" principle—values are assigned explicitly, not implicitly returned from blocks.
 
-// Match expression
-let name = match direction {
-    Direction.North => "north"
-    Direction.South => "south"
-    Direction.East => "east"
-    Direction.West => "west"
+```klar
+// If statement
+var max: i32
+if a > b {
+    max = a
+} else {
+    max = b
+}
+
+// Match statement
+var name: string
+match direction {
+    Direction.North => { name = "north" }
+    Direction.South => { name = "south" }
+    Direction.East => { name = "east" }
+    Direction.West => { name = "west" }
 }
 
 // Match with guards
-let description = match value {
-    0 => "zero"
-    n if n < 0 => "negative"
-    n if n > 100 => "large"
-    n => "normal: {n}"
+var description: string
+match value {
+    0 => { description = "zero" }
+    n if n < 0 => { description = "negative" }
+    n if n > 100 => { description = "large" }
+    n => { description = "normal: {n}" }
 }
 
 // For loop
@@ -297,7 +308,7 @@ for item in list {
     process(item)
 }
 
-for i in 0..10 {
+for i: i32 in 0..10 {
     print(i)
 }
 
@@ -312,13 +323,8 @@ while condition {
 
 // Infinite loop
 loop {
-    if done { break }
-}
-
-// Loop with value
-let result = loop {
-    if found {
-        break value
+    if done {
+        break
     }
 }
 ```
@@ -326,53 +332,56 @@ let result = loop {
 ### Pattern Matching
 
 ```klar
-// Destructuring
-let Point { x, y } = point
-let (first, second) = tuple
+// Destructuring with explicit types
+let x: f64 = point.x
+let y: f64 = point.y
 
-// In match
+let first: i32 = tuple.0
+let second: i32 = tuple.1
+
+// Match statement with pattern binding
 match value {
-    Option.Some(x) => use(x)
-    Option.None => default()
+    Option.Some(x) => { use(x) }
+    Option.None => { default() }
 }
 
 // Or patterns
+var category: string
 match value {
-    1 | 2 | 3 => "small"
-    _ => "other"
+    1 | 2 | 3 => { category = "small" }
+    _ => { category = "other" }
 }
 
 // Nested patterns
+var movement: string
 match value {
-    Message.Move { x: 0, y } => "vertical"
-    Message.Move { x, y: 0 } => "horizontal"
-    Message.Move { x, y } => "diagonal"
+    Message.Move { x: 0, y } => { movement = "vertical" }
+    Message.Move { x, y: 0 } => { movement = "horizontal" }
+    Message.Move { x, y } => { movement = "diagonal" }
 }
 ```
 
 ### Closures
 
+Closures follow the same rules as functions: explicit parameter types, explicit return types, and explicit `return` statements.
+
 ```klar
-// Basic form (types inferred)
-let double = |x| x * 2
-let add = |a, b| a + b
+// Closures require full type annotations and explicit return
+let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
+let add: fn(i32, i32) -> i32 = |a: i32, b: i32| -> i32 { return a + b }
 
-// With parameter types
-let double = |x: i32| x * 2
-let add = |a: i32, b: i32| a + b
-
-// With return type
-let parse = |s: string| -> i32 { s.parse()? }
-
-// Multi-line body
-let process = |x: i32| -> i32 {
-    let y = x * 2
-    y + 1
+// Multi-line closure
+let process: fn(i32) -> i32 = |x: i32| -> i32 {
+    let y: i32 = x * 2
+    return y + 1
 }
 
+// Closures without return value
+let print_it: fn(i32) -> void = |x: i32| -> void { print(x) }
+
 // Capturing environment
-let factor = 10
-let scale = |x| x * factor
+let factor: i32 = 10
+let scale: fn(i32) -> i32 = |x: i32| -> i32 { return x * factor }
 ```
 
 ### Operator Precedence (Highest to Lowest)
@@ -459,9 +468,9 @@ let w: i16 = x.trunc[i16]  // truncate (never traps)
 
 ```klar
 let a: i32 = 2_000_000_000
-let b = a + a              // trap (default)
-let c = a +% a             // wrap around
-let d = a +| a             // saturate to max
+let b: i32 = a + a              // trap (default)
+let c: i32 = a +% a             // wrap around
+let d: i32 = a +| a             // saturate to max
 ```
 
 ---
@@ -475,11 +484,11 @@ Every value has exactly one owner. When the owner goes out of scope, the value i
 ### Move Semantics
 
 ```klar
-let a = Buffer.new(1024)
-let b = a                    // a is MOVED to b
+let a: Buffer = Buffer.new(1024)
+let b: Buffer = a                    // a is MOVED to b
 // a is no longer valid
 
-let c = b.clone()            // explicit copy
+let c: Buffer = b.clone()            // explicit copy
 // both b and c are valid
 ```
 
@@ -488,7 +497,7 @@ let c = b.clone()            // explicit copy
 ```klar
 // Primitives are Copy
 let x: i32 = 5
-let y = x    // x is copied, still valid
+let y: i32 = x    // x is copied, still valid
 
 // Opt-in for structs
 struct Point: Copy {
@@ -508,7 +517,7 @@ fn modify(buf: &mut Buffer) {      // mutable borrow
     buf.write(data)
 }
 
-let buffer = Buffer.new(1024)
+let buffer: Buffer = Buffer.new(1024)
 print_length(&buffer)              // lend immutably
 modify(&mut buffer)                // lend mutably
 ```
@@ -543,25 +552,25 @@ This eliminates lifetime annotations entirely.
 
 ```klar
 // Single-threaded
-let data = Rc.new(Buffer.new(1024))
-let alias = data.clone()   // cheap increment
+let data: Rc[Buffer] = Rc.new(Buffer.new(1024))
+let alias: Rc[Buffer] = data.clone()   // cheap increment
 
 // Thread-safe
-let shared = Arc.new(Config.load())
+let shared: Arc[Config] = Arc.new(Config.load())
 
 // Weak references (break cycles)
-let weak = strong.downgrade()
+let weak: Weak[Config] = strong.downgrade()
 ```
 
 ### Interior Mutability
 
 ```klar
 // Cell for simple values
-let counter = Rc.new(Cell.new(0))
+let counter: Rc[Cell[i32]] = Rc.new(Cell.new(0))
 counter.set(counter.get() + 1)
 
 // RefCell for complex values (runtime checks)
-let buffer = Rc.new(RefCell.new(Buffer.new(1024)))
+let buffer: Rc[RefCell[Buffer]] = Rc.new(RefCell.new(Buffer.new(1024)))
 buffer.borrow_mut().write(data)
 ```
 
@@ -587,9 +596,9 @@ unsafe {
 ### Traps (Bugs)
 
 ```klar
-let x = arr[100]         // trap if out of bounds
-let y = maybe!           // trap if None
-let z = 1 / 0            // trap
+let x: i32 = arr[100]    // trap if out of bounds
+let y: i32 = maybe!      // trap if None
+let z: i32 = 1 / 0       // trap
 ```
 
 Traps halt execution immediately with a diagnostic.
@@ -613,9 +622,10 @@ fn divide(a: i32, b: i32) -> Result[i32, MathError] {
 ### Handling Results
 
 ```klar
-// Pattern matching
-let value = match result {
-    Ok(v) => v
+// Pattern matching (statement-based)
+var value: i32
+match result {
+    Ok(v) => { value = v }
     Err(e) => {
         log("Error: {e}")
         return
@@ -623,15 +633,15 @@ let value = match result {
 }
 
 // Default on error
-let value = result ?? 0
+let value: i32 = result ?? 0
 
 // Trap on error (for "impossible" errors)
-let value = result!
+let value: i32 = result!
 
 // Propagate with ?
 fn process() -> Result[Data, Error] {
-    let content = read_file(path)?   // returns early on Err
-    let parsed = parse(content)?
+    let content: string = read_file(path)?   // returns early on Err
+    let parsed: Data = parse(content)?
     return Ok(parsed)
 }
 ```
@@ -661,11 +671,17 @@ impl IoError: Into[ProcessError] {
 
 ### Try Blocks
 
+Try blocks allow grouping multiple fallible operations. The block captures errors and assigns the final result.
+
 ```klar
-let result = try {
-    let a = step_one()?
-    let b = step_two(a)?
-    step_three(b)?
+var result: Result[Data, Error]
+try {
+    let a: Data1 = step_one()?
+    let b: Data2 = step_two(a)?
+    let c: Data3 = step_three(b)?
+    result = Ok(c)
+} catch e {
+    result = Err(e)
 }
 ```
 
@@ -677,13 +693,13 @@ let result = try {
 
 ```klar
 async fn fetch_data(url: string) -> Result[Data, HttpError] {
-    let response = http.get(url).await?
-    let body = response.read_body().await?
+    let response: Response = http.get(url).await?
+    let body: string = response.read_body().await?
     return Ok(parse(body))
 }
 
 async fn main() {
-    let data = fetch_data("https://api.example.com").await?
+    let data: Data = fetch_data("https://api.example.com").await?
     process(data)
 }
 ```
@@ -695,18 +711,21 @@ async fn main() {
 spawn handle_connection(conn)
 
 // Await result
-let task = spawn fetch_data(url)
-let result = task.await
+let task: Task[Data] = spawn fetch_data(url)
+let result: Data = task.await
 
 // Concurrent operations
-let (a, b, c) = await_all(
+let results: (Data, Data, Data) = await_all(
     fetch("/api/a"),
     fetch("/api/b"),
     fetch("/api/c")
 )
+let a: Data = results.0
+let b: Data = results.1
+let c: Data = results.2
 
 // First to complete
-let first = await_first(
+let first: Data = await_first(
     fetch("/primary"),
     fetch("/backup")
 )
@@ -716,10 +735,11 @@ let first = await_first(
 
 ```klar
 async fn process_batch(items: List[Item]) -> List[Result] {
-    let results = scope {
-        let tasks = items.map(|item| spawn process_item(item))
-        await_all(tasks)
+    let mapper: fn(Item) -> Task[Result] = |item: Item| -> Task[Result] {
+        return spawn process_item(item)
     }
+    let tasks: List[Task[Result]] = items.map(mapper)
+    let results: List[Result] = await_all(tasks)
     // All tasks guaranteed complete here
     return results
 }
@@ -728,17 +748,22 @@ async fn process_batch(items: List[Item]) -> List[Result] {
 ### Threads (CPU-bound)
 
 ```klar
-thread.scope(fn(s) {
-    s.spawn(fn() { work_a() })
-    s.spawn(fn() { work_b() })
+let scope_fn: fn(Scope) -> void = |s: Scope| -> void {
+    let work_a_fn: fn() -> void = || -> void { work_a() }
+    let work_b_fn: fn() -> void = || -> void { work_b() }
+    s.spawn(work_a_fn)
+    s.spawn(work_b_fn)
     // Both complete before scope exits
-})
+}
+thread.scope(scope_fn)
 ```
 
 ### Channels
 
 ```klar
-let (tx, rx) = channel[Message]()
+let channel_pair: (Sender[Message], Receiver[Message]) = channel[Message]()
+let tx: Sender[Message] = channel_pair.0
+let rx: Receiver[Message] = channel_pair.1
 
 spawn async {
     tx.send(Message.Data(payload)).await
@@ -746,9 +771,10 @@ spawn async {
 
 spawn async {
     loop {
-        match rx.recv().await {
-            Message.Data(payload) => process(payload)
-            Message.Done => break
+        let msg: Message = rx.recv().await
+        match msg {
+            Message.Data(payload) => { process(payload) }
+            Message.Done => { break }
         }
     }
 }
@@ -756,9 +782,9 @@ spawn async {
 // Select
 loop {
     select {
-        msg from inbox => handle_message(msg)
-        tick from timer => handle_tick()
-        _ from shutdown => break
+        msg from inbox => { handle_message(msg) }
+        tick from timer => { handle_tick() }
+        _ from shutdown => { break }
     }
 }
 ```
@@ -767,23 +793,23 @@ loop {
 
 ```klar
 // Mutex
-let data = Mutex.new(HashMap.new())
+let data: Mutex[HashMap[string, i32]] = Mutex.new(HashMap.new())
 {
-    let mut guard = data.lock()
+    var guard: MutexGuard[HashMap[string, i32]] = data.lock()
     guard.insert("key", value)
 }
 
 // RwLock
-let cache = RwLock.new(HashMap.new())
+let cache: RwLock[HashMap[string, i32]] = RwLock.new(HashMap.new())
 {
-    let view = cache.read()      // many readers
+    let view: ReadGuard[HashMap[string, i32]] = cache.read()      // many readers
 }
 {
-    let mut edit = cache.write() // exclusive writer
+    var edit: WriteGuard[HashMap[string, i32]] = cache.write() // exclusive writer
 }
 
 // Atomics
-let counter = Atomic[i64].new(0)
+let counter: Atomic[i64] = Atomic[i64].new(0)
 counter.fetch_add(1)
 ```
 
@@ -811,7 +837,7 @@ fn max[T: Ordered](a: T, b: T) -> T {
 }
 
 fn swap[T](a: &mut T, b: &mut T) {
-    let temp = *a
+    let temp: T = *a
     *a = *b
     *b = temp
 }
@@ -918,7 +944,7 @@ impl Vec2: Add[Vec2] {
     }
 }
 
-let c = a + b    // calls a.add(b)
+let c: Vec2 = a + b    // calls a.add(b)
 ```
 
 ### Trait Objects
@@ -1258,7 +1284,7 @@ klar publish             # publish to registry
 ### Conditional Compilation
 
 ```klar
-const DEBUG = env.var("DEBUG") ?? false
+const DEBUG: bool = env.var("DEBUG") ?? false
 
 fn log(msg: string) {
     if comptime DEBUG {

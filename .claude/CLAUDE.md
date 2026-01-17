@@ -106,10 +106,10 @@ Source (.kl) → Lexer → Parser → AST → Type Checker → [Backend]
 ## Language Syntax Quick Reference
 
 ```klar
-// Variables
-let x = 42              // immutable, type inferred
-let y: i64 = 100        // explicit type
-var counter = 0         // mutable
+// Variables (explicit types required)
+let x: i32 = 42         // immutable
+let y: i64 = 100        // all types must be declared
+var counter: i32 = 0    // mutable
 
 // Functions (always use explicit return)
 fn add(a: i32, b: i32) -> i32 {
@@ -122,6 +122,9 @@ fn max[T: Ordered](a: T, b: T) -> T {
     }
     return b
 }
+
+// Closures (explicit types and return required)
+let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
 
 // Structs and methods
 struct Point { x: f64, y: f64 }
@@ -139,17 +142,28 @@ enum Result[T, E] { Ok(T), Err(E) }
 trait Drawable { fn draw(self) }
 impl Circle: Drawable { fn draw(self) { ... } }
 
-// Control flow
-let max = if a > b { a } else { b }
-for i in 0..10 { ... }
-match value { Pattern => result, _ => default }
+// Control flow (statement-based, not expressions)
+var max: i32
+if a > b {
+    max = a
+} else {
+    max = b
+}
+
+for i: i32 in 0..10 { ... }
+
+var result: string
+match value {
+    Pattern => { result = "matched" }
+    _ => { result = "default" }
+}
 
 // Error handling
 let maybe: ?i32 = Some(42)
-let value = maybe ?? 0          // default if None
+let value: i32 = maybe ?? 0          // default if None
 
 fn read_config() -> Result[Config, Error] {
-    let content = read_file(path)?   // propagate error
+    let content: string = read_file(path)?   // propagate error
     return Ok(parse(content))
 }
 ```
