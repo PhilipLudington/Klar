@@ -809,12 +809,24 @@ pub const VM = struct {
                     var parts = std.ArrayListUnmanaged([]const u8){};
                     defer parts.deinit(self.allocator);
 
+                    // Track which strings need to be freed (allocated by valueToString)
+                    var to_free = std.ArrayListUnmanaged([]const u8){};
+                    defer {
+                        for (to_free.items) |s| {
+                            self.allocator.free(s);
+                        }
+                        to_free.deinit(self.allocator);
+                    }
+
                     // Pop parts in reverse order
                     var i: u8 = 0;
                     while (i < count) : (i += 1) {
                         const part = try self.pop();
-                        const str = try self.valueToString(part);
-                        try parts.insert(self.allocator, 0, str);
+                        const str_info = try self.valueToStringAlloc(part);
+                        try parts.insert(self.allocator, 0, str_info.str);
+                        if (str_info.needs_free) {
+                            try to_free.append(self.allocator, str_info.str);
+                        }
                     }
 
                     const result = try std.mem.concat(self.allocator, u8, parts.items);
@@ -1536,24 +1548,34 @@ pub const VM = struct {
     }
 
     fn valueToString(self: *VM, value: Value) ![]const u8 {
+        const info = try self.valueToStringAlloc(value);
+        return info.str;
+    }
+
+    const StringAllocInfo = struct {
+        str: []const u8,
+        needs_free: bool,
+    };
+
+    fn valueToStringAlloc(self: *VM, value: Value) !StringAllocInfo {
         return switch (value) {
             .int => |i| blk: {
                 const str = try std.fmt.allocPrint(self.allocator, "{d}", .{i});
-                break :blk str;
+                break :blk .{ .str = str, .needs_free = true };
             },
             .float => |f| blk: {
                 const str = try std.fmt.allocPrint(self.allocator, "{d}", .{f});
-                break :blk str;
+                break :blk .{ .str = str, .needs_free = true };
             },
-            .bool_ => |b| if (b) "true" else "false",
+            .bool_ => |b| .{ .str = if (b) "true" else "false", .needs_free = false },
             .char_ => |c| blk: {
                 var buf = try self.allocator.alloc(u8, 4);
                 const len = std.unicode.utf8Encode(c, buf[0..4]) catch 0;
-                break :blk buf[0..len];
+                break :blk .{ .str = buf[0..len], .needs_free = true };
             },
-            .void_ => "void",
-            .string => |s| s.chars,
-            else => "<object>",
+            .void_ => .{ .str = "void", .needs_free = false },
+            .string => |s| .{ .str = s.chars, .needs_free = false },
+            else => .{ .str = "<object>", .needs_free = false },
         };
     }
 
