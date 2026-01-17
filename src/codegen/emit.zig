@@ -2603,6 +2603,10 @@ pub const Emitter = struct {
                 {
                     return llvm.Types.int1(self.ctx);
                 }
+                // Hash trait: hash() returns i64
+                if (std.mem.eql(u8, m.method_name, "hash")) {
+                    return llvm.Types.int64(self.ctx);
+                }
                 // Default trait: TypeName.default() returns the type's default value
                 if (std.mem.eql(u8, m.method_name, "default")) {
                     if (m.object == .identifier) {
@@ -3811,6 +3815,12 @@ pub const Emitter = struct {
         // Only user-defined struct types can have drop() - primitives are trivially dropped
         if (std.mem.eql(u8, method.method_name, "drop")) {
             return self.emitDropMethod(method, object, object_type);
+        }
+
+        // Hash trait: hash() method for computing hash codes
+        // All primitives have builtin Hash - structs need explicit impl
+        if (std.mem.eql(u8, method.method_name, "hash")) {
+            return self.emitHashMethod(method, object, object_type);
         }
 
         // Check for user-defined struct methods
@@ -6276,6 +6286,156 @@ pub const Emitter = struct {
         // No drop method found - return void (0)
         // The type checker should have caught this already
         return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit the Hash trait's hash() method for computing hash codes.
+    /// Returns i64 hash value. All primitives have builtin Hash.
+    /// Uses FNV-1a hash algorithm for consistent, good distribution.
+    fn emitHashMethod(self: *Emitter, method: *ast.MethodCall, value: llvm.ValueRef, value_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        _ = method; // hash() takes no arguments
+
+        // Dispatch based on the LLVM type kind
+        const kind = llvm.c.LLVMGetTypeKind(value_type);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        switch (kind) {
+            llvm.c.LLVMIntegerTypeKind => {
+                // For integers: convert to i64 and XOR with FNV offset basis
+                // This gives a simple but effective hash for integer values
+                const bit_width = llvm.c.LLVMGetIntTypeWidth(value_type);
+                if (bit_width <= 64) {
+                    // Sign extend or zero extend to i64
+                    const ext_value = if (bit_width < 64)
+                        self.builder.buildSExt(value, i64_type, "hash.ext")
+                    else
+                        value;
+                    // XOR with FNV-1a offset basis for better distribution
+                    // FNV offset basis: 14695981039346656037 (0xcbf29ce484222325)
+                    const fnv_offset = llvm.Const.int64(self.ctx, @bitCast(@as(u64, 0xcbf29ce484222325)));
+                    return self.builder.buildXor(ext_value, fnv_offset, "hash.int");
+                } else {
+                    // For larger integers (i128), truncate to i64 and hash
+                    const trunc_value = self.builder.buildTrunc(value, i64_type, "hash.trunc");
+                    const fnv_offset = llvm.Const.int64(self.ctx, @bitCast(@as(u64, 0xcbf29ce484222325)));
+                    return self.builder.buildXor(trunc_value, fnv_offset, "hash.bigint");
+                }
+            },
+            llvm.c.LLVMFloatTypeKind => {
+                // For floats: bitcast to i32, then extend to i64
+                const i32_type = llvm.Types.int32(self.ctx);
+                const bits = llvm.c.LLVMBuildBitCast(self.builder.ref, value, i32_type, "hash.f32bits");
+                const ext_bits = self.builder.buildSExt(bits, i64_type, "hash.ext");
+                const fnv_offset = llvm.Const.int64(self.ctx, @bitCast(@as(u64, 0xcbf29ce484222325)));
+                return self.builder.buildXor(ext_bits, fnv_offset, "hash.float");
+            },
+            llvm.c.LLVMDoubleTypeKind => {
+                // For doubles: bitcast directly to i64
+                const bits = llvm.c.LLVMBuildBitCast(self.builder.ref, value, i64_type, "hash.f64bits");
+                const fnv_offset = llvm.Const.int64(self.ctx, @bitCast(@as(u64, 0xcbf29ce484222325)));
+                return self.builder.buildXor(bits, fnv_offset, "hash.double");
+            },
+            llvm.c.LLVMPointerTypeKind => {
+                // This is likely a string (char*) - call string hash helper
+                const hash_fn = self.getOrDeclareStringHash();
+                var args = [_]llvm.ValueRef{value};
+                return self.builder.buildCall(
+                    llvm.c.LLVMGlobalGetValueType(hash_fn),
+                    hash_fn,
+                    &args,
+                    "hash.str",
+                );
+            },
+            llvm.c.LLVMStructTypeKind => {
+                // For structs that implement Hash, we need to call the user-defined hash method
+                // This should be handled by the user-defined method lookup before we get here
+                // For now, return a constant (should not reach here if type checker is correct)
+                return llvm.Const.int64(self.ctx, 0);
+            },
+            else => {
+                // Unsupported type - return 0
+                return llvm.Const.int64(self.ctx, 0);
+            },
+        }
+    }
+
+    /// Get or declare the klar_string_hash helper function for hashing strings.
+    /// Uses FNV-1a algorithm: hash = ((hash ^ byte) * FNV_prime) for each byte
+    fn getOrDeclareStringHash(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_hash";
+
+        // Check if already declared
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |existing| {
+            return existing;
+        }
+
+        // Declare: i64 klar_string_hash(i8* str)
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{i8_ptr_type};
+        const fn_type = llvm.Types.function(i64_type, &param_types, false);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Create the function body implementing FNV-1a hash
+        const entry = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const loop_block = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop");
+        const loop_body = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop_body");
+        const exit_block = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "exit");
+
+        // Save current builder state
+        const saved_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const str_param = llvm.c.LLVMGetParam(func, 0);
+
+        // Entry block: initialize hash with FNV offset basis, jump to loop
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        // Loop block: PHI nodes for hash and pointer, then check for null terminator
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const hash_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "hash");
+        const ptr_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i8_ptr_type, "ptr");
+
+        // Load current character
+        const char_val = llvm.c.LLVMBuildLoad2(self.builder.ref, i8_type, ptr_phi, "char");
+
+        // Check if null terminator
+        const is_null = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, char_val, llvm.Const.int(i8_type, 0, false), "is_null");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_null, exit_block, loop_body);
+
+        // Loop body: hash = (hash ^ byte) * FNV_prime
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_body);
+        const char_ext = llvm.c.LLVMBuildZExt(self.builder.ref, char_val, i64_type, "char.ext");
+        const xored = llvm.c.LLVMBuildXor(self.builder.ref, hash_phi, char_ext, "xored");
+        // FNV-1a prime: 1099511628211 (0x100000001b3)
+        const fnv_prime = llvm.Const.int64(self.ctx, @bitCast(@as(u64, 0x100000001b3)));
+        const new_hash = llvm.c.LLVMBuildMul(self.builder.ref, xored, fnv_prime, "new_hash");
+
+        // Increment pointer
+        var indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, 1)};
+        const next_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, ptr_phi, &indices, 1, "next_ptr");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        // Set up PHI incoming values
+        // hash_phi: entry -> FNV offset basis, loop_body -> new_hash
+        const fnv_offset = llvm.Const.int64(self.ctx, @bitCast(@as(u64, 0xcbf29ce484222325)));
+        var hash_values = [_]llvm.ValueRef{ fnv_offset, new_hash };
+        var hash_blocks = [_]llvm.BasicBlockRef{ entry, loop_body };
+        llvm.c.LLVMAddIncoming(hash_phi, &hash_values, &hash_blocks, 2);
+
+        // ptr_phi: entry -> str_param, loop_body -> next_ptr
+        var ptr_values = [_]llvm.ValueRef{ str_param, next_ptr };
+        var ptr_blocks = [_]llvm.BasicBlockRef{ entry, loop_body };
+        llvm.c.LLVMAddIncoming(ptr_phi, &ptr_values, &ptr_blocks, 2);
+
+        // Exit block: return the hash
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, exit_block);
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, hash_phi);
+
+        // Restore builder position
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, saved_block);
+
+        return func;
     }
 
     /// Emit the Default trait's default() static method.

@@ -1,0 +1,27 @@
+// Test for builtin Hash trait - float
+
+fn main() -> i32 {
+    // Test float hashing
+    let f1: f64 = 3.14159
+    let h1: i64 = f1.hash()
+    let h2: i64 = f1.hash()
+
+    // Hash of the same float should be consistent
+    let diff1: i64 = h1 - h2
+    let zero: i64 = i64.default()
+    if diff1 == zero {
+        // Hashes are equal - correct!
+        // Also verify that different floats give different hashes
+        let f2: f64 = 2.71828
+        let h3: i64 = f2.hash()
+        let diff2: i64 = h1 - h3
+        if diff2 == zero {
+            // Different floats shouldn't hash to the same value
+            return 2
+        }
+        return 0
+    } else {
+        // Same float hashes differently - should not happen
+        return 1
+    }
+}

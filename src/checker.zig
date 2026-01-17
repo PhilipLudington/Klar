@@ -905,6 +905,49 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
+
+        // Hash trait: trait Hash { fn hash(&self) -> i64; }
+        // Provides hashing for types, needed for HashMap/HashSet keys.
+        // All primitives have builtin Hash implementation.
+        // Returns i64 to allow for a large hash space.
+        const hash_self_type = self.type_builder.unknownType();
+        const hash_self_ref = try self.type_builder.referenceType(hash_self_type, false);
+        const hash_method_sig = types.FunctionType{
+            .params = try self.allocator.dupe(Type, &.{hash_self_ref}),
+            .return_type = self.type_builder.i64Type(),
+            .is_async = false,
+        };
+        const hash_method = types.TraitMethod{
+            .name = "hash",
+            .signature = hash_method_sig,
+            .has_default = false,
+        };
+
+        const hash_trait_type = try self.allocator.create(types.TraitType);
+        hash_trait_type.* = .{
+            .name = "Hash",
+            .type_params = &.{},
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{hash_method}),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, hash_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "Hash", .{
+            .trait_type = hash_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "Hash",
+            .type_ = .{ .trait_ = hash_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
     }
 
     // ========================================================================
@@ -2647,6 +2690,34 @@ pub const TypeChecker = struct {
             }
 
             // Type variable with Drop bound - handled below in the generic type_var section
+        }
+
+        // Hash trait: hash() method returns i64 hash code
+        // All primitives have builtin Hash implementation.
+        if (std.mem.eql(u8, method.method_name, "hash")) {
+            // hash() takes no arguments (only self)
+            if (method.args.len != 0) {
+                self.addError(.invalid_call, method.span, "hash() expects no arguments", .{});
+                return self.type_builder.i64Type();
+            }
+
+            // All primitives have builtin Hash implementation
+            if (object_type == .primitive) {
+                return self.type_builder.i64Type();
+            }
+
+            // For struct types, check if the struct implements Hash
+            if (object_type == .struct_) {
+                const struct_name = object_type.struct_.name;
+                if (self.typeImplementsTrait(struct_name, "Hash")) {
+                    return self.type_builder.i64Type();
+                } else {
+                    self.addError(.undefined_method, method.span, "type '{s}' does not implement Hash", .{struct_name});
+                    return self.type_builder.i64Type();
+                }
+            }
+
+            // Type variable with Hash bound - handled below in the generic type_var section
         }
 
         // String methods

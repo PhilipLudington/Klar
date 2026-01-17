@@ -1,0 +1,29 @@
+// Test for builtin Hash trait - integer
+
+fn main() -> i32 {
+    // Test integer hashing
+    let a: i32 = 42
+    let h1: i64 = a.hash()
+    let h2: i64 = a.hash()
+
+    // Hash of the same value should be consistent
+    // Compare by computing difference (avoid mixed-type comparison issues)
+    let diff1: i64 = h1 - h2
+    let zero: i64 = i64.default()
+    if diff1 == zero {
+        // Hashes are equal - correct!
+        // Also verify that different values give different hashes
+        let b: i32 = 43
+        let h3: i64 = b.hash()
+        let diff2: i64 = h1 - h3
+        if diff2 == zero {
+            // Different values shouldn't hash to the same value
+            // (very unlikely with FNV-1a for such close values)
+            return 2
+        }
+        return 0
+    } else {
+        // Same value hashes differently - should not happen
+        return 1
+    }
+}

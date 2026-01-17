@@ -1,0 +1,27 @@
+// Test for builtin Hash trait - bool
+
+fn main() -> i32 {
+    // Test bool hashing
+    let t: bool = true
+    let f: bool = false
+    let ht: i64 = t.hash()
+    let hf: i64 = f.hash()
+
+    // Hash of true and false should be different
+    let diff1: i64 = ht - hf
+    let zero: i64 = i64.default()
+    if diff1 == zero {
+        // true and false have the same hash - incorrect
+        return 1
+    }
+
+    // Hash should be consistent
+    let ht2: i64 = t.hash()
+    let diff2: i64 = ht - ht2
+    if diff2 == zero {
+        return 0
+    } else {
+        // Same value hashes differently - should not happen
+        return 2
+    }
+}

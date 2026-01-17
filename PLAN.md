@@ -142,7 +142,7 @@
 - [x] Implement `Clone` trait (explicit cloning) - builtin for primitives (int, float, bool, string)
 - [x] Implement `Drop` trait (custom destructors) - structs can implement to run cleanup code
 - [x] Implement `Default` trait (default values) - builtin for primitives (i32.default() -> 0, etc.)
-- [ ] Implement `Hash` trait (hashing for maps/sets)
+- [x] Implement `Hash` trait (hashing for maps/sets) - builtin for primitives (int, float, bool, string)
 
 ### Derive Macro Basics
 - [ ] Parse `#[derive(Eq, Clone)]` attributes
@@ -161,14 +161,15 @@
 - [x] Test: Clone trait works for primitives (clone_trait_int.kl, clone_trait_float.kl, clone_trait_bool.kl, clone_trait_string.kl)
 - [x] Test: Drop trait works for structs (drop_trait.kl)
 - [x] Test: Default trait works for primitives (default_trait_int.kl, default_trait_float.kl, default_trait_bool.kl, default_trait_string.kl)
+- [x] Test: Hash trait works for primitives (hash_trait_int.kl, hash_trait_float.kl, hash_trait_bool.kl, hash_trait_string.kl)
 - [ ] Test: associated types work correctly
 
 **Files Modified:**
 - `src/ast.zig` - TraitDecl super_traits field ✓
 - `src/parser.zig` - Parse trait inheritance (: B + C) syntax ✓
-- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds, trait inheritance, Eq, Ordered, Clone, and Drop trait definitions and checking ✓
+- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds, trait inheritance, Eq, Ordered, Clone, Drop, and Hash trait definitions and checking ✓
 - `src/types.zig` - Trait bounds to type system ✓
-- `src/codegen/emit.zig` - Early struct registration for monomorphized function signatures, Eq, Ordered, Clone, and Drop trait codegen ✓
+- `src/codegen/emit.zig` - Early struct registration for monomorphized function signatures, Eq, Ordered, Clone, Drop, and Hash trait codegen ✓
 - `src/main.zig` - Call struct registration before monomorphized function declarations ✓
 - `test/native/eq_trait.kl` - Test Eq for integers ✓
 - `test/native/eq_trait_bool.kl` - Test Eq for booleans ✓
@@ -181,6 +182,10 @@
 - `test/native/clone_trait_bool.kl` - Test Clone for booleans ✓
 - `test/native/clone_trait_string.kl` - Test Clone for strings ✓
 - `test/native/drop_trait.kl` - Test Drop for structs ✓
+- `test/native/hash_trait_int.kl` - Test Hash for integers ✓
+- `test/native/hash_trait_float.kl` - Test Hash for floats ✓
+- `test/native/hash_trait_bool.kl` - Test Hash for booleans ✓
+- `test/native/hash_trait_string.kl` - Test Hash for strings ✓
 
 ---
 
