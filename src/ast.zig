@@ -41,8 +41,6 @@ pub const Expr = union(enum) {
     index: *Index,
     field: *Field,
     method_call: *MethodCall,
-    if_expr: *IfExpr,
-    match_expr: *MatchExpr,
     block: *Block,
     closure: *Closure,
     range: *Range,
@@ -65,8 +63,6 @@ pub const Expr = union(enum) {
             .index => |i| i.span,
             .field => |f| f.span,
             .method_call => |m| m.span,
-            .if_expr => |i| i.span,
-            .match_expr => |m| m.span,
             .block => |b| b.span,
             .closure => |c| c.span,
             .range => |r| r.span,
@@ -248,26 +244,6 @@ pub const MethodCall = struct {
     span: Span,
 };
 
-pub const IfExpr = struct {
-    condition: Expr,
-    then_branch: Expr,
-    else_branch: ?Expr,
-    span: Span,
-};
-
-pub const MatchExpr = struct {
-    subject: Expr,
-    arms: []const MatchArm,
-    span: Span,
-};
-
-pub const MatchArm = struct {
-    pattern: Pattern,
-    guard: ?Expr,
-    body: Expr,
-    span: Span,
-};
-
 pub const Block = struct {
     statements: []const Stmt,
     final_expr: ?Expr,
@@ -276,7 +252,7 @@ pub const Block = struct {
 
 pub const Closure = struct {
     params: []const ClosureParam,
-    return_type: ?TypeExpr,
+    return_type: TypeExpr,
     body: Expr,
     span: Span,
     /// Captured variables from enclosing scope (populated by type checker).
@@ -293,7 +269,7 @@ pub const CapturedVar = struct {
 
 pub const ClosureParam = struct {
     name: []const u8,
-    type_: ?TypeExpr,
+    type_: TypeExpr,
     span: Span,
 };
 
@@ -402,6 +378,7 @@ pub const PatternLiteral = struct {
 pub const Binding = struct {
     name: []const u8,
     mutable: bool,
+    type_annotation: ?TypeExpr,
     span: Span,
 };
 
@@ -455,6 +432,8 @@ pub const Stmt = union(enum) {
     for_loop: *ForLoop,
     while_loop: *WhileLoop,
     loop_stmt: *LoopStmt,
+    if_stmt: *IfStmt,
+    match_stmt: *MatchStmt,
 
     pub fn span(self: Stmt) Span {
         return switch (self) {
@@ -468,20 +447,22 @@ pub const Stmt = union(enum) {
             .for_loop => |f| f.span,
             .while_loop => |w| w.span,
             .loop_stmt => |l| l.span,
+            .if_stmt => |i| i.span,
+            .match_stmt => |m| m.span,
         };
     }
 };
 
 pub const LetDecl = struct {
     name: []const u8,
-    type_: ?TypeExpr,
+    type_: TypeExpr,
     value: Expr,
     span: Span,
 };
 
 pub const VarDecl = struct {
     name: []const u8,
-    type_: ?TypeExpr,
+    type_: TypeExpr,
     value: Expr,
     span: Span,
 };
@@ -526,6 +507,31 @@ pub const WhileLoop = struct {
 };
 
 pub const LoopStmt = struct {
+    body: *Block,
+    span: Span,
+};
+
+pub const IfStmt = struct {
+    condition: Expr,
+    then_branch: *Block,
+    else_branch: ?*ElseBranch,
+    span: Span,
+};
+
+pub const ElseBranch = union(enum) {
+    block: *Block,
+    if_stmt: *IfStmt,
+};
+
+pub const MatchStmt = struct {
+    subject: Expr,
+    arms: []const MatchArmStmt,
+    span: Span,
+};
+
+pub const MatchArmStmt = struct {
+    pattern: Pattern,
+    guard: ?Expr,
     body: *Block,
     span: Span,
 };

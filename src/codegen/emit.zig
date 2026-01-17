@@ -644,30 +644,8 @@ pub const Emitter = struct {
 
             const result = try self.emitBlock(body);
 
-            // Check if the final_expr is an if-without-else (produces dummy value)
-            // In that case, for optional returns, we should return None instead
-            const has_if_without_else = if (body.final_expr) |expr|
-                expr == .if_expr and expr.if_expr.else_branch == null
-            else
-                false;
-
             // If block has a value and we haven't terminated, return it
             if (!self.has_terminator) {
-                // For optional return types with if-without-else as final expr,
-                // treat it as if there's no value (return None)
-                if (has_if_without_else) {
-                    if (self.current_return_type) |rt_info| {
-                        if (rt_info.is_optional) {
-                            self.emitDropsForReturn();
-                            const none_val = self.emitNone(rt_info.llvm_type);
-                            _ = self.builder.buildRet(none_val);
-                            self.popScope();
-                            self.current_function = null;
-                            return;
-                        }
-                    }
-                }
-
                 if (func.return_type == null) {
                     // Void function - always emit void return, ignore any expression value
                     // (e.g., if-without-else returns a placeholder that we discard)
@@ -753,7 +731,7 @@ pub const Emitter = struct {
                 defer self.allocator.free(name);
                 const alloca = self.builder.buildAlloca(ty, name);
                 _ = self.builder.buildStore(value, alloca);
-                const is_signed = if (decl.type_) |t| self.isTypeSigned(t) else true;
+                const is_signed = self.isTypeSigned(decl.type_);
                 // Extract struct type name if this is a struct literal
                 const struct_type_name = self.getStructTypeName(decl.value);
                 // For Rc/Arc types, track the inner type for dereferencing
@@ -781,7 +759,7 @@ pub const Emitter = struct {
                 defer self.allocator.free(name);
                 const alloca = self.builder.buildAlloca(ty, name);
                 _ = self.builder.buildStore(value, alloca);
-                const is_signed = if (decl.type_) |t| self.isTypeSigned(t) else true;
+                const is_signed = self.isTypeSigned(decl.type_);
                 // Extract struct type name if this is a struct literal
                 const struct_type_name = self.getStructTypeName(decl.value);
                 // For Rc/Arc types, track the inner type for dereferencing
@@ -870,6 +848,12 @@ pub const Emitter = struct {
             },
             .continue_stmt => {
                 try self.emitContinue();
+            },
+            .if_stmt => |if_stmt| {
+                try self.emitIfStmt(if_stmt);
+            },
+            .match_stmt => |match_stmt| {
+                try self.emitMatchStmt(match_stmt);
             },
         }
     }
@@ -1104,7 +1088,6 @@ pub const Emitter = struct {
             .binary => |bin| try self.emitBinary(bin),
             .unary => |un| try self.emitUnary(un),
             .call => |call| try self.emitCall(call),
-            .if_expr => |if_e| try self.emitIf(if_e),
             .block => |blk| blk: {
                 const result = try self.emitBlock(blk);
                 break :blk result orelse llvm.Const.int32(self.ctx, 0);
@@ -1121,7 +1104,6 @@ pub const Emitter = struct {
             .closure => |c| try self.emitClosure(c),
             .type_cast => |tc| try self.emitTypeCast(tc),
             .enum_literal => |e| try self.emitEnumLiteral(e),
-            .match_expr => |m| try self.emitMatch(m),
             .interpolated_string => |is| try self.emitInterpolatedString(is),
             else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
         };
@@ -1890,105 +1872,85 @@ pub const Emitter = struct {
         return self.builder.buildCall(fn_type, fn_ptr, call_args.items, "closure.call");
     }
 
-    fn emitIf(self: *Emitter, if_expr: *ast.IfExpr) EmitError!llvm.ValueRef {
+    /// Emit an if statement (no value produced, no PHI nodes).
+    fn emitIfStmt(self: *Emitter, if_stmt: *ast.IfStmt) EmitError!void {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const cond = try self.emitExpr(if_expr.condition);
+        const cond = try self.emitExpr(if_stmt.condition);
 
         // Create blocks
         const then_bb = llvm.appendBasicBlock(self.ctx, func, "then");
-        const else_bb = llvm.appendBasicBlock(self.ctx, func, "else");
+        const else_bb = if (if_stmt.else_branch != null)
+            llvm.appendBasicBlock(self.ctx, func, "else")
+        else
+            null;
         const merge_bb = llvm.appendBasicBlock(self.ctx, func, "ifcont");
 
-        _ = self.builder.buildCondBr(cond, then_bb, else_bb);
+        // Branch to then or else/merge
+        if (else_bb) |eb| {
+            _ = self.builder.buildCondBr(cond, then_bb, eb);
+        } else {
+            _ = self.builder.buildCondBr(cond, then_bb, merge_bb);
+        }
 
         // Emit then block
         self.builder.positionAtEnd(then_bb);
         self.has_terminator = false;
-        const then_val = try self.emitExpr(if_expr.then_branch);
+        _ = try self.emitBlock(if_stmt.then_branch);
         const then_has_term = self.has_terminator;
-        const then_end_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
         if (!then_has_term) {
             _ = self.builder.buildBr(merge_bb);
         }
 
-        // Emit else block
-        self.builder.positionAtEnd(else_bb);
-        self.has_terminator = false;
-        const else_val = if (if_expr.else_branch) |else_b|
-            try self.emitExpr(else_b)
-        else
-            llvm.Const.int32(self.ctx, 0);
-        const else_has_term = self.has_terminator;
-        const else_end_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
-        if (!else_has_term) {
-            _ = self.builder.buildBr(merge_bb);
+        // Emit else block if present
+        var else_has_term = false;
+        if (if_stmt.else_branch) |else_branch| {
+            self.builder.positionAtEnd(else_bb.?);
+            self.has_terminator = false;
+            switch (else_branch.*) {
+                .block => |block| {
+                    _ = try self.emitBlock(block);
+                },
+                .if_stmt => |nested_if| {
+                    try self.emitIfStmt(nested_if);
+                },
+            }
+            else_has_term = self.has_terminator;
+            if (!else_has_term) {
+                _ = self.builder.buildBr(merge_bb);
+            }
         }
 
-        // Emit merge block with PHI
+        // Position at merge block
         self.builder.positionAtEnd(merge_bb);
-        self.has_terminator = false;
 
-        // Only create PHI if both branches reach merge
-        if (then_has_term and else_has_term) {
-            // Both branches terminate, merge is unreachable
-            return llvm.Const.int32(self.ctx, 0);
-        }
-
-        // Check if this if-expression produces void (e.g., both branches are print() calls)
-        const result_type = self.inferExprType(ast.Expr{ .if_expr = if_expr }) catch llvm.Types.int32(self.ctx);
-        const is_void_result = llvm.isVoidType(result_type);
-
-        // For void results, don't create PHI - just return a placeholder
-        if (is_void_result) {
-            return llvm.Const.int32(self.ctx, 0);
-        }
-
-        const phi = self.builder.buildPhi(llvm.Types.int32(self.ctx), "iftmp");
-        if (!then_has_term and !else_has_term) {
-            var incoming_vals = [_]llvm.ValueRef{ then_val, else_val };
-            var incoming_blocks = [_]llvm.BasicBlockRef{ then_end_bb, else_end_bb };
-            llvm.addIncoming(phi, &incoming_vals, &incoming_blocks);
-        } else if (!then_has_term) {
-            var incoming_vals = [_]llvm.ValueRef{then_val};
-            var incoming_blocks = [_]llvm.BasicBlockRef{then_end_bb};
-            llvm.addIncoming(phi, &incoming_vals, &incoming_blocks);
+        // If both branches terminate (e.g., both return), the merge block is unreachable
+        if (then_has_term and (if_stmt.else_branch != null and else_has_term)) {
+            _ = self.builder.buildUnreachable();
+            self.has_terminator = true;
         } else {
-            var incoming_vals = [_]llvm.ValueRef{else_val};
-            var incoming_blocks = [_]llvm.BasicBlockRef{else_end_bb};
-            llvm.addIncoming(phi, &incoming_vals, &incoming_blocks);
+            self.has_terminator = false;
         }
-
-        return phi;
     }
 
-    /// Emit a match expression.
+    /// Emit a match statement (no value produced, no PHI nodes).
     /// Creates a chain of conditional branches that test each pattern in order.
-    /// Uses PHI nodes to merge the results from all arms.
-    fn emitMatch(self: *Emitter, match_expr: *ast.MatchExpr) EmitError!llvm.ValueRef {
+    fn emitMatchStmt(self: *Emitter, match_stmt: *ast.MatchStmt) EmitError!void {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Emit the subject expression
-        const subject_val = try self.emitExpr(match_expr.subject);
+        const subject_val = try self.emitExpr(match_stmt.subject);
 
         // Create the merge block for after all arms
         const merge_bb = llvm.appendBasicBlock(self.ctx, func, "match.merge");
-
-        // Track values and blocks for PHI node
-        var arm_values = std.ArrayListUnmanaged(llvm.ValueRef){};
-        defer arm_values.deinit(self.allocator);
-        var arm_blocks = std.ArrayListUnmanaged(llvm.BasicBlockRef){};
-        defer arm_blocks.deinit(self.allocator);
-
-        // Track if all arms have terminators (for unreachable merge)
-        var all_terminate = true;
 
         // Create a "match failed" block with unreachable (for non-exhaustive matches)
         const match_failed_bb = llvm.appendBasicBlock(self.ctx, func, "match.failed");
 
         // Process each arm
-        const num_arms = match_expr.arms.len;
-        for (match_expr.arms, 0..) |arm, i| {
+        const num_arms = match_stmt.arms.len;
+        var all_arms_terminate = true;
+        for (match_stmt.arms, 0..) |arm, i| {
             const is_last_arm = (i == num_arms - 1);
 
             // Create blocks for this arm
@@ -2015,12 +1977,8 @@ pub const Emitter = struct {
                 break :blk guard_val;
             } else pattern_matches;
 
-            // Branch based on match result (if we didn't already branch for guard)
-            if (arm.guard == null) {
-                _ = self.builder.buildCondBr(condition, arm_body_bb, next_arm_bb);
-            } else {
-                _ = self.builder.buildCondBr(condition, arm_body_bb, next_arm_bb);
-            }
+            // Branch based on match result
+            _ = self.builder.buildCondBr(condition, arm_body_bb, next_arm_bb);
 
             // Emit arm body
             self.builder.positionAtEnd(arm_body_bb);
@@ -2033,16 +1991,13 @@ pub const Emitter = struct {
             // Bind pattern variables
             try self.bindPatternVariables(arm.pattern, subject_val);
 
-            // Emit the arm body
-            const arm_val = try self.emitExpr(arm.body);
+            // Emit the arm body (as a block)
+            _ = try self.emitBlock(arm.body);
             const arm_has_term = self.has_terminator;
-            const arm_end_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
 
             if (!arm_has_term) {
-                arm_values.append(self.allocator, arm_val) catch return EmitError.OutOfMemory;
-                arm_blocks.append(self.allocator, arm_end_bb) catch return EmitError.OutOfMemory;
                 _ = self.builder.buildBr(merge_bb);
-                all_terminate = false;
+                all_arms_terminate = false;
             }
 
             // Move to next arm block
@@ -2057,22 +2012,14 @@ pub const Emitter = struct {
 
         // Position at merge block
         self.builder.positionAtEnd(merge_bb);
-        self.has_terminator = false;
 
-        // If all arms terminate (e.g., all return), merge is unreachable
-        if (all_terminate) {
-            return llvm.Const.int32(self.ctx, 0);
+        // If all arms terminate, merge block is unreachable
+        if (all_arms_terminate) {
+            _ = self.builder.buildUnreachable();
+            self.has_terminator = true;
+        } else {
+            self.has_terminator = false;
         }
-
-        // Create PHI node for the result
-        if (arm_values.items.len == 0) {
-            return llvm.Const.int32(self.ctx, 0);
-        }
-
-        const phi = self.builder.buildPhi(llvm.Types.int32(self.ctx), "match.result");
-        llvm.addIncoming(phi, arm_values.items, arm_blocks.items);
-
-        return phi;
     }
 
     /// Emit code that evaluates to true (i1) if the pattern matches the subject.
@@ -2686,14 +2633,6 @@ pub const Emitter = struct {
                     else => return llvm.Types.int32(self.ctx),
                 }) orelse llvm.Types.int32(self.ctx);
             },
-            .if_expr => |if_e| {
-                // If no else branch, result is void
-                if (if_e.else_branch == null) {
-                    return llvm.Types.void_(self.ctx);
-                }
-                // Otherwise infer from then branch (type checker ensures branches match)
-                return try self.inferExprType(if_e.then_branch);
-            },
             .block => |blk| {
                 // Block type is the type of its final expression, or void if none
                 if (blk.final_expr) |final| {
@@ -2718,13 +2657,6 @@ pub const Emitter = struct {
                 };
                 if (self.struct_types.get(base_name)) |enum_info| {
                     return enum_info.llvm_type;
-                }
-                return llvm.Types.int32(self.ctx);
-            },
-            .match_expr => |m| {
-                // Match expression type is the type of the first arm's body
-                if (m.arms.len > 0) {
-                    return try self.inferExprType(m.arms[0].body);
                 }
                 return llvm.Types.int32(self.ctx);
             },
@@ -4330,10 +4262,7 @@ pub const Emitter = struct {
         defer self.allocator.free(fn_name);
 
         // Determine return type
-        const return_type = if (closure.return_type) |rt|
-            try self.typeExprToLLVM(rt)
-        else
-            llvm.Types.int32(self.ctx); // Default to i32 if not specified
+        const return_type = try self.typeExprToLLVM(closure.return_type);
 
         // Build parameter types for the lifted function
         // First parameter is the environment pointer (for captured variables)
@@ -4345,10 +4274,7 @@ pub const Emitter = struct {
 
         // Add closure's declared parameters
         for (closure.params) |param| {
-            const param_ty = if (param.type_) |t|
-                try self.typeExprToLLVM(t)
-            else
-                llvm.Types.int32(self.ctx);
+            const param_ty = try self.typeExprToLLVM(param.type_);
             param_types.append(self.allocator, param_ty) catch return EmitError.OutOfMemory;
         }
 
@@ -4374,9 +4300,9 @@ pub const Emitter = struct {
         // Set up return type info
         self.current_return_type = .{
             .llvm_type = return_type,
-            .is_optional = if (closure.return_type) |rt| rt == .optional else false,
-            .inner_type = if (closure.return_type) |rt|
-                if (rt == .optional) try self.typeExprToLLVM(rt.optional.inner) else null
+            .is_optional = closure.return_type == .optional,
+            .inner_type = if (closure.return_type == .optional)
+                try self.typeExprToLLVM(closure.return_type.optional.inner)
             else
                 null,
         };
@@ -4431,10 +4357,7 @@ pub const Emitter = struct {
         // Add closure parameters to named_values
         for (closure.params, 0..) |param, i| {
             const param_value = llvm.getParam(lifted_fn, @intCast(i + 1)); // +1 for env ptr
-            const param_ty = if (param.type_) |t|
-                try self.typeExprToLLVM(t)
-            else
-                llvm.Types.int32(self.ctx);
+            const param_ty = try self.typeExprToLLVM(param.type_);
 
             // Allocate stack space for parameter
             const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
@@ -4560,12 +4483,9 @@ pub const Emitter = struct {
     }
 
     /// Check if a type expression represents a signed type.
-    fn isTypeExprSigned(self: *Emitter, type_expr: ?ast.TypeExpr) bool {
+    fn isTypeExprSigned(self: *Emitter, type_expr: ast.TypeExpr) bool {
         _ = self;
-        if (type_expr == null) return true; // Default to signed
-
-        const te = type_expr.?;
-        return switch (te) {
+        return switch (type_expr) {
             .named => |n| {
                 // Unsigned types
                 if (std.mem.startsWith(u8, n.name, "u")) return false;

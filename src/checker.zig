@@ -430,9 +430,7 @@ pub const TypeChecker = struct {
         // Clean up generic enum definitions (from checkEnum)
         for (self.generic_enum_types.items) |enum_type| {
             // Free type params if any
-            if (enum_type.type_params.len > 0) {
-                self.allocator.free(enum_type.type_params);
-            }
+            // Note: type_params slices are freed separately via type_var_slices
             // Free variant payloads
             for (enum_type.variants) |variant| {
                 if (variant.payload) |payload| {
@@ -448,10 +446,8 @@ pub const TypeChecker = struct {
         self.generic_enum_types.deinit(self.allocator);
 
         // Clean up generic struct definitions (from checkStruct)
+        // Note: type_params slices are freed separately via type_var_slices
         for (self.generic_struct_types.items) |struct_type| {
-            if (struct_type.type_params.len > 0) {
-                self.allocator.free(struct_type.type_params);
-            }
             self.allocator.free(struct_type.fields);
             self.allocator.destroy(struct_type);
         }
@@ -475,10 +471,8 @@ pub const TypeChecker = struct {
         self.trait_registry.deinit(self.allocator);
 
         // Clean up trait type allocations
+        // Note: type_params slices are freed separately via type_var_slices
         for (self.trait_types.items) |trait_type| {
-            if (trait_type.type_params.len > 0) {
-                self.allocator.free(trait_type.type_params);
-            }
             if (trait_type.super_traits.len > 0) {
                 self.allocator.free(trait_type.super_traits);
             }
@@ -1722,6 +1716,37 @@ pub const TypeChecker = struct {
                         const inner = try self.resolveTypeExpr(g.args[0]);
                         return try self.type_builder.weakArcType(inner);
                     }
+
+                    // Cell[T] - interior mutability wrapper
+                    if (std.mem.eql(u8, base_name, "Cell")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "Cell expects exactly 1 type argument", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner = try self.resolveTypeExpr(g.args[0]);
+                        return try self.type_builder.cellType(inner);
+                    }
+
+                    // Result[T, E] - result type for error handling
+                    if (std.mem.eql(u8, base_name, "Result")) {
+                        if (g.args.len != 2) {
+                            self.addError(.type_mismatch, g.span, "Result expects exactly 2 type arguments", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const ok_type = try self.resolveTypeExpr(g.args[0]);
+                        const err_type = try self.resolveTypeExpr(g.args[1]);
+                        return try self.type_builder.resultType(ok_type, err_type);
+                    }
+
+                    // Option[T] - optional type (alternative syntax for ?T)
+                    if (std.mem.eql(u8, base_name, "Option")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "Option expects exactly 1 type argument", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner = try self.resolveTypeExpr(g.args[0]);
+                        return try self.type_builder.optionalType(inner);
+                    }
                 }
 
                 // Generic user-defined type
@@ -1805,8 +1830,14 @@ pub const TypeChecker = struct {
     // ========================================================================
 
     pub fn checkExpr(self: *TypeChecker, expr: ast.Expr) Type {
+        return self.checkExprWithHint(expr, null);
+    }
+
+    /// Check an expression with an optional type hint for contextual typing.
+    /// The hint is used for numeric literals to adopt the expected type.
+    pub fn checkExprWithHint(self: *TypeChecker, expr: ast.Expr, hint: ?Type) Type {
         return switch (expr) {
-            .literal => |l| self.checkLiteral(l),
+            .literal => |l| self.checkLiteralWithHint(l, hint),
             .identifier => |i| self.checkIdentifier(i),
             .binary => |b| self.checkBinary(b),
             .unary => |u| self.checkUnary(u),
@@ -1815,8 +1846,6 @@ pub const TypeChecker = struct {
             .index => |i| self.checkIndex(i),
             .field => |f| self.checkField(f),
             .method_call => |m| self.checkMethodCall(m),
-            .if_expr => |i| self.checkIfExpr(i),
-            .match_expr => |m| self.checkMatchExpr(m),
             .block => |b| self.checkBlock(b),
             .closure => |c| self.checkClosure(c),
             .range => |r| self.checkRange(r),
@@ -1824,16 +1853,32 @@ pub const TypeChecker = struct {
             .array_literal => |a| self.checkArrayLiteral(a),
             .tuple_literal => |t| self.checkTupleLiteral(t),
             .type_cast => |tc| self.checkTypeCast(tc),
-            .grouped => |g| self.checkExpr(g.expr),
+            .grouped => |g| self.checkExprWithHint(g.expr, hint),
             .interpolated_string => |is| self.checkInterpolatedString(is),
             .enum_literal => |e| self.checkEnumLiteral(e),
         };
     }
 
-    fn checkLiteral(self: *TypeChecker, lit: ast.Literal) Type {
+    fn checkLiteralWithHint(self: *TypeChecker, lit: ast.Literal, hint: ?Type) Type {
         return switch (lit.kind) {
-            .int => self.type_builder.i32Type(), // Default int type
-            .float => self.type_builder.f64Type(), // Default float type
+            .int => {
+                // Use type hint if it's a compatible integer type
+                if (hint) |h| {
+                    if (h == .primitive and h.primitive.isInteger()) {
+                        return h;
+                    }
+                }
+                return self.type_builder.i32Type(); // Default int type
+            },
+            .float => {
+                // Use type hint if it's a compatible float type
+                if (hint) |h| {
+                    if (h == .primitive and h.primitive.isFloat()) {
+                        return h;
+                    }
+                }
+                return self.type_builder.f64Type(); // Default float type
+            },
             .string => self.type_builder.stringType(),
             .char => self.type_builder.charType(),
             .bool_ => self.type_builder.boolType(),
@@ -2214,9 +2259,18 @@ pub const TypeChecker = struct {
                     const s = a.base.struct_;
                     for (s.fields) |field| {
                         if (std.mem.eql(u8, field.name, fld.field_name)) {
-                            // The field type may contain type variables that map to the applied args
-                            // For now, return the raw field type (type var substitution happens at monomorphization)
-                            return field.type_;
+                            // Build substitution map from struct's type params to applied args
+                            var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+                            defer substitutions.deinit(self.allocator);
+
+                            // Map each struct type param to corresponding applied arg
+                            const min_len = @min(s.type_params.len, a.args.len);
+                            for (s.type_params[0..min_len], a.args[0..min_len]) |type_param, arg| {
+                                substitutions.put(self.allocator, type_param.id, arg) catch {};
+                            }
+
+                            // Substitute type vars in field type
+                            return self.substituteTypeParams(field.type_, substitutions) catch field.type_;
                         }
                     }
                     self.addError(.undefined_field, fld.span, "no field '{s}' on struct", .{fld.field_name});
@@ -3060,31 +3114,28 @@ pub const TypeChecker = struct {
         });
     }
 
-    fn checkIfExpr(self: *TypeChecker, if_expr: *ast.IfExpr) Type {
-        const cond_type = self.checkExpr(if_expr.condition);
+    fn checkIfStmt(self: *TypeChecker, if_stmt: *ast.IfStmt) void {
+        const cond_type = self.checkExpr(if_stmt.condition);
         if (!self.isBoolType(cond_type)) {
-            self.addError(.type_mismatch, if_expr.condition.span(), "if condition must be bool", .{});
+            self.addError(.type_mismatch, if_stmt.condition.span(), "if condition must be bool", .{});
         }
 
-        const then_type = self.checkExpr(if_expr.then_branch);
+        // Check then branch as a block (doesn't produce a value)
+        _ = self.checkBlock(if_stmt.then_branch);
 
-        if (if_expr.else_branch) |else_branch| {
-            const else_type = self.checkExpr(else_branch);
-            if (!then_type.eql(else_type)) {
-                self.addError(.type_mismatch, if_expr.span, "if branches must have same type", .{});
+        // Check else branch if present
+        if (if_stmt.else_branch) |else_branch| {
+            switch (else_branch.*) {
+                .block => |block| _ = self.checkBlock(block),
+                .if_stmt => |nested_if| self.checkIfStmt(nested_if),
             }
-            return then_type;
         }
-
-        // No else branch: return void or optional
-        return self.type_builder.voidType();
     }
 
-    fn checkMatchExpr(self: *TypeChecker, match: *ast.MatchExpr) Type {
-        const subject_type = self.checkExpr(match.subject);
-        var result_type: ?Type = null;
+    fn checkMatchStmt(self: *TypeChecker, match_stmt: *ast.MatchStmt) void {
+        const subject_type = self.checkExpr(match_stmt.subject);
 
-        for (match.arms) |arm| {
+        for (match_stmt.arms) |arm| {
             // Check pattern against subject type
             self.checkPattern(arm.pattern, subject_type);
 
@@ -3096,19 +3147,9 @@ pub const TypeChecker = struct {
                 }
             }
 
-            // Check arm body
-            const arm_type = self.checkExpr(arm.body);
-
-            if (result_type) |rt| {
-                if (!rt.eql(arm_type)) {
-                    self.addError(.type_mismatch, arm.span, "match arms must have same type", .{});
-                }
-            } else {
-                result_type = arm_type;
-            }
+            // Check arm body as a block (doesn't produce a value)
+            _ = self.checkBlock(arm.body);
         }
-
-        return result_type orelse self.type_builder.neverType();
     }
 
     fn checkBlock(self: *TypeChecker, block: *ast.Block) Type {
@@ -3143,10 +3184,7 @@ pub const TypeChecker = struct {
         defer param_types.deinit(self.allocator);
 
         for (closure.params) |param| {
-            const param_type = if (param.type_) |t|
-                self.resolveTypeExpr(t) catch self.type_builder.unknownType()
-            else
-                self.type_builder.unknownType();
+            const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
 
             param_types.append(self.allocator, param_type) catch {};
 
@@ -3159,19 +3197,13 @@ pub const TypeChecker = struct {
             }) catch {};
         }
 
-        const return_type = if (closure.return_type) |rt|
-            self.resolveTypeExpr(rt) catch self.type_builder.unknownType()
-        else
-            self.type_builder.unknownType();
+        const return_type = self.resolveTypeExpr(closure.return_type) catch self.type_builder.unknownType();
 
         const old_return_type = self.current_return_type;
         self.current_return_type = return_type;
         defer self.current_return_type = old_return_type;
 
-        const body_type = self.checkExpr(closure.body);
-
-        // Infer return type if not specified
-        const actual_return = if (closure.return_type == null) body_type else return_type;
+        _ = self.checkExpr(closure.body);
 
         // Store captured variables in the AST node
         // Note: This allocation is intentionally not freed here as it becomes
@@ -3189,7 +3221,7 @@ pub const TypeChecker = struct {
             closure.captures = captures.toOwnedSlice(self.allocator) catch null;
         }
 
-        return self.type_builder.functionType(param_types.items, actual_return) catch self.type_builder.unknownType();
+        return self.type_builder.functionType(param_types.items, return_type) catch self.type_builder.unknownType();
     }
 
     fn checkRange(self: *TypeChecker, range: *ast.Range) Type {
@@ -3397,6 +3429,8 @@ pub const TypeChecker = struct {
             .for_loop => |f| self.checkFor(f),
             .while_loop => |w| self.checkWhile(w),
             .loop_stmt => |l| self.checkLoop(l),
+            .if_stmt => |i| self.checkIfStmt(i),
+            .match_stmt => |m| self.checkMatchStmt(m),
         }
     }
 
@@ -3424,14 +3458,13 @@ pub const TypeChecker = struct {
     }
 
     fn checkLetDecl(self: *TypeChecker, decl: *ast.LetDecl) void {
-        const value_type = self.checkExpr(decl.value);
+        // Type is always provided - resolve it first for use as hint
+        const declared_type = self.resolveTypeExpr(decl.type_) catch self.type_builder.unknownType();
 
-        const declared_type = if (decl.type_) |t|
-            self.resolveTypeExpr(t) catch self.type_builder.unknownType()
-        else
-            value_type;
+        // Pass declared type as hint for contextual typing of literals
+        const value_type = self.checkExprWithHint(decl.value, declared_type);
 
-        if (decl.type_ != null and !declared_type.eql(value_type)) {
+        if (!self.isTypeCompatible(declared_type, value_type)) {
             self.addError(.type_mismatch, decl.span, "initializer type doesn't match declared type", .{});
         }
 
@@ -3451,14 +3484,13 @@ pub const TypeChecker = struct {
     }
 
     fn checkVarDecl(self: *TypeChecker, decl: *ast.VarDecl) void {
-        const value_type = self.checkExpr(decl.value);
+        // Type is always provided - resolve it first for use as hint
+        const declared_type = self.resolveTypeExpr(decl.type_) catch self.type_builder.unknownType();
 
-        const declared_type = if (decl.type_) |t|
-            self.resolveTypeExpr(t) catch self.type_builder.unknownType()
-        else
-            value_type;
+        // Pass declared type as hint for contextual typing of literals
+        const value_type = self.checkExprWithHint(decl.value, declared_type);
 
-        if (decl.type_ != null and !declared_type.eql(value_type)) {
+        if (!self.isTypeCompatible(declared_type, value_type)) {
             self.addError(.type_mismatch, decl.span, "initializer type doesn't match declared type", .{});
         }
 
@@ -3484,7 +3516,8 @@ pub const TypeChecker = struct {
         }
 
         if (ret.value) |value| {
-            const value_type = self.checkExpr(value);
+            // Pass expected return type as hint for contextual typing of literals
+            const value_type = self.checkExprWithHint(value, self.current_return_type);
             if (self.current_return_type) |expected| {
                 if (!value_type.eql(expected)) {
                     // Allow returning T when ?T is expected (implicit Some wrapping)
@@ -4398,9 +4431,18 @@ pub const TypeChecker = struct {
             .wildcard => {},
             .literal => {},
             .binding => |bind| {
+                // If type annotation is present, verify it matches the inferred type
+                var actual_type = t;
+                if (bind.type_annotation) |type_expr| {
+                    const declared_type = self.resolveTypeExpr(type_expr) catch self.type_builder.unknownType();
+                    if (!declared_type.eql(t)) {
+                        self.addError(.type_mismatch, bind.span, "declared type doesn't match inferred type", .{});
+                    }
+                    actual_type = declared_type;
+                }
                 self.current_scope.define(.{
                     .name = bind.name,
-                    .type_ = t,
+                    .type_ = actual_type,
                     .kind = .variable,
                     .mutable = bind.mutable,
                     .span = bind.span,
@@ -4519,9 +4561,29 @@ pub const TypeChecker = struct {
     }
 
     fn checkAssignmentCompatible(self: *TypeChecker, target: Type, value: Type) bool {
+        return self.isTypeCompatible(target, value);
+    }
+
+    /// Check if a value type is compatible with a target type.
+    /// This allows:
+    /// - Exact type equality
+    /// - Unknown types (for error recovery)
+    /// - Array to slice coercion (array[T, N] -> slice[T])
+    fn isTypeCompatible(self: *TypeChecker, target: Type, value: Type) bool {
         _ = self;
-        // No implicit conversions - types must match exactly
-        return target.eql(value) or target == .unknown or value == .unknown;
+
+        // Exact match
+        if (target.eql(value)) return true;
+
+        // Unknown types (error recovery)
+        if (target == .unknown or value == .unknown) return true;
+
+        // Array to slice coercion: [T; N] can be assigned to [T]
+        if (target == .slice and value == .array) {
+            return target.slice.element.eql(value.array.element);
+        }
+
+        return false;
     }
 
     // ========================================================================

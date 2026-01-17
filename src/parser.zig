@@ -221,12 +221,6 @@ pub const Parser = struct {
             // Block expression
             .l_brace => self.parseBlockExpr(),
 
-            // If expression
-            .if_ => self.parseIfExpr(),
-
-            // Match expression
-            .match => self.parseMatchExpr(),
-
             // Closure (pipe syntax only: |x| expr, |x: T| expr, |x: T| -> R { expr })
             .pipe => self.parseClosure(),
 
@@ -787,41 +781,47 @@ pub const Parser = struct {
 
     fn isStatementKeyword(self: *Parser) bool {
         return switch (self.current.kind) {
-            .let, .var_, .return_, .break_, .continue_, .for_, .while_, .loop => true,
+            .let, .var_, .return_, .break_, .continue_, .for_, .while_, .loop, .if_, .match => true,
             else => false,
         };
     }
 
-    fn parseIfExpr(self: *Parser) ParseError!ast.Expr {
+    fn parseIfStmt(self: *Parser) ParseError!ast.Stmt {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'if'
 
         const condition = try self.parseExpression();
         const then_block = try self.parseBlock();
-        const then_expr = ast.Expr{ .block = then_block };
 
-        var else_branch: ?ast.Expr = null;
+        var else_branch: ?*ast.ElseBranch = null;
         if (self.match(.else_)) {
             if (self.check(.if_)) {
-                else_branch = try self.parseIfExpr();
+                // Recursively parse else-if
+                const nested_if = try self.parseIfStmt();
+                const else_b = try self.create(ast.ElseBranch, .{ .if_stmt = nested_if.if_stmt });
+                else_branch = else_b;
             } else {
                 const else_block = try self.parseBlock();
-                else_branch = ast.Expr{ .block = else_block };
+                const else_b = try self.create(ast.ElseBranch, .{ .block = else_block });
+                else_branch = else_b;
             }
         }
 
-        const end_span = if (else_branch) |eb| eb.span() else then_expr.span();
+        const end_span = if (else_branch) |eb| switch (eb.*) {
+            .block => |b| b.span,
+            .if_stmt => |i| i.span,
+        } else then_block.span;
 
-        const if_expr = try self.create(ast.IfExpr, .{
+        const if_stmt = try self.create(ast.IfStmt, .{
             .condition = condition,
-            .then_branch = then_expr,
+            .then_branch = then_block,
             .else_branch = else_branch,
             .span = ast.Span.merge(start_span, end_span),
         });
-        return .{ .if_expr = if_expr };
+        return .{ .if_stmt = if_stmt };
     }
 
-    fn parseMatchExpr(self: *Parser) ParseError!ast.Expr {
+    fn parseMatchStmt(self: *Parser) ParseError!ast.Stmt {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'match'
 
@@ -830,13 +830,13 @@ pub const Parser = struct {
 
         try self.consume(.l_brace, "expected '{' after match subject");
 
-        var arms = std.ArrayListUnmanaged(ast.MatchArm){};
+        var arms = std.ArrayListUnmanaged(ast.MatchArmStmt){};
 
         while (!self.check(.r_brace) and !self.check(.eof)) {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
-            const arm = try self.parseMatchArm();
+            const arm = try self.parseMatchArmStmt();
             try arms.append(self.allocator, arm);
 
             _ = self.match(.newline) or self.match(.comma);
@@ -845,15 +845,15 @@ pub const Parser = struct {
         try self.consume(.r_brace, "expected '}' after match arms");
         const end_span = self.spanFromToken(self.previous);
 
-        const match_expr = try self.create(ast.MatchExpr, .{
+        const match_stmt = try self.create(ast.MatchStmt, .{
             .subject = subject,
-            .arms = try self.dupeSlice(ast.MatchArm, arms.items),
+            .arms = try self.dupeSlice(ast.MatchArmStmt, arms.items),
             .span = ast.Span.merge(start_span, end_span),
         });
-        return .{ .match_expr = match_expr };
+        return .{ .match_stmt = match_stmt };
     }
 
-    fn parseMatchArm(self: *Parser) ParseError!ast.MatchArm {
+    fn parseMatchArmStmt(self: *Parser) ParseError!ast.MatchArmStmt {
         const pattern = try self.parsePattern();
 
         var guard: ?ast.Expr = null;
@@ -862,13 +862,15 @@ pub const Parser = struct {
         }
 
         try self.consume(.fat_arrow, "expected '=>' after pattern");
-        const body = try self.parseExpression();
+
+        // Match arm body must be a block
+        const body = try self.parseBlock();
 
         return .{
             .pattern = pattern,
             .guard = guard,
             .body = body,
-            .span = ast.Span.merge(pattern.span(), body.span()),
+            .span = ast.Span.merge(pattern.span(), body.span),
         };
     }
 
@@ -883,10 +885,8 @@ pub const Parser = struct {
                 const param_name = try self.consumeIdentifier();
                 const param_span = self.spanFromToken(self.previous);
 
-                var param_type: ?ast.TypeExpr = null;
-                if (self.match(.colon)) {
-                    param_type = try self.parseType();
-                }
+                try self.consume(.colon, "type annotation required for closure parameter");
+                const param_type = try self.parseType();
 
                 try params.append(self.allocator, .{
                     .name = param_name,
@@ -900,10 +900,8 @@ pub const Parser = struct {
 
         try self.consume(.pipe, "expected '|' after closure parameters");
 
-        var return_type: ?ast.TypeExpr = null;
-        if (self.match(.arrow)) {
-            return_type = try self.parseType();
-        }
+        try self.consume(.arrow, "return type required for closure (use '-> Type')");
+        const return_type = try self.parseType();
 
         const body = try self.parseExpression();
         const end_span = body.span();
@@ -1153,6 +1151,8 @@ pub const Parser = struct {
             .for_ => self.parseForLoop(),
             .while_ => self.parseWhileLoop(),
             .loop => self.parseLoopStmt(),
+            .if_ => self.parseIfStmt(),
+            .match => self.parseMatchStmt(),
             else => self.parseExpressionStatement(),
         };
     }
@@ -1163,10 +1163,12 @@ pub const Parser = struct {
 
         const name = try self.consumeIdentifier();
 
-        var type_: ?ast.TypeExpr = null;
-        if (self.match(.colon)) {
-            type_ = try self.parseType();
+        // Type annotation is required
+        if (!self.match(.colon)) {
+            try self.reportError("type annotation required for let declaration");
+            return ParseError.ExpectedType;
         }
+        const type_ = try self.parseType();
 
         try self.consume(.eq, "expected '=' in let declaration");
         const value = try self.parseExpression();
@@ -1187,10 +1189,12 @@ pub const Parser = struct {
 
         const name = try self.consumeIdentifier();
 
-        var type_: ?ast.TypeExpr = null;
-        if (self.match(.colon)) {
-            type_ = try self.parseType();
+        // Type annotation is required
+        if (!self.match(.colon)) {
+            try self.reportError("type annotation required for var declaration");
+            return ParseError.ExpectedType;
         }
+        const type_ = try self.parseType();
 
         try self.consume(.eq, "expected '=' in var declaration");
         const value = try self.parseExpression();
@@ -1260,6 +1264,18 @@ pub const Parser = struct {
         self.advance(); // consume 'for'
 
         const pattern = try self.parsePattern();
+
+        // Require type annotation for simple binding patterns
+        switch (pattern) {
+            .binding => |bind| {
+                if (bind.type_annotation == null) {
+                    try self.reportError("type annotation required for for-loop iterator");
+                    return ParseError.ExpectedType;
+                }
+            },
+            else => {}, // Other patterns infer types from context
+        }
+
         try self.consume(.in, "expected 'in' after for pattern");
         const iterable = try self.parseExpression();
         const body = try self.parseBlock();
@@ -1391,10 +1407,16 @@ pub const Parser = struct {
             return self.parseVariantPatternWithType(base_type, start_span);
         }
 
-        // Simple binding
+        // Simple binding - check for type annotation
+        var type_annotation: ?ast.TypeExpr = null;
+        if (self.match(.colon)) {
+            type_annotation = try self.parseType();
+        }
+
         return .{ .binding = .{
             .name = name,
             .mutable = false,
+            .type_annotation = type_annotation,
             .span = start_span,
         } };
     }
@@ -2256,16 +2278,8 @@ test "parse array literal" {
     try std.testing.expectEqual(@as(usize, 3), result.expr.array_literal.elements.len);
 }
 
-test "parse if expression" {
-    var result = try testParse("if x { 1 } else { 2 }");
-    defer result.arena.deinit();
-
-    try std.testing.expect(result.expr == .if_expr);
-    try std.testing.expect(result.expr.if_expr.else_branch != null);
-}
-
 test "parse closure" {
-    var result = try testParse("|x, y| x + y");
+    var result = try testParse("|x: i32, y: i32| -> i32 { return x + y }");
     defer result.arena.deinit();
 
     try std.testing.expect(result.expr == .closure);
@@ -2334,30 +2348,26 @@ fn testParseStmt(source: []const u8) !struct { stmt: ast.Stmt, arena: std.heap.A
     return .{ .stmt = stmt, .arena = arena };
 }
 
-test "parse let declaration" {
-    var result = try testParseStmt("let x = 42");
-    defer result.arena.deinit();
-
-    try std.testing.expect(result.stmt == .let_decl);
-    try std.testing.expectEqualStrings("x", result.stmt.let_decl.name);
-    try std.testing.expect(result.stmt.let_decl.type_ == null);
-}
-
-test "parse let with type annotation" {
+test "parse let declaration with type" {
     var result = try testParseStmt("let x: i32 = 42");
     defer result.arena.deinit();
 
     try std.testing.expect(result.stmt == .let_decl);
     try std.testing.expectEqualStrings("x", result.stmt.let_decl.name);
-    try std.testing.expect(result.stmt.let_decl.type_ != null);
+    // Type is required and should be a named type "i32"
+    try std.testing.expect(result.stmt.let_decl.type_ == .named);
+    try std.testing.expectEqualStrings("i32", result.stmt.let_decl.type_.named.name);
 }
 
-test "parse var declaration" {
-    var result = try testParseStmt("var count = 0");
+test "parse var declaration with type" {
+    var result = try testParseStmt("var count: i32 = 0");
     defer result.arena.deinit();
 
     try std.testing.expect(result.stmt == .var_decl);
     try std.testing.expectEqualStrings("count", result.stmt.var_decl.name);
+    // Type is required
+    try std.testing.expect(result.stmt.var_decl.type_ == .named);
+    try std.testing.expectEqualStrings("i32", result.stmt.var_decl.type_.named.name);
 }
 
 test "parse return statement" {
@@ -2390,11 +2400,14 @@ test "parse while loop" {
     try std.testing.expect(result.stmt == .while_loop);
 }
 
-test "parse for loop" {
-    var result = try testParseStmt("for item in items { print(item) }");
+test "parse for loop with type" {
+    var result = try testParseStmt("for item: i32 in items { print(item) }");
     defer result.arena.deinit();
 
     try std.testing.expect(result.stmt == .for_loop);
+    // Check that the pattern is a binding with a type annotation
+    try std.testing.expect(result.stmt.for_loop.pattern == .binding);
+    try std.testing.expect(result.stmt.for_loop.pattern.binding.type_annotation != null);
 }
 
 test "parse loop statement" {
