@@ -19,7 +19,7 @@
 - No standard library beyond builtins (print, panic, assert)
 
 **Near-term Fixes (discovered via TheNarrowWindow game):**
-- [ ] **PRIORITY** VM: struct field access fails with "UndefinedField" for all structs (blocks game from running)
+- [x] VM: struct field access fails with "UndefinedField" for all structs - fixed by emitting StructDescriptor with field names to constant pool
 - [x] Native codegen: struct parameters to functions (fixed - track struct_type_name for parameters)
 - [x] Native codegen: mutable struct variables (`var s = struct_value`) - already working
 - [x] VM: struct field mutation crashes (hash map panic in ObjStruct.setField) - fixed by making setField duplicate keys

@@ -100,12 +100,16 @@ pub const Chunk = struct {
     }
 
     pub fn deinit(self: *Chunk) void {
-        // Free function chunks recursively
+        // Free nested allocations in constants
         for (self.constants.items) |constant| {
             switch (constant) {
                 .function => |func| {
                     func.deinit();
                     self.allocator.destroy(func);
+                },
+                .struct_type => |desc| {
+                    self.allocator.free(desc.field_names);
+                    self.allocator.destroy(desc);
                 },
                 else => {},
             }

@@ -598,19 +598,19 @@ pub const VM = struct {
                     try self.push(.{ .tuple = tuple });
                 },
                 .op_struct => {
-                    const field_count = self.readU16();
-                    const struc = try ObjStruct.createGC(&self.gc, "anonymous");
+                    const desc_idx = self.readU16();
+                    const descriptor = self.currentChunk().getConstant(desc_idx).struct_type;
+                    const struc = try ObjStruct.createGC(&self.gc, descriptor.name);
 
-                    // Pop values in reverse order.
-                    // TODO: Get field names from constant pool instead of using numeric keys
+                    // Pop values in reverse order (last field first on stack).
+                    const field_count = descriptor.field_names.len;
                     var i: usize = 0;
                     while (i < field_count) : (i += 1) {
                         const value = try self.pop();
-                        // For now, use numeric keys. setField duplicates the key internally,
-                        // so stack buffers are safe to use here.
-                        var buf: [32]u8 = undefined;
-                        const key = std.fmt.bufPrint(&buf, "{d}", .{field_count - 1 - i}) catch "?";
-                        try struc.setField(self.allocator, key, value);
+                        // Use actual field name from descriptor (fields are compiled in order,
+                        // so we pop in reverse: last field first).
+                        const field_name = descriptor.field_names[field_count - 1 - i];
+                        try struc.setField(self.allocator, field_name, value);
                     }
 
                     try self.push(.{ .struct_ = struc });

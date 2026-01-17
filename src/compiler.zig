@@ -174,6 +174,19 @@ const FunctionType = enum {
 };
 
 // ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Extracts the base type name from a TypeExpr.
+fn extractTypeName(te: ast.TypeExpr) []const u8 {
+    return switch (te) {
+        .named => |n| n.name,
+        .generic_apply => |g| extractTypeName(g.base),
+        else => "anonymous",
+    };
+}
+
+// ============================================================================
 // Compiler
 // ============================================================================
 
@@ -1139,15 +1152,40 @@ pub const Compiler = struct {
 
         // TODO: Handle spread operator
 
-        // Get struct descriptor.
-        // For now, create a simple descriptor from field names.
         const field_count = struc.fields.len;
         if (field_count > std.math.maxInt(u16)) {
             try self.addError(.too_many_constants, struc.span, "too many struct fields");
             return;
         }
 
-        try self.emitOp2(.op_struct, @intCast(field_count), line);
+        // Create struct descriptor with field names for the VM.
+        const field_names = self.allocator.alloc([]const u8, field_count) catch {
+            try self.addError(.internal_error, struc.span, "out of memory");
+            return;
+        };
+        for (struc.fields, 0..) |field, i| {
+            field_names[i] = field.name;
+        }
+
+        const descriptor = self.allocator.create(chunk_mod.StructDescriptor) catch {
+            self.allocator.free(field_names);
+            try self.addError(.internal_error, struc.span, "out of memory");
+            return;
+        };
+
+        // Extract struct type name from TypeExpr if available.
+        const type_name: []const u8 = if (struc.type_name) |te|
+            extractTypeName(te)
+        else
+            "anonymous";
+
+        descriptor.* = .{
+            .name = type_name,
+            .field_names = field_names,
+        };
+
+        const desc_idx = try self.makeConstant(.{ .struct_type = descriptor });
+        try self.emitOp2(.op_struct, @intCast(desc_idx), line);
     }
 
     fn compileArrayLiteral(self: *Compiler, arr: *ast.ArrayLiteral) Error!void {
