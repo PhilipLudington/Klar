@@ -19,6 +19,7 @@
 - No standard library beyond builtins (print, panic, assert)
 
 **Near-term Fixes (discovered via TheNarrowWindow game):**
+- [x] VM: struct field assignment fails with "TypeError" - fixed by swapping pop/peek order in op_set_field handler
 - [x] VM: struct field access fails with "UndefinedField" for all structs - fixed by emitting StructDescriptor with field names to constant pool
 - [x] Native codegen: struct parameters to functions (fixed - track struct_type_name for parameters)
 - [x] Native codegen: mutable struct variables (`var s = struct_value`) - already working
@@ -95,17 +96,17 @@
 
 **Objective:** Implement trait definitions, implementations, and bounds.
 
-**Status:** 🟡 In Progress. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds). Remaining: associated types, trait inheritance, core traits (Eq, Ordered, Clone, Drop), derive macros.
+**Status:** 🟡 In Progress. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance). Remaining: associated types, core traits (Eq, Ordered, Clone, Drop), derive macros.
 
 ### Trait Registry
 - [x] Create traits.zig module for trait management (implemented in checker.zig)
 - [x] Implement TraitRegistry to store all trait definitions
 - [x] Store trait method signatures and default implementations
-- [ ] Handle trait inheritance (trait A: B syntax)
+- [x] Handle trait inheritance (trait A: B syntax) - supports single and multiple inheritance (A: B + C)
 
 ### Trait Definition Checking
 - [x] Validate trait definitions (unique method names, valid signatures)
-- [ ] Check for conflicts in trait inheritance
+- [x] Check for conflicts in trait inheritance (first definition wins)
 - [x] Store Self type placeholder for trait methods
 - [ ] Handle associated types in traits
 
@@ -153,10 +154,13 @@
 - [x] Test: trait bounds restrict generic parameters (trait_bounds.kl)
 - [x] Test: method calls resolve to correct implementation (trait_default.kl)
 - [x] Test: trait method calls through generic bounds (trait_method_through_bounds.kl, trait_method_with_args.kl)
+- [x] Test: trait inheritance works correctly (trait_inheritance.kl, trait_multi_inherit.kl)
 - [ ] Test: associated types work correctly
 
 **Files Modified:**
-- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds ✓
+- `src/ast.zig` - TraitDecl super_traits field ✓
+- `src/parser.zig` - Parse trait inheritance (: B + C) syntax ✓
+- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds, trait inheritance ✓
 - `src/types.zig` - Trait bounds to type system ✓
 - `src/codegen/emit.zig` - Early struct registration for monomorphized function signatures ✓
 - `src/main.zig` - Call struct registration before monomorphized function declarations ✓

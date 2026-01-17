@@ -629,6 +629,7 @@ pub const VariantPayload = union(enum) {
 pub const TraitDecl = struct {
     name: []const u8,
     type_params: []const TypeParam,
+    super_traits: []const TypeExpr, // Trait inheritance: trait A: B + C
     methods: []const FunctionDecl,
     is_pub: bool,
     span: Span,

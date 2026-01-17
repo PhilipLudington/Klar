@@ -681,8 +681,9 @@ pub const VM = struct {
                 .op_set_field => {
                     const name_idx = self.readU16();
                     const name = self.currentChunk().getConstant(name_idx).string;
-                    const obj = try self.pop();
-                    const value = try self.peek(0);
+                    // Stack after op_swap: [object, value] with value at TOS
+                    const value = try self.pop(); // Pop value from TOS
+                    const obj = try self.peek(0); // Peek at object
 
                     switch (obj) {
                         .struct_ => |struc| {

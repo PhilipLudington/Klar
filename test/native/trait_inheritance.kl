@@ -1,0 +1,30 @@
+// Test for trait inheritance (trait A: B syntax)
+
+trait Base {
+    fn base_method(self: Self) -> i32
+}
+
+trait Derived: Base {
+    fn derived_method(self: Self) -> i32
+}
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+// Must implement all methods from Derived AND Base
+impl Point: Derived {
+    fn base_method(self: Point) -> i32 {
+        self.x
+    }
+
+    fn derived_method(self: Point) -> i32 {
+        self.y
+    }
+}
+
+fn main() -> i32 {
+    let p = Point { x: 10, y: 32 }
+    p.base_method() + p.derived_method()
+}

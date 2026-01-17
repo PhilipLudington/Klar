@@ -479,6 +479,9 @@ pub const TypeChecker = struct {
             if (trait_type.type_params.len > 0) {
                 self.allocator.free(trait_type.type_params);
             }
+            if (trait_type.super_traits.len > 0) {
+                self.allocator.free(trait_type.super_traits);
+            }
             self.allocator.free(trait_type.methods);
             self.allocator.destroy(trait_type);
         }
@@ -3390,12 +3393,46 @@ pub const TypeChecker = struct {
         }
         defer if (has_type_params) self.popTypeParams();
 
+        // Resolve super traits (trait inheritance)
+        var super_trait_list: std.ArrayListUnmanaged(*types.TraitType) = .{};
+        defer super_trait_list.deinit(self.allocator);
+
+        for (trait_decl.super_traits) |super_trait_expr| {
+            const resolved = self.resolveTypeExpr(super_trait_expr) catch {
+                self.addError(.undefined_type, trait_decl.span, "cannot resolve super trait", .{});
+                continue;
+            };
+            if (resolved != .trait_) {
+                self.addError(.type_mismatch, trait_decl.span, "expected trait type in trait inheritance", .{});
+                continue;
+            }
+            // Check that super trait is already defined (no forward references)
+            if (self.trait_registry.get(resolved.trait_.name) == null) {
+                self.addError(.undefined_type, trait_decl.span, "super trait '{s}' must be defined before use", .{resolved.trait_.name});
+                continue;
+            }
+            super_trait_list.append(self.allocator, resolved.trait_) catch {};
+        }
+
         // Build trait methods
         var trait_methods: std.ArrayListUnmanaged(types.TraitMethod) = .{};
         defer trait_methods.deinit(self.allocator);
 
         var seen_method_names: std.StringHashMapUnmanaged(void) = .{};
         defer seen_method_names.deinit(self.allocator);
+
+        // First, inherit methods from super traits
+        for (super_trait_list.items) |super_trait| {
+            for (super_trait.methods) |super_method| {
+                if (seen_method_names.get(super_method.name) != null) {
+                    // Method already defined (conflict from multiple inheritance)
+                    // For now, first one wins - could add more sophisticated handling later
+                    continue;
+                }
+                seen_method_names.put(self.allocator, super_method.name, {}) catch {};
+                trait_methods.append(self.allocator, super_method) catch {};
+            }
+        }
 
         for (trait_decl.methods) |method_decl| {
             // Check for duplicate method names
@@ -3469,7 +3506,7 @@ pub const TypeChecker = struct {
             .name = trait_decl.name,
             .type_params = trait_type_params,
             .methods = trait_methods.toOwnedSlice(self.allocator) catch &.{},
-            .super_traits = &.{}, // TODO: Support trait inheritance
+            .super_traits = super_trait_list.toOwnedSlice(self.allocator) catch &.{},
         };
 
         // Track for cleanup

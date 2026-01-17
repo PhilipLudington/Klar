@@ -1910,6 +1910,20 @@ pub const Parser = struct {
         const name = try self.consumeIdentifier();
         const type_params = try self.parseTypeParams();
 
+        // Parse optional super traits: trait A: B + C
+        var super_traits = std.ArrayListUnmanaged(ast.TypeExpr){};
+        if (self.match(.colon)) {
+            // Parse first super trait
+            const first_trait = try self.parseType();
+            try super_traits.append(self.allocator, first_trait);
+
+            // Parse additional super traits separated by '+'
+            while (self.match(.plus)) {
+                const next_trait = try self.parseType();
+                try super_traits.append(self.allocator, next_trait);
+            }
+        }
+
         try self.consume(.l_brace, "expected '{' after trait name");
 
         // Parse method signatures
@@ -1931,6 +1945,7 @@ pub const Parser = struct {
         const trait_decl = try self.create(ast.TraitDecl, .{
             .name = name,
             .type_params = type_params,
+            .super_traits = try self.dupeSlice(ast.TypeExpr, super_traits.items),
             .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
             .is_pub = is_pub,
             .span = ast.Span.merge(start_span, end_span),
