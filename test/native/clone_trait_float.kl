@@ -1,0 +1,16 @@
+// Test for builtin Clone trait - float
+
+fn main() -> i32 {
+    // Test float cloning
+    let a = 3.14
+    let b = a.clone()
+
+    // b should be a copy of a with the same value
+    if a.eq(b) {
+        // Values are equal - correct!
+        0
+    } else {
+        // Values differ - should not happen
+        1
+    }
+}

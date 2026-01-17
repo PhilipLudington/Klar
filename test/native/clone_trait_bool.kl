@@ -1,0 +1,24 @@
+// Test for builtin Clone trait - bool
+
+fn main() -> i32 {
+    // Test bool cloning
+    let t = true
+    let t2 = t.clone()
+
+    let f = false
+    let f2 = f.clone()
+
+    // Clones should equal originals
+    if t.eq(t2) {
+        if f.eq(f2) {
+            // Both correct!
+            0
+        } else {
+            // false clone failed
+            2
+        }
+    } else {
+        // true clone failed
+        1
+    }
+}

@@ -1718,6 +1718,32 @@ pub const Emitter = struct {
         return false;
     }
 
+    fn isRcType(self: *Emitter, expr: ast.Expr) bool {
+        if (expr == .method_call) {
+            const method = expr.method_call;
+            if (method.object == .identifier) {
+                const obj_name = method.object.identifier.name;
+                if (std.mem.eql(u8, obj_name, "Rc") and std.mem.eql(u8, method.method_name, "new")) {
+                    return true;
+                }
+            }
+            // For clone(), check the receiver
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                return self.isRcType(method.object);
+            }
+        }
+
+        // Check for identifier that is already an Rc (has inner_type but is not Arc)
+        if (expr == .identifier) {
+            const id = expr.identifier;
+            if (self.named_values.get(id.name)) |local| {
+                return local.inner_type != null and !local.is_arc;
+            }
+        }
+
+        return false;
+    }
+
     fn emitCall(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         // Check if callee is a direct function reference
         const func_name = switch (call.callee) {
@@ -2580,11 +2606,17 @@ pub const Emitter = struct {
                         return llvm.Types.pointer(self.ctx);
                     }
                 }
-                // clone() and downgrade() return pointers
-                if (std.mem.eql(u8, m.method_name, "clone") or
-                    std.mem.eql(u8, m.method_name, "downgrade"))
-                {
+                // downgrade() always returns pointer (Weak type)
+                if (std.mem.eql(u8, m.method_name, "downgrade")) {
                     return llvm.Types.pointer(self.ctx);
+                }
+                // clone() - for Rc/Arc returns pointer, for Clone trait returns same type as object
+                if (std.mem.eql(u8, m.method_name, "clone")) {
+                    if (self.isArcType(m.object) or self.isRcType(m.object)) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                    // For Clone trait, return the type of the object being cloned
+                    return self.inferExprType(m.object);
                 }
                 // upgrade() returns optional pointer - struct {i1, ptr}
                 if (std.mem.eql(u8, m.method_name, "upgrade")) {
@@ -3738,9 +3770,10 @@ pub const Emitter = struct {
             // Check if this is an Arc or Rc and dispatch accordingly
             if (self.isArcType(method.object)) {
                 return self.emitArcClone(object, object_type);
-            } else {
+            } else if (self.isRcType(method.object)) {
                 return self.emitRcClone(object, object_type);
             }
+            // For non-Rc/Arc types, fall through to Clone trait handler below
         }
 
         if (std.mem.eql(u8, method.method_name, "downgrade")) {
@@ -3801,6 +3834,11 @@ pub const Emitter = struct {
             std.mem.eql(u8, method.method_name, "ge"))
         {
             return self.emitOrderedMethod(method, object, object_type);
+        }
+
+        // Clone trait: clone() method for explicit cloning
+        if (std.mem.eql(u8, method.method_name, "clone")) {
+            return self.emitCloneMethod(method, object, object_type);
         }
 
         // Check for user-defined struct methods
@@ -6208,6 +6246,61 @@ pub const Emitter = struct {
                 return llvm.Const.int1(self.ctx, false);
             },
         }
+    }
+
+    /// Emit the Clone trait's clone() method for explicit cloning.
+    /// Works for primitives (integers, floats, bools, chars) and strings.
+    fn emitCloneMethod(self: *Emitter, method: *ast.MethodCall, value: llvm.ValueRef, value_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        _ = method; // clone() takes no arguments
+
+        // Dispatch based on the LLVM type kind
+        const kind = llvm.c.LLVMGetTypeKind(value_type);
+
+        switch (kind) {
+            llvm.c.LLVMIntegerTypeKind => {
+                // Integers and bools are value types - cloning is just returning the value
+                return value;
+            },
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => {
+                // Floats are value types - cloning is just returning the value
+                return value;
+            },
+            llvm.c.LLVMPointerTypeKind => {
+                // This is likely a string (char*) - use strdup to create a copy
+                const strdup_fn = self.getOrDeclareStrdup();
+                var args = [_]llvm.ValueRef{value};
+                return self.builder.buildCall(
+                    llvm.c.LLVMGlobalGetValueType(strdup_fn),
+                    strdup_fn,
+                    &args,
+                    "clone.str",
+                );
+            },
+            llvm.c.LLVMStructTypeKind => {
+                // For structs that implement Clone, we need to call the user-defined clone method
+                // This should be handled by the user-defined method lookup before we get here
+                // For now, just return the value (shallow copy)
+                return value;
+            },
+            else => {
+                // Unsupported type - just return the value
+                return value;
+            },
+        }
+    }
+
+    /// Declare the C strdup function if not already declared.
+    fn getOrDeclareStrdup(self: *Emitter) llvm.ValueRef {
+        const fn_name = "strdup";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // char* strdup(const char *s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 1, 0); // not variadic
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
     /// Declare the C strcmp function if not already declared.

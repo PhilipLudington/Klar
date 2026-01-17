@@ -764,6 +764,52 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
+
+        // Clone trait: trait Clone { fn clone(&self) -> Self; }
+        // Provides explicit cloning for types. All primitives implement Clone.
+        // Create a proper Self type variable so the type_var handler can resolve it
+        const clone_self_type = Type{ .type_var = .{
+            .id = 999, // Use a high unique ID to avoid conflicts
+            .name = "Self",
+            .bounds = &.{},
+        } };
+        const clone_self_ref = try self.type_builder.referenceType(clone_self_type, false);
+        const clone_method_sig = types.FunctionType{
+            .params = try self.allocator.dupe(Type, &.{clone_self_ref}),
+            .return_type = clone_self_type, // Returns Self type variable
+            .is_async = false,
+        };
+        const clone_method = types.TraitMethod{
+            .name = "clone",
+            .signature = clone_method_sig,
+            .has_default = false,
+        };
+
+        const clone_trait_type = try self.allocator.create(types.TraitType);
+        clone_trait_type.* = .{
+            .name = "Clone",
+            .type_params = &.{},
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{clone_method}),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, clone_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "Clone", .{
+            .trait_type = clone_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "Clone",
+            .type_ = .{ .trait_ = clone_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
     }
 
     // ========================================================================
@@ -2339,6 +2385,30 @@ pub const TypeChecker = struct {
             }
 
             // Type variable with Ordered bound - handled below in the generic type_var section
+        }
+
+        // Clone trait: clone() method on primitives and structs that implement Clone
+        if (std.mem.eql(u8, method.method_name, "clone")) {
+            // clone() takes no arguments
+            if (method.args.len != 0) {
+                self.addError(.invalid_call, method.span, "clone() expects no arguments", .{});
+                return self.type_builder.unknownType();
+            }
+
+            // All primitives have builtin Clone implementation (value types are trivially cloneable)
+            if (object_type == .primitive) {
+                return object_type;
+            }
+
+            // For struct types, check if the struct implements Clone
+            if (object_type == .struct_) {
+                const struct_name = object_type.struct_.name;
+                if (self.typeImplementsTrait(struct_name, "Clone")) {
+                    return object_type;
+                }
+            }
+
+            // Type variable with Clone bound - handled below in the generic type_var section
         }
 
         // String methods

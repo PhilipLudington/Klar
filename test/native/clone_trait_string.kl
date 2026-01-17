@@ -1,0 +1,16 @@
+// Test for builtin Clone trait - string
+
+fn main() -> i32 {
+    // Test string cloning
+    let s1 = "hello"
+    let s2 = s1.clone()
+
+    // s2 should be a copy of s1 with the same value
+    if s1.eq(s2) {
+        // Values are equal - correct!
+        0
+    } else {
+        // Values differ - should not happen
+        1
+    }
+}
