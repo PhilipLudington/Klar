@@ -13,8 +13,8 @@
 - 252x speedup for native vs VM
 
 **Gaps to Address:**
-- Generic functions, structs, and enums working (type checking + monomorphization); enum literal codegen pending
-- Traits parsed but not semantically checked
+- Generic functions, structs, and enums fully working (type checking, monomorphization, codegen)
+- Traits working (definitions, implementations, bounds, method resolution through bounds)
 - Single-file compilation only
 - No standard library beyond builtins (print, panic, assert)
 
@@ -43,7 +43,7 @@
 ### Type Parameter Substitution
 - [x] Implement substituteTypeParams() for replacing type vars with concrete types
 - [x] Handle recursive type substitution in nested generics
-- [ ] Create AppliedType representation for instantiated generic types
+- [x] Create AppliedType representation for instantiated generic types
 - [x] Support type parameter substitution in function signatures
 
 ### Monomorphization
@@ -95,7 +95,7 @@
 
 **Objective:** Implement trait definitions, implementations, and bounds.
 
-**Status:** 🟡 In Progress. Core trait infrastructure implemented (trait registry, definition validation, impl checking, bounds parsing). Remaining: trait method resolution through bounds, associated types, core traits, derive macros.
+**Status:** 🟡 In Progress. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds). Remaining: associated types, trait inheritance, core traits (Eq, Ordered, Clone, Drop), derive macros.
 
 ### Trait Registry
 - [x] Create traits.zig module for trait management (implemented in checker.zig)
@@ -678,8 +678,8 @@ Based on dependencies:
 Phase 4 is complete when:
 
 **Language Completeness:**
-- [ ] Generic functions and types work correctly
-- [ ] Traits can be defined and implemented
+- [x] Generic functions and types work correctly
+- [x] Traits can be defined and implemented
 - [ ] Multi-file projects compile
 - [ ] Standard library provides core functionality
 
