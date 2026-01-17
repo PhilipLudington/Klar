@@ -632,10 +632,26 @@ pub const VariantPayload = union(enum) {
     struct_: []const StructField,
 };
 
+/// Associated type declaration in a trait (e.g., `type Item` or `type Item: Clone`)
+pub const AssociatedTypeDecl = struct {
+    name: []const u8,
+    bounds: []const TypeExpr, // Trait bounds (e.g., : Clone + Hash)
+    default: ?TypeExpr, // Optional default type
+    span: Span,
+};
+
+/// Associated type binding in an impl block (e.g., `type Item = i32`)
+pub const AssociatedTypeBinding = struct {
+    name: []const u8,
+    value: TypeExpr,
+    span: Span,
+};
+
 pub const TraitDecl = struct {
     name: []const u8,
     type_params: []const TypeParam,
     super_traits: []const TypeExpr, // Trait inheritance: trait A: B + C
+    associated_types: []const AssociatedTypeDecl, // Associated type declarations
     methods: []const FunctionDecl,
     is_pub: bool,
     span: Span,
@@ -645,6 +661,7 @@ pub const ImplDecl = struct {
     type_params: []const TypeParam,
     target_type: TypeExpr,
     trait_type: ?TypeExpr,
+    associated_types: []const AssociatedTypeBinding, // Associated type bindings
     where_clause: ?[]const WhereConstraint,
     methods: []const FunctionDecl,
     span: Span,

@@ -240,6 +240,14 @@ pub const TypeChecker = struct {
         decl: ?*ast.TraitDecl,
     };
 
+    /// Information about an associated type binding in an impl block.
+    pub const AssociatedTypeBinding = struct {
+        /// Name of the associated type
+        name: []const u8,
+        /// The concrete type provided
+        concrete_type: Type,
+    };
+
     /// Information about a trait implementation for a type.
     pub const TraitImplInfo = struct {
         /// Name of the trait being implemented
@@ -248,6 +256,8 @@ pub const TypeChecker = struct {
         impl_type_name: []const u8,
         /// Type parameters from the impl block (for generic impls)
         impl_type_params: []const types.TypeVar,
+        /// Associated type bindings (type Item = ConcreteType)
+        associated_type_bindings: []const AssociatedTypeBinding,
         /// The methods implementing the trait
         methods: []const StructMethod,
     };
@@ -680,6 +690,7 @@ pub const TypeChecker = struct {
         eq_trait_type.* = .{
             .name = "Eq",
             .type_params = &.{},
+            .associated_types = &.{},
             .methods = try self.allocator.dupe(types.TraitMethod, &.{eq_method}),
             .super_traits = &.{},
         };
@@ -750,6 +761,7 @@ pub const TypeChecker = struct {
         ordered_trait_type.* = .{
             .name = "Ordered",
             .type_params = &.{},
+            .associated_types = &.{},
             .methods = try self.allocator.dupe(types.TraitMethod, &.{ lt_method, le_method, gt_method, ge_method }),
             .super_traits = &.{},
         };
@@ -796,6 +808,7 @@ pub const TypeChecker = struct {
         clone_trait_type.* = .{
             .name = "Clone",
             .type_params = &.{},
+            .associated_types = &.{},
             .methods = try self.allocator.dupe(types.TraitMethod, &.{clone_method}),
             .super_traits = &.{},
         };
@@ -838,6 +851,7 @@ pub const TypeChecker = struct {
         drop_trait_type.* = .{
             .name = "Drop",
             .type_params = &.{},
+            .associated_types = &.{},
             .methods = try self.allocator.dupe(types.TraitMethod, &.{drop_method}),
             .super_traits = &.{},
         };
@@ -884,6 +898,7 @@ pub const TypeChecker = struct {
         default_trait_type.* = .{
             .name = "Default",
             .type_params = &.{},
+            .associated_types = &.{},
             .methods = try self.allocator.dupe(types.TraitMethod, &.{default_method}),
             .super_traits = &.{},
         };
@@ -927,6 +942,7 @@ pub const TypeChecker = struct {
         hash_trait_type.* = .{
             .name = "Hash",
             .type_params = &.{},
+            .associated_types = &.{},
             .methods = try self.allocator.dupe(types.TraitMethod, &.{hash_method}),
             .super_traits = &.{},
         };
@@ -3985,6 +4001,64 @@ pub const TypeChecker = struct {
             super_trait_list.append(self.allocator, resolved.trait_) catch {};
         }
 
+        // Build associated types list
+        var associated_types: std.ArrayListUnmanaged(types.AssociatedType) = .{};
+        defer associated_types.deinit(self.allocator);
+
+        var seen_assoc_names: std.StringHashMapUnmanaged(void) = .{};
+        defer seen_assoc_names.deinit(self.allocator);
+
+        // First, inherit associated types from super traits
+        for (super_trait_list.items) |super_trait| {
+            for (super_trait.associated_types) |super_assoc| {
+                if (seen_assoc_names.get(super_assoc.name) != null) {
+                    // Associated type already defined (conflict from multiple inheritance)
+                    // First one wins - could add more sophisticated handling later
+                    continue;
+                }
+                seen_assoc_names.put(self.allocator, super_assoc.name, {}) catch {};
+                associated_types.append(self.allocator, super_assoc) catch {};
+            }
+        }
+
+        // Process associated type declarations from this trait
+        for (trait_decl.associated_types) |assoc_decl| {
+            // Check for duplicate associated type names
+            if (seen_assoc_names.get(assoc_decl.name) != null) {
+                self.addError(.duplicate_definition, assoc_decl.span, "duplicate associated type '{s}' in trait", .{assoc_decl.name});
+                continue;
+            }
+            seen_assoc_names.put(self.allocator, assoc_decl.name, {}) catch {};
+
+            // Resolve bounds (trait requirements for the associated type)
+            var assoc_bounds: std.ArrayListUnmanaged(*types.TraitType) = .{};
+            defer assoc_bounds.deinit(self.allocator);
+
+            for (assoc_decl.bounds) |bound_expr| {
+                const resolved = self.resolveTypeExpr(bound_expr) catch {
+                    self.addError(.undefined_type, assoc_decl.span, "cannot resolve associated type bound", .{});
+                    continue;
+                };
+                if (resolved != .trait_) {
+                    self.addError(.type_mismatch, assoc_decl.span, "expected trait type for associated type bound", .{});
+                    continue;
+                }
+                assoc_bounds.append(self.allocator, resolved.trait_) catch {};
+            }
+
+            // Resolve default type if provided
+            var default_type: ?Type = null;
+            if (assoc_decl.default) |default_expr| {
+                default_type = self.resolveTypeExpr(default_expr) catch null;
+            }
+
+            associated_types.append(self.allocator, .{
+                .name = assoc_decl.name,
+                .bounds = assoc_bounds.toOwnedSlice(self.allocator) catch &.{},
+                .default = default_type,
+            }) catch {};
+        }
+
         // Build trait methods
         var trait_methods: std.ArrayListUnmanaged(types.TraitMethod) = .{};
         defer trait_methods.deinit(self.allocator);
@@ -4076,6 +4150,7 @@ pub const TypeChecker = struct {
         trait_type.* = .{
             .name = trait_decl.name,
             .type_params = trait_type_params,
+            .associated_types = associated_types.toOwnedSlice(self.allocator) catch &.{},
             .methods = trait_methods.toOwnedSlice(self.allocator) catch &.{},
             .super_traits = super_trait_list.toOwnedSlice(self.allocator) catch &.{},
         };
@@ -4154,6 +4229,43 @@ pub const TypeChecker = struct {
                 self.addError(.undefined_type, impl_decl.span, "trait '{s}' not found", .{trait_name});
                 return;
             }
+        }
+
+        // Process associated type bindings from the impl block
+        var assoc_bindings: std.ArrayListUnmanaged(AssociatedTypeBinding) = .{};
+        defer assoc_bindings.deinit(self.allocator);
+
+        for (impl_decl.associated_types) |binding| {
+            // Resolve the concrete type
+            const concrete_type = self.resolveTypeExpr(binding.value) catch {
+                self.addError(.undefined_type, binding.span, "cannot resolve associated type binding", .{});
+                continue;
+            };
+
+            // If implementing a trait, verify the binding corresponds to a trait associated type
+            if (trait_info) |info| {
+                const trait_type = info.trait_type;
+                var found_in_trait = false;
+                for (trait_type.associated_types) |assoc| {
+                    if (std.mem.eql(u8, assoc.name, binding.name)) {
+                        found_in_trait = true;
+
+                        // TODO: Check that concrete_type satisfies assoc.bounds
+                        // This requires implementing trait bound checking for arbitrary types
+
+                        break;
+                    }
+                }
+                if (!found_in_trait) {
+                    self.addError(.undefined_type, binding.span, "'{s}' is not an associated type of trait '{s}'", .{ binding.name, trait_type.name });
+                    continue;
+                }
+            }
+
+            assoc_bindings.append(self.allocator, .{
+                .name = binding.name,
+                .concrete_type = concrete_type,
+            }) catch {};
         }
 
         // Process each method in the impl block
@@ -4267,6 +4379,21 @@ pub const TypeChecker = struct {
             // Get the list of implemented methods for this struct
             const impl_methods = self.struct_methods.get(struct_name);
 
+            // Check that all required associated types are provided
+            for (trait_type.associated_types) |trait_assoc| {
+                var found = false;
+                for (assoc_bindings.items) |binding| {
+                    if (std.mem.eql(u8, binding.name, trait_assoc.name)) {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found and trait_assoc.default == null) {
+                    self.addError(.trait_not_implemented, impl_decl.span, "missing associated type binding for '{s}'", .{trait_assoc.name});
+                }
+            }
+
             for (trait_type.methods) |trait_method| {
                 // Check if method is implemented
                 var found = false;
@@ -4297,6 +4424,7 @@ pub const TypeChecker = struct {
                 .trait_name = trait_type.name,
                 .impl_type_name = struct_name,
                 .impl_type_params = impl_type_params,
+                .associated_type_bindings = assoc_bindings.toOwnedSlice(self.allocator) catch &.{},
                 .methods = if (impl_methods) |m| m.items else &.{},
             }) catch {};
         }

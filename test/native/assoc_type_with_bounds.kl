@@ -1,0 +1,27 @@
+// Test associated types with trait bounds
+
+trait Cloneable {
+    fn my_clone(self: Self) -> Self
+}
+
+trait Container {
+    type Item: Cloneable
+    fn count(self: Self) -> i32
+}
+
+struct IntHolder {
+    value: i32
+}
+
+impl IntHolder: Container {
+    type Item = i32
+
+    fn count(self: IntHolder) -> i32 {
+        return 42
+    }
+}
+
+fn main() -> i32 {
+    let holder: IntHolder = IntHolder { value: 10 }
+    return holder.count()
+}

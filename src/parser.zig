@@ -1948,31 +1948,74 @@ pub const Parser = struct {
 
         try self.consume(.l_brace, "expected '{' after trait name");
 
-        // Parse method signatures
+        // Parse associated types and method signatures
+        var associated_types = std.ArrayListUnmanaged(ast.AssociatedTypeDecl){};
         var methods = std.ArrayListUnmanaged(ast.FunctionDecl){};
         while (!self.check(.r_brace) and !self.check(.eof)) {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
-            // Each method in trait is a function signature (potentially without body)
-            const method_decl = try self.parseFunctionDecl(false);
-            try methods.append(self.allocator, method_decl.function.*);
+            // Check for associated type declaration: type Item or type Item: Bounds
+            if (self.check(.type_)) {
+                const assoc_type = try self.parseAssociatedTypeDecl();
+                try associated_types.append(self.allocator, assoc_type);
+            } else {
+                // Each method in trait is a function signature (potentially without body)
+                const method_decl = try self.parseFunctionDecl(false);
+                try methods.append(self.allocator, method_decl.function.*);
+            }
 
             _ = self.match(.newline);
         }
 
-        try self.consume(.r_brace, "expected '}' after trait methods");
+        try self.consume(.r_brace, "expected '}' after trait members");
         const end_span = self.spanFromToken(self.previous);
 
         const trait_decl = try self.create(ast.TraitDecl, .{
             .name = name,
             .type_params = type_params,
             .super_traits = try self.dupeSlice(ast.TypeExpr, super_traits.items),
+            .associated_types = try self.dupeSlice(ast.AssociatedTypeDecl, associated_types.items),
             .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
             .is_pub = is_pub,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .trait_decl = trait_decl };
+    }
+
+    /// Parse an associated type declaration: type Item or type Item: Clone + Hash or type Item = DefaultType
+    fn parseAssociatedTypeDecl(self: *Parser) ParseError!ast.AssociatedTypeDecl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'type'
+
+        const assoc_name = try self.consumeIdentifier();
+
+        // Parse optional bounds: type Item: Clone + Hash
+        var bounds = std.ArrayListUnmanaged(ast.TypeExpr){};
+        if (self.match(.colon)) {
+            const first_bound = try self.parseType();
+            try bounds.append(self.allocator, first_bound);
+
+            while (self.match(.plus)) {
+                const next_bound = try self.parseType();
+                try bounds.append(self.allocator, next_bound);
+            }
+        }
+
+        // Parse optional default: type Item = i32
+        var default_type: ?ast.TypeExpr = null;
+        if (self.match(.eq)) {
+            default_type = try self.parseType();
+        }
+
+        const end_span = self.spanFromToken(self.previous);
+
+        return ast.AssociatedTypeDecl{
+            .name = assoc_name,
+            .bounds = try self.dupeSlice(ast.TypeExpr, bounds.items),
+            .default = default_type,
+            .span = ast.Span.merge(start_span, end_span),
+        };
     }
 
     fn parseImplDecl(self: *Parser) ParseError!ast.Decl {
@@ -1996,31 +2039,58 @@ pub const Parser = struct {
 
         try self.consume(.l_brace, "expected '{' after impl");
 
-        // Parse methods
+        // Parse associated type bindings and methods
+        var associated_types = std.ArrayListUnmanaged(ast.AssociatedTypeBinding){};
         var methods = std.ArrayListUnmanaged(ast.FunctionDecl){};
         while (!self.check(.r_brace) and !self.check(.eof)) {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
-            const is_pub = self.match(.pub_);
-            const method_decl = try self.parseFunctionDecl(is_pub);
-            try methods.append(self.allocator, method_decl.function.*);
+            // Check for associated type binding: type Item = ConcreteType
+            if (self.check(.type_)) {
+                const assoc_binding = try self.parseAssociatedTypeBinding();
+                try associated_types.append(self.allocator, assoc_binding);
+            } else {
+                const is_pub = self.match(.pub_);
+                const method_decl = try self.parseFunctionDecl(is_pub);
+                try methods.append(self.allocator, method_decl.function.*);
+            }
 
             _ = self.match(.newline);
         }
 
-        try self.consume(.r_brace, "expected '}' after impl methods");
+        try self.consume(.r_brace, "expected '}' after impl members");
         const end_span = self.spanFromToken(self.previous);
 
         const impl_decl = try self.create(ast.ImplDecl, .{
             .type_params = type_params,
             .target_type = target_type,
             .trait_type = trait_type,
+            .associated_types = try self.dupeSlice(ast.AssociatedTypeBinding, associated_types.items),
             .where_clause = where_clause,
             .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .impl_decl = impl_decl };
+    }
+
+    /// Parse an associated type binding: type Item = ConcreteType
+    fn parseAssociatedTypeBinding(self: *Parser) ParseError!ast.AssociatedTypeBinding {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'type'
+
+        const assoc_name = try self.consumeIdentifier();
+
+        try self.consume(.eq, "expected '=' after associated type name");
+        const value_type = try self.parseType();
+
+        const end_span = self.spanFromToken(self.previous);
+
+        return ast.AssociatedTypeBinding{
+            .name = assoc_name,
+            .value = value_type,
+            .span = ast.Span.merge(start_span, end_span),
+        };
     }
 
     fn parseTypeAlias(self: *Parser, is_pub: bool) ParseError!ast.Decl {

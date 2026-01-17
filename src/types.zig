@@ -396,9 +396,17 @@ pub const VariantPayload = union(enum) {
     struct_: []const StructField,
 };
 
+/// Associated type declaration in a trait (e.g., `type Item` or `type Item: Clone`)
+pub const AssociatedType = struct {
+    name: []const u8,
+    bounds: []const *TraitType, // Required trait bounds
+    default: ?Type, // Optional default type
+};
+
 pub const TraitType = struct {
     name: []const u8,
     type_params: []const TypeVar,
+    associated_types: []const AssociatedType, // Associated type declarations
     methods: []const TraitMethod,
     super_traits: []const *TraitType,
 };

@@ -97,7 +97,7 @@
 
 **Objective:** Implement trait definitions, implementations, and bounds.
 
-**Status:** 🟡 In Progress. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance). Remaining: associated types, core traits (Eq, Ordered, Clone, Drop), derive macros.
+**Status:** 🟡 In Progress. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance, basic associated types). Remaining: Self.Item resolution in method signatures, associated types in generic contexts, derive macros.
 
 ### Trait Registry
 - [x] Create traits.zig module for trait management (implemented in checker.zig)
@@ -125,8 +125,8 @@
 - [ ] Handle where clauses for complex bounds
 
 ### Associated Types
-- [ ] Support `type Item` declarations in traits
-- [ ] Require associated type definitions in impl blocks
+- [x] Support `type Item` declarations in traits
+- [x] Require associated type definitions in impl blocks
 - [ ] Resolve `Self.Item` references in trait methods
 - [ ] Handle associated types in generic contexts
 
@@ -162,13 +162,13 @@
 - [x] Test: Drop trait works for structs (drop_trait.kl)
 - [x] Test: Default trait works for primitives (default_trait_int.kl, default_trait_float.kl, default_trait_bool.kl, default_trait_string.kl)
 - [x] Test: Hash trait works for primitives (hash_trait_int.kl, hash_trait_float.kl, hash_trait_bool.kl, hash_trait_string.kl)
-- [ ] Test: associated types work correctly
+- [x] Test: associated types work correctly (assoc_type_basic.kl, assoc_type_with_bounds.kl)
 
 **Files Modified:**
-- `src/ast.zig` - TraitDecl super_traits field ✓
-- `src/parser.zig` - Parse trait inheritance (: B + C) syntax ✓
-- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds, trait inheritance, Eq, Ordered, Clone, Drop, and Hash trait definitions and checking ✓
-- `src/types.zig` - Trait bounds to type system ✓
+- `src/ast.zig` - TraitDecl super_traits field, AssociatedTypeDecl, AssociatedTypeBinding ✓
+- `src/parser.zig` - Parse trait inheritance (: B + C) syntax, associated type declarations and bindings ✓
+- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds, trait inheritance, Eq, Ordered, Clone, Drop, Hash trait definitions and checking, associated type processing ✓
+- `src/types.zig` - Trait bounds to type system, AssociatedType in TraitType ✓
 - `src/codegen/emit.zig` - Early struct registration for monomorphized function signatures, Eq, Ordered, Clone, Drop, and Hash trait codegen ✓
 - `src/main.zig` - Call struct registration before monomorphized function declarations ✓
 - `test/native/eq_trait.kl` - Test Eq for integers ✓
