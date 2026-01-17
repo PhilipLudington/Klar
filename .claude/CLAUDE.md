@@ -111,14 +111,24 @@ let x = 42              // immutable, type inferred
 let y: i64 = 100        // explicit type
 var counter = 0         // mutable
 
-// Functions
-fn add(a: i32, b: i32) -> i32 { a + b }
-fn max[T: Ordered](a: T, b: T) -> T { if a > b { a } else { b } }
+// Functions (always use explicit return)
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn max[T: Ordered](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
 
 // Structs and methods
 struct Point { x: f64, y: f64 }
 impl Point {
-    fn distance(self) -> f64 { ... }
+    fn distance(self) -> f64 {
+        return sqrt(self.x * self.x + self.y * self.y)
+    }
 }
 
 // Enums with data
@@ -137,7 +147,11 @@ match value { Pattern => result, _ => default }
 // Error handling
 let maybe: ?i32 = Some(42)
 let value = maybe ?? 0          // default if None
-let result = read_file(path)?   // propagate error
+
+fn read_config() -> Result[Config, Error] {
+    let content = read_file(path)?   // propagate error
+    return Ok(parse(content))
+}
 ```
 
 ## Development Guidelines

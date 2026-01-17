@@ -2,15 +2,16 @@
 
 > **"No ambiguity. No surprises."**
 
-Klar is a systems programming language designed for clarity, safety, and simplicity. It is optimized for AI code generation—specifically Claude Code—prioritizing unambiguous syntax and predictable semantics.
+Klar is an application programming language designed for clarity, safety, and simplicity. It is optimized for AI code generation—specifically Claude Code—prioritizing unambiguous syntax and predictable semantics.
 
 ## Design Philosophy
 
 ### Why Klar?
 
-Traditional systems languages present challenges for AI code generation:
+Traditional languages present challenges for AI code generation:
 - **C/C++**: Ambiguous syntax, undefined behavior, preprocessor complexity
 - **Rust**: Steep learning curve, complex lifetime annotations, borrow checker friction
+- **Go/C#**: Implicit behaviors, null references, verbose error handling
 
 Klar takes a different approach: **maximize clarity, minimize surprises**.
 
@@ -97,7 +98,7 @@ while condition {
 
 ```klar
 fn add(a: i32, b: i32) -> i32 {
-    a + b
+    return a + b
 }
 
 fn greet(name: string) {
@@ -106,7 +107,10 @@ fn greet(name: string) {
 
 // Generic functions
 fn max[T: Ordered](a: T, b: T) -> T {
-    if a > b { a } else { b }
+    if a > b {
+        return a
+    }
+    return b
 }
 ```
 
@@ -157,7 +161,7 @@ let forced = maybe!             // trap if None
 fn read_config() -> Result[Config, Error] {
     let content = read_file(path)?   // propagate error
     let parsed = parse(content)?
-    Ok(parsed)
+    return Ok(parsed)
 }
 ```
 
@@ -195,15 +199,16 @@ let d = a +| a          // saturating arithmetic
 
 ## Current Status
 
-**Phase 3: Native Compiler** — In Progress
+**Phase 4: Language Completion** — In Progress
 
 | Phase | Status | Description |
 |-------|--------|-------------|
 | Phase 1: Tree-Walking Interpreter | ✅ Complete | Lexer, parser, type checker, interpreter |
 | Phase 2: Bytecode VM | ✅ Complete | Bytecode compiler and virtual machine |
-| Phase 3: Native Compiler | 🚧 In Progress | LLVM-based native code generation |
+| Phase 3: Native Compiler | ✅ Complete | LLVM-based native code generation |
+| Phase 4: Language Completion | 🚧 In Progress | Generics, traits, modules, standard library |
 
-### Native Compiler Features (Phase 3)
+### Completed Features
 
 - ✅ LLVM backend with optimization levels (-O0 to -O3)
 - ✅ Ownership-based memory management (no GC)
@@ -212,7 +217,16 @@ let d = a +| a          // saturating arithmetic
 - ✅ Optional and Result types
 - ✅ Debug info generation (-g flag)
 - ✅ Cross-compilation support (--target flag)
-- ✅ 259x speedup over VM for compute-bound code
+- ✅ 252x speedup over VM for compute-bound code
+- ✅ Generic functions, structs, and enums with monomorphization
+- ✅ Trait definitions, implementations, and bounds
+- ✅ Builtin traits: Eq, Ordered, Clone, Drop
+
+### In Progress
+
+- 🚧 Associated types in traits
+- 🚧 Module system and imports
+- 🚧 Standard library
 
 See [PLAN.md](PLAN.md) for implementation details and roadmap.
 

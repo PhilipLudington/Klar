@@ -181,27 +181,29 @@ false
 
 ### Functions
 
+Functions always use explicit `return` statements. This follows the "explicit over implicit" principle—there is one obvious way to return a value.
+
 ```klar
 fn add(a: i32, b: i32) -> i32 {
     return a + b
 }
 
-// Implicit return (last expression)
-fn multiply(a: i32, b: i32) -> i32 {
-    a * b
-}
-
-// Single-expression shorthand
-fn double(x: i32) -> i32 = x * 2
-
-// Async function
-async fn fetch(url: string) -> Result[Response, HttpError] {
-    http.get(url).await
+fn greet(name: string) {
+    println("Hello, {name}!")
 }
 
 // Generic function
 fn max[T: Ordered](a: T, b: T) -> T {
-    if a > b { a } else { b }
+    if a > b {
+        return a
+    }
+    return b
+}
+
+// Async function
+async fn fetch(url: string) -> Result[Response, HttpError] {
+    let response = http.get(url).await?
+    return Ok(response)
 }
 ```
 
@@ -604,7 +606,7 @@ fn divide(a: i32, b: i32) -> Result[i32, MathError] {
     if b == 0 {
         return Err(MathError.DivideByZero)
     }
-    Ok(a / b)
+    return Ok(a / b)
 }
 ```
 
@@ -630,7 +632,7 @@ let value = result!
 fn process() -> Result[Data, Error] {
     let content = read_file(path)?   // returns early on Err
     let parsed = parse(content)?
-    Ok(parsed)
+    return Ok(parsed)
 }
 ```
 
@@ -652,7 +654,7 @@ enum ProcessError {
 // Conversion for ? propagation
 impl IoError: Into[ProcessError] {
     fn into(self) -> ProcessError {
-        ProcessError.Io(self)
+        return ProcessError.Io(self)
     }
 }
 ```
@@ -677,7 +679,7 @@ let result = try {
 async fn fetch_data(url: string) -> Result[Data, HttpError] {
     let response = http.get(url).await?
     let body = response.read_body().await?
-    Ok(parse(body))
+    return Ok(parse(body))
 }
 
 async fn main() {
@@ -714,11 +716,12 @@ let first = await_first(
 
 ```klar
 async fn process_batch(items: List[Item]) -> List[Result] {
-    scope {
+    let results = scope {
         let tasks = items.map(|item| spawn process_item(item))
         await_all(tasks)
     }
     // All tasks guaranteed complete here
+    return results
 }
 ```
 
@@ -801,7 +804,10 @@ RefCell[T] // NOT Sync
 
 ```klar
 fn max[T: Ordered](a: T, b: T) -> T {
-    if a.compare(b) is Ordering.Greater { a } else { b }
+    if a.compare(b) is Ordering.Greater {
+        return a
+    }
+    return b
 }
 
 fn swap[T](a: &mut T, b: &mut T) {
@@ -847,9 +853,12 @@ trait Printable {
 ```klar
 impl i32: Ordered {
     fn compare(self, other: i32) -> Ordering {
-        if self < other { Ordering.Less }
-        else if self > other { Ordering.Greater }
-        else { Ordering.Equal }
+        if self < other {
+            return Ordering.Less
+        } else if self > other {
+            return Ordering.Greater
+        }
+        return Ordering.Equal
     }
 }
 ```
@@ -905,7 +914,7 @@ trait Add[Rhs] {
 impl Vec2: Add[Vec2] {
     type Output = Vec2
     fn add(self, rhs: Vec2) -> Vec2 {
-        Vec2 { x: self.x + rhs.x, y: self.y + rhs.y }
+        return Vec2 { x: self.x + rhs.x, y: self.y + rhs.y }
     }
 }
 
@@ -1157,7 +1166,7 @@ pub struct Vec2 {
 }
 
 pub fn add(a: Vec2, b: Vec2) -> Vec2 {
-    Vec2 { x: a.x + b.x, y: a.y + b.y }
+    return Vec2 { x: a.x + b.x, y: a.y + b.y }
 }
 
 fn helper() { ... }  // private
