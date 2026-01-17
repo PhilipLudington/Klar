@@ -710,32 +710,45 @@ pub const TypeChecker = struct {
 
         // Ordered trait: trait Ordered { fn lt(&self, other: &Self) -> bool; fn le(...); fn gt(...); fn ge(...); }
         // Provides comparison methods for ordering: less than, less than or equal, greater than, greater than or equal
+        // Note: Each method needs its own params slice to avoid double-free in deinit
         const ord_self_type = self.type_builder.unknownType();
         const ord_self_ref = try self.type_builder.referenceType(ord_self_type, false);
-        const ord_method_sig = types.FunctionType{
-            .params = try self.allocator.dupe(Type, &.{ ord_self_ref, ord_self_ref }),
-            .return_type = self.type_builder.boolType(),
-            .is_async = false,
-        };
+        const ord_return_type = self.type_builder.boolType();
 
         const lt_method = types.TraitMethod{
             .name = "lt",
-            .signature = ord_method_sig,
+            .signature = .{
+                .params = try self.allocator.dupe(Type, &.{ ord_self_ref, ord_self_ref }),
+                .return_type = ord_return_type,
+                .is_async = false,
+            },
             .has_default = false,
         };
         const le_method = types.TraitMethod{
             .name = "le",
-            .signature = ord_method_sig,
+            .signature = .{
+                .params = try self.allocator.dupe(Type, &.{ ord_self_ref, ord_self_ref }),
+                .return_type = ord_return_type,
+                .is_async = false,
+            },
             .has_default = false,
         };
         const gt_method = types.TraitMethod{
             .name = "gt",
-            .signature = ord_method_sig,
+            .signature = .{
+                .params = try self.allocator.dupe(Type, &.{ ord_self_ref, ord_self_ref }),
+                .return_type = ord_return_type,
+                .is_async = false,
+            },
             .has_default = false,
         };
         const ge_method = types.TraitMethod{
             .name = "ge",
-            .signature = ord_method_sig,
+            .signature = .{
+                .params = try self.allocator.dupe(Type, &.{ ord_self_ref, ord_self_ref }),
+                .return_type = ord_return_type,
+                .is_async = false,
+            },
             .has_default = false,
         };
 
