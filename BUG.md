@@ -2,9 +2,10 @@
 
 ## BUG-001: Ownership Checker Segfault on Generic Functions
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** High
 **Discovered:** 2026-01-16
+**Fixed:** 2026-01-16
 **Component:** Ownership Checker (`src/ownership/`)
 
 ### Description
@@ -85,6 +86,16 @@ Use `klar build` instead of `klar check` - the native compilation path may not t
 - `src/ownership/checker.zig:501` - `popScope` caller
 - `src/ownership/checker.zig:122` - `analyzeFunction`
 
+### Resolution
+
+**Root Cause:** Dangling pointer in `OwnershipChecker.init()`. The function created a local `self` struct, set `self.current_scope = &self.global_scope` (pointing to the local variable's field), then returned `self` by value. After the return, `current_scope` pointed to invalid stack memory.
+
+**Fix:** Removed the `current_scope` assignment from `init()` and moved it to `analyze()`. Since `analyze()` takes `*OwnershipChecker` (a pointer to the struct in its final location), setting `current_scope = &self.global_scope` now correctly points to the stable address.
+
+**Files Changed:**
+- `src/ownership/checker.zig:63-75` - `init()` no longer sets `current_scope`
+- `src/ownership/checker.zig:85-93` - `analyze()` now initializes `current_scope`
+
 ### Notes
 
 - This bug is **not related** to the trait system implementation
@@ -96,9 +107,10 @@ Use `klar build` instead of `klar check` - the native compilation path may not t
 
 ## BUG-002: Memory Leaks in Error Paths
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** Low
 **Discovered:** 2026-01-16
+**Fixed:** 2026-01-16
 **Component:** Type Checker (`src/checker.zig`)
 
 ### Description
@@ -128,3 +140,23 @@ None needed for correctness - this only affects memory usage in error cases. The
 ### Priority
 
 Low - only affects error cases and development/debugging. Production use with successful compilation is unaffected.
+
+### Resolution
+
+**Root Causes and Fixes:**
+
+1. **Error message strings were not freed in deinit:** The `addError` function allocated error message strings with `allocPrint`, but `deinit` only freed the ArrayList container.
+   - **Fix:** Added loop in `deinit` to free each error message before freeing the errors list.
+
+2. **Type variable slices from `pushTypeParams` were leaked:** The function returned allocated slices that callers often ignored or didn't free.
+   - **Fix:** Added `type_var_slices` field to track allocations, freed in `deinit`.
+
+3. **Type slices from `substituteTypeParams` were leaked:** Creating substituted tuple, function, and applied types allocated param/element arrays that weren't tracked.
+   - **Fix:** Added `substituted_type_slices` field to track allocations, freed in `deinit`.
+
+**Files Changed:**
+- `src/checker.zig:355-362` - Free error messages in deinit
+- `src/checker.zig:225-227` - Added tracking fields
+- `src/checker.zig:696-699` - Track pushTypeParams allocations
+- `src/checker.zig:1109-1111, 1145-1147, 1172-1174` - Track substituteTypeParams allocations
+- `src/checker.zig:486-496` - Free tracked allocations in deinit

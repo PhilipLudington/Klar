@@ -61,16 +61,17 @@ pub const OwnershipChecker = struct {
     message_arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: Allocator) OwnershipChecker {
-        var self = OwnershipChecker{
+        // NOTE: Do NOT set current_scope here! The struct is returned by value,
+        // so any pointer to self.global_scope would become dangling after return.
+        // current_scope must be set after the struct is in its final location.
+        return OwnershipChecker{
             .allocator = allocator,
             .errors = .{},
-            .current_scope = undefined,
+            .current_scope = undefined, // Set in analyze() after struct is placed
             .global_scope = OwnershipScope.init(allocator, null, .global),
             .scope_arena = std.heap.ArenaAllocator.init(allocator),
             .message_arena = std.heap.ArenaAllocator.init(allocator),
         };
-        self.current_scope = &self.global_scope;
-        return self;
     }
 
     pub fn deinit(self: *OwnershipChecker) void {
@@ -82,6 +83,10 @@ pub const OwnershipChecker = struct {
 
     /// Analyze a module for ownership violations.
     pub fn analyze(self: *OwnershipChecker, module: ast.Module) !void {
+        // Initialize current_scope now that the struct is in its final location.
+        // This fixes the dangling pointer issue from init() returning by value.
+        self.current_scope = &self.global_scope;
+
         for (module.declarations) |decl| {
             try self.analyzeDecl(decl);
         }

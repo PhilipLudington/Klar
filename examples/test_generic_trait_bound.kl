@@ -1,0 +1,20 @@
+// Test case for BUG-001: Ownership Checker Segfault on Generic Functions
+// This should not crash during ownership checking
+
+trait Displayable {
+    fn display(self: Self) -> string
+}
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn show[T: Displayable](item: T) -> i32 {
+    42
+}
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 }
+    show(p)
+}

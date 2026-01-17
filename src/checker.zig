@@ -221,6 +221,10 @@ pub const TypeChecker = struct {
     /// Registry of trait implementations.
     /// Maps (struct_name, trait_name) -> TraitImplInfo.
     trait_impls: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(TraitImplInfo)),
+    /// Track type var slices allocated by pushTypeParams for cleanup.
+    type_var_slices: std.ArrayListUnmanaged([]const types.TypeVar),
+    /// Track Type slices allocated by substituteTypeParams for cleanup.
+    substituted_type_slices: std.ArrayListUnmanaged([]const Type),
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -344,6 +348,8 @@ pub const TypeChecker = struct {
             .trait_registry = .{},
             .trait_types = .{},
             .trait_impls = .{},
+            .type_var_slices = .{},
+            .substituted_type_slices = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -352,6 +358,13 @@ pub const TypeChecker = struct {
     pub fn deinit(self: *TypeChecker) void {
         self.type_builder.deinit();
         self.type_env.deinit();
+        // Free error messages before freeing the errors list
+        for (self.errors.items) |err| {
+            // Only free if it was actually allocated (not the fallback literal)
+            if (err.message.len > 0 and !std.mem.eql(u8, err.message, "error formatting message")) {
+                self.allocator.free(err.message);
+            }
+        }
         self.errors.deinit(self.allocator);
         self.global_scope.deinit();
         self.allocator.destroy(self.global_scope);
@@ -469,6 +482,18 @@ pub const TypeChecker = struct {
             impl_list.deinit(self.allocator);
         }
         self.trait_impls.deinit(self.allocator);
+
+        // Clean up type var slices from pushTypeParams
+        for (self.type_var_slices.items) |slice| {
+            self.allocator.free(slice);
+        }
+        self.type_var_slices.deinit(self.allocator);
+
+        // Clean up type slices from substituteTypeParams
+        for (self.substituted_type_slices.items) |slice| {
+            self.allocator.free(slice);
+        }
+        self.substituted_type_slices.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -683,7 +708,10 @@ pub const TypeChecker = struct {
         }
 
         try self.type_param_scopes.append(self.allocator, scope);
-        return try self.allocator.dupe(types.TypeVar, type_vars.items);
+        const result = try self.allocator.dupe(types.TypeVar, type_vars.items);
+        // Track allocation for cleanup in deinit
+        try self.type_var_slices.append(self.allocator, result);
+        return result;
     }
 
     /// Pop the current type parameter scope.
@@ -1078,7 +1106,9 @@ pub const TypeChecker = struct {
                 }
 
                 if (!changed) return typ;
-                return self.type_builder.tupleType(try self.allocator.dupe(Type, new_elements.items));
+                const elements_slice = try self.allocator.dupe(Type, new_elements.items);
+                try self.substituted_type_slices.append(self.allocator, elements_slice);
+                return self.type_builder.tupleType(elements_slice);
             },
 
             // Optional - substitute inner type
@@ -1112,10 +1142,9 @@ pub const TypeChecker = struct {
                 if (!func.return_type.eql(new_return)) changed = true;
 
                 if (!changed) return typ;
-                return self.type_builder.functionType(
-                    try self.allocator.dupe(Type, new_params.items),
-                    new_return,
-                );
+                const params_slice = try self.allocator.dupe(Type, new_params.items);
+                try self.substituted_type_slices.append(self.allocator, params_slice);
+                return self.type_builder.functionType(params_slice, new_return);
             },
 
             // Reference - substitute inner type
@@ -1140,7 +1169,9 @@ pub const TypeChecker = struct {
                 }
 
                 if (!changed) return typ;
-                return self.type_builder.appliedType(new_base, try self.allocator.dupe(Type, new_args.items));
+                const args_slice = try self.allocator.dupe(Type, new_args.items);
+                try self.substituted_type_slices.append(self.allocator, args_slice);
+                return self.type_builder.appliedType(new_base, args_slice);
             },
 
             // Rc types - substitute inner type
