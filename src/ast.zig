@@ -720,6 +720,7 @@ pub const TypeExpr = union(enum) {
     function: *FunctionType,
     reference: *ReferenceType,
     generic_apply: *GenericApply,
+    qualified: *QualifiedType, // For Self.Item, T.Associated, etc.
 
     pub fn span(self: TypeExpr) Span {
         return switch (self) {
@@ -732,12 +733,21 @@ pub const TypeExpr = union(enum) {
             .function => |f| f.span,
             .reference => |r| r.span,
             .generic_apply => |g| g.span,
+            .qualified => |q| q.span,
         };
     }
 };
 
 pub const NamedType = struct {
     name: []const u8,
+    span: Span,
+};
+
+/// Qualified type reference like Self.Item or T.Associated
+/// Used for accessing associated types through a type variable or Self
+pub const QualifiedType = struct {
+    base: TypeExpr, // The base type (e.g., Self, T)
+    member: []const u8, // The member name (e.g., Item)
     span: Span,
 };
 

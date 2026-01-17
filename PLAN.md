@@ -97,7 +97,7 @@
 
 **Objective:** Implement trait definitions, implementations, and bounds.
 
-**Status:** 🟡 In Progress. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance, basic associated types). Remaining: Self.Item resolution in method signatures, associated types in generic contexts.
+**Status:** 🟡 In Progress. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance, basic associated types, Self.Item resolution). Remaining: associated types in generic contexts.
 
 ### Trait Registry
 - [x] Create traits.zig module for trait management (implemented in checker.zig)
@@ -127,7 +127,7 @@
 ### Associated Types
 - [x] Support `type Item` declarations in traits
 - [x] Require associated type definitions in impl blocks
-- [ ] Resolve `Self.Item` references in trait methods
+- [x] Resolve `Self.Item` references in trait methods
 - [ ] Handle associated types in generic contexts
 
 ### Method Resolution
@@ -156,7 +156,7 @@
 - [x] Test: Drop trait works for structs (drop_trait.kl)
 - [x] Test: Default trait works for primitives (default_trait_int.kl, default_trait_float.kl, default_trait_bool.kl, default_trait_string.kl)
 - [x] Test: Hash trait works for primitives (hash_trait_int.kl, hash_trait_float.kl, hash_trait_bool.kl, hash_trait_string.kl)
-- [x] Test: associated types work correctly (assoc_type_basic.kl, assoc_type_with_bounds.kl)
+- [x] Test: associated types work correctly (assoc_type_basic.kl, assoc_type_with_bounds.kl, assoc_type_self_item.kl)
 
 **Files Modified:**
 - `src/ast.zig` - TraitDecl super_traits field, AssociatedTypeDecl, AssociatedTypeBinding ✓

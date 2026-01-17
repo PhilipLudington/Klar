@@ -1568,13 +1568,31 @@ pub const Parser = struct {
             return .{ .function = func };
         }
 
-        // Handle Self as a type
+        // Handle Self as a type (possibly with .Item access)
         if (self.match(.self_type)) {
-            const span = self.spanFromToken(self.previous);
-            return .{ .named = .{ .name = "Self", .span = span } };
+            const start_span = self.spanFromToken(self.previous);
+            var base: ast.TypeExpr = .{ .named = .{ .name = "Self", .span = start_span } };
+
+            // Check for qualified access: Self.Item
+            while (self.match(.dot)) {
+                if (!self.check(.identifier)) {
+                    try self.reportError("expected member name after '.'");
+                    return ParseError.ExpectedType;
+                }
+                const member_name = self.tokenText(self.current);
+                self.advance();
+                const qualified = try self.create(ast.QualifiedType, .{
+                    .base = base,
+                    .member = member_name,
+                    .span = start_span,
+                });
+                base = .{ .qualified = qualified };
+            }
+
+            return base;
         }
 
-        // Named type (with possible generic args)
+        // Named type (with possible generic args and qualified access)
         if (self.check(.identifier)) {
             const span = self.spanFromToken(self.current);
             const name = self.tokenText(self.current);
@@ -1599,6 +1617,22 @@ pub const Parser = struct {
                     .span = ast.Span.from(self.previous),
                 });
                 base = .{ .generic_apply = generic };
+            }
+
+            // Check for qualified access: T.Item or T[U].Item
+            while (self.match(.dot)) {
+                if (!self.check(.identifier)) {
+                    try self.reportError("expected member name after '.'");
+                    return ParseError.ExpectedType;
+                }
+                const member_name = self.tokenText(self.current);
+                self.advance();
+                const qualified = try self.create(ast.QualifiedType, .{
+                    .base = base,
+                    .member = member_name,
+                    .span = span,
+                });
+                base = .{ .qualified = qualified };
             }
 
             return base;

@@ -227,6 +227,8 @@ pub const TypeChecker = struct {
     substituted_type_slices: std.ArrayListUnmanaged([]const Type),
     /// Track trait method calls through bounds for monomorphization.
     trait_method_calls: std.ArrayListUnmanaged(TraitMethodCall),
+    /// Current trait being checked (for Self.Item resolution in trait method signatures)
+    current_trait_type: ?*types.TraitType,
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -375,6 +377,7 @@ pub const TypeChecker = struct {
             .type_var_slices = .{},
             .substituted_type_slices = .{},
             .trait_method_calls = .{},
+            .current_trait_type = null,
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -482,22 +485,27 @@ pub const TypeChecker = struct {
 
         // Clean up trait type allocations
         // Note: type_params slices are freed separately via type_var_slices
+        // Note: method.signature.params are allocated from type_builder's arena, not self.allocator
         for (self.trait_types.items) |trait_type| {
             if (trait_type.super_traits.len > 0) {
                 self.allocator.free(trait_type.super_traits);
             }
-            // Free param slices inside each method's signature
-            for (trait_type.methods) |method| {
-                if (method.signature.params.len > 0) {
-                    self.allocator.free(method.signature.params);
+            // Free associated types and their bounds slices
+            for (trait_type.associated_types) |assoc| {
+                if (assoc.bounds.len > 0) {
+                    self.allocator.free(assoc.bounds);
                 }
             }
+            if (trait_type.associated_types.len > 0) {
+                self.allocator.free(trait_type.associated_types);
+            }
+            // The methods slice is allocated with self.allocator
             self.allocator.free(trait_type.methods);
             self.allocator.destroy(trait_type);
         }
         self.trait_types.deinit(self.allocator);
 
-        // Clean up trait implementations (including allocated keys)
+        // Clean up trait implementations (including allocated keys and associated type bindings)
         var impls_key_iter = self.trait_impls.keyIterator();
         while (impls_key_iter.next()) |key| {
             // Keys are allocated strings, free them
@@ -507,6 +515,12 @@ pub const TypeChecker = struct {
         }
         var impls_iter = self.trait_impls.valueIterator();
         while (impls_iter.next()) |impl_list| {
+            // Free associated_type_bindings slices in each TraitImplInfo
+            for (impl_list.items) |impl_info| {
+                if (impl_info.associated_type_bindings.len > 0) {
+                    self.allocator.free(impl_info.associated_type_bindings);
+                }
+            }
             impl_list.deinit(self.allocator);
         }
         self.trait_impls.deinit(self.allocator);
@@ -673,16 +687,13 @@ pub const TypeChecker = struct {
         // Eq trait: trait Eq { fn eq(&self, other: &Self) -> bool; }
         // The signature uses 'unknown' as a placeholder for Self, which gets
         // substituted with the concrete type during impl checking.
+        // Note: Use type_builder for function types so params are on the arena.
         const eq_self_type = self.type_builder.unknownType();
         const eq_self_ref = try self.type_builder.referenceType(eq_self_type, false);
-        const eq_method_sig = types.FunctionType{
-            .params = try self.allocator.dupe(Type, &.{ eq_self_ref, eq_self_ref }),
-            .return_type = self.type_builder.boolType(),
-            .is_async = false,
-        };
+        const eq_func_type = try self.type_builder.functionType(&.{ eq_self_ref, eq_self_ref }, self.type_builder.boolType());
         const eq_method = types.TraitMethod{
             .name = "eq",
-            .signature = eq_method_sig,
+            .signature = eq_func_type.function.*,
             .has_default = false,
         };
 
@@ -715,45 +726,33 @@ pub const TypeChecker = struct {
 
         // Ordered trait: trait Ordered { fn lt(&self, other: &Self) -> bool; fn le(...); fn gt(...); fn ge(...); }
         // Provides comparison methods for ordering: less than, less than or equal, greater than, greater than or equal
-        // Note: Each method needs its own params slice to avoid double-free in deinit
+        // Note: Use type_builder for function types so params are on the arena.
         const ord_self_type = self.type_builder.unknownType();
         const ord_self_ref = try self.type_builder.referenceType(ord_self_type, false);
         const ord_return_type = self.type_builder.boolType();
 
+        const lt_func = try self.type_builder.functionType(&.{ ord_self_ref, ord_self_ref }, ord_return_type);
         const lt_method = types.TraitMethod{
             .name = "lt",
-            .signature = .{
-                .params = try self.allocator.dupe(Type, &.{ ord_self_ref, ord_self_ref }),
-                .return_type = ord_return_type,
-                .is_async = false,
-            },
+            .signature = lt_func.function.*,
             .has_default = false,
         };
+        const le_func = try self.type_builder.functionType(&.{ ord_self_ref, ord_self_ref }, ord_return_type);
         const le_method = types.TraitMethod{
             .name = "le",
-            .signature = .{
-                .params = try self.allocator.dupe(Type, &.{ ord_self_ref, ord_self_ref }),
-                .return_type = ord_return_type,
-                .is_async = false,
-            },
+            .signature = le_func.function.*,
             .has_default = false,
         };
+        const gt_func = try self.type_builder.functionType(&.{ ord_self_ref, ord_self_ref }, ord_return_type);
         const gt_method = types.TraitMethod{
             .name = "gt",
-            .signature = .{
-                .params = try self.allocator.dupe(Type, &.{ ord_self_ref, ord_self_ref }),
-                .return_type = ord_return_type,
-                .is_async = false,
-            },
+            .signature = gt_func.function.*,
             .has_default = false,
         };
+        const ge_func = try self.type_builder.functionType(&.{ ord_self_ref, ord_self_ref }, ord_return_type);
         const ge_method = types.TraitMethod{
             .name = "ge",
-            .signature = .{
-                .params = try self.allocator.dupe(Type, &.{ ord_self_ref, ord_self_ref }),
-                .return_type = ord_return_type,
-                .is_async = false,
-            },
+            .signature = ge_func.function.*,
             .has_default = false,
         };
 
@@ -787,20 +786,17 @@ pub const TypeChecker = struct {
         // Clone trait: trait Clone { fn clone(&self) -> Self; }
         // Provides explicit cloning for types. All primitives implement Clone.
         // Create a proper Self type variable so the type_var handler can resolve it
+        // Note: Use type_builder for function types so params are on the arena.
         const clone_self_type = Type{ .type_var = .{
             .id = 999, // Use a high unique ID to avoid conflicts
             .name = "Self",
             .bounds = &.{},
         } };
         const clone_self_ref = try self.type_builder.referenceType(clone_self_type, false);
-        const clone_method_sig = types.FunctionType{
-            .params = try self.allocator.dupe(Type, &.{clone_self_ref}),
-            .return_type = clone_self_type, // Returns Self type variable
-            .is_async = false,
-        };
+        const clone_func = try self.type_builder.functionType(&.{clone_self_ref}, clone_self_type);
         const clone_method = types.TraitMethod{
             .name = "clone",
-            .signature = clone_method_sig,
+            .signature = clone_func.function.*,
             .has_default = false,
         };
 
@@ -834,16 +830,12 @@ pub const TypeChecker = struct {
         // Drop trait: trait Drop { fn drop(self: Self) -> void; }
         // Provides custom destructor behavior. Called automatically when value goes out of scope.
         // Primitives don't need Drop (trivially dropped), but custom types can implement it.
-        // Note: Uses 'unknown' as placeholder for Self, consistent with Eq/Ordered traits.
+        // Note: Use type_builder for function types so params are on the arena.
         const drop_self_type = self.type_builder.unknownType();
-        const drop_method_sig = types.FunctionType{
-            .params = try self.allocator.dupe(Type, &.{drop_self_type}),
-            .return_type = self.type_builder.voidType(),
-            .is_async = false,
-        };
+        const drop_func = try self.type_builder.functionType(&.{drop_self_type}, self.type_builder.voidType());
         const drop_method = types.TraitMethod{
             .name = "drop",
-            .signature = drop_method_sig,
+            .signature = drop_func.function.*,
             .has_default = false,
         };
 
@@ -925,16 +917,13 @@ pub const TypeChecker = struct {
         // Provides hashing for types, needed for HashMap/HashSet keys.
         // All primitives have builtin Hash implementation.
         // Returns i64 to allow for a large hash space.
+        // Note: Use type_builder for function types so params are on the arena.
         const hash_self_type = self.type_builder.unknownType();
         const hash_self_ref = try self.type_builder.referenceType(hash_self_type, false);
-        const hash_method_sig = types.FunctionType{
-            .params = try self.allocator.dupe(Type, &.{hash_self_ref}),
-            .return_type = self.type_builder.i64Type(),
-            .is_async = false,
-        };
+        const hash_func = try self.type_builder.functionType(&.{hash_self_ref}, self.type_builder.i64Type());
         const hash_method = types.TraitMethod{
             .name = "hash",
-            .signature = hash_method_sig,
+            .signature = hash_func.function.*,
             .has_default = false,
         };
 
@@ -1926,6 +1915,52 @@ pub const TypeChecker = struct {
                 }
 
                 return try self.type_builder.appliedType(base, args.items);
+            },
+            .qualified => |q| {
+                // Qualified type access like Self.Item or T.Associated
+                const base = try self.resolveTypeExpr(q.base);
+
+                // Currently we only support associated type access on Self or type variables
+                switch (base) {
+                    .type_var => |tv| {
+                        // T.Item - look up the associated type in T's trait bounds
+                        for (tv.bounds) |bound_trait| {
+                            for (bound_trait.associated_types) |assoc| {
+                                if (std.mem.eql(u8, assoc.name, q.member)) {
+                                    // Found the associated type - for now return unknown
+                                    // since we don't have the concrete binding yet
+                                    // This will be resolved during monomorphization
+                                    return self.type_builder.unknownType();
+                                }
+                            }
+                        }
+                        self.addError(.undefined_type, q.span, "type variable has no associated type '{s}'", .{q.member});
+                        return self.type_builder.unknownType();
+                    },
+                    .unknown => {
+                        // Self.Item in trait context - look up in current trait's associated types
+                        // For now, we need to track the current trait being checked
+                        // and look up q.member in its associated types
+                        if (self.current_trait_type) |trait_type| {
+                            for (trait_type.associated_types) |assoc| {
+                                if (std.mem.eql(u8, assoc.name, q.member)) {
+                                    // Found the associated type declaration
+                                    // In trait methods, Self.Item is a placeholder that will be
+                                    // resolved to the concrete type during impl checking
+                                    return self.type_builder.unknownType();
+                                }
+                            }
+                            self.addError(.undefined_type, q.span, "trait has no associated type '{s}'", .{q.member});
+                        } else {
+                            self.addError(.undefined_type, q.span, "cannot use Self.{s} outside trait context", .{q.member});
+                        }
+                        return self.type_builder.unknownType();
+                    },
+                    else => {
+                        self.addError(.undefined_type, q.span, "cannot access associated type on this type", .{});
+                        return self.type_builder.unknownType();
+                    },
+                }
             },
         }
     }
@@ -4059,6 +4094,21 @@ pub const TypeChecker = struct {
             }) catch {};
         }
 
+        // Create a preliminary trait type with associated types for Self.Item resolution
+        // Methods will be added later
+        const trait_type = self.allocator.create(types.TraitType) catch return;
+        trait_type.* = .{
+            .name = trait_decl.name,
+            .type_params = trait_type_params,
+            .associated_types = associated_types.toOwnedSlice(self.allocator) catch &.{},
+            .methods = &.{}, // Will be filled in after method processing
+            .super_traits = super_trait_list.toOwnedSlice(self.allocator) catch &.{},
+        };
+
+        // Set current trait type for Self.Item resolution in method signatures
+        self.current_trait_type = trait_type;
+        defer self.current_trait_type = null;
+
         // Build trait methods
         var trait_methods: std.ArrayListUnmanaged(types.TraitMethod) = .{};
         defer trait_methods.deinit(self.allocator);
@@ -4067,7 +4117,7 @@ pub const TypeChecker = struct {
         defer seen_method_names.deinit(self.allocator);
 
         // First, inherit methods from super traits
-        for (super_trait_list.items) |super_trait| {
+        for (trait_type.super_traits) |super_trait| {
             for (super_trait.methods) |super_method| {
                 if (seen_method_names.get(super_method.name) != null) {
                     // Method already defined (conflict from multiple inheritance)
@@ -4145,15 +4195,8 @@ pub const TypeChecker = struct {
             }) catch {};
         }
 
-        // Create and register the trait type
-        const trait_type = self.allocator.create(types.TraitType) catch return;
-        trait_type.* = .{
-            .name = trait_decl.name,
-            .type_params = trait_type_params,
-            .associated_types = associated_types.toOwnedSlice(self.allocator) catch &.{},
-            .methods = trait_methods.toOwnedSlice(self.allocator) catch &.{},
-            .super_traits = super_trait_list.toOwnedSlice(self.allocator) catch &.{},
-        };
+        // Update the trait type with the now-complete methods list
+        trait_type.methods = trait_methods.toOwnedSlice(self.allocator) catch &.{};
 
         // Track for cleanup
         self.trait_types.append(self.allocator, trait_type) catch {};

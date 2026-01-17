@@ -2335,6 +2335,12 @@ pub const Emitter = struct {
                 // Complex types - return pointer as placeholder
                 return llvm.Types.pointer(self.ctx);
             },
+            .qualified => {
+                // Qualified types like Self.Item are resolved by the type checker
+                // At codegen time, they should have been substituted with concrete types
+                // If we get here, it's an unresolved associated type - use pointer as placeholder
+                return llvm.Types.pointer(self.ctx);
+            },
         };
     }
 
@@ -2787,6 +2793,12 @@ pub const Emitter = struct {
             },
             .function => {
                 try buf.appendSlice(self.allocator, "fn");
+            },
+            .qualified => |q| {
+                // For qualified types like Self.Item, mangle as Base_Member
+                try self.appendTypeNameForMangling(buf, q.base);
+                try buf.append(self.allocator, '_');
+                try buf.appendSlice(self.allocator, q.member);
             },
         }
     }

@@ -1,0 +1,31 @@
+// Test Self.Item resolution in trait methods
+
+trait Container {
+    type Item
+    fn get_first(self: Self) -> Self.Item
+}
+
+struct IntBox {
+    value: i32
+}
+
+impl IntBox: Container {
+    type Item = i32
+
+    fn get_first(self: IntBox) -> i32 {
+        return self.value
+    }
+}
+
+fn main() -> i32 {
+    let box: IntBox = IntBox { value: 42 }
+    let result: i32 = box.get_first()
+
+    if result == 42 {
+        print("Self.Item test passed!")
+        return 0
+    }
+
+    print("Test failed")
+    return 1
+}
