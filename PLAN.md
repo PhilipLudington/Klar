@@ -19,11 +19,11 @@
 - No standard library beyond builtins (print, panic, assert)
 
 **Near-term Fixes (discovered via TheNarrowWindow game):**
-- [ ] Native codegen: struct parameters to functions (fails with "UnsupportedFeature")
-- [ ] Native codegen: mutable struct variables (`var s = struct_value`)
+- [x] Native codegen: struct parameters to functions (fixed - track struct_type_name for parameters)
+- [x] Native codegen: mutable struct variables (`var s = struct_value`) - already working
 - [ ] VM: struct field mutation crashes (hash map panic in ObjStruct.setField)
-- [ ] VM: ownership checker crashes on complex if/else blocks (alignment panic)
-- [ ] String interpolation with struct field access (`"{game.turn}"`)
+- [x] VM: ownership checker crashes on complex if/else blocks (fixed in 4b75243)
+- [x] String interpolation with struct field access (`"{game.turn}"`) - implemented in native codegen
 
 ---
 
@@ -31,7 +31,7 @@
 
 **Objective:** Implement full generic type checking with monomorphization.
 
-**Status:** Generic functions, structs, and enums complete (type checking, monomorphization, codegen registration, enum literal construction, match pattern parsing/checking, match expression codegen). Generic struct methods pending.
+**Status:** ✅ Complete. Generic functions, structs, enums, and struct methods all working (type checking, monomorphization, codegen registration, enum literal construction, match pattern parsing/checking, match expression codegen, struct methods via impl blocks).
 
 ### Type Parameter Tracking
 - [x] Add TypeParam scope tracking in checker.zig

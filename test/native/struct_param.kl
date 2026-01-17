@@ -1,0 +1,19 @@
+// Test struct passed as function parameter (not method)
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn sum_point(p: Point) -> i32 {
+    p.x + p.y
+}
+
+fn double_x(p: Point) -> i32 {
+    p.x * 2
+}
+
+fn main() -> i32 {
+    let p = Point { x: 10, y: 32 }
+    sum_point(p)  // Should return 42
+}

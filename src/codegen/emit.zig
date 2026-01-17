@@ -609,11 +609,19 @@ pub const Emitter = struct {
             _ = self.builder.buildStore(param_value, alloca);
 
             const is_signed = self.isTypeSigned(param.type_);
+
+            // For struct type parameters, record the struct type name for field resolution
+            const param_struct_name: ?[]const u8 = switch (param.type_) {
+                .named => |n| n.name,
+                else => null,
+            };
+
             self.named_values.put(param.name, .{
                 .value = alloca,
                 .is_alloca = true,
                 .ty = param_ty,
                 .is_signed = is_signed,
+                .struct_type_name = param_struct_name,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -1102,6 +1110,7 @@ pub const Emitter = struct {
             .type_cast => |tc| try self.emitTypeCast(tc),
             .enum_literal => |e| try self.emitEnumLiteral(e),
             .match_expr => |m| try self.emitMatch(m),
+            .interpolated_string => |is| try self.emitInterpolatedString(is),
             else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
         };
     }
@@ -5255,6 +5264,186 @@ pub const Emitter = struct {
         self.current_function = saved_func;
 
         return func;
+    }
+
+    /// Emit an interpolated string expression.
+    /// For each part, emit either a string literal or the expression converted to string.
+    /// Uses snprintf to build the final string in a stack buffer.
+    fn emitInterpolatedString(self: *Emitter, interp: *ast.InterpolatedString) EmitError!llvm.ValueRef {
+        if (interp.parts.len == 0) {
+            return self.builder.buildGlobalStringPtr("", "empty_interp");
+        }
+
+        // Simple case: single string literal part
+        if (interp.parts.len == 1) {
+            switch (interp.parts[0]) {
+                .string => |s| {
+                    const str_z = self.allocator.dupeZ(u8, s) catch return EmitError.OutOfMemory;
+                    defer self.allocator.free(str_z);
+                    return self.builder.buildGlobalStringPtr(str_z, "interp_str");
+                },
+                .expr => |e| {
+                    // Single expression - emit as format string with printf-style format
+                    return self.emitExprAsString(e);
+                },
+            }
+        }
+
+        // Multiple parts: build format string and args for snprintf
+        // We'll use a fixed-size stack buffer and snprintf
+        var format_parts = std.ArrayListUnmanaged(u8){};
+        defer format_parts.deinit(self.allocator);
+
+        var expr_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer expr_values.deinit(self.allocator);
+
+        for (interp.parts) |part| {
+            switch (part) {
+                .string => |s| {
+                    // Escape any % in the string for printf format
+                    for (s) |c| {
+                        if (c == '%') {
+                            format_parts.append(self.allocator, '%') catch return EmitError.OutOfMemory;
+                            format_parts.append(self.allocator, '%') catch return EmitError.OutOfMemory;
+                        } else {
+                            format_parts.append(self.allocator, c) catch return EmitError.OutOfMemory;
+                        }
+                    }
+                },
+                .expr => |e| {
+                    // Emit the expression and determine format specifier
+                    const val = try self.emitExpr(e);
+                    expr_values.append(self.allocator, val) catch return EmitError.OutOfMemory;
+
+                    // Determine the format specifier based on the expression type
+                    const val_type = llvm.c.LLVMTypeOf(val);
+                    const type_kind = llvm.c.LLVMGetTypeKind(val_type);
+
+                    const format_spec: []const u8 = switch (type_kind) {
+                        llvm.c.LLVMIntegerTypeKind => blk: {
+                            const bit_width = llvm.c.LLVMGetIntTypeWidth(val_type);
+                            if (bit_width == 1) {
+                                // Bool - we need special handling
+                                break :blk "%d";
+                            } else if (bit_width <= 32) {
+                                break :blk "%d";
+                            } else {
+                                break :blk "%lld";
+                            }
+                        },
+                        llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => "%g",
+                        llvm.c.LLVMPointerTypeKind => "%s",
+                        else => "%d", // Default to int
+                    };
+
+                    for (format_spec) |c| {
+                        format_parts.append(self.allocator, c) catch return EmitError.OutOfMemory;
+                    }
+                },
+            }
+        }
+
+        // Create the format string
+        format_parts.append(self.allocator, 0) catch return EmitError.OutOfMemory; // null terminate
+        const format_str = self.builder.buildGlobalStringPtr(format_parts.items[0 .. format_parts.items.len - 1 :0], "interp_fmt");
+
+        // Allocate a buffer on the stack for the result
+        const buffer_size: u64 = 1024;
+        const i8_type = llvm.Types.int8(self.ctx);
+        const buffer_type = llvm.Types.array(i8_type, buffer_size);
+        const buffer = self.builder.buildAlloca(buffer_type, "interp_buf");
+
+        // Get pointer to buffer start
+        var indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const buffer_ptr = self.builder.buildGEP(buffer_type, buffer, &indices, "buf_ptr");
+
+        // Call snprintf(buffer, size, format, args...)
+        const snprintf_fn = self.getOrDeclareSnprintf();
+        const i64_type = llvm.Types.int64(self.ctx);
+        const size_val = llvm.Const.int(i64_type, buffer_size, false);
+
+        var call_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer call_args.deinit(self.allocator);
+        call_args.append(self.allocator, buffer_ptr) catch return EmitError.OutOfMemory;
+        call_args.append(self.allocator, size_val) catch return EmitError.OutOfMemory;
+        call_args.append(self.allocator, format_str) catch return EmitError.OutOfMemory;
+        for (expr_values.items) |val| {
+            call_args.append(self.allocator, val) catch return EmitError.OutOfMemory;
+        }
+
+        const fn_type = llvm.c.LLVMGlobalGetValueType(snprintf_fn);
+        _ = self.builder.buildCall(fn_type, snprintf_fn, call_args.items, "");
+
+        return buffer_ptr;
+    }
+
+    /// Emit an expression and convert it to a string for interpolation.
+    /// Returns a pointer to a string representation.
+    fn emitExprAsString(self: *Emitter, expr: ast.Expr) EmitError!llvm.ValueRef {
+        const val = try self.emitExpr(expr);
+        const val_type = llvm.c.LLVMTypeOf(val);
+        const type_kind = llvm.c.LLVMGetTypeKind(val_type);
+
+        // If already a pointer (string), return as-is
+        if (type_kind == llvm.c.LLVMPointerTypeKind) {
+            return val;
+        }
+
+        // For other types, use sprintf to convert
+        const buffer_size: u64 = 64;
+        const i8_type = llvm.Types.int8(self.ctx);
+        const buffer_type = llvm.Types.array(i8_type, buffer_size);
+        const buffer = self.builder.buildAlloca(buffer_type, "tostr_buf");
+
+        var indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const buffer_ptr = self.builder.buildGEP(buffer_type, buffer, &indices, "buf_ptr");
+
+        const format_spec: [:0]const u8 = switch (type_kind) {
+            llvm.c.LLVMIntegerTypeKind => blk: {
+                const bit_width = llvm.c.LLVMGetIntTypeWidth(val_type);
+                if (bit_width <= 32) {
+                    break :blk "%d";
+                } else {
+                    break :blk "%lld";
+                }
+            },
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => "%g",
+            else => "%d",
+        };
+
+        const format_str = self.builder.buildGlobalStringPtr(format_spec, "tostr_fmt");
+
+        const snprintf_fn = self.getOrDeclareSnprintf();
+        const i64_type = llvm.Types.int64(self.ctx);
+        const size_val = llvm.Const.int(i64_type, buffer_size, false);
+
+        var call_args = [_]llvm.ValueRef{ buffer_ptr, size_val, format_str, val };
+        const fn_type = llvm.c.LLVMGlobalGetValueType(snprintf_fn);
+        _ = self.builder.buildCall(fn_type, snprintf_fn, &call_args, "");
+
+        return buffer_ptr;
+    }
+
+    fn getOrDeclareSnprintf(self: *Emitter) llvm.ValueRef {
+        const fn_name = "snprintf";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int snprintf(char *str, size_t size, const char *format, ...)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, i64_type, ptr_type };
+        // variadic = 1 (true)
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 3, 1);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
     /// Emit a print or println call using libc puts/printf

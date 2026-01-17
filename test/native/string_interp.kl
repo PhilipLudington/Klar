@@ -1,0 +1,17 @@
+// Test string interpolation in native codegen
+
+struct Game {
+    turn: i32,
+    score: i32,
+}
+
+fn main() -> i32 {
+    let x = 42
+    print("{x}")  // Should print "42"
+
+    let game = Game { turn: 10, score: 100 }
+    print(" turn={game.turn}")  // Should print " turn=10"
+
+    // Return value based on what was printed
+    x  // 42
+}
