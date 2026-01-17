@@ -384,6 +384,8 @@ pub const Compiler = struct {
             .for_loop => |f| try self.compileForLoop(f),
             .loop_stmt => |l| try self.compileLoopStmt(l),
             .assignment => |a| try self.compileAssignment(a),
+            .if_stmt => |i| try self.compileIfStmt(i),
+            .match_stmt => |m| try self.compileMatchStmt(m),
         }
     }
 
@@ -676,8 +678,6 @@ pub const Compiler = struct {
             .index => |i| try self.compileIndex(i),
             .field => |f| try self.compileField(f),
             .method_call => |m| try self.compileMethodCall(m),
-            .if_expr => |i| try self.compileIfExpr(i),
-            .match_expr => |m| try self.compileMatchExpr(m),
             .block => |b| try self.compileBlockExpr(b),
             .closure => |c| try self.compileClosure(c),
             .range => |r| try self.compileRange(r),
@@ -946,40 +946,51 @@ pub const Compiler = struct {
         try self.emitByte(@intCast(method.args.len), line);
     }
 
-    fn compileIfExpr(self: *Compiler, if_expr: *ast.IfExpr) Error!void {
-        const line = if_expr.span.line;
+    fn compileIfStmt(self: *Compiler, if_stmt: *ast.IfStmt) Error!void {
+        const line = if_stmt.span.line;
 
         // Compile condition.
-        try self.compileExpr(if_expr.condition);
+        try self.compileExpr(if_stmt.condition);
 
         // Jump to else branch if false.
         const then_jump = try self.emitJump(.op_jump_if_false, line);
 
-        // Compile then branch.
-        try self.compileExpr(if_expr.then_branch);
+        // Compile then branch (as a block, doesn't leave value on stack).
+        self.beginScope();
+        try self.compileBlock(if_stmt.then_branch);
+        self.endScope();
 
-        // Jump over else branch.
-        const else_jump = try self.emitJump(.op_jump, line);
+        // Jump over else branch if present.
+        var else_jump: ?usize = null;
+        if (if_stmt.else_branch != null) {
+            else_jump = try self.emitJump(.op_jump, line);
+        }
 
         // Patch the then jump.
         try self.patchJump(then_jump);
 
-        // Compile else branch (or push void).
-        if (if_expr.else_branch) |else_branch| {
-            try self.compileExpr(else_branch);
-        } else {
-            try self.emitOp(.op_void, line);
+        // Compile else branch if present.
+        if (if_stmt.else_branch) |else_branch| {
+            switch (else_branch.*) {
+                .block => |block| {
+                    self.beginScope();
+                    try self.compileBlock(block);
+                    self.endScope();
+                },
+                .if_stmt => |nested_if| try self.compileIfStmt(nested_if),
+            }
+            // Patch the else jump.
+            if (else_jump) |jump| {
+                try self.patchJump(jump);
+            }
         }
-
-        // Patch the else jump.
-        try self.patchJump(else_jump);
     }
 
-    fn compileMatchExpr(self: *Compiler, match: *ast.MatchExpr) Error!void {
-        const line = match.span.line;
+    fn compileMatchStmt(self: *Compiler, match_stmt: *ast.MatchStmt) Error!void {
+        const line = match_stmt.span.line;
 
         // Compile the subject.
-        try self.compileExpr(match.subject);
+        try self.compileExpr(match_stmt.subject);
 
         // We'll emit a series of:
         // 1. Duplicate subject
@@ -990,7 +1001,7 @@ pub const Compiler = struct {
         var end_jumps = std.ArrayListUnmanaged(usize){};
         defer end_jumps.deinit(self.allocator);
 
-        for (match.arms) |arm| {
+        for (match_stmt.arms) |arm| {
             // Duplicate the subject for pattern matching.
             try self.emitOp(.op_dup, line);
 
@@ -1007,14 +1018,18 @@ pub const Compiler = struct {
             if (arm.guard) |guard| {
                 try self.compileExpr(guard);
                 const guard_fail = try self.emitJump(.op_jump_if_false, line);
-                // Guard passed, compile body.
-                try self.compileExpr(arm.body);
+                // Guard passed, compile body (as a block).
+                self.beginScope();
+                try self.compileBlock(arm.body);
+                self.endScope();
                 const end_jump = try self.emitJump(.op_jump, line);
                 try end_jumps.append(self.allocator, end_jump);
                 try self.patchJump(guard_fail);
             } else {
-                // Compile body.
-                try self.compileExpr(arm.body);
+                // Compile body (as a block).
+                self.beginScope();
+                try self.compileBlock(arm.body);
+                self.endScope();
                 const end_jump = try self.emitJump(.op_jump, line);
                 try end_jumps.append(self.allocator, end_jump);
             }

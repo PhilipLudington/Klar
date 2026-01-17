@@ -242,18 +242,18 @@ pub const DropInserter = struct {
 
     fn analyzeStmt(self: *DropInserter, stmt: ast.Stmt) !void {
         switch (stmt) {
-            .expr => |e| try self.analyzeExpr(e),
-            .let_ => |l| try self.analyzeLet(l),
-            .var_ => |v| try self.analyzeVar(v),
+            .expr_stmt => |e| try self.analyzeExpr(e.expr),
+            .let_decl => |l| try self.analyzeLet(l),
+            .var_decl => |v| try self.analyzeVar(v),
             .assignment => |a| try self.analyzeAssignment(a),
-            .if_ => |i| try self.analyzeIf(i),
-            .while_ => |w| try self.analyzeWhile(w),
-            .for_ => |f| try self.analyzeFor(f),
-            .return_ => |r| try self.analyzeReturn(r),
-            .break_ => |b| try self.analyzeBreak(b),
-            .continue_ => |c| try self.analyzeContinue(c),
-            .block => |b| try self.analyzeBlock(b),
-            .match => |m| try self.analyzeMatch(m),
+            .if_stmt => |i| try self.analyzeIf(i),
+            .while_loop => |w| try self.analyzeWhile(w),
+            .for_loop => |f| try self.analyzeFor(f),
+            .return_stmt => |r| try self.analyzeReturn(r),
+            .break_stmt => |b| try self.analyzeBreak(b),
+            .continue_stmt => |c| try self.analyzeContinue(c),
+            .loop_stmt => |l| try self.analyzeLoopStmt(l),
+            .match_stmt => |m| try self.analyzeMatch(m),
         }
     }
 
@@ -294,37 +294,46 @@ pub const DropInserter = struct {
         // Then branch
         try self.pushScope(.conditional);
         try self.analyzeBlock(if_stmt.then_branch);
-        try self.popScope(if_stmt.then_branch.span.offset + 1); // After block
+        try self.popScope(if_stmt.then_branch.span.end); // After block
 
         // Else branch
         if (if_stmt.else_branch) |else_branch| {
             try self.pushScope(.conditional);
             switch (else_branch.*) {
                 .block => |b| try self.analyzeBlock(b),
-                .if_ => |nested| try self.analyzeIf(nested),
+                .if_stmt => |nested| try self.analyzeIf(nested),
             }
             try self.popScope(null);
         }
     }
 
-    fn analyzeWhile(self: *DropInserter, while_stmt: *ast.WhileStmt) !void {
+    fn analyzeWhile(self: *DropInserter, while_stmt: *ast.WhileLoop) !void {
         try self.analyzeExpr(while_stmt.condition);
 
         try self.pushScope(.loop);
         try self.analyzeBlock(while_stmt.body);
-        try self.popScope(while_stmt.body.span.offset + 1);
+        try self.popScope(while_stmt.body.span.end);
     }
 
-    fn analyzeFor(self: *DropInserter, for_stmt: *ast.ForStmt) !void {
+    fn analyzeFor(self: *DropInserter, for_stmt: *ast.ForLoop) !void {
         try self.analyzeExpr(for_stmt.iterable);
 
         try self.pushScope(.loop);
 
         // Track loop variable
-        try self.trackVariable(for_stmt.binding, .unknown, true, for_stmt.span);
+        switch (for_stmt.pattern) {
+            .binding => |b| try self.trackVariable(b.name, .unknown, true, b.span),
+            else => {},
+        }
 
         try self.analyzeBlock(for_stmt.body);
-        try self.popScope(for_stmt.body.span.offset + 1);
+        try self.popScope(for_stmt.body.span.end);
+    }
+
+    fn analyzeLoopStmt(self: *DropInserter, loop_stmt: *ast.LoopStmt) !void {
+        try self.pushScope(.loop);
+        try self.analyzeBlock(loop_stmt.body);
+        try self.popScope(loop_stmt.body.span.end);
     }
 
     fn analyzeReturn(self: *DropInserter, return_stmt: *ast.ReturnStmt) !void {
@@ -362,24 +371,19 @@ pub const DropInserter = struct {
             try self.analyzeStmt(stmt);
         }
 
-        if (block.expression) |expr| {
+        if (block.final_expr) |expr| {
             try self.analyzeExpr(expr);
         }
 
-        try self.popScope(block.span.offset + 1);
+        try self.popScope(block.span.end);
     }
 
     fn analyzeMatch(self: *DropInserter, match_stmt: *ast.MatchStmt) !void {
-        try self.analyzeExpr(match_stmt.expr);
+        try self.analyzeExpr(match_stmt.subject);
 
         for (match_stmt.arms) |arm| {
             try self.pushScope(.conditional);
-            if (arm.body) |body| {
-                switch (body.*) {
-                    .block => |b| try self.analyzeBlock(b),
-                    .expr => |e| try self.analyzeExpr(e),
-                }
-            }
+            try self.analyzeBlock(arm.body);
             try self.popScope(null);
         }
     }

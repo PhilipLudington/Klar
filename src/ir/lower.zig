@@ -232,6 +232,8 @@ pub const Lowerer = struct {
             .break_stmt => |brk| try self.lowerBreak(brk),
             .continue_stmt => try self.lowerContinue(),
             .loop_stmt => |loop| try self.lowerLoop(loop),
+            .if_stmt => |if_stmt| try self.lowerIfStmt(if_stmt),
+            .match_stmt => |match_stmt| try self.lowerMatchStmt(match_stmt),
         }
     }
 
@@ -533,7 +535,6 @@ pub const Lowerer = struct {
             .binary => |bin| try self.lowerBinary(bin),
             .unary => |un| try self.lowerUnary(un),
             .call => |call| try self.lowerCall(call),
-            .if_expr => |if_e| try self.lowerIf(if_e),
             .block => |blk| {
                 try self.pushScope();
                 const result = try self.lowerBlock(blk);
@@ -725,53 +726,73 @@ pub const Lowerer = struct {
     }
 
     /// Lower an if expression.
-    fn lowerIf(self: *Lowerer, if_expr: *ast.IfExpr) LowerError!Value {
-        const cond = try self.lowerExpr(if_expr.condition);
+    fn lowerIfStmt(self: *Lowerer, if_stmt: *ast.IfStmt) LowerError!void {
+        const cond = try self.lowerExpr(if_stmt.condition);
 
         // Create blocks
         const then_bb = self.builder.createBlock("then") catch return LowerError.OutOfMemory;
-        const else_bb = self.builder.createBlock("else") catch return LowerError.OutOfMemory;
+        const else_bb = if (if_stmt.else_branch != null)
+            self.builder.createBlock("else") catch return LowerError.OutOfMemory
+        else
+            null;
         const merge_bb = self.builder.createBlock("ifcont") catch return LowerError.OutOfMemory;
 
-        _ = self.builder.buildCondBr(cond, then_bb, else_bb) catch {};
+        // Branch to then or else/merge
+        if (else_bb) |eb| {
+            _ = self.builder.buildCondBr(cond, then_bb, eb) catch {};
+        } else {
+            _ = self.builder.buildCondBr(cond, then_bb, merge_bb) catch {};
+        }
 
         // Then block
         self.builder.positionAtEnd(then_bb);
         try self.pushScope();
-        const then_val = try self.lowerExpr(if_expr.then_branch);
+        _ = try self.lowerBlock(if_stmt.then_branch);
         try self.popScope();
         const then_terminated = self.builder.isTerminated();
-        const then_end_bb = self.builder.getCurrentBlock() orelse return LowerError.NoCurrentBlock;
         if (!then_terminated) {
             _ = self.builder.buildBr(merge_bb) catch {};
         }
 
         // Else block
-        self.builder.positionAtEnd(else_bb);
-        try self.pushScope();
-        const else_val = if (if_expr.else_branch) |else_b|
-            try self.lowerExpr(else_b)
-        else
-            self.builder.constI32(0) catch return LowerError.OutOfMemory;
-        try self.popScope();
-        const else_terminated = self.builder.isTerminated();
-        const else_end_bb = self.builder.getCurrentBlock() orelse return LowerError.NoCurrentBlock;
-        if (!else_terminated) {
-            _ = self.builder.buildBr(merge_bb) catch {};
+        if (if_stmt.else_branch) |else_branch| {
+            self.builder.positionAtEnd(else_bb.?);
+            try self.pushScope();
+            switch (else_branch.*) {
+                .block => |block| _ = try self.lowerBlock(block),
+                .if_stmt => |nested_if| try self.lowerIfStmt(nested_if),
+            }
+            try self.popScope();
+            const else_terminated = self.builder.isTerminated();
+            if (!else_terminated) {
+                _ = self.builder.buildBr(merge_bb) catch {};
+            }
         }
 
         // Merge block
         self.builder.positionAtEnd(merge_bb);
+    }
 
-        if (then_terminated and else_terminated) {
-            // Both branches terminate, merge is unreachable
-            return self.builder.constI32(0) catch return LowerError.OutOfMemory;
+    fn lowerMatchStmt(self: *Lowerer, match_stmt: *ast.MatchStmt) LowerError!void {
+        const subject = try self.lowerExpr(match_stmt.subject);
+        _ = subject;
+
+        // Create merge block
+        const merge_bb = self.builder.createBlock("match.merge") catch return LowerError.OutOfMemory;
+
+        // TODO: Full pattern matching implementation
+        // For now, just lower the first arm's body (placeholder)
+        if (match_stmt.arms.len > 0) {
+            try self.pushScope();
+            _ = try self.lowerBlock(match_stmt.arms[0].body);
+            try self.popScope();
+            const arm_terminated = self.builder.isTerminated();
+            if (!arm_terminated) {
+                _ = self.builder.buildBr(merge_bb) catch {};
+            }
         }
 
-        return self.builder.buildPhi(then_val.ty, &.{
-            .{ .value = then_val, .block = then_end_bb },
-            .{ .value = else_val, .block = else_end_bb },
-        }) catch return LowerError.OutOfMemory;
+        self.builder.positionAtEnd(merge_bb);
     }
 
     /// Lower a range expression.

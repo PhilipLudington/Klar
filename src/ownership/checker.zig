@@ -168,6 +168,8 @@ pub const OwnershipChecker = struct {
             .return_stmt => |r| try self.analyzeReturn(r),
             .break_stmt => {},
             .continue_stmt => {},
+            .if_stmt => |i| try self.analyzeIfStmt(i),
+            .match_stmt => |m| try self.analyzeMatchStmt(m),
         }
     }
 
@@ -283,8 +285,6 @@ pub const OwnershipChecker = struct {
             .field => |f| try self.analyzeField(f),
             .index => |i| try self.analyzeIndex(i),
             .method_call => |m| try self.analyzeMethodCall(m),
-            .if_expr => |i| try self.analyzeIfExpr(i),
-            .match_expr => |m| try self.analyzeMatchExpr(m),
             .block => |b| try self.analyzeBlockExpr(b),
             .closure => |c| try self.analyzeClosure(c),
             .range => |r| try self.analyzeRange(r),
@@ -399,32 +399,31 @@ pub const OwnershipChecker = struct {
         return null;
     }
 
-    fn analyzeIfExpr(self: *OwnershipChecker, if_expr: *ast.IfExpr) !?*VariableState {
-        _ = try self.analyzeExpr(if_expr.condition);
+    fn analyzeIfStmt(self: *OwnershipChecker, if_stmt: *ast.IfStmt) !void {
+        _ = try self.analyzeExpr(if_stmt.condition);
 
         try self.pushScope(.conditional);
-        _ = try self.analyzeExpr(if_expr.then_branch);
+        try self.analyzeBlock(if_stmt.then_branch);
         self.popScope();
 
-        if (if_expr.else_branch) |else_branch| {
+        if (if_stmt.else_branch) |else_branch| {
             try self.pushScope(.conditional);
-            _ = try self.analyzeExpr(else_branch);
+            switch (else_branch.*) {
+                .block => |block| try self.analyzeBlock(block),
+                .if_stmt => |nested_if| try self.analyzeIfStmt(nested_if),
+            }
             self.popScope();
         }
-
-        return null;
     }
 
-    fn analyzeMatchExpr(self: *OwnershipChecker, match_expr: *ast.MatchExpr) !?*VariableState {
-        _ = try self.analyzeExpr(match_expr.subject);
+    fn analyzeMatchStmt(self: *OwnershipChecker, match_stmt: *ast.MatchStmt) !void {
+        _ = try self.analyzeExpr(match_stmt.subject);
 
-        for (match_expr.arms) |arm| {
+        for (match_stmt.arms) |arm| {
             try self.pushScope(.conditional);
-            _ = try self.analyzeExpr(arm.body);
+            try self.analyzeBlock(arm.body);
             self.popScope();
         }
-
-        return null;
     }
 
     fn analyzeBlockExpr(self: *OwnershipChecker, block: *ast.Block) !?*VariableState {

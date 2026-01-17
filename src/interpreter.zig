@@ -172,8 +172,6 @@ pub const Interpreter = struct {
             .index => |i| self.evalIndex(i),
             .field => |f| self.evalField(f),
             .method_call => |m| self.evalMethodCall(m),
-            .if_expr => |i| self.evalIfExpr(i),
-            .match_expr => |m| self.evalMatchExpr(m),
             .block => |b| self.evalBlock(b),
             .closure => |c| self.evalClosure(c),
             .range => |r| self.evalRange(r),
@@ -981,24 +979,26 @@ pub const Interpreter = struct {
         return RuntimeError.InvalidOperation;
     }
 
-    fn evalIfExpr(self: *Interpreter, if_expr: *ast.IfExpr) RuntimeError!Value {
-        const condition = try self.evaluate(if_expr.condition);
+    fn execIfStmt(self: *Interpreter, if_stmt: *ast.IfStmt) RuntimeError!void {
+        const condition = try self.evaluate(if_stmt.condition);
 
         if (condition.isTruthy()) {
-            return self.evaluate(if_expr.then_branch);
+            _ = try self.evalBlock(if_stmt.then_branch);
+            return;
         }
 
-        if (if_expr.else_branch) |else_branch| {
-            return self.evaluate(else_branch);
+        if (if_stmt.else_branch) |else_branch| {
+            switch (else_branch.*) {
+                .block => |block| _ = try self.evalBlock(block),
+                .if_stmt => |nested_if| try self.execIfStmt(nested_if),
+            }
         }
-
-        return self.builder.voidVal();
     }
 
-    fn evalMatchExpr(self: *Interpreter, match: *ast.MatchExpr) RuntimeError!Value {
-        const subject = try self.evaluate(match.subject);
+    fn execMatchStmt(self: *Interpreter, match_stmt: *ast.MatchStmt) RuntimeError!void {
+        const subject = try self.evaluate(match_stmt.subject);
 
-        for (match.arms) |arm| {
+        for (match_stmt.arms) |arm| {
             // Try to match pattern
             _ = self.pushEnv() catch return RuntimeError.OutOfMemory;
             defer self.popEnv();
@@ -1011,7 +1011,9 @@ pub const Interpreter = struct {
                         continue;
                     }
                 }
-                return self.evaluate(arm.body);
+                // Execute the arm body (a block)
+                _ = try self.evalBlock(arm.body);
+                return;
             }
         }
 
@@ -1385,6 +1387,8 @@ pub const Interpreter = struct {
             .for_loop => |f| try self.execFor(f),
             .while_loop => |w| try self.execWhile(w),
             .loop_stmt => |l| try self.execLoop(l),
+            .if_stmt => |i| try self.execIfStmt(i),
+            .match_stmt => |m| try self.execMatchStmt(m),
         }
     }
 
