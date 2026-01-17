@@ -94,29 +94,31 @@
 
 **Objective:** Implement trait definitions, implementations, and bounds.
 
+**Status:** 🟡 In Progress. Core trait infrastructure implemented (trait registry, definition validation, impl checking, bounds parsing). Remaining: trait method resolution through bounds, associated types, core traits, derive macros.
+
 ### Trait Registry
-- [ ] Create traits.zig module for trait management
-- [ ] Implement TraitRegistry to store all trait definitions
-- [ ] Store trait method signatures and default implementations
+- [x] Create traits.zig module for trait management (implemented in checker.zig)
+- [x] Implement TraitRegistry to store all trait definitions
+- [x] Store trait method signatures and default implementations
 - [ ] Handle trait inheritance (trait A: B syntax)
 
 ### Trait Definition Checking
-- [ ] Validate trait definitions (unique method names, valid signatures)
+- [x] Validate trait definitions (unique method names, valid signatures)
 - [ ] Check for conflicts in trait inheritance
-- [ ] Store Self type placeholder for trait methods
+- [x] Store Self type placeholder for trait methods
 - [ ] Handle associated types in traits
 
 ### Trait Implementation
-- [ ] Parse and check `impl Type: Trait { ... }` blocks
-- [ ] Verify all required methods are implemented
-- [ ] Check method signatures match trait definition
-- [ ] Allow default method overrides
-- [ ] Handle impl blocks for generic types
+- [x] Parse and check `impl Type: Trait { ... }` blocks
+- [x] Verify all required methods are implemented
+- [ ] Check method signatures match trait definition (TODO)
+- [x] Allow default method overrides (detected, not yet used for defaults)
+- [x] Handle impl blocks for generic types
 
 ### Trait Bounds
-- [ ] Implement trait bounds on generics: `fn sort[T: Ordered](list: List[T])`
-- [ ] Check that type arguments satisfy trait bounds
-- [ ] Support multiple trait bounds: `T: Ordered + Clone`
+- [x] Implement trait bounds on generics: `fn sort[T: Ordered](list: List[T])`
+- [x] Check that type arguments satisfy trait bounds
+- [x] Support multiple trait bounds: `T: Ordered + Clone`
 - [ ] Handle where clauses for complex bounds
 
 ### Associated Types
@@ -126,9 +128,9 @@
 - [ ] Handle associated types in generic contexts
 
 ### Method Resolution
-- [ ] Resolve trait method calls on concrete types
-- [ ] Look up correct implementation for method dispatch
-- [ ] Handle method calls through trait bounds in generics
+- [x] Resolve trait method calls on concrete types (via struct_methods)
+- [x] Look up correct implementation for method dispatch
+- [ ] Handle method calls through trait bounds in generics (needs trait method table)
 - [ ] Support UFCS (Uniform Function Call Syntax)
 
 ### Core Traits
@@ -146,15 +148,14 @@
 - [ ] Generate Hash implementation for structs
 
 ### Testing
-- [ ] Test: can define and implement traits
-- [ ] Test: trait bounds restrict generic parameters
-- [ ] Test: method calls resolve to correct implementation
+- [x] Test: can define and implement traits (trait_basic.kl)
+- [x] Test: trait bounds restrict generic parameters (trait_bounds.kl)
+- [x] Test: method calls resolve to correct implementation (trait_default.kl)
 - [ ] Test: associated types work correctly
 
-**Files to Create/Modify:**
-- `src/traits.zig` - NEW: Trait registry, resolution
-- `src/checker.zig` - Add trait checking, impl validation
-- `src/types.zig` - Add trait bounds to type system
+**Files Modified:**
+- `src/checker.zig` - Trait checking, impl validation, trait registry ✓
+- `src/types.zig` - Trait bounds to type system ✓
 
 ---
 

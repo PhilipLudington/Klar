@@ -1,0 +1,21 @@
+// Test for basic trait definition and implementation
+
+trait Summable {
+    fn sum(self: Self) -> i32
+}
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+impl Point: Summable {
+    fn sum(self: Point) -> i32 {
+        self.x + self.y
+    }
+}
+
+fn main() -> i32 {
+    let p = Point { x: 10, y: 32 }
+    p.sum()
+}

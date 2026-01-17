@@ -213,9 +213,37 @@ pub const TypeChecker = struct {
     /// Cache of monomorphized method instances for generic structs.
     /// Used by codegen to emit monomorphized methods.
     monomorphized_methods: std.ArrayListUnmanaged(MonomorphizedMethod),
+    /// Registry of trait definitions.
+    /// Maps trait name -> TraitInfo.
+    trait_registry: std.StringHashMapUnmanaged(TraitInfo),
+    /// Track trait type allocations for cleanup.
+    trait_types: std.ArrayListUnmanaged(*types.TraitType),
+    /// Registry of trait implementations.
+    /// Maps (struct_name, trait_name) -> TraitImplInfo.
+    trait_impls: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(TraitImplInfo)),
 
     const CaptureInfo = struct {
         is_mutable: bool,
+    };
+
+    /// Information about a trait definition.
+    pub const TraitInfo = struct {
+        /// The trait type containing method signatures
+        trait_type: *types.TraitType,
+        /// The original AST declaration
+        decl: *ast.TraitDecl,
+    };
+
+    /// Information about a trait implementation for a type.
+    pub const TraitImplInfo = struct {
+        /// Name of the trait being implemented
+        trait_name: []const u8,
+        /// Name of the implementing type
+        impl_type_name: []const u8,
+        /// Type parameters from the impl block (for generic impls)
+        impl_type_params: []const types.TypeVar,
+        /// The methods implementing the trait
+        methods: []const StructMethod,
     };
 
     /// Information about a method defined in an impl block.
@@ -313,6 +341,9 @@ pub const TypeChecker = struct {
             .generic_struct_types = .{},
             .struct_methods = .{},
             .monomorphized_methods = .{},
+            .trait_registry = .{},
+            .trait_types = .{},
+            .trait_impls = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -411,6 +442,33 @@ pub const TypeChecker = struct {
             self.allocator.free(method.type_args);
         }
         self.monomorphized_methods.deinit(self.allocator);
+
+        // Clean up trait registry
+        self.trait_registry.deinit(self.allocator);
+
+        // Clean up trait type allocations
+        for (self.trait_types.items) |trait_type| {
+            if (trait_type.type_params.len > 0) {
+                self.allocator.free(trait_type.type_params);
+            }
+            self.allocator.free(trait_type.methods);
+            self.allocator.destroy(trait_type);
+        }
+        self.trait_types.deinit(self.allocator);
+
+        // Clean up trait implementations (including allocated keys)
+        var impls_key_iter = self.trait_impls.keyIterator();
+        while (impls_key_iter.next()) |key| {
+            // Keys are allocated strings, free them
+            if (key.*.len > 0) {
+                self.allocator.free(key.*);
+            }
+        }
+        var impls_iter = self.trait_impls.valueIterator();
+        while (impls_iter.next()) |impl_list| {
+            impl_list.deinit(self.allocator);
+        }
+        self.trait_impls.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -602,7 +660,24 @@ pub const TypeChecker = struct {
         defer type_vars.deinit(self.allocator);
 
         for (type_params) |param| {
-            const type_var = try self.type_builder.newTypeVar(param.name);
+            // Resolve trait bounds
+            var bounds = std.ArrayListUnmanaged(*types.TraitType){};
+            defer bounds.deinit(self.allocator);
+
+            for (param.bounds) |bound_expr| {
+                const resolved = self.resolveTypeExpr(bound_expr) catch continue;
+                if (resolved == .trait_) {
+                    bounds.append(self.allocator, resolved.trait_) catch {};
+                } else {
+                    self.addError(.type_mismatch, param.span, "expected trait in bound, found '{s}'", .{@tagName(resolved)});
+                }
+            }
+
+            const type_var = if (bounds.items.len > 0)
+                try self.type_builder.newTypeVarWithBounds(param.name, bounds.items)
+            else
+                try self.type_builder.newTypeVar(param.name);
+
             try scope.put(self.allocator, param.name, type_var);
             try type_vars.append(self.allocator, type_var);
         }
@@ -1293,9 +1368,9 @@ pub const TypeChecker = struct {
                 if (self.lookupTypeParam(n.name)) |type_var| {
                     return .{ .type_var = type_var };
                 }
-                // Look up user-defined type
+                // Look up user-defined type or trait
                 if (self.current_scope.lookup(n.name)) |sym| {
-                    if (sym.kind == .type_) {
+                    if (sym.kind == .type_ or sym.kind == .trait_) {
                         return sym.type_;
                     }
                 }
@@ -1777,6 +1852,23 @@ pub const TypeChecker = struct {
                     var iter = substitutions.iterator();
                     while (iter.next()) |entry| {
                         type_args.append(self.allocator, entry.value_ptr.*) catch {};
+                    }
+
+                    // Look up the original generic function declaration to check trait bounds
+                    if (self.generic_functions.get(func_name)) |original_decl| {
+                        // Check that each type argument satisfies the bounds
+                        // The substitutions map maps type var id -> concrete type
+                        // We need to match them with the type params in order
+                        for (original_decl.type_params) |type_param| {
+                            // Get the type var that was registered for this param
+                            if (self.lookupTypeParam(type_param.name)) |type_var| {
+                                // Get the concrete type that was inferred
+                                if (substitutions.get(type_var.id)) |concrete_type| {
+                                    // Check that the concrete type satisfies bounds
+                                    _ = self.typeSatisfiesBounds(concrete_type, type_var.bounds, call.span);
+                                }
+                            }
+                        }
                     }
 
                     // Get the concrete function type
@@ -3144,9 +3236,119 @@ pub const TypeChecker = struct {
     }
 
     fn checkTrait(self: *TypeChecker, trait_decl: *ast.TraitDecl) void {
-        // TODO: implement trait checking
-        _ = self;
-        _ = trait_decl;
+        // Check for duplicate trait definition
+        if (self.trait_registry.get(trait_decl.name) != null) {
+            self.addError(.duplicate_definition, trait_decl.span, "duplicate trait definition '{s}'", .{trait_decl.name});
+            return;
+        }
+
+        // Push type parameters into scope if this is a generic trait
+        const has_type_params = trait_decl.type_params.len > 0;
+        var trait_type_params: []const types.TypeVar = &.{};
+        if (has_type_params) {
+            trait_type_params = self.pushTypeParams(trait_decl.type_params) catch return;
+        }
+        defer if (has_type_params) self.popTypeParams();
+
+        // Build trait methods
+        var trait_methods: std.ArrayListUnmanaged(types.TraitMethod) = .{};
+        defer trait_methods.deinit(self.allocator);
+
+        var seen_method_names: std.StringHashMapUnmanaged(void) = .{};
+        defer seen_method_names.deinit(self.allocator);
+
+        for (trait_decl.methods) |method_decl| {
+            // Check for duplicate method names
+            if (seen_method_names.get(method_decl.name) != null) {
+                self.addError(.duplicate_definition, method_decl.span, "duplicate method '{s}' in trait", .{method_decl.name});
+                continue;
+            }
+            seen_method_names.put(self.allocator, method_decl.name, {}) catch {};
+
+            // Build method signature
+            var param_types: std.ArrayListUnmanaged(Type) = .{};
+            defer param_types.deinit(self.allocator);
+
+            for (method_decl.params) |param| {
+                // Handle 'self' parameter - it represents the implementing type
+                if (std.mem.eql(u8, param.name, "self") or std.mem.eql(u8, param.name, "Self")) {
+                    // For 'self', we'll use a placeholder type that gets substituted during impl
+                    // For now, use unknown type as a marker
+                    param_types.append(self.allocator, self.type_builder.unknownType()) catch {};
+                } else {
+                    const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
+                    param_types.append(self.allocator, param_type) catch {};
+                }
+            }
+
+            const return_type = if (method_decl.return_type) |rt|
+                self.resolveTypeExpr(rt) catch self.type_builder.unknownType()
+            else
+                self.type_builder.voidType();
+
+            const func_type = self.type_builder.functionType(param_types.items, return_type) catch {
+                continue;
+            };
+
+            // Check if method has a default implementation (has a body)
+            const has_default = method_decl.body != null;
+
+            // If there's a default implementation, type-check it
+            if (method_decl.body) |body| {
+                _ = self.pushScope(.function) catch continue;
+                defer self.popScope();
+
+                // Bind parameters
+                for (method_decl.params, 0..) |param, idx| {
+                    const param_type = if (idx < param_types.items.len) param_types.items[idx] else self.type_builder.unknownType();
+                    self.current_scope.define(.{
+                        .name = param.name,
+                        .type_ = param_type,
+                        .kind = .parameter,
+                        .mutable = false,
+                        .span = param.span,
+                    }) catch {};
+                }
+
+                self.current_return_type = return_type;
+                defer self.current_return_type = null;
+
+                _ = self.checkBlock(body);
+            }
+
+            trait_methods.append(self.allocator, .{
+                .name = method_decl.name,
+                .signature = func_type.function.*,
+                .has_default = has_default,
+            }) catch {};
+        }
+
+        // Create and register the trait type
+        const trait_type = self.allocator.create(types.TraitType) catch return;
+        trait_type.* = .{
+            .name = trait_decl.name,
+            .type_params = trait_type_params,
+            .methods = trait_methods.toOwnedSlice(self.allocator) catch &.{},
+            .super_traits = &.{}, // TODO: Support trait inheritance
+        };
+
+        // Track for cleanup
+        self.trait_types.append(self.allocator, trait_type) catch {};
+
+        // Register in trait registry
+        self.trait_registry.put(self.allocator, trait_decl.name, .{
+            .trait_type = trait_type,
+            .decl = @constCast(trait_decl),
+        }) catch {};
+
+        // Register in symbol table as a trait
+        self.current_scope.define(.{
+            .name = trait_decl.name,
+            .type_ = .{ .trait_ = trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = trait_decl.span,
+        }) catch {};
     }
 
     fn checkImpl(self: *TypeChecker, impl_decl: *ast.ImplDecl) void {
@@ -3182,10 +3384,28 @@ pub const TypeChecker = struct {
             },
         };
 
-        // TODO: Handle trait implementations (impl_decl.trait_type)
-        if (impl_decl.trait_type != null) {
-            self.addError(.invalid_operation, impl_decl.span, "trait implementations not yet supported", .{});
-            return;
+        // Handle trait implementations (impl Type: Trait { ... })
+        var trait_info: ?TraitInfo = null;
+        if (impl_decl.trait_type) |trait_type_expr| {
+            // Resolve the trait type
+            const resolved_trait = self.resolveTypeExpr(trait_type_expr) catch {
+                self.addError(.undefined_type, impl_decl.span, "cannot resolve trait type", .{});
+                return;
+            };
+
+            // Must be a trait
+            if (resolved_trait != .trait_) {
+                self.addError(.type_mismatch, impl_decl.span, "expected trait type", .{});
+                return;
+            }
+
+            // Look up the trait in the registry
+            const trait_name = resolved_trait.trait_.name;
+            trait_info = self.trait_registry.get(trait_name);
+            if (trait_info == null) {
+                self.addError(.undefined_type, impl_decl.span, "trait '{s}' not found", .{trait_name});
+                return;
+            }
         }
 
         // Process each method in the impl block
@@ -3291,6 +3511,86 @@ pub const TypeChecker = struct {
                 _ = self.checkBlock(body);
             }
         }
+
+        // If this is a trait implementation, verify all required methods are implemented
+        if (trait_info) |info| {
+            const trait_type = info.trait_type;
+
+            // Get the list of implemented methods for this struct
+            const impl_methods = self.struct_methods.get(struct_name);
+
+            for (trait_type.methods) |trait_method| {
+                // Check if method is implemented
+                var found = false;
+                if (impl_methods) |methods_list| {
+                    for (methods_list.items) |impl_method| {
+                        if (std.mem.eql(u8, impl_method.name, trait_method.name)) {
+                            found = true;
+                            // TODO: Verify method signature matches trait signature
+                            break;
+                        }
+                    }
+                }
+
+                if (!found and !trait_method.has_default) {
+                    self.addError(.trait_not_implemented, impl_decl.span, "missing implementation for required trait method '{s}'", .{trait_method.name});
+                }
+            }
+
+            // Register this trait implementation
+            const impl_key = self.makeTraitImplKey(struct_name, trait_type.name);
+            const impl_result = self.trait_impls.getOrPut(self.allocator, impl_key) catch return;
+            if (!impl_result.found_existing) {
+                impl_result.value_ptr.* = .{};
+            }
+
+            impl_result.value_ptr.append(self.allocator, .{
+                .trait_name = trait_type.name,
+                .impl_type_name = struct_name,
+                .impl_type_params = impl_type_params,
+                .methods = if (impl_methods) |m| m.items else &.{},
+            }) catch {};
+        }
+    }
+
+    /// Create a unique key for trait implementation lookup
+    fn makeTraitImplKey(self: *TypeChecker, type_name: []const u8, trait_name: []const u8) []const u8 {
+        return std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ type_name, trait_name }) catch "";
+    }
+
+    /// Check if a type implements a trait
+    pub fn typeImplementsTrait(self: *TypeChecker, type_name: []const u8, trait_name: []const u8) bool {
+        const key = self.makeTraitImplKey(type_name, trait_name);
+        defer self.allocator.free(key);
+        return self.trait_impls.get(key) != null;
+    }
+
+    /// Check if a concrete type satisfies all trait bounds.
+    /// Returns true if the type satisfies all bounds, false otherwise.
+    pub fn typeSatisfiesBounds(self: *TypeChecker, concrete_type: Type, bounds: []const *types.TraitType, span: Span) bool {
+        if (bounds.len == 0) return true;
+
+        // Get the type name for trait lookup
+        const type_name: ?[]const u8 = switch (concrete_type) {
+            .struct_ => |s| s.name,
+            .enum_ => |e| e.name,
+            .primitive => |p| @tagName(p),
+            else => null,
+        };
+
+        if (type_name == null) {
+            // Complex types (functions, references, etc.) don't support traits yet
+            return true;
+        }
+
+        for (bounds) |trait| {
+            if (!self.typeImplementsTrait(type_name.?, trait.name)) {
+                self.addError(.trait_not_implemented, span, "type '{s}' does not implement trait '{s}'", .{ type_name.?, trait.name });
+                return false;
+            }
+        }
+
+        return true;
     }
 
     fn checkTypeAlias(self: *TypeChecker, alias: *ast.TypeAlias) void {

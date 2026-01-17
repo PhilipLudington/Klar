@@ -592,6 +592,18 @@ pub const TypeBuilder = struct {
         };
     }
 
+    pub fn newTypeVarWithBounds(self: *TypeBuilder, name_str: []const u8, bounds: []const *TraitType) !TypeVar {
+        const id = self.next_type_var_id;
+        self.next_type_var_id += 1;
+        const name_copy = try self.arena.allocator().dupe(u8, name_str);
+        const bounds_copy = try self.arena.allocator().dupe(*TraitType, bounds);
+        return .{
+            .id = id,
+            .name = name_copy,
+            .bounds = bounds_copy,
+        };
+    }
+
     pub fn typeVarType(self: *TypeBuilder, name_str: []const u8) !Type {
         return .{ .type_var = try self.newTypeVar(name_str) };
     }

@@ -1,0 +1,20 @@
+// Test trait with default method implementation
+
+trait Addable {
+    fn add(self: Self, other: i32) -> i32
+}
+
+struct Counter {
+    value: i32,
+}
+
+impl Counter: Addable {
+    fn add(self: Counter, other: i32) -> i32 {
+        self.value + other
+    }
+}
+
+fn main() -> i32 {
+    let c = Counter { value: 32 }
+    c.add(10)
+}

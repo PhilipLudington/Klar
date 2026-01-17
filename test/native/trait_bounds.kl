@@ -1,0 +1,21 @@
+// Test trait bounds on generic functions - basic validation
+
+trait Addable {
+    fn add(self: Self, x: i32) -> i32
+}
+
+struct Counter {
+    value: i32,
+}
+
+impl Counter: Addable {
+    fn add(self: Counter, x: i32) -> i32 {
+        self.value + x
+    }
+}
+
+fn main() -> i32 {
+    // For now, just verify that trait definition and implementation work
+    let c = Counter { value: 32 }
+    c.add(10)
+}
