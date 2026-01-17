@@ -2,7 +2,7 @@
 
 > **"No ambiguity. No surprises."**
 
-Klar is an application programming language designed for clarity, safety, and simplicity. It is optimized for AI code generation—specifically Claude Code—prioritizing unambiguous syntax and predictable semantics.
+Klar is an **AI-native** application programming language designed for clarity, safety, and simplicity. It is optimized for AI code generation—specifically Claude Code—prioritizing unambiguous syntax and predictable semantics.
 
 ## Design Philosophy
 
