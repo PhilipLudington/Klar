@@ -752,21 +752,6 @@ fn printExpr(out: std.fs.File, source: []const u8, expr: ast.Expr, indent: usize
                 try printExpr(out, source, arg, indent + 2);
             }
         },
-        .if_expr => |if_e| {
-            try out.writeAll(indent_str);
-            try out.writeAll("If:\n");
-            try out.writeAll(indent_str);
-            try out.writeAll("  condition:\n");
-            try printExpr(out, source, if_e.condition, indent + 2);
-            try out.writeAll(indent_str);
-            try out.writeAll("  then:\n");
-            try printExpr(out, source, if_e.then_branch, indent + 2);
-            if (if_e.else_branch) |else_b| {
-                try out.writeAll(indent_str);
-                try out.writeAll("  else:\n");
-                try printExpr(out, source, else_b, indent + 2);
-            }
-        },
         .block => |blk| {
             try out.writeAll(indent_str);
             const msg = std.fmt.bufPrint(&buf, "Block: ({d} stmts)\n", .{blk.statements.len}) catch "Block: ?\n";
