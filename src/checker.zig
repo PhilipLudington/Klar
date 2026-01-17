@@ -707,6 +707,63 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
+
+        // Ordered trait: trait Ordered { fn lt(&self, other: &Self) -> bool; fn le(...); fn gt(...); fn ge(...); }
+        // Provides comparison methods for ordering: less than, less than or equal, greater than, greater than or equal
+        const ord_self_type = self.type_builder.unknownType();
+        const ord_self_ref = try self.type_builder.referenceType(ord_self_type, false);
+        const ord_method_sig = types.FunctionType{
+            .params = try self.allocator.dupe(Type, &.{ ord_self_ref, ord_self_ref }),
+            .return_type = self.type_builder.boolType(),
+            .is_async = false,
+        };
+
+        const lt_method = types.TraitMethod{
+            .name = "lt",
+            .signature = ord_method_sig,
+            .has_default = false,
+        };
+        const le_method = types.TraitMethod{
+            .name = "le",
+            .signature = ord_method_sig,
+            .has_default = false,
+        };
+        const gt_method = types.TraitMethod{
+            .name = "gt",
+            .signature = ord_method_sig,
+            .has_default = false,
+        };
+        const ge_method = types.TraitMethod{
+            .name = "ge",
+            .signature = ord_method_sig,
+            .has_default = false,
+        };
+
+        const ordered_trait_type = try self.allocator.create(types.TraitType);
+        ordered_trait_type.* = .{
+            .name = "Ordered",
+            .type_params = &.{},
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{ lt_method, le_method, gt_method, ge_method }),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, ordered_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "Ordered", .{
+            .trait_type = ordered_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "Ordered",
+            .type_ = .{ .trait_ = ordered_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
     }
 
     // ========================================================================
@@ -2224,6 +2281,64 @@ pub const TypeChecker = struct {
             }
 
             // Type variable with Eq bound - handled below in the generic type_var section
+        }
+
+        // Ordered trait: lt(), le(), gt(), ge() methods on primitives and structs that implement Ordered
+        if (std.mem.eql(u8, method.method_name, "lt") or
+            std.mem.eql(u8, method.method_name, "le") or
+            std.mem.eql(u8, method.method_name, "gt") or
+            std.mem.eql(u8, method.method_name, "ge"))
+        {
+            // Check argument count - comparison methods take exactly one argument (other)
+            if (method.args.len != 1) {
+                self.addError(.invalid_call, method.span, "{s}() expects exactly 1 argument", .{method.method_name});
+                return self.type_builder.boolType();
+            }
+
+            const arg_type = self.checkExpr(method.args[0]);
+
+            // Primitives have builtin Ordered implementation (int, float, string)
+            if (object_type == .primitive) {
+                const prim = object_type.primitive;
+                // Only numeric types and strings support ordering
+                if (prim.isInteger() or prim.isFloat() or prim == .string_) {
+                    // Check that the argument type matches (or is a reference to the same type)
+                    const expected_type = object_type;
+                    var actual_type = arg_type;
+
+                    // Handle reference types - unwrap if necessary
+                    if (arg_type == .reference) {
+                        actual_type = arg_type.reference.inner;
+                    }
+
+                    if (!actual_type.eql(expected_type)) {
+                        self.addError(.type_mismatch, method.span, "{s}() argument type mismatch: expected same type as receiver", .{method.method_name});
+                    }
+                    return self.type_builder.boolType();
+                } else {
+                    // bool type doesn't support ordering
+                    self.addError(.invalid_call, method.span, "{s}() is not defined for type {s}", .{ method.method_name, @tagName(prim) });
+                    return self.type_builder.boolType();
+                }
+            }
+
+            // For struct types, check if the struct implements Ordered
+            if (object_type == .struct_) {
+                const struct_name = object_type.struct_.name;
+                if (self.typeImplementsTrait(struct_name, "Ordered")) {
+                    // Check argument type matches
+                    var actual_type = arg_type;
+                    if (arg_type == .reference) {
+                        actual_type = arg_type.reference.inner;
+                    }
+                    if (!actual_type.eql(object_type)) {
+                        self.addError(.type_mismatch, method.span, "{s}() argument type mismatch", .{method.method_name});
+                    }
+                    return self.type_builder.boolType();
+                }
+            }
+
+            // Type variable with Ordered bound - handled below in the generic type_var section
         }
 
         // String methods

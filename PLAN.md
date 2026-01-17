@@ -138,7 +138,7 @@
 
 ### Core Traits
 - [x] Implement `Eq` trait (equality comparison) - builtin for primitives (int, float, bool, string)
-- [ ] Implement `Ordered` trait (comparison, ordering)
+- [x] Implement `Ordered` trait (comparison, ordering) - builtin for primitives (int, float, string)
 - [ ] Implement `Clone` trait (explicit cloning)
 - [ ] Implement `Drop` trait (custom destructors)
 - [ ] Implement `Default` trait (default values)
@@ -157,18 +157,22 @@
 - [x] Test: trait method calls through generic bounds (trait_method_through_bounds.kl, trait_method_with_args.kl)
 - [x] Test: trait inheritance works correctly (trait_inheritance.kl, trait_multi_inherit.kl)
 - [x] Test: Eq trait works for primitives (eq_trait.kl, eq_trait_bool.kl, eq_trait_string.kl)
+- [x] Test: Ordered trait works for primitives (ordered_trait.kl, ordered_trait_float.kl, ordered_trait_string.kl)
 - [ ] Test: associated types work correctly
 
 **Files Modified:**
 - `src/ast.zig` - TraitDecl super_traits field ✓
 - `src/parser.zig` - Parse trait inheritance (: B + C) syntax ✓
-- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds, trait inheritance, Eq trait definition and checking ✓
+- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds, trait inheritance, Eq and Ordered trait definitions and checking ✓
 - `src/types.zig` - Trait bounds to type system ✓
-- `src/codegen/emit.zig` - Early struct registration for monomorphized function signatures, Eq trait codegen ✓
+- `src/codegen/emit.zig` - Early struct registration for monomorphized function signatures, Eq and Ordered trait codegen ✓
 - `src/main.zig` - Call struct registration before monomorphized function declarations ✓
 - `test/native/eq_trait.kl` - Test Eq for integers ✓
 - `test/native/eq_trait_bool.kl` - Test Eq for booleans ✓
 - `test/native/eq_trait_string.kl` - Test Eq for strings ✓
+- `test/native/ordered_trait.kl` - Test Ordered for integers ✓
+- `test/native/ordered_trait_float.kl` - Test Ordered for floats ✓
+- `test/native/ordered_trait_string.kl` - Test Ordered for strings ✓
 
 ---
 

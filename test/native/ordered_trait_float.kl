@@ -1,0 +1,44 @@
+// Test for builtin Ordered trait with floats
+
+fn main() -> i32 {
+    // Test float ordering
+    let a = 1.5
+    let b = 2.5
+    let c = 1.5
+
+    // Test lt() - less than
+    let lt1 = a.lt(b)  // 1.5 < 2.5 = true
+    let lt2 = b.lt(a)  // 2.5 < 1.5 = false
+
+    // Test le() - less than or equal
+    let le1 = a.le(c)  // 1.5 <= 1.5 = true
+    let le2 = b.le(a)  // 2.5 <= 1.5 = false
+
+    // Test gt() - greater than
+    let gt1 = b.gt(a)  // 2.5 > 1.5 = true
+    let gt2 = a.gt(b)  // 1.5 > 2.5 = false
+
+    // Test ge() - greater than or equal
+    let ge1 = a.ge(c)  // 1.5 >= 1.5 = true
+    let ge2 = a.ge(b)  // 1.5 >= 2.5 = false
+
+    // Verify all results
+    if lt1 {
+        if lt2 { 1 } else {
+            if le1 {
+                if le2 { 2 } else {
+                    if gt1 {
+                        if gt2 { 3 } else {
+                            if ge1 {
+                                if ge2 { 4 } else {
+                                    // All tests passed
+                                    0
+                                }
+                            } else { 5 }
+                        }
+                    } else { 6 }
+                }
+            } else { 7 }
+        }
+    } else { 8 }
+}

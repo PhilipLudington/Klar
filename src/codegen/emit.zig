@@ -2608,6 +2608,14 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, m.method_name, "eq")) {
                     return llvm.Types.int1(self.ctx);
                 }
+                // Ordered trait: lt(), le(), gt(), ge() return bool (i1)
+                if (std.mem.eql(u8, m.method_name, "lt") or
+                    std.mem.eql(u8, m.method_name, "le") or
+                    std.mem.eql(u8, m.method_name, "gt") or
+                    std.mem.eql(u8, m.method_name, "ge"))
+                {
+                    return llvm.Types.int1(self.ctx);
+                }
                 // is_ok, is_err, is_some, is_none all return bool
                 if (std.mem.eql(u8, m.method_name, "is_ok") or
                     std.mem.eql(u8, m.method_name, "is_err") or
@@ -3784,6 +3792,15 @@ pub const Emitter = struct {
         // Eq trait: eq() method for equality comparison
         if (std.mem.eql(u8, method.method_name, "eq")) {
             return self.emitEqMethod(method, object, object_type);
+        }
+
+        // Ordered trait: lt(), le(), gt(), ge() methods for comparison
+        if (std.mem.eql(u8, method.method_name, "lt") or
+            std.mem.eql(u8, method.method_name, "le") or
+            std.mem.eql(u8, method.method_name, "gt") or
+            std.mem.eql(u8, method.method_name, "ge"))
+        {
+            return self.emitOrderedMethod(method, object, object_type);
         }
 
         // Check for user-defined struct methods
@@ -6086,6 +6103,102 @@ pub const Emitter = struct {
             },
             llvm.c.LLVMStructTypeKind => {
                 // For structs that implement Eq, we need to call the user-defined eq method
+                // This should be handled by the user-defined method lookup before we get here
+                // For now, fall through to placeholder
+                return llvm.Const.int1(self.ctx, false);
+            },
+            else => {
+                // Unsupported type - return false
+                return llvm.Const.int1(self.ctx, false);
+            },
+        }
+    }
+
+    /// Emit the Ordered trait's comparison methods (lt, le, gt, ge).
+    /// Works for primitives (integers, floats, strings).
+    fn emitOrderedMethod(self: *Emitter, method: *ast.MethodCall, left: llvm.ValueRef, left_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        // Get the other argument
+        if (method.args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        var right = try self.emitExpr(method.args[0]);
+
+        // Dispatch based on the LLVM type kind of the left operand
+        const left_kind = llvm.c.LLVMGetTypeKind(left_type);
+
+        // For non-pointer primitives (int, float), if the right side is
+        // a pointer (reference), dereference it. But for pointers (strings),
+        // don't dereference - the pointer IS the value.
+        if (left_kind != llvm.c.LLVMPointerTypeKind) {
+            const right_type = llvm.typeOf(right);
+            const right_kind = llvm.c.LLVMGetTypeKind(right_type);
+            if (right_kind == llvm.c.LLVMPointerTypeKind) {
+                // Dereference the pointer to get the actual value
+                right = self.builder.buildLoad(left_type, right, "ord.deref");
+            }
+        }
+
+        // Determine the comparison predicate based on method name
+        const method_name = method.method_name;
+
+        switch (left_kind) {
+            llvm.c.LLVMIntegerTypeKind => {
+                // Integer comparison (signed)
+                const predicate: llvm.c.LLVMIntPredicate = if (std.mem.eql(u8, method_name, "lt"))
+                    llvm.c.LLVMIntSLT
+                else if (std.mem.eql(u8, method_name, "le"))
+                    llvm.c.LLVMIntSLE
+                else if (std.mem.eql(u8, method_name, "gt"))
+                    llvm.c.LLVMIntSGT
+                else // ge
+                    llvm.c.LLVMIntSGE;
+                return self.builder.buildICmp(predicate, left, right, "ord.int");
+            },
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => {
+                // Float comparison (ordered)
+                const predicate: llvm.c.LLVMRealPredicate = if (std.mem.eql(u8, method_name, "lt"))
+                    llvm.c.LLVMRealOLT
+                else if (std.mem.eql(u8, method_name, "le"))
+                    llvm.c.LLVMRealOLE
+                else if (std.mem.eql(u8, method_name, "gt"))
+                    llvm.c.LLVMRealOGT
+                else // ge
+                    llvm.c.LLVMRealOGE;
+                return self.builder.buildFCmp(predicate, left, right, "ord.float");
+            },
+            llvm.c.LLVMPointerTypeKind => {
+                // This is likely a string (char*) - use strcmp
+                const strcmp_fn = self.getOrDeclareStrcmp();
+                var args = [_]llvm.ValueRef{ left, right };
+                const result = self.builder.buildCall(
+                    llvm.c.LLVMGlobalGetValueType(strcmp_fn),
+                    strcmp_fn,
+                    &args,
+                    "ord.strcmp.result",
+                );
+                // strcmp returns: negative if s1 < s2, 0 if equal, positive if s1 > s2
+                // lt: result < 0
+                // le: result <= 0
+                // gt: result > 0
+                // ge: result >= 0
+                const predicate: llvm.c.LLVMIntPredicate = if (std.mem.eql(u8, method_name, "lt"))
+                    llvm.c.LLVMIntSLT
+                else if (std.mem.eql(u8, method_name, "le"))
+                    llvm.c.LLVMIntSLE
+                else if (std.mem.eql(u8, method_name, "gt"))
+                    llvm.c.LLVMIntSGT
+                else // ge
+                    llvm.c.LLVMIntSGE;
+                return self.builder.buildICmp(
+                    predicate,
+                    result,
+                    llvm.Const.int32(self.ctx, 0),
+                    "ord.str",
+                );
+            },
+            llvm.c.LLVMStructTypeKind => {
+                // For structs that implement Ordered, we need to call the user-defined method
                 // This should be handled by the user-defined method lookup before we get here
                 // For now, fall through to placeholder
                 return llvm.Const.int1(self.ctx, false);

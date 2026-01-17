@@ -1,0 +1,56 @@
+// Test for builtin Ordered trait with integers
+
+fn main() -> i32 {
+    // Test integer ordering
+    let a = 10
+    let b = 20
+    let c = 10
+
+    // Test lt() - less than
+    let lt1 = a.lt(b)  // 10 < 20 = true
+    let lt2 = b.lt(a)  // 20 < 10 = false
+    let lt3 = a.lt(c)  // 10 < 10 = false
+
+    // Test le() - less than or equal
+    let le1 = a.le(b)  // 10 <= 20 = true
+    let le2 = a.le(c)  // 10 <= 10 = true
+    let le3 = b.le(a)  // 20 <= 10 = false
+
+    // Test gt() - greater than
+    let gt1 = b.gt(a)  // 20 > 10 = true
+    let gt2 = a.gt(b)  // 10 > 20 = false
+    let gt3 = a.gt(c)  // 10 > 10 = false
+
+    // Test ge() - greater than or equal
+    let ge1 = b.ge(a)  // 20 >= 10 = true
+    let ge2 = a.ge(c)  // 10 >= 10 = true
+    let ge3 = a.ge(b)  // 10 >= 20 = false
+
+    // Verify all results
+    if lt1 {
+        if lt2 { 1 } else {
+            if lt3 { 2 } else {
+                if le1 {
+                    if le2 {
+                        if le3 { 3 } else {
+                            if gt1 {
+                                if gt2 { 4 } else {
+                                    if gt3 { 5 } else {
+                                        if ge1 {
+                                            if ge2 {
+                                                if ge3 { 6 } else {
+                                                    // All tests passed
+                                                    0
+                                                }
+                                            } else { 7 }
+                                        } else { 8 }
+                                    }
+                                }
+                            } else { 9 }
+                        }
+                    } else { 10 }
+                } else { 11 }
+            }
+        }
+    } else { 12 }
+}
