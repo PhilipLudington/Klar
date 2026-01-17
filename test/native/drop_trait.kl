@@ -1,0 +1,24 @@
+// Test for Drop trait - custom destructor
+
+// A simple resource holder that can be explicitly dropped
+struct Resource {
+    id: i32,
+}
+
+impl Resource: Drop {
+    fn drop(self: Resource) {
+        // In a real implementation, this would release a resource
+        // For testing, we just do nothing (the function signature requires void)
+    }
+}
+
+fn main() -> i32 {
+    var r = Resource { id: 42 }
+
+    // Manually call drop to test the trait implementation
+    r.drop()
+
+    // Return 0 to indicate success
+    // The fact that we could call drop() means the trait resolved correctly
+    0
+}

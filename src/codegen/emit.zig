@@ -3841,6 +3841,12 @@ pub const Emitter = struct {
             return self.emitCloneMethod(method, object, object_type);
         }
 
+        // Drop trait: drop() method for explicit destruction
+        // Only user-defined struct types can have drop() - primitives are trivially dropped
+        if (std.mem.eql(u8, method.method_name, "drop")) {
+            return self.emitDropMethod(method, object, object_type);
+        }
+
         // Check for user-defined struct methods
         if (self.type_checker) |tc| {
             // Get the struct type from the object
@@ -3944,11 +3950,17 @@ pub const Emitter = struct {
 
         // Call the method
         const fn_type = llvm.c.LLVMGlobalGetValueType(callee);
+
+        // Check if return type is void - LLVM doesn't allow naming void results
+        const ret_type = llvm.c.LLVMGetReturnType(fn_type);
+        const is_void = llvm.c.LLVMGetTypeKind(ret_type) == llvm.c.LLVMVoidTypeKind;
+        const call_name: [:0]const u8 = if (is_void) "" else "method.result";
+
         return self.builder.buildCall(
             fn_type,
             callee,
             args.items,
-            "method.result",
+            call_name,
         );
     }
 
@@ -6287,6 +6299,29 @@ pub const Emitter = struct {
                 return value;
             },
         }
+    }
+
+    /// Emit the Drop trait's drop() method for explicit destruction.
+    /// This calls the user-defined drop method on structs that implement Drop.
+    /// Primitives don't have drop() - they are trivially destroyed.
+    fn emitDropMethod(self: *Emitter, method: *ast.MethodCall, object: llvm.ValueRef, object_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        _ = object_type;
+
+        // For structs that implement Drop, we look up the user-defined drop method
+        if (self.type_checker) |tc| {
+            const struct_name = self.getStructNameFromExpr(method.object);
+            if (struct_name) |name| {
+                // Look up the drop method in the struct's impl block
+                if (tc.lookupStructMethod(name, "drop")) |drop_method| {
+                    // Call the user-defined drop method with the object as self
+                    return self.emitUserDefinedMethod(method, object, name, drop_method);
+                }
+            }
+        }
+
+        // No drop method found - return void (0)
+        // The type checker should have caught this already
+        return llvm.Const.int32(self.ctx, 0);
     }
 
     /// Declare the C strdup function if not already declared.

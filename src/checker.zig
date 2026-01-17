@@ -823,6 +823,48 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
+
+        // Drop trait: trait Drop { fn drop(self: Self) -> void; }
+        // Provides custom destructor behavior. Called automatically when value goes out of scope.
+        // Primitives don't need Drop (trivially dropped), but custom types can implement it.
+        // Note: Uses 'unknown' as placeholder for Self, consistent with Eq/Ordered traits.
+        const drop_self_type = self.type_builder.unknownType();
+        const drop_method_sig = types.FunctionType{
+            .params = try self.allocator.dupe(Type, &.{drop_self_type}),
+            .return_type = self.type_builder.voidType(),
+            .is_async = false,
+        };
+        const drop_method = types.TraitMethod{
+            .name = "drop",
+            .signature = drop_method_sig,
+            .has_default = false,
+        };
+
+        const drop_trait_type = try self.allocator.create(types.TraitType);
+        drop_trait_type.* = .{
+            .name = "Drop",
+            .type_params = &.{},
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{drop_method}),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, drop_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "Drop", .{
+            .trait_type = drop_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "Drop",
+            .type_ = .{ .trait_ = drop_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
     }
 
     // ========================================================================
@@ -2423,6 +2465,36 @@ pub const TypeChecker = struct {
             }
 
             // Type variable with Clone bound - handled below in the generic type_var section
+        }
+
+        // Drop trait: drop() method for explicit destruction
+        // Unlike Clone/Eq/Ordered, Drop is NOT automatically provided for primitives.
+        // Only types that explicitly implement Drop can have drop() called on them.
+        if (std.mem.eql(u8, method.method_name, "drop")) {
+            // drop() takes no arguments (only self)
+            if (method.args.len != 0) {
+                self.addError(.invalid_call, method.span, "drop() expects no arguments", .{});
+                return self.type_builder.voidType();
+            }
+
+            // Primitives do NOT implement Drop - they are trivially destroyed
+            if (object_type == .primitive) {
+                self.addError(.undefined_method, method.span, "primitives do not implement Drop; they are trivially destroyed", .{});
+                return self.type_builder.voidType();
+            }
+
+            // For struct types, check if the struct implements Drop
+            if (object_type == .struct_) {
+                const struct_name = object_type.struct_.name;
+                if (self.typeImplementsTrait(struct_name, "Drop")) {
+                    return self.type_builder.voidType();
+                } else {
+                    self.addError(.undefined_method, method.span, "type '{s}' does not implement Drop", .{struct_name});
+                    return self.type_builder.voidType();
+                }
+            }
+
+            // Type variable with Drop bound - handled below in the generic type_var section
         }
 
         // String methods
