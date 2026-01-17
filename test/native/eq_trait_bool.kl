@@ -1,0 +1,21 @@
+// Test Eq trait for boolean values
+
+fn main() -> i32 {
+    let t = true
+    let f = false
+    let t2 = true
+
+    // Test eq() on booleans
+    if t.eq(t2) {
+        if t.eq(f) {
+            // true == false should be false
+            1
+        } else {
+            // true == true is true, true == false is false - correct!
+            0
+        }
+    } else {
+        // true == true should be true
+        2
+    }
+}

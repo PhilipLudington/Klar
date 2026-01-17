@@ -1,0 +1,25 @@
+// Test for builtin Eq trait
+
+fn main() -> i32 {
+    // Test integer equality
+    let a = 42
+    let b = 42
+    let c = 100
+
+    // Test eq() method on integers
+    let eq1 = a.eq(b)
+    let eq2 = a.eq(c)
+
+    if eq1 {
+        if eq2 {
+            // Both true - should not happen
+            1
+        } else {
+            // a == b is true, a == c is false - correct!
+            0
+        }
+    } else {
+        // a == b is false - should not happen
+        2
+    }
+}

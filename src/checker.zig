@@ -236,8 +236,8 @@ pub const TypeChecker = struct {
     pub const TraitInfo = struct {
         /// The trait type containing method signatures
         trait_type: *types.TraitType,
-        /// The original AST declaration
-        decl: *ast.TraitDecl,
+        /// The original AST declaration (null for builtin traits)
+        decl: ?*ast.TraitDecl,
     };
 
     /// Information about a trait implementation for a type.
@@ -482,6 +482,12 @@ pub const TypeChecker = struct {
             if (trait_type.super_traits.len > 0) {
                 self.allocator.free(trait_type.super_traits);
             }
+            // Free param slices inside each method's signature
+            for (trait_type.methods) |method| {
+                if (method.signature.params.len > 0) {
+                    self.allocator.free(method.signature.params);
+                }
+            }
             self.allocator.free(trait_type.methods);
             self.allocator.destroy(trait_type);
         }
@@ -652,6 +658,52 @@ pub const TypeChecker = struct {
             .name = "Err",
             .type_ = err_type,
             .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
+        // Register builtin traits
+        // ====================================================================
+
+        // Eq trait: trait Eq { fn eq(&self, other: &Self) -> bool; }
+        // The signature uses 'unknown' as a placeholder for Self, which gets
+        // substituted with the concrete type during impl checking.
+        const eq_self_type = self.type_builder.unknownType();
+        const eq_self_ref = try self.type_builder.referenceType(eq_self_type, false);
+        const eq_method_sig = types.FunctionType{
+            .params = try self.allocator.dupe(Type, &.{ eq_self_ref, eq_self_ref }),
+            .return_type = self.type_builder.boolType(),
+            .is_async = false,
+        };
+        const eq_method = types.TraitMethod{
+            .name = "eq",
+            .signature = eq_method_sig,
+            .has_default = false,
+        };
+
+        const eq_trait_type = try self.allocator.create(types.TraitType);
+        eq_trait_type.* = .{
+            .name = "Eq",
+            .type_params = &.{},
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{eq_method}),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, eq_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "Eq", .{
+            .trait_type = eq_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "Eq",
+            .type_ = .{ .trait_ = eq_trait_type },
+            .kind = .trait_,
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
@@ -2126,6 +2178,52 @@ pub const TypeChecker = struct {
             if (object_type == .array or object_type == .slice) {
                 return self.type_builder.boolType();
             }
+        }
+
+        // Eq trait: eq() method on primitives and structs that implement Eq
+        if (std.mem.eql(u8, method.method_name, "eq")) {
+            // Check argument count - eq takes exactly one argument (other)
+            if (method.args.len != 1) {
+                self.addError(.invalid_call, method.span, "eq() expects exactly 1 argument", .{});
+                return self.type_builder.boolType();
+            }
+
+            const arg_type = self.checkExpr(method.args[0]);
+
+            // Primitives have builtin Eq implementation
+            if (object_type == .primitive) {
+                // Check that the argument type matches (or is a reference to the same type)
+                const expected_type = object_type;
+                var actual_type = arg_type;
+
+                // Handle reference types - unwrap if necessary
+                if (arg_type == .reference) {
+                    actual_type = arg_type.reference.inner;
+                }
+
+                if (!actual_type.eql(expected_type)) {
+                    self.addError(.type_mismatch, method.span, "eq() argument type mismatch: expected same type as receiver", .{});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // For struct types, check if the struct implements Eq
+            if (object_type == .struct_) {
+                const struct_name = object_type.struct_.name;
+                if (self.typeImplementsTrait(struct_name, "Eq")) {
+                    // Check argument type matches
+                    var actual_type = arg_type;
+                    if (arg_type == .reference) {
+                        actual_type = arg_type.reference.inner;
+                    }
+                    if (!actual_type.eql(object_type)) {
+                        self.addError(.type_mismatch, method.span, "eq() argument type mismatch", .{});
+                    }
+                    return self.type_builder.boolType();
+                }
+            }
+
+            // Type variable with Eq bound - handled below in the generic type_var section
         }
 
         // String methods

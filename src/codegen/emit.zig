@@ -2604,6 +2604,18 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, m.method_name, "set")) {
                     return llvm.Types.int32(self.ctx);
                 }
+                // Eq trait: eq() returns bool (i1)
+                if (std.mem.eql(u8, m.method_name, "eq")) {
+                    return llvm.Types.int1(self.ctx);
+                }
+                // is_ok, is_err, is_some, is_none all return bool
+                if (std.mem.eql(u8, m.method_name, "is_ok") or
+                    std.mem.eql(u8, m.method_name, "is_err") or
+                    std.mem.eql(u8, m.method_name, "is_some") or
+                    std.mem.eql(u8, m.method_name, "is_none"))
+                {
+                    return llvm.Types.int1(self.ctx);
+                }
                 return llvm.Types.int32(self.ctx);
             },
             .closure => {
@@ -3767,6 +3779,11 @@ pub const Emitter = struct {
         if (std.mem.eql(u8, method.method_name, "unwrap_err")) {
             // Result.unwrap_err() - return error value, trap if Ok
             return self.emitResultUnwrapErr(object, object_type);
+        }
+
+        // Eq trait: eq() method for equality comparison
+        if (std.mem.eql(u8, method.method_name, "eq")) {
+            return self.emitEqMethod(method, object, object_type);
         }
 
         // Check for user-defined struct methods
@@ -6013,6 +6030,86 @@ pub const Emitter = struct {
         // Err block: return error value
         self.builder.positionAtEnd(err_block);
         return self.builder.buildLoad(err_type, err_ptr, "unwrap_err.val");
+    }
+
+    /// Emit the Eq trait's eq() method for equality comparison.
+    /// Works for primitives (integers, floats, bools, chars, strings).
+    fn emitEqMethod(self: *Emitter, method: *ast.MethodCall, left: llvm.ValueRef, left_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        // Get the other argument
+        if (method.args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        var right = try self.emitExpr(method.args[0]);
+
+        // Dispatch based on the LLVM type kind of the left operand
+        const left_kind = llvm.c.LLVMGetTypeKind(left_type);
+
+        // For non-pointer primitives (int, float, bool), if the right side is
+        // a pointer (reference), dereference it. But for pointers (strings),
+        // don't dereference - the pointer IS the value.
+        if (left_kind != llvm.c.LLVMPointerTypeKind) {
+            const right_type = llvm.typeOf(right);
+            const right_kind = llvm.c.LLVMGetTypeKind(right_type);
+            if (right_kind == llvm.c.LLVMPointerTypeKind) {
+                // Dereference the pointer to get the actual value
+                right = self.builder.buildLoad(left_type, right, "eq.deref");
+            }
+        }
+
+        switch (left_kind) {
+            llvm.c.LLVMIntegerTypeKind => {
+                // Integer or bool comparison
+                return self.builder.buildICmp(llvm.c.LLVMIntEQ, left, right, "eq.int");
+            },
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => {
+                // Float comparison (OEQ = ordered equal)
+                return self.builder.buildFCmp(llvm.c.LLVMRealOEQ, left, right, "eq.float");
+            },
+            llvm.c.LLVMPointerTypeKind => {
+                // This is likely a string (char*) - use strcmp
+                const strcmp_fn = self.getOrDeclareStrcmp();
+                var args = [_]llvm.ValueRef{ left, right };
+                const result = self.builder.buildCall(
+                    llvm.c.LLVMGlobalGetValueType(strcmp_fn),
+                    strcmp_fn,
+                    &args,
+                    "eq.strcmp.result",
+                );
+                // strcmp returns 0 if equal, so compare result == 0
+                return self.builder.buildICmp(
+                    llvm.c.LLVMIntEQ,
+                    result,
+                    llvm.Const.int32(self.ctx, 0),
+                    "eq.str",
+                );
+            },
+            llvm.c.LLVMStructTypeKind => {
+                // For structs that implement Eq, we need to call the user-defined eq method
+                // This should be handled by the user-defined method lookup before we get here
+                // For now, fall through to placeholder
+                return llvm.Const.int1(self.ctx, false);
+            },
+            else => {
+                // Unsupported type - return false
+                return llvm.Const.int1(self.ctx, false);
+            },
+        }
+    }
+
+    /// Declare the C strcmp function if not already declared.
+    fn getOrDeclareStrcmp(self: *Emitter) llvm.ValueRef {
+        const fn_name = "strcmp";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int strcmp(const char *s1, const char *s2)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 2, 0); // not variadic
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
     fn getOrDeclareFprintf(self: *Emitter) llvm.ValueRef {

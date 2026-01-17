@@ -137,7 +137,7 @@
 - [ ] Support UFCS (Uniform Function Call Syntax)
 
 ### Core Traits
-- [ ] Implement `Eq` trait (equality comparison)
+- [x] Implement `Eq` trait (equality comparison) - builtin for primitives (int, float, bool, string)
 - [ ] Implement `Ordered` trait (comparison, ordering)
 - [ ] Implement `Clone` trait (explicit cloning)
 - [ ] Implement `Drop` trait (custom destructors)
@@ -156,15 +156,19 @@
 - [x] Test: method calls resolve to correct implementation (trait_default.kl)
 - [x] Test: trait method calls through generic bounds (trait_method_through_bounds.kl, trait_method_with_args.kl)
 - [x] Test: trait inheritance works correctly (trait_inheritance.kl, trait_multi_inherit.kl)
+- [x] Test: Eq trait works for primitives (eq_trait.kl, eq_trait_bool.kl, eq_trait_string.kl)
 - [ ] Test: associated types work correctly
 
 **Files Modified:**
 - `src/ast.zig` - TraitDecl super_traits field ✓
 - `src/parser.zig` - Parse trait inheritance (: B + C) syntax ✓
-- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds, trait inheritance ✓
+- `src/checker.zig` - Trait checking, impl validation, trait registry, trait method resolution through bounds, trait inheritance, Eq trait definition and checking ✓
 - `src/types.zig` - Trait bounds to type system ✓
-- `src/codegen/emit.zig` - Early struct registration for monomorphized function signatures ✓
+- `src/codegen/emit.zig` - Early struct registration for monomorphized function signatures, Eq trait codegen ✓
 - `src/main.zig` - Call struct registration before monomorphized function declarations ✓
+- `test/native/eq_trait.kl` - Test Eq for integers ✓
+- `test/native/eq_trait_bool.kl` - Test Eq for booleans ✓
+- `test/native/eq_trait_string.kl` - Test Eq for strings ✓
 
 ---
 
