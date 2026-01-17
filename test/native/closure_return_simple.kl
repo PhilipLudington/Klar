@@ -1,9 +1,9 @@
 // Simplest closure return test - closure with no captures
 fn get_adder() -> fn(i32, i32) -> i32 {
-    |x: i32, y: i32| x + y
+    return |x: i32, y: i32| -> i32 { return x + y }
 }
 
 fn main() -> i32 {
-    let add = get_adder()
-    add(5, 10)  // Should return 15
+    let add: fn(i32, i32) -> i32 = get_adder()
+    return add(5, 10)  // Should return 15
 }

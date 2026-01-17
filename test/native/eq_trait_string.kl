@@ -1,21 +1,21 @@
 // Test Eq trait for string values
 
 fn main() -> i32 {
-    let s1 = "hello"
-    let s2 = "hello"
-    let s3 = "world"
+    let s1: string = "hello"
+    let s2: string = "hello"
+    let s3: string = "world"
 
     // Test eq() on strings
     if s1.eq(s2) {
         if s1.eq(s3) {
             // "hello" == "world" should be false
-            1
+            return 1
         } else {
             // "hello" == "hello" is true, "hello" == "world" is false - correct!
-            0
+            return 0
         }
     } else {
         // "hello" == "hello" should be true
-        2
+        return 2
     }
 }

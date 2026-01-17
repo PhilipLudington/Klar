@@ -3,12 +3,12 @@
 
 fn main() -> i32 {
     // Create an Arc-wrapped integer
-    let arc1 = Arc.new(42)
+    let arc1: Arc[i32] = Arc.new(42)
 
     // Clone the Arc (atomically increments reference count)
-    let arc2 = arc1.clone()
+    let arc2: Arc[i32] = arc1.clone()
 
     // Both arc1 and arc2 point to the same value
     // The value is freed when the last reference is dropped
-    0
+    return 0
 }

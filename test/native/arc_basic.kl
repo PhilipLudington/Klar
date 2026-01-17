@@ -3,9 +3,9 @@
 
 fn main() -> i32 {
     // Create an Arc-wrapped integer
-    let arc_value = Arc.new(42)
+    let arc_value: Arc[i32] = Arc.new(42)
 
     // Arc uses atomic operations for reference counting
     // This is safe to share across threads
-    0
+    return 0
 }

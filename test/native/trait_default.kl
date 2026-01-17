@@ -10,11 +10,11 @@ struct Counter {
 
 impl Counter: Addable {
     fn add(self: Counter, other: i32) -> i32 {
-        self.value + other
+        return self.value + other
     }
 }
 
 fn main() -> i32 {
-    let c = Counter { value: 32 }
-    c.add(10)
+    let c: Counter = Counter { value: 32 }
+    return c.add(10)
 }

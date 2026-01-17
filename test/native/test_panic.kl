@@ -1,5 +1,5 @@
 // Test panic builtin
 fn main() -> i32 {
     panic("this should abort")
-    0  // Never reached
+    return 0  // Never reached
 }

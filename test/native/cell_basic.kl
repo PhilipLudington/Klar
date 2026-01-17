@@ -3,17 +3,17 @@
 
 fn main() -> i32 {
     // Create a Cell containing an integer
-    let counter = Cell.new(10)
+    let counter: Cell[i32] = Cell.new(10)
 
     // Get the initial value
-    let initial = counter.get()
+    let initial: i32 = counter.get()
 
     // Set a new value
     counter.set(42)
 
     // Get the updated value
-    let updated = counter.get()
+    let updated: i32 = counter.get()
 
     // Return the updated value (should be 42)
-    updated
+    return updated
 }

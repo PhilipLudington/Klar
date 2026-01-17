@@ -4,13 +4,13 @@
 
 // A function that transforms a value with a closure
 fn transform(f: fn(i32) -> i32, x: i32) -> i32 {
-    f(x)
+    return f(x)
 }
 
 fn main() -> i32 {
-    let square = |x: i32| x * x
-    let double = |x: i32| x * 2
+    let square: fn(i32) -> i32 = |x: i32| -> i32 { return x * x }
+    let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
 
     // transform(square, 5) + transform(double, 10) = 25 + 20 = 45
-    transform(square, 5) + transform(double, 10)
+    return transform(square, 5) + transform(double, 10)
 }

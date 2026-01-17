@@ -20,19 +20,19 @@ struct Numbers {
 // Must implement all methods from Calculator, Addable, AND Subtractable
 impl Numbers: Calculator {
     fn add_value(self: Numbers) -> i32 {
-        self.a + self.b
+        return self.a + self.b
     }
 
     fn sub_value(self: Numbers) -> i32 {
-        self.a - self.b
+        return self.a - self.b
     }
 
     fn calc(self: Numbers) -> i32 {
-        self.add_value() + self.sub_value()
+        return self.add_value() + self.sub_value()
     }
 }
 
 fn main() -> i32 {
-    let n = Numbers { a: 30, b: 12 }
-    n.calc()
+    let n: Numbers = Numbers { a: 30, b: 12 }
+    return n.calc()
 }

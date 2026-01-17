@@ -16,15 +16,15 @@ struct Point {
 // Must implement all methods from Derived AND Base
 impl Point: Derived {
     fn base_method(self: Point) -> i32 {
-        self.x
+        return self.x
     }
 
     fn derived_method(self: Point) -> i32 {
-        self.y
+        return self.y
     }
 }
 
 fn main() -> i32 {
-    let p = Point { x: 10, y: 32 }
-    p.base_method() + p.derived_method()
+    let p: Point = Point { x: 10, y: 32 }
+    return p.base_method() + p.derived_method()
 }

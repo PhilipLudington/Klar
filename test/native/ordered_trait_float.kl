@@ -2,43 +2,35 @@
 
 fn main() -> i32 {
     // Test float ordering
-    let a = 1.5
-    let b = 2.5
-    let c = 1.5
+    let a: f64 = 1.5
+    let b: f64 = 2.5
+    let c: f64 = 1.5
 
     // Test lt() - less than
-    let lt1 = a.lt(b)  // 1.5 < 2.5 = true
-    let lt2 = b.lt(a)  // 2.5 < 1.5 = false
+    let lt1: bool = a.lt(b)  // 1.5 < 2.5 = true
+    let lt2: bool = b.lt(a)  // 2.5 < 1.5 = false
 
     // Test le() - less than or equal
-    let le1 = a.le(c)  // 1.5 <= 1.5 = true
-    let le2 = b.le(a)  // 2.5 <= 1.5 = false
+    let le1: bool = a.le(c)  // 1.5 <= 1.5 = true
+    let le2: bool = b.le(a)  // 2.5 <= 1.5 = false
 
     // Test gt() - greater than
-    let gt1 = b.gt(a)  // 2.5 > 1.5 = true
-    let gt2 = a.gt(b)  // 1.5 > 2.5 = false
+    let gt1: bool = b.gt(a)  // 2.5 > 1.5 = true
+    let gt2: bool = a.gt(b)  // 1.5 > 2.5 = false
 
     // Test ge() - greater than or equal
-    let ge1 = a.ge(c)  // 1.5 >= 1.5 = true
-    let ge2 = a.ge(b)  // 1.5 >= 2.5 = false
+    let ge1: bool = a.ge(c)  // 1.5 >= 1.5 = true
+    let ge2: bool = a.ge(b)  // 1.5 >= 2.5 = false
 
     // Verify all results
-    if lt1 {
-        if lt2 { 1 } else {
-            if le1 {
-                if le2 { 2 } else {
-                    if gt1 {
-                        if gt2 { 3 } else {
-                            if ge1 {
-                                if ge2 { 4 } else {
-                                    // All tests passed
-                                    0
-                                }
-                            } else { 5 }
-                        }
-                    } else { 6 }
-                }
-            } else { 7 }
-        }
-    } else { 8 }
+    if not lt1 { return 8 }
+    if lt2 { return 1 }
+    if not le1 { return 7 }
+    if le2 { return 2 }
+    if not gt1 { return 6 }
+    if gt2 { return 3 }
+    if not ge1 { return 5 }
+    if ge2 { return 4 }
+    // All tests passed
+    return 0
 }

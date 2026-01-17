@@ -3,6 +3,6 @@
 // Expected exit code: 99
 
 fn main() -> i32 {
-    let result = Err(99)
-    result.unwrap_err()
+    let result: Result[i32, i32] = Err(99)
+    return result.unwrap_err()
 }

@@ -2,15 +2,15 @@
 
 fn main() -> i32 {
     // Test float cloning
-    let a = 3.14
-    let b = a.clone()
+    let a: f64 = 3.14
+    let b: f64 = a.clone()
 
     // b should be a copy of a with the same value
     if a.eq(b) {
         // Values are equal - correct!
-        0
+        return 0
     } else {
         // Values differ - should not happen
-        1
+        return 1
     }
 }

@@ -10,7 +10,7 @@ fn maybe_value(flag: bool) -> ?i32 {
 
 fn main() -> i32 {
     // Get None since flag is false
-    let opt = maybe_value(false)
+    let opt: ?i32 = maybe_value(false)
     // Use null coalescing to get default value
-    opt ?? 99
+    return opt ?? 99
 }

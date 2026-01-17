@@ -10,12 +10,12 @@ struct Counter {
 
 impl Counter: Addable {
     fn add(self: Counter, x: i32) -> i32 {
-        self.value + x
+        return self.value + x
     }
 }
 
 fn main() -> i32 {
     // For now, just verify that trait definition and implementation work
-    let c = Counter { value: 32 }
-    c.add(10)
+    let c: Counter = Counter { value: 32 }
+    return c.add(10)
 }

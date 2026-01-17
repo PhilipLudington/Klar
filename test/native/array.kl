@@ -1,6 +1,6 @@
 // test_array.kl - Test array creation and indexing
 
 fn main() -> i32 {
-    let arr = [10, 20, 12]
-    arr[0] + arr[1] + arr[2]
+    let arr: [i32] = [10, 20, 12]
+    return arr[0] + arr[1] + arr[2]
 }

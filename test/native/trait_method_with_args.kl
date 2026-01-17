@@ -10,16 +10,16 @@ struct Size {
 
 impl Size: Scalable {
     fn scale(self: Size, factor: i32) -> i32 {
-        self.value * factor
+        return self.value * factor
     }
 }
 
 // Generic function that calls trait method with arguments
 fn scale_by[T: Scalable](item: T, factor: i32) -> i32 {
-    item.scale(factor)
+    return item.scale(factor)
 }
 
 fn main() -> i32 {
-    let s = Size { value: 7 }
-    scale_by(s, 6)  // Should return 42
+    let s: Size = Size { value: 7 }
+    return scale_by(s, 6)  // Should return 42
 }

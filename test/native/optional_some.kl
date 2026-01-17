@@ -10,6 +10,6 @@ fn maybe_value(flag: bool) -> ?i32 {
 }
 
 fn main() -> i32 {
-    let opt = maybe_value(true)
-    opt!  // Force unwrap - should return 42
+    let opt: ?i32 = maybe_value(true)
+    return opt!  // Force unwrap - should return 42
 }

@@ -8,7 +8,7 @@ struct Triple {
 
 fn main() -> i32 {
     // Note: fields in literal in different order than declaration
-    let t = Triple { c: 30, a: 10, b: 2 }
+    let t: Triple = Triple { c: 30, a: 10, b: 2 }
     // Should return: 10 + 2 + 30 = 42
-    t.a + t.b + t.c
+    return t.a + t.b + t.c
 }

@@ -6,6 +6,6 @@ struct Point {
 }
 
 fn main() -> i32 {
-    let p = Point { x: 10, y: 32 }
-    p.x + p.y
+    let p: Point = Point { x: 10, y: 32 }
+    return p.x + p.y
 }

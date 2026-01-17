@@ -2,24 +2,24 @@
 
 fn main() -> i32 {
     // Test integer equality
-    let a = 42
-    let b = 42
-    let c = 100
+    let a: i32 = 42
+    let b: i32 = 42
+    let c: i32 = 100
 
     // Test eq() method on integers
-    let eq1 = a.eq(b)
-    let eq2 = a.eq(c)
+    let eq1: bool = a.eq(b)
+    let eq2: bool = a.eq(c)
 
     if eq1 {
         if eq2 {
             // Both true - should not happen
-            1
+            return 1
         } else {
             // a == b is true, a == c is false - correct!
-            0
+            return 0
         }
     } else {
         // a == b is false - should not happen
-        2
+        return 2
     }
 }

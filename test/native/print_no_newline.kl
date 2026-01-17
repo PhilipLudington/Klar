@@ -4,5 +4,5 @@ fn main() -> i32 {
     print(", ")
     print("World!")
     println("")
-    0
+    return 0
 }

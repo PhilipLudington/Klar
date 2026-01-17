@@ -6,12 +6,12 @@ struct Game {
 }
 
 fn main() -> i32 {
-    let x = 42
+    let x: i32 = 42
     print("{x}")  // Should print "42"
 
-    let game = Game { turn: 10, score: 100 }
+    let game: Game = Game { turn: 10, score: 100 }
     print(" turn={game.turn}")  // Should print " turn=10"
 
     // Return value based on what was printed
-    x  // 42
+    return x  // 42
 }

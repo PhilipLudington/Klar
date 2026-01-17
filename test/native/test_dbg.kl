@@ -1,6 +1,6 @@
 // Test dbg builtin (prints value and returns it)
 fn main() -> i32 {
-    let x = dbg(42)
-    let y = dbg(x + 10)
-    y - 52
+    let x: i32 = dbg(42)
+    let y: i32 = dbg(x + 10)
+    return y - 52
 }

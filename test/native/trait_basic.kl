@@ -11,11 +11,11 @@ struct Point {
 
 impl Point: Summable {
     fn sum(self: Point) -> i32 {
-        self.x + self.y
+        return self.x + self.y
     }
 }
 
 fn main() -> i32 {
-    let p = Point { x: 10, y: 32 }
-    p.sum()
+    let p: Point = Point { x: 10, y: 32 }
+    return p.sum()
 }

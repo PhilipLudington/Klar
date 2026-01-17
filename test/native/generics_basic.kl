@@ -2,16 +2,16 @@
 
 // Generic identity function
 fn identity[T](x: T) -> T {
-    x
+    return x
 }
 
 fn main() {
     // Test identity with i32
-    let x = identity(42)
+    let x: i32 = identity(42)
     assert_eq(x, 42)
 
     // Test identity with i32 a second time (should use same monomorphization)
-    let y = identity(100)
+    let y: i32 = identity(100)
     assert_eq(y, 100)
 
     println("Generics test passed!")

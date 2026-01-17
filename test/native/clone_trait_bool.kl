@@ -2,23 +2,23 @@
 
 fn main() -> i32 {
     // Test bool cloning
-    let t = true
-    let t2 = t.clone()
+    let t: bool = true
+    let t2: bool = t.clone()
 
-    let f = false
-    let f2 = f.clone()
+    let f: bool = false
+    let f2: bool = f.clone()
 
     // Clones should equal originals
     if t.eq(t2) {
         if f.eq(f2) {
             // Both correct!
-            0
+            return 0
         } else {
             // false clone failed
-            2
+            return 2
         }
     } else {
         // true clone failed
-        1
+        return 1
     }
 }

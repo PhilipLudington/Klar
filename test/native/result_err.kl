@@ -3,10 +3,10 @@
 // Expected exit code: 1 (is_err returns true as i1, which is 1)
 
 fn main() -> i32 {
-    let result = Err(99)
+    let result: Result[i32, i32] = Err(99)
     if result.is_err() {
-        1
+        return 1
     } else {
-        0
+        return 0
     }
 }

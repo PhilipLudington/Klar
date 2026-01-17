@@ -12,7 +12,7 @@ struct Point {
 
 impl Point: Summable {
     fn sum(self: Point) -> i32 {
-        self.x + self.y
+        return self.x + self.y
     }
 }
 
@@ -23,23 +23,23 @@ struct Rectangle {
 
 impl Rectangle: Summable {
     fn sum(self: Rectangle) -> i32 {
-        self.width + self.height
+        return self.width + self.height
     }
 }
 
 // Generic function that calls trait method through the bound
 fn get_sum[T: Summable](item: T) -> i32 {
-    item.sum()
+    return item.sum()
 }
 
 fn main() -> i32 {
-    let p = Point { x: 10, y: 20 }
-    let r = Rectangle { width: 5, height: 7 }
+    let p: Point = Point { x: 10, y: 20 }
+    let r: Rectangle = Rectangle { width: 5, height: 7 }
 
-    let point_sum = get_sum(p)
-    let rect_sum = get_sum(r)
+    let point_sum: i32 = get_sum(p)
+    let rect_sum: i32 = get_sum(r)
 
     // point_sum should be 30, rect_sum should be 12
     // Total: 42
-    point_sum + rect_sum
+    return point_sum + rect_sum
 }

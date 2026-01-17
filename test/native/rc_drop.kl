@@ -3,38 +3,38 @@
 // when they go out of scope.
 
 fn test_rc_drop_simple() -> i32 {
-    let rc_value = Rc.new(42)
+    let rc_value: Rc[i32] = Rc.new(42)
     // rc_value should be automatically dropped here when function returns
-    0
+    return 0
 }
 
 fn test_rc_drop_multiple() -> i32 {
-    let rc1 = Rc.new(10)
-    let rc2 = Rc.new(20)
-    let rc3 = Rc.new(30)
+    let rc1: Rc[i32] = Rc.new(10)
+    let rc2: Rc[i32] = Rc.new(20)
+    let rc3: Rc[i32] = Rc.new(30)
     // All three should be dropped in reverse order (rc3, rc2, rc1)
-    0
+    return 0
 }
 
 fn test_rc_drop_early_return() -> i32 {
-    let rc1 = Rc.new(100)
+    let rc1: Rc[i32] = Rc.new(100)
     if true {
         return 0  // rc1 should be dropped before this return
     }
-    1  // Unreachable, but rc1 would still be dropped here too
+    return 1  // Unreachable, but rc1 would still be dropped here too
 }
 
 fn test_rc_drop_with_clone() -> i32 {
-    let rc1 = Rc.new(42)
-    let rc2 = rc1.clone()  // Now we have 2 references
+    let rc1: Rc[i32] = Rc.new(42)
+    let rc2: Rc[i32] = rc1.clone()  // Now we have 2 references
     // Both rc1 and rc2 should be dropped, but the underlying value
     // is only freed when the last reference is dropped
-    0
+    return 0
 }
 
 fn main() -> i32 {
     // Run all tests
-    var result = test_rc_drop_simple()
+    var result: i32 = test_rc_drop_simple()
     if result != 0 {
         return result
     }
@@ -55,5 +55,5 @@ fn main() -> i32 {
     }
 
     // All tests passed
-    42
+    return 42
 }

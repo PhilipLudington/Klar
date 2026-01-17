@@ -1,7 +1,7 @@
 // test_array_bounds.kl - Test array bounds checking (should abort)
 
 fn main() -> i32 {
-    let arr = [10, 20, 30]
+    let arr: [i32] = [10, 20, 30]
     // This should trap - index 5 is out of bounds for array of length 3
-    arr[5]
+    return arr[5]
 }

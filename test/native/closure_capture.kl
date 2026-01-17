@@ -2,11 +2,11 @@
 // Expected exit code: 25 (5 * 5)
 
 fn main() -> i32 {
-    let factor = 5
+    let factor: i32 = 5
 
     // Closure that captures 'factor' from outer scope
-    let multiply = |x: i32| x * factor
+    let multiply: fn(i32) -> i32 = |x: i32| -> i32 { return x * factor }
 
     // Call the closure
-    multiply(5)
+    return multiply(5)
 }

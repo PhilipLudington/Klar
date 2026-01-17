@@ -3,10 +3,10 @@
 // Parameters 7+ go on the stack
 
 fn add_many(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> i32 {
-    a + b + c + d + e + f + g + h
+    return a + b + c + d + e + f + g + h
 }
 
 fn main() -> i32 {
     // 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 = 36
-    add_many(1, 2, 3, 4, 5, 6, 7, 8)
+    return add_many(1, 2, 3, 4, 5, 6, 7, 8)
 }

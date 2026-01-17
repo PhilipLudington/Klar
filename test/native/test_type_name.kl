@@ -3,5 +3,5 @@
 fn main() -> i32 {
     // Call type_name directly in println
     println(type_name(42))
-    0
+    return 0
 }

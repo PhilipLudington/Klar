@@ -9,13 +9,14 @@ enum MyOption[T] {
 
 fn main() -> i32 {
     // Test with None value
-    let none_val = MyOption[i32]::MyNone
+    let none_val: MyOption[i32] = MyOption[i32]::MyNone
 
     // Pattern match with generic enum type syntax
-    let result1 = match none_val {
-        MyOption.MySome(_) => 0,
-        MyOption.MyNone => 100,
+    var result1: i32 = 0
+    match none_val {
+        MyOption.MySome(_) => { result1 = 0 }
+        MyOption.MyNone => { result1 = 100 }
     }
 
-    result1
+    return result1
 }
