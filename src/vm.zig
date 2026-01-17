@@ -602,11 +602,12 @@ pub const VM = struct {
                     const struc = try ObjStruct.createGC(&self.gc, "anonymous");
 
                     // Pop values in reverse order.
-                    // TODO: Get field names from constant pool
+                    // TODO: Get field names from constant pool instead of using numeric keys
                     var i: usize = 0;
                     while (i < field_count) : (i += 1) {
                         const value = try self.pop();
-                        // For now, use numeric keys
+                        // For now, use numeric keys. setField duplicates the key internally,
+                        // so stack buffers are safe to use here.
                         var buf: [32]u8 = undefined;
                         const key = std.fmt.bufPrint(&buf, "{d}", .{field_count - 1 - i}) catch "?";
                         try struc.setField(self.allocator, key, value);

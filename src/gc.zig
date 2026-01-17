@@ -556,6 +556,11 @@ pub const GC = struct {
             },
             .struct_ => {
                 const obj: *vm_value.ObjStruct = @alignCast(@fieldParentPtr("header", header));
+                // Free all owned key strings
+                var key_iter = obj.fields.keyIterator();
+                while (key_iter.next()) |key| {
+                    self.backing_allocator.free(key.*);
+                }
                 obj.fields.deinit(self.backing_allocator);
                 self.bytes_allocated -= @sizeOf(vm_value.ObjStruct);
                 self.backing_allocator.destroy(obj);

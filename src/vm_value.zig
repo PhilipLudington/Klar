@@ -353,12 +353,28 @@ pub const ObjStruct = struct {
     }
 
     pub fn destroy(self: *ObjStruct, allocator: Allocator) void {
+        // Free all owned key strings
+        var key_iter = self.fields.keyIterator();
+        while (key_iter.next()) |key| {
+            allocator.free(key.*);
+        }
         self.fields.deinit(allocator);
         allocator.destroy(self);
     }
 
+    /// Set a field value. The field name is duplicated if it's a new key,
+    /// so the struct owns all its key strings.
     pub fn setField(self: *ObjStruct, allocator: Allocator, name: []const u8, value: Value) !void {
-        try self.fields.put(allocator, name, value);
+        // Check if key already exists
+        if (self.fields.getEntry(name)) |entry| {
+            // Key exists, just update the value
+            entry.value_ptr.* = value;
+        } else {
+            // New key - duplicate it so we own the memory
+            const owned_name = try allocator.dupe(u8, name);
+            errdefer allocator.free(owned_name);
+            try self.fields.put(allocator, owned_name, value);
+        }
     }
 
     pub fn getField(self: *ObjStruct, name: []const u8) ?Value {

@@ -21,7 +21,7 @@
 **Near-term Fixes (discovered via TheNarrowWindow game):**
 - [x] Native codegen: struct parameters to functions (fixed - track struct_type_name for parameters)
 - [x] Native codegen: mutable struct variables (`var s = struct_value`) - already working
-- [ ] VM: struct field mutation crashes (hash map panic in ObjStruct.setField)
+- [x] VM: struct field mutation crashes (hash map panic in ObjStruct.setField) - fixed by making setField duplicate keys
 - [x] VM: ownership checker crashes on complex if/else blocks (fixed in 4b75243)
 - [x] String interpolation with struct field access (`"{game.turn}"`) - implemented in native codegen
 
