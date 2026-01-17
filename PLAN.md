@@ -97,7 +97,7 @@
 
 **Objective:** Implement trait definitions, implementations, and bounds.
 
-**Status:** 🟡 In Progress. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance, basic associated types). Remaining: Self.Item resolution in method signatures, associated types in generic contexts, derive macros.
+**Status:** 🟡 In Progress. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance, basic associated types). Remaining: Self.Item resolution in method signatures, associated types in generic contexts.
 
 ### Trait Registry
 - [x] Create traits.zig module for trait management (implemented in checker.zig)
@@ -143,12 +143,6 @@
 - [x] Implement `Drop` trait (custom destructors) - structs can implement to run cleanup code
 - [x] Implement `Default` trait (default values) - builtin for primitives (i32.default() -> 0, etc.)
 - [x] Implement `Hash` trait (hashing for maps/sets) - builtin for primitives (int, float, bool, string)
-
-### Derive Macro Basics
-- [ ] Parse `#[derive(Eq, Clone)]` attributes
-- [ ] Generate Eq implementation for structs
-- [ ] Generate Clone implementation for structs
-- [ ] Generate Hash implementation for structs
 
 ### Testing
 - [x] Test: can define and implement traits (trait_basic.kl)
