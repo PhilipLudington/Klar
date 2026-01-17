@@ -2603,6 +2603,34 @@ pub const Emitter = struct {
                 {
                     return llvm.Types.int1(self.ctx);
                 }
+                // Default trait: TypeName.default() returns the type's default value
+                if (std.mem.eql(u8, m.method_name, "default")) {
+                    if (m.object == .identifier) {
+                        const type_name = m.object.identifier.name;
+                        // Map type name to LLVM type
+                        if (std.mem.eql(u8, type_name, "i8")) return llvm.Types.int8(self.ctx);
+                        if (std.mem.eql(u8, type_name, "i16")) return llvm.Types.int16(self.ctx);
+                        if (std.mem.eql(u8, type_name, "i32")) return llvm.Types.int32(self.ctx);
+                        if (std.mem.eql(u8, type_name, "i64")) return llvm.Types.int64(self.ctx);
+                        if (std.mem.eql(u8, type_name, "i128")) return llvm.Types.int128(self.ctx);
+                        if (std.mem.eql(u8, type_name, "isize")) return llvm.Types.int64(self.ctx);
+                        if (std.mem.eql(u8, type_name, "u8")) return llvm.Types.int8(self.ctx);
+                        if (std.mem.eql(u8, type_name, "u16")) return llvm.Types.int16(self.ctx);
+                        if (std.mem.eql(u8, type_name, "u32")) return llvm.Types.int32(self.ctx);
+                        if (std.mem.eql(u8, type_name, "u64")) return llvm.Types.int64(self.ctx);
+                        if (std.mem.eql(u8, type_name, "u128")) return llvm.Types.int128(self.ctx);
+                        if (std.mem.eql(u8, type_name, "usize")) return llvm.Types.int64(self.ctx);
+                        if (std.mem.eql(u8, type_name, "f32")) return llvm.Types.float32(self.ctx);
+                        if (std.mem.eql(u8, type_name, "f64")) return llvm.Types.float64(self.ctx);
+                        if (std.mem.eql(u8, type_name, "bool")) return llvm.Types.int1(self.ctx);
+                        if (std.mem.eql(u8, type_name, "char")) return llvm.Types.int32(self.ctx);
+                        if (std.mem.eql(u8, type_name, "string")) return llvm.Types.pointer(self.ctx);
+                        // Check for struct types
+                        if (self.struct_types.get(type_name)) |struct_info| {
+                            return struct_info.llvm_type;
+                        }
+                    }
+                }
                 return llvm.Types.int32(self.ctx);
             },
             .closure => {
@@ -3674,6 +3702,12 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, method.method_name, "err") or std.mem.eql(u8, method.method_name, "Err")) {
                     return self.emitResultErr(method);
                 }
+            }
+
+            // Default trait: TypeName.default() -> default value for the type
+            // Primitives have builtin Default implementations
+            if (std.mem.eql(u8, method.method_name, "default")) {
+                return self.emitDefaultMethod(obj_name);
             }
         }
 
@@ -6241,6 +6275,99 @@ pub const Emitter = struct {
 
         // No drop method found - return void (0)
         // The type checker should have caught this already
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit the Default trait's default() static method.
+    /// Returns the default value for the given type name.
+    /// Primitives have builtin defaults:
+    /// - integers -> 0
+    /// - floats -> 0.0
+    /// - bool -> false
+    /// - char -> '\0' (0)
+    /// - string -> "" (empty string)
+    fn emitDefaultMethod(self: *Emitter, type_name: []const u8) EmitError!llvm.ValueRef {
+        // Handle primitive types
+        if (std.mem.eql(u8, type_name, "i8")) {
+            return llvm.Const.int(llvm.Types.int8(self.ctx), 0, true);
+        }
+        if (std.mem.eql(u8, type_name, "i16")) {
+            return llvm.Const.int(llvm.Types.int16(self.ctx), 0, true);
+        }
+        if (std.mem.eql(u8, type_name, "i32")) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+        if (std.mem.eql(u8, type_name, "i64")) {
+            return llvm.Const.int64(self.ctx, 0);
+        }
+        if (std.mem.eql(u8, type_name, "i128")) {
+            return llvm.Const.int(llvm.Types.int128(self.ctx), 0, true);
+        }
+        if (std.mem.eql(u8, type_name, "isize")) {
+            return llvm.Const.int64(self.ctx, 0); // isize is i64 on 64-bit
+        }
+        if (std.mem.eql(u8, type_name, "u8")) {
+            return llvm.Const.int(llvm.Types.int8(self.ctx), 0, false);
+        }
+        if (std.mem.eql(u8, type_name, "u16")) {
+            return llvm.Const.int(llvm.Types.int16(self.ctx), 0, false);
+        }
+        if (std.mem.eql(u8, type_name, "u32")) {
+            return llvm.Const.int(llvm.Types.int32(self.ctx), 0, false);
+        }
+        if (std.mem.eql(u8, type_name, "u64")) {
+            return llvm.Const.int64(self.ctx, 0);
+        }
+        if (std.mem.eql(u8, type_name, "u128")) {
+            return llvm.Const.int(llvm.Types.int128(self.ctx), 0, false);
+        }
+        if (std.mem.eql(u8, type_name, "usize")) {
+            return llvm.Const.int64(self.ctx, 0); // usize is u64 on 64-bit
+        }
+        if (std.mem.eql(u8, type_name, "f32")) {
+            return llvm.Const.float32(self.ctx, 0.0);
+        }
+        if (std.mem.eql(u8, type_name, "f64")) {
+            return llvm.Const.float64(self.ctx, 0.0);
+        }
+        if (std.mem.eql(u8, type_name, "bool")) {
+            return llvm.Const.int1(self.ctx, false);
+        }
+        if (std.mem.eql(u8, type_name, "char")) {
+            // char is represented as i32 (Unicode code point), default is '\0'
+            return llvm.Const.int32(self.ctx, 0);
+        }
+        if (std.mem.eql(u8, type_name, "string")) {
+            // String default is empty string ""
+            return self.builder.buildGlobalStringPtr("", "default_str");
+        }
+
+        // For struct types that implement Default, look up the user-defined default method
+        if (self.type_checker) |tc| {
+            if (tc.lookupStructMethod(type_name, "default")) |default_method| {
+                // Get the function name for the static method
+                var name_buf: [256]u8 = undefined;
+                const fn_name = std.fmt.bufPrint(&name_buf, "{s}.default", .{type_name}) catch return EmitError.OutOfMemory;
+
+                // Look up the function - it should have been emitted earlier
+                if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name.ptr)) |func| {
+                    // Call the static default() function with no arguments
+                    var args = [_]llvm.ValueRef{};
+                    return self.builder.buildCall(
+                        llvm.c.LLVMGlobalGetValueType(func),
+                        func,
+                        &args,
+                        "default",
+                    );
+                }
+
+                // Function not found, try to emit it
+                _ = default_method;
+                // TODO: emit the user-defined default method if not already emitted
+            }
+        }
+
+        // Unknown type - return 0 as fallback (type checker should have caught this)
         return llvm.Const.int32(self.ctx, 0);
     }
 

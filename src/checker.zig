@@ -859,6 +859,52 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
+
+        // Default trait: trait Default { fn default() -> Self; }
+        // Provides a default value for types. All primitives have builtin Default:
+        // i32, i64, etc. -> 0, f32, f64 -> 0.0, bool -> false, string -> ""
+        // Note: This is a static method (no &self), it returns a new value of type Self.
+        const default_self_type = Type{ .type_var = .{
+            .id = 998, // Use a unique ID to avoid conflicts
+            .name = "Self",
+            .bounds = &.{},
+        } };
+        const default_method_sig = types.FunctionType{
+            .params = &.{}, // No parameters - static method
+            .return_type = default_self_type, // Returns Self
+            .is_async = false,
+        };
+        const default_method = types.TraitMethod{
+            .name = "default",
+            .signature = default_method_sig,
+            .has_default = false,
+        };
+
+        const default_trait_type = try self.allocator.create(types.TraitType);
+        default_trait_type.* = .{
+            .name = "Default",
+            .type_params = &.{},
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{default_method}),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, default_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "Default", .{
+            .trait_type = default_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "Default",
+            .type_ = .{ .trait_ = default_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
     }
 
     // ========================================================================
@@ -2345,6 +2391,58 @@ pub const TypeChecker = struct {
                 const value_type = self.checkExpr(method.args[0]);
                 // Cell should only wrap Copy types, but we'll allow it for flexibility
                 return self.type_builder.cellType(value_type) catch self.type_builder.unknownType();
+            }
+
+            // Default trait: TypeName.default() -> T where T implements Default
+            // Primitives have builtin Default implementations:
+            // i32, i64, etc. -> 0, f32, f64 -> 0.0, bool -> false, string -> ""
+            if (std.mem.eql(u8, method.method_name, "default")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "default() takes no arguments", .{});
+                    return self.type_builder.unknownType();
+                }
+
+                // Check if obj_name is a primitive type
+                const primitive_types = [_]struct { name: []const u8, prim: types.Primitive }{
+                    .{ .name = "i8", .prim = .i8_ },
+                    .{ .name = "i16", .prim = .i16_ },
+                    .{ .name = "i32", .prim = .i32_ },
+                    .{ .name = "i64", .prim = .i64_ },
+                    .{ .name = "i128", .prim = .i128_ },
+                    .{ .name = "isize", .prim = .isize_ },
+                    .{ .name = "u8", .prim = .u8_ },
+                    .{ .name = "u16", .prim = .u16_ },
+                    .{ .name = "u32", .prim = .u32_ },
+                    .{ .name = "u64", .prim = .u64_ },
+                    .{ .name = "u128", .prim = .u128_ },
+                    .{ .name = "usize", .prim = .usize_ },
+                    .{ .name = "f32", .prim = .f32_ },
+                    .{ .name = "f64", .prim = .f64_ },
+                    .{ .name = "bool", .prim = .bool_ },
+                    .{ .name = "char", .prim = .char_ },
+                    .{ .name = "string", .prim = .string_ },
+                };
+
+                for (primitive_types) |pt| {
+                    if (std.mem.eql(u8, obj_name, pt.name)) {
+                        return Type{ .primitive = pt.prim };
+                    }
+                }
+
+                // Check if it's a struct that implements Default
+                if (self.current_scope.lookup(obj_name)) |sym| {
+                    if (sym.type_ == .struct_) {
+                        if (self.typeImplementsTrait(obj_name, "Default")) {
+                            // Return the struct type - the struct has implemented default()
+                            return sym.type_;
+                        }
+                        self.addError(.undefined_method, method.span, "type '{s}' does not implement Default trait", .{obj_name});
+                        return self.type_builder.unknownType();
+                    }
+                }
+
+                self.addError(.undefined_method, method.span, "unknown type '{s}' for Default::default()", .{obj_name});
+                return self.type_builder.unknownType();
             }
         }
 

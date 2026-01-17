@@ -1,0 +1,13 @@
+// Test for builtin Default trait - integer
+
+fn main() -> i32 {
+    // Test integer default (should be 0)
+    let x: i32 = i32.default()
+
+    // Default for i32 should be 0
+    if x.eq(0) {
+        return 0
+    } else {
+        return 1
+    }
+}

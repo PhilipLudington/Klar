@@ -1,0 +1,13 @@
+// Test for builtin Default trait - float
+
+fn main() -> i32 {
+    // Test float default (should be 0.0)
+    let x: f64 = f64.default()
+
+    // Default for f64 should be 0.0
+    if x.eq(0.0) {
+        return 0
+    } else {
+        return 1
+    }
+}

@@ -141,7 +141,7 @@
 - [x] Implement `Ordered` trait (comparison, ordering) - builtin for primitives (int, float, string)
 - [x] Implement `Clone` trait (explicit cloning) - builtin for primitives (int, float, bool, string)
 - [x] Implement `Drop` trait (custom destructors) - structs can implement to run cleanup code
-- [ ] Implement `Default` trait (default values)
+- [x] Implement `Default` trait (default values) - builtin for primitives (i32.default() -> 0, etc.)
 - [ ] Implement `Hash` trait (hashing for maps/sets)
 
 ### Derive Macro Basics
@@ -160,6 +160,7 @@
 - [x] Test: Ordered trait works for primitives (ordered_trait.kl, ordered_trait_float.kl, ordered_trait_string.kl)
 - [x] Test: Clone trait works for primitives (clone_trait_int.kl, clone_trait_float.kl, clone_trait_bool.kl, clone_trait_string.kl)
 - [x] Test: Drop trait works for structs (drop_trait.kl)
+- [x] Test: Default trait works for primitives (default_trait_int.kl, default_trait_float.kl, default_trait_bool.kl, default_trait_string.kl)
 - [ ] Test: associated types work correctly
 
 **Files Modified:**

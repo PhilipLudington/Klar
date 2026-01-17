@@ -1,0 +1,13 @@
+// Test for builtin Default trait - bool
+
+fn main() -> i32 {
+    // Test bool default (should be false)
+    let x: bool = bool.default()
+
+    // Default for bool should be false
+    if x.eq(false) {
+        return 0
+    } else {
+        return 1
+    }
+}

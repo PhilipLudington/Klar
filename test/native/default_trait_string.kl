@@ -1,0 +1,13 @@
+// Test for builtin Default trait - string
+
+fn main() -> i32 {
+    // Test string default (should be "")
+    let x: string = string.default()
+
+    // Default for string should be empty string ""
+    if x.eq("") {
+        return 0
+    } else {
+        return 1
+    }
+}
