@@ -497,10 +497,8 @@ pub const OwnershipChecker = struct {
         const depth = self.current_scope.depth;
         var scope: ?*OwnershipScope = self.current_scope.parent;
         while (scope) |s| {
-            var it = s.variables.iterator();
-            while (it.next()) |entry| {
-                entry.value_ptr.invalidateBorrowsAtDepth(depth);
-            }
+            // Call the safe iteration helper on the scope
+            s.invalidateBorrowsAtDepth(depth);
             scope = s.parent;
         }
 

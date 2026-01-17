@@ -18,6 +18,13 @@
 - Single-file compilation only
 - No standard library beyond builtins (print, panic, assert)
 
+**Near-term Fixes (discovered via TheNarrowWindow game):**
+- [ ] Native codegen: struct parameters to functions (fails with "UnsupportedFeature")
+- [ ] Native codegen: mutable struct variables (`var s = struct_value`)
+- [ ] VM: struct field mutation crashes (hash map panic in ObjStruct.setField)
+- [ ] VM: ownership checker crashes on complex if/else blocks (alignment panic)
+- [ ] String interpolation with struct field access (`"{game.turn}"`)
+
 ---
 
 ## Milestone 1: Generic Type Checking
@@ -50,7 +57,7 @@
 - [x] Support generic struct definitions: `struct Pair[A, B] { first: A, second: B }`
 - [x] Instantiate generic structs at usage sites
 - [x] Generate monomorphized struct types for codegen
-- [ ] Handle generic struct methods
+- [x] Handle generic struct methods
 
 ### Generic Enums
 - [x] Support generic enum definitions: `enum Option[T] { Some(T), None }`

@@ -253,9 +253,12 @@ pub const OwnershipScope = struct {
     }
 
     pub fn deinit(self: *OwnershipScope) void {
-        var it = self.variables.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.deinit(self.allocator);
+        // Check if the map has been initialized before iterating
+        if (self.variables.capacity() > 0) {
+            var it = self.variables.iterator();
+            while (it.next()) |entry| {
+                entry.value_ptr.deinit(self.allocator);
+            }
         }
         self.variables.deinit(self.allocator);
     }
@@ -285,11 +288,14 @@ pub const OwnershipScope = struct {
     /// Returns variables that are still owned (not moved) and not Copy types.
     pub fn getDroppableVariables(self: *OwnershipScope, allocator: Allocator) ![]const []const u8 {
         var result = std.ArrayListUnmanaged([]const u8){};
-        var it = self.variables.iterator();
-        while (it.next()) |entry| {
-            const state = entry.value_ptr;
-            if (state.state == .owned and !state.is_copy) {
-                try result.append(allocator, entry.key_ptr.*);
+        // Check if the map has been initialized before iterating
+        if (self.variables.capacity() > 0) {
+            var it = self.variables.iterator();
+            while (it.next()) |entry| {
+                const state = entry.value_ptr;
+                if (state.state == .owned and !state.is_copy) {
+                    try result.append(allocator, entry.key_ptr.*);
+                }
             }
         }
         return result.toOwnedSlice(allocator);
@@ -302,6 +308,19 @@ pub const OwnershipScope = struct {
             return parent.isInLoop();
         }
         return false;
+    }
+
+    /// Invalidate borrows at a given scope depth for all variables in this scope.
+    /// This is a safe iteration that handles empty/uninitialized hash maps.
+    pub fn invalidateBorrowsAtDepth(self: *OwnershipScope, depth: u32) void {
+        // Check if the map has been initialized by checking if it has capacity
+        // An uninitialized StringHashMapUnmanaged has capacity() == 0
+        if (self.variables.capacity() == 0) return;
+
+        var it = self.variables.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.invalidateBorrowsAtDepth(depth);
+        }
     }
 };
 

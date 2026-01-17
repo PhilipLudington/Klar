@@ -280,15 +280,16 @@ pub const Emitter = struct {
             }
         }
 
-        // Second pass: declare all functions
+        // Second pass: declare all functions (including methods from impl blocks)
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| try self.declareFunction(f),
+                .impl_decl => |i| try self.declareImplMethods(i),
                 else => {},
             }
         }
 
-        // Third pass: emit function bodies
+        // Third pass: emit function bodies (including methods from impl blocks)
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
@@ -296,6 +297,7 @@ pub const Emitter = struct {
                         try self.emitFunction(f);
                     }
                 },
+                .impl_decl => |i| try self.emitImplMethods(i),
                 else => {},
             }
         }
@@ -340,6 +342,173 @@ pub const Emitter = struct {
 
         // Set the calling convention for proper ABI compliance
         llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
+    }
+
+    /// Declare methods from an impl block.
+    /// Methods are named StructName_methodName for non-generic structs.
+    fn declareImplMethods(self: *Emitter, impl_decl: *ast.ImplDecl) EmitError!void {
+        // Skip generic impl blocks - they are handled via monomorphization
+        if (impl_decl.type_params.len > 0) {
+            return;
+        }
+
+        // Get the struct name from the target type
+        const struct_name = switch (impl_decl.target_type) {
+            .named => |n| n.name,
+            .generic_apply => return, // Generic applications are handled via monomorphization
+            else => return EmitError.InvalidAST,
+        };
+
+        for (impl_decl.methods) |method| {
+            // Build the mangled method name: StructName_methodName
+            var name_buf = std.ArrayListUnmanaged(u8){};
+            defer name_buf.deinit(self.allocator);
+            name_buf.appendSlice(self.allocator, struct_name) catch return EmitError.OutOfMemory;
+            name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
+            name_buf.appendSlice(self.allocator, method.name) catch return EmitError.OutOfMemory;
+
+            const mangled_name = self.allocator.dupeZ(u8, name_buf.items) catch return EmitError.OutOfMemory;
+            defer self.allocator.free(mangled_name);
+
+            // Build parameter types
+            var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+            defer param_types.deinit(self.allocator);
+
+            for (method.params) |param| {
+                const param_ty = try self.typeExprToLLVM(param.type_);
+                param_types.append(self.allocator, param_ty) catch return EmitError.OutOfMemory;
+            }
+
+            // Get return type
+            const return_type = if (method.return_type) |rt|
+                try self.typeExprToLLVM(rt)
+            else
+                llvm.Types.void_(self.ctx);
+
+            const fn_type = llvm.Types.function(return_type, param_types.items, false);
+            const llvm_func = llvm.addFunction(self.module, mangled_name, fn_type);
+
+            // Set the calling convention
+            llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
+        }
+    }
+
+    /// Emit method bodies from an impl block.
+    fn emitImplMethods(self: *Emitter, impl_decl: *ast.ImplDecl) EmitError!void {
+        // Skip generic impl blocks - they are handled via monomorphization
+        if (impl_decl.type_params.len > 0) {
+            return;
+        }
+
+        // Get the struct name from the target type
+        const struct_name = switch (impl_decl.target_type) {
+            .named => |n| n.name,
+            .generic_apply => return,
+            else => return EmitError.InvalidAST,
+        };
+
+        for (impl_decl.methods) |method| {
+            if (method.body == null) continue;
+
+            // Build the mangled method name
+            var name_buf = std.ArrayListUnmanaged(u8){};
+            defer name_buf.deinit(self.allocator);
+            name_buf.appendSlice(self.allocator, struct_name) catch return EmitError.OutOfMemory;
+            name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
+            name_buf.appendSlice(self.allocator, method.name) catch return EmitError.OutOfMemory;
+
+            const mangled_name = self.allocator.dupeZ(u8, name_buf.items) catch return EmitError.OutOfMemory;
+            defer self.allocator.free(mangled_name);
+
+            // Get the declared function
+            const function = self.module.getNamedFunction(mangled_name) orelse return EmitError.InvalidAST;
+            self.current_function = function;
+
+            // Set up return type info
+            if (method.return_type) |rt| {
+                const llvm_rt = try self.typeExprToLLVM(rt);
+                const is_opt = rt == .optional;
+                self.current_return_type = .{
+                    .llvm_type = llvm_rt,
+                    .is_optional = is_opt,
+                    .inner_type = if (is_opt) try self.typeExprToLLVM(rt.optional.inner) else null,
+                };
+            } else {
+                self.current_return_type = null;
+            }
+            defer self.current_return_type = null;
+
+            // Create entry block
+            const entry = llvm.appendBasicBlock(self.ctx, function, "entry");
+            self.builder.positionAtEnd(entry);
+            self.has_terminator = false;
+
+            // Clear named values for the new function
+            self.named_values.clearRetainingCapacity();
+
+            // Add parameters to named values
+            for (method.params, 0..) |param, i| {
+                const param_value = llvm.getParam(function, @intCast(i));
+                const param_ty = try self.typeExprToLLVM(param.type_);
+
+                const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
+                defer self.allocator.free(param_name);
+
+                const alloca = self.builder.buildAlloca(param_ty, param_name);
+                _ = self.builder.buildStore(param_value, alloca);
+
+                // Determine if parameter is signed
+                const is_signed = self.isTypeExprSigned(param.type_);
+
+                // For struct type parameters, record the struct type name for field resolution
+                const param_struct_name: ?[]const u8 = switch (param.type_) {
+                    .named => |n| n.name,
+                    else => null,
+                };
+
+                self.named_values.put(param.name, .{
+                    .value = alloca,
+                    .is_alloca = true,
+                    .ty = param_ty,
+                    .is_signed = is_signed,
+                    .struct_type_name = param_struct_name,
+                }) catch return EmitError.OutOfMemory;
+            }
+
+            // Emit function body
+            try self.pushScope(false);
+
+            const result = try self.emitBlock(method.body.?);
+
+            // Handle return
+            if (!self.has_terminator) {
+                if (method.return_type == null) {
+                    self.emitDropsForReturn();
+                    _ = self.builder.buildRetVoid();
+                } else if (result) |val| {
+                    if (self.current_return_type) |rt_info| {
+                        if (rt_info.is_optional) {
+                            self.emitDropsForReturn();
+                            const wrapped = self.emitSome(val, rt_info.inner_type.?);
+                            _ = self.builder.buildRet(wrapped);
+                        } else {
+                            self.emitDropsForReturn();
+                            _ = self.builder.buildRet(val);
+                        }
+                    } else {
+                        self.emitDropsForReturn();
+                        _ = self.builder.buildRet(val);
+                    }
+                } else {
+                    self.emitDropsForReturn();
+                    _ = self.builder.buildRetVoid();
+                }
+            }
+
+            self.popScope();
+        }
+
+        self.current_function = null;
     }
 
     fn emitFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
@@ -2201,6 +2370,11 @@ pub const Emitter = struct {
         if (std.mem.eql(u8, name, "f64")) return llvm.Types.float64(self.ctx);
         if (std.mem.eql(u8, name, "bool")) return llvm.Types.int1(self.ctx);
 
+        // Check if it's a registered struct type
+        if (self.struct_types.get(name)) |struct_info| {
+            return struct_info.llvm_type;
+        }
+
         // Default to i32
         return llvm.Types.int32(self.ctx);
     }
@@ -2577,6 +2751,61 @@ pub const Emitter = struct {
             .function => {
                 try buf.appendSlice(self.allocator, "fn");
             },
+        }
+    }
+
+    /// Append type name for mangling from a types.Type value.
+    fn appendCheckerTypeNameForMangling(self: *Emitter, buf: *std.ArrayListUnmanaged(u8), ty: types.Type) !void {
+        switch (ty) {
+            .primitive => |p| {
+                const name: []const u8 = switch (p) {
+                    .i8_ => "i8",
+                    .i16_ => "i16",
+                    .i32_ => "i32",
+                    .i64_ => "i64",
+                    .i128_ => "i128",
+                    .isize_ => "isize",
+                    .u8_ => "u8",
+                    .u16_ => "u16",
+                    .u32_ => "u32",
+                    .u64_ => "u64",
+                    .u128_ => "u128",
+                    .usize_ => "usize",
+                    .f32_ => "f32",
+                    .f64_ => "f64",
+                    .bool_ => "bool",
+                    .char_ => "char",
+                    .string_ => "string",
+                };
+                try buf.appendSlice(self.allocator, name);
+            },
+            .void_ => try buf.appendSlice(self.allocator, "void"),
+            .struct_ => |s| try buf.appendSlice(self.allocator, s.name),
+            .enum_ => |e| try buf.appendSlice(self.allocator, e.name),
+            .optional => |o| {
+                try buf.appendSlice(self.allocator, "opt_");
+                try self.appendCheckerTypeNameForMangling(buf, o.*);
+            },
+            .array => |a| {
+                try buf.appendSlice(self.allocator, "arr_");
+                try self.appendCheckerTypeNameForMangling(buf, a.element);
+            },
+            .slice => |s| {
+                try buf.appendSlice(self.allocator, "slice_");
+                try self.appendCheckerTypeNameForMangling(buf, s.element);
+            },
+            .reference => |r| {
+                try buf.appendSlice(self.allocator, if (r.mutable) "mutref_" else "ref_");
+                try self.appendCheckerTypeNameForMangling(buf, r.inner);
+            },
+            .applied => |a| {
+                try self.appendCheckerTypeNameForMangling(buf, a.base);
+                for (a.args) |arg| {
+                    try buf.append(self.allocator, '$');
+                    try self.appendCheckerTypeNameForMangling(buf, arg);
+                }
+            },
+            else => try buf.appendSlice(self.allocator, "unknown"),
         }
     }
 
@@ -3519,9 +3748,115 @@ pub const Emitter = struct {
             return self.emitResultUnwrapErr(object, object_type);
         }
 
+        // Check for user-defined struct methods
+        if (self.type_checker) |tc| {
+            // Get the struct type from the object
+            const struct_name = self.getStructNameFromExpr(method.object);
+            if (struct_name) |name| {
+                if (tc.lookupStructMethod(name, method.method_name)) |struct_method| {
+                    return self.emitUserDefinedMethod(method, object, name, struct_method);
+                }
+            }
+        }
+
         // For other methods, fall back to a placeholder for now
-        // TODO: Implement general method lookup and dispatch
+        // TODO: Implement remaining method types
         return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Get the struct name from an expression (for method call resolution).
+    /// Looks up the struct type name from our cached struct_types map.
+    fn getStructNameFromExpr(self: *Emitter, expr: ast.Expr) ?[]const u8 {
+        switch (expr) {
+            .identifier => |ident| {
+                // Look up the variable to get its type
+                if (self.named_values.get(ident.name)) |local| {
+                    // Search our struct_types map to find which struct has this LLVM type
+                    var it = self.struct_types.iterator();
+                    while (it.next()) |entry| {
+                        if (entry.value_ptr.llvm_type == local.ty) {
+                            return entry.key_ptr.*;
+                        }
+                    }
+                }
+                return null;
+            },
+            .struct_literal => |lit| {
+                // For struct literals, get the name from the type_name
+                if (lit.type_name) |type_name| {
+                    switch (type_name) {
+                        .named => |n| return n.name,
+                        .generic_apply => |g| {
+                            // For generic types like Pair[i32, i32], we need the mangled name
+                            // which would already be in struct_types
+                            if (g.base == .named) {
+                                return g.base.named.name;
+                            }
+                            return null;
+                        },
+                        else => return null,
+                    }
+                }
+                return null;
+            },
+            .field => |_| {
+                // Field access returns a value, harder to track type
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    /// Emit a call to a user-defined struct method.
+    fn emitUserDefinedMethod(
+        self: *Emitter,
+        method: *ast.MethodCall,
+        object: llvm.ValueRef,
+        struct_name: []const u8,
+        struct_method: TypeChecker.StructMethod,
+    ) EmitError!llvm.ValueRef {
+        // Determine the mangled function name
+        // For generic structs, the struct_name already contains the monomorphization (e.g., "Pair$i32$i32")
+        // The method name becomes "Pair$i32$i32_get_first"
+        var fn_name_buf = std.ArrayListUnmanaged(u8){};
+        defer fn_name_buf.deinit(self.allocator);
+        fn_name_buf.appendSlice(self.allocator, struct_name) catch return EmitError.OutOfMemory;
+        fn_name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
+        fn_name_buf.appendSlice(self.allocator, method.method_name) catch return EmitError.OutOfMemory;
+
+        const fn_name = self.allocator.dupeZ(u8, fn_name_buf.items) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(fn_name);
+
+        // Get the function from the module
+        const callee = self.module.getNamedFunction(fn_name) orelse {
+            // Function not found - it might not have been emitted yet
+            // This is an error in our compilation order
+            return EmitError.InvalidAST;
+        };
+
+        // Build arguments: self (if needed) + actual arguments
+        var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer args.deinit(self.allocator);
+
+        // Add 'self' if method has it
+        if (struct_method.has_self) {
+            args.append(self.allocator, object) catch return EmitError.OutOfMemory;
+        }
+
+        // Add other arguments
+        for (method.args) |arg| {
+            const arg_val = try self.emitExpr(arg);
+            args.append(self.allocator, arg_val) catch return EmitError.OutOfMemory;
+        }
+
+        // Call the method
+        const fn_type = llvm.c.LLVMGlobalGetValueType(callee);
+        return self.builder.buildCall(
+            fn_type,
+            callee,
+            args.items,
+            "method.result",
+        );
     }
 
     /// Emit Rc.new(value) - allocates an Rc and stores the value.
@@ -5783,7 +6118,43 @@ pub const Emitter = struct {
                 return self.getClosureStructType();
             },
             .reference => llvm.Types.pointer(self.ctx),
-            .struct_, .enum_, .trait_, .type_var, .applied => {
+            .struct_ => |s| {
+                // Look up struct type in struct_types cache
+                if (self.struct_types.get(s.name)) |struct_info| {
+                    return struct_info.llvm_type;
+                }
+                // Fallback to pointer if not found
+                return llvm.Types.pointer(self.ctx);
+            },
+            .applied => |a| {
+                // For applied types (e.g., Pair[i32]), construct mangled name and look up
+                var name_buf = std.ArrayListUnmanaged(u8){};
+                defer name_buf.deinit(self.allocator);
+
+                // Get base name
+                if (a.base == .struct_) {
+                    name_buf.appendSlice(self.allocator, a.base.struct_.name) catch {
+                        return llvm.Types.pointer(self.ctx);
+                    };
+                    // Append type args
+                    for (a.args) |arg| {
+                        name_buf.append(self.allocator, '$') catch {
+                            return llvm.Types.pointer(self.ctx);
+                        };
+                        self.appendCheckerTypeNameForMangling(&name_buf, arg) catch {
+                            return llvm.Types.pointer(self.ctx);
+                        };
+                    }
+
+                    // Look up the mangled struct type
+                    if (self.struct_types.get(name_buf.items)) |struct_info| {
+                        return struct_info.llvm_type;
+                    }
+                }
+                // Fallback to pointer if not found
+                return llvm.Types.pointer(self.ctx);
+            },
+            .enum_, .trait_, .type_var => {
                 // Complex types default to pointer
                 return llvm.Types.pointer(self.ctx);
             },
@@ -6081,6 +6452,170 @@ pub const Emitter = struct {
                 .is_alloca = true,
                 .ty = param_ty,
                 .is_signed = is_signed,
+            }) catch return EmitError.OutOfMemory;
+        }
+
+        // Emit function body
+        if (func.body) |body| {
+            try self.pushScope(false);
+
+            const result = try self.emitBlock(body);
+
+            // Handle return
+            if (!self.has_terminator) {
+                if (func.return_type == null) {
+                    self.emitDropsForReturn();
+                    _ = self.builder.buildRetVoid();
+                } else if (result) |val| {
+                    if (self.current_return_type) |rt_info| {
+                        if (rt_info.is_optional) {
+                            self.emitDropsForReturn();
+                            const wrapped = self.emitSome(val, rt_info.inner_type.?);
+                            _ = self.builder.buildRet(wrapped);
+                        } else {
+                            self.emitDropsForReturn();
+                            _ = self.builder.buildRet(val);
+                        }
+                    } else {
+                        self.emitDropsForReturn();
+                        _ = self.builder.buildRet(val);
+                    }
+                } else {
+                    self.emitDropsForReturn();
+                    _ = self.builder.buildRetVoid();
+                }
+            }
+
+            self.popScope();
+        }
+
+        self.current_function = null;
+    }
+
+    /// Declare all monomorphized methods from the type checker.
+    /// Must be called BEFORE emitting method bodies.
+    pub fn declareMonomorphizedMethods(self: *Emitter, type_checker: *const TypeChecker) EmitError!void {
+        const monos = type_checker.monomorphized_methods.items;
+
+        for (monos) |mono| {
+            // Skip if this method has no body
+            if (mono.original_decl.body == null) continue;
+
+            try self.declareMonomorphizedMethod(mono);
+        }
+    }
+
+    /// Emit all monomorphized method bodies from the type checker.
+    /// Must be called AFTER declareMonomorphizedMethods.
+    pub fn emitMonomorphizedMethods(self: *Emitter, type_checker: *const TypeChecker) EmitError!void {
+        const monos = type_checker.monomorphized_methods.items;
+
+        for (monos) |mono| {
+            // Skip if this method has no body
+            if (mono.original_decl.body == null) continue;
+
+            try self.emitMonomorphizedMethod(mono);
+        }
+    }
+
+    /// Declare a monomorphized method without emitting its body.
+    fn declareMonomorphizedMethod(self: *Emitter, mono: TypeChecker.MonomorphizedMethod) EmitError!void {
+        const func_type = mono.concrete_type.function;
+
+        // Build parameter types from the concrete function type
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer param_types.deinit(self.allocator);
+
+        for (func_type.params) |param_ty| {
+            const llvm_param_ty = self.typeToLLVM(param_ty);
+            param_types.append(self.allocator, llvm_param_ty) catch return EmitError.OutOfMemory;
+        }
+
+        // Get return type
+        const return_type = self.typeToLLVM(func_type.return_type);
+
+        // Create LLVM function type
+        const fn_type = llvm.Types.function(return_type, param_types.items, false);
+
+        // Create function with mangled name
+        const mangled_name = self.allocator.dupeZ(u8, mono.mangled_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(mangled_name);
+
+        const llvm_func = llvm.addFunction(self.module, mangled_name, fn_type);
+
+        // Set the calling convention
+        llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
+    }
+
+    /// Emit a monomorphized method body.
+    fn emitMonomorphizedMethod(self: *Emitter, mono: TypeChecker.MonomorphizedMethod) EmitError!void {
+        const func = mono.original_decl;
+        const func_type = mono.concrete_type.function;
+
+        // Get the declared function
+        const mangled_name = self.allocator.dupeZ(u8, mono.mangled_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(mangled_name);
+
+        const function = self.module.getNamedFunction(mangled_name) orelse {
+            return EmitError.InvalidAST;
+        };
+        self.current_function = function;
+
+        // Set up return type info
+        const return_llvm_type = self.typeToLLVM(func_type.return_type);
+        const is_optional = func_type.return_type == .optional;
+        self.current_return_type = .{
+            .llvm_type = return_llvm_type,
+            .is_optional = is_optional,
+            .inner_type = if (is_optional) self.typeToLLVM(func_type.return_type.optional.*) else null,
+        };
+        defer self.current_return_type = null;
+
+        // Create entry block
+        const entry = llvm.appendBasicBlock(self.ctx, function, "entry");
+        self.builder.positionAtEnd(entry);
+        self.has_terminator = false;
+
+        // Clear named values
+        self.named_values.clearRetainingCapacity();
+
+        // Construct the mangled struct name for field resolution (e.g., "Pair$i32")
+        var struct_name_buf = std.ArrayListUnmanaged(u8){};
+        defer struct_name_buf.deinit(self.allocator);
+        struct_name_buf.appendSlice(self.allocator, mono.struct_name) catch return EmitError.OutOfMemory;
+        for (mono.type_args) |type_arg| {
+            struct_name_buf.append(self.allocator, '$') catch return EmitError.OutOfMemory;
+            self.appendCheckerTypeNameForMangling(&struct_name_buf, type_arg) catch return EmitError.OutOfMemory;
+        }
+        const mangled_struct_name = self.allocator.dupe(u8, struct_name_buf.items) catch return EmitError.OutOfMemory;
+
+        // Add parameters to named values with concrete types
+        for (func.params, 0..) |param, i| {
+            const param_value = llvm.getParam(function, @intCast(i));
+            const param_ty = self.typeToLLVM(func_type.params[i]);
+
+            const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
+            defer self.allocator.free(param_name);
+
+            const alloca = self.builder.buildAlloca(param_ty, param_name);
+            _ = self.builder.buildStore(param_value, alloca);
+
+            // Check if this is a struct parameter (like 'self') that needs struct_type_name
+            const param_struct_name: ?[]const u8 = blk: {
+                // If this is the first param named "self" and param type is struct, use the mangled struct name
+                if (std.mem.eql(u8, param.name, "self")) {
+                    break :blk mangled_struct_name;
+                }
+                break :blk null;
+            };
+
+            const is_signed = self.isCheckerTypeSigned(func_type.params[i]);
+            self.named_values.put(param.name, .{
+                .value = alloca,
+                .is_alloca = true,
+                .ty = param_ty,
+                .is_signed = is_signed,
+                .struct_type_name = param_struct_name,
             }) catch return EmitError.OutOfMemory;
         }
 

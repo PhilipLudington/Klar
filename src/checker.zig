@@ -207,9 +207,47 @@ pub const TypeChecker = struct {
     generic_enum_types: std.ArrayListUnmanaged(*types.EnumType),
     /// Track generic struct definitions for cleanup (created in checkStruct).
     generic_struct_types: std.ArrayListUnmanaged(*types.StructType),
+    /// Registry of methods defined in impl blocks.
+    /// Maps struct name -> list of methods.
+    struct_methods: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(StructMethod)),
+    /// Cache of monomorphized method instances for generic structs.
+    /// Used by codegen to emit monomorphized methods.
+    monomorphized_methods: std.ArrayListUnmanaged(MonomorphizedMethod),
 
     const CaptureInfo = struct {
         is_mutable: bool,
+    };
+
+    /// Information about a method defined in an impl block.
+    pub const StructMethod = struct {
+        /// Name of the method
+        name: []const u8,
+        /// The function declaration from the AST
+        decl: *ast.FunctionDecl,
+        /// Type parameters from the impl block (for generic impls)
+        impl_type_params: []const types.TypeVar,
+        /// The resolved function type (with type vars if generic)
+        func_type: Type,
+        /// Whether the first parameter is 'self'
+        has_self: bool,
+        /// Whether self is mutable (&mut self vs &self)
+        self_is_mutable: bool,
+    };
+
+    /// Information about a monomorphized method instance.
+    pub const MonomorphizedMethod = struct {
+        /// Original struct name (e.g., "Pair")
+        struct_name: []const u8,
+        /// Original method name (e.g., "get_first")
+        method_name: []const u8,
+        /// Mangled name for this instantiation (e.g., "Pair$i32$string_get_first")
+        mangled_name: []const u8,
+        /// The concrete type arguments used for this instantiation
+        type_args: []const Type,
+        /// The concrete function type after substitution
+        concrete_type: Type,
+        /// Reference to the original method declaration (for codegen)
+        original_decl: *ast.FunctionDecl,
     };
 
     /// Information about a monomorphized function instance.
@@ -273,6 +311,8 @@ pub const TypeChecker = struct {
             .monomorphized_enums = .{},
             .generic_enum_types = .{},
             .generic_struct_types = .{},
+            .struct_methods = .{},
+            .monomorphized_methods = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -357,6 +397,20 @@ pub const TypeChecker = struct {
             self.allocator.destroy(struct_type);
         }
         self.generic_struct_types.deinit(self.allocator);
+
+        // Clean up struct methods registry
+        var methods_iter = self.struct_methods.valueIterator();
+        while (methods_iter.next()) |methods_list| {
+            methods_list.deinit(self.allocator);
+        }
+        self.struct_methods.deinit(self.allocator);
+
+        // Clean up monomorphized methods
+        for (self.monomorphized_methods.items) |method| {
+            self.allocator.free(method.mangled_name);
+            self.allocator.free(method.type_args);
+        }
+        self.monomorphized_methods.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -1800,6 +1854,23 @@ pub const TypeChecker = struct {
                 self.addError(.undefined_field, fld.span, "no field '{s}' on struct", .{fld.field_name});
                 return self.type_builder.unknownType();
             },
+            .applied => |a| {
+                // For applied types like Pair[T], access fields from the base struct
+                if (a.base == .struct_) {
+                    const s = a.base.struct_;
+                    for (s.fields) |field| {
+                        if (std.mem.eql(u8, field.name, fld.field_name)) {
+                            // The field type may contain type variables that map to the applied args
+                            // For now, return the raw field type (type var substitution happens at monomorphization)
+                            return field.type_;
+                        }
+                    }
+                    self.addError(.undefined_field, fld.span, "no field '{s}' on struct", .{fld.field_name});
+                    return self.type_builder.unknownType();
+                }
+                self.addError(.undefined_field, fld.span, "cannot access field on this type", .{});
+                return self.type_builder.unknownType();
+            },
             .tuple => |t| {
                 // Tuple field access by index (e.g., tuple.0, tuple.1)
                 const idx = std.fmt.parseInt(usize, fld.field_name, 10) catch {
@@ -2245,9 +2316,144 @@ pub const TypeChecker = struct {
             }
         }
 
-        // TODO: look up method on type's impl or trait
+        // Look up user-defined method on struct types
+        if (object_type == .struct_) {
+            const struct_type = object_type.struct_;
+            if (self.lookupStructMethod(struct_type.name, method.method_name)) |struct_method| {
+                // Check argument count (excluding self if method has it)
+                const expected_args = if (struct_method.has_self)
+                    struct_method.func_type.function.params.len - 1
+                else
+                    struct_method.func_type.function.params.len;
+
+                if (method.args.len != expected_args) {
+                    self.addError(.invalid_call, method.span, "method expects {d} argument(s), got {d}", .{ expected_args, method.args.len });
+                }
+
+                // Type check arguments
+                const param_start: usize = if (struct_method.has_self) 1 else 0;
+                for (method.args, 0..) |arg, i| {
+                    const arg_type = self.checkExpr(arg);
+                    const param_idx = param_start + i;
+                    if (param_idx < struct_method.func_type.function.params.len) {
+                        const expected_type = struct_method.func_type.function.params[param_idx];
+                        // Skip type var parameters for now (generic methods)
+                        if (expected_type != .type_var and !arg_type.eql(expected_type)) {
+                            self.addError(.type_mismatch, method.span, "argument type mismatch", .{});
+                        }
+                    }
+                }
+
+                // If the struct is a monomorphized generic struct, substitute type params in return type
+                // Check if this is a monomorphized struct (has $ in name)
+                if (std.mem.indexOf(u8, struct_type.name, "$")) |_| {
+                    self.recordMethodMonomorphization(struct_type, struct_method) catch {};
+
+                    // Find the monomorphized struct info to get the type substitutions
+                    for (self.monomorphized_structs.items) |mono| {
+                        if (std.mem.eql(u8, mono.mangled_name, struct_type.name)) {
+                            // Build substitution map from impl type params to concrete types
+                            var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+                            defer substitutions.deinit(self.allocator);
+
+                            // Map method's impl type params to the struct's concrete type args
+                            for (struct_method.impl_type_params, 0..) |type_param, i| {
+                                if (i < mono.type_args.len) {
+                                    substitutions.put(self.allocator, type_param.id, mono.type_args[i]) catch {};
+                                }
+                            }
+
+                            // Substitute in the return type
+                            const return_type = struct_method.func_type.function.return_type;
+                            const concrete_return = self.substituteTypeParams(return_type, substitutions) catch return_type;
+                            return concrete_return;
+                        }
+                    }
+                }
+
+                return struct_method.func_type.function.return_type;
+            }
+        }
+
         self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
         return self.type_builder.unknownType();
+    }
+
+    /// Look up a method by name for a given struct type.
+    /// Handles both direct struct names and monomorphized struct names (e.g., "Pair$i32$string").
+    pub fn lookupStructMethod(self: *const TypeChecker, struct_name: []const u8, method_name: []const u8) ?StructMethod {
+        // First try direct lookup
+        if (self.struct_methods.get(struct_name)) |methods| {
+            for (methods.items) |m| {
+                if (std.mem.eql(u8, m.name, method_name)) {
+                    return m;
+                }
+            }
+        }
+
+        // If this is a monomorphized struct name (contains $), try the original name
+        if (std.mem.indexOf(u8, struct_name, "$")) |dollar_idx| {
+            const original_name = struct_name[0..dollar_idx];
+            if (self.struct_methods.get(original_name)) |methods| {
+                for (methods.items) |m| {
+                    if (std.mem.eql(u8, m.name, method_name)) {
+                        return m;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// Record a monomorphized method instance for a generic struct.
+    fn recordMethodMonomorphization(self: *TypeChecker, struct_type: *types.StructType, method: StructMethod) !void {
+        // Find the corresponding monomorphized struct to get type args
+        var type_args: []const Type = &.{};
+        for (self.monomorphized_structs.items) |ms| {
+            if (std.mem.eql(u8, ms.mangled_name, struct_type.name)) {
+                type_args = ms.type_args;
+                break;
+            }
+        }
+
+        // Check if this method instantiation already exists
+        for (self.monomorphized_methods.items) |existing| {
+            if (std.mem.eql(u8, existing.mangled_name, struct_type.name) and
+                std.mem.eql(u8, existing.method_name, method.name))
+            {
+                // Already recorded
+                return;
+            }
+        }
+
+        // Create mangled method name: Pair$i32$string_get_first
+        var mangled_name = std.ArrayListUnmanaged(u8){};
+        errdefer mangled_name.deinit(self.allocator);
+        try mangled_name.appendSlice(self.allocator, struct_type.name);
+        try mangled_name.append(self.allocator, '_');
+        try mangled_name.appendSlice(self.allocator, method.name);
+
+        // Substitute type params in the method's function type
+        var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+        defer substitutions.deinit(self.allocator);
+
+        for (method.impl_type_params, 0..) |type_param, i| {
+            if (i < type_args.len) {
+                try substitutions.put(self.allocator, type_param.id, type_args[i]);
+            }
+        }
+
+        const concrete_func_type = try self.substituteTypeParams(method.func_type, substitutions);
+
+        try self.monomorphized_methods.append(self.allocator, .{
+            .struct_name = if (std.mem.indexOf(u8, struct_type.name, "$")) |idx| struct_type.name[0..idx] else struct_type.name,
+            .method_name = method.name,
+            .mangled_name = try mangled_name.toOwnedSlice(self.allocator),
+            .type_args = try self.allocator.dupe(Type, type_args),
+            .concrete_type = concrete_func_type,
+            .original_decl = method.decl,
+        });
     }
 
     fn checkIfExpr(self: *TypeChecker, if_expr: *ast.IfExpr) Type {
@@ -2944,9 +3150,147 @@ pub const TypeChecker = struct {
     }
 
     fn checkImpl(self: *TypeChecker, impl_decl: *ast.ImplDecl) void {
-        // TODO: implement impl checking
-        _ = self;
-        _ = impl_decl;
+        // Push type parameters into scope if this is a generic impl
+        const has_type_params = impl_decl.type_params.len > 0;
+        var impl_type_params: []const types.TypeVar = &.{};
+        if (has_type_params) {
+            impl_type_params = self.pushTypeParams(impl_decl.type_params) catch return;
+        }
+        defer if (has_type_params) self.popTypeParams();
+
+        // Resolve the target type (e.g., Pair[A, B] or Point)
+        const target_type = self.resolveTypeExpr(impl_decl.target_type) catch {
+            self.addError(.undefined_type, impl_decl.span, "cannot resolve impl target type", .{});
+            return;
+        };
+
+        // Get the struct name - we only support impl blocks for structs currently
+        // For generic impls like impl[T] Pair[T], the target_type is an applied type
+        const struct_name = switch (target_type) {
+            .struct_ => |s| s.name,
+            .applied => |a| blk: {
+                // For generic impls, the base should be a struct
+                if (a.base == .struct_) {
+                    break :blk a.base.struct_.name;
+                }
+                self.addError(.invalid_operation, impl_decl.span, "impl blocks currently only support structs", .{});
+                return;
+            },
+            else => {
+                self.addError(.invalid_operation, impl_decl.span, "impl blocks currently only support structs", .{});
+                return;
+            },
+        };
+
+        // TODO: Handle trait implementations (impl_decl.trait_type)
+        if (impl_decl.trait_type != null) {
+            self.addError(.invalid_operation, impl_decl.span, "trait implementations not yet supported", .{});
+            return;
+        }
+
+        // Process each method in the impl block
+        for (impl_decl.methods) |*method_decl_const| {
+            // Need to cast to mutable pointer for registration
+            const method_decl = @constCast(method_decl_const);
+
+            // Determine if this method has 'self' as first parameter
+            var has_self = false;
+            var self_is_mutable = false;
+            var param_start_idx: usize = 0;
+
+            if (method_decl.params.len > 0) {
+                const first_param = method_decl.params[0];
+                if (std.mem.eql(u8, first_param.name, "self")) {
+                    has_self = true;
+                    param_start_idx = 1;
+                    // Check if self is mutable (type would be &mut Self or similar)
+                    // For now, we'll mark it based on the type expression
+                    if (first_param.type_ == .reference) {
+                        self_is_mutable = first_param.type_.reference.mutable;
+                    }
+                }
+            }
+
+            // Build the method's function type
+            var param_types: std.ArrayListUnmanaged(Type) = .{};
+            defer param_types.deinit(self.allocator);
+
+            // Include all parameters (including self) in the function type
+            for (method_decl.params) |param| {
+                // For 'self' parameter, use the target struct type
+                if (std.mem.eql(u8, param.name, "self")) {
+                    // self could be: self, &self, &mut self
+                    // For now, treat it as the struct type itself
+                    param_types.append(self.allocator, target_type) catch {};
+                } else {
+                    const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
+                    param_types.append(self.allocator, param_type) catch {};
+                }
+            }
+
+            const return_type = if (method_decl.return_type) |rt|
+                self.resolveTypeExpr(rt) catch self.type_builder.unknownType()
+            else
+                self.type_builder.voidType();
+
+            const func_type = self.type_builder.functionType(param_types.items, return_type) catch {
+                continue;
+            };
+
+            // Register the method in the struct_methods registry
+            const result = self.struct_methods.getOrPut(self.allocator, struct_name) catch continue;
+            if (!result.found_existing) {
+                result.value_ptr.* = .{};
+            }
+
+            // Check for duplicate method
+            var is_duplicate = false;
+            for (result.value_ptr.items) |existing| {
+                if (std.mem.eql(u8, existing.name, method_decl.name)) {
+                    self.addError(.duplicate_definition, method_decl.span, "duplicate method definition", .{});
+                    is_duplicate = true;
+                    break;
+                }
+            }
+
+            if (!is_duplicate) {
+                // Duplicate the impl_type_params slice to own it
+                const owned_type_params = self.allocator.dupe(types.TypeVar, impl_type_params) catch &.{};
+
+                result.value_ptr.append(self.allocator, .{
+                    .name = method_decl.name,
+                    .decl = method_decl,
+                    .impl_type_params = owned_type_params,
+                    .func_type = func_type,
+                    .has_self = has_self,
+                    .self_is_mutable = self_is_mutable,
+                }) catch {};
+            }
+
+            // Type-check the method body
+            if (method_decl.body) |body| {
+                _ = self.pushScope(.function) catch continue;
+                defer self.popScope();
+
+                // Bind parameters (starting from param_start_idx to skip self for binding purposes)
+                // Actually, we should bind self too with the proper type
+                for (method_decl.params, 0..) |param, idx| {
+                    const param_type = if (idx < param_types.items.len) param_types.items[idx] else self.type_builder.unknownType();
+                    self.current_scope.define(.{
+                        .name = param.name,
+                        .type_ = param_type,
+                        .kind = .parameter,
+                        .mutable = if (std.mem.eql(u8, param.name, "self")) self_is_mutable else false,
+                        .span = param.span,
+                    }) catch {};
+                }
+
+                self.current_return_type = return_type;
+                defer self.current_return_type = null;
+
+                _ = self.checkBlock(body);
+            }
+        }
     }
 
     fn checkTypeAlias(self: *TypeChecker, alias: *ast.TypeAlias) void {

@@ -208,8 +208,9 @@ pub const Parser = struct {
             .char_literal => self.parseCharLiteral(),
             .true_, .false_ => self.parseBoolLiteral(),
 
-            // Identifier
+            // Identifier (including 'self' keyword when used as expression)
             .identifier => self.parseIdentifierOrStructLiteral(),
+            .self => self.parseSelfExpression(),
 
             // Grouping / tuple
             .l_paren => self.parseGroupedOrTuple(),
@@ -496,6 +497,16 @@ pub const Parser = struct {
 
         return .{ .literal = .{
             .kind = .{ .bool_ = value },
+            .span = span,
+        } };
+    }
+
+    /// Parse 'self' as an expression (used in method bodies)
+    fn parseSelfExpression(self: *Parser) ParseError!ast.Expr {
+        const span = self.spanFromToken(self.current);
+        self.advance(); // consume 'self'
+        return .{ .identifier = .{
+            .name = "self",
             .span = span,
         } };
     }

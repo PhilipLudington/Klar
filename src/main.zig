@@ -464,6 +464,15 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
 
+    // Declare monomorphized methods for generic structs BEFORE emitModule
+    // so method calls can find them
+    emitter.declareMonomorphizedMethods(&checker) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Codegen error (method decl): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
     emitter.emitModule(module) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
@@ -475,6 +484,14 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     emitter.emitMonomorphizedFunctions(&checker) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Codegen error (monomorphization): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
+    // Emit monomorphized method bodies
+    emitter.emitMonomorphizedMethods(&checker) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Codegen error (methods): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
         try stderr.writeAll(msg);
         return;
     };
