@@ -26,6 +26,7 @@
 - [x] VM: struct field mutation crashes (hash map panic in ObjStruct.setField) - fixed by making setField duplicate keys
 - [x] VM: ownership checker crashes on complex if/else blocks (fixed in 4b75243)
 - [x] String interpolation with struct field access (`"{game.turn}"`) - implemented in native codegen
+- [x] VM: implicit optional return not wrapping as None - fixed by emitting op_none before op_return for optional return types
 
 ---
 

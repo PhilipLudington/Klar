@@ -305,7 +305,12 @@ pub const Compiler = struct {
         // Emit implicit return if needed.
         // If the function has a return type, emit op_return (which pops and returns a value).
         // Otherwise, emit op_return_void.
-        if (func.return_type != null) {
+        // For optional return types, emit op_none first (implicit None).
+        if (func.return_type) |ret_type| {
+            if (ret_type == .optional) {
+                // Implicit None for optional return types
+                try self.emitOp(.op_none, line);
+            }
             try self.emitOp(.op_return, line);
         } else {
             try self.emitOp(.op_return_void, line);
