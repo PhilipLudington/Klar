@@ -200,6 +200,11 @@ pub const ModuleResolver = struct {
 
         // Check if already resolved
         if (self.modules.get(canonical)) |existing| {
+            // Still add dependency even for already-resolved modules
+            // This is needed for cycle detection in topological sort
+            if (from) |f| {
+                try f.dependencies.append(self.allocator, existing);
+            }
             return existing;
         }
 

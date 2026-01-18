@@ -68,6 +68,9 @@ pub const Symbol = struct {
     kind: Kind,
     mutable: bool,
     span: Span,
+    /// For imported symbols with aliases, stores the original name.
+    /// Used by codegen to find the correct LLVM function.
+    original_name: ?[]const u8 = null,
 
     pub const Kind = enum {
         variable,
@@ -1065,6 +1068,12 @@ pub const TypeChecker = struct {
             return sym.type_;
         }
         return null;
+    }
+
+    /// Look up a symbol by name in the current scope chain.
+    /// Returns the full Symbol struct including original_name for aliased imports.
+    pub fn lookupSymbol(self: *const TypeChecker, name: []const u8) ?Symbol {
+        return self.current_scope.lookup(name);
     }
 
     // ========================================================================
@@ -5334,6 +5343,8 @@ pub const TypeChecker = struct {
             .kind = symbol_kind,
             .mutable = false,
             .span = span,
+            // If aliased, store original name for codegen to find the LLVM function
+            .original_name = if (item.alias != null) item.name else null,
         }) catch {};
     }
 

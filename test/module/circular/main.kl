@@ -1,0 +1,8 @@
+// main.kl - Entry point that imports module_a (which imports module_b, which imports module_a)
+// This should trigger a circular import error.
+
+import module_a.{ get_value }
+
+fn main() -> i32 {
+    return get_value()
+}

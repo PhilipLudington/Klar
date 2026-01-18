@@ -1,0 +1,11 @@
+// main.kl - Tests glob import syntax (import utils.*)
+
+import utils.*
+
+fn main() -> i32 {
+    // Both add and multiply should be available via glob import
+    let sum: i32 = add(10, 20)
+    let product: i32 = multiply(3, 4)
+    // 30 + 12 = 42
+    return sum + product
+}

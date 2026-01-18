@@ -1,0 +1,11 @@
+// main.kl - Tests aliased import syntax (import x.{ y as z })
+
+import math.{ add as sum, multiply as product }
+
+fn main() -> i32 {
+    // Use aliased names
+    let a: i32 = sum(10, 20)       // 30
+    let b: i32 = product(3, 4)    // 12
+    // 30 + 12 = 42
+    return a + b
+}

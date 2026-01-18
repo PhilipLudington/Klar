@@ -1785,7 +1785,19 @@ pub const Emitter = struct {
 
         // Try to find as a module-level function
         if (func_name) |name| {
-            const name_z = self.allocator.dupeZ(u8, name) catch return EmitError.OutOfMemory;
+            // First, try to find the function directly by name
+            var lookup_name = name;
+
+            // Check if this is an aliased import - if so, use the original name
+            if (self.type_checker) |tc| {
+                if (tc.lookupSymbol(name)) |sym| {
+                    if (sym.original_name) |orig| {
+                        lookup_name = orig;
+                    }
+                }
+            }
+
+            const name_z = self.allocator.dupeZ(u8, lookup_name) catch return EmitError.OutOfMemory;
             defer self.allocator.free(name_z);
 
             if (self.module.getNamedFunction(name_z)) |func| {

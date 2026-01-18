@@ -1,0 +1,7 @@
+// module_a.kl - Imports module_b, creating a circular dependency
+
+import module_b.{ helper }
+
+pub fn get_value() -> i32 {
+    return helper() + 10
+}
