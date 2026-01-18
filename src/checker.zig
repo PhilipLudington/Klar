@@ -327,6 +327,8 @@ pub const TypeChecker = struct {
         void_,
         /// Struct value with type name and field values (preserves order)
         struct_: ComptimeStruct,
+        /// Array value with element type and elements
+        array: ComptimeArray,
     };
 
     /// A compile-time struct value.
@@ -334,6 +336,14 @@ pub const TypeChecker = struct {
         type_name: []const u8,
         /// Fields stored in declaration order using ArrayHashMap
         fields: std.StringArrayHashMapUnmanaged(ComptimeValue),
+    };
+
+    /// A compile-time array value.
+    pub const ComptimeArray = struct {
+        /// Element type for codegen
+        element_type: Type,
+        /// Array elements in order
+        elements: []const ComptimeValue,
     };
 
     /// Symbols exported from a module.
@@ -4046,6 +4056,10 @@ pub const TypeChecker = struct {
                 self.addError(.comptime_error, block.span, "unknown struct type '{s}' in comptime block", .{cs.type_name});
                 break :blk self.type_builder.unknownType();
             },
+            .array => |arr| blk: {
+                // Build array type from element type and length
+                break :blk self.type_builder.arrayType(arr.element_type, arr.elements.len) catch self.type_builder.unknownType();
+            },
         };
     }
 
@@ -4396,6 +4410,18 @@ pub const TypeChecker = struct {
                 }
                 return null;
             },
+            .array_literal => |arr| {
+                // Evaluate each element at compile time
+                var elements = std.ArrayListUnmanaged(Value){};
+                for (arr.elements) |elem| {
+                    const val = self.evaluateComptimeExpr(elem) orelse return null;
+                    elements.append(self.allocator, val) catch return null;
+                }
+                // Create an interpreter array value (heap-allocated)
+                const array_val = self.allocator.create(values.ArrayValue) catch return null;
+                array_val.* = .{ .elements = elements.items };
+                return .{ .array = array_val };
+            },
             else => null,
         };
     }
@@ -4518,9 +4544,62 @@ pub const TypeChecker = struct {
                 };
                 break :blk .{ .struct_ = .{ .type_name = type_name, .fields = comptime_fields } };
             },
+            .array => |arr| blk: {
+                // Convert array value to comptime array
+                if (arr.elements.len == 0) {
+                    self.addError(.comptime_error, span, "empty arrays not supported in comptime blocks", .{});
+                    break :blk null;
+                }
+
+                // Recursively convert all elements
+                var comptime_elements = std.ArrayListUnmanaged(ComptimeValue){};
+                for (arr.elements) |elem| {
+                    const elem_comptime = self.valueToComptimeValue(elem, span) orelse {
+                        comptime_elements.deinit(self.allocator);
+                        break :blk null;
+                    };
+                    comptime_elements.append(self.allocator, elem_comptime) catch {
+                        comptime_elements.deinit(self.allocator);
+                        break :blk null;
+                    };
+                }
+
+                // Infer element type from first element
+                const element_type = self.inferTypeFromComptimeValue(comptime_elements.items[0]);
+
+                break :blk .{ .array = .{
+                    .element_type = element_type,
+                    .elements = comptime_elements.toOwnedSlice(self.allocator) catch {
+                        comptime_elements.deinit(self.allocator);
+                        break :blk null;
+                    },
+                } };
+            },
             else => {
                 self.addError(.comptime_error, span, "comptime block produced a non-primitive value", .{});
                 return null;
+            },
+        };
+    }
+
+    /// Infer the Klar Type from a ComptimeValue.
+    fn inferTypeFromComptimeValue(self: *TypeChecker, cv: ComptimeValue) Type {
+        return switch (cv) {
+            .int => |i| if (i.is_i32) self.type_builder.i32Type() else self.type_builder.i64Type(),
+            .float => self.type_builder.f64Type(),
+            .bool_ => self.type_builder.boolType(),
+            .string => self.type_builder.stringType(),
+            .void_ => self.type_builder.voidType(),
+            .struct_ => |cs| blk: {
+                if (self.lookupType(cs.type_name)) |t| {
+                    break :blk t;
+                }
+                break :blk self.type_builder.unknownType();
+            },
+            .array => |arr| blk: {
+                // Recursively infer element type
+                const elem_type = self.inferTypeFromComptimeValue(arr.elements[0]);
+                break :blk self.type_builder.arrayType(elem_type, arr.elements.len) catch self.type_builder.unknownType();
             },
         };
     }
@@ -4549,6 +4628,21 @@ pub const TypeChecker = struct {
                     sv.fields.put(self.allocator, entry.key_ptr.*, field_value) catch {};
                 }
                 break :blk .{ .struct_ = sv };
+            },
+            .array => |arr| blk: {
+                // Convert comptime array back to interpreter array value (heap-allocated)
+                var elements = std.ArrayListUnmanaged(Value){};
+                for (arr.elements) |elem| {
+                    const elem_value = self.comptimeValueToInterpreterValue(elem);
+                    elements.append(self.allocator, elem_value) catch {
+                        break :blk .{ .void_ = {} };
+                    };
+                }
+                const array_val = self.allocator.create(values.ArrayValue) catch {
+                    break :blk .{ .void_ = {} };
+                };
+                array_val.* = .{ .elements = elements.items };
+                break :blk .{ .array = array_val };
             },
         };
     }

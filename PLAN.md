@@ -712,7 +712,7 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [x] Results are stored and emitted as compile-time constants in codegen
 - [x] Support accessing outer scope constants (populateInterpreterEnv copies constant_values to interpreter)
 - [x] Support struct types in comptime blocks
-- [ ] Support arrays in comptime blocks
+- [x] Support arrays in comptime blocks
 
 ### Comptime Functions
 - [x] Mark functions as `fn @name(...)` (@ prefix on function name)
@@ -764,14 +764,15 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [x] Test: comptime blocks can access outer scope constants (test/native/comptime_const_access.kl)
 - [x] Test: recursive comptime functions work (test/native/comptime_recursive.kl, comptime_recursive_simple.kl)
 - [x] Test: comptime struct values work (test/native/comptime_struct.kl)
+- [x] Test: comptime array values work (test/native/comptime_array.kl)
 
 **Files Modified:**
 - `src/ast.zig` - Added is_comptime field to FunctionDecl ✓
 - `src/parser.zig` - Parse `comptime fn` syntax ✓
-- `src/checker.zig` - Comptime evaluation during type checking, comptime function call evaluation, struct support in ComptimeValue ✓
+- `src/checker.zig` - Comptime evaluation during type checking, comptime function call evaluation, struct and array support in ComptimeValue ✓
 - `src/interpreter.zig` - Made evalBlock public for comptime ✓
-- `src/codegen/emit.zig` - Emit comptime values as constants (including struct values) ✓
-- `src/codegen/llvm.zig` - Added Const.namedStruct for comptime struct emission ✓
+- `src/codegen/emit.zig` - Emit comptime values as constants (including struct and array values) ✓
+- `src/codegen/llvm.zig` - Added Const.namedStruct and Const.array for comptime struct/array emission ✓
 
 ---
 

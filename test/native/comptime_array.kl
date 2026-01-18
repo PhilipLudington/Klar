@@ -1,0 +1,40 @@
+// Test comptime array evaluation
+
+fn main() -> i32 {
+    // Basic comptime array of integers
+    let arr: [i32] = @{ [1, 2, 3] }
+
+    // Verify first element
+    if arr[0] != 1 {
+        return 1
+    }
+
+    // Verify second element
+    if arr[1] != 2 {
+        return 2
+    }
+
+    // Verify third element
+    if arr[2] != 3 {
+        return 3
+    }
+
+    // Comptime array with expressions
+    let computed: [i32] = @{ [10, 20 + 5, 30 * 2, 100 - 50] }
+
+    if computed[0] != 10 {
+        return 4
+    }
+    if computed[1] != 25 {
+        return 5
+    }
+    if computed[2] != 60 {
+        return 6
+    }
+    if computed[3] != 50 {
+        return 7
+    }
+
+    // All tests passed
+    return 0
+}

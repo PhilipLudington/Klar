@@ -507,6 +507,11 @@ pub const Const = struct {
     pub fn namedStruct(struct_type: TypeRef, vals: []const ValueRef) ValueRef {
         return c.LLVMConstNamedStruct(struct_type, @ptrCast(@constCast(vals.ptr)), @intCast(vals.len));
     }
+
+    /// Create a constant array value.
+    pub fn array(element_type: TypeRef, vals: []const ValueRef) ValueRef {
+        return c.LLVMConstArray2(element_type, @ptrCast(@constCast(vals.ptr)), @intCast(vals.len));
+    }
 };
 
 /// Function operations.

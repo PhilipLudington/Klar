@@ -2756,6 +2756,11 @@ pub const Emitter = struct {
                                 }
                                 break :blk llvm.Types.int32(self.ctx); // Fallback
                             },
+                            .array => |arr| blk: {
+                                // Get the LLVM array type
+                                const elem_llvm_type = self.typeToLLVM(arr.element_type);
+                                break :blk llvm.Types.array(elem_llvm_type, @intCast(arr.elements.len));
+                            },
                         };
                     }
                 }
@@ -2793,6 +2798,11 @@ pub const Emitter = struct {
                                     break :struct_blk struct_info.llvm_type;
                                 }
                                 break :struct_blk llvm.Types.int32(self.ctx); // Fallback
+                            },
+                            .array => |arr| arr_blk: {
+                                // Get the LLVM array type
+                                const elem_llvm_type = self.typeToLLVM(arr.element_type);
+                                break :arr_blk llvm.Types.array(elem_llvm_type, @intCast(arr.elements.len));
                             },
                         };
                     }
@@ -5639,6 +5649,22 @@ pub const Emitter = struct {
 
                 // Create constant struct
                 break :blk llvm.Const.namedStruct(struct_type, field_values.items);
+            },
+            .array => |arr| blk: {
+                // Get the LLVM element type
+                const element_llvm_type = self.typeToLLVM(arr.element_type);
+
+                // Recursively emit each element as a constant
+                var element_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+                defer element_values.deinit(self.allocator);
+
+                for (arr.elements) |elem| {
+                    const elem_val = try self.emitComptimeValue(elem);
+                    element_values.append(self.allocator, elem_val) catch return EmitError.OutOfMemory;
+                }
+
+                // Create constant array
+                break :blk llvm.Const.array(element_llvm_type, element_values.items);
             },
         };
     }
