@@ -809,19 +809,63 @@ pub const Parser = struct {
         // Types can be: identifiers, Self, primitives, ?T, [T], fn(...) -> T, etc.
         // For simplicity, we'll try parsing as type first if it looks like one
 
-        // If the next token is an identifier followed by [ or ), or if it's a type keyword,
-        // we try to parse it as a type
+        // If the current token is just an identifier, check what follows to disambiguate.
+        // If followed by an operator, it's definitely an expression.
+        // This handles cases like `@foo(n - 1)` where `n` should be parsed as expression.
+        if (self.current.kind == .identifier) {
+            const name = self.source[self.current.loc.start..self.current.loc.end];
+
+            // Check if this is a known primitive type name - always parse as type
+            const is_primitive = std.mem.eql(u8, name, "i8") or
+                std.mem.eql(u8, name, "i16") or
+                std.mem.eql(u8, name, "i32") or
+                std.mem.eql(u8, name, "i64") or
+                std.mem.eql(u8, name, "i128") or
+                std.mem.eql(u8, name, "isize") or
+                std.mem.eql(u8, name, "u8") or
+                std.mem.eql(u8, name, "u16") or
+                std.mem.eql(u8, name, "u32") or
+                std.mem.eql(u8, name, "u64") or
+                std.mem.eql(u8, name, "u128") or
+                std.mem.eql(u8, name, "usize") or
+                std.mem.eql(u8, name, "f32") or
+                std.mem.eql(u8, name, "f64") or
+                std.mem.eql(u8, name, "bool") or
+                std.mem.eql(u8, name, "char") or
+                std.mem.eql(u8, name, "string") or
+                std.mem.eql(u8, name, "void");
+
+            if (!is_primitive) {
+                // Peek ahead to check what follows this non-primitive identifier
+                // An identifier followed by a binary operator is definitely an expression
+                const next = self.peekNext();
+                switch (next.kind) {
+                    // Binary operators indicate this is an expression
+                    .plus, .minus, .star, .slash, .percent,
+                    .eq_eq, .not_eq, .lt, .lt_eq, .gt, .gt_eq,
+                    .and_, .or_,
+                    // These also indicate expression continuation
+                    .dot, .l_paren,
+                    => return .{ .expr_arg = try self.parseExpression() },
+                    // For comma/rparen, default to trying as type first
+                    // This handles @typeInfo(UserType) correctly
+                    // For [ after identifier, try as type first for generic types
+                    else => {},
+                }
+            }
+        }
+
+        // For non-identifier tokens that could start a type, try type first
         const could_be_type = switch (self.current.kind) {
-            .identifier, .self_type => true,
+            .identifier => true, // Identifiers (including primitives and user types)
+            .self_type => true,
             .l_bracket, .question => true,
             .fn_ => true,
             else => false,
         };
 
         if (could_be_type) {
-            // Save position to backtrack if needed
-            // For now, just try to parse as type - this may need improvement
-            // to handle ambiguous cases
+            // Try to parse as type
             const type_expr = self.parseType() catch {
                 // If type parsing fails, try as expression
                 return .{ .expr_arg = try self.parseExpression() };

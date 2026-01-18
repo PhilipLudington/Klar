@@ -1628,6 +1628,27 @@ pub const Interpreter = struct {
         } else if (std.mem.eql(u8, builtin.name, "hasField")) {
             return self.evalBuiltinHasField(builtin);
         } else {
+            // Check if this is a call to a user-defined comptime function
+            // (registered in the environment by the checker's registerComptimeFunctionsInInterpreter)
+            if (self.global_env.get(builtin.name)) |func_val| {
+                if (func_val == .function) {
+                    // Evaluate arguments
+                    var args = std.ArrayListUnmanaged(Value){};
+                    defer args.deinit(self.allocator);
+
+                    for (builtin.args) |arg| {
+                        const arg_expr = switch (arg) {
+                            .expr_arg => |e| e,
+                            .type_arg => return RuntimeError.InvalidOperation,
+                        };
+                        const arg_value = try self.evaluate(arg_expr);
+                        args.append(self.allocator, arg_value) catch return RuntimeError.OutOfMemory;
+                    }
+
+                    // Call the function
+                    return self.callFunction(func_val.function, args.items);
+                }
+            }
             return RuntimeError.InvalidOperation;
         }
     }

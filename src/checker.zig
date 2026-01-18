@@ -298,6 +298,22 @@ pub const TypeChecker = struct {
     /// This allows comptime blocks and expressions to reference outer scope constants.
     constant_values: std.StringHashMapUnmanaged(ComptimeValue),
 
+    /// Shared interpreter for comptime function evaluation.
+    /// This allows recursive comptime function calls to share state.
+    /// Owned by the outermost comptime call (set to null between top-level evaluations).
+    comptime_interpreter: ?*Interpreter,
+
+    /// Recursion depth for comptime function calls (prevents infinite recursion).
+    comptime_depth: u32,
+
+    /// True when we are inside a comptime function body during type checking.
+    /// When true, calls to comptime functions within the body should be type-checked
+    /// but not evaluated (the interpreter handles evaluation).
+    checking_comptime_function_body: bool,
+
+    /// Maximum recursion depth for comptime functions.
+    const max_comptime_depth: u32 = 1000;
+
     /// Represents a compile-time evaluated value.
     pub const ComptimeValue = union(enum) {
         /// Integer with type info preserved
@@ -500,6 +516,9 @@ pub const TypeChecker = struct {
             .comptime_call_values = .{},
             .comptime_builtin_values = .{},
             .constant_values = .{},
+            .comptime_interpreter = null,
+            .comptime_depth = 0,
+            .checking_comptime_function_body = false,
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -4044,7 +4063,14 @@ pub const TypeChecker = struct {
 
     /// Evaluate a call to a comptime function at compile time.
     /// Returns the computed ComptimeValue, or null if evaluation fails.
+    /// Supports recursive comptime function calls by sharing the interpreter.
     fn evaluateComptimeCall(self: *TypeChecker, call: *ast.Call, func_decl: *ast.FunctionDecl) ?ComptimeValue {
+        // Check recursion depth limit
+        if (self.comptime_depth >= max_comptime_depth) {
+            self.addError(.comptime_error, call.span, "comptime recursion depth limit exceeded (max {d})", .{max_comptime_depth});
+            return null;
+        }
+
         // First, check that all arguments are compile-time known
         var arg_values = std.ArrayListUnmanaged(Value){};
         defer arg_values.deinit(self.allocator);
@@ -4060,27 +4086,74 @@ pub const TypeChecker = struct {
             };
         }
 
-        // Create interpreter and set up the function call environment
-        var interp = Interpreter.init(self.allocator) catch {
-            self.addError(.comptime_error, call.span, "failed to create interpreter for comptime function", .{});
-            return null;
-        };
-        defer interp.deinit();
-
-        // Bind parameters to argument values
-        for (func_decl.params, arg_values.items) |param, arg_val| {
-            interp.global_env.define(param.name, arg_val, false) catch {
-                self.addError(.comptime_error, call.span, "failed to bind comptime function parameter", .{});
+        // Check if we need to create a new interpreter (outermost call)
+        const is_outermost = self.comptime_interpreter == null;
+        if (is_outermost) {
+            // Create the shared interpreter
+            const interp = self.allocator.create(Interpreter) catch {
+                self.addError(.comptime_error, call.span, "failed to allocate interpreter for comptime function", .{});
                 return null;
             };
+            interp.* = Interpreter.init(self.allocator) catch {
+                self.allocator.destroy(interp);
+                self.addError(.comptime_error, call.span, "failed to create interpreter for comptime function", .{});
+                return null;
+            };
+            self.comptime_interpreter = interp;
+
+            // Populate with constants from outer scope
+            self.populateInterpreterEnv(interp);
+
+            // Register all comptime functions in the interpreter
+            self.registerComptimeFunctionsInInterpreter(interp);
         }
 
-        // Evaluate function body
+        const interp = self.comptime_interpreter.?;
+
+        // Track recursion depth
+        self.comptime_depth += 1;
+        defer self.comptime_depth -= 1;
+
+        // Cleanup interpreter when outermost call completes
+        defer if (is_outermost) {
+            interp.deinit();
+            self.allocator.destroy(interp);
+            self.comptime_interpreter = null;
+        };
+
+        // Get the function body
         const body = func_decl.body orelse {
             self.addError(.comptime_error, call.span, "comptime function must have a body", .{});
             return null;
         };
 
+        // Create a new environment for this function call (for proper parameter scoping)
+        const old_env = interp.current_env;
+        const func_env = self.allocator.create(values.Environment) catch {
+            self.addError(.comptime_error, call.span, "failed to create function environment", .{});
+            return null;
+        };
+        func_env.* = values.Environment.init(self.allocator, interp.global_env);
+        interp.current_env = func_env;
+
+        defer {
+            interp.current_env = old_env;
+            func_env.deinit();
+            self.allocator.destroy(func_env);
+        }
+
+        // Bind parameters to argument values in the function environment
+        for (func_decl.params, arg_values.items) |param, arg_val| {
+            interp.current_env.define(param.name, arg_val, false) catch {
+                self.addError(.comptime_error, call.span, "failed to bind comptime function parameter", .{});
+                return null;
+            };
+        }
+
+        // Clear return value from any previous call
+        interp.return_value = null;
+
+        // Evaluate function body
         const block_result = interp.evalBlock(body) catch |err| {
             // Convert interpreter errors to compile errors
             if (err == error.RuntimeError) {
@@ -4096,8 +4169,168 @@ pub const TypeChecker = struct {
         // If there's a return_value, use that; otherwise use the block result
         const result = if (interp.return_value) |rv| rv else block_result;
 
+        // Clear the return value so it doesn't affect other calls
+        interp.return_value = null;
+
         // Convert interpreter Value to ComptimeValue
         return self.valueToComptimeValue(result, call.span);
+    }
+
+    /// Register all comptime functions in the interpreter's environment.
+    /// This enables recursive calls by making functions available for lookup.
+    fn registerComptimeFunctionsInInterpreter(self: *TypeChecker, interp: *Interpreter) void {
+        var iter = self.comptime_functions.iterator();
+        while (iter.next()) |entry| {
+            const func_name = entry.key_ptr.*;
+            const func_decl = entry.value_ptr.*;
+
+            if (func_decl.body) |body| {
+                // Create a FunctionValue for this comptime function
+                const func_val = self.allocator.create(values.FunctionValue) catch continue;
+
+                // Convert params
+                var params = std.ArrayListUnmanaged(values.FunctionValue.FunctionParam){};
+                for (func_decl.params) |param| {
+                    params.append(self.allocator, .{ .name = param.name }) catch continue;
+                }
+
+                const params_slice = params.toOwnedSlice(self.allocator) catch continue;
+
+                func_val.* = .{
+                    .name = func_name,
+                    .params = params_slice,
+                    .body = body,
+                    .closure_env = interp.global_env,
+                };
+
+                // Track for cleanup
+                interp.allocated_functions.append(self.allocator, func_val) catch continue;
+
+                // Register in global environment
+                interp.global_env.define(func_name, .{ .function = func_val }, false) catch continue;
+            }
+        }
+    }
+
+    /// Evaluate a comptime function call via @name(...) builtin syntax.
+    /// Similar to evaluateComptimeCall but handles BuiltinCall arguments.
+    fn evaluateComptimeCallBuiltin(self: *TypeChecker, bc: *ast.BuiltinCall, func_decl: *ast.FunctionDecl) ?ComptimeValue {
+        // Check recursion depth limit
+        if (self.comptime_depth >= max_comptime_depth) {
+            self.addError(.comptime_error, bc.span, "comptime recursion depth limit exceeded (max {d})", .{max_comptime_depth});
+            return null;
+        }
+
+        // First, check that all arguments are compile-time known
+        var arg_values = std.ArrayListUnmanaged(Value){};
+        defer arg_values.deinit(self.allocator);
+
+        for (bc.args) |arg| {
+            const arg_expr = switch (arg) {
+                .expr_arg => |e| e,
+                .type_arg => {
+                    self.addError(.comptime_error, bc.span, "type arguments not supported in comptime function calls", .{});
+                    return null;
+                },
+            };
+            // Try to evaluate the argument at compile time
+            const arg_value = self.evaluateComptimeExpr(arg_expr) orelse {
+                self.addError(.comptime_error, arg_expr.span(), "argument to comptime function must be comptime-known", .{});
+                return null;
+            };
+            arg_values.append(self.allocator, arg_value) catch {
+                return null;
+            };
+        }
+
+        // Check if we need to create a new interpreter (outermost call)
+        const is_outermost = self.comptime_interpreter == null;
+        if (is_outermost) {
+            // Create the shared interpreter
+            const interp = self.allocator.create(Interpreter) catch {
+                self.addError(.comptime_error, bc.span, "failed to allocate interpreter for comptime function", .{});
+                return null;
+            };
+            interp.* = Interpreter.init(self.allocator) catch {
+                self.allocator.destroy(interp);
+                self.addError(.comptime_error, bc.span, "failed to create interpreter for comptime function", .{});
+                return null;
+            };
+            self.comptime_interpreter = interp;
+
+            // Populate with constants from outer scope
+            self.populateInterpreterEnv(interp);
+
+            // Register all comptime functions in the interpreter
+            self.registerComptimeFunctionsInInterpreter(interp);
+        }
+
+        const interp = self.comptime_interpreter.?;
+
+        // Track recursion depth
+        self.comptime_depth += 1;
+        defer self.comptime_depth -= 1;
+
+        // Cleanup interpreter when outermost call completes
+        defer if (is_outermost) {
+            interp.deinit();
+            self.allocator.destroy(interp);
+            self.comptime_interpreter = null;
+        };
+
+        // Get the function body
+        const body = func_decl.body orelse {
+            self.addError(.comptime_error, bc.span, "comptime function must have a body", .{});
+            return null;
+        };
+
+        // Create a new environment for this function call (for proper parameter scoping)
+        const old_env = interp.current_env;
+        const func_env = self.allocator.create(values.Environment) catch {
+            self.addError(.comptime_error, bc.span, "failed to create function environment", .{});
+            return null;
+        };
+        func_env.* = values.Environment.init(self.allocator, interp.global_env);
+        interp.current_env = func_env;
+
+        defer {
+            interp.current_env = old_env;
+            func_env.deinit();
+            self.allocator.destroy(func_env);
+        }
+
+        // Bind parameters to argument values in the function environment
+        for (func_decl.params, arg_values.items) |param, arg_val| {
+            interp.current_env.define(param.name, arg_val, false) catch {
+                self.addError(.comptime_error, bc.span, "failed to bind comptime function parameter", .{});
+                return null;
+            };
+        }
+
+        // Clear return value from any previous call
+        interp.return_value = null;
+
+        // Evaluate function body
+        const block_result = interp.evalBlock(body) catch |err| {
+            // Convert interpreter errors to compile errors
+            if (err == error.RuntimeError) {
+                self.addError(.comptime_error, bc.span, "comptime function evaluation failed", .{});
+            } else if (err == error.ComptimeError) {
+                // @compileError was called
+                // Error message already written to stdout by interpreter
+            }
+            return null;
+        };
+
+        // Check for return value (set when return statement was executed)
+        // If there's a return_value, use that; otherwise use the block result
+        const result = if (interp.return_value) |rv| rv else block_result;
+
+        // Clear the return value so it doesn't affect other calls
+        interp.return_value = null;
+
+        // Convert interpreter Value to ComptimeValue
+        return self.valueToComptimeValue(result, bc.span);
     }
 
     /// Evaluate an expression at compile time to get an interpreter Value.
@@ -4154,32 +4387,11 @@ pub const TypeChecker = struct {
             .builtin_call => |bc| {
                 // Check if this is a comptime function call via @name(...) syntax
                 if (self.comptime_functions.get(bc.name)) |comptime_func| {
-                    // Evaluate all arguments at compile time
-                    var arg_values = std.ArrayListUnmanaged(Value){};
-                    defer arg_values.deinit(self.allocator);
-
-                    for (bc.args) |arg| {
-                        const arg_expr = switch (arg) {
-                            .expr_arg => |e| e,
-                            .type_arg => return null, // Type args not supported
-                        };
-                        const arg_value = self.evaluateComptimeExpr(arg_expr) orelse return null;
-                        arg_values.append(self.allocator, arg_value) catch return null;
+                    // Delegate to evaluateComptimeCallBuiltin which uses the shared interpreter
+                    const result = self.evaluateComptimeCallBuiltin(bc, comptime_func);
+                    if (result) |cv| {
+                        return self.comptimeValueToInterpreterValue(cv);
                     }
-
-                    // Create interpreter and evaluate
-                    var interp = Interpreter.init(self.allocator) catch return null;
-                    defer interp.deinit();
-
-                    for (comptime_func.params, arg_values.items) |param, arg_val| {
-                        interp.global_env.define(param.name, arg_val, false) catch return null;
-                    }
-
-                    const body = comptime_func.body orelse return null;
-                    const block_result = interp.evalBlock(body) catch return null;
-                    const result = if (interp.return_value) |rv| rv else block_result;
-
-                    return result;
                 }
                 return null;
             },
@@ -4327,13 +4539,37 @@ pub const TypeChecker = struct {
 
     /// Handle a user-defined comptime function call using @name(...) syntax
     fn checkComptimeFunctionCallFromBuiltin(self: *TypeChecker, builtin: *ast.BuiltinCall, func_decl: *ast.FunctionDecl) Type {
+
         // Check argument count
         if (builtin.args.len != func_decl.params.len) {
             self.addError(.wrong_number_of_args, builtin.span, "@{s} expects {d} argument(s), got {d}", .{ builtin.name, func_decl.params.len, builtin.args.len });
             return self.type_builder.unknownType();
         }
 
-        // Evaluate all arguments at compile time
+        // If we're inside a comptime function body, just type-check arguments
+        // without trying to evaluate them. The interpreter will handle evaluation.
+        if (self.checking_comptime_function_body) {
+            // Type-check arguments against parameter types
+            for (builtin.args, 0..) |arg, i| {
+                const expr = switch (arg) {
+                    .expr_arg => |e| e,
+                    .type_arg => {
+                        self.addError(.type_mismatch, builtin.span, "comptime function expects expression arguments, not types", .{});
+                        return self.type_builder.unknownType();
+                    },
+                };
+
+                const arg_type = self.checkExpr(expr);
+                const param_type = self.resolveTypeExpr(func_decl.params[i].type_) catch self.type_builder.unknownType();
+                if (!self.isTypeCompatible(arg_type, param_type)) {
+                    self.addError(.type_mismatch, expr.span(), "argument type mismatch", .{});
+                }
+            }
+            // Return the function's return type without evaluating
+            return self.checkFunctionDeclReturnType(func_decl);
+        }
+
+        // Normal path: evaluate at compile time
         var arg_values = std.ArrayListUnmanaged(Value){};
         defer arg_values.deinit(self.allocator);
 
@@ -4355,45 +4591,12 @@ pub const TypeChecker = struct {
             };
         }
 
-        // Create interpreter and set up the function call environment
-        var interp = Interpreter.init(self.allocator) catch {
-            self.addError(.comptime_error, builtin.span, "failed to create interpreter for comptime function", .{});
-            return self.type_builder.unknownType();
-        };
-        defer interp.deinit();
-
-        // Bind parameters to argument values
-        for (func_decl.params, arg_values.items) |param, arg_val| {
-            interp.global_env.define(param.name, arg_val, false) catch {
-                self.addError(.comptime_error, builtin.span, "failed to bind comptime function parameter", .{});
-                return self.type_builder.unknownType();
-            };
-        }
-
-        // Evaluate function body
-        const body = func_decl.body orelse {
-            self.addError(.comptime_error, builtin.span, "comptime function must have a body", .{});
+        // Use the shared interpreter approach from evaluateComptimeCallBuiltin
+        const comptime_value = self.evaluateComptimeCallBuiltin(builtin, func_decl) orelse {
             return self.type_builder.unknownType();
         };
 
-        const block_result = interp.evalBlock(body) catch |err| {
-            if (err == error.RuntimeError) {
-                self.addError(.comptime_error, builtin.span, "comptime function evaluation failed", .{});
-            }
-            return self.type_builder.unknownType();
-        };
-
-        // Check for return value
-        const result = if (interp.return_value) |rv| rv else block_result;
-
-        // Convert interpreter Value to ComptimeValue and store it
-        const comptime_value = self.valueToComptimeValue(result, builtin.span) orelse {
-            self.addError(.comptime_error, builtin.span, "comptime function returned non-primitive value", .{});
-            return self.type_builder.unknownType();
-        };
-
-        // Store the result for codegen - we need a way to map builtin calls to comptime values
-        // Use the comptime_call_results map with a unique key
+        // Store the result for codegen
         self.comptime_builtin_values.put(self.allocator, builtin, comptime_value) catch {};
 
         // Return the function's return type
@@ -5131,6 +5334,14 @@ pub const TypeChecker = struct {
 
             self.current_return_type = return_type;
             defer self.current_return_type = null;
+
+            // For comptime functions, set the flag so nested comptime calls
+            // are type-checked but not evaluated during this phase
+            const was_checking_comptime_body = self.checking_comptime_function_body;
+            if (func.is_comptime) {
+                self.checking_comptime_function_body = true;
+            }
+            defer self.checking_comptime_function_body = was_checking_comptime_body;
 
             _ = self.checkBlock(body);
         }
@@ -6517,6 +6728,14 @@ pub const TypeChecker = struct {
                         else
                             self.type_builder.voidType();
                         defer self.current_return_type = null;
+
+                        // For comptime functions, set the flag so nested comptime calls
+                        // are type-checked but not evaluated during this phase
+                        const was_checking_comptime_body = self.checking_comptime_function_body;
+                        if (f.is_comptime) {
+                            self.checking_comptime_function_body = true;
+                        }
+                        defer self.checking_comptime_function_body = was_checking_comptime_body;
 
                         _ = self.checkBlock(body);
                     }

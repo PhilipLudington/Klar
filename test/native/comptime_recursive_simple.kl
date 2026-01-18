@@ -1,0 +1,15 @@
+// Simple test for recursive comptime function
+
+fn @countdown(n: i32) -> i32 {
+    if n <= 0 {
+        return 0
+    }
+    return @countdown(n - 1)
+}
+
+fn main() {
+    let x: i32 = @countdown(3)
+    // countdown(3) -> countdown(2) -> countdown(1) -> countdown(0) -> 0
+    // x should be 0, use dbg to verify
+    let _: i32 = dbg(x)
+}
