@@ -9,6 +9,16 @@
       "name": "Native Tests",
       "resultsFile": ".native-test-results.json",
       "command": "./run-native-tests.sh"
+    },
+    {
+      "name": "Module Tests",
+      "resultsFile": ".module-test-results.json",
+      "command": "./run-module-tests.sh"
+    },
+    {
+      "name": "App Tests",
+      "resultsFile": ".app-test-results.json",
+      "command": "./run-app-tests.sh"
     }
   ],
   "builds": [

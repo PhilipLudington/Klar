@@ -1,5 +1,8 @@
 #!/bin/bash
-# Test reference apps compile and run correctly
+# GitStat test wrapper for Klar reference app tests
+# Tests examples/apps/*.kl compile and run correctly
+
+RESULTS_FILE=".app-test-results.json"
 
 set -e
 
@@ -46,6 +49,17 @@ VM_ONLY_APPS=(
 
 passed=0
 failed=0
+FAILURES=""
+
+# Helper to record a failure
+record_failure() {
+    local name="$1"
+    local msg="$2"
+    if [ -n "$FAILURES" ]; then
+        FAILURES="$FAILURES,"
+    fi
+    FAILURES="$FAILURES\"$name: $msg\""
+}
 
 echo "Testing reference apps..."
 echo ""
@@ -64,10 +78,12 @@ for app in "${NATIVE_APPS[@]}"; do
         else
             echo "FAILED (no output)"
             ((failed++))
+            record_failure "$app" "no output"
         fi
     else
         echo "FAILED (compile error)"
         ((failed++))
+        record_failure "$app" "compile error"
     fi
 
     rm -f "$temp_bin"
@@ -83,8 +99,21 @@ for app in "${VM_ONLY_APPS[@]}"; do
     else
         echo "FAILED"
         ((failed++))
+        record_failure "$app" "VM execution failed"
     fi
 done
+
+total=$((passed + failed))
+
+# Write results JSON
+cat > "$RESULTS_FILE" << EOF
+{
+  "passed": $passed,
+  "failed": $failed,
+  "total": $total,
+  "failures": [$FAILURES]
+}
+EOF
 
 echo ""
 echo "Results: $passed passed, $failed failed"
