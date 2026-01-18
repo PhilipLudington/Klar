@@ -15,3 +15,6 @@ zig-out/
 
 # LLVM IR output (when debugging)
 *.ll
+
+# Scratch/temporary test files
+scratch/
