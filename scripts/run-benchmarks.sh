@@ -5,16 +5,16 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$SCRIPT_DIR"
 
 # Ensure compiler is built
 echo "Building Klar compiler..."
 ./build.sh > /dev/null 2>&1
 
-KLAR="./zig-out/bin/klar"
-BENCHMARK_DIR="benchmarks"
-RESULTS_FILE=".benchmark-results.json"
+KLAR="$SCRIPT_DIR/zig-out/bin/klar"
+BENCHMARK_DIR="$SCRIPT_DIR/benchmarks"
+RESULTS_FILE="$SCRIPT_DIR/.benchmark-results.json"
 TMP_DIR="/tmp/klar_benchmarks"
 
 mkdir -p "$TMP_DIR"

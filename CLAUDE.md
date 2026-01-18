@@ -20,10 +20,15 @@ Klar targets application-level programming (like C#/Go), not bare-metal systems 
 # Build the compiler (ALWAYS use wrapper script)
 ./build.sh
 
-# Run tests (ALWAYS use wrapper scripts for GitStat integration)
-./run-tests.sh           # Zig unit tests
-./run-native-tests.sh    # Native compilation tests (test/native/)
-./run-benchmarks.sh      # VM vs native benchmarks
+# Run ALL tests (ALWAYS use this for GitStat integration)
+./run-tests.sh           # Runs all test suites (unit, native, app, module)
+
+# Run individual test suites (in scripts/ directory)
+./scripts/run-unit-tests.sh     # Zig unit tests
+./scripts/run-native-tests.sh   # Native compilation tests (test/native/)
+./scripts/run-app-tests.sh      # Reference application tests
+./scripts/run-module-tests.sh   # Module system tests
+./scripts/run-benchmarks.sh     # VM vs native benchmarks (not included in run-tests.sh)
 
 # DO NOT run `zig build` or `zig build test` directly
 ```

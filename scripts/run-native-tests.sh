@@ -2,13 +2,15 @@
 # GitStat test wrapper for Klar native compilation tests
 # Compiles and runs test/native/*.kl files
 
-RESULTS_FILE=".native-test-results.json"
-KLAR="./zig-out/bin/klar"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESULTS_FILE="$SCRIPT_DIR/.native-test-results.json"
+KLAR="$SCRIPT_DIR/zig-out/bin/klar"
+TEST_DIR="$SCRIPT_DIR/test/native"
 
 # Ensure compiler is built
 if [ ! -f "$KLAR" ]; then
     echo "Building Klar compiler first..."
-    zig build || exit 1
+    cd "$SCRIPT_DIR" && zig build || exit 1
 fi
 
 PASSED=0
@@ -38,7 +40,7 @@ get_expected() {
 }
 
 # Run each test
-for f in test/native/*.kl; do
+for f in "$TEST_DIR"/*.kl; do
     [ -f "$f" ] || continue
 
     name=$(basename "$f" .kl)

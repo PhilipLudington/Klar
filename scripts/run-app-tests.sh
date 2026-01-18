@@ -2,11 +2,10 @@
 # GitStat test wrapper for Klar reference app tests
 # Tests examples/apps/*.kl compile and run correctly
 
-RESULTS_FILE=".app-test-results.json"
-
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESULTS_FILE="$SCRIPT_DIR/.app-test-results.json"
 KLAR="$SCRIPT_DIR/zig-out/bin/klar"
 APPS_DIR="$SCRIPT_DIR/examples/apps"
 

@@ -2,13 +2,15 @@
 # GitStat test wrapper for Klar module/multi-file compilation tests
 # Tests import resolution, visibility, circular detection, etc.
 
-RESULTS_FILE=".module-test-results.json"
-KLAR="./zig-out/bin/klar"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESULTS_FILE="$SCRIPT_DIR/.module-test-results.json"
+KLAR="$SCRIPT_DIR/zig-out/bin/klar"
+TEST_DIR="$SCRIPT_DIR/test/module"
 
 # Ensure compiler is built
 if [ ! -f "$KLAR" ]; then
     echo "Building Klar compiler first..."
-    zig build || exit 1
+    cd "$SCRIPT_DIR" && zig build || exit 1
 fi
 
 PASSED=0
@@ -38,7 +40,7 @@ echo ""
 # Test 1: Basic multi-file import
 echo "--- basic: Multi-file import ---"
 temp_bin="/tmp/klar_module_basic"
-if $KLAR build test/module/basic/main.kl -o "$temp_bin" 2>/dev/null; then
+if $KLAR build $TEST_DIR/basic/main.kl -o "$temp_bin" 2>/dev/null; then
     result=$("$temp_bin" 2>/dev/null; echo $?)
     # greet() returns 42, add(10, 20) returns 30, total = 72
     if [ "$result" = "72" ]; then
@@ -57,7 +59,7 @@ fi
 # Test 2: Nested module paths
 echo "--- nested: Nested module paths ---"
 temp_bin="/tmp/klar_module_nested"
-if $KLAR build test/module/nested/main.kl -o "$temp_bin" 2>/dev/null; then
+if $KLAR build $TEST_DIR/nested/main.kl -o "$temp_bin" 2>/dev/null; then
     result=$("$temp_bin" 2>/dev/null; echo $?)
     # add(5, 3) = 8, multiply(4, 2) = 8, total = 16
     if [ "$result" = "16" ]; then
@@ -76,7 +78,7 @@ fi
 # Test 3: Visibility enforcement (should FAIL to compile)
 echo "--- visibility: Private symbol import rejected ---"
 temp_bin="/tmp/klar_module_visibility"
-error_output=$($KLAR build test/module/visibility/main.kl -o "$temp_bin" 2>&1)
+error_output=$($KLAR build $TEST_DIR/visibility/main.kl -o "$temp_bin" 2>&1)
 # Check if output contains error (compiler may return 0 even with errors)
 if echo "$error_output" | grep -q "not found\|not exported\|private\|error"; then
     if echo "$error_output" | grep -q "private_fn.*not found\|symbol.*not found"; then
@@ -96,8 +98,8 @@ fi
 # Test 4: Circular import detection (should FAIL to compile)
 echo "--- circular: Circular import detected ---"
 temp_bin="/tmp/klar_module_circular"
-if [ -d "test/module/circular" ]; then
-    error_output=$($KLAR build test/module/circular/main.kl -o "$temp_bin" 2>&1)
+if [ -d "$TEST_DIR/circular" ]; then
+    error_output=$($KLAR build $TEST_DIR/circular/main.kl -o "$temp_bin" 2>&1)
     # Check output for circular detection
     if echo "$error_output" | grep -qi "circular"; then
         echo "✓ circular (correctly detected circular import)"
@@ -115,8 +117,8 @@ fi
 # Test 5: Glob imports
 echo "--- glob: Glob import (.*) ---"
 temp_bin="/tmp/klar_module_glob"
-if [ -d "test/module/glob" ]; then
-    if $KLAR build test/module/glob/main.kl -o "$temp_bin" 2>/dev/null; then
+if [ -d "$TEST_DIR/glob" ]; then
+    if $KLAR build $TEST_DIR/glob/main.kl -o "$temp_bin" 2>/dev/null; then
         result=$("$temp_bin" 2>/dev/null; echo $?)
         if [ "$result" = "42" ]; then
             echo "✓ glob (exit: $result)"
@@ -137,8 +139,8 @@ fi
 # Test 6: Aliased imports
 echo "--- alias: Aliased import (as) ---"
 temp_bin="/tmp/klar_module_alias"
-if [ -d "test/module/alias" ]; then
-    if $KLAR build test/module/alias/main.kl -o "$temp_bin" 2>/dev/null; then
+if [ -d "$TEST_DIR/alias" ]; then
+    if $KLAR build $TEST_DIR/alias/main.kl -o "$temp_bin" 2>/dev/null; then
         "$temp_bin" >/dev/null 2>&1
         result=$?
         if [ "$result" = "42" ]; then

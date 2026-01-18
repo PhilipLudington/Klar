@@ -1,56 +1,94 @@
 #!/bin/bash
-# GitStat test wrapper for Klar unit tests
-# Runs zig build test and writes results to .test-results.json
+# Master test runner - runs all test suites
+# Individual test scripts are in scripts/
 
-RESULTS_FILE=".test-results.json"
+set -e
 
-# Run tests and capture output
-TEST_OUTPUT=$(zig build test 2>&1) || TEST_EXIT=$?
-TEST_EXIT=${TEST_EXIT:-0}
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
 
-# Parse test results from Zig output
-# Zig test output format: "X passed, Y skipped, Z failed"
-if echo "$TEST_OUTPUT" | grep -q "passed"; then
-    PASSED=$(echo "$TEST_OUTPUT" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' || echo "0")
-    FAILED=$(echo "$TEST_OUTPUT" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' || echo "0")
-    SKIPPED=$(echo "$TEST_OUTPUT" | grep -oE '[0-9]+ skipped' | grep -oE '[0-9]+' || echo "0")
-else
-    # If no "passed" in output, tests likely all passed silently
-    if [ $TEST_EXIT -eq 0 ]; then
-        # Count test declarations in source files as approximation
-        PASSED=$(grep -r "^test " src/ --include="*.zig" 2>/dev/null | wc -l | tr -d ' ')
-        FAILED=0
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Track overall results
+TOTAL_PASSED=0
+TOTAL_FAILED=0
+FAILED_SUITES=""
+
+run_suite() {
+    local name="$1"
+    local script="$2"
+
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo -e "${YELLOW}Running: $name${NC}"
+    echo "═══════════════════════════════════════════════════════════"
+
+    if "$script"; then
+        echo -e "${GREEN}✓ $name passed${NC}"
+        return 0
     else
-        PASSED=0
-        FAILED=1
+        echo -e "${RED}✗ $name failed${NC}"
+        FAILED_SUITES="$FAILED_SUITES $name"
+        return 1
     fi
-fi
-
-TOTAL=$((PASSED + FAILED))
-
-# Extract failure messages
-FAILURES=""
-if [ $FAILED -gt 0 ]; then
-    FAILURES=$(echo "$TEST_OUTPUT" | grep -A2 "FAIL" | head -20 | \
-        sed 's/"/\\"/g' | \
-        awk '{printf "%s\"%s\"", (NR>1?",":""), $0}')
-fi
-
-# Write results JSON
-cat > "$RESULTS_FILE" << EOF
-{
-  "passed": $PASSED,
-  "failed": $FAILED,
-  "total": $TOTAL,
-  "failures": [$FAILURES]
 }
-EOF
 
-# Print summary
-if [ $FAILED -eq 0 ]; then
-    echo "All $PASSED tests passed"
+# Build first
+echo "═══════════════════════════════════════════════════════════"
+echo -e "${YELLOW}Building compiler...${NC}"
+echo "═══════════════════════════════════════════════════════════"
+if ! ./build.sh; then
+    echo -e "${RED}Build failed - aborting tests${NC}"
+    exit 1
+fi
+
+# Run all test suites
+run_suite "Unit Tests" "./scripts/run-unit-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
+run_suite "Native Tests" "./scripts/run-native-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
+run_suite "App Tests" "./scripts/run-app-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
+run_suite "Module Tests" "./scripts/run-module-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
+
+# Summary
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo "SUMMARY"
+echo "═══════════════════════════════════════════════════════════"
+
+# Read results from JSON files
+read_json_field() {
+    local file="$1"
+    local field="$2"
+    grep -o "\"$field\": *[0-9]*" "$file" 2>/dev/null | grep -o '[0-9]*' || echo "0"
+}
+
+UNIT_PASSED=$(read_json_field .test-results.json passed)
+UNIT_FAILED=$(read_json_field .test-results.json failed)
+NATIVE_PASSED=$(read_json_field .native-test-results.json passed)
+NATIVE_FAILED=$(read_json_field .native-test-results.json failed)
+APP_PASSED=$(read_json_field .app-test-results.json passed)
+APP_FAILED=$(read_json_field .app-test-results.json failed)
+MODULE_PASSED=$(read_json_field .module-test-results.json passed)
+MODULE_FAILED=$(read_json_field .module-test-results.json failed)
+
+TOTAL_PASSED=$((UNIT_PASSED + NATIVE_PASSED + APP_PASSED + MODULE_PASSED))
+TOTAL_FAILED=$((UNIT_FAILED + NATIVE_FAILED + APP_FAILED + MODULE_FAILED))
+
+printf "  %-15s %3d passed, %d failed\n" "Unit Tests:" "$UNIT_PASSED" "$UNIT_FAILED"
+printf "  %-15s %3d passed, %d failed\n" "Native Tests:" "$NATIVE_PASSED" "$NATIVE_FAILED"
+printf "  %-15s %3d passed, %d failed\n" "App Tests:" "$APP_PASSED" "$APP_FAILED"
+printf "  %-15s %3d passed, %d failed\n" "Module Tests:" "$MODULE_PASSED" "$MODULE_FAILED"
+echo "───────────────────────────────────────────────────────────"
+printf "  %-15s %3d passed, %d failed\n" "TOTAL:" "$TOTAL_PASSED" "$TOTAL_FAILED"
+echo ""
+
+if [ $TOTAL_FAILED -eq 0 ]; then
+    echo -e "${GREEN}All tests passed!${NC}"
+    exit 0
 else
-    echo "$FAILED/$TOTAL tests failed"
-    echo "$TEST_OUTPUT"
+    echo -e "${RED}Some tests failed:$FAILED_SUITES${NC}"
     exit 1
 fi
