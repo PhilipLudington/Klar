@@ -1,0 +1,10 @@
+// Test string.ends_with() method
+fn main() -> i32 {
+    let s: string = "hello world"
+    assert(s.ends_with("world"))
+    assert(s.ends_with("d"))
+    assert(s.ends_with("hello world"))
+    assert(not s.ends_with("hello"))
+    assert(not s.ends_with("WORLD"))
+    return 0
+}

@@ -1,0 +1,16 @@
+// Test string.trim() method
+fn main() -> i32 {
+    let s: string = "  hello  "
+    let trimmed: string = s.trim()
+    assert_eq(trimmed.len(), 5)
+
+    let no_ws: string = "hello"
+    let same: string = no_ws.trim()
+    assert_eq(same.len(), 5)
+
+    let only_ws: string = "   "
+    let empty: string = only_ws.trim()
+    assert_eq(empty.len(), 0)
+
+    return 0
+}

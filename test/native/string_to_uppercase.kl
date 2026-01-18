@@ -1,0 +1,13 @@
+// Test string.to_uppercase() method
+fn main() -> i32 {
+    let s: string = "hello"
+    let upper: string = s.to_uppercase()
+    assert(upper.starts_with("HELLO"))
+    assert_eq(upper.len(), 5)
+
+    let mixed: string = "Hello World"
+    let upper2: string = mixed.to_uppercase()
+    assert(upper2.starts_with("HELLO WORLD"))
+
+    return 0
+}

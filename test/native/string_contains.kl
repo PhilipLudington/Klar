@@ -1,0 +1,10 @@
+// Test string.contains() method
+fn main() -> i32 {
+    let s: string = "hello world"
+    assert(s.contains("world"))
+    assert(s.contains("hello"))
+    assert(s.contains("o w"))
+    assert(not s.contains("xyz"))
+    assert(not s.contains("WORLD"))
+    return 0
+}

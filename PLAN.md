@@ -819,6 +819,13 @@ These are valuable but not required for Phase 4 completion:
 - [ ] Add history persistence across sessions
 - [ ] Add multi-line input support for function/struct definitions
 
+### Windows Support
+- [ ] Add Windows target triple detection in native codegen
+- [ ] Handle Windows-specific stderr access (UCRT `__acrt_iob_func`)
+- [ ] Handle Windows-specific stdout access
+- [ ] Test libc function linking on Windows (MSVCRT/UCRT)
+- [ ] Add Windows CI testing
+
 ---
 
 ## Implementation Order

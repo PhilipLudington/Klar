@@ -1,0 +1,15 @@
+// Test string.len() method
+fn main() -> i32 {
+    let s: string = "hello"
+    let len: i32 = s.len()
+    assert_eq(len, 5)
+
+    let empty: string = ""
+    let empty_len: i32 = empty.len()
+    assert_eq(empty_len, 0)
+
+    let longer: string = "hello world!"
+    let longer_len: i32 = longer.len()
+    assert_eq(longer_len, 12)
+    return 0
+}

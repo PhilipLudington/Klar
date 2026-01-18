@@ -1,0 +1,9 @@
+// Test string.is_empty() method
+fn main() -> i32 {
+    let empty: string = ""
+    assert(empty.is_empty())
+
+    let nonempty: string = "hello"
+    assert(not nonempty.is_empty())
+    return 0
+}

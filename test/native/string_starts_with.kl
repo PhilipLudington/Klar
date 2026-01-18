@@ -1,0 +1,10 @@
+// Test string.starts_with() method
+fn main() -> i32 {
+    let s: string = "hello world"
+    assert(s.starts_with("hello"))
+    assert(s.starts_with("h"))
+    assert(s.starts_with("hello world"))
+    assert(not s.starts_with("world"))
+    assert(not s.starts_with("HELLO"))
+    return 0
+}

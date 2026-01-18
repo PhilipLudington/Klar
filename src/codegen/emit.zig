@@ -114,6 +114,8 @@ pub const Emitter = struct {
         closure_return_type: ?llvm.TypeRef = null,
         /// For closure variables, the parameter types of the closure function.
         closure_param_types: ?[]const llvm.TypeRef = null,
+        /// True if this is a string type.
+        is_string: bool = false,
     };
 
     const LoopContext = struct {
@@ -744,6 +746,8 @@ pub const Emitter = struct {
                 const is_arc = self.isArcType(decl.value);
                 // For closure types, extract return type and param types from annotation
                 const closure_info = self.tryGetClosureTypeInfo(decl.type_);
+                // Check if this is a string type
+                const is_string = self.isTypeString(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -754,6 +758,7 @@ pub const Emitter = struct {
                     .is_arc = is_arc,
                     .closure_return_type = if (closure_info) |ci| ci.return_type else null,
                     .closure_param_types = if (closure_info) |ci| ci.param_types else null,
+                    .is_string = is_string,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -776,6 +781,8 @@ pub const Emitter = struct {
                 const is_arc = self.isArcType(decl.value);
                 // For closure types, extract return type and param types from annotation
                 const closure_info = self.tryGetClosureTypeInfo(decl.type_);
+                // Check if this is a string type
+                const is_string = self.isTypeString(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -786,6 +793,7 @@ pub const Emitter = struct {
                     .is_arc = is_arc,
                     .closure_return_type = if (closure_info) |ci| ci.return_type else null,
                     .closure_param_types = if (closure_info) |ci| ci.param_types else null,
+                    .is_string = is_string,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -2520,6 +2528,15 @@ pub const Emitter = struct {
         };
     }
 
+    /// Check if a type expression is a string type.
+    fn isTypeString(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .named => |named| std.mem.eql(u8, named.name, "string"),
+            else => false,
+        };
+    }
+
     /// Infer LLVM type from expression (simplified).
     fn inferExprType(self: *Emitter, expr: ast.Expr) EmitError!llvm.TypeRef {
         return switch (expr) {
@@ -2815,6 +2832,26 @@ pub const Emitter = struct {
                 // Hash trait: hash() returns i64
                 if (std.mem.eql(u8, m.method_name, "hash")) {
                     return llvm.Types.int64(self.ctx);
+                }
+                // String methods
+                // len() returns i32
+                if (std.mem.eql(u8, m.method_name, "len")) {
+                    return llvm.Types.int32(self.ctx);
+                }
+                // is_empty(), contains(), starts_with(), ends_with() return bool
+                if (std.mem.eql(u8, m.method_name, "is_empty") or
+                    std.mem.eql(u8, m.method_name, "contains") or
+                    std.mem.eql(u8, m.method_name, "starts_with") or
+                    std.mem.eql(u8, m.method_name, "ends_with"))
+                {
+                    return llvm.Types.int1(self.ctx);
+                }
+                // trim(), to_uppercase(), to_lowercase() return string (pointer)
+                if (std.mem.eql(u8, m.method_name, "trim") or
+                    std.mem.eql(u8, m.method_name, "to_uppercase") or
+                    std.mem.eql(u8, m.method_name, "to_lowercase"))
+                {
+                    return llvm.Types.pointer(self.ctx);
                 }
                 // Default trait: TypeName.default() returns the type's default value
                 if (std.mem.eql(u8, m.method_name, "default")) {
@@ -4180,6 +4217,41 @@ pub const Emitter = struct {
         // All primitives have builtin Hash - structs need explicit impl
         if (std.mem.eql(u8, method.method_name, "hash")) {
             return self.emitHashMethod(method, object, object_type);
+        }
+
+        // Check for string methods
+        // Strings are represented as pointers in LLVM, so we check the LLVM type
+        if (self.isStringExpr(method.object)) {
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                return self.emitStringLen(object);
+            }
+            if (std.mem.eql(u8, method.method_name, "is_empty")) {
+                return self.emitStringIsEmpty(object);
+            }
+            if (std.mem.eql(u8, method.method_name, "contains")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const pattern = try self.emitExpr(method.args[0]);
+                return self.emitStringContains(object, pattern);
+            }
+            if (std.mem.eql(u8, method.method_name, "starts_with")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const prefix = try self.emitExpr(method.args[0]);
+                return self.emitStringStartsWith(object, prefix);
+            }
+            if (std.mem.eql(u8, method.method_name, "ends_with")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const suffix = try self.emitExpr(method.args[0]);
+                return self.emitStringEndsWith(object, suffix);
+            }
+            if (std.mem.eql(u8, method.method_name, "trim")) {
+                return self.emitStringTrim(object);
+            }
+            if (std.mem.eql(u8, method.method_name, "to_uppercase")) {
+                return self.emitStringToUppercase(object);
+            }
+            if (std.mem.eql(u8, method.method_name, "to_lowercase")) {
+                return self.emitStringToLowercase(object);
+            }
         }
 
         // Check for user-defined struct methods
@@ -6309,6 +6381,620 @@ pub const Emitter = struct {
         const size_type = llvm.Types.int64(self.ctx);
         var param_types = [_]llvm.TypeRef{ptr_type};
         const fn_type = llvm.c.LLVMFunctionType(size_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    /// Declare strstr if not already declared.
+    fn getOrDeclareStrstr(self: *Emitter) llvm.ValueRef {
+        const fn_name = "strstr";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // char *strstr(const char *haystack, const char *needle)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    /// Declare strncmp if not already declared.
+    fn getOrDeclareStrncmp(self: *Emitter) llvm.ValueRef {
+        const fn_name = "strncmp";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int strncmp(const char *s1, const char *s2, size_t n)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const size_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type, size_type };
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 3, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    /// Check if an expression is a string type.
+    /// Checks string literals directly and uses named_values for identifiers.
+    fn isStringExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .literal => |lit| {
+                // String literals are always string type
+                return lit.kind == .string;
+            },
+            .identifier => |id| {
+                // Check if we have type info for this identifier in named_values
+                if (self.named_values.get(id.name)) |local| {
+                    // Check if the LLVM type is a pointer (strings are pointers)
+                    // and we've marked this as a string type
+                    if (local.is_string) {
+                        return true;
+                    }
+                }
+                // Fallback: use type checker if available
+                if (self.type_checker) |tc| {
+                    // We need to cast away const since checkExpr modifies internal state
+                    // This is safe because the type checker has already processed the AST
+                    const tc_mut = @constCast(tc);
+                    const expr_type = tc_mut.checkExpr(expr);
+                    return expr_type == .primitive and expr_type.primitive == .string_;
+                }
+                return false;
+            },
+            .interpolated_string => {
+                // Interpolated strings are always string type
+                return true;
+            },
+            .method_call => |m| {
+                // If the method returns a string (like trim, to_uppercase, etc.),
+                // the result is a string
+                if (std.mem.eql(u8, m.method_name, "trim") or
+                    std.mem.eql(u8, m.method_name, "to_uppercase") or
+                    std.mem.eql(u8, m.method_name, "to_lowercase"))
+                {
+                    // Only if the object is also a string
+                    return self.isStringExpr(m.object);
+                }
+                return false;
+            },
+            else => {
+                // For other expressions, use type checker if available
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const expr_type = tc_mut.checkExpr(expr);
+                    return expr_type == .primitive and expr_type.primitive == .string_;
+                }
+                return false;
+            },
+        }
+    }
+
+    /// Emit string.len() - returns length as i32.
+    fn emitStringLen(self: *Emitter, str: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const strlen_fn = self.getOrDeclareStrlen();
+        var args = [_]llvm.ValueRef{str};
+        const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &args, "strlen");
+        // Truncate from size_t (i64) to i32
+        const i32_type = llvm.Types.int32(self.ctx);
+        return llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "strlen_i32");
+    }
+
+    /// Emit string.is_empty() - returns true if len == 0.
+    fn emitStringIsEmpty(self: *Emitter, str: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const strlen_fn = self.getOrDeclareStrlen();
+        var args = [_]llvm.ValueRef{str};
+        const len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &args, "strlen");
+        // Compare len == 0
+        const zero = llvm.Const.int64(self.ctx, 0);
+        return self.builder.buildICmp(llvm.c.LLVMIntEQ, len, zero, "is_empty");
+    }
+
+    /// Emit string.contains(pattern) - returns true if pattern is found in string.
+    fn emitStringContains(self: *Emitter, str: llvm.ValueRef, pattern: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const strstr_fn = self.getOrDeclareStrstr();
+        var args = [_]llvm.ValueRef{ str, pattern };
+        const result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strstr_fn), strstr_fn, &args, "strstr");
+        // strstr returns NULL if not found, non-NULL if found
+        const null_ptr = llvm.c.LLVMConstPointerNull(llvm.Types.pointer(self.ctx));
+        return self.builder.buildICmp(llvm.c.LLVMIntNE, result, null_ptr, "contains");
+    }
+
+    /// Emit string.starts_with(prefix) - returns true if string starts with prefix.
+    fn emitStringStartsWith(self: *Emitter, str: llvm.ValueRef, prefix: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Get the length of the prefix
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{prefix};
+        const prefix_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "prefix_len");
+
+        // Compare using strncmp(str, prefix, prefix_len) == 0
+        const strncmp_fn = self.getOrDeclareStrncmp();
+        var strncmp_args = [_]llvm.ValueRef{ str, prefix, prefix_len };
+        const cmp_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strncmp_fn), strncmp_fn, &strncmp_args, "strncmp");
+
+        const zero = llvm.Const.int32(self.ctx, 0);
+        return self.builder.buildICmp(llvm.c.LLVMIntEQ, cmp_result, zero, "starts_with");
+    }
+
+    /// Emit string.ends_with(suffix) - returns true if string ends with suffix.
+    fn emitStringEndsWith(self: *Emitter, str: llvm.ValueRef, suffix: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Get the lengths
+        const strlen_fn = self.getOrDeclareStrlen();
+
+        var str_args = [_]llvm.ValueRef{str};
+        const str_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &str_args, "str_len");
+
+        var suffix_args = [_]llvm.ValueRef{suffix};
+        const suffix_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &suffix_args, "suffix_len");
+
+        // Check if suffix is longer than string (would be false)
+        const suffix_longer = self.builder.buildICmp(llvm.c.LLVMIntUGT, suffix_len, str_len, "suffix_longer");
+
+        // Calculate offset = str_len - suffix_len
+        const offset = llvm.c.LLVMBuildSub(self.builder.ref, str_len, suffix_len, "offset");
+
+        // Get pointer to end of string: str + offset
+        const i8_type = llvm.Types.int8(self.ctx);
+        var indices = [_]llvm.ValueRef{offset};
+        const end_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, str, &indices, 1, "end_ptr");
+
+        // Compare using strcmp(end_ptr, suffix) == 0
+        const strcmp_fn = self.getOrDeclareStrcmp();
+        var strcmp_args = [_]llvm.ValueRef{ end_ptr, suffix };
+        const cmp_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &strcmp_args, "strcmp");
+
+        const zero = llvm.Const.int32(self.ctx, 0);
+        const ends_match = self.builder.buildICmp(llvm.c.LLVMIntEQ, cmp_result, zero, "ends_match");
+
+        // Result: !suffix_longer && ends_match
+        const suffix_not_longer = llvm.c.LLVMBuildNot(self.builder.ref, suffix_longer, "suffix_not_longer");
+        return self.builder.buildAnd(suffix_not_longer, ends_match, "ends_with");
+    }
+
+    /// Emit string.trim() - returns a new string with leading/trailing whitespace removed.
+    /// Calls the klar_string_trim runtime function.
+    fn emitStringTrim(self: *Emitter, str: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const trim_fn = self.getOrDeclareStringTrim();
+        var args = [_]llvm.ValueRef{str};
+        return llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(trim_fn),
+            trim_fn,
+            &args,
+            1,
+            "trimmed",
+        );
+    }
+
+    /// Emit string.to_uppercase() - returns a new string with all characters uppercased.
+    /// Calls the klar_string_to_uppercase runtime function.
+    fn emitStringToUppercase(self: *Emitter, str: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const upper_fn = self.getOrDeclareStringToUppercase();
+        var args = [_]llvm.ValueRef{str};
+        return llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(upper_fn),
+            upper_fn,
+            &args,
+            1,
+            "uppercased",
+        );
+    }
+
+    /// Emit string.to_lowercase() - returns a new string with all characters lowercased.
+    /// Calls the klar_string_to_lowercase runtime function.
+    fn emitStringToLowercase(self: *Emitter, str: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const lower_fn = self.getOrDeclareStringToLowercase();
+        var args = [_]llvm.ValueRef{str};
+        return llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(lower_fn),
+            lower_fn,
+            &args,
+            1,
+            "lowercased",
+        );
+    }
+
+    /// Declare or get the klar_string_trim runtime function.
+    /// This function trims leading and trailing whitespace from a string.
+    fn getOrDeclareStringTrim(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_trim";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Declare: char* klar_string_trim(const char* s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 1, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Build the function body inline
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const loop_start_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop_start");
+        const loop_end_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop_end");
+        const copy_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "copy");
+        const ret_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "return");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const zero_i64 = llvm.Const.int64(self.ctx, 0);
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+
+        // Entry block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+        const s = llvm.c.LLVMGetParam(func, 0);
+
+        // Get string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{s};
+        const len = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(strlen_fn),
+            strlen_fn,
+            &strlen_args,
+            1,
+            "len",
+        );
+
+        // Allocate variables for start and end indices
+        const start_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "start_ptr");
+        const end_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "end_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, start_ptr);
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, len, end_ptr);
+
+        // Loop to find start (skip leading whitespace)
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_start_bb);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_start_bb);
+        const start_val = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, start_ptr, "start");
+        const start_lt_len = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntULT, start_val, len, "start_lt_len");
+
+        // Get character at start position
+        var gep_indices = [_]llvm.ValueRef{start_val};
+        const char_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &gep_indices, 1, "char_ptr");
+        const ch = llvm.c.LLVMBuildLoad2(self.builder.ref, i8_type, char_ptr, "ch");
+
+        // Check if whitespace (space, tab, newline, carriage return)
+        const is_space = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, ch, llvm.Const.int8(self.ctx, ' '), "is_space");
+        const is_tab = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, ch, llvm.Const.int8(self.ctx, '\t'), "is_tab");
+        const is_nl = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, ch, llvm.Const.int8(self.ctx, '\n'), "is_nl");
+        const is_cr = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, ch, llvm.Const.int8(self.ctx, '\r'), "is_cr");
+        const is_ws1 = llvm.c.LLVMBuildOr(self.builder.ref, is_space, is_tab, "is_ws1");
+        const is_ws2 = llvm.c.LLVMBuildOr(self.builder.ref, is_nl, is_cr, "is_ws2");
+        const is_ws = llvm.c.LLVMBuildOr(self.builder.ref, is_ws1, is_ws2, "is_ws");
+
+        const continue_start = llvm.c.LLVMBuildAnd(self.builder.ref, start_lt_len, is_ws, "continue_start");
+
+        // If still whitespace, increment start and loop
+        const inc_start_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "inc_start");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_start, inc_start_bb, loop_end_bb);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, inc_start_bb);
+        const new_start = llvm.c.LLVMBuildAdd(self.builder.ref, start_val, one_i64, "new_start");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, new_start, start_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_start_bb);
+
+        // Loop to find end (skip trailing whitespace)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_end_bb);
+        const end_val = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, end_ptr, "end");
+        const start_val2 = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, start_ptr, "start2");
+        const end_gt_start = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntUGT, end_val, start_val2, "end_gt_start");
+
+        // Get character at end-1 position
+        const end_minus1 = llvm.c.LLVMBuildSub(self.builder.ref, end_val, one_i64, "end_minus1");
+        var gep_indices2 = [_]llvm.ValueRef{end_minus1};
+        const char_ptr2 = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &gep_indices2, 1, "char_ptr2");
+        const ch2 = llvm.c.LLVMBuildLoad2(self.builder.ref, i8_type, char_ptr2, "ch2");
+
+        // Check if whitespace
+        const is_space2 = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, ch2, llvm.Const.int8(self.ctx, ' '), "is_space2");
+        const is_tab2 = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, ch2, llvm.Const.int8(self.ctx, '\t'), "is_tab2");
+        const is_nl2 = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, ch2, llvm.Const.int8(self.ctx, '\n'), "is_nl2");
+        const is_cr2 = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntEQ, ch2, llvm.Const.int8(self.ctx, '\r'), "is_cr2");
+        const is_ws12 = llvm.c.LLVMBuildOr(self.builder.ref, is_space2, is_tab2, "is_ws12");
+        const is_ws22 = llvm.c.LLVMBuildOr(self.builder.ref, is_nl2, is_cr2, "is_ws22");
+        const is_ws_end = llvm.c.LLVMBuildOr(self.builder.ref, is_ws12, is_ws22, "is_ws_end");
+
+        const continue_end = llvm.c.LLVMBuildAnd(self.builder.ref, end_gt_start, is_ws_end, "continue_end");
+
+        const dec_end_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "dec_end");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_end, dec_end_bb, copy_bb);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, dec_end_bb);
+        const new_end = llvm.c.LLVMBuildSub(self.builder.ref, end_val, one_i64, "new_end");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, new_end, end_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_end_bb);
+
+        // Copy the trimmed substring
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, copy_bb);
+        const final_start = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, start_ptr, "final_start");
+        const final_end = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, end_ptr, "final_end");
+        const trimmed_len = llvm.c.LLVMBuildSub(self.builder.ref, final_end, final_start, "trimmed_len");
+        const alloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, trimmed_len, one_i64, "alloc_size");
+
+        // Allocate new string
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const result = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &malloc_args,
+            1,
+            "result",
+        );
+
+        // Copy using memcpy
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var gep_indices3 = [_]llvm.ValueRef{final_start};
+        const src_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &gep_indices3, 1, "src_ptr");
+        var memcpy_args = [_]llvm.ValueRef{ result, src_ptr, trimmed_len };
+        _ = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(memcpy_fn),
+            memcpy_fn,
+            &memcpy_args,
+            3,
+            "",
+        );
+
+        // Add null terminator
+        var gep_indices4 = [_]llvm.ValueRef{trimmed_len};
+        const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_indices4, 1, "null_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int8(self.ctx, 0), null_ptr);
+
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, ret_bb);
+
+        // Return
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, result);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
+    /// Declare or get the klar_string_to_uppercase runtime function.
+    fn getOrDeclareStringToUppercase(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_to_uppercase";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Declare: char* klar_string_to_uppercase(const char* s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 1, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Build the function body
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop");
+        const body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "body");
+        const ret_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "return");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const zero_i64 = llvm.Const.int64(self.ctx, 0);
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+
+        // Entry block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+        const s = llvm.c.LLVMGetParam(func, 0);
+
+        // Get string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{s};
+        const len = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(strlen_fn),
+            strlen_fn,
+            &strlen_args,
+            1,
+            "len",
+        );
+
+        // Allocate new string
+        const alloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, len, one_i64, "alloc_size");
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const result = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &malloc_args,
+            1,
+            "result",
+        );
+
+        // Initialize loop counter
+        const i_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "i_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, i_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
+
+        // Loop condition
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_bb);
+        const i = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, i_ptr, "i");
+        const cond = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntULT, i, len, "cond");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cond, body_bb, ret_bb);
+
+        // Loop body - convert to uppercase
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, body_bb);
+        var gep_src = [_]llvm.ValueRef{i};
+        const src_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &gep_src, 1, "src_ptr");
+        const ch = llvm.c.LLVMBuildLoad2(self.builder.ref, i8_type, src_ptr, "ch");
+
+        // Check if lowercase letter (a-z) and convert to uppercase
+        const is_lower = llvm.c.LLVMBuildAnd(
+            self.builder.ref,
+            llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntUGE, ch, llvm.Const.int8(self.ctx, 'a'), "ge_a"),
+            llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntULE, ch, llvm.Const.int8(self.ctx, 'z'), "le_z"),
+            "is_lower",
+        );
+
+        // Subtract 32 to convert lowercase to uppercase
+        const upper_ch = llvm.c.LLVMBuildSub(self.builder.ref, ch, llvm.Const.int8(self.ctx, 32), "upper_ch");
+        const result_ch = llvm.c.LLVMBuildSelect(self.builder.ref, is_lower, upper_ch, ch, "result_ch");
+
+        // Store result
+        var gep_dst = [_]llvm.ValueRef{i};
+        const dst_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_dst, 1, "dst_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, result_ch, dst_ptr);
+
+        // Increment counter
+        const next_i = llvm.c.LLVMBuildAdd(self.builder.ref, i, one_i64, "next_i");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, next_i, i_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
+
+        // Return block - add null terminator and return
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
+        var gep_null = [_]llvm.ValueRef{len};
+        const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_null, 1, "null_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int8(self.ctx, 0), null_ptr);
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, result);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
+    /// Declare or get the klar_string_to_lowercase runtime function.
+    fn getOrDeclareStringToLowercase(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_to_lowercase";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Declare: char* klar_string_to_lowercase(const char* s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 1, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Build the function body
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop");
+        const body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "body");
+        const ret_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "return");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const zero_i64 = llvm.Const.int64(self.ctx, 0);
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+
+        // Entry block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+        const s = llvm.c.LLVMGetParam(func, 0);
+
+        // Get string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{s};
+        const len = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(strlen_fn),
+            strlen_fn,
+            &strlen_args,
+            1,
+            "len",
+        );
+
+        // Allocate new string
+        const alloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, len, one_i64, "alloc_size");
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const result = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &malloc_args,
+            1,
+            "result",
+        );
+
+        // Initialize loop counter
+        const i_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "i_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, i_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
+
+        // Loop condition
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_bb);
+        const i = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, i_ptr, "i");
+        const cond = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntULT, i, len, "cond");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cond, body_bb, ret_bb);
+
+        // Loop body - convert to lowercase
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, body_bb);
+        var gep_src = [_]llvm.ValueRef{i};
+        const src_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &gep_src, 1, "src_ptr");
+        const ch = llvm.c.LLVMBuildLoad2(self.builder.ref, i8_type, src_ptr, "ch");
+
+        // Check if uppercase letter (A-Z) and convert to lowercase
+        const is_upper = llvm.c.LLVMBuildAnd(
+            self.builder.ref,
+            llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntUGE, ch, llvm.Const.int8(self.ctx, 'A'), "ge_A"),
+            llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntULE, ch, llvm.Const.int8(self.ctx, 'Z'), "le_Z"),
+            "is_upper",
+        );
+
+        // Add 32 to convert uppercase to lowercase
+        const lower_ch = llvm.c.LLVMBuildAdd(self.builder.ref, ch, llvm.Const.int8(self.ctx, 32), "lower_ch");
+        const result_ch = llvm.c.LLVMBuildSelect(self.builder.ref, is_upper, lower_ch, ch, "result_ch");
+
+        // Store result
+        var gep_dst = [_]llvm.ValueRef{i};
+        const dst_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_dst, 1, "dst_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, result_ch, dst_ptr);
+
+        // Increment counter
+        const next_i = llvm.c.LLVMBuildAdd(self.builder.ref, i, one_i64, "next_i");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, next_i, i_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
+
+        // Return block - add null terminator and return
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
+        var gep_null = [_]llvm.ValueRef{len};
+        const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_null, 1, "null_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int8(self.ctx, 0), null_ptr);
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, result);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
+    /// Declare or get the memcpy function.
+    fn getOrDeclareMemcpy(self: *Emitter) llvm.ValueRef {
+        const fn_name = "memcpy";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type, i64_type };
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 3, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 

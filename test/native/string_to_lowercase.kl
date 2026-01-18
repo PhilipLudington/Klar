@@ -1,0 +1,13 @@
+// Test string.to_lowercase() method
+fn main() -> i32 {
+    let s: string = "HELLO"
+    let lower: string = s.to_lowercase()
+    assert(lower.starts_with("hello"))
+    assert_eq(lower.len(), 5)
+
+    let mixed: string = "Hello World"
+    let lower2: string = mixed.to_lowercase()
+    assert(lower2.starts_with("hello world"))
+
+    return 0
+}
