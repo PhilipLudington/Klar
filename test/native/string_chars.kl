@@ -1,0 +1,11 @@
+// Test string.chars() method
+
+fn main() -> i32 {
+    // Test chars on simple ASCII string - just verify it compiles
+    let s: string = "hello"
+    let c: [char] = s.chars()
+
+    // For now just verify it compiles and runs
+    print("chars test passed\n")
+    return 0
+}

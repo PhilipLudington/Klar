@@ -3151,12 +3151,13 @@ pub const TypeChecker = struct {
                 return self.type_builder.stringType();
             }
             if (std.mem.eql(u8, method.method_name, "chars")) {
-                // Return array of char - for now return unknown
-                return self.type_builder.unknownType();
+                // Return slice of char
+                return self.type_builder.sliceType(self.type_builder.charType()) catch return self.type_builder.unknownType();
             }
             if (std.mem.eql(u8, method.method_name, "bytes")) {
-                // Return array of u8 - for now return unknown
-                return self.type_builder.unknownType();
+                // Return slice of u8
+                const u8_type: Type = .{ .primitive = .u8_ };
+                return self.type_builder.sliceType(u8_type) catch return self.type_builder.unknownType();
             }
         }
 

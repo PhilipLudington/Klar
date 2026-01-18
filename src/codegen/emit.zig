@@ -2853,6 +2853,16 @@ pub const Emitter = struct {
                 {
                     return llvm.Types.pointer(self.ctx);
                 }
+                // bytes() and chars() return slice struct { ptr, len }
+                if (std.mem.eql(u8, m.method_name, "bytes") or
+                    std.mem.eql(u8, m.method_name, "chars"))
+                {
+                    var slice_fields = [_]llvm.TypeRef{
+                        llvm.Types.pointer(self.ctx), // data pointer
+                        llvm.Types.int64(self.ctx), // length
+                    };
+                    return llvm.Types.struct_(self.ctx, &slice_fields, false);
+                }
                 // Default trait: TypeName.default() returns the type's default value
                 if (std.mem.eql(u8, m.method_name, "default")) {
                     if (m.object == .identifier) {
@@ -4251,6 +4261,12 @@ pub const Emitter = struct {
             }
             if (std.mem.eql(u8, method.method_name, "to_lowercase")) {
                 return self.emitStringToLowercase(object);
+            }
+            if (std.mem.eql(u8, method.method_name, "bytes")) {
+                return self.emitStringBytes(object);
+            }
+            if (std.mem.eql(u8, method.method_name, "chars")) {
+                return self.emitStringChars(object);
             }
         }
 
@@ -6593,6 +6609,189 @@ pub const Emitter = struct {
             1,
             "lowercased",
         );
+    }
+
+    /// Emit string.bytes() - returns a slice of u8 containing the string's bytes.
+    /// The slice points directly to the string's data (no allocation).
+    fn emitStringBytes(self: *Emitter, str: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Get the string length using strlen
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str};
+        const len = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(strlen_fn),
+            strlen_fn,
+            &strlen_args,
+            1,
+            "str.len",
+        );
+
+        // Create a slice struct type: { ptr, i64 }
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // data pointer
+            llvm.Types.int64(self.ctx), // length
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+
+        // Build the slice struct value using alloca + store + load pattern
+        const slice_ptr = self.builder.buildAlloca(slice_type, "bytes_slice_ptr");
+
+        // Store pointer field (index 0)
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 0, "ptr_field");
+        _ = self.builder.buildStore(str, ptr_field);
+
+        // Store length field (index 1)
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 1, "len_field");
+        _ = self.builder.buildStore(len, len_field);
+
+        // Load the complete slice struct
+        return self.builder.buildLoad(slice_type, slice_ptr, "bytes_slice");
+    }
+
+    /// Emit string.chars() - returns a slice of char containing the string's unicode codepoints.
+    /// This calls a runtime function that decodes UTF-8 and allocates the result.
+    fn emitStringChars(self: *Emitter, str: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const chars_fn = self.getOrDeclareStringChars();
+        var args = [_]llvm.ValueRef{str};
+        return llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(chars_fn),
+            chars_fn,
+            &args,
+            1,
+            "chars_slice",
+        );
+    }
+
+    /// Declare or get the klar_string_chars runtime function.
+    /// This function treats each byte as a character (ASCII-only for now).
+    /// TODO: Implement proper UTF-8 decoding.
+    fn getOrDeclareStringChars(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_chars";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Return type is a struct { ptr, i64 }
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var slice_fields = [_]llvm.TypeRef{
+            ptr_type, // data pointer
+            llvm.Types.int64(self.ctx), // length
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(slice_type, &param_types, 1, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Build the function body inline
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop");
+        const loop_body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop_body");
+        const loop_end_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop_end");
+        const ret_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "return");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const zero_i64 = llvm.Const.int64(self.ctx, 0);
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+        const four_i64 = llvm.Const.int64(self.ctx, 4); // sizeof(i32)
+
+        // Entry block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+        const s = llvm.c.LLVMGetParam(func, 0);
+
+        // Get string length using strlen
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{s};
+        const len = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(strlen_fn),
+            strlen_fn,
+            &strlen_args,
+            1,
+            "len",
+        );
+
+        // Allocate array of i32 (len * 4 bytes)
+        const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, len, four_i64, "alloc_size");
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const result = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &malloc_args,
+            1,
+            "result",
+        );
+
+        // Allocate index variable
+        const idx_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "idx_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, zero_i64, idx_ptr);
+
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
+
+        // Loop condition
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_bb);
+        const idx = llvm.c.LLVMBuildLoad2(self.builder.ref, i64_type, idx_ptr, "idx");
+        const cond = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntULT, idx, len, "cond");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cond, loop_body_bb, loop_end_bb);
+
+        // Loop body: copy byte as i32
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_body_bb);
+
+        // Load source byte
+        var src_indices = [_]llvm.ValueRef{idx};
+        const src_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &src_indices, 1, "src_ptr");
+        const byte = llvm.c.LLVMBuildLoad2(self.builder.ref, i8_type, src_ptr, "byte");
+
+        // Zero-extend byte to i32
+        const char_val = llvm.c.LLVMBuildZExt(self.builder.ref, byte, i32_type, "char_val");
+
+        // Store to result array
+        var dst_indices = [_]llvm.ValueRef{idx};
+        const dst_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i32_type, result, &dst_indices, 1, "dst_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, char_val, dst_ptr);
+
+        // Increment index
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, one_i64, "next_idx");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, next_idx, idx_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
+
+        // Loop end: build result struct
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_end_bb);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, ret_bb);
+
+        // Return the slice struct
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
+
+        // Build slice struct { ptr, len } using alloca + store + load
+        const slice_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, slice_type, "slice_ptr");
+
+        // Store pointer field (index 0)
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 0, "ptr_field");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, result, ptr_field);
+
+        // Store length field (index 1)
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_ptr, 1, "len_field");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, len, len_field);
+
+        // Load the complete slice struct and return
+        const slice_val = llvm.c.LLVMBuildLoad2(self.builder.ref, slice_type, slice_ptr, "slice_val");
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, slice_val);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
     }
 
     /// Declare or get the klar_string_trim runtime function.

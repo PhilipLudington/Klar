@@ -36,6 +36,7 @@ pub const klar_arc_downgrade = arc.klar_arc_downgrade;
 pub const klar_string_trim = string.klar_string_trim;
 pub const klar_string_to_uppercase = string.klar_string_to_uppercase;
 pub const klar_string_to_lowercase = string.klar_string_to_lowercase;
+pub const klar_string_chars = string.klar_string_chars;
 
 test {
     _ = rc;

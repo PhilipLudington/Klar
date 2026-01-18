@@ -1,0 +1,11 @@
+// Test string.bytes() method
+
+fn main() -> i32 {
+    // Test bytes on simple ASCII string - just verify it compiles
+    let s: string = "hello"
+    let b: [u8] = s.bytes()
+
+    // For now just verify it compiles and runs
+    print("bytes test passed\n")
+    return 0
+}
