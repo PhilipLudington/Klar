@@ -1,0 +1,21 @@
+// Test @typeName builtin at compile time
+
+fn main() -> i32 {
+    // Test @typeName for primitive types
+    let name_i32: string = @typeName(i32)
+    println(name_i32)
+
+    let name_i64: string = @typeName(i64)
+    println(name_i64)
+
+    let name_bool: string = @typeName(bool)
+    println(name_bool)
+
+    let name_string: string = @typeName(string)
+    println(name_string)
+
+    let name_f64: string = @typeName(f64)
+    println(name_f64)
+
+    return 0
+}

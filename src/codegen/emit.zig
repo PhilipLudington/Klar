@@ -1105,6 +1105,9 @@ pub const Emitter = struct {
             .type_cast => |tc| try self.emitTypeCast(tc),
             .enum_literal => |e| try self.emitEnumLiteral(e),
             .interpolated_string => |is| try self.emitInterpolatedString(is),
+            // Comptime expressions
+            .builtin_call => |bc| try self.emitBuiltinCall(bc),
+            .comptime_block => llvm.Const.int32(self.ctx, 0), // Evaluated at compile time, no runtime value
             else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
         };
     }
@@ -2727,6 +2730,20 @@ pub const Emitter = struct {
                 }
                 return llvm.Types.int32(self.ctx);
             },
+            // Comptime expressions
+            .builtin_call => |bc| {
+                // Builtin calls like @typeName return string
+                if (std.mem.eql(u8, bc.name, "typeName")) {
+                    return llvm.Types.pointer(self.ctx); // string type
+                }
+                // @hasField returns bool
+                if (std.mem.eql(u8, bc.name, "hasField")) {
+                    return llvm.Types.int1(self.ctx); // bool type
+                }
+                // Default to i32 for other builtins
+                return llvm.Types.int32(self.ctx);
+            },
+            .comptime_block => llvm.Types.int32(self.ctx), // Comptime blocks don't have runtime type
             else => llvm.Types.int32(self.ctx),
         };
     }
@@ -5485,6 +5502,31 @@ pub const Emitter = struct {
         _ = self.builder.buildCall(fn_type, snprintf_fn, call_args.items, "");
 
         return buffer_ptr;
+    }
+
+    /// Emit a builtin call like @typeName, @typeInfo, @hasField, etc.
+    /// These are evaluated at compile time and the results are stored in type_checker.
+    fn emitBuiltinCall(self: *Emitter, bc: *ast.BuiltinCall) EmitError!llvm.ValueRef {
+        // Look up the precomputed result from the type checker
+        if (self.type_checker) |tc| {
+            // Check for string results (e.g., @typeName)
+            if (tc.comptime_strings.get(bc)) |computed_string| {
+                // Emit as a global string constant
+                const str_z = self.allocator.dupeZ(u8, computed_string) catch return EmitError.OutOfMemory;
+                defer self.allocator.free(str_z);
+                return self.builder.buildGlobalStringPtr(str_z, "comptime_str");
+            }
+            // Check for boolean results (e.g., @hasField)
+            if (tc.comptime_bools.get(bc)) |computed_bool| {
+                return llvm.Const.int1(self.ctx, computed_bool);
+            }
+            // Check for integer results (e.g., @sizeOf, @alignOf)
+            if (tc.comptime_ints.get(bc)) |computed_int| {
+                return llvm.Const.int32(self.ctx, @intCast(computed_int));
+            }
+        }
+        // Fallback: return 0 if not found
+        return llvm.Const.int32(self.ctx, 0);
     }
 
     /// Emit an expression and convert it to a string for interpolation.

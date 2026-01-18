@@ -51,6 +51,50 @@ Klar targets application-level programming (like C#/Go), not bare-metal systems 
 ./zig-out/bin/klar build program.kl --emit-ir           # Output internal IR
 ```
 
+## Interactive REPL
+
+The REPL (Read-Eval-Print Loop) enables interactive code exploration using the interpreter backend:
+
+```bash
+# Start the REPL
+./zig-out/bin/klar repl
+```
+
+### REPL Commands
+
+| Command | Description |
+|---------|-------------|
+| `:help` | Show available commands |
+| `:type <expr>` | Show the type of an expression without evaluating |
+| `:list` | Show all current bindings (variables, functions, types) |
+| `:load <file>` | Load definitions from a Klar file |
+| `:reset` | Clear all bindings and start fresh |
+| `:quit` or `:q` | Exit the REPL |
+
+### REPL Usage Examples
+
+```
+klar> let x: i32 = 42
+klar> x + 10
+52
+klar> fn double(n: i32) -> i32 { return n * 2 }
+klar> double(x)
+84
+klar> :type double(x)
+i32
+klar> :list
+Variables:
+  x: i32
+Functions:
+  double: fn(i32) -> i32
+```
+
+**Notes:**
+- State persists across inputs (variables, functions, structs remain defined)
+- Uses the interpreter backend (not VM or native compilation)
+- Errors don't crash the session - you can continue after errors
+- Multi-file imports not yet supported in REPL
+
 ## Compiler Architecture
 
 The compiler is a multi-stage pipeline with three execution backends:
@@ -187,6 +231,8 @@ CarbideZig standards apply - see `carbide/CARBIDE.md` and `carbide/STANDARDS.md`
 
 ### When Debugging
 
+- **Use `klar run` for quick testing** - Don't build to a temp file and execute separately. Use `./zig-out/bin/klar run file.kl` instead of `./zig-out/bin/klar build file.kl -o /tmp/test && /tmp/test`
+- Use `--interpret` flag with `klar run` to use the tree-walking interpreter instead of the bytecode VM
 - Use `--emit-llvm` to inspect generated LLVM IR
 - Use `--emit-ir` to inspect internal IR before LLVM
 - The VM has `--debug` flag for bytecode tracing

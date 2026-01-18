@@ -429,6 +429,9 @@ pub const RuntimeError = error{
     AssertionFailed,
     Panic,
 
+    // Comptime errors
+    ComptimeError,
+
     // Allocation
     OutOfMemory,
 };

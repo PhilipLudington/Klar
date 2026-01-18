@@ -691,6 +691,16 @@ pub const Compiler = struct {
                 // TODO: Enum literal compilation for bytecode VM
                 // For now, enum literals are only supported in native compilation
             },
+            .comptime_block => {
+                // Comptime blocks are evaluated at compile time by the type checker
+                // The bytecode VM should never see them - they are replaced by their evaluated values
+                try self.addError(.internal_error, expr.span(), "comptime blocks not yet supported in bytecode VM");
+            },
+            .builtin_call => {
+                // Builtin calls are evaluated at compile time
+                // The bytecode VM should never see them
+                try self.addError(.internal_error, expr.span(), "builtin calls not yet supported in bytecode VM");
+            },
         }
     }
 

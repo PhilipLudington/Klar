@@ -26,6 +26,7 @@ pub const CheckError = struct {
         undefined_field,
         undefined_method,
         undefined_variant,
+        undefined_function,
         invalid_operation,
         invalid_assignment,
         invalid_call,
@@ -41,11 +42,14 @@ pub const CheckError = struct {
         trait_not_implemented,
         invalid_conversion,
         mutability_error,
+        wrong_number_of_args,
         // Module system errors
         undefined_module,
         visibility_error,
         circular_import,
         import_conflict,
+        // Comptime errors
+        comptime_error,
     };
 
     pub fn format(self: CheckError, allocator: Allocator) ![]u8 {
@@ -251,6 +255,22 @@ pub const TypeChecker = struct {
     /// Module scopes created by prepareForNewModule (for cleanup).
     module_scopes: std.ArrayListUnmanaged(*Scope),
 
+    // Comptime evaluation
+    /// Storage for comptime-evaluated string values.
+    /// Maps BuiltinCall AST node pointers to their computed string values.
+    /// Used by codegen to emit the correct string literals.
+    comptime_strings: std.AutoHashMapUnmanaged(*ast.BuiltinCall, []const u8),
+
+    /// Storage for comptime-evaluated boolean values.
+    /// Maps BuiltinCall AST node pointers to their computed boolean values.
+    /// Used by codegen to emit the correct boolean literals.
+    comptime_bools: std.AutoHashMapUnmanaged(*ast.BuiltinCall, bool),
+
+    /// Storage for comptime-evaluated integer values.
+    /// Maps BuiltinCall AST node pointers to their computed integer values.
+    /// Used by codegen for @sizeOf, @alignOf, etc.
+    comptime_ints: std.AutoHashMapUnmanaged(*ast.BuiltinCall, i64),
+
     /// Symbols exported from a module.
     pub const ModuleSymbols = struct {
         /// All exported symbols from this module.
@@ -432,6 +452,9 @@ pub const TypeChecker = struct {
             .current_module = null,
             .module_resolver_ref = null,
             .module_scopes = .{},
+            .comptime_strings = .{},
+            .comptime_bools = .{},
+            .comptime_ints = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -611,6 +634,19 @@ pub const TypeChecker = struct {
             self.allocator.destroy(scope);
         }
         self.module_scopes.deinit(self.allocator);
+
+        // Clean up comptime strings
+        var comptime_iter = self.comptime_strings.valueIterator();
+        while (comptime_iter.next()) |str| {
+            self.allocator.free(str.*);
+        }
+        self.comptime_strings.deinit(self.allocator);
+
+        // Clean up comptime bools (no values to free, just the map)
+        self.comptime_bools.deinit(self.allocator);
+
+        // Clean up comptime ints (no values to free, just the map)
+        self.comptime_ints.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -2157,6 +2193,8 @@ pub const TypeChecker = struct {
             .grouped => |g| self.checkExprWithHint(g.expr, hint),
             .interpolated_string => |is| self.checkInterpolatedString(is),
             .enum_literal => |e| self.checkEnumLiteral(e),
+            .comptime_block => |cb| self.checkComptimeBlock(cb),
+            .builtin_call => |bc| self.checkBuiltinCall(bc),
         };
     }
 
@@ -3809,6 +3847,301 @@ pub const TypeChecker = struct {
         }
 
         return enum_type;
+    }
+
+    /// Type check a comptime block expression
+    /// Comptime blocks are evaluated at compile time using the interpreter.
+    fn checkComptimeBlock(self: *TypeChecker, block: *ast.ComptimeBlock) Type {
+        // For now, just type-check the block normally
+        // TODO: Actually evaluate the block at compile time using the interpreter
+        _ = self.checkBlock(block.body);
+
+        // Comptime blocks must produce a compile-time constant value
+        // For now, return void as the type (will be enhanced when we add actual evaluation)
+        return self.type_builder.voidType();
+    }
+
+    /// Type check a builtin function call (@typeName, @typeInfo, etc.)
+    fn checkBuiltinCall(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (std.mem.eql(u8, builtin.name, "typeName")) {
+            return self.checkBuiltinTypeName(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "typeInfo")) {
+            return self.checkBuiltinTypeInfo(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "compileError")) {
+            return self.checkBuiltinCompileError(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "hasField")) {
+            return self.checkBuiltinHasField(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "sizeOf")) {
+            return self.checkBuiltinSizeOf(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "alignOf")) {
+            return self.checkBuiltinAlignOf(builtin);
+        } else {
+            self.addError(.undefined_function, builtin.span, "unknown builtin '@{s}'", .{builtin.name});
+            return self.type_builder.unknownType();
+        }
+    }
+
+    /// @typeName(T) -> string
+    fn checkBuiltinTypeName(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len != 1) {
+            self.addError(.wrong_number_of_args, builtin.span, "@typeName expects 1 argument, got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
+        }
+
+        // The argument must be a type
+        const resolved_type: Type = switch (builtin.args[0]) {
+            .type_arg => |type_expr| blk: {
+                // Resolve the type expression to a concrete type
+                const t = self.resolveTypeExpr(type_expr) catch {
+                    return self.type_builder.unknownType();
+                };
+                break :blk t;
+            },
+            .expr_arg => {
+                self.addError(.type_mismatch, builtin.span, "@typeName expects a type argument, not an expression", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        // Format the type to a string and store it for codegen
+        var buf = std.ArrayListUnmanaged(u8){};
+        types.formatType(buf.writer(self.allocator), resolved_type) catch {
+            buf.deinit(self.allocator);
+            return self.type_builder.stringType();
+        };
+
+        // Store the computed string value for codegen
+        const type_name = buf.toOwnedSlice(self.allocator) catch {
+            buf.deinit(self.allocator);
+            return self.type_builder.stringType();
+        };
+        self.comptime_strings.put(self.allocator, builtin, type_name) catch {
+            self.allocator.free(type_name);
+        };
+
+        return self.type_builder.stringType();
+    }
+
+    /// @typeInfo(T) -> TypeInfo struct (for now, just return void)
+    fn checkBuiltinTypeInfo(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len != 1) {
+            self.addError(.wrong_number_of_args, builtin.span, "@typeInfo expects 1 argument, got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
+        }
+
+        switch (builtin.args[0]) {
+            .type_arg => {},
+            .expr_arg => {
+                self.addError(.type_mismatch, builtin.span, "@typeInfo expects a type argument, not an expression", .{});
+                return self.type_builder.unknownType();
+            },
+        }
+
+        // TODO: Return a proper TypeInfo struct type
+        // For now, return void as a placeholder
+        return self.type_builder.voidType();
+    }
+
+    /// @compileError("message") -> never returns (compile error)
+    fn checkBuiltinCompileError(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len != 1) {
+            self.addError(.wrong_number_of_args, builtin.span, "@compileError expects 1 argument, got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
+        }
+
+        switch (builtin.args[0]) {
+            .expr_arg => |expr| {
+                // Check if the expression is a string literal
+                switch (expr) {
+                    .literal => |lit| {
+                        switch (lit.kind) {
+                            .string => |msg| {
+                                // Emit the compile error with the user's message
+                                self.addError(.comptime_error, builtin.span, "{s}", .{msg});
+                            },
+                            else => {
+                                self.addError(.type_mismatch, builtin.span, "@compileError expects a string literal", .{});
+                            },
+                        }
+                    },
+                    else => {
+                        self.addError(.type_mismatch, builtin.span, "@compileError expects a string literal", .{});
+                    },
+                }
+            },
+            .type_arg => {
+                self.addError(.type_mismatch, builtin.span, "@compileError expects a string, not a type", .{});
+            },
+        }
+
+        return self.type_builder.neverType();
+    }
+
+    /// @hasField(T, "field_name") -> bool
+    fn checkBuiltinHasField(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len != 2) {
+            self.addError(.wrong_number_of_args, builtin.span, "@hasField expects 2 arguments, got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
+        }
+
+        // First arg must be a type
+        const type_arg = switch (builtin.args[0]) {
+            .type_arg => |te| te,
+            .expr_arg => {
+                self.addError(.type_mismatch, builtin.span, "@hasField first argument must be a type", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        // Second arg must be a string literal
+        const field_name: ?[]const u8 = switch (builtin.args[1]) {
+            .expr_arg => |expr| blk: {
+                switch (expr) {
+                    .literal => |lit| {
+                        switch (lit.kind) {
+                            .string => |s| break :blk s,
+                            else => {},
+                        }
+                    },
+                    else => {},
+                }
+                self.addError(.type_mismatch, builtin.span, "@hasField second argument must be a string literal", .{});
+                break :blk null;
+            },
+            .type_arg => blk: {
+                self.addError(.type_mismatch, builtin.span, "@hasField second argument must be a string, not a type", .{});
+                break :blk null;
+            },
+        };
+
+        // Evaluate at compile time
+        if (field_name) |name| {
+            const resolved_type = self.resolveTypeExpr(type_arg) catch {
+                return self.type_builder.boolType();
+            };
+            const has_field = switch (resolved_type) {
+                .struct_ => |s| blk: {
+                    for (s.fields) |field| {
+                        if (std.mem.eql(u8, field.name, name)) {
+                            break :blk true;
+                        }
+                    }
+                    break :blk false;
+                },
+                else => false,
+            };
+            self.comptime_bools.put(self.allocator, builtin, has_field) catch {};
+        }
+
+        return self.type_builder.boolType();
+    }
+
+    /// @sizeOf(T) -> i32 (size of type in bytes)
+    fn checkBuiltinSizeOf(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len != 1) {
+            self.addError(.wrong_number_of_args, builtin.span, "@sizeOf expects 1 argument, got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
+        }
+
+        const type_arg = switch (builtin.args[0]) {
+            .type_arg => |ta| ta,
+            .expr_arg => {
+                self.addError(.type_mismatch, builtin.span, "@sizeOf expects a type argument, not an expression", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        const resolved_type = self.resolveTypeExpr(type_arg) catch {
+            return self.type_builder.i32Type();
+        };
+
+        const size: i64 = self.computeTypeSize(resolved_type);
+        self.comptime_ints.put(self.allocator, builtin, size) catch {};
+
+        return self.type_builder.i32Type();
+    }
+
+    /// @alignOf(T) -> i32 (alignment of type in bytes)
+    fn checkBuiltinAlignOf(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len != 1) {
+            self.addError(.wrong_number_of_args, builtin.span, "@alignOf expects 1 argument, got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
+        }
+
+        const type_arg = switch (builtin.args[0]) {
+            .type_arg => |ta| ta,
+            .expr_arg => {
+                self.addError(.type_mismatch, builtin.span, "@alignOf expects a type argument, not an expression", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        const resolved_type = self.resolveTypeExpr(type_arg) catch {
+            return self.type_builder.i32Type();
+        };
+
+        const alignment: i64 = self.computeTypeAlignment(resolved_type);
+        self.comptime_ints.put(self.allocator, builtin, alignment) catch {};
+
+        return self.type_builder.i32Type();
+    }
+
+    /// Compute the size of a type in bytes
+    fn computeTypeSize(self: *TypeChecker, typ: Type) i64 {
+        return switch (typ) {
+            .primitive => |p| switch (p) {
+                .i8_, .u8_ => 1,
+                .i16_, .u16_ => 2,
+                .i32_, .u32_, .f32_ => 4,
+                .i64_, .u64_, .f64_ => 8,
+                .bool_ => 1,
+                else => 8, // default for other primitives (i128, isize, etc.)
+            },
+            .void_ => 0,
+            .reference, .function => 8, // 64-bit pointers
+            .struct_ => |s| blk: {
+                var total: i64 = 0;
+                for (s.fields) |field| {
+                    total += self.computeTypeSize(field.type_);
+                }
+                break :blk if (total == 0) 1 else total; // empty struct has size 1
+            },
+            .enum_ => 4, // enum tag
+            .array => |a| self.computeTypeSize(a.element) * @as(i64, @intCast(a.size)),
+            .slice => 16, // pointer + length
+            .optional => |o| self.computeTypeSize(o.*) + 1, // child + tag byte
+            else => 8, // default for unknown types
+        };
+    }
+
+    /// Compute the alignment of a type in bytes
+    fn computeTypeAlignment(self: *TypeChecker, typ: Type) i64 {
+        return switch (typ) {
+            .primitive => |p| switch (p) {
+                .i8_, .u8_, .bool_ => 1,
+                .i16_, .u16_ => 2,
+                .i32_, .u32_, .f32_ => 4,
+                .i64_, .u64_, .f64_ => 8,
+                else => 8, // default for other primitives (i128, isize, etc.)
+            },
+            .void_ => 1,
+            .reference, .function => 8, // 64-bit pointers
+            .struct_ => |s| blk: {
+                var max_align: i64 = 1;
+                for (s.fields) |field| {
+                    const field_align = self.computeTypeAlignment(field.type_);
+                    if (field_align > max_align) {
+                        max_align = field_align;
+                    }
+                }
+                break :blk max_align;
+            },
+            .enum_ => 4,
+            .array => |a| self.computeTypeAlignment(a.element),
+            .slice => 8, // pointer alignment
+            .optional => |o| self.computeTypeAlignment(o.*),
+            else => 8,
+        };
     }
 
     // ========================================================================

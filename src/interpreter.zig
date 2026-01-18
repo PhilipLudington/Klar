@@ -186,6 +186,8 @@ pub const Interpreter = struct {
                 // For now, enum literals are only supported in native compilation
                 return error.NotImplemented;
             },
+            .comptime_block => |cb| self.evalComptimeBlock(cb),
+            .builtin_call => |bc| self.evalBuiltinCall(bc),
         };
     }
 
@@ -1600,6 +1602,97 @@ pub const Interpreter = struct {
 
     pub fn getOutput(self: *Interpreter) []const u8 {
         return self.output.items;
+    }
+
+    // ========================================================================
+    // Comptime Evaluation
+    // ========================================================================
+
+    /// Evaluate a comptime block - executes the block body and returns its value
+    fn evalComptimeBlock(self: *Interpreter, block: *ast.ComptimeBlock) RuntimeError!Value {
+        // Comptime blocks are just regular blocks evaluated at compile time
+        // The interpreter evaluates them normally
+        return self.evalBlock(block.body);
+    }
+
+    /// Evaluate a builtin call (@typeName, @typeInfo, etc.)
+    fn evalBuiltinCall(self: *Interpreter, builtin: *ast.BuiltinCall) RuntimeError!Value {
+        if (std.mem.eql(u8, builtin.name, "typeName")) {
+            return self.evalBuiltinTypeName(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "typeInfo")) {
+            return self.evalBuiltinTypeInfo(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "compileError")) {
+            return self.evalBuiltinCompileError(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "hasField")) {
+            return self.evalBuiltinHasField(builtin);
+        } else {
+            return RuntimeError.InvalidOperation;
+        }
+    }
+
+    /// @typeName(T) -> string
+    fn evalBuiltinTypeName(self: *Interpreter, builtin: *ast.BuiltinCall) RuntimeError!Value {
+        _ = self;
+        if (builtin.args.len != 1) return RuntimeError.InvalidOperation;
+
+        // The type argument should have been resolved by the type checker
+        // For now, just return a placeholder string
+        switch (builtin.args[0]) {
+            .type_arg => |type_expr| {
+                // Convert type expression to string
+                const name = switch (type_expr) {
+                    .named => |n| n.name,
+                    else => "<type>",
+                };
+                return .{ .string = name };
+            },
+            .expr_arg => {
+                return RuntimeError.TypeError;
+            },
+        }
+    }
+
+    /// @typeInfo(T) -> TypeInfo (placeholder)
+    fn evalBuiltinTypeInfo(self: *Interpreter, builtin: *ast.BuiltinCall) RuntimeError!Value {
+        _ = self;
+        if (builtin.args.len != 1) return RuntimeError.InvalidOperation;
+
+        // TODO: Return actual type info struct
+        return .void_;
+    }
+
+    /// @compileError("message") -> never returns
+    fn evalBuiltinCompileError(self: *Interpreter, builtin: *ast.BuiltinCall) RuntimeError!Value {
+        if (builtin.args.len != 1) return RuntimeError.InvalidOperation;
+
+        switch (builtin.args[0]) {
+            .expr_arg => |expr| {
+                const msg_value = try self.evaluate(expr);
+                if (msg_value != .string) return RuntimeError.TypeError;
+
+                // In the interpreter, we just report the error
+                // The actual compile error happens during type checking
+                const stdout = getStdOut();
+                stdout.writeAll("compile error: ") catch {};
+                stdout.writeAll(msg_value.string) catch {};
+                stdout.writeAll("\n") catch {};
+
+                return RuntimeError.ComptimeError;
+            },
+            .type_arg => {
+                return RuntimeError.TypeError;
+            },
+        }
+    }
+
+    /// @hasField(T, "field_name") -> bool
+    fn evalBuiltinHasField(self: *Interpreter, builtin: *ast.BuiltinCall) RuntimeError!Value {
+        _ = self;
+        if (builtin.args.len != 2) return RuntimeError.InvalidOperation;
+
+        // TODO: Implement actual field checking
+        // For now, return false as placeholder
+        return .{ .bool_ = false };
     }
 };
 

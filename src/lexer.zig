@@ -62,6 +62,7 @@ pub const Lexer = struct {
             '?' => self.matchSingle('?', .question_question, .question),
             '.' => self.handleDot(),
             ':' => self.matchSingle(':', .colon_colon, .colon),
+            '@' => self.makeToken(.at),
             '"' => self.string(),
             '\'' => self.char(),
             '\n' => self.handleNewline(),

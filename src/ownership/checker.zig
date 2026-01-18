@@ -295,6 +295,8 @@ pub const OwnershipChecker = struct {
             .grouped => |g| try self.analyzeExpr(g.expr),
             .interpolated_string => |i| try self.analyzeInterpolatedString(i),
             .enum_literal => |e| try self.analyzeEnumLiteral(e),
+            .comptime_block => |cb| try self.analyzeComptimeBlock(cb),
+            .builtin_call => |bc| try self.analyzeBuiltinCall(bc),
         };
     }
 
@@ -302,6 +304,23 @@ pub const OwnershipChecker = struct {
         // Analyze each payload expression
         for (lit.payload) |payload_expr| {
             _ = try self.analyzeExpr(payload_expr);
+        }
+        return null;
+    }
+
+    fn analyzeComptimeBlock(self: *OwnershipChecker, block: *ast.ComptimeBlock) !?*VariableState {
+        // Analyze the block body for ownership - comptime blocks still need ownership tracking
+        _ = try self.analyzeBlockExpr(block.body);
+        return null;
+    }
+
+    fn analyzeBuiltinCall(self: *OwnershipChecker, builtin: *ast.BuiltinCall) !?*VariableState {
+        // Analyze any expression arguments for ownership
+        for (builtin.args) |arg| {
+            switch (arg) {
+                .expr_arg => |expr| _ = try self.analyzeExpr(expr),
+                .type_arg => {}, // Type arguments don't affect ownership
+            }
         }
         return null;
     }

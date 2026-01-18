@@ -51,6 +51,8 @@ pub const Expr = union(enum) {
     grouped: *Grouped,
     interpolated_string: *InterpolatedString,
     enum_literal: *EnumLiteral,
+    comptime_block: *ComptimeBlock,
+    builtin_call: *BuiltinCall,
 
     pub fn span(self: Expr) Span {
         return switch (self) {
@@ -73,6 +75,8 @@ pub const Expr = union(enum) {
             .grouped => |g| g.span,
             .interpolated_string => |i| i.span,
             .enum_literal => |e| e.span,
+            .comptime_block => |c| c.span,
+            .builtin_call => |b| b.span,
         };
     }
 };
@@ -338,6 +342,26 @@ pub const InterpolatedPart = union(enum) {
     expr: Expr,
 };
 
+/// Comptime block expression: `comptime { ... }`
+/// Evaluated at compile time during type checking.
+pub const ComptimeBlock = struct {
+    body: *Block,
+    span: Span,
+};
+
+/// Builtin function call: `@typeName(T)`, `@typeInfo(T)`, etc.
+pub const BuiltinCall = struct {
+    name: []const u8, // The builtin name without @ (e.g., "typeName")
+    args: []const BuiltinArg,
+    span: Span,
+};
+
+/// Argument to a builtin function - can be either a type or an expression
+pub const BuiltinArg = union(enum) {
+    type_arg: TypeExpr,
+    expr_arg: Expr,
+};
+
 // ============================================================================
 // Patterns
 // ============================================================================
@@ -582,6 +606,7 @@ pub const FunctionParam = struct {
     name: []const u8,
     type_: TypeExpr,
     default_value: ?Expr,
+    is_comptime: bool, // true for `comptime` parameter modifier
     span: Span,
 };
 

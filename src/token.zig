@@ -95,6 +95,7 @@ pub const Token = struct {
         fat_arrow,
         colon,
         colon_colon,
+        at, // @ for builtin functions
 
         // Compound assignment
         plus_eq,
@@ -193,6 +194,7 @@ pub const Token = struct {
                 .fat_arrow => "=>",
                 .colon => ":",
                 .colon_colon => "::",
+                .at => "@",
                 .plus_eq => "+=",
                 .minus_eq => "-=",
                 .star_eq => "*=",

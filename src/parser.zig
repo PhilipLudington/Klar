@@ -230,6 +230,12 @@ pub const Parser = struct {
             .amp => self.parseRefOrRefMut(),
             .star => self.parseUnary(.deref),
 
+            // Comptime block: comptime { ... }
+            .comptime_ => self.parseComptimeBlock(),
+
+            // Builtin call: @typeName(T), @typeInfo(T), etc.
+            .at => self.parseBuiltinCall(),
+
             else => {
                 try self.reportError("expected expression");
                 return ParseError.ExpectedExpression;
@@ -727,6 +733,89 @@ pub const Parser = struct {
     fn parseBlockExpr(self: *Parser) ParseError!ast.Expr {
         const block = try self.parseBlock();
         return .{ .block = block };
+    }
+
+    /// Parse a comptime block expression: comptime { ... }
+    fn parseComptimeBlock(self: *Parser) ParseError!ast.Expr {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'comptime'
+
+        // Expect a block
+        const block = try self.parseBlock();
+
+        const end_span = block.span;
+
+        const comptime_block = try self.create(ast.ComptimeBlock, .{
+            .body = block,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+
+        return .{ .comptime_block = comptime_block };
+    }
+
+    /// Parse a builtin call: @typeName(T), @typeInfo(T), @compileError("msg"), etc.
+    fn parseBuiltinCall(self: *Parser) ParseError!ast.Expr {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume '@'
+
+        // Expect builtin name (identifier)
+        const name = try self.consumeIdentifier();
+
+        // Parse argument list
+        try self.consume(.l_paren, "expected '(' after builtin name");
+
+        var args = std.ArrayListUnmanaged(ast.BuiltinArg){};
+
+        if (!self.check(.r_paren)) {
+            while (true) {
+                // Try to parse as type first, then fall back to expression
+                // This is a bit tricky - types start with identifiers or certain keywords
+                const arg = try self.parseBuiltinArg();
+                try args.append(self.allocator, arg);
+
+                if (!self.match(.comma)) break;
+            }
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_paren, "expected ')' after builtin arguments");
+
+        const builtin_call = try self.create(ast.BuiltinCall, .{
+            .name = name,
+            .args = try self.dupeSlice(ast.BuiltinArg, args.items),
+            .span = ast.Span.merge(start_span, end_span),
+        });
+
+        return .{ .builtin_call = builtin_call };
+    }
+
+    /// Parse a builtin argument - could be a type or an expression
+    fn parseBuiltinArg(self: *Parser) ParseError!ast.BuiltinArg {
+        // Try to detect if this looks like a type
+        // Types can be: identifiers, Self, primitives, ?T, [T], fn(...) -> T, etc.
+        // For simplicity, we'll try parsing as type first if it looks like one
+
+        // If the next token is an identifier followed by [ or ), or if it's a type keyword,
+        // we try to parse it as a type
+        const could_be_type = switch (self.current.kind) {
+            .identifier, .self_type => true,
+            .l_bracket, .question => true,
+            .fn_ => true,
+            else => false,
+        };
+
+        if (could_be_type) {
+            // Save position to backtrack if needed
+            // For now, just try to parse as type - this may need improvement
+            // to handle ambiguous cases
+            const type_expr = self.parseType() catch {
+                // If type parsing fails, try as expression
+                return .{ .expr_arg = try self.parseExpression() };
+            };
+            return .{ .type_arg = type_expr };
+        } else {
+            return .{ .expr_arg = try self.parseExpression() };
+        }
     }
 
     fn parseBlock(self: *Parser) ParseError!*ast.Block {
@@ -1870,6 +1959,7 @@ pub const Parser = struct {
                 .name = param_name,
                 .type_ = param_type,
                 .default_value = default_value,
+                .is_comptime = false, // TODO: parse comptime modifier
                 .span = param_span,
             });
 

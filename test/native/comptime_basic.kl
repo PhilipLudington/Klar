@@ -1,0 +1,12 @@
+// Test basic comptime functionality
+
+fn main() -> i32 {
+    // For now, comptime blocks just type-check but don't evaluate
+    // This is a placeholder test
+
+    // Test that builtin @typeName parses (returns string)
+    let name: string = @typeName(i32)
+
+    // Basic return
+    return 42
+}
