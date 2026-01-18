@@ -2740,6 +2740,18 @@ pub const Emitter = struct {
             },
             // Comptime expressions
             .builtin_call => |bc| {
+                // Check for user-defined comptime function call results first
+                if (self.type_checker) |tc| {
+                    if (tc.comptime_builtin_values.get(bc)) |comptime_value| {
+                        return switch (comptime_value) {
+                            .int => |i| if (i.is_i32) llvm.Types.int32(self.ctx) else llvm.Types.int64(self.ctx),
+                            .float => llvm.Types.float64(self.ctx),
+                            .bool_ => llvm.Types.int1(self.ctx),
+                            .string => llvm.Types.pointer(self.ctx),
+                            .void_ => llvm.Types.int32(self.ctx),
+                        };
+                    }
+                }
                 // Builtin calls that return strings
                 if (std.mem.eql(u8, bc.name, "typeName") or
                     std.mem.eql(u8, bc.name, "typeInfo") or
@@ -5534,10 +5546,15 @@ pub const Emitter = struct {
     }
 
     /// Emit a builtin call like @typeName, @typeInfo, @hasField, etc.
+    /// Also handles user-defined comptime function calls via @name(...) syntax.
     /// These are evaluated at compile time and the results are stored in type_checker.
     fn emitBuiltinCall(self: *Emitter, bc: *ast.BuiltinCall) EmitError!llvm.ValueRef {
         // Look up the precomputed result from the type checker
         if (self.type_checker) |tc| {
+            // Check for user-defined comptime function call results first
+            if (tc.comptime_builtin_values.get(bc)) |comptime_value| {
+                return self.emitComptimeValue(comptime_value);
+            }
             // Check for string results (e.g., @typeName)
             if (tc.comptime_strings.get(bc)) |computed_string| {
                 // Emit as a global string constant

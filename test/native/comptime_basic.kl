@@ -2,19 +2,19 @@
 
 fn main() -> i32 {
     // Comptime integer expression - 2 + 3 = 5
-    let x: i32 = comptime { 2 + 3 }
+    let x: i32 = @{ 2 + 3 }
     if x != 5 {
         return 1
     }
 
     // Comptime boolean expression - true and false or true = true
-    let flag: bool = comptime { true and false or true }
+    let flag: bool = @{ true and false or true }
     if not flag {
         return 2
     }
 
     // Comptime arithmetic - 10 * 5 - 8 / 2 = 50 - 4 = 46
-    let result: i32 = comptime { 10 * 5 - 8 / 2 }
+    let result: i32 = @{ 10 * 5 - 8 / 2 }
     if result != 46 {
         return 3
     }

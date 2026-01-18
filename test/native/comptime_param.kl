@@ -2,17 +2,17 @@
 // Functions can require parameters to be known at compile time
 
 // Simple function with a comptime parameter
-fn double_comptime(comptime n: i32) -> i32 {
+fn double_comptime(@n: i32) -> i32 {
     return n * 2
 }
 
 // Function with mixed comptime and runtime parameters
-fn add_offset(comptime offset: i32, value: i32) -> i32 {
+fn add_offset(@offset: i32, value: i32) -> i32 {
     return value + offset
 }
 
 // Function that uses comptime parameter in an expression
-fn scale_by(comptime factor: i32, x: i32, y: i32) -> i32 {
+fn scale_by(@factor: i32, x: i32, y: i32) -> i32 {
     return (x + y) * factor
 }
 

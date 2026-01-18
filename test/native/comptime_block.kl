@@ -2,7 +2,7 @@
 
 fn main() -> i32 {
     // Comptime block - for now just parsed and type-checked
-    comptime {
+    @{
         let x: i32 = 10
         let y: i32 = 20
     }

@@ -2,7 +2,7 @@
 
 fn main() -> i32 {
     // Comptime string expression
-    let greeting: string = comptime { "hello" }
+    let greeting: string = @{ "hello" }
     print(greeting)
 
     // Return 0 for success

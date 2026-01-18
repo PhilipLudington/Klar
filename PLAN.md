@@ -705,7 +705,7 @@ src/repl.zig             # REPL loop and command handling ✓
 Comptime enables powerful metaprogramming without macros—code that runs at compile time to generate code, validate invariants, or compute constants.
 
 ### Comptime Blocks
-- [x] Parse `comptime { ... }` blocks
+- [x] Parse `@{ ... }` blocks (comptime block syntax)
 - [x] Evaluate comptime blocks during type checking
 - [x] Use interpreter for comptime evaluation
 - [x] Comptime blocks can contain literals, arithmetic, and boolean operations
@@ -714,15 +714,16 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [ ] Support complex types (structs, arrays, etc.) - only primitives currently
 
 ### Comptime Functions
-- [x] Mark functions as `comptime fn`
+- [x] Mark functions as `fn @name(...)` (@ prefix on function name)
 - [x] Comptime functions can only call other comptime functions (at call site)
 - [x] Comptime functions execute at compile time when called with comptime-known arguments
 - [x] Return values become compile-time constants
+- [x] Nested comptime function calls supported (e.g., `@add(@mul(2, 3), 4)`)
 - [ ] Support recursive comptime function calls (requires interpreter environment sharing)
 
 ### Comptime Parameters
-- [x] Support `comptime` parameter modifier
-- [x] `fn foo(comptime n: i32)` - n must be known at compile time
+- [x] Support `@param: Type` syntax (@ prefix on parameter name)
+- [x] `fn foo(@n: i32)` - n must be known at compile time
 - [ ] Enable type-level computation based on values (array sizes from comptime params, etc.)
 
 ### Compile-Time Reflection

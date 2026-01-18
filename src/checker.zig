@@ -289,6 +289,10 @@ pub const TypeChecker = struct {
     /// Used by codegen to emit constants instead of function calls.
     comptime_call_values: std.AutoHashMapUnmanaged(*ast.Call, ComptimeValue),
 
+    /// Storage for comptime function calls via @name(...) builtin syntax.
+    /// Maps BuiltinCall AST node pointers to their evaluated compile-time values.
+    comptime_builtin_values: std.AutoHashMapUnmanaged(*ast.BuiltinCall, ComptimeValue),
+
     /// Represents a compile-time evaluated value.
     pub const ComptimeValue = union(enum) {
         /// Integer with type info preserved
@@ -489,6 +493,7 @@ pub const TypeChecker = struct {
             .comptime_values = .{},
             .comptime_functions = .{},
             .comptime_call_values = .{},
+            .comptime_builtin_values = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -699,6 +704,14 @@ pub const TypeChecker = struct {
             }
         }
         self.comptime_call_values.deinit(self.allocator);
+        // Clean up comptime builtin call values (free allocated strings)
+        var builtin_iter = self.comptime_builtin_values.valueIterator();
+        while (builtin_iter.next()) |cv| {
+            if (cv.* == .string) {
+                self.allocator.free(cv.string);
+            }
+        }
+        self.comptime_builtin_values.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -4123,6 +4136,38 @@ pub const TypeChecker = struct {
                 }
                 return null;
             },
+            .builtin_call => |bc| {
+                // Check if this is a comptime function call via @name(...) syntax
+                if (self.comptime_functions.get(bc.name)) |comptime_func| {
+                    // Evaluate all arguments at compile time
+                    var arg_values = std.ArrayListUnmanaged(Value){};
+                    defer arg_values.deinit(self.allocator);
+
+                    for (bc.args) |arg| {
+                        const arg_expr = switch (arg) {
+                            .expr_arg => |e| e,
+                            .type_arg => return null, // Type args not supported
+                        };
+                        const arg_value = self.evaluateComptimeExpr(arg_expr) orelse return null;
+                        arg_values.append(self.allocator, arg_value) catch return null;
+                    }
+
+                    // Create interpreter and evaluate
+                    var interp = Interpreter.init(self.allocator) catch return null;
+                    defer interp.deinit();
+
+                    for (comptime_func.params, arg_values.items) |param, arg_val| {
+                        interp.global_env.define(param.name, arg_val, false) catch return null;
+                    }
+
+                    const body = comptime_func.body orelse return null;
+                    const block_result = interp.evalBlock(body) catch return null;
+                    const result = if (interp.return_value) |rv| rv else block_result;
+
+                    return result;
+                }
+                return null;
+            },
             else => null,
         };
     }
@@ -4236,7 +4281,13 @@ pub const TypeChecker = struct {
     }
 
     /// Type check a builtin function call (@typeName, @typeInfo, etc.)
+    /// Also handles user-defined comptime function calls (@name syntax)
     fn checkBuiltinCall(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        // First, check if this is a user-defined comptime function call
+        if (self.comptime_functions.get(builtin.name)) |comptime_func| {
+            return self.checkComptimeFunctionCallFromBuiltin(builtin, comptime_func);
+        }
+
         if (std.mem.eql(u8, builtin.name, "typeName")) {
             return self.checkBuiltinTypeName(builtin);
         } else if (std.mem.eql(u8, builtin.name, "typeInfo")) {
@@ -4257,6 +4308,89 @@ pub const TypeChecker = struct {
             self.addError(.undefined_function, builtin.span, "unknown builtin '@{s}'", .{builtin.name});
             return self.type_builder.unknownType();
         }
+    }
+
+    /// Handle a user-defined comptime function call using @name(...) syntax
+    fn checkComptimeFunctionCallFromBuiltin(self: *TypeChecker, builtin: *ast.BuiltinCall, func_decl: *ast.FunctionDecl) Type {
+        // Check argument count
+        if (builtin.args.len != func_decl.params.len) {
+            self.addError(.wrong_number_of_args, builtin.span, "@{s} expects {d} argument(s), got {d}", .{ builtin.name, func_decl.params.len, builtin.args.len });
+            return self.type_builder.unknownType();
+        }
+
+        // Evaluate all arguments at compile time
+        var arg_values = std.ArrayListUnmanaged(Value){};
+        defer arg_values.deinit(self.allocator);
+
+        for (builtin.args) |arg| {
+            const expr = switch (arg) {
+                .expr_arg => |e| e,
+                .type_arg => {
+                    self.addError(.type_mismatch, builtin.span, "comptime function expects expression arguments, not types", .{});
+                    return self.type_builder.unknownType();
+                },
+            };
+
+            const arg_value = self.evaluateComptimeExpr(expr) orelse {
+                self.addError(.comptime_error, expr.span(), "argument to comptime function must be comptime-known", .{});
+                return self.type_builder.unknownType();
+            };
+            arg_values.append(self.allocator, arg_value) catch {
+                return self.type_builder.unknownType();
+            };
+        }
+
+        // Create interpreter and set up the function call environment
+        var interp = Interpreter.init(self.allocator) catch {
+            self.addError(.comptime_error, builtin.span, "failed to create interpreter for comptime function", .{});
+            return self.type_builder.unknownType();
+        };
+        defer interp.deinit();
+
+        // Bind parameters to argument values
+        for (func_decl.params, arg_values.items) |param, arg_val| {
+            interp.global_env.define(param.name, arg_val, false) catch {
+                self.addError(.comptime_error, builtin.span, "failed to bind comptime function parameter", .{});
+                return self.type_builder.unknownType();
+            };
+        }
+
+        // Evaluate function body
+        const body = func_decl.body orelse {
+            self.addError(.comptime_error, builtin.span, "comptime function must have a body", .{});
+            return self.type_builder.unknownType();
+        };
+
+        const block_result = interp.evalBlock(body) catch |err| {
+            if (err == error.RuntimeError) {
+                self.addError(.comptime_error, builtin.span, "comptime function evaluation failed", .{});
+            }
+            return self.type_builder.unknownType();
+        };
+
+        // Check for return value
+        const result = if (interp.return_value) |rv| rv else block_result;
+
+        // Convert interpreter Value to ComptimeValue and store it
+        const comptime_value = self.valueToComptimeValue(result, builtin.span) orelse {
+            self.addError(.comptime_error, builtin.span, "comptime function returned non-primitive value", .{});
+            return self.type_builder.unknownType();
+        };
+
+        // Store the result for codegen - we need a way to map builtin calls to comptime values
+        // Use the comptime_call_results map with a unique key
+        self.comptime_builtin_values.put(self.allocator, builtin, comptime_value) catch {};
+
+        // Return the function's return type
+        return self.checkFunctionDeclReturnType(func_decl);
+    }
+
+    /// Get the return type of a function declaration
+    fn checkFunctionDeclReturnType(self: *TypeChecker, func_decl: *ast.FunctionDecl) Type {
+        if (func_decl.return_type) |ret_type| {
+            return self.resolveTypeExpr(ret_type) catch self.type_builder.unknownType();
+        }
+        return self.type_builder.voidType();
     }
 
     /// @typeName(T) -> string

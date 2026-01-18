@@ -252,11 +252,8 @@ pub const Parser = struct {
             .amp => self.parseRefOrRefMut(),
             .star => self.parseUnary(.deref),
 
-            // Comptime block: comptime { ... }
-            .comptime_ => self.parseComptimeBlock(),
-
-            // Builtin call: @typeName(T), @typeInfo(T), etc.
-            .at => self.parseBuiltinCall(),
+            // @ can be: comptime block @{ ... } or builtin call @name(...)
+            .at => self.parseAtExpr(),
 
             else => {
                 try self.reportError("expected expression");
@@ -757,30 +754,25 @@ pub const Parser = struct {
         return .{ .block = block };
     }
 
-    /// Parse a comptime block expression: comptime { ... }
-    fn parseComptimeBlock(self: *Parser) ParseError!ast.Expr {
-        const start_span = self.spanFromToken(self.current);
-        self.advance(); // consume 'comptime'
-
-        // Expect a block
-        const block = try self.parseBlock();
-
-        const end_span = block.span;
-
-        const comptime_block = try self.create(ast.ComptimeBlock, .{
-            .body = block,
-            .span = ast.Span.merge(start_span, end_span),
-        });
-
-        return .{ .comptime_block = comptime_block };
-    }
-
-    /// Parse a builtin call: @typeName(T), @typeInfo(T), @compileError("msg"), etc.
-    fn parseBuiltinCall(self: *Parser) ParseError!ast.Expr {
+    /// Parse @ expression: either @{ ... } (comptime block) or @name(...) (builtin call)
+    fn parseAtExpr(self: *Parser) ParseError!ast.Expr {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '@'
 
-        // Expect builtin name (identifier)
+        // Check if this is a comptime block: @{ ... }
+        if (self.check(.l_brace)) {
+            const block = try self.parseBlock();
+            const end_span = block.span;
+
+            const comptime_block = try self.create(ast.ComptimeBlock, .{
+                .body = block,
+                .span = ast.Span.merge(start_span, end_span),
+            });
+
+            return .{ .comptime_block = comptime_block };
+        }
+
+        // Otherwise it's a builtin call: @name(...)
         const name = try self.consumeIdentifier();
 
         // Parse argument list
@@ -1848,14 +1840,8 @@ pub const Parser = struct {
         // Handle visibility modifier
         const is_pub = self.match(.pub_);
 
-        // Handle comptime function: comptime fn
-        if (self.check(.comptime_) and self.peekNext().kind == .fn_) {
-            self.advance(); // consume 'comptime'
-            return self.parseFunctionDecl(is_pub, true);
-        }
-
         return switch (self.current.kind) {
-            .fn_ => self.parseFunctionDecl(is_pub, false),
+            .fn_ => self.parseFunctionDecl(is_pub),
             .struct_ => self.parseStructDecl(is_pub),
             .enum_ => self.parseEnumDecl(is_pub),
             .trait => self.parseTraitDecl(is_pub),
@@ -1871,9 +1857,12 @@ pub const Parser = struct {
         };
     }
 
-    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_comptime: bool) ParseError!ast.Decl {
+    fn parseFunctionDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'fn'
+
+        // Check for comptime function: fn @name(...)
+        const is_comptime = self.match(.at);
 
         const name = try self.consumeIdentifier();
 
@@ -1969,8 +1958,8 @@ pub const Parser = struct {
         while (true) {
             const param_span = self.spanFromToken(self.current);
 
-            // Check for optional comptime modifier
-            const is_comptime = self.match(.comptime_);
+            // Check for comptime parameter: @param: Type
+            const is_comptime = self.match(.at);
 
             // Handle 'self' and regular identifiers as parameter names
             const param_name = if (self.match(.self))
@@ -2203,7 +2192,7 @@ pub const Parser = struct {
                 try associated_types.append(self.allocator, assoc_type);
             } else {
                 // Each method in trait is a function signature (potentially without body)
-                const method_decl = try self.parseFunctionDecl(false, false);
+                const method_decl = try self.parseFunctionDecl(false);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -2294,7 +2283,7 @@ pub const Parser = struct {
                 try associated_types.append(self.allocator, assoc_binding);
             } else {
                 const is_pub = self.match(.pub_);
-                const method_decl = try self.parseFunctionDecl(is_pub, false);
+                const method_decl = try self.parseFunctionDecl(is_pub);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
