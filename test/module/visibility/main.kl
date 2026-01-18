@@ -1,0 +1,7 @@
+// main.kl - Tries to import private symbol (should fail)
+
+import utils.{ public_fn, private_fn }
+
+fn main() -> i32 {
+    return public_fn()
+}

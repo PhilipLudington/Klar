@@ -1,0 +1,9 @@
+// utils.kl - Module with both public and private symbols
+
+pub fn public_fn() -> i32 {
+    return 1
+}
+
+fn private_fn() -> i32 {
+    return 2
+}

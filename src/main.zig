@@ -13,6 +13,9 @@ const codegen = @import("codegen/mod.zig");
 const ir = @import("ir/mod.zig");
 const ownership = @import("ownership/mod.zig");
 const opt = @import("opt/mod.zig");
+const module_resolver = @import("module_resolver.zig");
+const ModuleResolver = module_resolver.ModuleResolver;
+const ModuleInfo = module_resolver.ModuleInfo;
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -284,6 +287,101 @@ fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
 }
 
+/// Try to find the standard library path relative to the compiler binary.
+fn findStdLibPath(allocator: std.mem.Allocator) ?[]const u8 {
+    // Get the path to the current executable
+    var exe_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_path = std.fs.selfExePath(&exe_path_buf) catch return null;
+
+    const exe_dir = std.fs.path.dirname(exe_path) orelse return null;
+
+    // Try relative paths from the executable
+    const candidates = [_][]const u8{
+        "std", // <exe_dir>/std
+        "../std", // <exe_dir>/../std
+        "../lib/std", // <exe_dir>/../lib/std
+        "../../std", // <exe_dir>/../../std (for zig-out/bin)
+    };
+
+    for (candidates) |candidate| {
+        const full_path = std.fs.path.join(allocator, &.{ exe_dir, candidate }) catch continue;
+
+        // Check if this path exists and contains mod.kl
+        const mod_path = std.fs.path.join(allocator, &.{ full_path, "mod.kl" }) catch {
+            allocator.free(full_path);
+            continue;
+        };
+        defer allocator.free(mod_path);
+
+        std.fs.cwd().access(mod_path, .{}) catch {
+            allocator.free(full_path);
+            continue;
+        };
+
+        return full_path;
+    }
+
+    return null;
+}
+
+/// Parse and load a module's source file.
+/// Returns the source string which must be kept alive until after codegen.
+fn parseModuleSource(
+    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    mod: *ModuleInfo,
+) ![]const u8 {
+    // Read source
+    const source = readSourceFile(allocator, mod.file_path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ mod.file_path, err }) catch "Error opening file\n";
+        try getStdErr().writeAll(msg);
+        return error.FileNotFound;
+    };
+    // Don't store source in ModuleInfo - caller will track it for cleanup
+
+    // Parse
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena, &lexer, source);
+
+    const module_ast = parser.parseModule() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Parse error in '{s}': {}\n", .{ mod.file_path, err }) catch "Parse error\n";
+        try getStdErr().writeAll(msg);
+
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try getStdErr().writeAll(err_msg);
+        }
+        allocator.free(source);
+        return error.ParseError;
+    };
+
+    mod.module_ast = module_ast;
+    mod.state = .parsed;
+    return source;
+}
+
+/// Discover all modules imported by a module.
+fn discoverImports(
+    resolver: *ModuleResolver,
+    mod: *ModuleInfo,
+) !void {
+    if (mod.module_ast == null) return;
+
+    for (mod.module_ast.?.imports) |import_decl| {
+        _ = resolver.resolve(import_decl.path, mod) catch |err| {
+            // Error already recorded in resolver
+            _ = err;
+            continue;
+        };
+    }
+}
+
 fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.CompileOptions) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
@@ -323,7 +421,108 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     var checker = TypeChecker.init(allocator);
     defer checker.deinit();
 
-    checker.checkModule(module);
+    // Collect all modules to emit (for multi-file compilation)
+    var modules_to_emit = std.ArrayListUnmanaged(ast.Module){};
+    defer modules_to_emit.deinit(allocator);
+
+    // Track source strings that need to be freed after codegen
+    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (module_sources.items) |src| {
+            allocator.free(src);
+        }
+        module_sources.deinit(allocator);
+    }
+
+    // Check if this module has imports (multi-file compilation)
+    if (module.imports.len > 0) {
+        // Set up module resolver for multi-file compilation
+        var resolver = ModuleResolver.init(allocator);
+        defer resolver.deinit();
+
+        // Try to find standard library
+        if (findStdLibPath(allocator)) |std_path| {
+            resolver.setStdLibPath(std_path);
+            defer allocator.free(std_path);
+        }
+
+        // Register entry module
+        const entry = resolver.resolveEntry(path) catch {
+            try stderr.writeAll("Error: could not resolve entry module\n");
+            return;
+        };
+        entry.module_ast = module;
+        entry.state = .parsed;
+
+        // Discover all imported modules (breadth-first)
+        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+        defer modules_to_process.deinit(allocator);
+        try modules_to_process.append(allocator, entry);
+
+        var processed_idx: usize = 0;
+        while (processed_idx < modules_to_process.items.len) {
+            const mod = modules_to_process.items[processed_idx];
+            processed_idx += 1;
+
+            // Parse if not already parsed
+            if (mod.state == .discovered) {
+                const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
+                try module_sources.append(allocator, src);
+            }
+
+            // Discover imports
+            if (mod.module_ast) |mod_ast| {
+                for (mod_ast.imports) |import_decl| {
+                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
+                    if (dep.state == .discovered) {
+                        try modules_to_process.append(allocator, dep);
+                    }
+                }
+            }
+        }
+
+        // Check for resolution errors
+        if (resolver.hasErrors()) {
+            var buf: [512]u8 = undefined;
+            for (resolver.errors.items) |err| {
+                const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return;
+        }
+
+        // Get topological order
+        const compilation_order = resolver.getCompilationOrder() catch |err| {
+            if (err == error.CircularImport) {
+                try stderr.writeAll("Error: circular import detected\n");
+            }
+            return;
+        };
+        defer allocator.free(compilation_order);
+
+        // Set up checker with module resolver
+        checker.setModuleResolver(&resolver);
+
+        // Type check all modules in order and collect for emission
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |mod_ast| {
+                // Prepare fresh scope for this module (keeps builtins and type registry)
+                checker.prepareForNewModule();
+                checker.setCurrentModule(mod);
+                checker.checkModule(mod_ast);
+
+                // Register exports WHILE in this module's scope (before switching)
+                checker.registerModuleExports(mod) catch {};
+
+                // Collect for emission
+                try modules_to_emit.append(allocator, mod_ast);
+            }
+        }
+    } else {
+        // Single-file compilation (no imports)
+        checker.checkModule(module);
+        try modules_to_emit.append(allocator, module);
+    }
 
     if (checker.hasErrors()) {
         var buf: [512]u8 = undefined;
@@ -438,13 +637,15 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     emitter.setTypeChecker(&checker);
 
     // Register all struct declarations first so their types are available
-    // when declaring monomorphized function signatures
-    emitter.registerAllStructDecls(module) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Codegen error (struct registration): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
-        try stderr.writeAll(msg);
-        return;
-    };
+    // when declaring monomorphized function signatures (for all modules)
+    for (modules_to_emit.items) |mod_to_emit| {
+        emitter.registerAllStructDecls(mod_to_emit) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Codegen error (struct registration): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+    }
 
     // Register monomorphized struct types BEFORE emitModule
     // so struct literals can find them
@@ -482,12 +683,15 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
 
-    emitter.emitModule(module) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
-        try stderr.writeAll(msg);
-        return;
-    };
+    // Emit all modules
+    for (modules_to_emit.items) |mod_to_emit| {
+        emitter.emitModule(mod_to_emit) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+    }
 
     // Emit monomorphized generic function bodies
     emitter.emitMonomorphizedFunctions(&checker) catch |err| {

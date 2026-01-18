@@ -1,0 +1,14 @@
+// utils.kl - A utility module with public functions
+
+pub fn greet() -> i32 {
+    return 42
+}
+
+pub fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+// Private function - should not be importable
+fn private_helper() -> i32 {
+    return 100
+}

@@ -1,0 +1,9 @@
+// main.kl - Entry point that imports utils
+
+import utils.{ greet, add }
+
+fn main() -> i32 {
+    let result: i32 = greet()
+    let sum: i32 = add(10, 20)
+    return result + sum
+}

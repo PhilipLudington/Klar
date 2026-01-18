@@ -6,6 +6,9 @@ const Type = types.Type;
 const Primitive = types.Primitive;
 const TypeBuilder = types.TypeBuilder;
 const Span = ast.Span;
+const module_resolver = @import("module_resolver.zig");
+const ModuleInfo = module_resolver.ModuleInfo;
+const ModuleResolver = module_resolver.ModuleResolver;
 
 // ============================================================================
 // Type Checker Errors
@@ -38,6 +41,11 @@ pub const CheckError = struct {
         trait_not_implemented,
         invalid_conversion,
         mutability_error,
+        // Module system errors
+        undefined_module,
+        visibility_error,
+        circular_import,
+        import_conflict,
     };
 
     pub fn format(self: CheckError, allocator: Allocator) ![]u8 {
@@ -230,6 +238,45 @@ pub const TypeChecker = struct {
     /// Current trait being checked (for Self.Item resolution in trait method signatures)
     current_trait_type: ?*types.TraitType,
 
+    // Module system fields
+    /// Registry of symbols from other modules, keyed by module canonical name.
+    module_registry: std.StringHashMapUnmanaged(ModuleSymbols),
+    /// The current module being checked (null for single-file compilation).
+    current_module: ?*ModuleInfo,
+    /// The module resolver (null for single-file compilation).
+    module_resolver_ref: ?*ModuleResolver,
+    /// Module scopes created by prepareForNewModule (for cleanup).
+    module_scopes: std.ArrayListUnmanaged(*Scope),
+
+    /// Symbols exported from a module.
+    pub const ModuleSymbols = struct {
+        /// All exported symbols from this module.
+        symbols: std.StringHashMapUnmanaged(ModuleSymbol),
+        /// The module info (for re-export tracking).
+        module_info: *ModuleInfo,
+    };
+
+    /// A symbol imported from another module.
+    pub const ModuleSymbol = struct {
+        /// Name of the symbol.
+        name: []const u8,
+        /// Kind of symbol.
+        kind: Kind,
+        /// Resolved type (null for types/traits).
+        type_: ?Type,
+        /// Whether the symbol is public.
+        is_pub: bool,
+
+        pub const Kind = enum {
+            function,
+            struct_type,
+            enum_type,
+            trait_type,
+            type_alias,
+            constant,
+        };
+    };
+
     const CaptureInfo = struct {
         is_mutable: bool,
     };
@@ -378,6 +425,10 @@ pub const TypeChecker = struct {
             .substituted_type_slices = .{},
             .trait_method_calls = .{},
             .current_trait_type = null,
+            .module_registry = .{},
+            .current_module = null,
+            .module_resolver_ref = null,
+            .module_scopes = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -539,6 +590,24 @@ pub const TypeChecker = struct {
 
         // Clean up trait method calls
         self.trait_method_calls.deinit(self.allocator);
+
+        // Clean up module registry (including allocated canonical name keys)
+        var module_key_iter = self.module_registry.keyIterator();
+        while (module_key_iter.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        var module_iter = self.module_registry.valueIterator();
+        while (module_iter.next()) |mod_symbols| {
+            mod_symbols.symbols.deinit(self.allocator);
+        }
+        self.module_registry.deinit(self.allocator);
+
+        // Clean up module scopes created by prepareForNewModule
+        for (self.module_scopes.items) |scope| {
+            scope.deinit();
+            self.allocator.destroy(scope);
+        }
+        self.module_scopes.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -5001,10 +5070,255 @@ pub const TypeChecker = struct {
     }
 
     // ========================================================================
+    // Module System Support
+    // ========================================================================
+
+    /// Set the module resolver for multi-file compilation.
+    pub fn setModuleResolver(self: *TypeChecker, resolver: *ModuleResolver) void {
+        self.module_resolver_ref = resolver;
+    }
+
+    /// Set the current module being checked.
+    pub fn setCurrentModule(self: *TypeChecker, mod: *ModuleInfo) void {
+        self.current_module = mod;
+    }
+
+    /// Prepare for checking a new module by resetting to a fresh module scope.
+    /// This keeps builtin types but clears module-level function/variable definitions.
+    pub fn prepareForNewModule(self: *TypeChecker) void {
+        // Create a new scope for this module that inherits from global (builtins)
+        const module_scope = self.allocator.create(Scope) catch return;
+        module_scope.* = Scope.init(self.allocator, self.global_scope, .global);
+        self.current_scope = module_scope;
+        // Track for cleanup
+        self.module_scopes.append(self.allocator, module_scope) catch {};
+    }
+
+    /// Register exported symbols from a module.
+    pub fn registerModuleExports(self: *TypeChecker, mod: *ModuleInfo) !void {
+        const canonical = try mod.canonicalName(self.allocator);
+        defer self.allocator.free(canonical);
+
+        var symbols = ModuleSymbols{
+            .symbols = .{},
+            .module_info = mod,
+        };
+
+        // Collect exports from the module's AST
+        if (mod.module_ast) |module_ast| {
+            for (module_ast.declarations) |decl| {
+                switch (decl) {
+                    .function => |f| {
+                        if (f.is_pub) {
+                            const sym = ModuleSymbol{
+                                .name = f.name,
+                                .kind = .function,
+                                .type_ = self.current_scope.lookup(f.name).?.type_,
+                                .is_pub = true,
+                            };
+                            try symbols.symbols.put(self.allocator, f.name, sym);
+                        }
+                    },
+                    .struct_decl => |s| {
+                        if (s.is_pub) {
+                            const sym = ModuleSymbol{
+                                .name = s.name,
+                                .kind = .struct_type,
+                                .type_ = null, // Types don't have a Type value
+                                .is_pub = true,
+                            };
+                            try symbols.symbols.put(self.allocator, s.name, sym);
+                        }
+                    },
+                    .enum_decl => |e| {
+                        if (e.is_pub) {
+                            const sym = ModuleSymbol{
+                                .name = e.name,
+                                .kind = .enum_type,
+                                .type_ = null,
+                                .is_pub = true,
+                            };
+                            try symbols.symbols.put(self.allocator, e.name, sym);
+                        }
+                    },
+                    .trait_decl => |t| {
+                        if (t.is_pub) {
+                            const sym = ModuleSymbol{
+                                .name = t.name,
+                                .kind = .trait_type,
+                                .type_ = null,
+                                .is_pub = true,
+                            };
+                            try symbols.symbols.put(self.allocator, t.name, sym);
+                        }
+                    },
+                    .const_decl => |c| {
+                        if (c.is_pub) {
+                            const sym = ModuleSymbol{
+                                .name = c.name,
+                                .kind = .constant,
+                                .type_ = self.current_scope.lookup(c.name).?.type_,
+                                .is_pub = true,
+                            };
+                            try symbols.symbols.put(self.allocator, c.name, sym);
+                        }
+                    },
+                    .type_alias => |t| {
+                        if (t.is_pub) {
+                            const sym = ModuleSymbol{
+                                .name = t.name,
+                                .kind = .type_alias,
+                                .type_ = null,
+                                .is_pub = true,
+                            };
+                            try symbols.symbols.put(self.allocator, t.name, sym);
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        // Store in registry using duplicated canonical name
+        const canonical_dup = try self.allocator.dupe(u8, canonical);
+        try self.module_registry.put(self.allocator, canonical_dup, symbols);
+    }
+
+    /// Process all imports for a module.
+    fn processImports(self: *TypeChecker, module: ast.Module) void {
+        for (module.imports) |import_decl| {
+            self.processImport(import_decl) catch {
+                // Error already reported in processImport
+            };
+        }
+    }
+
+    /// Process a single import declaration.
+    fn processImport(self: *TypeChecker, import_decl: ast.ImportDecl) !void {
+        // Build canonical name for the imported module
+        var canonical_buf = std.ArrayListUnmanaged(u8){};
+        defer canonical_buf.deinit(self.allocator);
+
+        for (import_decl.path, 0..) |segment, i| {
+            try canonical_buf.appendSlice(self.allocator, segment);
+            if (i < import_decl.path.len - 1) {
+                try canonical_buf.append(self.allocator, '.');
+            }
+        }
+
+        const canonical = canonical_buf.items;
+
+        // Look up the module in the registry
+        const mod_symbols = self.module_registry.get(canonical) orelse {
+            self.addError(.undefined_module, import_decl.span, "module '{s}' not found", .{canonical});
+            return error.UndefinedModule;
+        };
+
+        // Handle different import styles
+        if (import_decl.items) |items| {
+            switch (items) {
+                .all => {
+                    // import module.* - import all public symbols
+                    self.importAllSymbols(mod_symbols, import_decl.span);
+                },
+                .specific => |specific_items| {
+                    // import module.{ A, B } - import specific symbols
+                    for (specific_items) |item| {
+                        self.importSpecificSymbol(mod_symbols, item, import_decl.span);
+                    }
+                },
+            }
+        } else {
+            // import module - just makes module name available as namespace
+            // The last segment becomes the namespace name (or alias if provided)
+            const namespace_name = import_decl.alias orelse import_decl.path[import_decl.path.len - 1];
+
+            // Register the module as a namespace symbol
+            self.current_scope.define(.{
+                .name = namespace_name,
+                .type_ = self.type_builder.unknownType(), // Module namespace type
+                .kind = .module,
+                .mutable = false,
+                .span = import_decl.span,
+            }) catch {};
+        }
+    }
+
+    /// Import all public symbols from a module into current scope.
+    fn importAllSymbols(self: *TypeChecker, mod_symbols: ModuleSymbols, span: Span) void {
+        var iter = mod_symbols.symbols.iterator();
+        while (iter.next()) |entry| {
+            const sym = entry.value_ptr.*;
+            if (!sym.is_pub) continue;
+
+            // Check for conflicts
+            if (self.current_scope.lookupLocal(sym.name)) |existing| {
+                self.addError(.import_conflict, span, "import '{s}' conflicts with existing symbol defined at {d}:{d}", .{ sym.name, existing.span.line, existing.span.column });
+                continue;
+            }
+
+            // Add to scope based on symbol kind
+            const symbol_kind: Symbol.Kind = switch (sym.kind) {
+                .function => .function,
+                .struct_type, .enum_type, .trait_type, .type_alias => .type_,
+                .constant => .constant,
+            };
+
+            self.current_scope.define(.{
+                .name = sym.name,
+                .type_ = sym.type_ orelse self.type_builder.unknownType(),
+                .kind = symbol_kind,
+                .mutable = false,
+                .span = span,
+            }) catch {};
+        }
+    }
+
+    /// Import a specific symbol from a module into current scope.
+    fn importSpecificSymbol(self: *TypeChecker, mod_symbols: ModuleSymbols, item: ast.ImportItem, span: Span) void {
+        const sym = mod_symbols.symbols.get(item.name) orelse {
+            self.addError(.undefined_variable, item.span, "symbol '{s}' not found in module", .{item.name});
+            return;
+        };
+
+        if (!sym.is_pub) {
+            self.addError(.visibility_error, item.span, "symbol '{s}' is not public", .{item.name});
+            return;
+        }
+
+        // Use alias if provided, otherwise use original name
+        const local_name = item.alias orelse item.name;
+
+        // Check for conflicts
+        if (self.current_scope.lookupLocal(local_name)) |existing| {
+            self.addError(.import_conflict, span, "import '{s}' conflicts with existing symbol defined at {d}:{d}", .{ local_name, existing.span.line, existing.span.column });
+            return;
+        }
+
+        // Add to scope
+        const symbol_kind: Symbol.Kind = switch (sym.kind) {
+            .function => .function,
+            .struct_type, .enum_type, .trait_type, .type_alias => .type_,
+            .constant => .constant,
+        };
+
+        self.current_scope.define(.{
+            .name = local_name,
+            .type_ = sym.type_ orelse self.type_builder.unknownType(),
+            .kind = symbol_kind,
+            .mutable = false,
+            .span = span,
+        }) catch {};
+    }
+
+    // ========================================================================
     // Module Checking Entry Point
     // ========================================================================
 
     pub fn checkModule(self: *TypeChecker, module: ast.Module) void {
+        // Process imports first (for multi-file compilation)
+        self.processImports(module);
+
         // First pass: register all type declarations
         for (module.declarations) |decl| {
             switch (decl) {

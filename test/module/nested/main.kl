@@ -1,0 +1,9 @@
+// main.kl - Entry point that imports nested module
+
+import lib.math.{ add, multiply }
+
+fn main() -> i32 {
+    let sum: i32 = add(5, 3)
+    let product: i32 = multiply(4, 2)
+    return sum + product
+}
