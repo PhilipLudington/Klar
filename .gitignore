@@ -11,11 +11,9 @@ zig-out/
 .build-results.json
 .test-results.json
 .native-test-results.json
+.module-test-results.json
+.app-test-results.json
 .benchmark-results.json
 
 # LLVM IR output (when debugging)
 *.ll
-
-# Scratch/temporary test files
-scratch/
-.module-test-results.json
