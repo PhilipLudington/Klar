@@ -1,0 +1,52 @@
+// Test associated types in generic contexts (T.Item resolution)
+
+trait Container {
+    type Item
+    fn get_first(self: Self) -> Self.Item
+}
+
+struct IntBox {
+    value: i32
+}
+
+impl IntBox: Container {
+    type Item = i32
+
+    fn get_first(self: IntBox) -> i32 {
+        return self.value
+    }
+}
+
+struct StringBox {
+    value: string
+}
+
+impl StringBox: Container {
+    type Item = string
+
+    fn get_first(self: StringBox) -> string {
+        return self.value
+    }
+}
+
+fn extract[T: Container](container: T) -> T.Item {
+    return container.get_first()
+}
+
+fn main() -> i32 {
+    let int_box: IntBox = IntBox { value: 42 }
+    let num: i32 = extract(int_box)
+
+    if num != 42 {
+        return 1
+    }
+
+    let str_box: StringBox = StringBox { value: "hello" }
+    let text: string = extract(str_box)
+
+    if text != "hello" {
+        return 2
+    }
+
+    return 42
+}

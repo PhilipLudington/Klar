@@ -30,6 +30,9 @@ pub const Type = union(enum) {
     // Generic types
     type_var: TypeVar,
     applied: *AppliedType,
+    /// Associated type reference (e.g., T.Item where T is a type variable)
+    /// This is resolved to a concrete type during monomorphization.
+    associated_type_ref: *AssociatedTypeRef,
 
     // Reference-counted types
     rc: *RcType,
@@ -84,6 +87,11 @@ pub const Type = union(enum) {
                     if (!arg1.eql(arg2)) break :blk false;
                 }
                 break :blk true;
+            },
+            .associated_type_ref => |a| blk: {
+                const oa = other.associated_type_ref;
+                break :blk a.type_var.id == oa.type_var.id and
+                    std.mem.eql(u8, a.assoc_name, oa.assoc_name);
             },
             .rc => |r| r.inner.eql(other.rc.inner),
             .weak_rc => |w| w.inner.eql(other.weak_rc.inner),
@@ -173,7 +181,8 @@ pub const Type = union(enum) {
             // - Arc/WeakArc (thread-safe reference counting, must use .clone())
             // - Cell (provides interior mutability, has move semantics)
             // - Unknown/error types (conservative)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .unknown, .error_type => false,
+            // - Associated type refs (will be resolved during monomorphization)
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .unknown, .error_type, .associated_type_ref => false,
         };
     }
 };
@@ -434,6 +443,18 @@ pub const AppliedType = struct {
     args: []const Type,
 };
 
+/// Associated type reference (e.g., T.Item where T: Container)
+/// Used to represent associated types that depend on type variables,
+/// which are resolved to concrete types during monomorphization.
+pub const AssociatedTypeRef = struct {
+    /// The type variable that has the associated type bound (e.g., T in T.Item)
+    type_var: TypeVar,
+    /// The name of the associated type (e.g., "Item")
+    assoc_name: []const u8,
+    /// The trait that declares this associated type
+    trait: *TraitType,
+};
+
 // ============================================================================
 // Reference-Counted Types
 // ============================================================================
@@ -624,6 +645,14 @@ pub const TypeBuilder = struct {
         return .{ .applied = applied };
     }
 
+    // Associated type reference constructor
+    pub fn associatedTypeRefType(self: *TypeBuilder, type_var: TypeVar, assoc_name: []const u8, trait: *TraitType) !Type {
+        const ref = try self.arena.allocator().create(AssociatedTypeRef);
+        const name_copy = try self.arena.allocator().dupe(u8, assoc_name);
+        ref.* = .{ .type_var = type_var, .assoc_name = name_copy, .trait = trait };
+        return .{ .associated_type_ref = ref };
+    }
+
     // Reference-counted type constructors
     pub fn rcType(self: *TypeBuilder, inner: Type) !Type {
         const rc = try self.arena.allocator().create(RcType);
@@ -748,6 +777,11 @@ pub fn formatType(writer: anytype, t: Type) !void {
             try writer.writeAll("Cell[");
             try formatType(writer, c.inner);
             try writer.writeAll("]");
+        },
+        .associated_type_ref => |a| {
+            try writer.writeAll(a.type_var.name);
+            try writer.writeAll(".");
+            try writer.writeAll(a.assoc_name);
         },
         .void_ => try writer.writeAll("void"),
         .never => try writer.writeAll("!"),

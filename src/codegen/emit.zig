@@ -2369,6 +2369,10 @@ pub const Emitter = struct {
         if (std.mem.eql(u8, name, "f32")) return llvm.Types.float32(self.ctx);
         if (std.mem.eql(u8, name, "f64")) return llvm.Types.float64(self.ctx);
         if (std.mem.eql(u8, name, "bool")) return llvm.Types.int1(self.ctx);
+        if (std.mem.eql(u8, name, "string")) return llvm.Types.pointer(self.ctx);
+        if (std.mem.eql(u8, name, "char")) return llvm.Types.int32(self.ctx); // Unicode codepoint
+        if (std.mem.eql(u8, name, "isize")) return llvm.Types.int64(self.ctx);
+        if (std.mem.eql(u8, name, "usize")) return llvm.Types.int64(self.ctx);
 
         // Check if it's a registered struct type
         if (self.struct_types.get(name)) |struct_info| {
@@ -2519,6 +2523,19 @@ pub const Emitter = struct {
                         return self.getResultType(ok_type, err_type);
                     }
                     return llvm.Types.int32(self.ctx);
+                }
+
+                // Check if this is a monomorphized generic function call
+                if (self.type_checker) |checker| {
+                    if (checker.getCallResolution(call)) |mangled_name| {
+                        const mangled_z = self.allocator.dupeZ(u8, mangled_name) catch return EmitError.OutOfMemory;
+                        defer self.allocator.free(mangled_z);
+
+                        if (self.module.getNamedFunction(mangled_z)) |func| {
+                            const fn_type = llvm.getGlobalValueType(func);
+                            return llvm.getReturnType(fn_type);
+                        }
+                    }
                 }
 
                 const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
@@ -2853,6 +2870,12 @@ pub const Emitter = struct {
                     try buf.append(self.allocator, '$');
                     try self.appendCheckerTypeNameForMangling(buf, arg);
                 }
+            },
+            .associated_type_ref => |atr| {
+                // Format as TypeVar.AssocName for mangling (shouldn't normally reach here)
+                try buf.appendSlice(self.allocator, atr.type_var.name);
+                try buf.append(self.allocator, '_');
+                try buf.appendSlice(self.allocator, atr.assoc_name);
             },
             else => try buf.appendSlice(self.allocator, "unknown"),
         }
@@ -6921,6 +6944,11 @@ pub const Emitter = struct {
                 return llvm.Types.pointer(self.ctx);
             },
             .cell => llvm.Types.pointer(self.ctx),
+            .associated_type_ref => {
+                // Associated type refs should have been resolved during type checking.
+                // If we get here, it's an unresolved associated type - use pointer as fallback.
+                return llvm.Types.pointer(self.ctx);
+            },
         };
     }
 

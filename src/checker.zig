@@ -1525,6 +1525,42 @@ pub const TypeChecker = struct {
                 return self.type_builder.cellType(new_inner);
             },
 
+            // Associated type reference - resolve using trait impls
+            .associated_type_ref => |assoc_ref| {
+                // Look up what concrete type was substituted for the type variable
+                if (substitutions.get(assoc_ref.type_var.id)) |concrete_type| {
+                    // Get the struct/enum name from the concrete type
+                    const impl_type_name = switch (concrete_type) {
+                        .struct_ => |s| s.name,
+                        .enum_ => |e| e.name,
+                        .applied => |app| switch (app.base) {
+                            .struct_ => |s| s.name,
+                            .enum_ => |e| e.name,
+                            else => return typ, // Can't resolve associated type
+                        },
+                        else => return typ, // Can't resolve associated type for non-struct/enum
+                    };
+
+                    // Build the key for trait_impls lookup: "TypeName:TraitName"
+                    const impl_key = self.makeTraitImplKey(impl_type_name, assoc_ref.trait.name);
+                    defer self.allocator.free(impl_key);
+
+                    // Look up the trait impl for this concrete type
+                    if (self.trait_impls.get(impl_key)) |impls| {
+                        for (impls.items) |impl_info| {
+                            // Find the associated type binding
+                            for (impl_info.associated_type_bindings) |binding| {
+                                if (std.mem.eql(u8, binding.name, assoc_ref.assoc_name)) {
+                                    return binding.concrete_type;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Couldn't resolve - return as-is (will be an error later)
+                return typ;
+            },
+
             // Struct/Enum/Trait - return as-is (monomorphization creates applied types)
             .struct_, .enum_, .trait_ => typ,
         };
@@ -1564,6 +1600,8 @@ pub const TypeChecker = struct {
             .arc => |arc| self.containsTypeVar(arc.inner),
             .weak_arc => |warc| self.containsTypeVar(warc.inner),
             .cell => |c| self.containsTypeVar(c.inner),
+            // Associated type ref contains a type variable reference
+            .associated_type_ref => true,
             .struct_, .enum_, .trait_ => false,
         };
     }
@@ -1686,6 +1724,24 @@ pub const TypeChecker = struct {
                     }
                 }
                 return true;
+            },
+
+            .associated_type_ref => |assoc_ref| {
+                // Associated type ref acts like a type variable for unification purposes
+                // Try to resolve it first using existing substitutions
+                if (substitutions.get(assoc_ref.type_var.id)) |_| {
+                    // Resolve the associated type and compare
+                    const resolved = self.substituteTypeParams(.{ .associated_type_ref = assoc_ref }, substitutions.*) catch {
+                        return false;
+                    };
+                    if (resolved == .associated_type_ref) {
+                        // Couldn't resolve - check if types match
+                        return false;
+                    }
+                    return resolved.eql(concrete);
+                }
+                // No substitution for the type variable yet - can't unify
+                return false;
             },
 
             .struct_, .enum_, .trait_ => {
@@ -1927,10 +1983,11 @@ pub const TypeChecker = struct {
                         for (tv.bounds) |bound_trait| {
                             for (bound_trait.associated_types) |assoc| {
                                 if (std.mem.eql(u8, assoc.name, q.member)) {
-                                    // Found the associated type - for now return unknown
-                                    // since we don't have the concrete binding yet
-                                    // This will be resolved during monomorphization
-                                    return self.type_builder.unknownType();
+                                    // Found the associated type - create an AssociatedTypeRef
+                                    // that will be resolved during monomorphization
+                                    return self.type_builder.associatedTypeRefType(tv, q.member, bound_trait) catch {
+                                        return self.type_builder.unknownType();
+                                    };
                                 }
                             }
                         }
@@ -3227,6 +3284,23 @@ pub const TypeChecker = struct {
                 if (return_type == .type_var and std.mem.eql(u8, return_type.type_var.name, "Self")) {
                     return object_type; // Self becomes the bounded type
                 }
+
+                // If return type is unknown, check if it's a Self.Item type
+                // that should become T.Item (associated type ref) for the caller's type variable
+                if (return_type == .unknown) {
+                    // Check if this trait has associated types
+                    // If so, create an AssociatedTypeRef for the first associated type
+                    // (This handles the common case of Self.Item in trait methods)
+                    if (found_trait.?.associated_types.len > 0) {
+                        // For now, assume the unknown return type is the first associated type
+                        // A more robust solution would track which associated type Self.X refers to
+                        const assoc = found_trait.?.associated_types[0];
+                        return self.type_builder.associatedTypeRefType(type_var, assoc.name, found_trait.?) catch {
+                            return self.type_builder.unknownType();
+                        };
+                    }
+                }
+
                 return return_type;
             }
         }

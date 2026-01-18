@@ -97,7 +97,7 @@
 
 **Objective:** Implement trait definitions, implementations, and bounds.
 
-**Status:** 🟡 In Progress. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance, basic associated types, Self.Item resolution). Remaining: associated types in generic contexts.
+**Status:** ✅ Complete. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance, associated types including generic context resolution via `T.Item`).
 
 ### Trait Registry
 - [x] Create traits.zig module for trait management (implemented in checker.zig)
@@ -128,7 +128,7 @@
 - [x] Support `type Item` declarations in traits
 - [x] Require associated type definitions in impl blocks
 - [x] Resolve `Self.Item` references in trait methods
-- [ ] Handle associated types in generic contexts
+- [x] Handle associated types in generic contexts (T.Item resolution via AssociatedTypeRef)
 
 ### Method Resolution
 - [x] Resolve trait method calls on concrete types (via struct_methods)
