@@ -1137,6 +1137,92 @@ pub const Parser = struct {
     }
 
     // ========================================================================
+    // REPL Input Parsing
+    // ========================================================================
+
+    /// Input type for REPL: can be expression, statement, or declaration
+    pub const ReplInput = union(enum) {
+        expr: ast.Expr,
+        stmt: ast.Stmt,
+        decl: ast.Decl,
+        command: Command,
+        empty,
+    };
+
+    /// REPL meta-commands
+    pub const Command = struct {
+        kind: Kind,
+        arg: ?[]const u8,
+
+        pub const Kind = enum {
+            help,
+            quit,
+            reset,
+            type_,
+            list,
+            load,
+        };
+    };
+
+    /// Parse REPL input: either an expression, statement, or declaration.
+    /// Tries to determine the intent from the first token(s).
+    pub fn parseReplInput(self: *Parser) ParseError!ReplInput {
+        // Empty input
+        if (self.check(.eof)) {
+            return .empty;
+        }
+
+        // Check for declaration keywords first (fn, struct, enum, trait, impl, type, const, pub)
+        if (self.check(.fn_) or self.check(.struct_) or self.check(.enum_) or
+            self.check(.trait) or self.check(.impl) or self.check(.type_) or
+            self.check(.const_) or self.check(.pub_))
+        {
+            const decl = try self.parseDeclaration();
+            return .{ .decl = decl };
+        }
+
+        // Check for statement keywords (let, var, return, break, continue, loops, if, match)
+        if (self.check(.let) or self.check(.var_) or self.check(.return_) or
+            self.check(.break_) or self.check(.continue_) or self.check(.for_) or
+            self.check(.while_) or self.check(.loop) or self.check(.if_) or
+            self.check(.match))
+        {
+            const stmt = try self.parseStatement();
+            return .{ .stmt = stmt };
+        }
+
+        // Otherwise, try to parse as an expression
+        const expr = try self.parseExpression();
+
+        // If next token is '=' or an assignment operator, parse as assignment statement
+        if (self.check(.eq) or self.check(.plus_eq) or self.check(.minus_eq) or
+            self.check(.star_eq) or self.check(.slash_eq) or self.check(.percent_eq))
+        {
+            const op: ast.BinaryOp = switch (self.current.kind) {
+                .eq => .assign,
+                .plus_eq => .add_assign,
+                .minus_eq => .sub_assign,
+                .star_eq => .mul_assign,
+                .slash_eq => .div_assign,
+                .percent_eq => .mod_assign,
+                else => unreachable,
+            };
+            self.advance();
+            const value = try self.parseExpression();
+
+            const assignment = try self.create(ast.Assignment, .{
+                .target = expr,
+                .op = op,
+                .value = value,
+                .span = ast.Span.merge(expr.span(), value.span()),
+            });
+            return .{ .stmt = .{ .assignment = assignment } };
+        }
+
+        return .{ .expr = expr };
+    }
+
+    // ========================================================================
     // Statement parsing
     // ========================================================================
 

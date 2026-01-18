@@ -16,6 +16,7 @@ const opt = @import("opt/mod.zig");
 const module_resolver = @import("module_resolver.zig");
 const ModuleResolver = module_resolver.ModuleResolver;
 const ModuleInfo = module_resolver.ModuleInfo;
+const Repl = @import("repl.zig").Repl;
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -41,25 +42,33 @@ pub fn main() !void {
 
     const command = args[1];
 
-    if (std.mem.eql(u8, command, "run") or std.mem.eql(u8, command, "run-vm")) {
+    if (std.mem.eql(u8, command, "run")) {
         if (args.len < 3) {
             try getStdErr().writeAll("Error: no input file\n");
             return;
         }
         // Check for flags
+        var use_vm = false;
         var debug_mode = false;
         var use_interpreter = false;
         for (args) |arg| {
-            if (std.mem.eql(u8, arg, "--debug")) {
+            if (std.mem.eql(u8, arg, "--vm")) {
+                use_vm = true;
+            } else if (std.mem.eql(u8, arg, "--debug")) {
                 debug_mode = true;
             } else if (std.mem.eql(u8, arg, "--interpret")) {
                 use_interpreter = true;
             }
         }
-        if (use_interpreter) {
-            try runInterpreterFile(allocator, args[2]);
+        if (use_vm or use_interpreter) {
+            if (use_interpreter) {
+                try runInterpreterFile(allocator, args[2]);
+            } else {
+                try runVmFile(allocator, args[2], debug_mode);
+            }
         } else {
-            try runVmFile(allocator, args[2], debug_mode);
+            // Default: compile to native and run
+            try runNativeFile(allocator, args[2]);
         }
     } else if (std.mem.eql(u8, command, "tokenize")) {
         if (args.len < 3) {
@@ -150,6 +159,8 @@ pub fn main() !void {
             return;
         }
         try disasmFile(allocator, args[2]);
+    } else if (std.mem.eql(u8, command, "repl")) {
+        try runRepl(allocator);
     } else if (std.mem.eql(u8, command, "test")) {
         try getStdErr().writeAll("Test not yet implemented\n");
     } else if (std.mem.eql(u8, command, "fmt")) {
@@ -246,6 +257,23 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8) !void {
             };
         }
     }
+}
+
+fn runRepl(allocator: std.mem.Allocator) !void {
+    var repl = Repl.init(allocator) catch {
+        try getStdErr().writeAll("Failed to initialize REPL\n");
+        return;
+    };
+    defer repl.deinit();
+
+    repl.run() catch |err| {
+        // Normal exit via :quit doesn't need error message
+        if (err != error.QuitRepl) {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "REPL error: {s}\n", .{@errorName(err)}) catch "REPL error\n";
+            try getStdErr().writeAll(msg);
+        }
+    };
 }
 
 fn tokenizeFile(allocator: std.mem.Allocator, path: []const u8) !void {
@@ -859,9 +887,67 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     // Clean up object file (only on success)
     std.fs.cwd().deleteFile(obj_path) catch {};
 
-    var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "Built {s}\n", .{exe_path}) catch "Built executable\n";
-    try stdout.writeAll(msg);
+    if (!options.quiet) {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Built {s}\n", .{exe_path}) catch "Built executable\n";
+        try stdout.writeAll(msg);
+    }
+}
+
+fn runNativeFile(allocator: std.mem.Allocator, path: []const u8) !void {
+    // Generate a unique temp path for the executable
+    const timestamp = std.time.timestamp();
+    var temp_path_buf: [256]u8 = undefined;
+    const temp_path = std.fmt.bufPrint(&temp_path_buf, "/tmp/klar-run-{d}", .{timestamp}) catch {
+        try getStdErr().writeAll("Failed to create temp path\n");
+        return;
+    };
+
+    // Build to temp path quietly
+    const options = codegen.CompileOptions{
+        .output_path = temp_path,
+        .source_path = path,
+        .quiet = true,
+    };
+
+    // Build the executable
+    buildNative(allocator, path, options) catch {
+        // Errors already printed by buildNative
+        return;
+    };
+
+    // Execute the compiled binary
+    const argv = [_][]const u8{temp_path};
+    var child = std.process.Child.init(&argv, allocator);
+    child.spawn() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Failed to execute: {s}\n", .{@errorName(err)}) catch "Failed to execute\n";
+        try getStdErr().writeAll(msg);
+        // Clean up temp file
+        std.fs.cwd().deleteFile(temp_path) catch {};
+        return;
+    };
+
+    // Wait for completion
+    const result = child.wait() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Failed to wait: {s}\n", .{@errorName(err)}) catch "Failed to wait\n";
+        try getStdErr().writeAll(msg);
+        // Clean up temp file
+        std.fs.cwd().deleteFile(temp_path) catch {};
+        return;
+    };
+
+    // Clean up temp file
+    std.fs.cwd().deleteFile(temp_path) catch {};
+
+    // Exit with the program's exit code
+    const exit_code: u8 = switch (result.Exited) {
+        0...255 => |code| code,
+    };
+    if (exit_code != 0) {
+        std.process.exit(exit_code);
+    }
 }
 
 fn parseFile(allocator: std.mem.Allocator, path: []const u8) !void {
@@ -1347,7 +1433,8 @@ fn printUsage() !void {
         \\Usage: klar <command> [options]
         \\
         \\Commands:
-        \\  run <file>           Run a Klar program (bytecode VM)
+        \\  run <file>           Run a Klar program (native compilation)
+        \\  repl                 Interactive REPL (Read-Eval-Print Loop)
         \\  tokenize <file>      Tokenize a file (lexer output)
         \\  parse <file>         Parse a file (AST output)
         \\  check <file>         Type check a file
@@ -1372,8 +1459,9 @@ fn printUsage() !void {
         \\  --verbose-opt        Show optimization statistics
         \\
         \\Run Options:
-        \\  --debug              Enable instruction tracing
-        \\  --interpret          Use tree-walking interpreter instead of VM
+        \\  --vm                 Use bytecode VM instead of native
+        \\  --debug              Enable instruction tracing (VM only)
+        \\  --interpret          Use tree-walking interpreter (VM only)
         \\
         \\Target Triples:
         \\  x86_64-linux-gnu     Linux on x86_64
@@ -1421,4 +1509,5 @@ test {
     _ = @import("disasm.zig");
     _ = @import("ir/mod.zig");
     _ = @import("opt/mod.zig");
+    _ = @import("repl.zig");
 }

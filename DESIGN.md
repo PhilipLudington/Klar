@@ -50,6 +50,34 @@ Klar is not a systems language (like C, Rust, or Zig). It targets the same space
 | Overloading complexity | No overloading, use generics |
 | Build system | In-language or convention-based |
 
+### AI-Native Tooling
+
+Traditional languages assume a human writes code, runs it, reads errors, and iterates. Klar assumes an AI may be generating code and benefits from programmatic verification.
+
+**The AI Verification Loop:**
+
+```
+AI generates code → AI tests in REPL → AI fixes internally → User gets working code
+```
+
+A REPL (Read-Eval-Print Loop) enables AI assistants to:
+
+1. **Self-verify** — Test generated code before presenting to the user
+2. **Explore types** — Probe APIs interactively (`typeof(response.headers)`)
+3. **Build incrementally** — Construct complex code piece by piece, validating each step
+4. **Reduce roundtrips** — Catch mistakes before the user sees them
+
+This transforms the AI from "code suggester" to "code author" — it can validate its own work rather than hoping it compiles.
+
+**Design implications:**
+
+- **Fast startup** — REPL should launch instantly for rapid iteration
+- **Stateful sessions** — Definitions persist for incremental exploration
+- **Rich introspection** — Types, values, and structures easily inspectable
+- **Sandboxed execution** — Safe to run untrusted generated code
+
+The same REPL that aids AI generation also benefits human learners exploring the language interactively.
+
 ---
 
 ## Lexical Elements

@@ -44,6 +44,8 @@ pub const CompileOptions = struct {
     /// Target triple for cross-compilation (e.g., "x86_64-linux-gnu").
     /// If null, compiles for the host platform.
     target_triple: ?[]const u8 = null,
+    /// Suppress "Built" message (for klar run).
+    quiet: bool = false,
 };
 
 /// Convenience re-exports

@@ -1041,6 +1041,32 @@ pub const TypeChecker = struct {
         return self.errors.items.len > 0;
     }
 
+    /// Clear all accumulated errors (useful for REPL after reporting)
+    pub fn clearErrors(self: *TypeChecker) void {
+        // Free error messages
+        for (self.errors.items) |err| {
+            if (err.message.len > 0 and !std.mem.eql(u8, err.message, "error formatting message")) {
+                self.allocator.free(err.message);
+            }
+        }
+        self.errors.clearRetainingCapacity();
+    }
+
+    /// Resolve a type expression to a Type, returning void on error
+    pub fn resolveType(self: *TypeChecker, type_expr: ast.TypeExpr) Type {
+        return self.resolveTypeExpr(type_expr) catch {
+            return .void_;
+        };
+    }
+
+    /// Look up a symbol by name and return its type (if found)
+    pub fn lookupType(self: *TypeChecker, name: []const u8) ?Type {
+        if (self.current_scope.lookup(name)) |sym| {
+            return sym.type_;
+        }
+        return null;
+    }
+
     // ========================================================================
     // Scope Management
     // ========================================================================

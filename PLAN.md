@@ -187,41 +187,43 @@
 
 **Objective:** Implement multi-file compilation with imports and exports.
 
+**Status:** ✅ Core functionality complete. Multi-file compilation works with selective imports, visibility enforcement, and topological ordering.
+
 ### Module Resolver
-- [ ] Create module_resolver.zig for module discovery
-- [ ] Implement file-to-module name mapping
-- [ ] Build module dependency graph
-- [ ] Detect and report circular imports
+- [x] Create module_resolver.zig for module discovery
+- [x] Implement file-to-module name mapping
+- [x] Build module dependency graph
+- [x] Detect and report circular imports
 
 ### Module Declaration
 - [ ] Parse `module math.vector` declarations
 - [ ] Validate module name matches file path
-- [ ] Support implicit module names from file location
-- [ ] Handle mod.kl for directory modules
+- [x] Support implicit module names from file location
+- [x] Handle mod.kl for directory modules
 
 ### Import Resolution
-- [ ] Parse `import std.collections.List` statements
-- [ ] Resolve import paths to source files
-- [ ] Search in: current dir, std library, dependencies
-- [ ] Handle selective imports: `import std.io.{ read, write }`
+- [x] Parse `import std.collections.List` statements
+- [x] Resolve import paths to source files
+- [x] Search in: current dir, std library, dependencies
+- [x] Handle selective imports: `import std.io.{ read, write }`
 
 ### Import Variants
-- [ ] Implement glob imports: `import std.collections.*`
-- [ ] Implement aliased imports: `import std.collections.HashMap as Map`
+- [x] Implement glob imports: `import std.collections.*`
+- [x] Implement aliased imports: `import std.collections.HashMap as Map`
 - [ ] Implement relative imports: `import .sibling`, `import ..parent.child`
 - [ ] Handle re-exports from modules
 
 ### Visibility System
-- [ ] Implement `pub fn`, `pub struct` visibility
-- [ ] Check visibility at import resolution
+- [x] Implement `pub fn`, `pub struct` visibility
+- [x] Check visibility at import resolution
 - [ ] Support `pub(package)` for internal APIs
-- [ ] Report errors for private item access
+- [x] Report errors for private item access
 
 ### Multi-File Compilation
-- [ ] Compile modules in dependency order
-- [ ] Link multiple object files into single binary
-- [ ] Share type information across modules
-- [ ] Handle cross-module references
+- [x] Compile modules in dependency order
+- [x] Link multiple object files into single binary
+- [x] Share type information across modules
+- [x] Handle cross-module references
 
 ### Project Structure
 - [ ] Support standard project layout (src/, tests/, std/)
@@ -229,14 +231,13 @@
 - [ ] Handle package manifest (klar.toml)
 
 ### Testing
-- [ ] Test: can compile multi-file projects
-- [ ] Test: imports resolve correctly
-- [ ] Test: circular imports detected and reported
-- [ ] Test: visibility enforced correctly
+- [x] Test: can compile multi-file projects
+- [x] Test: imports resolve correctly
+- [x] Test: circular imports detected and reported
+- [x] Test: visibility enforced correctly
 
-**Files to Create:**
-- `src/module_resolver.zig` - NEW: Module discovery, import resolution
-- `src/project.zig` - NEW: Project/package handling
+**Files Created:**
+- `src/module_resolver.zig` - Module discovery, import resolution ✓
 
 ---
 
@@ -642,6 +643,124 @@ tools/
 
 ---
 
+## Milestone 10: REPL
+
+**Objective:** Interactive Read-Eval-Print Loop for exploration and AI-assisted development.
+
+**Status:** ✅ Core functionality complete. Basic REPL works with interpreter backend.
+
+The REPL is central to Klar's AI-native philosophy. It enables AI assistants to verify generated code before presenting it to users, transforming AI from "code suggester" to "code author."
+
+### Core REPL Loop
+- [x] Implement `klar repl` command
+- [x] Parse and evaluate expressions interactively
+- [x] Display results with type information
+- [ ] Handle multi-line input (detect incomplete expressions)
+- [x] Graceful error recovery (don't exit on errors)
+
+### Stateful Sessions
+- [x] Persist variable bindings across inputs
+- [x] Persist function definitions across inputs
+- [x] Persist type/struct definitions across inputs
+- [x] Support `:reset` command to clear state
+- [x] Support `:load <file>` to load definitions from file (single-file only)
+
+### Introspection Commands
+- [x] `:type <expr>` - Show type of expression without evaluating
+- [ ] `:info <name>` - Show definition/signature of binding
+- [x] `:list` - Show all current bindings
+- [x] `:help` - Show available commands
+
+### AI Integration Features
+- [ ] Fast startup (< 100ms target)
+- [ ] Machine-readable output mode (JSON)
+- [ ] Sandboxed execution (no filesystem/network by default)
+- [ ] Timeout for runaway computations
+- [ ] Memory limits for safety
+
+### Implementation Notes
+- Uses interpreter backend (simpler, adequate for interactive use)
+- Source strings persisted for symbol name stability
+- Multi-file imports deferred to stretch goals (requires ModuleResolver integration)
+
+### Testing
+- [x] Test: can define and call functions interactively
+- [x] Test: state persists across inputs
+- [x] Test: errors don't crash the session
+- [x] Test: introspection commands work correctly
+
+**Files Created:**
+```
+src/repl.zig             # REPL loop and command handling ✓
+```
+
+---
+
+## Milestone 11: Comptime
+
+**Objective:** Compile-time code evaluation and generation.
+
+Comptime enables powerful metaprogramming without macros—code that runs at compile time to generate code, validate invariants, or compute constants.
+
+### Comptime Blocks
+- [ ] Parse `comptime { ... }` blocks
+- [ ] Evaluate comptime blocks during type checking
+- [ ] Use interpreter for comptime evaluation
+- [ ] Comptime blocks can contain any valid Klar code
+- [ ] Results must be compile-time known
+
+### Comptime Functions
+- [ ] Mark functions as `comptime fn`
+- [ ] Comptime functions can only call other comptime functions
+- [ ] Comptime functions execute at compile time when called
+- [ ] Return values become compile-time constants
+
+### Comptime Parameters
+- [ ] Support `comptime` parameter modifier
+- [ ] `fn foo(comptime n: i32)` - n must be known at compile time
+- [ ] Enable type-level computation based on values
+
+### Compile-Time Reflection
+- [ ] `@typeInfo(T)` - Get type metadata at comptime
+- [ ] `@typeName(T)` - Get string name of type
+- [ ] `@hasField(T, "name")` - Check if struct has field
+- [ ] `@fields(T)` - Get list of struct fields
+
+### Code Generation
+- [ ] Comptime can generate struct fields
+- [ ] Comptime can generate function bodies
+- [ ] Comptime can generate match arms
+- [ ] Enable derive-like functionality without macros
+
+### Comptime Assertions
+- [ ] `comptime assert(condition)` - Compile error if false
+- [ ] `@compileError("message")` - Emit custom compile error
+- [ ] Validate invariants at compile time
+
+### Integration with Generics
+- [ ] Comptime expressions in generic bounds
+- [ ] Conditional compilation based on type properties
+- [ ] Generate specialized implementations
+
+### Implementation Strategy
+- [ ] Use interpreter for comptime (simpler integration with type checker)
+- [ ] Interpreter can directly work with AST during type checking phase
+- [ ] VM could be used later if comptime performance becomes a bottleneck
+- [ ] Comptime runs once per compilation, so speed is less critical than REPL
+
+### Testing
+- [ ] Test: comptime blocks evaluate correctly
+- [ ] Test: comptime functions produce constants
+- [ ] Test: @typeInfo returns correct metadata
+- [ ] Test: comptime assertions catch errors at compile time
+
+**Files to Modify:**
+- `src/checker.zig` - Comptime evaluation during type checking
+- `src/interpreter.zig` - Used for comptime evaluation
+- `src/ast.zig` - Comptime AST nodes
+
+---
+
 ## Stretch Goals
 
 These are valuable but not required for Phase 4 completion:
@@ -653,27 +772,22 @@ These are valuable but not required for Phase 4 completion:
 - [ ] Implement .await syntax
 - [ ] Implement spawn for concurrent tasks
 
-### Comptime
-- [ ] Implement comptime block evaluation
-- [ ] Support comptime function execution
-- [ ] Enable compile-time code generation
-- [ ] Replace need for macros
-
 ### Self-Hosting
 - [ ] Port lexer to Klar
 - [ ] Port parser to Klar
 - [ ] Port checker to Klar
 - [ ] Full self-hosted compiler
 
-### REPL
-- [ ] Implement read-eval-print loop
-- [ ] Support incremental compilation
-- [ ] Maintain REPL state between expressions
-
 ### WebAssembly Target
 - [ ] Add WASM backend to codegen
 - [ ] Handle WASM-specific ABI
 - [ ] Test in browser/Node.js
+
+### REPL Enhancements
+- [ ] Add multi-file import support (integrate ModuleResolver)
+- [ ] Add tab completion for identifiers
+- [ ] Add history persistence across sessions
+- [ ] Add multi-line input support for function/struct definitions
 
 ---
 
@@ -681,15 +795,17 @@ These are valuable but not required for Phase 4 completion:
 
 Based on dependencies:
 
-1. **Milestone 1: Generics** (foundation for everything)
-2. **Milestone 3: Modules** (can start in parallel, needed for stdlib)
-3. **Milestone 2: Traits** (needs generics)
-4. **Milestone 4: Stdlib Core** (needs generics, traits, modules)
-5. **Milestone 6: Iterators** (needs traits)
-6. **Milestone 7: Error Handling** (needs traits)
-7. **Milestone 5: Stdlib I/O** (needs core)
-8. **Milestone 8: Package Manager** (needs modules)
-9. **Milestone 9: Tooling** (needs stable language)
+1. **Milestone 1: Generics** (foundation for everything) ✅
+2. **Milestone 2: Traits** (needs generics) ✅
+3. **Milestone 3: Modules** (needed for stdlib) ✅
+4. **Milestone 10: REPL** (uses interpreter, enables AI workflow) ✅
+5. **Milestone 11: Comptime** (uses interpreter, enables metaprogramming)
+6. **Milestone 4: Stdlib Core** (needs generics, traits, modules)
+7. **Milestone 6: Iterators** (needs traits)
+8. **Milestone 7: Error Handling** (needs traits)
+9. **Milestone 5: Stdlib I/O** (needs core)
+10. **Milestone 8: Package Manager** (needs modules)
+11. **Milestone 9: Tooling** (needs stable language)
 
 ---
 
@@ -700,8 +816,14 @@ Phase 4 is complete when:
 **Language Completeness:**
 - [x] Generic functions and types work correctly
 - [x] Traits can be defined and implemented
-- [ ] Multi-file projects compile
+- [x] Multi-file projects compile
 - [ ] Standard library provides core functionality
+- [ ] Comptime enables compile-time metaprogramming
+
+**AI-Native Development:**
+- [x] REPL provides interactive code exploration
+- [x] AI assistants can verify code before presenting to users
+- [x] Fast feedback loop for iterative development
 
 **Usability:**
 - [ ] Can write non-trivial programs (CLI tools, utilities)
