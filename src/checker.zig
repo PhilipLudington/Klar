@@ -293,6 +293,11 @@ pub const TypeChecker = struct {
     /// Maps BuiltinCall AST node pointers to their evaluated compile-time values.
     comptime_builtin_values: std.AutoHashMapUnmanaged(*ast.BuiltinCall, ComptimeValue),
 
+    /// Storage for compile-time constant values.
+    /// Maps constant names to their evaluated compile-time values.
+    /// This allows comptime blocks and expressions to reference outer scope constants.
+    constant_values: std.StringHashMapUnmanaged(ComptimeValue),
+
     /// Represents a compile-time evaluated value.
     pub const ComptimeValue = union(enum) {
         /// Integer with type info preserved
@@ -494,6 +499,7 @@ pub const TypeChecker = struct {
             .comptime_functions = .{},
             .comptime_call_values = .{},
             .comptime_builtin_values = .{},
+            .constant_values = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -712,6 +718,15 @@ pub const TypeChecker = struct {
             }
         }
         self.comptime_builtin_values.deinit(self.allocator);
+
+        // Clean up constant values (free allocated strings)
+        var constant_iter = self.constant_values.valueIterator();
+        while (constant_iter.next()) |cv| {
+            if (cv.* == .string) {
+                self.allocator.free(cv.string);
+            }
+        }
+        self.constant_values.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -4015,17 +4030,16 @@ pub const TypeChecker = struct {
     }
 
     /// Populate interpreter environment with constants from the current scope.
-    /// Currently a no-op as we start with a fresh interpreter environment.
-    /// Future enhancement: copy constants from the type-checker scope to the interpreter.
+    /// Copies compile-time evaluated constants to the interpreter's global environment.
     fn populateInterpreterEnv(self: *TypeChecker, interp: *Interpreter) void {
-        // Silence unused parameter warnings - these will be used in future enhancements
-        _ = self;
-        _ = interp;
-        // For now, the interpreter starts with a fresh environment with only builtins.
-        // To access outer constants, we would need to:
-        // 1. Store AST nodes for constant definitions in the Symbol table
-        // 2. Re-evaluate those AST nodes in the interpreter
-        // This is a limitation - comptime blocks currently can only use literals and builtins.
+        // Copy all evaluated constant values to the interpreter
+        var iter = self.constant_values.iterator();
+        while (iter.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const cv = entry.value_ptr.*;
+            const value = self.comptimeValueToInterpreterValue(cv);
+            interp.global_env.define(name, value, false) catch {};
+        }
     }
 
     /// Evaluate a call to a comptime function at compile time.
@@ -4118,9 +4132,10 @@ pub const TypeChecker = struct {
                 return self.evaluateComptimeBinaryOp(b.op, left, right);
             },
             .identifier => |ident| {
-                // Check if this identifier refers to a const with a known value
-                // For now, only support literals - comptime function parameters are handled separately
-                _ = ident;
+                // Check if this identifier refers to a const with a known comptime value
+                if (self.constant_values.get(ident.name)) |cv| {
+                    return self.comptimeValueToInterpreterValue(cv);
+                }
                 return null;
             },
             .call => |c| {
@@ -5830,6 +5845,13 @@ pub const TypeChecker = struct {
 
         if (const_decl.type_ != null and !declared_type.eql(value_type)) {
             self.addError(.type_mismatch, const_decl.span, "constant type mismatch", .{});
+        }
+
+        // Try to evaluate the constant at compile time and store it for comptime access
+        if (self.evaluateComptimeExpr(const_decl.value)) |interp_value| {
+            if (self.valueToComptimeValue(interp_value, const_decl.span)) |comptime_val| {
+                self.constant_values.put(self.allocator, const_decl.name, comptime_val) catch {};
+            }
         }
 
         self.current_scope.define(.{

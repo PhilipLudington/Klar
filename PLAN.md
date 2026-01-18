@@ -710,7 +710,7 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [x] Use interpreter for comptime evaluation
 - [x] Comptime blocks can contain literals, arithmetic, and boolean operations
 - [x] Results are stored and emitted as compile-time constants in codegen
-- [ ] Support accessing outer scope constants (current limitation: fresh interpreter environment)
+- [x] Support accessing outer scope constants (populateInterpreterEnv copies constant_values to interpreter)
 - [ ] Support complex types (structs, arrays, etc.) - only primitives currently
 
 ### Comptime Functions
@@ -760,6 +760,7 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [x] Test: @typeInfo returns correct metadata (test/native/typeinfo_basic.kl, typeinfo_struct.kl, typeinfo_enum.kl)
 - [x] Test: comptime parameters work correctly (test/native/comptime_param.kl)
 - [x] Test: comptime assertions catch errors at compile time (test/native/comptime_assert.kl)
+- [x] Test: comptime blocks can access outer scope constants (test/native/comptime_const_access.kl)
 
 **Files Modified:**
 - `src/ast.zig` - Added is_comptime field to FunctionDecl ✓

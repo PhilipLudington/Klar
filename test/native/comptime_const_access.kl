@@ -1,0 +1,50 @@
+// Test comptime block access to outer scope constants
+
+// Constants defined at module scope
+const SIZE: i32 = 10
+const MULTIPLIER: i32 = 5
+const OFFSET: i32 = 3
+const PI_APPROX: f64 = 3.14159
+const FLAG: bool = true
+const NAME: string = "test"
+
+fn main() -> i32 {
+    // Test 1: Access single constant in comptime block
+    let x: i32 = @{ SIZE }
+    if x != 10 {
+        return 1
+    }
+
+    // Test 2: Use constants in arithmetic expression
+    let y: i32 = @{ SIZE * MULTIPLIER }
+    if y != 50 {
+        return 2
+    }
+
+    // Test 3: More complex expression with multiple constants
+    let z: i32 = @{ SIZE * MULTIPLIER + OFFSET }
+    if z != 53 {
+        return 3
+    }
+
+    // Test 4: Float constant access
+    let pi: f64 = @{ PI_APPROX }
+    if pi < 3.14 or pi > 3.15 {
+        return 4
+    }
+
+    // Test 5: Boolean constant access
+    let flag: bool = @{ FLAG }
+    if not flag {
+        return 5
+    }
+
+    // Test 6: Boolean operations with constants
+    let result: bool = @{ FLAG and true }
+    if not result {
+        return 6
+    }
+
+    // All tests passed
+    return 0
+}
