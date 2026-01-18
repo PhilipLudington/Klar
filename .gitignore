@@ -18,3 +18,4 @@ zig-out/
 
 # Scratch/temporary test files
 scratch/
+.module-test-results.json
