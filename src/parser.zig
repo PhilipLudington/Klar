@@ -1969,6 +1969,9 @@ pub const Parser = struct {
         while (true) {
             const param_span = self.spanFromToken(self.current);
 
+            // Check for optional comptime modifier
+            const is_comptime = self.match(.comptime_);
+
             // Handle 'self' and regular identifiers as parameter names
             const param_name = if (self.match(.self))
                 "self"
@@ -1988,7 +1991,7 @@ pub const Parser = struct {
                 .name = param_name,
                 .type_ = param_type,
                 .default_value = default_value,
-                .is_comptime = false, // TODO: parse comptime modifier
+                .is_comptime = is_comptime,
                 .span = param_span,
             });
 

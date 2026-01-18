@@ -1,0 +1,37 @@
+// Test comptime parameters
+// Functions can require parameters to be known at compile time
+
+// Simple function with a comptime parameter
+fn double_comptime(comptime n: i32) -> i32 {
+    return n * 2
+}
+
+// Function with mixed comptime and runtime parameters
+fn add_offset(comptime offset: i32, value: i32) -> i32 {
+    return value + offset
+}
+
+// Function that uses comptime parameter in an expression
+fn scale_by(comptime factor: i32, x: i32, y: i32) -> i32 {
+    return (x + y) * factor
+}
+
+fn main() {
+    // These should work - compile-time known arguments
+    let doubled: i32 = double_comptime(5)
+    assert_eq(doubled, 10)
+
+    let doubled2: i32 = double_comptime(100)
+    assert_eq(doubled2, 200)
+
+    // Mixed comptime and runtime - comptime arg is literal, runtime arg is variable
+    var runtime_val: i32 = 50
+    let with_offset: i32 = add_offset(10, runtime_val)
+    assert_eq(with_offset, 60)
+
+    // Multiple runtime args with comptime factor
+    let scaled: i32 = scale_by(3, 4, 6)
+    assert_eq(scaled, 30)  // (4 + 6) * 3 = 30
+
+    println("All comptime parameter tests passed!")
+}

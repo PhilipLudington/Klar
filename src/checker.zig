@@ -2523,6 +2523,18 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Check comptime parameters receive comptime-known arguments
+        if (func.comptime_params != 0) {
+            for (call.args, 0..) |arg, i| {
+                if (i < 64 and (func.comptime_params & (@as(u64, 1) << @intCast(i))) != 0) {
+                    // This parameter is comptime, verify argument is comptime-known
+                    if (self.evaluateComptimeExpr(arg) == null) {
+                        self.addError(.comptime_error, arg.span(), "argument to comptime parameter must be comptime-known", .{});
+                    }
+                }
+            }
+        }
+
         // Check if this is a generic function call (has type variables)
         const is_generic = self.containsTypeVar(.{ .function = func });
 
@@ -4855,9 +4867,14 @@ pub const TypeChecker = struct {
         var param_types: std.ArrayListUnmanaged(Type) = .{};
         defer param_types.deinit(self.allocator);
 
-        for (func.params) |param| {
+        // Build comptime parameter bitmask
+        var comptime_params: u64 = 0;
+        for (func.params, 0..) |param, i| {
             const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
             param_types.append(self.allocator, param_type) catch {};
+            if (param.is_comptime and i < 64) {
+                comptime_params |= @as(u64, 1) << @intCast(i);
+            }
         }
 
         const return_type = if (func.return_type) |rt|
@@ -4865,7 +4882,7 @@ pub const TypeChecker = struct {
         else
             self.type_builder.voidType();
 
-        const func_type = self.type_builder.functionType(param_types.items, return_type) catch {
+        const func_type = self.type_builder.functionTypeWithComptime(param_types.items, return_type, comptime_params) catch {
             return;
         };
 
@@ -6215,9 +6232,14 @@ pub const TypeChecker = struct {
                     var param_types: std.ArrayListUnmanaged(Type) = .{};
                     defer param_types.deinit(self.allocator);
 
-                    for (f.params) |param| {
+                    // Build comptime parameter bitmask
+                    var comptime_params: u64 = 0;
+                    for (f.params, 0..) |param, i| {
                         const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
                         param_types.append(self.allocator, param_type) catch {};
+                        if (param.is_comptime and i < 64) {
+                            comptime_params |= @as(u64, 1) << @intCast(i);
+                        }
                     }
 
                     const return_type = if (f.return_type) |rt|
@@ -6225,7 +6247,7 @@ pub const TypeChecker = struct {
                     else
                         self.type_builder.voidType();
 
-                    const func_type = self.type_builder.functionType(param_types.items, return_type) catch continue;
+                    const func_type = self.type_builder.functionTypeWithComptime(param_types.items, return_type, comptime_params) catch continue;
 
                     self.current_scope.define(.{
                         .name = f.name,

@@ -721,9 +721,9 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [ ] Support recursive comptime function calls (requires interpreter environment sharing)
 
 ### Comptime Parameters
-- [ ] Support `comptime` parameter modifier
-- [ ] `fn foo(comptime n: i32)` - n must be known at compile time
-- [ ] Enable type-level computation based on values
+- [x] Support `comptime` parameter modifier
+- [x] `fn foo(comptime n: i32)` - n must be known at compile time
+- [ ] Enable type-level computation based on values (array sizes from comptime params, etc.)
 
 ### Compile-Time Reflection
 - [x] `@typeName(T)` - Get string name of type (already implemented via builtins)
@@ -757,6 +757,7 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [x] Test: comptime blocks evaluate correctly (test/native/comptime_basic.kl)
 - [x] Test: comptime functions produce constants (test/native/comptime_fn.kl, test/native/comptime_fn_simple.kl)
 - [x] Test: @typeInfo returns correct metadata (test/native/typeinfo_basic.kl, typeinfo_struct.kl, typeinfo_enum.kl)
+- [x] Test: comptime parameters work correctly (test/native/comptime_param.kl)
 - [ ] Test: comptime assertions catch errors at compile time
 
 **Files Modified:**

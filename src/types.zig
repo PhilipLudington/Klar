@@ -364,6 +364,8 @@ pub const FunctionType = struct {
     params: []const Type,
     return_type: Type,
     is_async: bool = false,
+    /// Bitmask indicating which parameters are comptime (index i is comptime if bit i is set)
+    comptime_params: u64 = 0,
 };
 
 pub const ReferenceType = struct {
@@ -597,9 +599,13 @@ pub const TypeBuilder = struct {
     }
 
     pub fn functionType(self: *TypeBuilder, params: []const Type, return_type: Type) !Type {
+        return self.functionTypeWithComptime(params, return_type, 0);
+    }
+
+    pub fn functionTypeWithComptime(self: *TypeBuilder, params: []const Type, return_type: Type, comptime_params: u64) !Type {
         const func = try self.arena.allocator().create(FunctionType);
         const params_copy = try self.arena.allocator().dupe(Type, params);
-        func.* = .{ .params = params_copy, .return_type = return_type };
+        func.* = .{ .params = params_copy, .return_type = return_type, .comptime_params = comptime_params };
         return .{ .function = func };
     }
 
