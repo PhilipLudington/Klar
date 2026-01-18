@@ -1,0 +1,45 @@
+// Test @typeInfo and @fields for enum types
+
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+enum Status {
+    Pending,
+    Running,
+    Complete,
+    Failed
+}
+
+fn main() -> i32 {
+    // Test @typeInfo for enum
+    let color_info: string = @typeInfo(Color)
+    if color_info != "enum" {
+        println("FAIL: Color typeInfo should be 'enum'")
+        return 1
+    }
+
+    let status_info: string = @typeInfo(Status)
+    if status_info != "enum" {
+        println("FAIL: Status typeInfo should be 'enum'")
+        return 2
+    }
+
+    // Test @fields for enum (returns variant names)
+    let color_variants: string = @fields(Color)
+    if color_variants != "Red,Green,Blue" {
+        println("FAIL: Color fields should be 'Red,Green,Blue'")
+        return 3
+    }
+
+    let status_variants: string = @fields(Status)
+    if status_variants != "Pending,Running,Complete,Failed" {
+        println("FAIL: Status fields should be 'Pending,Running,Complete,Failed'")
+        return 4
+    }
+
+    println("All enum typeinfo tests passed!")
+    return 0
+}

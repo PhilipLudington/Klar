@@ -2740,15 +2740,22 @@ pub const Emitter = struct {
             },
             // Comptime expressions
             .builtin_call => |bc| {
-                // Builtin calls like @typeName return string
-                if (std.mem.eql(u8, bc.name, "typeName")) {
+                // Builtin calls that return strings
+                if (std.mem.eql(u8, bc.name, "typeName") or
+                    std.mem.eql(u8, bc.name, "typeInfo") or
+                    std.mem.eql(u8, bc.name, "fields"))
+                {
                     return llvm.Types.pointer(self.ctx); // string type
                 }
                 // @hasField returns bool
                 if (std.mem.eql(u8, bc.name, "hasField")) {
                     return llvm.Types.int1(self.ctx); // bool type
                 }
-                // Default to i32 for other builtins
+                // @sizeOf and @alignOf return i32
+                if (std.mem.eql(u8, bc.name, "sizeOf") or std.mem.eql(u8, bc.name, "alignOf")) {
+                    return llvm.Types.int32(self.ctx);
+                }
+                // Default to i32 for unknown builtins
                 return llvm.Types.int32(self.ctx);
             },
             .comptime_block => |cb| blk: {

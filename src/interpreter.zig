@@ -1621,6 +1621,8 @@ pub const Interpreter = struct {
             return self.evalBuiltinTypeName(builtin);
         } else if (std.mem.eql(u8, builtin.name, "typeInfo")) {
             return self.evalBuiltinTypeInfo(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "fields")) {
+            return self.evalBuiltinFields(builtin);
         } else if (std.mem.eql(u8, builtin.name, "compileError")) {
             return self.evalBuiltinCompileError(builtin);
         } else if (std.mem.eql(u8, builtin.name, "hasField")) {
@@ -1652,13 +1654,51 @@ pub const Interpreter = struct {
         }
     }
 
-    /// @typeInfo(T) -> TypeInfo (placeholder)
+    /// @typeInfo(T) -> string describing the type kind
     fn evalBuiltinTypeInfo(self: *Interpreter, builtin: *ast.BuiltinCall) RuntimeError!Value {
         _ = self;
         if (builtin.args.len != 1) return RuntimeError.InvalidOperation;
 
-        // TODO: Return actual type info struct
-        return .void_;
+        // The type argument determines what kind of type it is
+        switch (builtin.args[0]) {
+            .type_arg => |type_expr| {
+                const kind: []const u8 = switch (type_expr) {
+                    .named => |n| blk: {
+                        // Check if it's a primitive type name
+                        const primitives = [_][]const u8{ "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64", "bool", "char", "string" };
+                        for (primitives) |p| {
+                            if (std.mem.eql(u8, n.name, p)) {
+                                break :blk "primitive";
+                            }
+                        }
+                        // Could be a struct, enum, or trait - assume struct for now
+                        break :blk "struct";
+                    },
+                    .array => "array",
+                    .slice => "slice",
+                    .tuple => "tuple",
+                    .optional => "optional",
+                    .result => "result",
+                    .function => "function",
+                    .reference => "reference",
+                    else => "unknown",
+                };
+                return .{ .string = kind };
+            },
+            .expr_arg => {
+                return RuntimeError.TypeError;
+            },
+        }
+    }
+
+    /// @fields(T) -> string with comma-separated field names
+    fn evalBuiltinFields(self: *Interpreter, builtin: *ast.BuiltinCall) RuntimeError!Value {
+        _ = self;
+        if (builtin.args.len != 1) return RuntimeError.InvalidOperation;
+
+        // In the interpreter, we don't have full type info, so we return empty string
+        // The real work is done by the type checker which has access to struct definitions
+        return .{ .string = "" };
     }
 
     /// @compileError("message") -> never returns

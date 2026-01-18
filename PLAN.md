@@ -727,9 +727,9 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 
 ### Compile-Time Reflection
 - [x] `@typeName(T)` - Get string name of type (already implemented via builtins)
-- [ ] `@typeInfo(T)` - Get type metadata at comptime
+- [x] `@typeInfo(T)` - Get type kind string ("primitive", "struct", "enum", etc.)
 - [x] `@hasField(T, "name")` - Check if struct has field (already implemented via builtins)
-- [ ] `@fields(T)` - Get list of struct fields
+- [x] `@fields(T)` - Get comma-separated field names (struct) or variant names (enum)
 
 ### Code Generation
 - [ ] Comptime can generate struct fields
@@ -756,7 +756,7 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 ### Testing
 - [x] Test: comptime blocks evaluate correctly (test/native/comptime_basic.kl)
 - [x] Test: comptime functions produce constants (test/native/comptime_fn.kl, test/native/comptime_fn_simple.kl)
-- [ ] Test: @typeInfo returns correct metadata
+- [x] Test: @typeInfo returns correct metadata (test/native/typeinfo_basic.kl, typeinfo_struct.kl, typeinfo_enum.kl)
 - [ ] Test: comptime assertions catch errors at compile time
 
 **Files Modified:**

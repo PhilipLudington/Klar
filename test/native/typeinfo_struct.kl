@@ -1,0 +1,43 @@
+// Test @typeInfo and @fields for struct types
+
+struct Point {
+    x: f64,
+    y: f64
+}
+
+struct Person {
+    name: string,
+    age: i32,
+    active: bool
+}
+
+fn main() -> i32 {
+    // Test @typeInfo for struct
+    let point_info: string = @typeInfo(Point)
+    if point_info != "struct" {
+        println("FAIL: Point typeInfo should be 'struct'")
+        return 1
+    }
+
+    let person_info: string = @typeInfo(Person)
+    if person_info != "struct" {
+        println("FAIL: Person typeInfo should be 'struct'")
+        return 2
+    }
+
+    // Test @fields for struct
+    let point_fields: string = @fields(Point)
+    if point_fields != "x,y" {
+        println("FAIL: Point fields should be 'x,y'")
+        return 3
+    }
+
+    let person_fields: string = @fields(Person)
+    if person_fields != "name,age,active" {
+        println("FAIL: Person fields should be 'name,age,active'")
+        return 4
+    }
+
+    println("All struct typeinfo tests passed!")
+    return 0
+}

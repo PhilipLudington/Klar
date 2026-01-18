@@ -4229,6 +4229,8 @@ pub const TypeChecker = struct {
             return self.checkBuiltinTypeName(builtin);
         } else if (std.mem.eql(u8, builtin.name, "typeInfo")) {
             return self.checkBuiltinTypeInfo(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "fields")) {
+            return self.checkBuiltinFields(builtin);
         } else if (std.mem.eql(u8, builtin.name, "compileError")) {
             return self.checkBuiltinCompileError(builtin);
         } else if (std.mem.eql(u8, builtin.name, "hasField")) {
@@ -4284,24 +4286,156 @@ pub const TypeChecker = struct {
         return self.type_builder.stringType();
     }
 
-    /// @typeInfo(T) -> TypeInfo struct (for now, just return void)
+    /// @typeInfo(T) -> string describing the type kind
+    /// Returns one of: "primitive", "struct", "enum", "trait", "array", "slice",
+    /// "tuple", "optional", "result", "function", "reference", "rc", "arc", "void", "unknown"
     fn checkBuiltinTypeInfo(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
         if (builtin.args.len != 1) {
             self.addError(.wrong_number_of_args, builtin.span, "@typeInfo expects 1 argument, got {d}", .{builtin.args.len});
             return self.type_builder.unknownType();
         }
 
-        switch (builtin.args[0]) {
-            .type_arg => {},
+        const type_expr = switch (builtin.args[0]) {
+            .type_arg => |te| te,
             .expr_arg => {
                 self.addError(.type_mismatch, builtin.span, "@typeInfo expects a type argument, not an expression", .{});
                 return self.type_builder.unknownType();
             },
+        };
+
+        // Resolve the type expression
+        const resolved_type = self.resolveTypeExpr(type_expr) catch {
+            return self.type_builder.unknownType();
+        };
+
+        // Determine the type kind string
+        const type_kind_literal: []const u8 = switch (resolved_type) {
+            .primitive => "primitive",
+            .struct_ => "struct",
+            .enum_ => "enum",
+            .trait_ => "trait",
+            .array => "array",
+            .slice => "slice",
+            .tuple => "tuple",
+            .optional => "optional",
+            .result => "result",
+            .function => "function",
+            .reference => "reference",
+            .type_var => "type_var",
+            .applied => "applied",
+            .associated_type_ref => "associated_type",
+            .rc => "rc",
+            .weak_rc => "weak_rc",
+            .arc => "arc",
+            .weak_arc => "weak_arc",
+            .cell => "cell",
+            .void_ => "void",
+            .never => "never",
+            .unknown => "unknown",
+            .error_type => "error",
+        };
+
+        // Duplicate the string literal so it can be freed during deinit
+        const type_kind = self.allocator.dupe(u8, type_kind_literal) catch {
+            return self.type_builder.stringType();
+        };
+
+        // Store the type kind string for codegen
+        self.comptime_strings.put(self.allocator, builtin, type_kind) catch {
+            self.allocator.free(type_kind);
+        };
+
+        return self.type_builder.stringType();
+    }
+
+    /// @fields(T) -> string with comma-separated field names
+    /// Returns empty string for non-struct types
+    fn checkBuiltinFields(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len != 1) {
+            self.addError(.wrong_number_of_args, builtin.span, "@fields expects 1 argument, got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
         }
 
-        // TODO: Return a proper TypeInfo struct type
-        // For now, return void as a placeholder
-        return self.type_builder.voidType();
+        const type_expr = switch (builtin.args[0]) {
+            .type_arg => |te| te,
+            .expr_arg => {
+                self.addError(.type_mismatch, builtin.span, "@fields expects a type argument, not an expression", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        // Resolve the type expression
+        const resolved_type = self.resolveTypeExpr(type_expr) catch {
+            return self.type_builder.unknownType();
+        };
+
+        // Get fields for struct types - always allocate so deinit can free
+        const fields_str: []u8 = switch (resolved_type) {
+            .struct_ => |s| blk: {
+                if (s.fields.len == 0) {
+                    break :blk self.allocator.alloc(u8, 0) catch {
+                        return self.type_builder.stringType();
+                    };
+                }
+                // Build comma-separated field names
+                var total_len: usize = 0;
+                for (s.fields) |field| {
+                    total_len += field.name.len + 1; // +1 for comma
+                }
+                total_len -= 1; // No trailing comma
+
+                const result = self.allocator.alloc(u8, total_len) catch {
+                    return self.type_builder.stringType();
+                };
+                var pos: usize = 0;
+                for (s.fields, 0..) |field, i| {
+                    @memcpy(result[pos..][0..field.name.len], field.name);
+                    pos += field.name.len;
+                    if (i < s.fields.len - 1) {
+                        result[pos] = ',';
+                        pos += 1;
+                    }
+                }
+                break :blk result;
+            },
+            .enum_ => |e| blk: {
+                // For enums, return variant names
+                if (e.variants.len == 0) {
+                    break :blk self.allocator.alloc(u8, 0) catch {
+                        return self.type_builder.stringType();
+                    };
+                }
+                var total_len: usize = 0;
+                for (e.variants) |variant| {
+                    total_len += variant.name.len + 1;
+                }
+                total_len -= 1;
+
+                const result = self.allocator.alloc(u8, total_len) catch {
+                    return self.type_builder.stringType();
+                };
+                var pos: usize = 0;
+                for (e.variants, 0..) |variant, i| {
+                    @memcpy(result[pos..][0..variant.name.len], variant.name);
+                    pos += variant.name.len;
+                    if (i < e.variants.len - 1) {
+                        result[pos] = ',';
+                        pos += 1;
+                    }
+                }
+                break :blk result;
+            },
+            else => self.allocator.alloc(u8, 0) catch {
+                return self.type_builder.stringType();
+            },
+        };
+
+        // Store the fields string for codegen
+        self.comptime_strings.put(self.allocator, builtin, fields_str) catch {
+            self.allocator.free(fields_str);
+        };
+
+        return self.type_builder.stringType();
     }
 
     /// @compileError("message") -> never returns (compile error)

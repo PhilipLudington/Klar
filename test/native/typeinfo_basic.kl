@@ -1,0 +1,32 @@
+// Test @typeInfo builtin for compile-time type reflection
+// @typeInfo(T) returns a string describing the type kind
+
+fn main() -> i32 {
+    // Test primitive types
+    let int_info: string = @typeInfo(i32)
+    if int_info != "primitive" {
+        println("FAIL: i32 typeInfo should be 'primitive'")
+        return 1
+    }
+
+    let bool_info: string = @typeInfo(bool)
+    if bool_info != "primitive" {
+        println("FAIL: bool typeInfo should be 'primitive'")
+        return 2
+    }
+
+    let float_info: string = @typeInfo(f64)
+    if float_info != "primitive" {
+        println("FAIL: f64 typeInfo should be 'primitive'")
+        return 3
+    }
+
+    let string_info: string = @typeInfo(string)
+    if string_info != "primitive" {
+        println("FAIL: string typeInfo should be 'primitive'")
+        return 4
+    }
+
+    println("All @typeInfo primitive tests passed!")
+    return 0
+}
