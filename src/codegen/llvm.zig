@@ -502,6 +502,11 @@ pub const Const = struct {
             @intFromBool(!null_terminate),
         );
     }
+
+    /// Create a constant named struct value.
+    pub fn namedStruct(struct_type: TypeRef, vals: []const ValueRef) ValueRef {
+        return c.LLVMConstNamedStruct(struct_type, @ptrCast(@constCast(vals.ptr)), @intCast(vals.len));
+    }
 };
 
 /// Function operations.

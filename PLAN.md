@@ -700,7 +700,7 @@ src/repl.zig             # REPL loop and command handling ✓
 
 **Objective:** Compile-time code evaluation and generation.
 
-**Status:** 🟡 In Progress. Comptime blocks and comptime functions work with primitive types.
+**Status:** 🟡 In Progress. Comptime blocks and comptime functions work with primitives and structs.
 
 Comptime enables powerful metaprogramming without macros—code that runs at compile time to generate code, validate invariants, or compute constants.
 
@@ -711,7 +711,8 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [x] Comptime blocks can contain literals, arithmetic, and boolean operations
 - [x] Results are stored and emitted as compile-time constants in codegen
 - [x] Support accessing outer scope constants (populateInterpreterEnv copies constant_values to interpreter)
-- [ ] Support complex types (structs, arrays, etc.) - only primitives currently
+- [x] Support struct types in comptime blocks
+- [ ] Support arrays in comptime blocks
 
 ### Comptime Functions
 - [x] Mark functions as `fn @name(...)` (@ prefix on function name)
@@ -719,7 +720,7 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [x] Comptime functions execute at compile time when called with comptime-known arguments
 - [x] Return values become compile-time constants
 - [x] Nested comptime function calls supported (e.g., `@add(@mul(2, 3), 4)`)
-- [ ] Support recursive comptime function calls (requires interpreter environment sharing)
+- [x] Support recursive comptime function calls (implemented via shared interpreter environment)
 
 ### Comptime Parameters
 - [x] Support `@param: Type` syntax (@ prefix on parameter name)
@@ -761,13 +762,16 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [x] Test: comptime parameters work correctly (test/native/comptime_param.kl)
 - [x] Test: comptime assertions catch errors at compile time (test/native/comptime_assert.kl)
 - [x] Test: comptime blocks can access outer scope constants (test/native/comptime_const_access.kl)
+- [x] Test: recursive comptime functions work (test/native/comptime_recursive.kl, comptime_recursive_simple.kl)
+- [x] Test: comptime struct values work (test/native/comptime_struct.kl)
 
 **Files Modified:**
 - `src/ast.zig` - Added is_comptime field to FunctionDecl ✓
 - `src/parser.zig` - Parse `comptime fn` syntax ✓
-- `src/checker.zig` - Comptime evaluation during type checking, comptime function call evaluation ✓
+- `src/checker.zig` - Comptime evaluation during type checking, comptime function call evaluation, struct support in ComptimeValue ✓
 - `src/interpreter.zig` - Made evalBlock public for comptime ✓
-- `src/codegen/emit.zig` - Emit comptime values as constants ✓
+- `src/codegen/emit.zig` - Emit comptime values as constants (including struct values) ✓
+- `src/codegen/llvm.zig` - Added Const.namedStruct for comptime struct emission ✓
 
 ---
 

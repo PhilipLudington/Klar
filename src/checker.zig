@@ -325,6 +325,15 @@ pub const TypeChecker = struct {
         bool_: bool,
         string: []const u8,
         void_,
+        /// Struct value with type name and field values (preserves order)
+        struct_: ComptimeStruct,
+    };
+
+    /// A compile-time struct value.
+    pub const ComptimeStruct = struct {
+        type_name: []const u8,
+        /// Fields stored in declaration order using ArrayHashMap
+        fields: std.StringArrayHashMapUnmanaged(ComptimeValue),
     };
 
     /// Symbols exported from a module.
@@ -4008,28 +4017,9 @@ pub const TypeChecker = struct {
             return self.type_builder.unknownType();
         };
 
-        // Convert the Value to ComptimeValue and store it
-        const comptime_value: ComptimeValue = switch (result) {
-            .int => |i| .{ .int = .{
-                .value = @intCast(i.value), // Truncate i128 to i64
-                .is_i32 = (i.type_ == .i32_), // Preserve type info
-            } },
-            .float => |f| .{ .float = f.value },
-            .bool_ => |b| .{ .bool_ = b },
-            .string => |s| blk: {
-                // Duplicate the string since the interpreter will free it
-                const duped = self.allocator.dupe(u8, s) catch {
-                    self.addError(.comptime_error, block.span, "out of memory during comptime evaluation", .{});
-                    break :blk ComptimeValue{ .void_ = {} };
-                };
-                break :blk ComptimeValue{ .string = duped };
-            },
-            .void_ => .void_,
-            else => {
-                // Complex types (structs, arrays, etc.) not yet supported
-                self.addError(.comptime_error, block.span, "comptime block produced a non-primitive value", .{});
-                return self.type_builder.unknownType();
-            },
+        // Convert the Value to ComptimeValue using the shared helper
+        const comptime_value = self.valueToComptimeValue(result, block.span) orelse {
+            return self.type_builder.unknownType();
         };
 
         // Store the evaluated value for codegen
@@ -4045,6 +4035,17 @@ pub const TypeChecker = struct {
             .bool_ => self.type_builder.boolType(),
             .string => self.type_builder.stringType(),
             .void_ => block_type, // Return the block's inferred type
+            .struct_ => |cs| blk: {
+                // Look up the struct type by name
+                if (self.lookupType(cs.type_name)) |t| {
+                    if (t == .struct_) {
+                        break :blk t;
+                    }
+                }
+                // If struct not found, return unknown
+                self.addError(.comptime_error, block.span, "unknown struct type '{s}' in comptime block", .{cs.type_name});
+                break :blk self.type_builder.unknownType();
+            },
         };
     }
 
@@ -4488,8 +4489,37 @@ pub const TypeChecker = struct {
                 break :blk .{ .string = duped };
             },
             .void_ => .{ .void_ = {} },
+            .struct_ => |sv| blk: {
+                // Convert struct value to comptime struct
+                var comptime_fields = std.StringArrayHashMapUnmanaged(ComptimeValue){};
+                var iter = sv.fields.iterator();
+                while (iter.next()) |entry| {
+                    // Recursively convert field value
+                    const field_comptime_value = self.valueToComptimeValue(entry.value_ptr.*, span) orelse {
+                        // Clean up on failure
+                        comptime_fields.deinit(self.allocator);
+                        break :blk null;
+                    };
+                    // Duplicate field name to ensure ownership
+                    const field_name = self.allocator.dupe(u8, entry.key_ptr.*) catch {
+                        comptime_fields.deinit(self.allocator);
+                        break :blk null;
+                    };
+                    comptime_fields.put(self.allocator, field_name, field_comptime_value) catch {
+                        self.allocator.free(field_name);
+                        comptime_fields.deinit(self.allocator);
+                        break :blk null;
+                    };
+                }
+                // Duplicate type name
+                const type_name = self.allocator.dupe(u8, sv.type_name) catch {
+                    comptime_fields.deinit(self.allocator);
+                    break :blk null;
+                };
+                break :blk .{ .struct_ = .{ .type_name = type_name, .fields = comptime_fields } };
+            },
             else => {
-                self.addError(.comptime_error, span, "comptime function returned non-primitive value", .{});
+                self.addError(.comptime_error, span, "comptime block produced a non-primitive value", .{});
                 return null;
             },
         };
@@ -4497,13 +4527,29 @@ pub const TypeChecker = struct {
 
     /// Convert a ComptimeValue back to an interpreter Value.
     fn comptimeValueToInterpreterValue(self: *TypeChecker, cv: ComptimeValue) Value {
-        _ = self;
         return switch (cv) {
             .int => |i| .{ .int = values.Integer{ .value = i.value, .type_ = if (i.is_i32) .i32_ else .i64_ } },
             .float => |f| .{ .float = values.Float{ .value = f, .type_ = .f64_ } },
             .bool_ => |b| .{ .bool_ = b },
             .string => |s| .{ .string = s },
             .void_ => .{ .void_ = {} },
+            .struct_ => |cs| blk: {
+                // Convert comptime struct back to interpreter struct value
+                const sv = self.allocator.create(values.StructValue) catch {
+                    break :blk .{ .void_ = {} }; // Fallback on allocation failure
+                };
+                sv.* = .{
+                    .type_name = cs.type_name,
+                    .fields = .{},
+                };
+                // Convert each field
+                var iter = cs.fields.iterator();
+                while (iter.next()) |entry| {
+                    const field_value = self.comptimeValueToInterpreterValue(entry.value_ptr.*);
+                    sv.fields.put(self.allocator, entry.key_ptr.*, field_value) catch {};
+                }
+                break :blk .{ .struct_ = sv };
+            },
         };
     }
 

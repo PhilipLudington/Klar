@@ -1,0 +1,17 @@
+// Test comptime with struct values
+
+struct Point {
+    x: i32,
+    y: i32
+}
+
+fn main() -> i32 {
+    // Create a struct at compile time
+    let p: Point = @{
+        Point { x: 10, y: 32 }
+    }
+
+    // Access struct fields - should work at runtime
+    // The struct value is created at compile time as a constant
+    return p.x + p.y  // Should return 42
+}

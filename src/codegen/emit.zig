@@ -2749,6 +2749,13 @@ pub const Emitter = struct {
                             .bool_ => llvm.Types.int1(self.ctx),
                             .string => llvm.Types.pointer(self.ctx),
                             .void_ => llvm.Types.int32(self.ctx),
+                            .struct_ => |cs| blk: {
+                                // Get the LLVM struct type
+                                if (self.struct_types.get(cs.type_name)) |struct_info| {
+                                    break :blk struct_info.llvm_type;
+                                }
+                                break :blk llvm.Types.int32(self.ctx); // Fallback
+                            },
                         };
                     }
                 }
@@ -2780,6 +2787,13 @@ pub const Emitter = struct {
                             .bool_ => llvm.Types.int1(self.ctx),
                             .string => llvm.Types.pointer(self.ctx),
                             .void_ => llvm.Types.int32(self.ctx),
+                            .struct_ => |cs| struct_blk: {
+                                // Get the LLVM struct type
+                                if (self.struct_types.get(cs.type_name)) |struct_info| {
+                                    break :struct_blk struct_info.llvm_type;
+                                }
+                                break :struct_blk llvm.Types.int32(self.ctx); // Fallback
+                            },
                         };
                     }
                 }
@@ -2822,6 +2836,17 @@ pub const Emitter = struct {
                         },
                         else => null,
                     };
+                }
+                return null;
+            },
+            .comptime_block => |cb| {
+                // Look up the comptime value and extract struct type name
+                if (self.type_checker) |tc| {
+                    if (tc.comptime_values.get(cb)) |comptime_value| {
+                        if (comptime_value == .struct_) {
+                            return comptime_value.struct_.type_name;
+                        }
+                    }
                 }
                 return null;
             },
@@ -5590,6 +5615,31 @@ pub const Emitter = struct {
                 break :blk self.builder.buildGlobalStringPtr(str_z, "comptime_str");
             },
             .void_ => llvm.Const.int32(self.ctx, 0),
+            .struct_ => |cs| blk: {
+                // Get the LLVM struct type
+                const struct_info = self.struct_types.get(cs.type_name) orelse {
+                    break :blk llvm.Const.int32(self.ctx, 0); // Fallback
+                };
+                const struct_type = struct_info.llvm_type;
+
+                // Build constant field values in the correct order
+                var field_values = std.ArrayListUnmanaged(llvm.ValueRef){};
+                defer field_values.deinit(self.allocator);
+
+                // Iterate through struct fields in declaration order
+                for (struct_info.field_names) |field_name| {
+                    if (cs.fields.get(field_name)) |field_cv| {
+                        const field_val = try self.emitComptimeValue(field_cv);
+                        field_values.append(self.allocator, field_val) catch return EmitError.OutOfMemory;
+                    } else {
+                        // Field not found - use zero
+                        field_values.append(self.allocator, llvm.Const.int32(self.ctx, 0)) catch return EmitError.OutOfMemory;
+                    }
+                }
+
+                // Create constant struct
+                break :blk llvm.Const.namedStruct(struct_type, field_values.items);
+            },
         };
     }
 
