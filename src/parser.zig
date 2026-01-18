@@ -1746,15 +1746,30 @@ pub const Parser = struct {
             return .{ .reference = ref };
         }
 
-        // Slice type: [T]
+        // Slice type: [T] or Array type: [T; size]
         if (self.match(.l_bracket)) {
+            const start_span = ast.Span.from(self.previous);
             const element = try self.parseType();
-            try self.consume(.r_bracket, "expected ']' after slice type");
-            const slice = try self.create(ast.SliceType, .{
-                .element = element,
-                .span = element.span(),
-            });
-            return .{ .slice = slice };
+            if (self.match(.semicolon)) {
+                // Array type: [T; size]
+                const size_expr = try self.parseExpression();
+                try self.consume(.r_bracket, "expected ']' after array size");
+                const end_span = ast.Span.from(self.previous);
+                const arr = try self.create(ast.ArrayType, .{
+                    .element = element,
+                    .size = size_expr,
+                    .span = ast.Span.merge(start_span, end_span),
+                });
+                return .{ .array = arr };
+            } else {
+                // Slice type: [T]
+                try self.consume(.r_bracket, "expected ']' after slice type");
+                const slice = try self.create(ast.SliceType, .{
+                    .element = element,
+                    .span = element.span(),
+                });
+                return .{ .slice = slice };
+            }
         }
 
         // Tuple type: (T1, T2, ...)

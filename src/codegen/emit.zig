@@ -2297,6 +2297,17 @@ pub const Emitter = struct {
                         .int => |v| @intCast(v),
                         else => return EmitError.InvalidAST,
                     },
+                    .identifier => |ident| blk: {
+                        // Look up constant from type checker
+                        if (self.type_checker) |tc| {
+                            if (tc.getConstantValue(ident.name)) |cv| {
+                                if (cv == .int) {
+                                    break :blk @intCast(cv.int.value);
+                                }
+                            }
+                        }
+                        return EmitError.UnsupportedFeature;
+                    },
                     else => return EmitError.UnsupportedFeature, // Non-constant array size
                 };
                 return llvm.Types.array(elem_type, size);

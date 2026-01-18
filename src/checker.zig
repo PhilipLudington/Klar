@@ -1452,6 +1452,12 @@ pub const TypeChecker = struct {
         return self.monomorphized_enums.items;
     }
 
+    /// Get a constant value by name.
+    /// Returns null if the name doesn't refer to a constant.
+    pub fn getConstantValue(self: *const TypeChecker, name: []const u8) ?ComptimeValue {
+        return self.constant_values.get(name);
+    }
+
     /// Record a monomorphized struct instance and return the concrete StructType.
     /// If the same instantiation already exists, returns the existing entry.
     pub fn recordStructMonomorphization(
@@ -2043,8 +2049,23 @@ pub const TypeChecker = struct {
             },
             .array => |a| {
                 const elem_type = try self.resolveTypeExpr(a.element);
-                // TODO: evaluate size expression at compile time
-                return try self.type_builder.arrayType(elem_type, 0);
+                // Evaluate size expression at compile time
+                if (self.evaluateComptimeExpr(a.size)) |val| {
+                    if (val == .int) {
+                        if (val.int.value < 0) {
+                            self.addError(.comptime_error, a.span, "array size cannot be negative", .{});
+                            return try self.type_builder.arrayType(elem_type, 0);
+                        }
+                        const size: usize = @intCast(val.int.value);
+                        return try self.type_builder.arrayType(elem_type, size);
+                    } else {
+                        self.addError(.comptime_error, a.span, "array size must be an integer", .{});
+                        return try self.type_builder.arrayType(elem_type, 0);
+                    }
+                } else {
+                    self.addError(.comptime_error, a.span, "array size must be comptime-known", .{});
+                    return try self.type_builder.arrayType(elem_type, 0);
+                }
             },
             .slice => |s| {
                 const elem_type = try self.resolveTypeExpr(s.element);

@@ -1,0 +1,23 @@
+// Test sized array types with comptime size expressions
+
+const SIZE: i32 = 3
+
+fn main() -> i32 {
+    // Basic sized array with literal
+    let arr1: [i32; 3] = [1, 2, 3]
+    if arr1[0] != 1 { return 1 }
+    if arr1[1] != 2 { return 2 }
+    if arr1[2] != 3 { return 3 }
+
+    // Sized array with constant
+    let arr2: [i32; SIZE] = [10, 20, 30]
+    if arr2[0] != 10 { return 4 }
+    if arr2[1] != 20 { return 5 }
+    if arr2[2] != 30 { return 6 }
+
+    // Sized array with expression
+    let arr3: [i32; 2 + 2] = [1, 2, 3, 4]
+    if arr3[3] != 4 { return 7 }
+
+    return 0
+}
