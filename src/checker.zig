@@ -4251,6 +4251,8 @@ pub const TypeChecker = struct {
             return self.checkBuiltinSizeOf(builtin);
         } else if (std.mem.eql(u8, builtin.name, "alignOf")) {
             return self.checkBuiltinAlignOf(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "assert")) {
+            return self.checkBuiltinAssert(builtin);
         } else {
             self.addError(.undefined_function, builtin.span, "unknown builtin '@{s}'", .{builtin.name});
             return self.type_builder.unknownType();
@@ -4483,6 +4485,67 @@ pub const TypeChecker = struct {
         }
 
         return self.type_builder.neverType();
+    }
+
+    /// @assert(condition) or @assert(condition, "message")
+    /// Evaluates condition at compile time and emits error if false.
+    fn checkBuiltinAssert(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len == 0 or builtin.args.len > 2) {
+            self.addError(.wrong_number_of_args, builtin.span, "@assert expects 1 or 2 arguments, got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
+        }
+
+        // First arg must be a comptime-known boolean expression
+        const condition_expr = switch (builtin.args[0]) {
+            .expr_arg => |expr| expr,
+            .type_arg => {
+                self.addError(.type_mismatch, builtin.span, "@assert first argument must be a boolean expression, not a type", .{});
+                return self.type_builder.voidType();
+            },
+        };
+
+        // Try to evaluate the condition at compile time
+        const condition_value = self.evaluateComptimeExpr(condition_expr);
+        if (condition_value == null) {
+            self.addError(.comptime_error, builtin.span, "@assert condition must be comptime-known", .{});
+            return self.type_builder.voidType();
+        }
+
+        // Check that it's a boolean
+        if (condition_value.? != .bool_) {
+            self.addError(.type_mismatch, builtin.span, "@assert condition must be a boolean, not {s}", .{@tagName(condition_value.?)});
+            return self.type_builder.voidType();
+        }
+
+        // If condition is false, emit compile error
+        if (!condition_value.?.bool_) {
+            // Check for optional message argument
+            if (builtin.args.len == 2) {
+                switch (builtin.args[1]) {
+                    .expr_arg => |expr| {
+                        switch (expr) {
+                            .literal => |lit| {
+                                switch (lit.kind) {
+                                    .string => |msg| {
+                                        self.addError(.comptime_error, builtin.span, "assertion failed: {s}", .{msg});
+                                        return self.type_builder.voidType();
+                                    },
+                                    else => {},
+                                }
+                            },
+                            else => {},
+                        }
+                    },
+                    .type_arg => {},
+                }
+                // If we get here, message wasn't a string literal
+                self.addError(.type_mismatch, builtin.span, "@assert message must be a string literal", .{});
+            } else {
+                self.addError(.comptime_error, builtin.span, "assertion failed", .{});
+            }
+        }
+
+        return self.type_builder.voidType();
     }
 
     /// @hasField(T, "field_name") -> bool

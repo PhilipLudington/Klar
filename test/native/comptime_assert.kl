@@ -1,0 +1,25 @@
+// Test @assert builtin
+// @assert(condition) - fails at compile time if condition is false
+// @assert(condition, "message") - fails with custom message
+
+fn main() -> i32 {
+    // Basic comptime assertions that should pass
+    @assert(true)
+    @assert(1 == 1)
+    @assert(2 + 2 == 4)
+    @assert(10 > 5)
+    @assert(3 * 4 == 12)
+
+    // Boolean logic
+    @assert(true and true)
+    @assert(true or false)
+    @assert(not false)
+
+    // Comparisons
+    @assert(100 >= 100)
+    @assert(50 <= 100)
+    @assert(7 != 8)
+
+    // All assertions passed
+    return 0
+}

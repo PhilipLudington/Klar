@@ -738,9 +738,9 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [ ] Enable derive-like functionality without macros
 
 ### Comptime Assertions
-- [ ] `comptime assert(condition)` - Compile error if false
+- [x] `@assert(condition)` - Compile error if false (supports optional message)
 - [x] `@compileError("message")` - Emit custom compile error (already implemented via builtins)
-- [ ] Validate invariants at compile time
+- [x] Validate invariants at compile time
 
 ### Integration with Generics
 - [ ] Comptime expressions in generic bounds
@@ -758,7 +758,7 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [x] Test: comptime functions produce constants (test/native/comptime_fn.kl, test/native/comptime_fn_simple.kl)
 - [x] Test: @typeInfo returns correct metadata (test/native/typeinfo_basic.kl, typeinfo_struct.kl, typeinfo_enum.kl)
 - [x] Test: comptime parameters work correctly (test/native/comptime_param.kl)
-- [ ] Test: comptime assertions catch errors at compile time
+- [x] Test: comptime assertions catch errors at compile time (test/native/comptime_assert.kl)
 
 **Files Modified:**
 - `src/ast.zig` - Added is_comptime field to FunctionDecl ✓
