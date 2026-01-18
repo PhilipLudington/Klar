@@ -1,0 +1,48 @@
+// Test comptime functions
+// Comptime functions are evaluated at compile time and their results become constants
+
+// Simple comptime function that adds two integers
+comptime fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+// Comptime function that multiplies
+comptime fn mul(a: i32, b: i32) -> i32 {
+    return a * b
+}
+
+// Comptime function that computes a simple expression
+comptime fn triple(n: i32) -> i32 {
+    return n * 3
+}
+
+// Comptime function with boolean logic
+comptime fn is_even(n: i32) -> bool {
+    return n % 2 == 0
+}
+
+fn main() {
+    // All these calls should be evaluated at compile time
+    let sum: i32 = add(2, 3)
+    assert_eq(sum, 5)
+
+    let product: i32 = mul(4, 5)
+    assert_eq(product, 20)
+
+    // Nested comptime calls
+    let nested: i32 = add(mul(2, 3), 4)
+    assert_eq(nested, 10)
+
+    // Boolean comptime function
+    let even: bool = is_even(4)
+    assert(even)
+
+    let odd: bool = is_even(5)
+    assert(not odd)
+
+    // Triple
+    let tripled: i32 = triple(7)
+    assert_eq(tripled, 21)
+
+    println("All comptime function tests passed!")
+}

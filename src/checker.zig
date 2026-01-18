@@ -280,6 +280,15 @@ pub const TypeChecker = struct {
     /// Used by codegen to emit the correct compile-time constant values.
     comptime_values: std.AutoHashMapUnmanaged(*ast.ComptimeBlock, ComptimeValue),
 
+    /// Storage for comptime function declarations.
+    /// Maps function name to the function declaration for comptime evaluation.
+    comptime_functions: std.StringHashMapUnmanaged(*ast.FunctionDecl),
+
+    /// Storage for comptime function call results.
+    /// Maps Call AST node pointers to their evaluated compile-time values.
+    /// Used by codegen to emit constants instead of function calls.
+    comptime_call_values: std.AutoHashMapUnmanaged(*ast.Call, ComptimeValue),
+
     /// Represents a compile-time evaluated value.
     pub const ComptimeValue = union(enum) {
         /// Integer with type info preserved
@@ -478,6 +487,8 @@ pub const TypeChecker = struct {
             .comptime_bools = .{},
             .comptime_ints = .{},
             .comptime_values = .{},
+            .comptime_functions = .{},
+            .comptime_call_values = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -679,6 +690,15 @@ pub const TypeChecker = struct {
             }
         }
         self.comptime_values.deinit(self.allocator);
+        self.comptime_functions.deinit(self.allocator);
+        // Clean up comptime call values (free allocated strings)
+        var call_iter = self.comptime_call_values.valueIterator();
+        while (call_iter.next()) |cv| {
+            if (cv.* == .string) {
+                self.allocator.free(cv.string);
+            }
+        }
+        self.comptime_call_values.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -2488,6 +2508,21 @@ pub const TypeChecker = struct {
             return func.return_type;
         }
 
+        // Check if this is a comptime function call
+        if (call.callee == .identifier) {
+            const func_name = call.callee.identifier.name;
+            if (self.comptime_functions.get(func_name)) |comptime_func| {
+                // Evaluate comptime function at compile time
+                const result = self.evaluateComptimeCall(call, comptime_func);
+                if (result) |comptime_value| {
+                    self.comptime_call_values.put(self.allocator, call, comptime_value) catch {};
+                    return func.return_type;
+                }
+                // Evaluation failed, error already reported
+                return func.return_type;
+            }
+        }
+
         // Check if this is a generic function call (has type variables)
         const is_generic = self.containsTypeVar(.{ .function = func });
 
@@ -3968,6 +4003,226 @@ pub const TypeChecker = struct {
         // This is a limitation - comptime blocks currently can only use literals and builtins.
     }
 
+    /// Evaluate a call to a comptime function at compile time.
+    /// Returns the computed ComptimeValue, or null if evaluation fails.
+    fn evaluateComptimeCall(self: *TypeChecker, call: *ast.Call, func_decl: *ast.FunctionDecl) ?ComptimeValue {
+        // First, check that all arguments are compile-time known
+        var arg_values = std.ArrayListUnmanaged(Value){};
+        defer arg_values.deinit(self.allocator);
+
+        for (call.args) |arg| {
+            // Try to evaluate the argument at compile time
+            const arg_value = self.evaluateComptimeExpr(arg) orelse {
+                self.addError(.comptime_error, arg.span(), "argument to comptime function must be comptime-known", .{});
+                return null;
+            };
+            arg_values.append(self.allocator, arg_value) catch {
+                return null;
+            };
+        }
+
+        // Create interpreter and set up the function call environment
+        var interp = Interpreter.init(self.allocator) catch {
+            self.addError(.comptime_error, call.span, "failed to create interpreter for comptime function", .{});
+            return null;
+        };
+        defer interp.deinit();
+
+        // Bind parameters to argument values
+        for (func_decl.params, arg_values.items) |param, arg_val| {
+            interp.global_env.define(param.name, arg_val, false) catch {
+                self.addError(.comptime_error, call.span, "failed to bind comptime function parameter", .{});
+                return null;
+            };
+        }
+
+        // Evaluate function body
+        const body = func_decl.body orelse {
+            self.addError(.comptime_error, call.span, "comptime function must have a body", .{});
+            return null;
+        };
+
+        const block_result = interp.evalBlock(body) catch |err| {
+            // Convert interpreter errors to compile errors
+            if (err == error.RuntimeError) {
+                self.addError(.comptime_error, call.span, "comptime function evaluation failed", .{});
+            } else if (err == error.ComptimeError) {
+                // @compileError was called
+                // Error message already written to stdout by interpreter
+            }
+            return null;
+        };
+
+        // Check for return value (set when return statement was executed)
+        // If there's a return_value, use that; otherwise use the block result
+        const result = if (interp.return_value) |rv| rv else block_result;
+
+        // Convert interpreter Value to ComptimeValue
+        return self.valueToComptimeValue(result, call.span);
+    }
+
+    /// Evaluate an expression at compile time to get an interpreter Value.
+    /// Returns null if the expression is not comptime-known.
+    fn evaluateComptimeExpr(self: *TypeChecker, expr: ast.Expr) ?Value {
+        return switch (expr) {
+            .literal => |lit| switch (lit.kind) {
+                .int => |v| .{ .int = values.Integer{ .value = v, .type_ = .i64_ } },
+                .float => |v| .{ .float = values.Float{ .value = v, .type_ = .f64_ } },
+                .bool_ => |v| .{ .bool_ = v },
+                .string => |v| .{ .string = v },
+                .char => |v| .{ .char_ = v },
+            },
+            .unary => |u| {
+                const operand = self.evaluateComptimeExpr(u.operand) orelse return null;
+                switch (u.op) {
+                    .negate => {
+                        if (operand == .int) return .{ .int = values.Integer{ .value = -operand.int.value, .type_ = operand.int.type_ } };
+                        if (operand == .float) return .{ .float = values.Float{ .value = -operand.float.value, .type_ = operand.float.type_ } };
+                        return null;
+                    },
+                    .not => {
+                        if (operand == .bool_) return .{ .bool_ = !operand.bool_ };
+                        return null;
+                    },
+                    else => return null,
+                }
+            },
+            .binary => |b| {
+                const left = self.evaluateComptimeExpr(b.left) orelse return null;
+                const right = self.evaluateComptimeExpr(b.right) orelse return null;
+                return self.evaluateComptimeBinaryOp(b.op, left, right);
+            },
+            .identifier => |ident| {
+                // Check if this identifier refers to a const with a known value
+                // For now, only support literals - comptime function parameters are handled separately
+                _ = ident;
+                return null;
+            },
+            .call => |c| {
+                // Check if calling another comptime function
+                if (c.callee == .identifier) {
+                    const func_name = c.callee.identifier.name;
+                    if (self.comptime_functions.get(func_name)) |comptime_func| {
+                        const result = self.evaluateComptimeCall(c, comptime_func);
+                        if (result) |cv| {
+                            return self.comptimeValueToInterpreterValue(cv);
+                        }
+                    }
+                }
+                return null;
+            },
+            else => null,
+        };
+    }
+
+    /// Evaluate a binary operation at compile time.
+    fn evaluateComptimeBinaryOp(self: *TypeChecker, op: ast.BinaryOp, left: Value, right: Value) ?Value {
+        _ = self;
+        // Integer operations
+        if (left == .int and right == .int) {
+            const l = left.int.value;
+            const r = right.int.value;
+            const t = left.int.type_;
+            return switch (op) {
+                .add => .{ .int = values.Integer{ .value = l + r, .type_ = t } },
+                .sub => .{ .int = values.Integer{ .value = l - r, .type_ = t } },
+                .mul => .{ .int = values.Integer{ .value = l * r, .type_ = t } },
+                .div => if (r != 0) .{ .int = values.Integer{ .value = @divTrunc(l, r), .type_ = t } } else null,
+                .mod => if (r != 0) .{ .int = values.Integer{ .value = @mod(l, r), .type_ = t } } else null,
+                .eq => .{ .bool_ = l == r },
+                .not_eq => .{ .bool_ = l != r },
+                .lt => .{ .bool_ = l < r },
+                .lt_eq => .{ .bool_ = l <= r },
+                .gt => .{ .bool_ = l > r },
+                .gt_eq => .{ .bool_ = l >= r },
+                else => null,
+            };
+        }
+        // Float operations
+        if ((left == .float or left == .int) and (right == .float or right == .int)) {
+            const l: f64 = if (left == .float) left.float.value else @floatFromInt(left.int.value);
+            const r: f64 = if (right == .float) right.float.value else @floatFromInt(right.int.value);
+            return switch (op) {
+                .add => .{ .float = values.Float{ .value = l + r, .type_ = .f64_ } },
+                .sub => .{ .float = values.Float{ .value = l - r, .type_ = .f64_ } },
+                .mul => .{ .float = values.Float{ .value = l * r, .type_ = .f64_ } },
+                .div => if (r != 0) .{ .float = values.Float{ .value = l / r, .type_ = .f64_ } } else null,
+                .eq => .{ .bool_ = l == r },
+                .not_eq => .{ .bool_ = l != r },
+                .lt => .{ .bool_ = l < r },
+                .lt_eq => .{ .bool_ = l <= r },
+                .gt => .{ .bool_ = l > r },
+                .gt_eq => .{ .bool_ = l >= r },
+                else => null,
+            };
+        }
+        // Boolean operations
+        if (left == .bool_ and right == .bool_) {
+            const l = left.bool_;
+            const r = right.bool_;
+            return switch (op) {
+                .and_ => .{ .bool_ = l and r },
+                .or_ => .{ .bool_ = l or r },
+                .eq => .{ .bool_ = l == r },
+                .not_eq => .{ .bool_ = l != r },
+                else => null,
+            };
+        }
+        // String operations
+        if (left == .string and right == .string) {
+            return switch (op) {
+                .eq => .{ .bool_ = std.mem.eql(u8, left.string, right.string) },
+                .not_eq => .{ .bool_ = !std.mem.eql(u8, left.string, right.string) },
+                else => null,
+            };
+        }
+        return null;
+    }
+
+    /// Convert an interpreter Value to a ComptimeValue.
+    fn valueToComptimeValue(self: *TypeChecker, value: Value, span: ast.Span) ?ComptimeValue {
+        return switch (value) {
+            .int => |v| blk: {
+                const int_val = v.value;
+                // Clamp to i64 range for ComptimeValue
+                const clamped: i64 = if (int_val > std.math.maxInt(i64))
+                    std.math.maxInt(i64)
+                else if (int_val < std.math.minInt(i64))
+                    std.math.minInt(i64)
+                else
+                    @intCast(int_val);
+                break :blk .{ .int = .{ .value = clamped, .is_i32 = clamped >= std.math.minInt(i32) and clamped <= std.math.maxInt(i32) } };
+            },
+            .float => |v| .{ .float = v.value },
+            .bool_ => |v| .{ .bool_ = v },
+            .string => |v| blk: {
+                // Need to duplicate the string as interpreter may free it
+                const duped = self.allocator.dupe(u8, v) catch {
+                    self.addError(.comptime_error, span, "failed to allocate comptime string", .{});
+                    break :blk null;
+                };
+                break :blk .{ .string = duped };
+            },
+            .void_ => .{ .void_ = {} },
+            else => {
+                self.addError(.comptime_error, span, "comptime function returned non-primitive value", .{});
+                return null;
+            },
+        };
+    }
+
+    /// Convert a ComptimeValue back to an interpreter Value.
+    fn comptimeValueToInterpreterValue(self: *TypeChecker, cv: ComptimeValue) Value {
+        _ = self;
+        return switch (cv) {
+            .int => |i| .{ .int = values.Integer{ .value = i.value, .type_ = if (i.is_i32) .i32_ else .i64_ } },
+            .float => |f| .{ .float = values.Float{ .value = f, .type_ = .f64_ } },
+            .bool_ => |b| .{ .bool_ = b },
+            .string => |s| .{ .string = s },
+            .void_ => .{ .void_ = {} },
+        };
+    }
+
     /// Type check a builtin function call (@typeName, @typeInfo, etc.)
     fn checkBuiltinCall(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
         if (std.mem.eql(u8, builtin.name, "typeName")) {
@@ -4488,6 +4743,11 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = func.span,
         }) catch {};
+
+        // Register comptime functions for compile-time evaluation
+        if (func.is_comptime) {
+            self.comptime_functions.put(self.allocator, func.name, func) catch {};
+        }
 
         // Check function body if present
         if (func.body) |body| {
@@ -5840,6 +6100,11 @@ pub const TypeChecker = struct {
                         .mutable = false,
                         .span = f.span,
                     }) catch {};
+
+                    // Register comptime functions for compile-time evaluation
+                    if (f.is_comptime) {
+                        self.comptime_functions.put(self.allocator, f.name, f) catch {};
+                    }
                 },
                 .const_decl => self.checkDecl(decl),
                 else => {},

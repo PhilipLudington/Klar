@@ -599,6 +599,7 @@ pub const FunctionDecl = struct {
     body: ?*Block,
     is_pub: bool,
     is_async: bool,
+    is_comptime: bool, // true for `comptime fn` (compile-time function)
     span: Span,
 };
 

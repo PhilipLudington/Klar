@@ -1730,6 +1730,14 @@ pub const Emitter = struct {
     }
 
     fn emitCall(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        // Check if this is a comptime function call with a precomputed value
+        if (self.type_checker) |tc| {
+            if (tc.comptime_call_values.get(call)) |comptime_value| {
+                // Emit the precomputed constant value
+                return self.emitComptimeValue(comptime_value);
+            }
+        }
+
         // Check if callee is a direct function reference
         const func_name = switch (call.callee) {
             .identifier => |id| id.name,
@@ -5543,26 +5551,31 @@ pub const Emitter = struct {
         return llvm.Const.int32(self.ctx, 0);
     }
 
+    /// Emit a ComptimeValue as an LLVM constant.
+    fn emitComptimeValue(self: *Emitter, comptime_value: TypeChecker.ComptimeValue) EmitError!llvm.ValueRef {
+        return switch (comptime_value) {
+            .int => |i| if (i.is_i32)
+                llvm.Const.int32(self.ctx, @intCast(i.value))
+            else
+                llvm.Const.int64(self.ctx, @intCast(i.value)),
+            .float => |f| llvm.Const.float64(self.ctx, f),
+            .bool_ => |b| llvm.Const.int1(self.ctx, b),
+            .string => |s| blk: {
+                const str_z = self.allocator.dupeZ(u8, s) catch return EmitError.OutOfMemory;
+                defer self.allocator.free(str_z);
+                break :blk self.builder.buildGlobalStringPtr(str_z, "comptime_str");
+            },
+            .void_ => llvm.Const.int32(self.ctx, 0),
+        };
+    }
+
     /// Emit a comptime block.
     /// These are evaluated at compile time by the type checker and the results are stored.
     fn emitComptimeBlock(self: *Emitter, cb: *ast.ComptimeBlock) EmitError!llvm.ValueRef {
         // Look up the precomputed result from the type checker
         if (self.type_checker) |tc| {
             if (tc.comptime_values.get(cb)) |comptime_value| {
-                return switch (comptime_value) {
-                    .int => |i| if (i.is_i32)
-                        llvm.Const.int32(self.ctx, @intCast(i.value))
-                    else
-                        llvm.Const.int64(self.ctx, @intCast(i.value)),
-                    .float => |f| llvm.Const.float64(self.ctx, f),
-                    .bool_ => |b| llvm.Const.int1(self.ctx, b),
-                    .string => |s| blk: {
-                        const str_z = self.allocator.dupeZ(u8, s) catch return EmitError.OutOfMemory;
-                        defer self.allocator.free(str_z);
-                        break :blk self.builder.buildGlobalStringPtr(str_z, "comptime_str");
-                    },
-                    .void_ => llvm.Const.int32(self.ctx, 0),
-                };
+                return self.emitComptimeValue(comptime_value);
             }
         }
         // Fallback: return 0 if not found (should not happen if type checking passed)

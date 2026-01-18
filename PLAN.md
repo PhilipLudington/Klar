@@ -700,7 +700,7 @@ src/repl.zig             # REPL loop and command handling ✓
 
 **Objective:** Compile-time code evaluation and generation.
 
-**Status:** 🟡 In Progress. Basic comptime blocks work with primitive types (int, bool, string, float).
+**Status:** 🟡 In Progress. Comptime blocks and comptime functions work with primitive types.
 
 Comptime enables powerful metaprogramming without macros—code that runs at compile time to generate code, validate invariants, or compute constants.
 
@@ -714,10 +714,11 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [ ] Support complex types (structs, arrays, etc.) - only primitives currently
 
 ### Comptime Functions
-- [ ] Mark functions as `comptime fn`
-- [ ] Comptime functions can only call other comptime functions
-- [ ] Comptime functions execute at compile time when called
-- [ ] Return values become compile-time constants
+- [x] Mark functions as `comptime fn`
+- [x] Comptime functions can only call other comptime functions (at call site)
+- [x] Comptime functions execute at compile time when called with comptime-known arguments
+- [x] Return values become compile-time constants
+- [ ] Support recursive comptime function calls (requires interpreter environment sharing)
 
 ### Comptime Parameters
 - [ ] Support `comptime` parameter modifier
@@ -754,12 +755,14 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 
 ### Testing
 - [x] Test: comptime blocks evaluate correctly (test/native/comptime_basic.kl)
-- [ ] Test: comptime functions produce constants
+- [x] Test: comptime functions produce constants (test/native/comptime_fn.kl, test/native/comptime_fn_simple.kl)
 - [ ] Test: @typeInfo returns correct metadata
 - [ ] Test: comptime assertions catch errors at compile time
 
 **Files Modified:**
-- `src/checker.zig` - Comptime evaluation during type checking ✓
+- `src/ast.zig` - Added is_comptime field to FunctionDecl ✓
+- `src/parser.zig` - Parse `comptime fn` syntax ✓
+- `src/checker.zig` - Comptime evaluation during type checking, comptime function call evaluation ✓
 - `src/interpreter.zig` - Made evalBlock public for comptime ✓
 - `src/codegen/emit.zig` - Emit comptime values as constants ✓
 

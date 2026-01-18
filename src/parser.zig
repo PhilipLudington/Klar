@@ -72,6 +72,28 @@ pub const Parser = struct {
         return self.current.kind == kind;
     }
 
+    fn peekNext(self: *Parser) Token {
+        // Peek at the next token without consuming current
+        // Save lexer state
+        const saved_pos = self.lexer.pos;
+        const saved_line = self.lexer.line;
+        const saved_column = self.lexer.column;
+
+        // Get next token
+        var next = self.lexer.next();
+        // Skip newlines like advance() does
+        while (next.kind == .newline) {
+            next = self.lexer.next();
+        }
+
+        // Restore lexer state
+        self.lexer.pos = saved_pos;
+        self.lexer.line = saved_line;
+        self.lexer.column = saved_column;
+
+        return next;
+    }
+
     fn match(self: *Parser, kind: Token.Kind) bool {
         if (!self.check(kind)) return false;
         self.advance();
@@ -1826,8 +1848,14 @@ pub const Parser = struct {
         // Handle visibility modifier
         const is_pub = self.match(.pub_);
 
+        // Handle comptime function: comptime fn
+        if (self.check(.comptime_) and self.peekNext().kind == .fn_) {
+            self.advance(); // consume 'comptime'
+            return self.parseFunctionDecl(is_pub, true);
+        }
+
         return switch (self.current.kind) {
-            .fn_ => self.parseFunctionDecl(is_pub),
+            .fn_ => self.parseFunctionDecl(is_pub, false),
             .struct_ => self.parseStructDecl(is_pub),
             .enum_ => self.parseEnumDecl(is_pub),
             .trait => self.parseTraitDecl(is_pub),
@@ -1843,7 +1871,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseFunctionDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_comptime: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'fn'
 
@@ -1892,6 +1920,7 @@ pub const Parser = struct {
             .body = body,
             .is_pub = is_pub,
             .is_async = false,
+            .is_comptime = is_comptime,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .function = func };
@@ -2171,7 +2200,7 @@ pub const Parser = struct {
                 try associated_types.append(self.allocator, assoc_type);
             } else {
                 // Each method in trait is a function signature (potentially without body)
-                const method_decl = try self.parseFunctionDecl(false);
+                const method_decl = try self.parseFunctionDecl(false, false);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -2262,7 +2291,7 @@ pub const Parser = struct {
                 try associated_types.append(self.allocator, assoc_binding);
             } else {
                 const is_pub = self.match(.pub_);
-                const method_decl = try self.parseFunctionDecl(is_pub);
+                const method_decl = try self.parseFunctionDecl(is_pub, false);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 

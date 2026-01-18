@@ -1,0 +1,12 @@
+// Simpler test for comptime functions
+
+comptime fn double(x: i32) -> i32 {
+    return x * 2
+}
+
+fn main() {
+    // This should be evaluated at compile time
+    let result: i32 = double(21)
+    assert_eq(result, 42)
+    println("Comptime function test passed!")
+}
