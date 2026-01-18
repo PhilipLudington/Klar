@@ -1022,7 +1022,7 @@ pub const Interpreter = struct {
         return RuntimeError.PatternMatchFailed;
     }
 
-    fn evalBlock(self: *Interpreter, block: *ast.Block) RuntimeError!Value {
+    pub fn evalBlock(self: *Interpreter, block: *ast.Block) RuntimeError!Value {
         _ = self.pushEnv() catch return RuntimeError.OutOfMemory;
         defer self.popEnv();
 

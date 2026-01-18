@@ -9,6 +9,10 @@ const Span = ast.Span;
 const module_resolver = @import("module_resolver.zig");
 const ModuleInfo = module_resolver.ModuleInfo;
 const ModuleResolver = module_resolver.ModuleResolver;
+const interpreter = @import("interpreter.zig");
+const Interpreter = interpreter.Interpreter;
+const values = @import("values.zig");
+const Value = values.Value;
 
 // ============================================================================
 // Type Checker Errors
@@ -271,6 +275,24 @@ pub const TypeChecker = struct {
     /// Used by codegen for @sizeOf, @alignOf, etc.
     comptime_ints: std.AutoHashMapUnmanaged(*ast.BuiltinCall, i64),
 
+    /// Storage for comptime block values.
+    /// Maps ComptimeBlock AST node pointers to their evaluated values.
+    /// Used by codegen to emit the correct compile-time constant values.
+    comptime_values: std.AutoHashMapUnmanaged(*ast.ComptimeBlock, ComptimeValue),
+
+    /// Represents a compile-time evaluated value.
+    pub const ComptimeValue = union(enum) {
+        /// Integer with type info preserved
+        int: struct {
+            value: i64,
+            is_i32: bool, // true for i32, false for i64
+        },
+        float: f64,
+        bool_: bool,
+        string: []const u8,
+        void_,
+    };
+
     /// Symbols exported from a module.
     pub const ModuleSymbols = struct {
         /// All exported symbols from this module.
@@ -455,6 +477,7 @@ pub const TypeChecker = struct {
             .comptime_strings = .{},
             .comptime_bools = .{},
             .comptime_ints = .{},
+            .comptime_values = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -647,6 +670,15 @@ pub const TypeChecker = struct {
 
         // Clean up comptime ints (no values to free, just the map)
         self.comptime_ints.deinit(self.allocator);
+
+        // Clean up comptime values (need to free strings)
+        var comptime_values_iter = self.comptime_values.valueIterator();
+        while (comptime_values_iter.next()) |cv| {
+            if (cv.* == .string) {
+                self.allocator.free(cv.string);
+            }
+        }
+        self.comptime_values.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -3852,13 +3884,88 @@ pub const TypeChecker = struct {
     /// Type check a comptime block expression
     /// Comptime blocks are evaluated at compile time using the interpreter.
     fn checkComptimeBlock(self: *TypeChecker, block: *ast.ComptimeBlock) Type {
-        // For now, just type-check the block normally
-        // TODO: Actually evaluate the block at compile time using the interpreter
-        _ = self.checkBlock(block.body);
+        // First, type-check the block to ensure it's valid
+        const block_type = self.checkBlock(block.body);
 
-        // Comptime blocks must produce a compile-time constant value
-        // For now, return void as the type (will be enhanced when we add actual evaluation)
-        return self.type_builder.voidType();
+        // Create an interpreter instance for comptime evaluation
+        var interp = Interpreter.init(self.allocator) catch {
+            self.addError(.comptime_error, block.span, "failed to initialize comptime interpreter", .{});
+            return self.type_builder.unknownType();
+        };
+        defer interp.deinit();
+
+        // Populate the interpreter with constants from the current scope
+        self.populateInterpreterEnv(&interp);
+
+        // Evaluate the comptime block
+        const result = interp.evalBlock(block.body) catch |err| {
+            // Convert runtime error to type-checking error
+            const msg = switch (err) {
+                values.RuntimeError.UndefinedVariable => "undefined variable in comptime block",
+                values.RuntimeError.TypeError => "type error in comptime block",
+                values.RuntimeError.DivisionByZero => "division by zero in comptime block",
+                values.RuntimeError.IndexOutOfBounds => "index out of bounds in comptime block",
+                values.RuntimeError.InvalidOperation => "invalid operation in comptime block",
+                values.RuntimeError.ComptimeError => "compile error triggered in comptime block",
+                values.RuntimeError.AssertionFailed => "assertion failed in comptime block",
+                else => "runtime error in comptime block",
+            };
+            self.addError(.comptime_error, block.span, "{s}", .{msg});
+            return self.type_builder.unknownType();
+        };
+
+        // Convert the Value to ComptimeValue and store it
+        const comptime_value: ComptimeValue = switch (result) {
+            .int => |i| .{ .int = .{
+                .value = @intCast(i.value), // Truncate i128 to i64
+                .is_i32 = (i.type_ == .i32_), // Preserve type info
+            } },
+            .float => |f| .{ .float = f.value },
+            .bool_ => |b| .{ .bool_ = b },
+            .string => |s| blk: {
+                // Duplicate the string since the interpreter will free it
+                const duped = self.allocator.dupe(u8, s) catch {
+                    self.addError(.comptime_error, block.span, "out of memory during comptime evaluation", .{});
+                    break :blk ComptimeValue{ .void_ = {} };
+                };
+                break :blk ComptimeValue{ .string = duped };
+            },
+            .void_ => .void_,
+            else => {
+                // Complex types (structs, arrays, etc.) not yet supported
+                self.addError(.comptime_error, block.span, "comptime block produced a non-primitive value", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        // Store the evaluated value for codegen
+        self.comptime_values.put(self.allocator, block, comptime_value) catch {
+            self.addError(.comptime_error, block.span, "failed to store comptime value", .{});
+            return self.type_builder.unknownType();
+        };
+
+        // Return the type based on the evaluated value
+        return switch (comptime_value) {
+            .int => |i| if (i.is_i32) self.type_builder.i32Type() else self.type_builder.i64Type(),
+            .float => self.type_builder.f64Type(),
+            .bool_ => self.type_builder.boolType(),
+            .string => self.type_builder.stringType(),
+            .void_ => block_type, // Return the block's inferred type
+        };
+    }
+
+    /// Populate interpreter environment with constants from the current scope.
+    /// Currently a no-op as we start with a fresh interpreter environment.
+    /// Future enhancement: copy constants from the type-checker scope to the interpreter.
+    fn populateInterpreterEnv(self: *TypeChecker, interp: *Interpreter) void {
+        // Silence unused parameter warnings - these will be used in future enhancements
+        _ = self;
+        _ = interp;
+        // For now, the interpreter starts with a fresh environment with only builtins.
+        // To access outer constants, we would need to:
+        // 1. Store AST nodes for constant definitions in the Symbol table
+        // 2. Re-evaluate those AST nodes in the interpreter
+        // This is a limitation - comptime blocks currently can only use literals and builtins.
     }
 
     /// Type check a builtin function call (@typeName, @typeInfo, etc.)

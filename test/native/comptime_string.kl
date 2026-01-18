@@ -1,0 +1,10 @@
+// Test comptime block with string
+
+fn main() -> i32 {
+    // Comptime string expression
+    let greeting: string = comptime { "hello" }
+    print(greeting)
+
+    // Return 0 for success
+    return 0
+}

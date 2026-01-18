@@ -1,12 +1,24 @@
-// Test basic comptime functionality
+// Test basic comptime block evaluation
 
 fn main() -> i32 {
-    // For now, comptime blocks just type-check but don't evaluate
-    // This is a placeholder test
+    // Comptime integer expression - 2 + 3 = 5
+    let x: i32 = comptime { 2 + 3 }
+    if x != 5 {
+        return 1
+    }
 
-    // Test that builtin @typeName parses (returns string)
-    let name: string = @typeName(i32)
+    // Comptime boolean expression - true and false or true = true
+    let flag: bool = comptime { true and false or true }
+    if not flag {
+        return 2
+    }
 
-    // Basic return
-    return 42
+    // Comptime arithmetic - 10 * 5 - 8 / 2 = 50 - 4 = 46
+    let result: i32 = comptime { 10 * 5 - 8 / 2 }
+    if result != 46 {
+        return 3
+    }
+
+    // All tests passed
+    return 0
 }

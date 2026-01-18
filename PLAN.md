@@ -700,14 +700,18 @@ src/repl.zig             # REPL loop and command handling ✓
 
 **Objective:** Compile-time code evaluation and generation.
 
+**Status:** 🟡 In Progress. Basic comptime blocks work with primitive types (int, bool, string, float).
+
 Comptime enables powerful metaprogramming without macros—code that runs at compile time to generate code, validate invariants, or compute constants.
 
 ### Comptime Blocks
-- [ ] Parse `comptime { ... }` blocks
-- [ ] Evaluate comptime blocks during type checking
-- [ ] Use interpreter for comptime evaluation
-- [ ] Comptime blocks can contain any valid Klar code
-- [ ] Results must be compile-time known
+- [x] Parse `comptime { ... }` blocks
+- [x] Evaluate comptime blocks during type checking
+- [x] Use interpreter for comptime evaluation
+- [x] Comptime blocks can contain literals, arithmetic, and boolean operations
+- [x] Results are stored and emitted as compile-time constants in codegen
+- [ ] Support accessing outer scope constants (current limitation: fresh interpreter environment)
+- [ ] Support complex types (structs, arrays, etc.) - only primitives currently
 
 ### Comptime Functions
 - [ ] Mark functions as `comptime fn`
@@ -721,9 +725,9 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [ ] Enable type-level computation based on values
 
 ### Compile-Time Reflection
+- [x] `@typeName(T)` - Get string name of type (already implemented via builtins)
 - [ ] `@typeInfo(T)` - Get type metadata at comptime
-- [ ] `@typeName(T)` - Get string name of type
-- [ ] `@hasField(T, "name")` - Check if struct has field
+- [x] `@hasField(T, "name")` - Check if struct has field (already implemented via builtins)
 - [ ] `@fields(T)` - Get list of struct fields
 
 ### Code Generation
@@ -734,7 +738,7 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 
 ### Comptime Assertions
 - [ ] `comptime assert(condition)` - Compile error if false
-- [ ] `@compileError("message")` - Emit custom compile error
+- [x] `@compileError("message")` - Emit custom compile error (already implemented via builtins)
 - [ ] Validate invariants at compile time
 
 ### Integration with Generics
@@ -743,21 +747,21 @@ Comptime enables powerful metaprogramming without macros—code that runs at com
 - [ ] Generate specialized implementations
 
 ### Implementation Strategy
-- [ ] Use interpreter for comptime (simpler integration with type checker)
-- [ ] Interpreter can directly work with AST during type checking phase
+- [x] Use interpreter for comptime (simpler integration with type checker)
+- [x] Interpreter can directly work with AST during type checking phase
 - [ ] VM could be used later if comptime performance becomes a bottleneck
-- [ ] Comptime runs once per compilation, so speed is less critical than REPL
+- [x] Comptime runs once per compilation, so speed is less critical than REPL
 
 ### Testing
-- [ ] Test: comptime blocks evaluate correctly
+- [x] Test: comptime blocks evaluate correctly (test/native/comptime_basic.kl)
 - [ ] Test: comptime functions produce constants
 - [ ] Test: @typeInfo returns correct metadata
 - [ ] Test: comptime assertions catch errors at compile time
 
-**Files to Modify:**
-- `src/checker.zig` - Comptime evaluation during type checking
-- `src/interpreter.zig` - Used for comptime evaluation
-- `src/ast.zig` - Comptime AST nodes
+**Files Modified:**
+- `src/checker.zig` - Comptime evaluation during type checking ✓
+- `src/interpreter.zig` - Made evalBlock public for comptime ✓
+- `src/codegen/emit.zig` - Emit comptime values as constants ✓
 
 ---
 

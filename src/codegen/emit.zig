@@ -1107,7 +1107,7 @@ pub const Emitter = struct {
             .interpolated_string => |is| try self.emitInterpolatedString(is),
             // Comptime expressions
             .builtin_call => |bc| try self.emitBuiltinCall(bc),
-            .comptime_block => llvm.Const.int32(self.ctx, 0), // Evaluated at compile time, no runtime value
+            .comptime_block => |cb| try self.emitComptimeBlock(cb),
             else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
         };
     }
@@ -2743,7 +2743,21 @@ pub const Emitter = struct {
                 // Default to i32 for other builtins
                 return llvm.Types.int32(self.ctx);
             },
-            .comptime_block => llvm.Types.int32(self.ctx), // Comptime blocks don't have runtime type
+            .comptime_block => |cb| blk: {
+                // Look up the precomputed result from type checker
+                if (self.type_checker) |tc| {
+                    if (tc.comptime_values.get(cb)) |comptime_value| {
+                        break :blk switch (comptime_value) {
+                            .int => |i| if (i.is_i32) llvm.Types.int32(self.ctx) else llvm.Types.int64(self.ctx),
+                            .float => llvm.Types.float64(self.ctx),
+                            .bool_ => llvm.Types.int1(self.ctx),
+                            .string => llvm.Types.pointer(self.ctx),
+                            .void_ => llvm.Types.int32(self.ctx),
+                        };
+                    }
+                }
+                break :blk llvm.Types.int32(self.ctx); // Fallback
+            },
             else => llvm.Types.int32(self.ctx),
         };
     }
@@ -5526,6 +5540,32 @@ pub const Emitter = struct {
             }
         }
         // Fallback: return 0 if not found
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit a comptime block.
+    /// These are evaluated at compile time by the type checker and the results are stored.
+    fn emitComptimeBlock(self: *Emitter, cb: *ast.ComptimeBlock) EmitError!llvm.ValueRef {
+        // Look up the precomputed result from the type checker
+        if (self.type_checker) |tc| {
+            if (tc.comptime_values.get(cb)) |comptime_value| {
+                return switch (comptime_value) {
+                    .int => |i| if (i.is_i32)
+                        llvm.Const.int32(self.ctx, @intCast(i.value))
+                    else
+                        llvm.Const.int64(self.ctx, @intCast(i.value)),
+                    .float => |f| llvm.Const.float64(self.ctx, f),
+                    .bool_ => |b| llvm.Const.int1(self.ctx, b),
+                    .string => |s| blk: {
+                        const str_z = self.allocator.dupeZ(u8, s) catch return EmitError.OutOfMemory;
+                        defer self.allocator.free(str_z);
+                        break :blk self.builder.buildGlobalStringPtr(str_z, "comptime_str");
+                    },
+                    .void_ => llvm.Const.int32(self.ctx, 0),
+                };
+            }
+        }
+        // Fallback: return 0 if not found (should not happen if type checking passed)
         return llvm.Const.int32(self.ctx, 0);
     }
 
