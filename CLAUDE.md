@@ -28,6 +28,19 @@ Klar targets application-level programming (like C#/Go), not bare-metal systems 
 # DO NOT run `zig build` or `zig build test` directly
 ```
 
+## Klar Command Rules
+
+**NEVER** use `./zig-out/bin/klar` directly in Bash commands. Always use the corresponding skill:
+
+| Action | Use Skill |
+|--------|-----------|
+| Run a .kl file | `/klar-run` |
+| Test a .kl file | `/klar-test` |
+| Build an executable | `/klar-build` |
+| Type-check a file | `/klar-check` |
+
+If you find yourself typing `./zig-out/bin/klar` in a Bash command, **STOP** and use the skill instead.
+
 ## Running Klar Programs
 
 ```bash
