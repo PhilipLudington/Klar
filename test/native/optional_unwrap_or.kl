@@ -1,0 +1,26 @@
+// Test Optional.unwrap_or method
+// Expected exit code: 0
+
+fn maybe_get(flag: bool) -> ?i32 {
+    if flag {
+        return 100
+    }
+}
+
+fn main() -> i32 {
+    // Test unwrap_or with None - should return default
+    let none_opt: ?i32 = maybe_get(false)
+    let none_result: i32 = none_opt.unwrap_or(42)
+    if none_result != 42 {
+        return 1
+    }
+
+    // Test unwrap_or with Some - should return inner value
+    let some_opt: ?i32 = maybe_get(true)
+    let some_result: i32 = some_opt.unwrap_or(42)
+    if some_result != 100 {
+        return 2
+    }
+
+    return 0
+}

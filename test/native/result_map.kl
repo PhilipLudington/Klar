@@ -1,0 +1,34 @@
+// Test Result.map() method
+// Expected exit code: 0
+
+fn main() -> i32 {
+    // Test 1: map on Ok
+    let ok: Result[i32, i32] = Ok(5)
+    let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
+    let mapped: Result[i32, i32] = ok.map(double)
+    if not mapped.is_ok() {
+        return 1  // Error: map on Ok should return Ok
+    }
+    if mapped.unwrap() != 10 {
+        return 2  // Error: wrong mapped value
+    }
+
+    // Test 2: map on Err
+    let err: Result[i32, i32] = Err(99)
+    let mapped_err: Result[i32, i32] = err.map(double)
+    if not mapped_err.is_err() {
+        return 3  // Error: map on Err should return Err
+    }
+    if mapped_err.unwrap_err() != 99 {
+        return 4  // Error: error value should be preserved
+    }
+
+    // Test 3: map with addition closure
+    let add_ten: fn(i32) -> i32 = |x: i32| -> i32 { return x + 10 }
+    let mapped2: Result[i32, i32] = ok.map(add_ten)
+    if mapped2.unwrap() != 15 {
+        return 5  // Error: wrong mapped value (5 + 10 = 15)
+    }
+
+    return 0  // All tests passed
+}

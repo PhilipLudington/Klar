@@ -1,0 +1,20 @@
+// Test Result.unwrap_or method
+// Expected exit code: 0
+
+fn main() -> i32 {
+    // Test unwrap_or with Err - should return default
+    let err_result: Result[i32, i32] = Err(999)
+    let err_val: i32 = err_result.unwrap_or(42)
+    if err_val != 42 {
+        return 1
+    }
+
+    // Test unwrap_or with Ok - should return inner value
+    let ok_result: Result[i32, i32] = Ok(100)
+    let ok_val: i32 = ok_result.unwrap_or(42)
+    if ok_val != 100 {
+        return 2
+    }
+
+    return 0
+}

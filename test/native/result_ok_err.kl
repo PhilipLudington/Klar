@@ -1,0 +1,48 @@
+// Test Result.ok() and Result.err() methods
+
+fn main() -> i32 {
+    // Test 1: Ok result -> ok() returns Some
+    let ok_result: Result[i32, i32] = Ok(42)
+    let ok_opt: ?i32 = ok_result.ok()
+    if not ok_opt.is_some() {
+        return 1  // Error: Ok.ok() should be Some
+    }
+    if ok_opt! != 42 {
+        return 2  // Error: wrong value from Ok.ok()
+    }
+
+    // Test 2: Ok result -> err() returns None
+    let ok_err_opt: ?i32 = ok_result.err()
+    if not ok_err_opt.is_none() {
+        return 3  // Error: Ok.err() should be None
+    }
+
+    // Test 3: Err result -> err() returns Some
+    let err_result: Result[i32, i32] = Err(99)
+    let err_opt: ?i32 = err_result.err()
+    if not err_opt.is_some() {
+        return 4  // Error: Err.err() should be Some
+    }
+    if err_opt! != 99 {
+        return 5  // Error: wrong value from Err.err()
+    }
+
+    // Test 4: Err result -> ok() returns None
+    let err_ok_opt: ?i32 = err_result.ok()
+    if not err_ok_opt.is_none() {
+        return 6  // Error: Err.ok() should be None
+    }
+
+    // Test 5: unwrap_or on ok() result
+    let unwrapped: i32 = ok_result.ok().unwrap_or(0)
+    if unwrapped != 42 {
+        return 7  // Error: unwrap_or on Some should return inner value
+    }
+
+    let unwrapped_none: i32 = err_result.ok().unwrap_or(-1)
+    if unwrapped_none != -1 {
+        return 8  // Error: unwrap_or on None should return default
+    }
+
+    return 0  // All tests passed
+}

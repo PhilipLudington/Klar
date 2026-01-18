@@ -1,0 +1,44 @@
+// Test Optional.and_then() method
+// Expected exit code: 0
+
+fn maybe_double(x: i32) -> ?i32 {
+    if x > 0 {
+        return x * 2
+    }
+    // Return None for non-positive
+}
+
+fn maybe_value(flag: bool) -> ?i32 {
+    if flag {
+        return 5
+    }
+}
+
+fn main() -> i32 {
+    // Test 1: and_then on Some with function returning Some
+    let some: ?i32 = maybe_value(true)
+    let double_fn: fn(i32) -> ?i32 = |x: i32| -> ?i32 { return maybe_double(x) }
+    let result: ?i32 = some.and_then(double_fn)
+    if not result.is_some() {
+        return 1  // Error: and_then should return Some(10)
+    }
+    if result! != 10 {
+        return 2  // Error: wrong value (5 * 2 = 10)
+    }
+
+    // Test 2: and_then on None
+    let none: ?i32 = maybe_value(false)
+    let result_none: ?i32 = none.and_then(double_fn)
+    if not result_none.is_none() {
+        return 3  // Error: and_then on None should return None
+    }
+
+    // Test 3: and_then with function returning None
+    let negative_fn: fn(i32) -> ?i32 = |x: i32| -> ?i32 { return maybe_double(0 - x) }
+    let result_inner_none: ?i32 = some.and_then(negative_fn)
+    if not result_inner_none.is_none() {
+        return 4  // Error: and_then should return None when inner function returns None
+    }
+
+    return 0  // All tests passed
+}

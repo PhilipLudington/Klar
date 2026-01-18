@@ -2660,6 +2660,61 @@ pub const Emitter = struct {
                 {
                     return llvm.Types.int1(self.ctx);
                 }
+                // Result.ok() returns Optional[T] where Result is Result[T, E]
+                if (std.mem.eql(u8, m.method_name, "ok")) {
+                    // Get the Result type from the object
+                    const result_type = try self.inferExprType(m.object);
+                    // ok_type is at index 1 in the Result struct {tag, ok_value, err_value}
+                    const ok_type = llvm.c.LLVMStructGetTypeAtIndex(result_type, 1);
+                    // Build Optional type: {i1, T}
+                    var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type };
+                    return llvm.Types.struct_(self.ctx, &opt_fields, false);
+                }
+                // Result.err() returns Optional[E] where Result is Result[T, E]
+                if (std.mem.eql(u8, m.method_name, "err")) {
+                    // Get the Result type from the object
+                    const result_type = try self.inferExprType(m.object);
+                    // err_type is at index 2 in the Result struct {tag, ok_value, err_value}
+                    const err_type = llvm.c.LLVMStructGetTypeAtIndex(result_type, 2);
+                    // Build Optional type: {i1, E}
+                    var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), err_type };
+                    return llvm.Types.struct_(self.ctx, &opt_fields, false);
+                }
+                // map(f) returns Optional[U] or Result[U, E] where U is the function's return type
+                if (std.mem.eql(u8, m.method_name, "map")) {
+                    // The return type is determined by the function argument's return type
+                    // wrapped in Optional or Result
+                    const object_type = try self.inferExprType(m.object);
+                    const num_fields = llvm.c.LLVMCountStructElementTypes(object_type);
+                    const is_result = num_fields == 3;
+
+                    // For now, use i32 as the mapped type (closure return type)
+                    // The actual type will be determined at runtime from the closure call
+                    if (is_result) {
+                        const err_type = llvm.c.LLVMStructGetTypeAtIndex(object_type, 2);
+                        var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), llvm.Types.int32(self.ctx), err_type };
+                        return llvm.Types.struct_(self.ctx, &result_fields, false);
+                    } else {
+                        var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), llvm.Types.int32(self.ctx) };
+                        return llvm.Types.struct_(self.ctx, &opt_fields, false);
+                    }
+                }
+                // and_then(f) returns the function's return type directly
+                if (std.mem.eql(u8, m.method_name, "and_then")) {
+                    // Same as map - the result type is determined by the closure
+                    const object_type = try self.inferExprType(m.object);
+                    const num_fields = llvm.c.LLVMCountStructElementTypes(object_type);
+                    const is_result = num_fields == 3;
+
+                    if (is_result) {
+                        const err_type = llvm.c.LLVMStructGetTypeAtIndex(object_type, 2);
+                        var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), llvm.Types.int32(self.ctx), err_type };
+                        return llvm.Types.struct_(self.ctx, &result_fields, false);
+                    } else {
+                        var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), llvm.Types.int32(self.ctx) };
+                        return llvm.Types.struct_(self.ctx, &opt_fields, false);
+                    }
+                }
                 // Hash trait: hash() returns i64
                 if (std.mem.eql(u8, m.method_name, "hash")) {
                     return llvm.Types.int64(self.ctx);
@@ -3941,6 +3996,53 @@ pub const Emitter = struct {
         if (std.mem.eql(u8, method.method_name, "unwrap_err")) {
             // Result.unwrap_err() - return error value, trap if Ok
             return self.emitResultUnwrapErr(object, object_type);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "unwrap_or")) {
+            // Optional.unwrap_or(default) or Result.unwrap_or(default)
+            // Returns the inner value if Some/Ok, otherwise returns default
+            if (method.args.len != 1) {
+                return EmitError.InvalidAST;
+            }
+            const default_val = try self.emitExpr(method.args[0]);
+            return self.emitUnwrapOr(object, object_type, default_val);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "expect")) {
+            // Optional.expect(msg) or Result.expect(msg)
+            // Like unwrap but with a custom message (message ignored for now - traps on None/Err)
+            // TODO: Print the message before trapping when panic infrastructure is available
+            return self.emitResultUnwrap(object, object_type);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "ok")) {
+            // Result.ok() -> ?T - converts Result to Optional of Ok value
+            // Returns Some(value) if Ok, None if Err
+            return self.emitResultOkMethod(object, object_type, method);
+        }
+
+        if (std.mem.eql(u8, method.method_name, "err")) {
+            // Result.err() -> ?E - converts Result to Optional of Err value
+            // Returns Some(error) if Err, None if Ok
+            return self.emitResultErrMethod(object, object_type, method);
+        }
+
+        // map(f) - applies function f to inner value if Some/Ok
+        if (std.mem.eql(u8, method.method_name, "map")) {
+            if (method.args.len != 1) {
+                return EmitError.InvalidAST;
+            }
+            const func_val = try self.emitExpr(method.args[0]);
+            return self.emitMapMethod(object, object_type, func_val, method);
+        }
+
+        // and_then(f) - applies function f and flattens result
+        if (std.mem.eql(u8, method.method_name, "and_then")) {
+            if (method.args.len != 1) {
+                return EmitError.InvalidAST;
+            }
+            const func_val = try self.emitExpr(method.args[0]);
+            return self.emitAndThenMethod(object, object_type, func_val, method);
         }
 
         // Eq trait: eq() method for equality comparison
@@ -6314,6 +6416,482 @@ pub const Emitter = struct {
         // Err block: return error value
         self.builder.positionAtEnd(err_block);
         return self.builder.buildLoad(err_type, err_ptr, "unwrap_err.val");
+    }
+
+    /// Emit Optional.unwrap_or(default) or Result.unwrap_or(default).
+    /// Returns the inner value if Some/Ok, otherwise returns the default value.
+    fn emitUnwrapOr(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, default_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store to temp for GEP access
+        const val_alloca = self.builder.buildAlloca(value_type, "unwrap_or.tmp");
+        _ = self.builder.buildStore(value, val_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(value_type, val_alloca, &tag_indices, "unwrap_or.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "unwrap_or.tag");
+
+        // Get the inner value (index 1 for Optional/Result Ok value)
+        var val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const inner_ptr = self.builder.buildGEP(value_type, val_alloca, &val_indices, "unwrap_or.val.ptr");
+        const inner_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 1);
+
+        // Create basic blocks
+        const some_block = llvm.appendBasicBlock(self.ctx, func, "unwrap_or.some");
+        const none_block = llvm.appendBasicBlock(self.ctx, func, "unwrap_or.none");
+        const merge_block = llvm.appendBasicBlock(self.ctx, func, "unwrap_or.merge");
+
+        // Branch based on tag: tag==1 means Some/Ok, tag==0 means None/Err
+        _ = self.builder.buildCondBr(tag, some_block, none_block);
+
+        // Some block: load the inner value
+        self.builder.positionAtEnd(some_block);
+        const some_val = self.builder.buildLoad(inner_type, inner_ptr, "unwrap_or.inner");
+        _ = self.builder.buildBr(merge_block);
+
+        // None block: use default value (already computed)
+        self.builder.positionAtEnd(none_block);
+        _ = self.builder.buildBr(merge_block);
+
+        // Merge block: phi to select the result
+        self.builder.positionAtEnd(merge_block);
+        var incoming_values = [_]llvm.ValueRef{ some_val, default_val };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ some_block, none_block };
+        const result = self.builder.buildPhi(inner_type, "unwrap_or.result");
+        llvm.c.LLVMAddIncoming(result, &incoming_values, &incoming_blocks, 2);
+
+        return result;
+    }
+
+    /// Emit Result.ok() method - converts Result[T, E] to ?T.
+    /// Returns Some(value) if Ok, None if Err.
+    fn emitResultOkMethod(self: *Emitter, result_val: llvm.ValueRef, result_type: llvm.TypeRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store Result to temp for GEP access
+        const result_alloca = self.builder.buildAlloca(result_type, "result.ok.tmp");
+        _ = self.builder.buildStore(result_val, result_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(result_type, result_alloca, &tag_indices, "result.ok.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "result.ok.tag");
+
+        // Get the ok value (index 1)
+        var ok_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const ok_ptr = self.builder.buildGEP(result_type, result_alloca, &ok_indices, "result.ok.val.ptr");
+        const ok_type = llvm.c.LLVMStructGetTypeAtIndex(result_type, 1);
+
+        // Build Optional type: struct { i1, T } where T is the ok_type
+        var opt_field_types = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_field_types, false);
+        _ = method; // Unused, type built from Result's inner type
+
+        // Create basic blocks
+        const is_ok_block = llvm.appendBasicBlock(self.ctx, func, "result.ok.some");
+        const is_err_block = llvm.appendBasicBlock(self.ctx, func, "result.ok.none");
+        const merge_block = llvm.appendBasicBlock(self.ctx, func, "result.ok.merge");
+
+        // Alloca for the optional result
+        const opt_alloca = self.builder.buildAlloca(opt_type, "result.ok.opt");
+
+        // Branch based on tag: tag==1 means Ok, tag==0 means Err
+        _ = self.builder.buildCondBr(tag, is_ok_block, is_err_block);
+
+        // Ok block: create Some(value)
+        self.builder.positionAtEnd(is_ok_block);
+        const ok_val = self.builder.buildLoad(ok_type, ok_ptr, "result.ok.inner");
+        // Set tag to 1 (Some)
+        var opt_tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const opt_tag_ptr = self.builder.buildGEP(opt_type, opt_alloca, &opt_tag_indices, "opt.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 1, false), opt_tag_ptr);
+        // Set value
+        var opt_val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const opt_val_ptr = self.builder.buildGEP(opt_type, opt_alloca, &opt_val_indices, "opt.val.ptr");
+        _ = self.builder.buildStore(ok_val, opt_val_ptr);
+        _ = self.builder.buildBr(merge_block);
+
+        // Err block: create None
+        self.builder.positionAtEnd(is_err_block);
+        // Set tag to 0 (None)
+        const none_tag_ptr = self.builder.buildGEP(opt_type, opt_alloca, &opt_tag_indices, "opt.tag.ptr.none");
+        _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 0, false), none_tag_ptr);
+        _ = self.builder.buildBr(merge_block);
+
+        // Merge block: load and return the optional
+        self.builder.positionAtEnd(merge_block);
+        return self.builder.buildLoad(opt_type, opt_alloca, "result.ok.result");
+    }
+
+    /// Emit Result.err() method - converts Result[T, E] to ?E.
+    /// Returns Some(error) if Err, None if Ok.
+    fn emitResultErrMethod(self: *Emitter, result_val: llvm.ValueRef, result_type: llvm.TypeRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store Result to temp for GEP access
+        const result_alloca = self.builder.buildAlloca(result_type, "result.err.tmp");
+        _ = self.builder.buildStore(result_val, result_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(result_type, result_alloca, &tag_indices, "result.err.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "result.err.tag");
+
+        // Get the err value (index 2)
+        var err_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 2),
+        };
+        const err_ptr = self.builder.buildGEP(result_type, result_alloca, &err_indices, "result.err.val.ptr");
+        const err_type = llvm.c.LLVMStructGetTypeAtIndex(result_type, 2);
+
+        // Build Optional type: struct { i1, E } where E is the err_type
+        var opt_field_types = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), err_type };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_field_types, false);
+        _ = method; // Unused, type built from Result's inner type
+
+        // Create basic blocks
+        const is_err_block = llvm.appendBasicBlock(self.ctx, func, "result.err.some");
+        const is_ok_block = llvm.appendBasicBlock(self.ctx, func, "result.err.none");
+        const merge_block = llvm.appendBasicBlock(self.ctx, func, "result.err.merge");
+
+        // Alloca for the optional result
+        const opt_alloca = self.builder.buildAlloca(opt_type, "result.err.opt");
+
+        // Branch based on tag: tag==0 means Err, tag==1 means Ok
+        _ = self.builder.buildCondBr(tag, is_ok_block, is_err_block);
+
+        // Err block: create Some(error)
+        self.builder.positionAtEnd(is_err_block);
+        const err_val = self.builder.buildLoad(err_type, err_ptr, "result.err.inner");
+        // Set tag to 1 (Some)
+        var opt_tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const opt_tag_ptr = self.builder.buildGEP(opt_type, opt_alloca, &opt_tag_indices, "opt.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 1, false), opt_tag_ptr);
+        // Set value
+        var opt_val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const opt_val_ptr = self.builder.buildGEP(opt_type, opt_alloca, &opt_val_indices, "opt.val.ptr");
+        _ = self.builder.buildStore(err_val, opt_val_ptr);
+        _ = self.builder.buildBr(merge_block);
+
+        // Ok block: create None
+        self.builder.positionAtEnd(is_ok_block);
+        // Set tag to 0 (None)
+        const none_tag_ptr = self.builder.buildGEP(opt_type, opt_alloca, &opt_tag_indices, "opt.tag.ptr.none");
+        _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 0, false), none_tag_ptr);
+        _ = self.builder.buildBr(merge_block);
+
+        // Merge block: load and return the optional
+        self.builder.positionAtEnd(merge_block);
+        return self.builder.buildLoad(opt_type, opt_alloca, "result.err.result");
+    }
+
+    /// Emit Optional.map(f) or Result.map(f) - applies f to inner value.
+    /// For Optional[T].map(f: fn(T) -> U) -> Optional[U]: Some(v) -> Some(f(v)), None -> None
+    /// For Result[T, E].map(f: fn(T) -> U) -> Result[U, E]: Ok(v) -> Ok(f(v)), Err(e) -> Err(e)
+    fn emitMapMethod(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, func_val: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store value to temp for GEP access
+        const val_alloca = self.builder.buildAlloca(value_type, "map.tmp");
+        _ = self.builder.buildStore(value, val_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(value_type, val_alloca, &tag_indices, "map.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "map.tag");
+
+        // Get the inner value (index 1 for Optional/Result Ok value)
+        var inner_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const inner_ptr = self.builder.buildGEP(value_type, val_alloca, &inner_indices, "map.inner.ptr");
+        const inner_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 1);
+
+        // Determine if this is a Result (has 3 fields) or Optional (has 2 fields)
+        const num_fields = llvm.c.LLVMCountStructElementTypes(value_type);
+        const is_result = num_fields == 3;
+
+        // Create basic blocks
+        const some_block = llvm.appendBasicBlock(self.ctx, func, "map.some");
+        const none_block = llvm.appendBasicBlock(self.ctx, func, "map.none");
+        const merge_block = llvm.appendBasicBlock(self.ctx, func, "map.merge");
+
+        // Branch based on tag
+        _ = self.builder.buildCondBr(tag, some_block, none_block);
+
+        // Some/Ok block: call the function and wrap result
+        self.builder.positionAtEnd(some_block);
+        const inner_val = self.builder.buildLoad(inner_type, inner_ptr, "map.inner");
+
+        // Call the closure with the inner value (map closure returns i32)
+        const mapped_val = try self.emitClosureCallWithValue(func_val, inner_val, inner_type, llvm.Types.int32(self.ctx));
+        const mapped_type = llvm.c.LLVMTypeOf(mapped_val);
+
+        // Build result type and wrap the mapped value
+        var some_result: llvm.ValueRef = undefined;
+        var result_type: llvm.TypeRef = undefined;
+
+        if (is_result) {
+            // Result: build Result[U, E] with ok_type = mapped_type, err_type unchanged
+            const err_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 2);
+            var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), mapped_type, err_type };
+            result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
+
+            // Create Ok(mapped_val)
+            const result_alloca = self.builder.buildAlloca(result_type, "map.result.ok");
+            var res_tag_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 0),
+            };
+            const res_tag_ptr = self.builder.buildGEP(result_type, result_alloca, &res_tag_indices, "map.result.tag.ptr");
+            _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 1, false), res_tag_ptr);
+
+            var res_val_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 1),
+            };
+            const res_val_ptr = self.builder.buildGEP(result_type, result_alloca, &res_val_indices, "map.result.val.ptr");
+            _ = self.builder.buildStore(mapped_val, res_val_ptr);
+
+            some_result = self.builder.buildLoad(result_type, result_alloca, "map.result.ok.val");
+        } else {
+            // Optional: build Optional[U]
+            var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), mapped_type };
+            result_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+
+            // Create Some(mapped_val)
+            some_result = self.emitSome(mapped_val, mapped_type);
+        }
+        _ = self.builder.buildBr(merge_block);
+        const some_end_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // None/Err block: return None or propagate Err
+        self.builder.positionAtEnd(none_block);
+        var none_result: llvm.ValueRef = undefined;
+
+        if (is_result) {
+            // Result: propagate the Err unchanged (but need to build with new ok_type)
+            const err_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 2);
+            var err_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 2),
+            };
+            const err_ptr = self.builder.buildGEP(value_type, val_alloca, &err_indices, "map.err.ptr");
+            const err_val = self.builder.buildLoad(err_type, err_ptr, "map.err");
+
+            // Create Err(err_val) with new result type
+            const result_alloca = self.builder.buildAlloca(result_type, "map.result.err");
+            var res_tag_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 0),
+            };
+            const res_tag_ptr = self.builder.buildGEP(result_type, result_alloca, &res_tag_indices, "map.result.err.tag.ptr");
+            _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 0, false), res_tag_ptr);
+
+            var res_err_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 2),
+            };
+            const res_err_ptr = self.builder.buildGEP(result_type, result_alloca, &res_err_indices, "map.result.err.ptr");
+            _ = self.builder.buildStore(err_val, res_err_ptr);
+
+            none_result = self.builder.buildLoad(result_type, result_alloca, "map.result.err.val");
+        } else {
+            // Optional: return None
+            none_result = self.emitNone(result_type);
+        }
+        _ = self.builder.buildBr(merge_block);
+        const none_end_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Merge block
+        self.builder.positionAtEnd(merge_block);
+        var incoming_vals = [_]llvm.ValueRef{ some_result, none_result };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ some_end_block, none_end_block };
+        const phi = self.builder.buildPhi(result_type, "map.result");
+        llvm.addIncoming(phi, &incoming_vals, &incoming_blocks);
+
+        _ = method; // AST node used for type info if needed
+        return phi;
+    }
+
+    /// Emit Optional.and_then(f) or Result.and_then(f) - applies f and flattens.
+    /// For Optional[T].and_then(f: fn(T) -> ?U) -> ?U: Some(v) -> f(v), None -> None
+    /// For Result[T, E].and_then(f: fn(T) -> Result[U, E]) -> Result[U, E]: Ok(v) -> f(v), Err(e) -> Err(e)
+    fn emitAndThenMethod(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, func_val: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store value to temp for GEP access
+        const val_alloca = self.builder.buildAlloca(value_type, "and_then.tmp");
+        _ = self.builder.buildStore(value, val_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(value_type, val_alloca, &tag_indices, "and_then.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "and_then.tag");
+
+        // Get the inner value (index 1)
+        var inner_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const inner_ptr = self.builder.buildGEP(value_type, val_alloca, &inner_indices, "and_then.inner.ptr");
+        const inner_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 1);
+
+        // Determine if this is a Result (has 3 fields) or Optional (has 2 fields)
+        const num_fields = llvm.c.LLVMCountStructElementTypes(value_type);
+        const is_result = num_fields == 3;
+
+        // Create basic blocks
+        const some_block = llvm.appendBasicBlock(self.ctx, func, "and_then.some");
+        const none_block = llvm.appendBasicBlock(self.ctx, func, "and_then.none");
+        const merge_block = llvm.appendBasicBlock(self.ctx, func, "and_then.merge");
+
+        // Branch based on tag
+        _ = self.builder.buildCondBr(tag, some_block, none_block);
+
+        // Determine the result type BEFORE branching (for the closure return type)
+        // For and_then, the closure returns Optional[U] or Result[U, E]
+        // Since we're in the Some/Ok branch, the result type is the same structure as input
+        // but possibly with different inner type U
+        var result_type: llvm.TypeRef = undefined;
+        if (is_result) {
+            // Result[U, E] - for now assume U is i32 (same as original ok_type)
+            const err_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 2);
+            var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), llvm.Types.int32(self.ctx), err_type };
+            result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
+        } else {
+            // Optional[U] - for now assume U is i32
+            var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), llvm.Types.int32(self.ctx) };
+            result_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+        }
+
+        // Some/Ok block: call the function (result is already Optional/Result)
+        self.builder.positionAtEnd(some_block);
+        const inner_val = self.builder.buildLoad(inner_type, inner_ptr, "and_then.inner");
+
+        // Call the closure - returns the new Optional/Result directly
+        const func_result = try self.emitClosureCallWithValue(func_val, inner_val, inner_type, result_type);
+        _ = self.builder.buildBr(merge_block);
+        const some_end_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // None/Err block: return None or propagate Err
+        self.builder.positionAtEnd(none_block);
+        var none_result: llvm.ValueRef = undefined;
+
+        if (is_result) {
+            // Result: propagate the Err with the new result type
+            const err_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 2);
+            var err_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 2),
+            };
+            const err_ptr = self.builder.buildGEP(value_type, val_alloca, &err_indices, "and_then.err.ptr");
+            const err_val = self.builder.buildLoad(err_type, err_ptr, "and_then.err");
+
+            // Create Err with result_type (already computed above)
+            const result_alloca = self.builder.buildAlloca(result_type, "and_then.result.err");
+            var res_tag_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 0),
+            };
+            const res_tag_ptr = self.builder.buildGEP(result_type, result_alloca, &res_tag_indices, "and_then.result.err.tag.ptr");
+            _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 0, false), res_tag_ptr);
+
+            var res_err_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 2),
+            };
+            const res_err_ptr = self.builder.buildGEP(result_type, result_alloca, &res_err_indices, "and_then.result.err.ptr");
+            _ = self.builder.buildStore(err_val, res_err_ptr);
+
+            none_result = self.builder.buildLoad(result_type, result_alloca, "and_then.result.err.val");
+        } else {
+            // Optional: return None of the result type
+            none_result = self.emitNone(result_type);
+        }
+        _ = self.builder.buildBr(merge_block);
+        const none_end_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Merge block
+        self.builder.positionAtEnd(merge_block);
+        var incoming_vals = [_]llvm.ValueRef{ func_result, none_result };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ some_end_block, none_end_block };
+        const phi = self.builder.buildPhi(result_type, "and_then.result");
+        llvm.addIncoming(phi, &incoming_vals, &incoming_blocks);
+
+        _ = method; // AST node for type info if needed
+        return phi;
+    }
+
+    /// Helper to call a closure with a single value argument.
+    /// return_type: the expected return type of the closure (use int32 for map, Optional/Result for and_then)
+    fn emitClosureCallWithValue(self: *Emitter, closure_val: llvm.ValueRef, arg_val: llvm.ValueRef, arg_type: llvm.TypeRef, return_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        const closure_struct_type = self.getClosureStructType();
+
+        // Allocate space to store the closure value
+        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "map.closure.tmp");
+        _ = self.builder.buildStore(closure_val, closure_alloca);
+
+        // Load function pointer
+        var fn_ptr_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const fn_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &fn_ptr_indices, "map.fn.ptr.ptr");
+        const fn_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), fn_ptr_gep, "map.fn.ptr");
+
+        // Load environment pointer
+        var env_ptr_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const env_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &env_ptr_indices, "map.env.ptr.ptr");
+        const env_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), env_ptr_gep, "map.env.ptr");
+
+        // Build call args: env_ptr + arg_val
+        var call_args = [_]llvm.ValueRef{ env_ptr, arg_val };
+
+        // Build function type: fn(ptr, arg_type) -> return_type
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), arg_type };
+        const fn_type = llvm.Types.function(return_type, &param_types, false);
+
+        return self.builder.buildCall(fn_type, fn_ptr, &call_args, "map.closure.call");
     }
 
     /// Emit the Eq trait's eq() method for equality comparison.

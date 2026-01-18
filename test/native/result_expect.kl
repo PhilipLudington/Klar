@@ -1,0 +1,7 @@
+// Test Result.expect method with Ok value
+// Expected exit code: 42
+
+fn main() -> i32 {
+    let result: Result[i32, i32] = Ok(42)
+    return result.expect("should be ok")
+}

@@ -1,0 +1,13 @@
+// Test Optional.expect method with Some value
+// Expected exit code: 42
+
+fn maybe_get(flag: bool) -> ?i32 {
+    if flag {
+        return 42
+    }
+}
+
+fn main() -> i32 {
+    let opt: ?i32 = maybe_get(true)
+    return opt.expect("should have value")
+}

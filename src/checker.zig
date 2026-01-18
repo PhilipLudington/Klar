@@ -3197,6 +3197,34 @@ pub const TypeChecker = struct {
             {
                 return object_type.optional.*;
             }
+            // map(f: fn(T) -> U) -> ?U
+            if (std.mem.eql(u8, method.method_name, "map")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "map() takes exactly 1 argument (a function)", .{});
+                    return self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type == .function) {
+                    // Return Optional of the function's return type
+                    return self.type_builder.optionalType(arg_type.function.return_type) catch self.type_builder.unknownType();
+                }
+                self.addError(.type_mismatch, method.span, "map() argument must be a function", .{});
+                return self.type_builder.unknownType();
+            }
+            // and_then(f: fn(T) -> ?U) -> ?U
+            if (std.mem.eql(u8, method.method_name, "and_then")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "and_then() takes exactly 1 argument (a function)", .{});
+                    return self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type == .function) {
+                    // Return the function's return type directly (should be Optional)
+                    return arg_type.function.return_type;
+                }
+                self.addError(.type_mismatch, method.span, "and_then() argument must be a function", .{});
+                return self.type_builder.unknownType();
+            }
         }
 
         // Result methods
@@ -3270,6 +3298,36 @@ pub const TypeChecker = struct {
                     self.addError(.invalid_call, method.span, "err() takes no arguments", .{});
                 }
                 return self.type_builder.optionalType(result_type.err_type) catch self.type_builder.unknownType();
+            }
+
+            // map(f: fn(T) -> U) -> Result[U, E]
+            if (std.mem.eql(u8, method.method_name, "map")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "map() takes exactly 1 argument (a function)", .{});
+                    return self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type == .function) {
+                    // Return Result[U, E] where U is the function's return type
+                    return self.type_builder.resultType(arg_type.function.return_type, result_type.err_type) catch self.type_builder.unknownType();
+                }
+                self.addError(.type_mismatch, method.span, "map() argument must be a function", .{});
+                return self.type_builder.unknownType();
+            }
+
+            // and_then(f: fn(T) -> Result[U, E]) -> Result[U, E]
+            if (std.mem.eql(u8, method.method_name, "and_then")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "and_then() takes exactly 1 argument (a function)", .{});
+                    return self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type == .function) {
+                    // Return the function's return type directly (should be Result)
+                    return arg_type.function.return_type;
+                }
+                self.addError(.type_mismatch, method.span, "and_then() argument must be a function", .{});
+                return self.type_builder.unknownType();
             }
         }
 

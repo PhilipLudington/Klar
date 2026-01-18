@@ -245,17 +245,32 @@
 
 **Objective:** Implement core standard library types.
 
-### Option Type
-- [ ] Implement `Option[T]` enum in std/core/option.kl
-- [ ] Add `Some(T)` and `None` variants
-- [ ] Implement `unwrap()`, `unwrap_or()`, `map()`, `and_then()`
+**Status:** In Progress. Optional and Result are built-in types with core methods implemented.
+
+### Option Type (Built-in as `?T`)
+- [x] Built-in `?T` syntax for Optional types
+- [x] `Some(T)` created via function return, `None` via implicit
+- [x] Implement `is_some()`, `is_none()`
+- [x] Implement `unwrap()` - panics on None
+- [x] Implement `unwrap_or(default)` - returns value or default
+- [x] Implement `expect(msg)` - panics with message on None
+- [x] Implement `map(f)` - applies function to inner value
+- [x] Implement `and_then(f)` - applies function returning Optional
 - [ ] Implement `Eq`, `Clone` for Option
 
-### Result Type
-- [ ] Implement `Result[T, E]` enum in std/core/result.kl
-- [ ] Add `Ok(T)` and `Err(E)` variants
-- [ ] Implement `unwrap()`, `unwrap_err()`, `map()`, `map_err()`
-- [ ] Implement `and_then()` for chaining
+### Result Type (Built-in as `Result[T, E]`)
+- [x] Built-in `Result[T, E]` type with `Ok(T)` and `Err(E)` variants
+- [x] Implement `is_ok()`, `is_err()`
+- [x] Implement `unwrap()` - panics on Err
+- [x] Implement `unwrap_err()` - panics on Ok
+- [x] Implement `unwrap_or(default)` - returns value or default
+- [x] Implement `expect(msg)` - panics with message on Err
+- [x] Implement `ok()` - converts to `?T`
+- [x] Implement `err()` - converts to `?E`
+- [x] Implement `map(f)` - applies function to ok value
+- [ ] Implement `map_err(f)` - applies function to err value
+- [x] Implement `and_then(f)` for Optional chaining
+- [ ] Implement `and_then(f)` for Result chaining (blocked by closure struct return convention)
 - [ ] Implement `Eq`, `Clone` for Result
 
 ### String Type
@@ -700,7 +715,7 @@ src/repl.zig             # REPL loop and command handling ✓
 
 **Objective:** Compile-time code evaluation and generation.
 
-**Status:** 🟡 In Progress. Comptime blocks and comptime functions work with primitives and structs.
+**Status:** ✅ Core Complete. Comptime blocks, functions, parameters, reflection, and assertions all working. Advanced features (code generation, dependent types) deferred.
 
 Comptime enables powerful metaprogramming without macros—code that runs at compile time to generate code, validate invariants, or compute constants.
 
@@ -814,8 +829,8 @@ Based on dependencies:
 2. **Milestone 2: Traits** (needs generics) ✅
 3. **Milestone 3: Modules** (needed for stdlib) ✅
 4. **Milestone 10: REPL** (uses interpreter, enables AI workflow) ✅
-5. **Milestone 11: Comptime** (uses interpreter, enables metaprogramming)
-6. **Milestone 4: Stdlib Core** (needs generics, traits, modules)
+5. **Milestone 11: Comptime** (uses interpreter, enables metaprogramming) ✅ Core Complete
+6. **Milestone 4: Stdlib Core** (needs generics, traits, modules) ← **CURRENT**
 7. **Milestone 6: Iterators** (needs traits)
 8. **Milestone 7: Error Handling** (needs traits)
 9. **Milestone 5: Stdlib I/O** (needs core)
@@ -833,7 +848,7 @@ Phase 4 is complete when:
 - [x] Traits can be defined and implemented
 - [x] Multi-file projects compile
 - [ ] Standard library provides core functionality
-- [ ] Comptime enables compile-time metaprogramming
+- [x] Comptime enables compile-time metaprogramming (core features complete)
 
 **AI-Native Development:**
 - [x] REPL provides interactive code exploration

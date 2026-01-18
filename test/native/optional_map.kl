@@ -1,0 +1,37 @@
+// Test Optional.map() method
+// Expected exit code: 0
+
+fn maybe_value(flag: bool) -> ?i32 {
+    if flag {
+        return 5
+    }
+}
+
+fn main() -> i32 {
+    // Test 1: map on Some
+    let some: ?i32 = maybe_value(true)
+    let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
+    let mapped: ?i32 = some.map(double)
+    if not mapped.is_some() {
+        return 1  // Error: map on Some should return Some
+    }
+    if mapped! != 10 {
+        return 2  // Error: wrong mapped value
+    }
+
+    // Test 2: map on None
+    let none: ?i32 = maybe_value(false)
+    let mapped_none: ?i32 = none.map(double)
+    if not mapped_none.is_none() {
+        return 3  // Error: map on None should return None
+    }
+
+    // Test 3: map with addition closure
+    let add_ten: fn(i32) -> i32 = |x: i32| -> i32 { return x + 10 }
+    let mapped2: ?i32 = some.map(add_ten)
+    if mapped2! != 15 {
+        return 4  // Error: wrong mapped value (5 + 10 = 15)
+    }
+
+    return 0  // All tests passed
+}
