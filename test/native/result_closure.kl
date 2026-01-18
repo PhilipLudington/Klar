@@ -1,0 +1,11 @@
+// Test closure returning Result[i32, i32]
+// Expected exit code: 0
+
+fn main() -> i32 {
+    let make_ok: fn(i32) -> Result[i32, i32] = |x: i32| -> Result[i32, i32] { return Ok(x * 2) }
+    let result: Result[i32, i32] = make_ok(5)
+    if result.is_ok() {
+        return 0
+    }
+    return 1
+}

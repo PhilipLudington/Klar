@@ -256,7 +256,7 @@
 - [x] Implement `expect(msg)` - panics with message on None
 - [x] Implement `map(f)` - applies function to inner value
 - [x] Implement `and_then(f)` - applies function returning Optional
-- [ ] Implement `Eq`, `Clone` for Option
+- [x] Implement `Eq`, `Clone` for Option
 
 ### Result Type (Built-in as `Result[T, E]`)
 - [x] Built-in `Result[T, E]` type with `Ok(T)` and `Err(E)` variants
@@ -268,10 +268,10 @@
 - [x] Implement `ok()` - converts to `?T`
 - [x] Implement `err()` - converts to `?E`
 - [x] Implement `map(f)` - applies function to ok value
-- [ ] Implement `map_err(f)` - applies function to err value
+- [x] Implement `map_err(f)` - applies function to err value
 - [x] Implement `and_then(f)` for Optional chaining
-- [ ] Implement `and_then(f)` for Result chaining (blocked by closure struct return convention)
-- [ ] Implement `Eq`, `Clone` for Result
+- [x] Implement `and_then(f)` for Result chaining
+- [x] Implement `Eq`, `Clone` for Result
 
 ### String Type
 - [ ] Implement `String` struct in std/string.kl

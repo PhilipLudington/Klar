@@ -1,0 +1,49 @@
+// Test Optional.eq() method (Eq trait for Optional)
+// Expected exit code: 0
+
+fn make_some(x: i32) -> ?i32 {
+    return x
+}
+
+fn make_none() -> ?i32 {
+    // Implicit None return
+}
+
+fn main() -> i32 {
+    // Test 1: None == None should be true
+    let none1: ?i32 = make_none()
+    let none2: ?i32 = make_none()
+    if not none1.eq(none2) {
+        return 1  // Error: None == None should be true
+    }
+
+    // Test 2: Some(x) == Some(x) should be true
+    let some1: ?i32 = make_some(42)
+    let some2: ?i32 = make_some(42)
+    if not some1.eq(some2) {
+        return 2  // Error: Some(42) == Some(42) should be true
+    }
+
+    // Test 3: Some(x) == Some(y) where x != y should be false
+    let some3: ?i32 = make_some(42)
+    let some4: ?i32 = make_some(100)
+    if some3.eq(some4) {
+        return 3  // Error: Some(42) == Some(100) should be false
+    }
+
+    // Test 4: Some(x) == None should be false
+    let some5: ?i32 = make_some(42)
+    let none3: ?i32 = make_none()
+    if some5.eq(none3) {
+        return 4  // Error: Some(42) == None should be false
+    }
+
+    // Test 5: None == Some(x) should be false
+    let none4: ?i32 = make_none()
+    let some6: ?i32 = make_some(42)
+    if none4.eq(some6) {
+        return 5  // Error: None == Some(42) should be false
+    }
+
+    return 0  // All tests passed
+}

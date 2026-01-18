@@ -1,0 +1,48 @@
+// Test Result.eq() method (Eq trait for Result)
+// Expected exit code: 0
+
+fn main() -> i32 {
+    // Test 1: Ok(x) == Ok(x) should be true
+    let ok1: Result[i32, i32] = Ok(42)
+    let ok2: Result[i32, i32] = Ok(42)
+    if not ok1.eq(ok2) {
+        return 1  // Error: Ok(42) == Ok(42) should be true
+    }
+
+    // Test 2: Ok(x) == Ok(y) where x != y should be false
+    let ok3: Result[i32, i32] = Ok(42)
+    let ok4: Result[i32, i32] = Ok(100)
+    if ok3.eq(ok4) {
+        return 2  // Error: Ok(42) == Ok(100) should be false
+    }
+
+    // Test 3: Err(x) == Err(x) should be true
+    let err1: Result[i32, i32] = Err(10)
+    let err2: Result[i32, i32] = Err(10)
+    if not err1.eq(err2) {
+        return 3  // Error: Err(10) == Err(10) should be true
+    }
+
+    // Test 4: Err(x) == Err(y) where x != y should be false
+    let err3: Result[i32, i32] = Err(10)
+    let err4: Result[i32, i32] = Err(20)
+    if err3.eq(err4) {
+        return 4  // Error: Err(10) == Err(20) should be false
+    }
+
+    // Test 5: Ok(x) == Err(y) should be false
+    let ok5: Result[i32, i32] = Ok(42)
+    let err5: Result[i32, i32] = Err(42)
+    if ok5.eq(err5) {
+        return 5  // Error: Ok(42) == Err(42) should be false
+    }
+
+    // Test 6: Err(x) == Ok(y) should be false
+    let err6: Result[i32, i32] = Err(42)
+    let ok6: Result[i32, i32] = Ok(42)
+    if err6.eq(ok6) {
+        return 6  // Error: Err(42) == Ok(42) should be false
+    }
+
+    return 0  // All tests passed
+}

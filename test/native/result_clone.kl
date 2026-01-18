@@ -1,0 +1,51 @@
+// Test Result.clone() method (Clone trait for Result)
+// Expected exit code: 0
+
+fn main() -> i32 {
+    // Test 1: Clone Ok value
+    let ok_original: Result[i32, i32] = Ok(42)
+    let ok_cloned: Result[i32, i32] = ok_original.clone()
+    if not ok_cloned.is_ok() {
+        return 1  // Error: cloned should be Ok
+    }
+    if ok_cloned.unwrap() != 42 {
+        return 2  // Error: cloned value should be 42
+    }
+
+    // Test 2: Clone Err value
+    let err_original: Result[i32, i32] = Err(10)
+    let err_cloned: Result[i32, i32] = err_original.clone()
+    if not err_cloned.is_err() {
+        return 3  // Error: cloned should be Err
+    }
+    if err_cloned.unwrap_err() != 10 {
+        return 4  // Error: cloned error should be 10
+    }
+
+    // Test 3: Original and clone (Ok) should be equal
+    let res1: Result[i32, i32] = Ok(100)
+    let res2: Result[i32, i32] = res1.clone()
+    if not res1.eq(res2) {
+        return 5  // Error: original and clone should be equal
+    }
+
+    // Test 4: Original and clone (Err) should be equal
+    let res3: Result[i32, i32] = Err(200)
+    let res4: Result[i32, i32] = res3.clone()
+    if not res3.eq(res4) {
+        return 6  // Error: original and clone should be equal
+    }
+
+    // Test 5: Clone preserves value
+    let a: Result[i32, i32] = Ok(50)
+    let b: Result[i32, i32] = a.clone()
+    // Both should have the same value
+    if a.unwrap() != 50 {
+        return 7
+    }
+    if b.unwrap() != 50 {
+        return 8
+    }
+
+    return 0  // All tests passed
+}

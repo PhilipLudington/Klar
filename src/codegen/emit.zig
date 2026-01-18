@@ -109,6 +109,11 @@ pub const Emitter = struct {
         inner_type: ?llvm.TypeRef = null,
         /// True if this is an Arc type (uses atomic operations).
         is_arc: bool = false,
+        /// For closure variables, the return type of the closure function.
+        /// This is needed because we can't determine the return type from the closure struct type alone.
+        closure_return_type: ?llvm.TypeRef = null,
+        /// For closure variables, the parameter types of the closure function.
+        closure_param_types: ?[]const llvm.TypeRef = null,
     };
 
     const LoopContext = struct {
@@ -737,6 +742,8 @@ pub const Emitter = struct {
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
+                // For closure types, extract return type and param types from annotation
+                const closure_info = self.tryGetClosureTypeInfo(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -745,6 +752,8 @@ pub const Emitter = struct {
                     .struct_type_name = struct_type_name,
                     .inner_type = inner_type,
                     .is_arc = is_arc,
+                    .closure_return_type = if (closure_info) |ci| ci.return_type else null,
+                    .closure_param_types = if (closure_info) |ci| ci.param_types else null,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -765,6 +774,8 @@ pub const Emitter = struct {
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
+                // For closure types, extract return type and param types from annotation
+                const closure_info = self.tryGetClosureTypeInfo(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -773,6 +784,8 @@ pub const Emitter = struct {
                     .struct_type_name = struct_type_name,
                     .inner_type = inner_type,
                     .is_arc = is_arc,
+                    .closure_return_type = if (closure_info) |ci| ci.return_type else null,
+                    .closure_param_types = if (closure_info) |ci| ci.param_types else null,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -1729,6 +1742,36 @@ pub const Emitter = struct {
         return false;
     }
 
+    /// Information about a closure type extracted from its TypeExpr annotation.
+    const ClosureTypeInfo2 = struct {
+        return_type: llvm.TypeRef,
+        param_types: ?[]const llvm.TypeRef,
+    };
+
+    /// Try to extract closure type information from a TypeExpr.
+    /// Returns null if the type is not a function type.
+    /// Note: The param_types slice is allocated from the emitter's allocator.
+    /// The memory is intentionally not freed during the emitter's lifetime as a simplification.
+    fn tryGetClosureTypeInfo(self: *Emitter, type_expr: ast.TypeExpr) ?ClosureTypeInfo2 {
+        if (type_expr != .function) return null;
+
+        const fn_type = type_expr.function;
+
+        // Convert return type to LLVM
+        const return_type = self.typeExprToLLVM(fn_type.return_type) catch return null;
+
+        // For param types, we only need them if we're actually going to call the closure
+        // with the typed call path. Since we primarily need the return type, and param
+        // types can be inferred from the actual call arguments, we can skip allocating
+        // param_types to avoid the memory management complexity.
+        // The emitter will use null param_types and fall back to inferring from args.
+
+        return ClosureTypeInfo2{
+            .return_type = return_type,
+            .param_types = null, // Simplified: param types inferred from call args
+        };
+    }
+
     fn emitCall(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         // Check if this is a comptime function call with a precomputed value
         if (self.type_checker) |tc| {
@@ -1834,18 +1877,26 @@ pub const Emitter = struct {
                     self.builder.buildLoad(closure_struct_type, local.value, "closure.load")
                 else
                     local.value;
-                return self.emitClosureCall(closure_value, call.args);
+                return self.emitClosureCallTyped(closure_value, call.args, local.closure_return_type, local.closure_param_types);
             }
         }
 
         // Generic callee - evaluate it and call as closure
         const callee_value = try self.emitExpr(call.callee);
-        return self.emitClosureCall(callee_value, call.args);
+        return self.emitClosureCallTyped(callee_value, call.args, null, null);
     }
 
-    /// Emit a call to a closure value.
+    /// Emit a call to a closure value with optional type information.
     /// Closure struct is { fn_ptr: ptr, env_ptr: ptr }
-    fn emitClosureCall(self: *Emitter, closure_value: llvm.ValueRef, args: []const ast.Expr) EmitError!llvm.ValueRef {
+    /// If return_type and param_types are provided, they are used for the function signature.
+    /// Otherwise, defaults to i32 return type and i32 parameters.
+    fn emitClosureCallTyped(
+        self: *Emitter,
+        closure_value: llvm.ValueRef,
+        args: []const ast.Expr,
+        return_type: ?llvm.TypeRef,
+        param_types_info: ?[]const llvm.TypeRef,
+    ) EmitError!llvm.ValueRef {
         // Closure struct type: { fn_ptr, env_ptr }
         const closure_struct_type = self.getClosureStructType();
 
@@ -1880,19 +1931,33 @@ pub const Emitter = struct {
         }
 
         // Build function type for the call
-        // Return type: i32 (default), params: env_ptr + user params
+        // Use provided types if available, otherwise default to i32
         var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
         defer param_types.deinit(self.allocator);
 
+        // First param is always the environment pointer
         param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
-        for (args) |_| {
-            param_types.append(self.allocator, llvm.Types.int32(self.ctx)) catch return EmitError.OutOfMemory;
+
+        // Add user parameter types
+        if (param_types_info) |pti| {
+            // Use the provided parameter types
+            for (pti) |pt| {
+                param_types.append(self.allocator, pt) catch return EmitError.OutOfMemory;
+            }
+        } else {
+            // Default to i32 for each argument
+            for (args) |_| {
+                param_types.append(self.allocator, llvm.Types.int32(self.ctx)) catch return EmitError.OutOfMemory;
+            }
         }
 
-        const fn_type = llvm.Types.function(llvm.Types.int32(self.ctx), param_types.items, false);
+        // Use provided return type or default to i32
+        const actual_return_type = return_type orelse llvm.Types.int32(self.ctx);
+        const fn_type = llvm.Types.function(actual_return_type, param_types.items, false);
 
         // Call through function pointer
-        return self.builder.buildCall(fn_type, fn_ptr, call_args.items, "closure.call");
+        const call_name: [:0]const u8 = if (llvm.isVoidType(actual_return_type)) "" else "closure.call";
+        return self.builder.buildCall(fn_type, fn_ptr, call_args.items, call_name);
     }
 
     /// Emit an if statement (no value produced, no PHI nodes).
@@ -2365,8 +2430,23 @@ pub const Emitter = struct {
                 };
                 return llvm.Types.struct_(self.ctx, &result_fields, false);
             },
-            .generic_apply => {
-                // Complex types - return pointer as placeholder
+            .generic_apply => |g| {
+                // Handle builtin generic types like Result[T, E]
+                if (g.base == .named) {
+                    const base_name = g.base.named.name;
+                    if (std.mem.eql(u8, base_name, "Result") and g.args.len == 2) {
+                        // Result[T, E] is a struct of { tag: i1, ok_value: T, err_value: E }
+                        const ok_type = try self.typeExprToLLVM(g.args[0]);
+                        const err_type = try self.typeExprToLLVM(g.args[1]);
+                        var result_fields = [_]llvm.TypeRef{
+                            llvm.Types.int1(self.ctx), // tag (0 = err, 1 = ok)
+                            ok_type, // ok_value
+                            err_type, // err_value
+                        };
+                        return llvm.Types.struct_(self.ctx, &result_fields, false);
+                    }
+                }
+                // Other complex types - return pointer as placeholder
                 return llvm.Types.pointer(self.ctx);
             },
             .qualified => {
@@ -2572,6 +2652,13 @@ pub const Emitter = struct {
                     }
                 }
 
+                // Check if this is a local closure variable with known return type
+                if (self.named_values.get(func_name)) |local| {
+                    if (local.closure_return_type) |ret_type| {
+                        return ret_type;
+                    }
+                }
+
                 const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(name);
 
@@ -2714,6 +2801,16 @@ pub const Emitter = struct {
                         var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), llvm.Types.int32(self.ctx) };
                         return llvm.Types.struct_(self.ctx, &opt_fields, false);
                     }
+                }
+                // map_err(f) returns Result[T, F] where T is unchanged and F is the mapped error type
+                if (std.mem.eql(u8, m.method_name, "map_err")) {
+                    // Get the Result type from the object
+                    const object_type = try self.inferExprType(m.object);
+                    // ok_type is at index 1, unchanged
+                    const ok_type = llvm.c.LLVMStructGetTypeAtIndex(object_type, 1);
+                    // For now, use i32 as the mapped error type (closure return type)
+                    var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type, llvm.Types.int32(self.ctx) };
+                    return llvm.Types.struct_(self.ctx, &result_fields, false);
                 }
                 // Hash trait: hash() returns i64
                 if (std.mem.eql(u8, m.method_name, "hash")) {
@@ -4043,6 +4140,15 @@ pub const Emitter = struct {
             }
             const func_val = try self.emitExpr(method.args[0]);
             return self.emitAndThenMethod(object, object_type, func_val, method);
+        }
+
+        // map_err(f) - applies function f to error value if Err
+        if (std.mem.eql(u8, method.method_name, "map_err")) {
+            if (method.args.len != 1) {
+                return EmitError.InvalidAST;
+            }
+            const func_val = try self.emitExpr(method.args[0]);
+            return self.emitMapErrMethod(object, object_type, func_val, method);
         }
 
         // Eq trait: eq() method for equality comparison
@@ -6340,6 +6446,250 @@ pub const Emitter = struct {
         return self.builder.buildNot(tag, "opt.is_none");
     }
 
+    /// Emit Optional.eq(other) - compares two optionals for equality.
+    /// Both None => true, both Some with equal values => true, otherwise => false.
+    fn emitOptionalEq(self: *Emitter, left: llvm.ValueRef, right: llvm.ValueRef, opt_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store both optionals for GEP access
+        const left_alloca = self.builder.buildAlloca(opt_type, "opt.eq.left");
+        _ = self.builder.buildStore(left, left_alloca);
+        const right_alloca = self.builder.buildAlloca(opt_type, "opt.eq.right");
+        _ = self.builder.buildStore(right, right_alloca);
+
+        // Get left tag
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const left_tag_ptr = self.builder.buildGEP(opt_type, left_alloca, &tag_indices, "opt.eq.left.tag.ptr");
+        const left_tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), left_tag_ptr, "opt.eq.left.tag");
+
+        // Get right tag
+        const right_tag_ptr = self.builder.buildGEP(opt_type, right_alloca, &tag_indices, "opt.eq.right.tag.ptr");
+        const right_tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), right_tag_ptr, "opt.eq.right.tag");
+
+        // Check if tags are equal
+        const tags_equal = self.builder.buildICmp(llvm.c.LLVMIntEQ, left_tag, right_tag, "opt.eq.tags");
+
+        // Basic blocks
+        const tags_match_block = llvm.appendBasicBlock(self.ctx, func, "opt.eq.tags_match");
+        const tags_differ_block = llvm.appendBasicBlock(self.ctx, func, "opt.eq.tags_differ");
+        const both_some_block = llvm.appendBasicBlock(self.ctx, func, "opt.eq.both_some");
+        const both_none_block = llvm.appendBasicBlock(self.ctx, func, "opt.eq.both_none");
+        const merge_block = llvm.appendBasicBlock(self.ctx, func, "opt.eq.merge");
+
+        // Branch on tags equality
+        _ = self.builder.buildCondBr(tags_equal, tags_match_block, tags_differ_block);
+
+        // Tags differ => false
+        self.builder.positionAtEnd(tags_differ_block);
+        _ = self.builder.buildBr(merge_block);
+
+        // Tags match => check if both Some or both None
+        self.builder.positionAtEnd(tags_match_block);
+        _ = self.builder.buildCondBr(left_tag, both_some_block, both_none_block);
+
+        // Both None => true
+        self.builder.positionAtEnd(both_none_block);
+        _ = self.builder.buildBr(merge_block);
+
+        // Both Some => compare values
+        self.builder.positionAtEnd(both_some_block);
+        var val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const left_val_ptr = self.builder.buildGEP(opt_type, left_alloca, &val_indices, "opt.eq.left.val.ptr");
+        const right_val_ptr = self.builder.buildGEP(opt_type, right_alloca, &val_indices, "opt.eq.right.val.ptr");
+        const inner_type = llvm.c.LLVMStructGetTypeAtIndex(opt_type, 1);
+        const left_val = self.builder.buildLoad(inner_type, left_val_ptr, "opt.eq.left.val");
+        const right_val = self.builder.buildLoad(inner_type, right_val_ptr, "opt.eq.right.val");
+
+        // Compare inner values based on type
+        const inner_kind = llvm.c.LLVMGetTypeKind(inner_type);
+        const values_equal = switch (inner_kind) {
+            llvm.c.LLVMIntegerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntEQ, left_val, right_val, "opt.eq.val"),
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildFCmp(llvm.c.LLVMRealOEQ, left_val, right_val, "opt.eq.val"),
+            llvm.c.LLVMPointerTypeKind => blk: {
+                // Likely string - use strcmp
+                const strcmp_fn = self.getOrDeclareStrcmp();
+                var args = [_]llvm.ValueRef{ left_val, right_val };
+                const result = self.builder.buildCall(
+                    llvm.c.LLVMGlobalGetValueType(strcmp_fn),
+                    strcmp_fn,
+                    &args,
+                    "opt.eq.strcmp",
+                );
+                break :blk self.builder.buildICmp(llvm.c.LLVMIntEQ, result, llvm.Const.int32(self.ctx, 0), "opt.eq.str");
+            },
+            else => llvm.Const.int1(self.ctx, false),
+        };
+        _ = self.builder.buildBr(merge_block);
+        const both_some_end = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Merge block with phi
+        self.builder.positionAtEnd(merge_block);
+        const phi = self.builder.buildPhi(llvm.Types.int1(self.ctx), "opt.eq.result");
+        var incoming_vals = [_]llvm.ValueRef{
+            llvm.Const.int1(self.ctx, false), // tags differ
+            llvm.Const.int1(self.ctx, true), // both none
+            values_equal, // both some
+        };
+        var incoming_blocks = [_]llvm.c.LLVMBasicBlockRef{
+            tags_differ_block,
+            both_none_block,
+            both_some_end,
+        };
+        llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 3);
+
+        return phi;
+    }
+
+    /// Emit Result.eq(other) - compares two results for equality.
+    /// Both Ok with equal values => true, both Err with equal values => true, otherwise => false.
+    fn emitResultEq(self: *Emitter, left: llvm.ValueRef, right: llvm.ValueRef, result_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store both results for GEP access
+        const left_alloca = self.builder.buildAlloca(result_type, "res.eq.left");
+        _ = self.builder.buildStore(left, left_alloca);
+        const right_alloca = self.builder.buildAlloca(result_type, "res.eq.right");
+        _ = self.builder.buildStore(right, right_alloca);
+
+        // Get left tag
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const left_tag_ptr = self.builder.buildGEP(result_type, left_alloca, &tag_indices, "res.eq.left.tag.ptr");
+        const left_tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), left_tag_ptr, "res.eq.left.tag");
+
+        // Get right tag
+        const right_tag_ptr = self.builder.buildGEP(result_type, right_alloca, &tag_indices, "res.eq.right.tag.ptr");
+        const right_tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), right_tag_ptr, "res.eq.right.tag");
+
+        // Check if tags are equal
+        const tags_equal = self.builder.buildICmp(llvm.c.LLVMIntEQ, left_tag, right_tag, "res.eq.tags");
+
+        // Basic blocks
+        const tags_match_block = llvm.appendBasicBlock(self.ctx, func, "res.eq.tags_match");
+        const tags_differ_block = llvm.appendBasicBlock(self.ctx, func, "res.eq.tags_differ");
+        const both_ok_block = llvm.appendBasicBlock(self.ctx, func, "res.eq.both_ok");
+        const both_err_block = llvm.appendBasicBlock(self.ctx, func, "res.eq.both_err");
+        const merge_block = llvm.appendBasicBlock(self.ctx, func, "res.eq.merge");
+
+        // Branch on tags equality
+        _ = self.builder.buildCondBr(tags_equal, tags_match_block, tags_differ_block);
+
+        // Tags differ => false
+        self.builder.positionAtEnd(tags_differ_block);
+        _ = self.builder.buildBr(merge_block);
+
+        // Tags match => check if both Ok or both Err
+        self.builder.positionAtEnd(tags_match_block);
+        _ = self.builder.buildCondBr(left_tag, both_ok_block, both_err_block);
+
+        // Both Ok => compare ok values
+        self.builder.positionAtEnd(both_ok_block);
+        var ok_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const left_ok_ptr = self.builder.buildGEP(result_type, left_alloca, &ok_indices, "res.eq.left.ok.ptr");
+        const right_ok_ptr = self.builder.buildGEP(result_type, right_alloca, &ok_indices, "res.eq.right.ok.ptr");
+        const ok_type = llvm.c.LLVMStructGetTypeAtIndex(result_type, 1);
+        const left_ok = self.builder.buildLoad(ok_type, left_ok_ptr, "res.eq.left.ok");
+        const right_ok = self.builder.buildLoad(ok_type, right_ok_ptr, "res.eq.right.ok");
+
+        // Compare ok values
+        const ok_kind = llvm.c.LLVMGetTypeKind(ok_type);
+        const ok_equal = switch (ok_kind) {
+            llvm.c.LLVMIntegerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntEQ, left_ok, right_ok, "res.eq.ok"),
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildFCmp(llvm.c.LLVMRealOEQ, left_ok, right_ok, "res.eq.ok"),
+            llvm.c.LLVMPointerTypeKind => blk: {
+                const strcmp_fn = self.getOrDeclareStrcmp();
+                var args = [_]llvm.ValueRef{ left_ok, right_ok };
+                const result = self.builder.buildCall(
+                    llvm.c.LLVMGlobalGetValueType(strcmp_fn),
+                    strcmp_fn,
+                    &args,
+                    "res.eq.ok.strcmp",
+                );
+                break :blk self.builder.buildICmp(llvm.c.LLVMIntEQ, result, llvm.Const.int32(self.ctx, 0), "res.eq.ok.str");
+            },
+            else => llvm.Const.int1(self.ctx, false),
+        };
+        _ = self.builder.buildBr(merge_block);
+        const both_ok_end = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Both Err => compare err values
+        self.builder.positionAtEnd(both_err_block);
+        var err_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 2),
+        };
+        const left_err_ptr = self.builder.buildGEP(result_type, left_alloca, &err_indices, "res.eq.left.err.ptr");
+        const right_err_ptr = self.builder.buildGEP(result_type, right_alloca, &err_indices, "res.eq.right.err.ptr");
+        const err_type = llvm.c.LLVMStructGetTypeAtIndex(result_type, 2);
+        const left_err = self.builder.buildLoad(err_type, left_err_ptr, "res.eq.left.err");
+        const right_err = self.builder.buildLoad(err_type, right_err_ptr, "res.eq.right.err");
+
+        // Compare err values
+        const err_kind = llvm.c.LLVMGetTypeKind(err_type);
+        const err_equal = switch (err_kind) {
+            llvm.c.LLVMIntegerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntEQ, left_err, right_err, "res.eq.err"),
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildFCmp(llvm.c.LLVMRealOEQ, left_err, right_err, "res.eq.err"),
+            llvm.c.LLVMPointerTypeKind => blk: {
+                const strcmp_fn = self.getOrDeclareStrcmp();
+                var args = [_]llvm.ValueRef{ left_err, right_err };
+                const result = self.builder.buildCall(
+                    llvm.c.LLVMGlobalGetValueType(strcmp_fn),
+                    strcmp_fn,
+                    &args,
+                    "res.eq.err.strcmp",
+                );
+                break :blk self.builder.buildICmp(llvm.c.LLVMIntEQ, result, llvm.Const.int32(self.ctx, 0), "res.eq.err.str");
+            },
+            else => llvm.Const.int1(self.ctx, false),
+        };
+        _ = self.builder.buildBr(merge_block);
+        const both_err_end = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Merge block with phi
+        self.builder.positionAtEnd(merge_block);
+        const phi = self.builder.buildPhi(llvm.Types.int1(self.ctx), "res.eq.result");
+        var incoming_vals = [_]llvm.ValueRef{
+            llvm.Const.int1(self.ctx, false), // tags differ
+            ok_equal, // both ok
+            err_equal, // both err
+        };
+        var incoming_blocks = [_]llvm.c.LLVMBasicBlockRef{
+            tags_differ_block,
+            both_ok_end,
+            both_err_end,
+        };
+        llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 3);
+
+        return phi;
+    }
+
+    /// Emit Optional.clone() - returns a clone of the optional.
+    /// For value types (integers, floats, bools), this is just a copy.
+    fn emitOptionalClone(_: *Emitter, opt_val: llvm.ValueRef, _: llvm.TypeRef) EmitError!llvm.ValueRef {
+        // For value types, the optional is already a value - just return it
+        // The struct itself is copied (shallow copy), which is correct for primitives
+        return opt_val;
+    }
+
+    /// Emit Result.clone() - returns a clone of the result.
+    /// For value types (integers, floats, bools), this is just a copy.
+    fn emitResultClone(_: *Emitter, result_val: llvm.ValueRef, _: llvm.TypeRef) EmitError!llvm.ValueRef {
+        // For value types, the result is already a value - just return it
+        // The struct itself is copied (shallow copy), which is correct for primitives
+        return result_val;
+    }
+
     /// Emit Result.unwrap() / Optional.unwrap() - traps if Err/None, returns value if Ok/Some.
     fn emitResultUnwrap(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
@@ -6747,6 +7097,118 @@ pub const Emitter = struct {
         return phi;
     }
 
+    /// Emit Result.map_err(f) - applies f to error value.
+    /// For Result[T, E].map_err(f: fn(E) -> F) -> Result[T, F]: Ok(v) -> Ok(v), Err(e) -> Err(f(e))
+    fn emitMapErrMethod(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, func_val: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store value to temp for GEP access
+        const val_alloca = self.builder.buildAlloca(value_type, "map_err.tmp");
+        _ = self.builder.buildStore(value, val_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(value_type, val_alloca, &tag_indices, "map_err.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "map_err.tag");
+
+        // Get the ok value type (index 1) - unchanged in map_err
+        const ok_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 1);
+
+        // Get the error value (index 2)
+        var err_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 2),
+        };
+        const err_ptr = self.builder.buildGEP(value_type, val_alloca, &err_indices, "map_err.err.ptr");
+        const err_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 2);
+
+        // Create basic blocks
+        const ok_block = llvm.appendBasicBlock(self.ctx, func, "map_err.ok");
+        const err_block = llvm.appendBasicBlock(self.ctx, func, "map_err.err");
+        const merge_block = llvm.appendBasicBlock(self.ctx, func, "map_err.merge");
+
+        // Branch based on tag (1 = Ok, 0 = Err)
+        _ = self.builder.buildCondBr(tag, ok_block, err_block);
+
+        // Ok block: propagate Ok unchanged (but need to build with new err_type)
+        self.builder.positionAtEnd(ok_block);
+
+        // Get the ok value
+        var ok_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const ok_ptr = self.builder.buildGEP(value_type, val_alloca, &ok_indices, "map_err.ok.ptr");
+        const ok_val = self.builder.buildLoad(ok_type, ok_ptr, "map_err.ok");
+
+        // Err block: call the function and wrap result
+        self.builder.positionAtEnd(err_block);
+        const err_val = self.builder.buildLoad(err_type, err_ptr, "map_err.err");
+
+        // Call the closure with the error value
+        const mapped_err_val = try self.emitClosureCallWithValue(func_val, err_val, err_type, llvm.Types.int32(self.ctx));
+        const mapped_err_type = llvm.c.LLVMTypeOf(mapped_err_val);
+
+        // Build result type: Result[T, F] where T is unchanged, F is the mapped error type
+        var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type, mapped_err_type };
+        const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
+
+        // Go back to Ok block and create Ok(ok_val) with new result type
+        self.builder.positionAtEnd(ok_block);
+        const ok_result_alloca = self.builder.buildAlloca(result_type, "map_err.result.ok");
+        var ok_res_tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const ok_res_tag_ptr = self.builder.buildGEP(result_type, ok_result_alloca, &ok_res_tag_indices, "map_err.result.ok.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 1, false), ok_res_tag_ptr);
+
+        var ok_res_val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const ok_res_val_ptr = self.builder.buildGEP(result_type, ok_result_alloca, &ok_res_val_indices, "map_err.result.ok.val.ptr");
+        _ = self.builder.buildStore(ok_val, ok_res_val_ptr);
+
+        const ok_result = self.builder.buildLoad(result_type, ok_result_alloca, "map_err.result.ok.val");
+        _ = self.builder.buildBr(merge_block);
+        const ok_end_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Continue Err block: create Err(mapped_err_val)
+        self.builder.positionAtEnd(err_block);
+        const err_result_alloca = self.builder.buildAlloca(result_type, "map_err.result.err");
+        var err_res_tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const err_res_tag_ptr = self.builder.buildGEP(result_type, err_result_alloca, &err_res_tag_indices, "map_err.result.err.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 0, false), err_res_tag_ptr);
+
+        var err_res_val_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 2),
+        };
+        const err_res_val_ptr = self.builder.buildGEP(result_type, err_result_alloca, &err_res_val_indices, "map_err.result.err.val.ptr");
+        _ = self.builder.buildStore(mapped_err_val, err_res_val_ptr);
+
+        const err_result = self.builder.buildLoad(result_type, err_result_alloca, "map_err.result.err.val");
+        _ = self.builder.buildBr(merge_block);
+        const err_end_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Merge block
+        self.builder.positionAtEnd(merge_block);
+        var incoming_vals = [_]llvm.ValueRef{ ok_result, err_result };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ ok_end_block, err_end_block };
+        const phi = self.builder.buildPhi(result_type, "map_err.result");
+        llvm.addIncoming(phi, &incoming_vals, &incoming_blocks);
+
+        _ = method; // AST node used for type info if needed
+        return phi;
+    }
+
     /// Emit Optional.and_then(f) or Result.and_then(f) - applies f and flattens.
     /// For Optional[T].and_then(f: fn(T) -> ?U) -> ?U: Some(v) -> f(v), None -> None
     /// For Result[T, E].and_then(f: fn(T) -> Result[U, E]) -> Result[U, E]: Ok(v) -> f(v), Err(e) -> Err(e)
@@ -6947,7 +7409,16 @@ pub const Emitter = struct {
                 );
             },
             llvm.c.LLVMStructTypeKind => {
-                // For structs that implement Eq, we need to call the user-defined eq method
+                // Check if this is Optional (2 fields) or Result (3 fields)
+                const num_fields = llvm.c.LLVMCountStructElementTypes(left_type);
+                if (num_fields == 2) {
+                    // Optional[T] - compare: both None = true, both Some with equal values = true
+                    return self.emitOptionalEq(left, right, left_type);
+                } else if (num_fields == 3) {
+                    // Result[T, E] - compare: both Ok with equal values = true, both Err with equal values = true
+                    return self.emitResultEq(left, right, left_type);
+                }
+                // For user-defined structs, we need to call the user-defined eq method
                 // This should be handled by the user-defined method lookup before we get here
                 // For now, fall through to placeholder
                 return llvm.Const.int1(self.ctx, false);
@@ -7084,7 +7555,16 @@ pub const Emitter = struct {
                 );
             },
             llvm.c.LLVMStructTypeKind => {
-                // For structs that implement Clone, we need to call the user-defined clone method
+                // Check if this is Optional (2 fields) or Result (3 fields)
+                const num_fields = llvm.c.LLVMCountStructElementTypes(value_type);
+                if (num_fields == 2) {
+                    // Optional[T] - clone the optional
+                    return self.emitOptionalClone(value, value_type);
+                } else if (num_fields == 3) {
+                    // Result[T, E] - clone the result
+                    return self.emitResultClone(value, value_type);
+                }
+                // For user-defined structs that implement Clone, we need to call the user-defined clone method
                 // This should be handled by the user-defined method lookup before we get here
                 // For now, just return the value (shallow copy)
                 return value;

@@ -3225,6 +3225,30 @@ pub const TypeChecker = struct {
                 self.addError(.type_mismatch, method.span, "and_then() argument must be a function", .{});
                 return self.type_builder.unknownType();
             }
+            // eq(other: ?T) -> bool (Eq trait for Optional)
+            if (std.mem.eql(u8, method.method_name, "eq")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "eq() expects exactly 1 argument", .{});
+                    return self.type_builder.boolType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                // Argument should be the same Optional type (or a reference to it)
+                var actual_arg_type = arg_type;
+                if (arg_type == .reference) {
+                    actual_arg_type = arg_type.reference.inner;
+                }
+                if (!actual_arg_type.eql(object_type)) {
+                    self.addError(.type_mismatch, method.span, "eq() argument type mismatch: expected same Optional type", .{});
+                }
+                return self.type_builder.boolType();
+            }
+            // clone() -> ?T (Clone trait for Optional)
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clone() expects no arguments", .{});
+                }
+                return object_type;
+            }
         }
 
         // Result methods
@@ -3328,6 +3352,45 @@ pub const TypeChecker = struct {
                 }
                 self.addError(.type_mismatch, method.span, "and_then() argument must be a function", .{});
                 return self.type_builder.unknownType();
+            }
+
+            // map_err(f: fn(E) -> F) -> Result[T, F]
+            if (std.mem.eql(u8, method.method_name, "map_err")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "map_err() takes exactly 1 argument (a function)", .{});
+                    return self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type == .function) {
+                    // Return Result[T, F] where T is unchanged and F is the function's return type
+                    return self.type_builder.resultType(result_type.ok_type, arg_type.function.return_type) catch self.type_builder.unknownType();
+                }
+                self.addError(.type_mismatch, method.span, "map_err() argument must be a function", .{});
+                return self.type_builder.unknownType();
+            }
+            // eq(other: Result[T, E]) -> bool (Eq trait for Result)
+            if (std.mem.eql(u8, method.method_name, "eq")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "eq() expects exactly 1 argument", .{});
+                    return self.type_builder.boolType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                // Argument should be the same Result type (or a reference to it)
+                var actual_arg_type = arg_type;
+                if (arg_type == .reference) {
+                    actual_arg_type = arg_type.reference.inner;
+                }
+                if (!actual_arg_type.eql(object_type)) {
+                    self.addError(.type_mismatch, method.span, "eq() argument type mismatch: expected same Result type", .{});
+                }
+                return self.type_builder.boolType();
+            }
+            // clone() -> Result[T, E] (Clone trait for Result)
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clone() expects no arguments", .{});
+                }
+                return object_type;
             }
         }
 

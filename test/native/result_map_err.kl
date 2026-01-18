@@ -1,0 +1,34 @@
+// Test Result.map_err() method
+// Expected exit code: 0
+
+fn main() -> i32 {
+    // Test 1: map_err on Ok - should preserve Ok value
+    let ok: Result[i32, i32] = Ok(42)
+    let double_err: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
+    let mapped_ok: Result[i32, i32] = ok.map_err(double_err)
+    if not mapped_ok.is_ok() {
+        return 1  // Error: map_err on Ok should return Ok
+    }
+    if mapped_ok.unwrap() != 42 {
+        return 2  // Error: Ok value should be unchanged
+    }
+
+    // Test 2: map_err on Err - should apply function to error
+    let err: Result[i32, i32] = Err(10)
+    let mapped_err: Result[i32, i32] = err.map_err(double_err)
+    if not mapped_err.is_err() {
+        return 3  // Error: map_err on Err should return Err
+    }
+    if mapped_err.unwrap_err() != 20 {
+        return 4  // Error: error should be doubled (10 * 2 = 20)
+    }
+
+    // Test 3: map_err with different transformation
+    let add_100: fn(i32) -> i32 = |x: i32| -> i32 { return x + 100 }
+    let mapped2: Result[i32, i32] = err.map_err(add_100)
+    if mapped2.unwrap_err() != 110 {
+        return 5  // Error: error should be 10 + 100 = 110
+    }
+
+    return 0  // All tests passed
+}

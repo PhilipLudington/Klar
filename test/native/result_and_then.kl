@@ -1,0 +1,41 @@
+// Test Result.and_then() method
+// Expected exit code: 0
+
+fn maybe_double(x: i32) -> Result[i32, i32] {
+    if x > 0 {
+        return Ok(x * 2)
+    }
+    return Err(-1)
+}
+
+fn main() -> i32 {
+    // Test 1: and_then on Ok with function returning Ok
+    let ok: Result[i32, i32] = Ok(5)
+    let double_fn: fn(i32) -> Result[i32, i32] = |x: i32| -> Result[i32, i32] { return maybe_double(x) }
+    let result: Result[i32, i32] = ok.and_then(double_fn)
+    if not result.is_ok() {
+        return 1  // Error: and_then should return Ok(10)
+    }
+    if result.unwrap() != 10 {
+        return 2  // Error: wrong value (5 * 2 = 10)
+    }
+
+    // Test 2: and_then on Err - should propagate Err
+    let err: Result[i32, i32] = Err(99)
+    let result_err: Result[i32, i32] = err.and_then(double_fn)
+    if not result_err.is_err() {
+        return 3  // Error: and_then on Err should return Err
+    }
+    if result_err.unwrap_err() != 99 {
+        return 4  // Error: original error should be preserved
+    }
+
+    // Test 3: and_then with function returning Err
+    let negative_fn: fn(i32) -> Result[i32, i32] = |x: i32| -> Result[i32, i32] { return maybe_double(0 - x) }
+    let result_inner_err: Result[i32, i32] = ok.and_then(negative_fn)
+    if not result_inner_err.is_err() {
+        return 5  // Error: and_then should return Err when inner function returns Err
+    }
+
+    return 0  // All tests passed
+}

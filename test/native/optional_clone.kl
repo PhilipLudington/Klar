@@ -1,0 +1,49 @@
+// Test Optional.clone() method (Clone trait for Optional)
+// Expected exit code: 0
+
+fn make_some(x: i32) -> ?i32 {
+    return x
+}
+
+fn make_none() -> ?i32 {
+    // Implicit None return
+}
+
+fn main() -> i32 {
+    // Test 1: Clone Some value
+    let original: ?i32 = make_some(42)
+    let cloned: ?i32 = original.clone()
+    if not cloned.is_some() {
+        return 1  // Error: cloned should be Some
+    }
+    if cloned.unwrap() != 42 {
+        return 2  // Error: cloned value should be 42
+    }
+
+    // Test 2: Clone None
+    let none_original: ?i32 = make_none()
+    let none_cloned: ?i32 = none_original.clone()
+    if not none_cloned.is_none() {
+        return 3  // Error: cloned None should be None
+    }
+
+    // Test 3: Original and clone should be equal
+    let opt1: ?i32 = make_some(100)
+    let opt2: ?i32 = opt1.clone()
+    if not opt1.eq(opt2) {
+        return 4  // Error: original and clone should be equal
+    }
+
+    // Test 4: Clone preserves value
+    let a: ?i32 = make_some(10)
+    let b: ?i32 = a.clone()
+    // Both should be Some(10) since they are independent copies
+    if a.unwrap() != 10 {
+        return 5
+    }
+    if b.unwrap() != 10 {
+        return 6
+    }
+
+    return 0  // All tests passed
+}
