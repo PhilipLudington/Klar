@@ -1,5 +1,10 @@
 # Klar Run
 
+**USE THIS SKILL** when running Klar programs. Always use this instead of manual `./zig-out/bin/klar run` bash commands when:
+- Executing any `.kl` file to see its output
+- Running examples or demos
+- Quick iteration during development
+
 Execute a Klar program directly without creating a persistent binary.
 
 ## Arguments

@@ -1,5 +1,12 @@
 # Klar Build
 
+**USE THIS SKILL** when building Klar executables. Always use this instead of manual `./zig-out/bin/klar build` bash commands when:
+- Creating a persistent executable (`-o output`)
+- Generating LLVM IR or assembly for debugging (`--emit-llvm`, `--emit-asm`)
+- Building optimized or debug versions (`-O2`, `-g`)
+
+For quick testing without persistent output, prefer `/klar-test` or `/klar-run` instead.
+
 Compile a Klar program to a native executable.
 
 ## Arguments

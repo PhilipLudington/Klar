@@ -1,5 +1,10 @@
 # Klar Test Runner
 
+**USE THIS SKILL** when running Klar test files. Always use this instead of manual `./zig-out/bin/klar` bash commands when:
+- Testing any `.kl` file to verify it works correctly
+- Running files in `test/` or `test/native/` directories
+- Wanting to quickly check if code compiles and runs
+
 Run Klar source files for testing.
 
 ## Arguments

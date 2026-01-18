@@ -1,5 +1,12 @@
 # Klar Check
 
+**USE THIS SKILL** when type-checking Klar files. Always use this instead of manual `./zig-out/bin/klar check` bash commands when:
+- Validating code without running it
+- Quickly checking for type errors during development
+- Verifying syntax is correct before committing
+
+For actually running the code, use `/klar-test` or `/klar-run` instead.
+
 Type-check a Klar file without generating code.
 
 ## Arguments
