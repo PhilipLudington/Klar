@@ -1,7 +1,7 @@
-// Test basic List[T] type and creation
+// Test basic List[T] type and push operation
 fn main() -> i32 {
     // Create an empty list using type parameter on method
-    let list: List[i32] = List.new[i32]()
+    var list: List[i32] = List.new[i32]()
 
     // Check initial state
     let len: i32 = list.len()
@@ -12,6 +12,35 @@ fn main() -> i32 {
     let empty: bool = list.is_empty()
     if not empty {
         return 2
+    }
+
+    // Test push - this will trigger allocation
+    list.push(10)
+
+    let len2: i32 = list.len()
+    if len2 != 1 {
+        return 3
+    }
+
+    // Push more values
+    list.push(20)
+    list.push(30)
+
+    let len3: i32 = list.len()
+    if len3 != 3 {
+        return 4
+    }
+
+    // Check capacity grew (should be at least 8)
+    let cap: i32 = list.capacity()
+    if cap < 8 {
+        return 5
+    }
+
+    // Verify not empty
+    let still_empty: bool = list.is_empty()
+    if still_empty {
+        return 6
     }
 
     return 42

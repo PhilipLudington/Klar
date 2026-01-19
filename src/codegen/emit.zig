@@ -127,6 +127,8 @@ pub const Emitter = struct {
         is_reference: bool = false,
         /// For reference params, the LLVM type of the pointed-to struct.
         reference_inner_type: ?llvm.TypeRef = null,
+        /// For List[T] types, the element type.
+        list_element_type: ?types.Type = null,
     };
 
     const LoopContext = struct {
@@ -796,6 +798,8 @@ pub const Emitter = struct {
                 // Check if this is an array or slice type
                 const is_array = self.isTypeArray(decl.type_);
                 const array_info = self.getArrayTypeInfo(decl.type_);
+                // Check if this is a List type
+                const list_element_type = self.getListTypeInfo(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -810,6 +814,7 @@ pub const Emitter = struct {
                     .is_array = is_array,
                     .array_size = if (array_info) |ai| ai.size else null,
                     .array_element_type = if (array_info) |ai| ai.element_type else null,
+                    .list_element_type = list_element_type,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -837,6 +842,8 @@ pub const Emitter = struct {
                 // Check if this is an array or slice type
                 const is_array = self.isTypeArray(decl.type_);
                 const array_info = self.getArrayTypeInfo(decl.type_);
+                // Check if this is a List type
+                const list_element_type = self.getListTypeInfo(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -851,6 +858,7 @@ pub const Emitter = struct {
                     .is_array = is_array,
                     .array_size = if (array_info) |ai| ai.size else null,
                     .array_element_type = if (array_info) |ai| ai.element_type else null,
+                    .list_element_type = list_element_type,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -3221,6 +3229,26 @@ pub const Emitter = struct {
                     break :blk tc_mut.resolveTypeExpr(slc.element) catch null;
                 } else null;
                 return .{ .element_type = element_type, .size = null };
+            },
+            else => return null,
+        }
+    }
+
+    /// Get List element type from type expression (e.g., List[i32] -> i32)
+    fn getListTypeInfo(self: *Emitter, type_expr: ast.TypeExpr) ?types.Type {
+        switch (type_expr) {
+            .generic_apply => |g| {
+                // Check if the base is "List"
+                if (g.base == .named and std.mem.eql(u8, g.base.named.name, "List")) {
+                    if (g.args.len == 1) {
+                        // Resolve the element type using type checker
+                        if (self.type_checker) |tc| {
+                            const tc_mut = @constCast(tc);
+                            return tc_mut.resolveTypeExpr(g.args[0]) catch null;
+                        }
+                    }
+                }
+                return null;
             },
             else => return null,
         }
@@ -6051,6 +6079,20 @@ pub const Emitter = struct {
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
+    fn getOrDeclareRealloc(self: *Emitter) llvm.ValueRef {
+        const fn_name = "realloc";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // void* realloc(void* ptr, size_t size)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, i64_type };
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
     fn getOrDeclareRcClone(self: *Emitter) llvm.ValueRef {
         const fn_name = "klar_rc_clone";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
@@ -7667,7 +7709,18 @@ pub const Emitter = struct {
 
     /// Get the element type for a List expression.
     fn getListElementType(self: *Emitter, expr: ast.Expr) ?types.Type {
-        // Use type checker to get the list element type
+        // First check if this is an identifier with stored list element type
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.list_element_type) |elem_type| {
+                        return elem_type;
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: use type checker to get the list element type
         if (self.type_checker) |tc| {
             const tc_mut = @constCast(tc);
             const expr_type = tc_mut.checkExpr(expr);
@@ -8190,26 +8243,85 @@ pub const Emitter = struct {
     }
 
     /// Emit list.push(value) - adds an element to the list.
+    /// Implemented inline: checks capacity, grows if needed, stores value, increments len.
     fn emitListPush(self: *Emitter, list_ptr: llvm.ValueRef, method: *ast.MethodCall, value: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const list_push_fn = self.getOrDeclareListPush();
+        const func = self.current_function orelse return EmitError.InvalidAST;
 
-        // Get element size and alignment from the element type
+        // Get element type info
         const element_type = self.getListElementType(method.object) orelse return EmitError.InvalidAST;
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
-        const element_align_log2 = self.getAlignLog2(element_llvm_type);
 
-        // Allocate stack space for the value and get its pointer
-        const value_alloca = self.builder.buildAlloca(element_llvm_type, "push.value");
-        _ = self.builder.buildStore(value, value_alloca);
+        const list_type = self.getListStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
 
-        var args = [_]llvm.ValueRef{
-            list_ptr,
-            llvm.Const.int64(self.ctx, @intCast(element_size)),
-            llvm.Const.int8(self.ctx, @intCast(element_align_log2)),
-            value_alloca,
-        };
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(list_push_fn), list_push_fn, &args, "");
+        // Load current ptr, len, capacity
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "push.ptr_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "push.len_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 2, "push.cap_ptr");
+
+        const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "push.current_ptr");
+        const current_len = self.builder.buildLoad(i32_type, len_ptr, "push.current_len");
+        const current_cap = self.builder.buildLoad(i32_type, cap_ptr, "push.current_cap");
+
+        // Check if we need to grow: len >= capacity
+        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntSGE, current_len, current_cap, "push.need_grow");
+
+        // Create basic blocks for growth path
+        const grow_bb = llvm.appendBasicBlock(self.ctx, func, "push.grow");
+        const store_bb = llvm.appendBasicBlock(self.ctx, func, "push.store");
+
+        _ = self.builder.buildCondBr(need_grow, grow_bb, store_bb);
+
+        // --- Grow block ---
+        self.builder.positionAtEnd(grow_bb);
+
+        // New capacity = max(8, capacity * 2)
+        const doubled_cap = llvm.c.LLVMBuildMul(self.builder.ref, current_cap, llvm.Const.int32(self.ctx, 2), "push.doubled");
+        const eight = llvm.Const.int32(self.ctx, 8);
+        const cmp_eight = self.builder.buildICmp(llvm.c.LLVMIntSGT, doubled_cap, eight, "push.cmp_eight");
+        const new_cap = llvm.c.LLVMBuildSelect(self.builder.ref, cmp_eight, doubled_cap, eight, "push.new_cap");
+
+        // Calculate new size in bytes: new_cap * element_size
+        const new_cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_cap, i64_type, "push.new_cap_i64");
+        const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
+        const new_size = llvm.c.LLVMBuildMul(self.builder.ref, new_cap_i64, elem_size_val, "push.new_size");
+
+        // Call realloc(ptr, new_size) - realloc handles null ptr like malloc
+        const realloc_fn = self.getOrDeclareRealloc();
+        var realloc_args = [_]llvm.ValueRef{ current_ptr, new_size };
+        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "push.new_ptr");
+
+        // Store new ptr and capacity
+        _ = self.builder.buildStore(new_ptr, ptr_ptr);
+        _ = self.builder.buildStore(new_cap, cap_ptr);
+
+        _ = self.builder.buildBr(store_bb);
+
+        // --- Store block ---
+        self.builder.positionAtEnd(store_bb);
+
+        // PHI for the data pointer (either current_ptr or new_ptr from grow)
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, ptr_type, "push.data_ptr");
+        var incoming_values = [_]llvm.ValueRef{ current_ptr, new_ptr };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ llvm.c.LLVMGetPreviousBasicBlock(grow_bb), grow_bb };
+        llvm.c.LLVMAddIncoming(phi, &incoming_values, &incoming_blocks, 2);
+
+        // Calculate address: ptr + len * element_size
+        const len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, current_len, i64_type, "push.len_i64");
+        const offset = llvm.c.LLVMBuildMul(self.builder.ref, len_i64, elem_size_val, "push.offset");
+        const i8_type = llvm.Types.int8(self.ctx);
+        var gep_indices = [_]llvm.ValueRef{offset};
+        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, phi, &gep_indices, 1, "push.elem_ptr");
+
+        // Store the value
+        _ = self.builder.buildStore(value, elem_ptr);
+
+        // Increment len and store back
+        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, current_len, llvm.Const.int32(self.ctx, 1), "push.new_len");
+        _ = self.builder.buildStore(new_len, len_ptr);
 
         // Return void (represented as i32 0 for now)
         return llvm.Const.int32(self.ctx, 0);
