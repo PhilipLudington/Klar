@@ -1,0 +1,24 @@
+// Test basic Range[i32] functionality
+// Uses manual iterator pattern with Range.next()
+
+fn main() -> i32 {
+    var r: Range[i32] = 0..5
+    var sum: i32 = 0
+
+    // Manual iteration using next() with method-based optional handling
+    loop {
+        let maybe: ?i32 = r.next()
+        if maybe.is_some() {
+            let x: i32 = maybe!
+            sum = sum + x
+        } else {
+            break
+        }
+    }
+
+    // sum should be 0+1+2+3+4 = 10
+    if sum == 10 {
+        return 42
+    }
+    return 1
+}

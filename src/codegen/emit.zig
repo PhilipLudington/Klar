@@ -1186,7 +1186,8 @@ pub const Emitter = struct {
             // Comptime expressions
             .builtin_call => |bc| try self.emitBuiltinCall(bc),
             .comptime_block => |cb| try self.emitComptimeBlock(cb),
-            else => llvm.Const.int32(self.ctx, 0), // Placeholder for unimplemented
+            // Range expression
+            .range => |r| try self.emitRangeLiteral(r),
         };
     }
 
@@ -1210,6 +1211,57 @@ pub const Emitter = struct {
                 break :blk self.builder.buildGlobalStringPtr(str_z, "str");
             },
         };
+    }
+
+    /// Emit a range literal (e.g., 0..10 or 0..=10)
+    /// Range layout: { start: T, end: T, current: T, inclusive: i1 }
+    fn emitRangeLiteral(self: *Emitter, range: *ast.Range) EmitError!llvm.ValueRef {
+        // Determine element type from start or end expression, default to i32
+        const elem_ty = llvm.Types.int32(self.ctx);
+
+        // Get start value (default to 0 if not specified)
+        const start_val = if (range.start) |s|
+            try self.emitExpr(s)
+        else
+            llvm.Const.int32(self.ctx, 0);
+
+        // Get end value (required)
+        const end_val = if (range.end) |e|
+            try self.emitExpr(e)
+        else
+            return EmitError.UnsupportedFeature;
+
+        // Create the Range struct type
+        var fields = [_]llvm.TypeRef{
+            elem_ty, // start
+            elem_ty, // end
+            elem_ty, // current
+            llvm.Types.int1(self.ctx), // inclusive
+        };
+        const range_ty = llvm.Types.struct_(self.ctx, &fields, false);
+
+        // Allocate space for the range struct
+        const range_alloca = self.builder.buildAlloca(range_ty, "range.tmp");
+
+        // Store start
+        const start_gep = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_alloca, 0, "range.start.ptr");
+        _ = self.builder.buildStore(start_val, start_gep);
+
+        // Store end
+        const end_gep = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_alloca, 1, "range.end.ptr");
+        _ = self.builder.buildStore(end_val, end_gep);
+
+        // Store current (initially same as start)
+        const current_gep = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_alloca, 2, "range.current.ptr");
+        _ = self.builder.buildStore(start_val, current_gep);
+
+        // Store inclusive flag
+        const inclusive_gep = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_alloca, 3, "range.inclusive.ptr");
+        const inclusive_val = llvm.Const.int1(self.ctx, range.inclusive);
+        _ = self.builder.buildStore(inclusive_val, inclusive_gep);
+
+        // Load and return the range struct
+        return self.builder.buildLoad(range_ty, range_alloca, "range");
     }
 
     fn emitIdentifier(self: *Emitter, id: ast.Identifier) llvm.ValueRef {
@@ -2870,6 +2922,11 @@ pub const Emitter = struct {
                     .eq, .not_eq, .lt, .gt, .lt_eq, .gt_eq, .and_, .or_ => {
                         return llvm.Types.int1(self.ctx);
                     },
+                    .null_coalesce => {
+                        // Null coalescing returns the inner type of the Optional
+                        // which is the same as the right side type
+                        return try self.inferExprType(bin.right);
+                    },
                     else => {
                         // For arithmetic, check both sides - if either is float, result is float
                         const left_ty = try self.inferExprType(bin.left);
@@ -3233,6 +3290,31 @@ pub const Emitter = struct {
                         }
                     }
                 }
+
+                // Range methods
+                if (self.isRangeExpr(m.object)) {
+                    // next() returns Optional[i32] - struct { i1 tag, i32 value }
+                    if (std.mem.eql(u8, m.method_name, "next")) {
+                        var opt_fields = [_]llvm.TypeRef{
+                            llvm.Types.int1(self.ctx), // tag
+                            llvm.Types.int32(self.ctx), // value (i32 for now)
+                        };
+                        return llvm.Types.struct_(self.ctx, &opt_fields, false);
+                    }
+                    // reset() returns void (represented as i32)
+                    if (std.mem.eql(u8, m.method_name, "reset")) {
+                        return llvm.Types.int32(self.ctx);
+                    }
+                    // is_empty() returns bool
+                    if (std.mem.eql(u8, m.method_name, "is_empty")) {
+                        return llvm.Types.int1(self.ctx);
+                    }
+                    // len() returns i32
+                    if (std.mem.eql(u8, m.method_name, "len")) {
+                        return llvm.Types.int32(self.ctx);
+                    }
+                }
+
                 return llvm.Types.int32(self.ctx);
             },
             .closure => {
@@ -3360,6 +3442,19 @@ pub const Emitter = struct {
                     }
                 }
                 break :blk llvm.Types.int32(self.ctx); // Fallback
+            },
+            .range => {
+                // Range type: { start: T, end: T, current: T, inclusive: i1 }
+                // For now, assume i32 element type
+                const i32_type = llvm.Types.int32(self.ctx);
+                const i1_type = llvm.Types.int1(self.ctx);
+                var fields = [_]llvm.TypeRef{
+                    i32_type, // start
+                    i32_type, // end
+                    i32_type, // current
+                    i1_type, // inclusive
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
             },
             else => llvm.Types.int32(self.ctx),
         };
@@ -4685,6 +4780,38 @@ pub const Emitter = struct {
                 if (method.args.len != 1) return EmitError.InvalidAST;
                 const other = try self.emitExpr(method.args[0]);
                 return self.emitIntMax(object, other);
+            }
+        }
+
+        // Check for Range methods
+        if (self.isRangeExpr(method.object)) {
+            // For Range methods, we need the alloca pointer, not the loaded value
+            const range_ptr = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value; // This is the alloca pointer
+                }
+                break :blk null;
+            } else null;
+
+            if (std.mem.eql(u8, method.method_name, "next")) {
+                if (range_ptr) |ptr| {
+                    return self.emitRangeNext(ptr);
+                }
+            }
+            if (std.mem.eql(u8, method.method_name, "reset")) {
+                if (range_ptr) |ptr| {
+                    return self.emitRangeReset(ptr);
+                }
+            }
+            if (std.mem.eql(u8, method.method_name, "is_empty")) {
+                if (range_ptr) |ptr| {
+                    return self.emitRangeIsEmpty(ptr);
+                }
+            }
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                if (range_ptr) |ptr| {
+                    return self.emitRangeLen(ptr);
+                }
             }
         }
 
@@ -6996,6 +7123,63 @@ pub const Emitter = struct {
         }
     }
 
+    /// Check if an expression is a Range type.
+    fn isRangeExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .range => return true,
+            .identifier => |id| {
+                // Check the stored LLVM type from named_values
+                if (self.named_values.get(id.name)) |local| {
+                    return self.isRangeType(local.ty);
+                }
+                return false;
+            },
+            else => {
+                // For other expressions, check via emitted type
+                // This handles method chains and other complex expressions
+                return false;
+            },
+        }
+    }
+
+    /// Check if an LLVM type is a Range type by checking its structure.
+    /// Range has layout: { i32, i32, i32, i1 } (start, end, current, inclusive)
+    fn isRangeType(self: *Emitter, ty: llvm.TypeRef) bool {
+        _ = self;
+        const type_kind = llvm.getTypeKind(ty);
+        if (type_kind != llvm.c.LLVMStructTypeKind) return false;
+
+        // Range struct has exactly 4 fields: i32, i32, i32, i1
+        const num_fields = llvm.c.LLVMCountStructElementTypes(ty);
+        if (num_fields != 4) return false;
+
+        // Check field types
+        const field0 = llvm.c.LLVMStructGetTypeAtIndex(ty, 0);
+        const field1 = llvm.c.LLVMStructGetTypeAtIndex(ty, 1);
+        const field2 = llvm.c.LLVMStructGetTypeAtIndex(ty, 2);
+        const field3 = llvm.c.LLVMStructGetTypeAtIndex(ty, 3);
+
+        // Fields 0-2 should be i32, field 3 should be i1
+        const kind0 = llvm.getTypeKind(field0);
+        const kind1 = llvm.getTypeKind(field1);
+        const kind2 = llvm.getTypeKind(field2);
+        const kind3 = llvm.getTypeKind(field3);
+
+        if (kind0 != llvm.c.LLVMIntegerTypeKind or kind1 != llvm.c.LLVMIntegerTypeKind or
+            kind2 != llvm.c.LLVMIntegerTypeKind or kind3 != llvm.c.LLVMIntegerTypeKind)
+        {
+            return false;
+        }
+
+        // Check bit widths: first 3 should be 32, last should be 1
+        const width0 = llvm.c.LLVMGetIntTypeWidth(field0);
+        const width1 = llvm.c.LLVMGetIntTypeWidth(field1);
+        const width2 = llvm.c.LLVMGetIntTypeWidth(field2);
+        const width3 = llvm.c.LLVMGetIntTypeWidth(field3);
+
+        return width0 == 32 and width1 == 32 and width2 == 32 and width3 == 1;
+    }
+
     /// Get array element type from an expression.
     fn getArrayElementType(self: *Emitter, expr: ast.Expr) ?types.Type {
         // First check named_values for identifiers
@@ -7269,6 +7453,192 @@ pub const Emitter = struct {
         const cmp = self.builder.buildICmp(llvm.c.LLVMIntSGT, a, b, "max_cmp");
         // Select: a > b ? a : b
         return llvm.c.LLVMBuildSelect(self.builder.ref, cmp, a, b, "max");
+    }
+
+    // ========================================================================
+    // Range Methods
+    // ========================================================================
+
+    /// Emit Range.next() - returns Optional[T], Some(current) and increments, or None if exhausted.
+    /// Range layout: { start: T, end: T, current: T, inclusive: i1 }
+    fn emitRangeNext(self: *Emitter, range_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+
+        // Build range struct type
+        var range_fields = [_]llvm.TypeRef{
+            i32_type, // start
+            i32_type, // end
+            i32_type, // current
+            i1_type, // inclusive
+        };
+        const range_ty = llvm.Types.struct_(self.ctx, &range_fields, false);
+
+        // Load current value
+        const current_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 2, "range.current.ptr");
+        const current = self.builder.buildLoad(i32_type, current_ptr, "range.current");
+
+        // Load end value
+        const end_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 1, "range.end.ptr");
+        const end_val = self.builder.buildLoad(i32_type, end_ptr, "range.end");
+
+        // Load inclusive flag
+        const inclusive_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 3, "range.inclusive.ptr");
+        const inclusive = self.builder.buildLoad(i1_type, inclusive_ptr, "range.inclusive");
+
+        // Build Optional[i32] type: { i1 tag, i32 value }
+        var opt_fields = [_]llvm.TypeRef{ i1_type, i32_type };
+        const opt_ty = llvm.Types.struct_(self.ctx, &opt_fields, false);
+
+        // Create basic blocks for branching
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const check_inclusive_bb = llvm.appendBasicBlock(self.ctx, func, "range.check_inclusive");
+        const some_bb = llvm.appendBasicBlock(self.ctx, func, "range.some");
+        const none_bb = llvm.appendBasicBlock(self.ctx, func, "range.none");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, func, "range.merge");
+
+        // Check: current < end (non-inclusive case, always valid check)
+        const lt_cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, current, end_val, "range.lt");
+        _ = self.builder.buildCondBr(lt_cmp, some_bb, check_inclusive_bb);
+
+        // Check inclusive case: current == end && inclusive
+        self.builder.positionAtEnd(check_inclusive_bb);
+        const eq_cmp = self.builder.buildICmp(llvm.c.LLVMIntEQ, current, end_val, "range.eq");
+        const in_range = llvm.c.LLVMBuildAnd(self.builder.ref, eq_cmp, inclusive, "range.in_range");
+        _ = self.builder.buildCondBr(in_range, some_bb, none_bb);
+
+        // Some case: return Some(current), increment current
+        self.builder.positionAtEnd(some_bb);
+        // Increment current for next iteration
+        const one = llvm.Const.int32(self.ctx, 1);
+        const next_current = self.builder.buildAdd(current, one, "range.next_current");
+        _ = self.builder.buildStore(next_current, current_ptr);
+        // Build Some(current) - allocate, store, load
+        const some_alloca = self.builder.buildAlloca(opt_ty, "opt.some");
+        const some_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, some_alloca, 0, "opt.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), some_tag_ptr);
+        const some_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, some_alloca, 1, "opt.val.ptr");
+        _ = self.builder.buildStore(current, some_val_ptr);
+        const some_result = self.builder.buildLoad(opt_ty, some_alloca, "opt.some");
+        _ = self.builder.buildBr(merge_bb);
+
+        // None case: return None
+        self.builder.positionAtEnd(none_bb);
+        const none_alloca = self.builder.buildAlloca(opt_ty, "opt.none");
+        const none_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, none_alloca, 0, "opt.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), none_tag_ptr);
+        const none_val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, none_alloca, 1, "opt.val.ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), none_val_ptr);
+        const none_result = self.builder.buildLoad(opt_ty, none_alloca, "opt.none");
+        _ = self.builder.buildBr(merge_bb);
+
+        // Merge: phi node to select result
+        self.builder.positionAtEnd(merge_bb);
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, opt_ty, "range.next.result");
+        var incoming_values = [_]llvm.ValueRef{ some_result, none_result };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ some_bb, none_bb };
+        llvm.c.LLVMAddIncoming(phi, &incoming_values, &incoming_blocks, 2);
+
+        return phi;
+    }
+
+    /// Emit Range.reset() - resets current to start.
+    fn emitRangeReset(self: *Emitter, range_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+
+        // Build range struct type
+        var range_fields = [_]llvm.TypeRef{
+            i32_type, // start
+            i32_type, // end
+            i32_type, // current
+            i1_type, // inclusive
+        };
+        const range_ty = llvm.Types.struct_(self.ctx, &range_fields, false);
+
+        // Load start value
+        const start_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 0, "range.start.ptr");
+        const start_val = self.builder.buildLoad(i32_type, start_ptr, "range.start");
+
+        // Store start into current
+        const current_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 2, "range.current.ptr");
+        _ = self.builder.buildStore(start_val, current_ptr);
+
+        // Return void (represented as 0 in LLVM for now)
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit Range.is_empty() - returns true if current >= end (or > end for inclusive).
+    fn emitRangeIsEmpty(self: *Emitter, range_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+
+        // Build range struct type
+        var range_fields = [_]llvm.TypeRef{
+            i32_type, // start
+            i32_type, // end
+            i32_type, // current
+            i1_type, // inclusive
+        };
+        const range_ty = llvm.Types.struct_(self.ctx, &range_fields, false);
+
+        // Load current value
+        const current_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 2, "range.current.ptr");
+        const current = self.builder.buildLoad(i32_type, current_ptr, "range.current");
+
+        // Load end value
+        const end_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 1, "range.end.ptr");
+        const end_val = self.builder.buildLoad(i32_type, end_ptr, "range.end");
+
+        // Load inclusive flag
+        const inclusive_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 3, "range.inclusive.ptr");
+        const inclusive = self.builder.buildLoad(i1_type, inclusive_ptr, "range.inclusive");
+
+        // For non-inclusive: is_empty = current >= end
+        // For inclusive: is_empty = current > end
+        // Combined: is_empty = (current > end) || (!inclusive && current == end)
+        const gt_cmp = self.builder.buildICmp(llvm.c.LLVMIntSGT, current, end_val, "range.gt");
+        const eq_cmp = self.builder.buildICmp(llvm.c.LLVMIntEQ, current, end_val, "range.eq");
+        const not_inclusive = llvm.c.LLVMBuildNot(self.builder.ref, inclusive, "range.not_incl");
+        const eq_and_not_incl = llvm.c.LLVMBuildAnd(self.builder.ref, eq_cmp, not_inclusive, "range.eq_and_not_incl");
+        return llvm.c.LLVMBuildOr(self.builder.ref, gt_cmp, eq_and_not_incl, "range.is_empty");
+    }
+
+    /// Emit Range.len() - returns remaining count as i32.
+    fn emitRangeLen(self: *Emitter, range_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+
+        // Build range struct type
+        var range_fields = [_]llvm.TypeRef{
+            i32_type, // start
+            i32_type, // end
+            i32_type, // current
+            i1_type, // inclusive
+        };
+        const range_ty = llvm.Types.struct_(self.ctx, &range_fields, false);
+
+        // Load current value
+        const current_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 2, "range.current.ptr");
+        const current = self.builder.buildLoad(i32_type, current_ptr, "range.current");
+
+        // Load end value
+        const end_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 1, "range.end.ptr");
+        const end_val = self.builder.buildLoad(i32_type, end_ptr, "range.end");
+
+        // Load inclusive flag
+        const inclusive_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, range_ty, range_ptr, 3, "range.inclusive.ptr");
+        const inclusive = self.builder.buildLoad(i1_type, inclusive_ptr, "range.inclusive");
+
+        // len = max(0, end - current + (inclusive ? 1 : 0))
+        const diff = self.builder.buildSub(end_val, current, "range.diff");
+        const inclusive_ext = llvm.c.LLVMBuildZExt(self.builder.ref, inclusive, i32_type, "range.incl_ext");
+        const len_raw = self.builder.buildAdd(diff, inclusive_ext, "range.len_raw");
+
+        // Clamp to 0 if negative
+        const zero = llvm.Const.int32(self.ctx, 0);
+        const is_neg = self.builder.buildICmp(llvm.c.LLVMIntSLT, len_raw, zero, "range.is_neg");
+        return llvm.c.LLVMBuildSelect(self.builder.ref, is_neg, zero, len_raw, "range.len");
     }
 
     // ========================================================================
@@ -10141,6 +10511,17 @@ pub const Emitter = struct {
                 return llvm.Types.pointer(self.ctx);
             },
             .cell => llvm.Types.pointer(self.ctx),
+            .range => |r| {
+                // Range LLVM layout: { start: T, end: T, current: T, inclusive: i1 }
+                const elem_ty = self.typeToLLVM(r.element_type);
+                var fields = [_]llvm.TypeRef{
+                    elem_ty, // start
+                    elem_ty, // end
+                    elem_ty, // current
+                    llvm.Types.int1(self.ctx), // inclusive
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
             .associated_type_ref => {
                 // Associated type refs should have been resolved during type checking.
                 // If we get here, it's an unresolved associated type - use pointer as fallback.

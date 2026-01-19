@@ -1973,6 +1973,13 @@ pub const TypeChecker = struct {
 
             // Struct/Enum/Trait - return as-is (monomorphization creates applied types)
             .struct_, .enum_, .trait_ => typ,
+
+            // Range - substitute element type
+            .range => |r| {
+                const new_elem = try self.substituteTypeParams(r.element_type, substitutions);
+                if (r.element_type.eql(new_elem)) return typ;
+                return self.type_builder.rangeType(new_elem, r.inclusive);
+            },
         };
     }
 
@@ -2010,6 +2017,7 @@ pub const TypeChecker = struct {
             .arc => |arc| self.containsTypeVar(arc.inner),
             .weak_arc => |warc| self.containsTypeVar(warc.inner),
             .cell => |c| self.containsTypeVar(c.inner),
+            .range => |r| self.containsTypeVar(r.element_type),
             // Associated type ref contains a type variable reference
             .associated_type_ref => true,
             .struct_, .enum_, .trait_ => false,
@@ -2152,6 +2160,13 @@ pub const TypeChecker = struct {
                 }
                 // No substitution for the type variable yet - can't unify
                 return false;
+            },
+
+            .range => |r| {
+                if (concrete != .range) return false;
+                const concrete_range = concrete.range;
+                if (r.inclusive != concrete_range.inclusive) return false;
+                return self.unifyTypes(r.element_type, concrete_range.element_type, substitutions);
             },
 
             .struct_, .enum_, .trait_ => {
@@ -2321,6 +2336,20 @@ pub const TypeChecker = struct {
                         }
                         const inner = try self.resolveTypeExpr(g.args[0]);
                         return try self.type_builder.optionalType(inner);
+                    }
+
+                    // Range[T] - range iterator type
+                    if (std.mem.eql(u8, base_name, "Range")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "Range expects exactly 1 type argument", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner = try self.resolveTypeExpr(g.args[0]);
+                        if (!inner.isInteger()) {
+                            self.addError(.type_mismatch, g.span, "Range element type must be an integer type", .{});
+                        }
+                        // Default to non-inclusive when created via type syntax
+                        return try self.type_builder.rangeType(inner, false);
                     }
                 }
 
@@ -3586,6 +3615,52 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Range methods
+        if (object_type == .range) {
+            const range_type = object_type.range;
+            const element_type = range_type.element_type;
+
+            // next(&mut self) -> ?T (Iterator trait method)
+            if (std.mem.eql(u8, method.method_name, "next")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "next() takes no arguments (only &mut self)", .{});
+                }
+                return self.type_builder.optionalType(element_type) catch self.type_builder.unknownType();
+            }
+
+            // reset(&mut self) -> void
+            if (std.mem.eql(u8, method.method_name, "reset")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "reset() takes no arguments", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // is_empty(&self) -> bool
+            if (std.mem.eql(u8, method.method_name, "is_empty")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "is_empty() takes no arguments", .{});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // len(&self) -> i32
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "len() takes no arguments", .{});
+                }
+                return self.type_builder.i32Type();
+            }
+
+            // clone() -> Range[T] (Clone trait)
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clone() expects no arguments", .{});
+                }
+                return object_type;
+            }
+        }
+
         // Rc methods
         if (object_type == .rc) {
             const inner_type = object_type.rc.inner;
@@ -4158,11 +4233,14 @@ pub const TypeChecker = struct {
             if (range.start != null and !elem_type.eql(end_type)) {
                 self.addError(.type_mismatch, range.span, "range bounds must have same type", .{});
             }
+            // If no start was specified, infer element type from end
+            if (range.start == null) {
+                elem_type = end_type;
+            }
         }
 
-        // Range produces an iterator-like type
-        // For now, just return slice type as placeholder
-        return self.type_builder.sliceType(elem_type) catch self.type_builder.unknownType();
+        // Range is now a proper Range[T] type
+        return self.type_builder.rangeType(elem_type, range.inclusive) catch self.type_builder.unknownType();
     }
 
     fn checkStructLiteral(self: *TypeChecker, lit: *ast.StructLiteral) Type {
@@ -5169,6 +5247,7 @@ pub const TypeChecker = struct {
             .arc => "arc",
             .weak_arc => "weak_arc",
             .cell => "cell",
+            .range => "range",
             .void_ => "void",
             .never => "never",
             .unknown => "unknown",

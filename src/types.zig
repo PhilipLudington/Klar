@@ -43,6 +43,9 @@ pub const Type = union(enum) {
     // Interior mutability types
     cell: *CellType,
 
+    // Range type
+    range: *RangeType,
+
     // Special types
     void_,
     never,
@@ -98,6 +101,8 @@ pub const Type = union(enum) {
             .arc => |a| a.inner.eql(other.arc.inner),
             .weak_arc => |w| w.inner.eql(other.weak_arc.inner),
             .cell => |c| c.inner.eql(other.cell.inner),
+            // Range type equality only depends on element type; inclusive is a runtime property
+            .range => |r| r.element_type.eql(other.range.element_type),
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -170,6 +175,9 @@ pub const Type = union(enum) {
 
             // void and never are trivially Copy (no data to move)
             .void_, .never => true,
+
+            // Range is Copy (contains integers and bool)
+            .range => |r| r.element_type.isCopyType(),
 
             // These types are NOT Copy:
             // - Slices (contain a pointer + length, may own data)
@@ -498,6 +506,14 @@ pub const CellType = struct {
     inner: Type, // The wrapped type (must be Copy)
 };
 
+/// Range type for iteration (Range[T])
+/// Represents an iterator over a sequence of values from start to end.
+/// Layout: { start: T, end: T, current: T, inclusive: bool }
+pub const RangeType = struct {
+    element_type: Type,
+    inclusive: bool,
+};
+
 // ============================================================================
 // Type Builder - Arena-based type allocation
 // ============================================================================
@@ -691,6 +707,13 @@ pub const TypeBuilder = struct {
         cell.* = .{ .inner = inner };
         return .{ .cell = cell };
     }
+
+    // Range type constructor
+    pub fn rangeType(self: *TypeBuilder, element_type: Type, inclusive: bool) !Type {
+        const range = try self.arena.allocator().create(RangeType);
+        range.* = .{ .element_type = element_type, .inclusive = inclusive };
+        return .{ .range = range };
+    }
 };
 
 // ============================================================================
@@ -782,6 +805,11 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .cell => |c| {
             try writer.writeAll("Cell[");
             try formatType(writer, c.inner);
+            try writer.writeAll("]");
+        },
+        .range => |r| {
+            try writer.writeAll("Range[");
+            try formatType(writer, r.element_type);
             try writer.writeAll("]");
         },
         .associated_type_ref => |a| {
