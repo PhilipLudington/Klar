@@ -1,8 +1,8 @@
-# Resume Point: String Type Complete
+# Resume Point: Map[K,V] Type Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `String` is now a **fully implemented** builtin heap-allocated string type.
+Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `Map[K,V]` is now a **fully implemented** builtin hash map type.
 
 ## Progress Summary
 
@@ -11,65 +11,68 @@ Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `String
 - **Milestone 6: Iterator Protocol** ✅
 - **List[T] Full Implementation** ✅
 - **String Type Full Implementation** ✅
-  - Static constructors: `new()`, `from()`, `with_capacity()`
+- **Map[K,V] Full Implementation** ✅
+  - Static constructors: `Map.new[K,V]()`, `Map.with_capacity[K,V](n)`
   - Accessors: `len()`, `is_empty()`, `capacity()`
-  - Mutation: `push(char)`, `append(other)`, `clear()`
-  - Concatenation: `concat(other)` (supports chained calls)
-  - Conversion: `as_str()`
+  - Lookup: `get(key) -> ?V`, `contains_key(key) -> bool`
+  - Mutation: `insert(key, value)`, `remove(key) -> ?V`, `clear()`
+  - Collection: `keys() -> List[K]`, `values() -> List[V]`
   - Memory: `clone()`, `drop()`
-  - Comparison: `eq(other)`, `hash()`
+  - Automatic resize/rehash at 75% load factor
 
 ---
 
-## Current State: String Type
+## Current State: Map[K,V] Type
 
-`String` is a heap-allocated, growable UTF-8 string type with the following layout:
+`Map[K,V]` is a hash map using open addressing with linear probing and tombstone deletion:
+
 ```
-{ ptr: *u8, len: i32, capacity: i32 }
+Map layout:   { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
+Entry layout: { state: i8, cached_hash: i32, key: K, value: V }
+
+state: EMPTY=0, OCCUPIED=1, TOMBSTONE=2
+Initial capacity: 8
+Load factor threshold: 75%
+Growth factor: 2x
 ```
 
 ### All Methods Implemented
 
-| Method | Implementation |
-|--------|----------------|
-| `String.new()` | Inline - returns `{ null, 0, 0 }` |
-| `String.from(s)` | Inline - strlen + malloc + memcpy |
-| `String.with_capacity(n)` | Inline - malloc, returns `{ ptr, 0, n }` |
-| `s.len()` | Inline - reads struct field |
-| `s.is_empty()` | Inline - compares len to 0 |
-| `s.capacity()` | Inline - reads struct field |
-| `s.push(char)` | Inline - capacity check, realloc, store |
-| `s.concat(other)` | Inline - malloc, 2x memcpy, returns new String |
-| `s.append(other)` | Inline - grow if needed, memcpy in place |
-| `s.as_str()` | Inline - returns ptr field |
-| `s.clear()` | Inline - sets len=0, null-terminates |
-| `s.clone()` | Inline - malloc + memcpy, returns new String |
-| `s.drop()` | Inline - free(ptr), zeros struct |
-| `s.eq(other)` | Inline - length check + memcmp |
-| `s.hash()` | Inline - FNV-1a loop |
+| Method | Signature | Notes |
+|--------|-----------|-------|
+| `Map.new[K,V]()` | `() -> Map[K,V]` | Returns zeroed struct |
+| `Map.with_capacity[K,V](n)` | `(i32) -> Map[K,V]` | Pre-allocates entries |
+| `m.insert(key, value)` | `(K, V) -> void` | Updates if key exists, triggers resize at 75% load |
+| `m.get(key)` | `(K) -> ?V` | Returns None if not found |
+| `m.remove(key)` | `(K) -> ?V` | Uses tombstone deletion |
+| `m.contains_key(key)` | `(K) -> bool` | Probe loop check |
+| `m.len()` | `() -> i32` | Excludes tombstones |
+| `m.is_empty()` | `() -> bool` | len == 0 |
+| `m.capacity()` | `() -> i32` | Current allocated capacity |
+| `m.keys()` | `() -> List[K]` | Collects all keys |
+| `m.values()` | `() -> List[V]` | Collects all values |
+| `m.clear()` | `() -> void` | Resets to empty |
+| `m.clone()` | `() -> Map[K,V]` | Deep copy with memcpy |
+| `m.drop()` | `() -> void` | Frees entries |
 
 ### Test Files
 
-- `test/native/string_basic.kl` - Core operations
-- `test/native/string_push.kl` - Push character
-- `test/native/string_concat.kl` - Concatenation with chaining
-- `test/native/string_append.kl` - Append mutation
-- `test/native/string_clone.kl` - Deep copy
-- `test/native/string_clear.kl` - Clear contents
-- `test/native/string_drop.kl` - Memory free
-- `test/native/string_eq.kl` - Equality
-- `test/native/string_hash.kl` - Hash code
-- `test/native/string_as_str.kl` - Primitive conversion
+- `test/native/map_basic.kl` - Core operations: new, insert, get, contains_key, update, remove
+- `test/native/map_resize.kl` - Resize/rehash with 20+ inserts, value verification after resize
 
 ### Verification
 
-All 394 tests pass (220 unit + 158 native + 10 app + 6 module).
+All 402 tests pass (220 unit + 166 native + 10 app + 6 module).
 
 ---
 
-## Key Bug Fix
+## Key Bug Fixes
 
-**String/List type collision**: Both String and List have identical LLVM struct layout `{ ptr, i32, i32 }`. Fixed by adding `is_string_data` check in `isListExpr()` to exclude String types before checking LLVM structure. This prevented String methods from being incorrectly dispatched to List handlers.
+1. **Cell methods guard**: Cell's `get()` method was incorrectly matching Map's `get()` call because there was no type check. Fixed by adding guard in both `emitMethodCall` and `inferExprType` to only dispatch to Cell methods when the object is a pointer and not Map/List/Array.
+
+2. **Map emit functions**: Four functions (`emitMapRemove`, `emitMapContainsKey`, `emitMapValues`, `emitMapClone`) were still using `checkExpr` which failed during codegen. Fixed to use `getMapKeyType`/`getMapValueType` helper functions that read from stored LocalValue info.
+
+3. **Resize implementation**: Initial implementation only handled capacity=0 case. Added full resize logic with rehashing when `(len + tombstone_count + 1) * 4 > capacity * 3`.
 
 ---
 
@@ -77,19 +80,14 @@ All 394 tests pass (220 unit + 158 native + 10 app + 6 module).
 
 Continue with **Milestone 4: Standard Library - Core**:
 
-1. **Map[K, V]** - Hash-based key-value store
-   - Requires K: Hash + Eq bound
-   - `new()`, `insert()`, `get()`, `remove()`
-   - `contains_key()`, `keys()`, `values()`
-
-2. **Set[T]** - Hash-based unique collection
+1. **Set[T]** - Hash-based unique collection
    - Requires T: Hash + Eq bound
    - `new()`, `insert()`, `contains()`, `remove()`
    - `union()`, `intersection()`, `difference()`
 
-3. **Prelude** - Auto-imported types
-   - Include Option, Result, String, List
-   - Include core traits (Eq, Clone, etc.)
+2. **Prelude** - Auto-imported types
+   - Include Option, Result, String, List, Map
+   - Include core traits (Eq, Clone, Hash, etc.)
 
 ---
 
@@ -99,11 +97,10 @@ Continue with **Milestone 4: Standard Library - Core**:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test String specifically
-./zig-out/bin/klar run test/native/string_concat.kl
-./zig-out/bin/klar run test/native/string_clone.kl
-./zig-out/bin/klar run test/native/string_eq.kl
+# Test Map specifically
+./zig-out/bin/klar run test/native/map_basic.kl
+./zig-out/bin/klar run test/native/map_resize.kl
 
 # Check generated IR
-./zig-out/bin/klar build test/native/string_concat.kl -o /tmp/test --emit-llvm
+./zig-out/bin/klar build test/native/map_basic.kl -o /tmp/test --emit-llvm
 ```

@@ -48,6 +48,7 @@ pub const Type = union(enum) {
 
     // Collection types
     list: *ListType,
+    map: *MapType,
     string_data: *StringDataType,
 
     // Special types
@@ -109,6 +110,8 @@ pub const Type = union(enum) {
             .range => |r| r.element_type.eql(other.range.element_type),
             // List type equality depends on element type
             .list => |l| l.element.eql(other.list.element),
+            // Map type equality depends on key and value types
+            .map => |m| m.key.eql(other.map.key) and m.value.eql(other.map.value),
             // String data is a singleton type (no type parameters)
             .string_data => true,
             .void_, .never, .unknown, .error_type => true,
@@ -197,10 +200,11 @@ pub const Type = union(enum) {
             // - Arc/WeakArc (thread-safe reference counting, must use .clone())
             // - Cell (provides interior mutability, has move semantics)
             // - List (owns heap memory, must be moved or cloned)
+            // - Map (owns heap memory, must be moved or cloned)
             // - String (heap-allocated string, must be moved or cloned)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .string_data, .unknown, .error_type, .associated_type_ref => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .string_data, .unknown, .error_type, .associated_type_ref => false,
         };
     }
 };
@@ -531,6 +535,16 @@ pub const ListType = struct {
     element: Type,
 };
 
+/// Map type for key-value collections (Map[K, V])
+/// A heap-allocated hash map using open addressing with linear probing.
+/// Layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
+/// Entry layout: { state: i8, cached_hash: i32, key: K, value: V }
+/// State: 0=EMPTY, 1=OCCUPIED, 2=TOMBSTONE
+pub const MapType = struct {
+    key: Type,
+    value: Type,
+};
+
 /// String type for heap-allocated UTF-8 strings (String)
 /// A heap-allocated, dynamically-sized string.
 /// Layout: { ptr: *u8, len: i32, capacity: i32 }
@@ -748,6 +762,13 @@ pub const TypeBuilder = struct {
         return .{ .list = list };
     }
 
+    // Map type constructor
+    pub fn mapType(self: *TypeBuilder, key: Type, value: Type) !Type {
+        const map = try self.arena.allocator().create(MapType);
+        map.* = .{ .key = key, .value = value };
+        return .{ .map = map };
+    }
+
     // String data type constructor
     pub fn stringDataType(self: *TypeBuilder) !Type {
         const str = try self.arena.allocator().create(StringDataType);
@@ -855,6 +876,13 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .list => |l| {
             try writer.writeAll("List[");
             try formatType(writer, l.element);
+            try writer.writeAll("]");
+        },
+        .map => |m| {
+            try writer.writeAll("Map[");
+            try formatType(writer, m.key);
+            try writer.writeAll(", ");
+            try formatType(writer, m.value);
             try writer.writeAll("]");
         },
         .string_data => {

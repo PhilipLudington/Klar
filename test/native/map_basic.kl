@@ -1,0 +1,88 @@
+// Basic Map[K,V] tests
+fn main() -> i32 {
+    // Create a new map
+    var m: Map[i32, i32] = Map.new[i32, i32]()
+
+    // Test initial state
+    if m.len() != 0 {
+        return 1
+    }
+    if not m.is_empty() {
+        return 2
+    }
+
+    // Insert a value
+    m.insert(1, 100)
+
+    // Test len and is_empty after insert
+    if m.len() != 1 {
+        return 3
+    }
+    if m.is_empty() {
+        return 4
+    }
+
+    // Test get
+    let v: ?i32 = m.get(1)
+    let val: i32 = v.unwrap_or(-1)
+    if val != 100 {
+        return 5
+    }
+
+    // Test get for non-existent key
+    let v2: ?i32 = m.get(999)
+    let val2: i32 = v2.unwrap_or(-1)
+    if val2 != -1 {
+        return 6
+    }
+
+    // Test contains_key
+    if not m.contains_key(1) {
+        return 7
+    }
+    if m.contains_key(999) {
+        return 8
+    }
+
+    // Test update (insert with existing key)
+    m.insert(1, 200)
+    let v3: ?i32 = m.get(1)
+    let val3: i32 = v3.unwrap_or(-1)
+    if val3 != 200 {
+        return 9
+    }
+    // Length should stay the same after update
+    if m.len() != 1 {
+        return 10
+    }
+
+    // Insert more values
+    m.insert(2, 300)
+    m.insert(3, 400)
+    if m.len() != 3 {
+        return 11
+    }
+
+    // Test remove
+    let removed: ?i32 = m.remove(2)
+    let removed_val: i32 = removed.unwrap_or(-1)
+    if removed_val != 300 {
+        return 12
+    }
+    if m.len() != 2 {
+        return 13
+    }
+    // Verify key is gone
+    if m.contains_key(2) {
+        return 14
+    }
+
+    // Remove non-existent key
+    let removed2: ?i32 = m.remove(999)
+    let removed2_val: i32 = removed2.unwrap_or(-1)
+    if removed2_val != -1 {
+        return 15
+    }
+
+    return 0  // Success
+}

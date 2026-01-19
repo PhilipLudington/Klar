@@ -1,0 +1,68 @@
+// Test Map resize with many inserts
+fn main() -> i32 {
+    var m: Map[i32, i32] = Map.new[i32, i32]()
+
+    // Initial capacity is 8, insert more to trigger resize
+    // Insert 20 key-value pairs
+    m.insert(1, 100)
+    m.insert(2, 200)
+    m.insert(3, 300)
+    m.insert(4, 400)
+    m.insert(5, 500)
+    m.insert(6, 600)
+    m.insert(7, 700)
+    m.insert(8, 800)
+    m.insert(9, 900)
+    m.insert(10, 1000)
+    m.insert(11, 1100)
+    m.insert(12, 1200)
+    m.insert(13, 1300)
+    m.insert(14, 1400)
+    m.insert(15, 1500)
+    m.insert(16, 1600)
+    m.insert(17, 1700)
+    m.insert(18, 1800)
+    m.insert(19, 1900)
+    m.insert(20, 2000)
+
+    // Verify length
+    if m.len() != 20 {
+        return 1
+    }
+
+    // Verify all values are retrievable after resize
+    let v1: ?i32 = m.get(1)
+    if v1.unwrap_or(-1) != 100 {
+        return 2
+    }
+
+    let v10: ?i32 = m.get(10)
+    if v10.unwrap_or(-1) != 1000 {
+        return 3
+    }
+
+    let v20: ?i32 = m.get(20)
+    if v20.unwrap_or(-1) != 2000 {
+        return 4
+    }
+
+    // Verify capacity grew (should be at least 32 after resize)
+    let cap: i32 = m.capacity()
+    if cap < 16 {
+        return 5
+    }
+
+    // Test update after resize
+    m.insert(10, 9999)
+    let v10_updated: ?i32 = m.get(10)
+    if v10_updated.unwrap_or(-1) != 9999 {
+        return 6
+    }
+
+    // Length should stay the same after update
+    if m.len() != 20 {
+        return 7
+    }
+
+    return 0  // Success
+}

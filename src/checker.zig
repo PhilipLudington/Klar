@@ -1988,6 +1988,14 @@ pub const TypeChecker = struct {
                 return self.type_builder.listType(new_elem);
             },
 
+            // Map - substitute key and value types
+            .map => |m| {
+                const new_key = try self.substituteTypeParams(m.key, substitutions);
+                const new_value = try self.substituteTypeParams(m.value, substitutions);
+                if (m.key.eql(new_key) and m.value.eql(new_value)) return typ;
+                return self.type_builder.mapType(new_key, new_value);
+            },
+
             // String - no type parameters to substitute
             .string_data => typ,
         };
@@ -2029,6 +2037,7 @@ pub const TypeChecker = struct {
             .cell => |c| self.containsTypeVar(c.inner),
             .range => |r| self.containsTypeVar(r.element_type),
             .list => |l| self.containsTypeVar(l.element),
+            .map => |m| self.containsTypeVar(m.key) or self.containsTypeVar(m.value),
             // String has no type parameters
             .string_data => false,
             // Associated type ref contains a type variable reference
@@ -2185,6 +2194,15 @@ pub const TypeChecker = struct {
             .list => |l| {
                 if (concrete != .list) return false;
                 return self.unifyTypes(l.element, concrete.list.element, substitutions);
+            },
+
+            .map => |m| {
+                if (concrete != .map) return false;
+                const concrete_map = concrete.map;
+                if (!try self.unifyTypes(m.key, concrete_map.key, substitutions)) {
+                    return false;
+                }
+                return self.unifyTypes(m.value, concrete_map.value, substitutions);
             },
 
             // String has no type parameters - simple equality check
@@ -2387,6 +2405,21 @@ pub const TypeChecker = struct {
                         }
                         const inner = try self.resolveTypeExpr(g.args[0]);
                         return try self.type_builder.listType(inner);
+                    }
+
+                    // Map[K,V] - hash map type
+                    if (std.mem.eql(u8, base_name, "Map")) {
+                        if (g.args.len != 2) {
+                            self.addError(.type_mismatch, g.span, "Map expects exactly 2 type arguments (key and value types)", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const key_type = try self.resolveTypeExpr(g.args[0]);
+                        const value_type = try self.resolveTypeExpr(g.args[1]);
+                        // Check that key type implements Hash + Eq
+                        if (!self.typeImplementsHashAndEq(key_type, g.span)) {
+                            // Error already reported by typeImplementsHashAndEq
+                        }
+                        return try self.type_builder.mapType(key_type, value_type);
                     }
                 }
 
@@ -3165,6 +3198,65 @@ pub const TypeChecker = struct {
                 return self.type_builder.unknownType();
             }
 
+            // Map.new[K,V]() -> Map[K,V] - static constructor with type arguments
+            // K must implement Hash + Eq traits
+            if (std.mem.eql(u8, obj_name, "Map") and std.mem.eql(u8, method.method_name, "new")) {
+                if (method.type_args) |type_args| {
+                    if (type_args.len != 2) {
+                        self.addError(.invalid_call, method.span, "Map.new[K,V]() expects exactly 2 type arguments", .{});
+                        return self.type_builder.unknownType();
+                    }
+                    if (method.args.len != 0) {
+                        self.addError(.invalid_call, method.span, "Map.new[K,V]() takes no value arguments", .{});
+                    }
+                    const key_type = self.resolveTypeExpr(type_args[0]) catch {
+                        return self.type_builder.unknownType();
+                    };
+                    const value_type = self.resolveTypeExpr(type_args[1]) catch {
+                        return self.type_builder.unknownType();
+                    };
+                    // Check that K implements Hash + Eq traits
+                    if (!self.typeImplementsHashAndEq(key_type, method.span)) {
+                        // Error already reported by typeImplementsHashAndEq
+                    }
+                    return self.type_builder.mapType(key_type, value_type) catch self.type_builder.unknownType();
+                }
+                self.addError(.invalid_call, method.span, "Map.new() requires type arguments: Map.new[i32, string]()", .{});
+                return self.type_builder.unknownType();
+            }
+
+            // Map.with_capacity[K,V](n) -> Map[K,V] - static constructor with pre-allocated capacity
+            if (std.mem.eql(u8, obj_name, "Map") and std.mem.eql(u8, method.method_name, "with_capacity")) {
+                if (method.type_args) |type_args| {
+                    if (type_args.len != 2) {
+                        self.addError(.invalid_call, method.span, "Map.with_capacity[K,V](n) expects exactly 2 type arguments", .{});
+                        return self.type_builder.unknownType();
+                    }
+                    if (method.args.len != 1) {
+                        self.addError(.invalid_call, method.span, "Map.with_capacity[K,V](n) takes exactly 1 argument (capacity)", .{});
+                        return self.type_builder.unknownType();
+                    }
+                    // Check that the argument is an integer (capacity)
+                    const arg_type = self.checkExpr(method.args[0]);
+                    if (arg_type != .primitive or (arg_type.primitive != .i32_ and arg_type.primitive != .i64_)) {
+                        self.addError(.type_mismatch, method.span, "Map.with_capacity expects an integer capacity argument", .{});
+                    }
+                    const key_type = self.resolveTypeExpr(type_args[0]) catch {
+                        return self.type_builder.unknownType();
+                    };
+                    const value_type = self.resolveTypeExpr(type_args[1]) catch {
+                        return self.type_builder.unknownType();
+                    };
+                    // Check that K implements Hash + Eq traits
+                    if (!self.typeImplementsHashAndEq(key_type, method.span)) {
+                        // Error already reported by typeImplementsHashAndEq
+                    }
+                    return self.type_builder.mapType(key_type, value_type) catch self.type_builder.unknownType();
+                }
+                self.addError(.invalid_call, method.span, "Map.with_capacity() requires type arguments: Map.with_capacity[i32, string](10)", .{});
+                return self.type_builder.unknownType();
+            }
+
             // String.new() -> String - static constructor for empty string
             if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, method.method_name, "new")) {
                 if (method.args.len != 0) {
@@ -3233,25 +3325,25 @@ pub const TypeChecker = struct {
             return self.type_builder.stringType();
         }
 
-        // Check for len method on arrays, tuples, strings, lists, and String
+        // Check for len method on arrays, tuples, strings, lists, maps, and String
         // Returns i32 for ergonomic use with loop counters
         if (std.mem.eql(u8, method.method_name, "len")) {
             if (object_type == .primitive and object_type.primitive == .string_) {
                 return .{ .primitive = .i32_ };
             }
-            if (object_type == .array or object_type == .slice or object_type == .tuple or object_type == .list or object_type == .string_data) {
+            if (object_type == .array or object_type == .slice or object_type == .tuple or object_type == .list or object_type == .string_data or object_type == .map) {
                 return .{ .primitive = .i32_ };
             }
-            self.addError(.undefined_method, method.span, "len() requires array, tuple, string, or list", .{});
+            self.addError(.undefined_method, method.span, "len() requires array, tuple, string, list, or map", .{});
             return self.type_builder.unknownType();
         }
 
-        // Check for is_empty method on strings, arrays, lists, and String
+        // Check for is_empty method on strings, arrays, lists, maps, and String
         if (std.mem.eql(u8, method.method_name, "is_empty")) {
             if (object_type == .primitive and object_type.primitive == .string_) {
                 return self.type_builder.boolType();
             }
-            if (object_type == .list or object_type == .string_data) {
+            if (object_type == .list or object_type == .string_data or object_type == .map) {
                 return self.type_builder.boolType();
             }
             if (object_type == .array or object_type == .slice) {
@@ -3903,6 +3995,133 @@ pub const TypeChecker = struct {
             }
 
             // drop(&mut self) -> void (frees list memory)
+            if (std.mem.eql(u8, method.method_name, "drop")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "drop() takes no arguments", .{});
+                }
+                return self.type_builder.voidType();
+            }
+        }
+
+        // Map methods
+        if (object_type == .map) {
+            const map_type = object_type.map;
+            const key_type = map_type.key;
+            const value_type = map_type.value;
+
+            // insert(&mut self, key: K, value: V) -> void
+            if (std.mem.eql(u8, method.method_name, "insert")) {
+                if (method.args.len != 2) {
+                    self.addError(.invalid_call, method.span, "insert() expects exactly 2 arguments (key, value)", .{});
+                    return self.type_builder.voidType();
+                }
+                const arg_key_type = self.checkExpr(method.args[0]);
+                if (!arg_key_type.eql(key_type)) {
+                    self.addError(.type_mismatch, method.span, "insert() key type mismatch", .{});
+                }
+                const arg_value_type = self.checkExpr(method.args[1]);
+                if (!arg_value_type.eql(value_type)) {
+                    self.addError(.type_mismatch, method.span, "insert() value type mismatch", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // get(&self, key: K) -> ?V
+            if (std.mem.eql(u8, method.method_name, "get")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "get() expects exactly 1 argument", .{});
+                    return self.type_builder.optionalType(value_type) catch self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (!arg_type.eql(key_type)) {
+                    self.addError(.type_mismatch, method.span, "get() key type mismatch", .{});
+                }
+                return self.type_builder.optionalType(value_type) catch self.type_builder.unknownType();
+            }
+
+            // remove(&mut self, key: K) -> ?V
+            if (std.mem.eql(u8, method.method_name, "remove")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "remove() expects exactly 1 argument", .{});
+                    return self.type_builder.optionalType(value_type) catch self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (!arg_type.eql(key_type)) {
+                    self.addError(.type_mismatch, method.span, "remove() key type mismatch", .{});
+                }
+                return self.type_builder.optionalType(value_type) catch self.type_builder.unknownType();
+            }
+
+            // contains_key(&self, key: K) -> bool
+            if (std.mem.eql(u8, method.method_name, "contains_key")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "contains_key() expects exactly 1 argument", .{});
+                    return self.type_builder.boolType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (!arg_type.eql(key_type)) {
+                    self.addError(.type_mismatch, method.span, "contains_key() key type mismatch", .{});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // keys(&self) -> List[K]
+            if (std.mem.eql(u8, method.method_name, "keys")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "keys() takes no arguments", .{});
+                }
+                return self.type_builder.listType(key_type) catch self.type_builder.unknownType();
+            }
+
+            // values(&self) -> List[V]
+            if (std.mem.eql(u8, method.method_name, "values")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "values() takes no arguments", .{});
+                }
+                return self.type_builder.listType(value_type) catch self.type_builder.unknownType();
+            }
+
+            // len(&self) -> i32
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "len() takes no arguments", .{});
+                }
+                return self.type_builder.i32Type();
+            }
+
+            // is_empty(&self) -> bool
+            if (std.mem.eql(u8, method.method_name, "is_empty")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "is_empty() takes no arguments", .{});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // capacity(&self) -> i32
+            if (std.mem.eql(u8, method.method_name, "capacity")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "capacity() takes no arguments", .{});
+                }
+                return self.type_builder.i32Type();
+            }
+
+            // clear(&mut self) -> void
+            if (std.mem.eql(u8, method.method_name, "clear")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clear() takes no arguments", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // clone(&self) -> Map[K,V] (creates a deep copy of the map)
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
+                }
+                return object_type; // Returns same Map[K,V] type
+            }
+
+            // drop(&mut self) -> void (frees map memory)
             if (std.mem.eql(u8, method.method_name, "drop")) {
                 if (method.args.len != 0) {
                     self.addError(.invalid_call, method.span, "drop() takes no arguments", .{});
@@ -5618,6 +5837,7 @@ pub const TypeChecker = struct {
             .cell => "cell",
             .range => "range",
             .list => "list",
+            .map => "map",
             .string_data => "string",
             .void_ => "void",
             .never => "never",
@@ -6870,6 +7090,53 @@ pub const TypeChecker = struct {
         const key = self.makeTraitImplKey(type_name, trait_name);
         defer self.allocator.free(key);
         return self.trait_impls.get(key) != null;
+    }
+
+    /// Check if a type implements both Hash and Eq traits (required for Map keys).
+    /// All primitives have builtin Hash and Eq implementations.
+    /// For struct types, checks that the struct explicitly implements both traits.
+    /// Reports an error if the type doesn't satisfy the requirements.
+    fn typeImplementsHashAndEq(self: *TypeChecker, key_type: Type, span: Span) bool {
+        // Primitives have builtin Hash and Eq implementations
+        if (key_type == .primitive) {
+            return true;
+        }
+
+        // For struct types, check that the struct implements both Hash and Eq
+        if (key_type == .struct_) {
+            const struct_name = key_type.struct_.name;
+            var valid = true;
+
+            if (!self.typeImplementsTrait(struct_name, "Hash")) {
+                self.addError(.trait_not_implemented, span, "Map key type '{s}' must implement Hash", .{struct_name});
+                valid = false;
+            }
+            if (!self.typeImplementsTrait(struct_name, "Eq")) {
+                self.addError(.trait_not_implemented, span, "Map key type '{s}' must implement Eq", .{struct_name});
+                valid = false;
+            }
+            return valid;
+        }
+
+        // For enum types, check if they implement Hash and Eq
+        if (key_type == .enum_) {
+            const enum_name = key_type.enum_.name;
+            var valid = true;
+
+            if (!self.typeImplementsTrait(enum_name, "Hash")) {
+                self.addError(.trait_not_implemented, span, "Map key type '{s}' must implement Hash", .{enum_name});
+                valid = false;
+            }
+            if (!self.typeImplementsTrait(enum_name, "Eq")) {
+                self.addError(.trait_not_implemented, span, "Map key type '{s}' must implement Eq", .{enum_name});
+                valid = false;
+            }
+            return valid;
+        }
+
+        // Other types (functions, references, etc.) are not valid map keys
+        self.addError(.type_mismatch, span, "type is not valid as a Map key - must implement Hash + Eq", .{});
+        return false;
     }
 
     /// Check if a type represents Self in a trait definition.
