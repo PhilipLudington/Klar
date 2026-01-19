@@ -11,6 +11,7 @@ pub const rc = @import("rc.zig");
 pub const arc = @import("arc.zig");
 pub const alloc = @import("alloc.zig");
 pub const string = @import("string.zig");
+pub const list = @import("list.zig");
 
 // Re-export commonly used functions for C-compatible FFI
 
@@ -38,9 +39,24 @@ pub const klar_string_to_uppercase = string.klar_string_to_uppercase;
 pub const klar_string_to_lowercase = string.klar_string_to_lowercase;
 pub const klar_string_chars = string.klar_string_chars;
 
+// List operations
+pub const klar_list_new = list.klar_list_new;
+pub const klar_list_push = list.klar_list_push;
+pub const klar_list_pop = list.klar_list_pop;
+pub const klar_list_get = list.klar_list_get;
+pub const klar_list_set = list.klar_list_set;
+pub const klar_list_len = list.klar_list_len;
+pub const klar_list_is_empty = list.klar_list_is_empty;
+pub const klar_list_capacity = list.klar_list_capacity;
+pub const klar_list_clear = list.klar_list_clear;
+pub const klar_list_first = list.klar_list_first;
+pub const klar_list_last = list.klar_list_last;
+pub const klar_list_drop = list.klar_list_drop;
+
 test {
     _ = rc;
     _ = arc;
     _ = alloc;
     _ = string;
+    _ = list;
 }

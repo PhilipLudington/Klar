@@ -454,29 +454,36 @@ std/
 
 **Objective:** Implement iterators and for-loop integration.
 
+**Status:** Core functionality complete. For-loops work with Range[T] and arrays. Iterator adapters and collect not yet started.
+
 ### Iterator Trait
-- [ ] Define `Iterator` trait in std/iter.kl
-- [ ] Add associated type `type Item`
-- [ ] Add `next(self: &mut Self) -> Option[Self.Item]`
-- [ ] Add `size_hint() -> (usize, Option[usize])` with default
+- [x] Define `Iterator` trait as builtin (in checker.zig)
+- [x] Add associated type `type Item`
+- [x] Add `next(self: &mut Self) -> ?Self.Item`
+- [ ] Add `size_hint() -> (usize, ?usize)` with default
 
 ### IntoIterator Trait
-- [ ] Define `IntoIterator` trait
-- [ ] Add associated types `type Item`, `type IntoIter`
-- [ ] Add `into_iter(self) -> Self.IntoIter`
+- [x] Define `IntoIterator` trait as builtin (in checker.zig)
+- [x] Add associated types `type Item`, `type IntoIter`
+- [x] Add `into_iter(self) -> Self.IntoIter`
 - [ ] Implement for List, Set, Map, String
 
-### For Loop Desugaring
-- [ ] Transform `for x in collection { ... }` in parser/checker
-- [ ] Call `into_iter()` on collection
-- [ ] Generate while loop calling `next()`
-- [ ] Handle loop variables correctly
+### For Loop Implementation
+- [x] Parse `for x in collection { ... }` syntax
+- [x] Support for-loops over Range literals (`for i in 0..10`)
+- [x] Support for-loops over Range variables (`var r = 0..10; for i in r`)
+- [x] Support for-loops over arrays (`for x in [1, 2, 3]`)
+- [x] Handle loop variables correctly with proper scoping
+- [x] Support `break` and `continue` in for-loops
+- [ ] Desugar via `into_iter()` for custom types (currently only builtin types supported)
 
 ### Range Iterators
-- [ ] Implement Range struct for `start..end`
-- [ ] Implement RangeInclusive for `start..=end`
-- [ ] Implement Iterator for Range types
-- [ ] Support integer ranges
+- [x] Implement `Range[T]` builtin type with `{start, end, current, inclusive}` layout
+- [x] Support exclusive ranges: `start..end`
+- [x] Support inclusive ranges: `start..=end`
+- [x] Implement `next()` method for Range iteration
+- [x] Implement `reset()`, `is_empty()`, `len()`, `clone()` methods
+- [x] Support integer element types
 
 ### Iterator Adapters
 - [ ] Implement `map[B](f: fn(Self.Item) -> B) -> Map[Self, B]`
@@ -494,13 +501,23 @@ std/
 - [ ] Implement FromIterator for String (from chars)
 
 ### Testing
-- [ ] Test: for loops work with any IntoIterator
+- [x] Test: for loops work with Range literals (for_range.kl)
+- [x] Test: for loops work with Range variables (for_range.kl)
+- [x] Test: for loops work with arrays (for_array.kl)
+- [x] Test: range iterators work correctly (range_basic.kl, range_inclusive.kl)
+- [x] Test: Iterator trait can be used as bound (iter_trait_basic.kl)
 - [ ] Test: iterator chains are lazy (not evaluated until needed)
 - [ ] Test: can collect into List, Set
-- [ ] Test: range iterators work correctly
 
-**Files to Create:**
-- `std/iter.kl` - Iterator, IntoIterator traits, adapters
+**Files Modified:**
+- `src/checker.zig` - Iterator/IntoIterator trait definitions, Range method checking
+- `src/codegen/emit.zig` - For-loop codegen for Range and arrays, emitRangeNext()
+- `src/types.zig` - RangeType definition
+- `test/native/for_range.kl` - Range for-loop tests
+- `test/native/for_array.kl` - Array for-loop tests
+- `test/native/range_basic.kl` - Manual Range iteration
+- `test/native/range_inclusive.kl` - Inclusive range tests
+- `test/native/iter_trait_basic.kl` - Iterator trait bound test
 
 ---
 
@@ -867,8 +884,8 @@ Based on dependencies:
 3. **Milestone 3: Modules** (needed for stdlib) ✅
 4. **Milestone 10: REPL** (uses interpreter, enables AI workflow) ✅
 5. **Milestone 11: Comptime** (uses interpreter, enables metaprogramming) ✅ Core Complete
-6. **Milestone 4: Stdlib Core** (needs generics, traits, modules) ← **CURRENT**
-7. **Milestone 6: Iterators** (needs traits)
+6. **Milestone 6: Iterators** (for-loops with Range/arrays) ✅ Core Complete
+7. **Milestone 4: Stdlib Core** (needs generics, traits, modules) ← **CURRENT**
 8. **Milestone 7: Error Handling** (needs traits)
 9. **Milestone 5: Stdlib I/O** (needs core)
 10. **Milestone 8: Package Manager** (needs modules)
@@ -886,6 +903,7 @@ Phase 4 is complete when:
 - [x] Multi-file projects compile
 - [ ] Standard library provides core functionality
 - [x] Comptime enables compile-time metaprogramming (core features complete)
+- [x] For-loops work with Range and arrays
 
 **AI-Native Development:**
 - [x] REPL provides interactive code exploration

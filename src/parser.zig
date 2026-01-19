@@ -1226,9 +1226,28 @@ pub const Parser = struct {
         else
             return ParseError.ExpectedIdentifier;
 
-        // Check for method call
+        // Check for method call with optional type arguments: foo.method[T]() or foo.method()
         if (self.check(.l_paren)) {
-            return self.parseMethodCall(object, field_name);
+            return self.parseMethodCall(object, field_name, null);
+        }
+
+        // Check for method call with type arguments: foo.method[T]()
+        if (self.check(.l_bracket)) {
+            self.advance(); // consume '['
+            var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
+            if (!self.check(.r_bracket)) {
+                while (true) {
+                    try type_args.append(self.allocator, try self.parseType());
+                    if (!self.match(.comma)) break;
+                }
+            }
+            try self.consume(.r_bracket, "expected ']' after type arguments");
+
+            // Now expect '(' for the method call
+            if (!self.check(.l_paren)) {
+                return ParseError.UnexpectedToken;
+            }
+            return self.parseMethodCall(object, field_name, try self.dupeSlice(ast.TypeExpr, type_args.items));
         }
 
         const end_span = self.spanFromToken(self.previous);
@@ -1258,7 +1277,7 @@ pub const Parser = struct {
         return .{ .type_cast = type_cast };
     }
 
-    fn parseMethodCall(self: *Parser, object: ast.Expr, method_name: []const u8) ParseError!ast.Expr {
+    fn parseMethodCall(self: *Parser, object: ast.Expr, method_name: []const u8, type_args: ?[]const ast.TypeExpr) ParseError!ast.Expr {
         self.advance(); // consume '('
 
         var args = std.ArrayListUnmanaged(ast.Expr){};
@@ -1276,7 +1295,7 @@ pub const Parser = struct {
         const method_call = try self.create(ast.MethodCall, .{
             .object = object,
             .method_name = method_name,
-            .type_args = null,
+            .type_args = type_args,
             .args = try self.dupeSlice(ast.Expr, args.items),
             .span = ast.Span.merge(object.span(), end_span),
         });

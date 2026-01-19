@@ -1,0 +1,18 @@
+// Test basic List[T] type and creation
+fn main() -> i32 {
+    // Create an empty list using type parameter on method
+    let list: List[i32] = List.new[i32]()
+
+    // Check initial state
+    let len: i32 = list.len()
+    if len != 0 {
+        return 1
+    }
+
+    let empty: bool = list.is_empty()
+    if not empty {
+        return 2
+    }
+
+    return 42
+}

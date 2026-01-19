@@ -1,107 +1,116 @@
-# Resume Point: Iterator Protocol Complete
+# Resume Point: List[T] Implementation In Progress
 
 ## Context
 
-Working on **Phase 4: Language Completion**. Milestone 6 (Iterator Protocol) is now complete.
+Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). Implementing `List[T]` as a builtin growable collection type.
 
 ## Progress Summary
 
 ### Completed
 
-- **Phase 1: Iterator Trait** ✅
-- **Phase 2: IntoIterator Trait** ✅
-- **Phase 3: Range Iterator** ✅
-- **Phase 4: For Loop Desugaring** ✅
-- **Phase 5: Array Iteration** ✅ ← NEW
+- **Milestone 6: Iterator Protocol** ✅
+- **List[T] Basic Infrastructure** ✅ ← NEW
 
 ---
 
-## What Was Just Implemented: Array Iteration
+## What Was Just Implemented: List[T] Type
 
-For-loops now work with arrays using direct index iteration (efficient fast path).
+`List[T]` is a dynamic/growable list type with the following layout:
+```
+{ ptr: *T, len: i32, capacity: i32 }
+```
 
-### Changes Made (src/codegen/emit.zig)
+### Files Modified
 
-1. **Modified `emitForLoop`** (lines 1000-1010)
-   - Added array detection: `self.isArrayExpr(loop.iterable)`
-   - Routes to new `emitForLoopArray` function
+| File | Changes |
+|------|---------|
+| `src/types.zig` | Added `ListType` struct and `.list` variant |
+| `src/checker.zig` | Type checking for `List[T]`, `List.new[T]()`, all methods |
+| `src/parser.zig` | Method calls with type args: `foo.method[T]()` |
+| `src/codegen/emit.zig` | LLVM type, type inference, `isListExpr`, `isListType`, inline emit methods |
+| `src/runtime/list.zig` | Runtime functions (not yet linked) |
+| `src/runtime/mod.zig` | Re-exports for list functions |
+| `test/native/list_basic.kl` | Basic test file |
 
-2. **New `emitForLoopArray` function** (lines 1254-1373)
-   - Generates efficient index-based iteration
-   - Supports break/continue
-   - Handles nested loops correctly
+### Methods Status
 
-3. **New `getArrayInfo` helper** (lines 1383-1414)
-   - Extracts array pointer, type, and length from expression
-   - Handles both array identifiers and array literals
+| Method | Status | Implementation |
+|--------|--------|----------------|
+| `List.new[T]()` | ✅ Working | Inline - returns `{ null, 0, 0 }` |
+| `list.len()` | ✅ Working | Inline - reads struct field |
+| `list.is_empty()` | ✅ Working | Inline - compares len to 0 |
+| `list.capacity()` | ✅ Working | Inline - reads struct field |
+| `list.push(value)` | ⚠️ Declared | Needs inline impl (malloc/realloc) |
+| `list.pop()` | ⚠️ Declared | Needs inline impl |
+| `list.get(index)` | ⚠️ Declared | Needs inline impl |
+| `list.set(index, value)` | ⚠️ Declared | Needs inline impl |
+| `list.first()` | ⚠️ Declared | Needs inline impl |
+| `list.last()` | ⚠️ Declared | Needs inline impl |
+| `list.clear()` | ⚠️ Declared | Needs inline impl |
+| Drop/cleanup | ❌ Not started | Needs inline impl |
 
-4. **New `isSignedType` helper** (lines 1416-1423)
+### Test File
 
-### New Test File
+`test/native/list_basic.kl`:
+```klar
+fn main() -> i32 {
+    let list: List[i32] = List.new[i32]()
 
-- `test/native/for_array.kl` - Comprehensive array iteration tests:
-  - Basic iteration
-  - Empty array
-  - Array literal in for-loop
-  - Nested loops
-  - Break/continue
+    let len: i32 = list.len()
+    if len != 0 { return 1 }
+
+    let empty: bool = list.is_empty()
+    if not empty { return 2 }
+
+    return 42
+}
+```
 
 ### Verification
 
-All 369 tests pass.
+All 370 tests pass.
 
 ---
 
-## Iterator Protocol Summary
+## Architecture Notes
 
-### What's Implemented
+### Why Inline Implementation?
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Iterator trait | ✅ | `fn next(&mut self) -> ?Self.Item` |
-| IntoIterator trait | ✅ | `fn into_iter(self) -> Self.IntoIter` |
-| Range[T] builtin | ✅ | `0..10`, `0..=10` syntax |
-| For-loop with Range literal | ✅ | Fast path: direct index iteration |
-| For-loop with Range[T] variable | ✅ | Uses iterator protocol (`.next()`) |
-| For-loop with arrays | ✅ | Fast path: direct index iteration |
+The Klar compiler generates standalone native executables without linking a separate runtime library. Runtime functions (like `klar_rc_alloc`) are implemented inline in LLVM IR within the codegen phase. The Zig runtime files (`src/runtime/*.zig`) exist but aren't linked - they serve as reference implementations.
 
-### For-Loop Behavior
+For List to work fully, methods like `push` need to be implemented inline in `emit.zig`, generating LLVM IR that:
+1. Calls malloc/realloc for growth
+2. Copies elements
+3. Updates len/capacity fields
 
-```klar
-// Range literal (fast path)
-for i: i32 in 0..10 { ... }
+### Key Functions Added to emit.zig
 
-// Range variable (iterator protocol)
-var r: Range[i32] = 0..10
-for i: i32 in r { ... }
-
-// Array (fast path)
-let arr: [i32; 3] = [1, 2, 3]
-for x: i32 in arr { ... }
-
-// Array literal (fast path)
-for x: i32 in [1, 2, 3] { ... }
-```
+- `isListExpr(expr)` - checks if expression is List type
+- `isListType(ty)` - checks LLVM type structure
+- `getListElementType(expr)` - gets element type for generics
+- `getListStructType()` - returns `{ ptr, i32, i32 }`
+- `emitListNew()` - creates empty list inline
+- `emitListLen()` - reads len field
+- `emitListIsEmpty()` - compares len to 0
+- `emitListCapacity()` - reads capacity field
 
 ---
 
 ## What's Next
 
-The iterator protocol is complete for the core use cases. Potential future work:
+To complete List[T]:
 
-1. **Slice iteration** - Currently unsupported (`[T]` slices)
-2. **User-defined iterators** - Structs implementing Iterator trait
-3. **Iterator adapters** - `.map()`, `.filter()`, `.collect()`, etc.
-4. **IntoIterator for arrays** - Full trait implementation (currently uses fast path)
+1. **Implement `push` inline** - Most important, requires:
+   - Check if len >= capacity
+   - If so, realloc to 2x capacity (or initial 8)
+   - Copy value to ptr[len]
+   - Increment len
 
----
+2. **Implement other mutation methods** - Similar pattern
 
-## Files Modified
+3. **Implement Drop** - Free the ptr on scope exit
 
-| File | Changes |
-|------|---------|
-| `src/codegen/emit.zig` | `emitForLoopArray`, `getArrayInfo`, `isSignedType`, updated `emitForLoop` |
-| `test/native/for_array.kl` | New comprehensive test file |
+Alternative: Could simplify by using a fixed-capacity array internally for MVP.
 
 ---
 
@@ -111,11 +120,10 @@ The iterator protocol is complete for the core use cases. Potential future work:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test array iteration specifically
-./zig-out/bin/klar run test/native/for_array.kl
+# Test list specifically
+./zig-out/bin/klar run test/native/list_basic.kl
 
-# Test all for-loop variants
-./zig-out/bin/klar run test/native/for_range.kl
-./zig-out/bin/klar run test/native/for_array.kl
-./zig-out/bin/klar run test/native/range_basic.kl
+# Check generated IR
+./zig-out/bin/klar build test/native/list_basic.kl -o /tmp/test --emit-llvm
+cat list_basic.ll
 ```

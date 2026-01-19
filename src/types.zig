@@ -46,6 +46,9 @@ pub const Type = union(enum) {
     // Range type
     range: *RangeType,
 
+    // Collection types
+    list: *ListType,
+
     // Special types
     void_,
     never,
@@ -103,6 +106,8 @@ pub const Type = union(enum) {
             .cell => |c| c.inner.eql(other.cell.inner),
             // Range type equality only depends on element type; inclusive is a runtime property
             .range => |r| r.element_type.eql(other.range.element_type),
+            // List type equality depends on element type
+            .list => |l| l.element.eql(other.list.element),
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -188,9 +193,10 @@ pub const Type = union(enum) {
             // - Rc/Weak (must use .clone() explicitly to get new reference)
             // - Arc/WeakArc (thread-safe reference counting, must use .clone())
             // - Cell (provides interior mutability, has move semantics)
+            // - List (owns heap memory, must be moved or cloned)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .unknown, .error_type, .associated_type_ref => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .unknown, .error_type, .associated_type_ref => false,
         };
     }
 };
@@ -514,6 +520,13 @@ pub const RangeType = struct {
     inclusive: bool,
 };
 
+/// List type for growable collections (List[T])
+/// A heap-allocated, dynamically-sized array.
+/// Layout: { ptr: *T, len: i32, capacity: i32 }
+pub const ListType = struct {
+    element: Type,
+};
+
 // ============================================================================
 // Type Builder - Arena-based type allocation
 // ============================================================================
@@ -714,6 +727,13 @@ pub const TypeBuilder = struct {
         range.* = .{ .element_type = element_type, .inclusive = inclusive };
         return .{ .range = range };
     }
+
+    // List type constructor
+    pub fn listType(self: *TypeBuilder, element: Type) !Type {
+        const list = try self.arena.allocator().create(ListType);
+        list.* = .{ .element = element };
+        return .{ .list = list };
+    }
 };
 
 // ============================================================================
@@ -810,6 +830,11 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .range => |r| {
             try writer.writeAll("Range[");
             try formatType(writer, r.element_type);
+            try writer.writeAll("]");
+        },
+        .list => |l| {
+            try writer.writeAll("List[");
+            try formatType(writer, l.element);
             try writer.writeAll("]");
         },
         .associated_type_ref => |a| {
