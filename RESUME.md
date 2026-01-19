@@ -1,8 +1,8 @@
-# Resume Point: List[T] Iteration Complete
+# Resume Point: List[T] Feature Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `List[T]` is now a fully functional builtin growable collection type with for-loop iteration support.
+Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `List[T]` is now a **fully complete** builtin growable collection type with all planned methods implemented.
 
 ## Progress Summary
 
@@ -10,7 +10,10 @@ Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `List[T
 
 - **Milestone 6: Iterator Protocol** ✅
 - **List[T] Full Implementation** ✅
-- **For-loop iteration over List[T]** ✅ ← LATEST
+- **For-loop iteration over List[T]** ✅
+- **List.with_capacity[T](n)** ✅ ← NEW
+- **list.clone()** ✅ ← NEW
+- **list.drop()** ✅ ← NEW
 
 ---
 
@@ -21,11 +24,12 @@ Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `List[T
 { ptr: *T, len: i32, capacity: i32 }
 ```
 
-### Methods Status
+### Methods Status - ALL COMPLETE
 
 | Method | Status | Implementation |
 |--------|--------|----------------|
 | `List.new[T]()` | ✅ Working | Inline - returns `{ null, 0, 0 }` |
+| `List.with_capacity[T](n)` | ✅ Working | Inline - malloc, returns `{ ptr, 0, n }` |
 | `list.len()` | ✅ Working | Inline - reads struct field |
 | `list.is_empty()` | ✅ Working | Inline - compares len to 0 |
 | `list.capacity()` | ✅ Working | Inline - reads struct field |
@@ -36,121 +40,82 @@ Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `List[T
 | `list.first()` | ✅ Working | Inline - returns ?T (first element) |
 | `list.last()` | ✅ Working | Inline - returns ?T (last element) |
 | `list.clear()` | ✅ Working | Inline - sets len to 0 |
+| `list.clone()` | ✅ Working | Inline - malloc + memcpy, deep copy |
+| `list.drop()` | ✅ Working | Inline - free + reset to empty |
 | **For-loop iteration** | ✅ Working | `for x in list { ... }` |
-| `with_capacity(n)` | ❌ Not started | Pre-allocate capacity |
-| Drop/cleanup | ❌ Not started | Free memory on scope exit |
 
 ### Test Files
 
-**`test/native/list_basic.kl`** - Tests core operations:
-```klar
-fn main() -> i32 {
-    var list: List[i32] = List.new[i32]()
-    if list.len() != 0 { return 1 }
-    if not list.is_empty() { return 2 }
-
-    list.push(10)
-    list.push(20)
-    list.push(30)
-    if list.len() != 3 { return 4 }
-
-    return 42
-}
-```
-
-**`test/native/for_list.kl`** - Tests for-loop iteration:
-```klar
-fn main() -> i32 {
-    var nums: List[i32] = List.new[i32]()
-    nums.push(10)
-    nums.push(20)
-    nums.push(30)
-
-    var sum: i32 = 0
-    for n: i32 in nums {
-        sum = sum + n
-    }
-    // sum = 60
-
-    // Also tests break, continue, empty list iteration
-    return 0
-}
-```
+- `test/native/list_basic.kl` - Core operations (push, pop, get, len, etc.)
+- `test/native/for_list.kl` - For-loop iteration with break/continue
+- `test/native/list_with_capacity.kl` - Pre-allocated capacity
+- `test/native/list_clone.kl` - Deep copy verification
+- `test/native/list_drop.kl` - Memory cleanup and reuse
 
 ### Verification
 
-All 371 tests pass.
+All 374 tests pass (211 unit + 147 native + 10 app + 6 module).
 
 ---
 
-## Files Modified
+## Files Modified (This Session)
 
 | File | Changes |
 |------|---------|
-| `src/types.zig` | `ListType` struct and `.list` variant |
-| `src/checker.zig` | Type checking for `List[T]`, all methods, for-loop iteration |
-| `src/parser.zig` | Method calls with type args: `foo.method[T]()` |
-| `src/codegen/emit.zig` | LLVM codegen for all methods and for-loop iteration |
-| `test/native/list_basic.kl` | Test file for List operations |
-| `test/native/for_list.kl` | Test file for for-loop iteration |
+| `src/checker.zig` | Type checking for `with_capacity`, `clone`, `drop` |
+| `src/codegen/emit.zig` | `emitListWithCapacity`, `emitListClone`, `emitListDrop`, fixed method dispatch |
+| `src/runtime/list.zig` | Runtime functions (documented, not linked) |
+| `src/runtime/mod.zig` | Runtime exports |
+| `test/native/list_with_capacity.kl` | Test for with_capacity |
+| `test/native/list_clone.kl` | Test for clone |
+| `test/native/list_drop.kl` | Test for drop |
+| `PLAN.md` | Updated to mark List[T] features complete |
 
-### Key Functions in emit.zig
+### Key Functions Added in emit.zig
 
-**List type helpers:**
-- `isListExpr(expr)` - checks if expression is List type
-- `isListType(ty)` - checks LLVM type structure
-- `getListElementType(expr)` - gets element type
-- `getListStructType()` - returns `{ ptr, i32, i32 }`
-- `getListTypeInfo(type_expr)` - extracts element type from `List[T]`
-- `getListInfo(expr)` - returns ListInfo{alloca, element_type} for iteration
+**New List method emitters:**
+- `emitListWithCapacity()` - malloc capacity*size, returns `{ ptr, 0, capacity }`
+- `emitListClone()` - malloc + memcpy, returns deep copy
+- `emitListDrop()` - free ptr, reset to `{ null, 0, 0 }`
 
-**List method emitters:**
-- `emitListNew()` - creates empty list `{ null, 0, 0 }`
-- `emitListLen()` - reads len field
-- `emitListIsEmpty()` - compares len to 0
-- `emitListCapacity()` - reads capacity field
-- `emitListPush()` - capacity check, realloc if needed, store value
-- `emitListPop()` - decrement len, return Optional[T]
-- `emitListGet()` - bounds check, return Optional[T]
-- `emitListSet()` - bounds check, store value
-- `emitListFirst()` - return first element as Optional[T]
-- `emitListLast()` - return last element as Optional[T]
-- `emitListClear()` - set len to 0
-
-**For-loop iteration:**
-- `emitForLoopList()` - generates index-based iteration over List[T]
-
-### LocalValue Changes
-
-Added `list_element_type: ?types.Type` field to track element type for List variables.
+**Bug Fix:**
+- Fixed method dispatch ordering - List.get/set/clone/drop now checked before Cell methods
 
 ---
 
 ## Architecture Notes
 
-The Klar compiler generates standalone native executables without linking a separate runtime library. All List methods are implemented inline in LLVM IR within `emit.zig`.
+All List methods are implemented as **inline LLVM IR** in `emit.zig`. No separate runtime library is linked. This approach:
+- Eliminates linker dependencies
+- Enables optimization across method boundaries
+- Keeps executables self-contained
 
-For-loop iteration over List[T]:
-1. Allocates index counter (starts at 0)
-2. Loop condition: `idx < list.len`
-3. In body: load `list.ptr[idx]`, bind to loop variable
-4. Increment: `idx += 1`
-5. Supports `break` and `continue`
+Method dispatch in `emitMethodCall()`:
+1. Array methods (for `[T; N]`)
+2. **List methods** (for `List[T]`) ← Fixed ordering
+3. User-defined struct methods
+4. Cell methods
+5. Rc/Arc methods
+6. Builtin trait methods
 
 ---
 
 ## What's Next
 
-To complete List[T]:
+List[T] is **feature complete**. Remaining Milestone 4 work:
 
-1. **`with_capacity(n)`** - Pre-allocate capacity for performance
-2. **Drop trait** - Free the ptr on scope exit (memory safety)
-3. **Clone trait** - Clone list with cloneable elements
+1. **Map[K, V]** - Hash-based key-value store
+   - `new()`, `insert()`, `get()`, `remove()`
+   - `contains_key()`, `keys()`, `values()`
+   - Requires K: Hash + Eq
 
-Other Milestone 4 work:
-- **Map[K, V]** - Hash-based key-value store
-- **Set[T]** - Hash-based unique collection
-- **String type** - Heap-allocated growable strings
+2. **Set[T]** - Hash-based unique collection
+   - `new()`, `insert()`, `remove()`, `contains()`
+   - Requires T: Hash + Eq
+
+3. **String type** - Heap-allocated growable strings
+   - Methods: `len()`, `push()`, `concat()`, `slice()`
+   - UTF-8 support
 
 ---
 
@@ -162,9 +127,11 @@ Other Milestone 4 work:
 
 # Test list specifically
 ./zig-out/bin/klar run test/native/list_basic.kl
-./zig-out/bin/klar run test/native/for_list.kl
+./zig-out/bin/klar run test/native/list_with_capacity.kl
+./zig-out/bin/klar run test/native/list_clone.kl
+./zig-out/bin/klar run test/native/list_drop.kl
 
 # Check generated IR
-./zig-out/bin/klar build test/native/for_list.kl -o /tmp/test --emit-llvm
-cat for_list.ll
+./zig-out/bin/klar build test/native/list_clone.kl -o /tmp/test --emit-llvm
+cat list_clone.ll
 ```
