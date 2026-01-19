@@ -991,7 +991,32 @@ pub const Emitter = struct {
             else => return EmitError.UnsupportedFeature, // Only simple bindings for now
         };
 
-        // For now, handle range-based for loops: for i in start..end { body }
+        // Check if iterable is a range literal (fast path) or Range[T] type (iterator protocol)
+        switch (loop.iterable) {
+            .range => |range| {
+                // Fast path for range literals: for i in start..end { body }
+                try self.emitForLoopRangeLiteral(func, binding_name, range, loop.body);
+            },
+            else => {
+                // Check if the iterable is a Range[T] type (e.g., a variable of type Range[i32])
+                if (self.isRangeExpr(loop.iterable)) {
+                    try self.emitForLoopRangeIterator(func, binding_name, loop.iterable, loop.body);
+                } else {
+                    return EmitError.UnsupportedFeature;
+                }
+            },
+        }
+    }
+
+    /// Emit for-loop for range literals using direct index iteration (fast path).
+    fn emitForLoopRangeLiteral(
+        self: *Emitter,
+        func: llvm.ValueRef,
+        binding_name: []const u8,
+        range: *ast.Range,
+        body: *ast.Block,
+    ) EmitError!void {
+        // For range literals: for i in start..end { body }
         // We emit this as:
         //   %i = alloca i32
         //   store start, %i
@@ -1006,12 +1031,6 @@ pub const Emitter = struct {
         //   store %next, %i
         //   br cond
         // end:
-
-        // Get range bounds
-        const range = switch (loop.iterable) {
-            .range => |r| r,
-            else => return EmitError.UnsupportedFeature, // Only range iteration for now
-        };
 
         // Range can have optional start/end; default start to 0
         const start_val = if (range.start) |s|
@@ -1067,7 +1086,7 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(body_bb);
         self.has_terminator = false;
         try self.pushScope(true); // is_loop = true
-        _ = try self.emitBlock(loop.body);
+        _ = try self.emitBlock(body);
         if (!self.has_terminator) {
             // Emit drops for variables declared in this iteration before continuing
             self.popScope();
@@ -1095,6 +1114,138 @@ pub const Emitter = struct {
 
         // Remove loop variable from scope
         _ = self.named_values.remove(binding_name);
+    }
+
+    /// Emit for-loop for Range[T] types using the iterator protocol.
+    fn emitForLoopRangeIterator(
+        self: *Emitter,
+        func: llvm.ValueRef,
+        binding_name: []const u8,
+        iterable: ast.Expr,
+        body: *ast.Block,
+    ) EmitError!void {
+        // For Range[T] iteration via iterator protocol:
+        //   var iter = iterable  (or use iterable directly if already a mutable alloca)
+        //   loop:
+        //     let maybe = iter.next()
+        //     if maybe.is_none() { break }
+        //     let x = maybe!
+        //     ... body ...
+        //   end:
+
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+
+        // Build range struct type
+        var range_fields = [_]llvm.TypeRef{
+            i32_type, // start
+            i32_type, // end
+            i32_type, // current
+            i1_type, // inclusive
+        };
+        const range_ty = llvm.Types.struct_(self.ctx, &range_fields, false);
+
+        // Build Optional[i32] type: { i1 tag, i32 value }
+        var opt_fields = [_]llvm.TypeRef{ i1_type, i32_type };
+        const opt_ty = llvm.Types.struct_(self.ctx, &opt_fields, false);
+
+        // Get pointer to the range (we need to mutate it via .next())
+        const range_ptr = try self.getAddressOfRange(iterable, range_ty);
+
+        // Allocate loop variable (element from iterator)
+        const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(var_name);
+        const elem_alloca = self.builder.buildAlloca(i32_type, var_name);
+
+        // Add loop variable to scope
+        self.named_values.put(binding_name, .{
+            .value = elem_alloca,
+            .is_alloca = true,
+            .ty = i32_type,
+            .is_signed = true,
+        }) catch return EmitError.OutOfMemory;
+
+        // Create blocks
+        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "foriter.loop");
+        const body_bb = llvm.appendBasicBlock(self.ctx, func, "foriter.body");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "foriter.end");
+
+        // Push loop context (continue goes to loop header, break goes to end)
+        self.loop_stack.append(self.allocator, .{
+            .continue_block = loop_bb,
+            .break_block = end_bb,
+        }) catch return EmitError.OutOfMemory;
+        defer _ = self.loop_stack.pop();
+
+        // Branch to loop
+        _ = self.builder.buildBr(loop_bb);
+
+        // Loop: call .next() and check for None
+        self.builder.positionAtEnd(loop_bb);
+        const maybe_val = try self.emitRangeNext(range_ptr);
+
+        // Extract tag (is_some)
+        const tag_alloca = self.builder.buildAlloca(opt_ty, "maybe.tmp");
+        _ = self.builder.buildStore(maybe_val, tag_alloca);
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, tag_alloca, 0, "tag.ptr");
+        const is_some = self.builder.buildLoad(i1_type, tag_ptr, "is_some");
+
+        // Branch: if is_some goto body, else goto end
+        _ = self.builder.buildCondBr(is_some, body_bb, end_bb);
+
+        // Body: extract value and run body
+        self.builder.positionAtEnd(body_bb);
+        self.has_terminator = false;
+
+        // Extract the value from Some
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_ty, tag_alloca, 1, "val.ptr");
+        const elem_val = self.builder.buildLoad(i32_type, val_ptr, "elem");
+        _ = self.builder.buildStore(elem_val, elem_alloca);
+
+        // Emit body with loop scope for drop tracking
+        try self.pushScope(true); // is_loop = true
+        _ = try self.emitBlock(body);
+        if (!self.has_terminator) {
+            // Emit drops for variables declared in this iteration before continuing
+            self.popScope();
+            _ = self.builder.buildBr(loop_bb);
+        } else {
+            // Terminator already emitted (break/continue/return)
+            if (self.scope_stack.pop()) |scope| {
+                var s = scope;
+                s.droppables.deinit(self.allocator);
+            }
+        }
+
+        // Continue after loop
+        self.builder.positionAtEnd(end_bb);
+        self.has_terminator = false;
+
+        // Remove loop variable from scope
+        _ = self.named_values.remove(binding_name);
+    }
+
+    /// Get address of a Range expression. If it's an identifier, return its alloca.
+    /// If it's a range literal, allocate it and return the alloca.
+    fn getAddressOfRange(self: *Emitter, expr: ast.Expr, range_ty: llvm.TypeRef) EmitError!llvm.ValueRef {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.is_alloca) {
+                        return local.value;
+                    }
+                }
+                return EmitError.InvalidAST;
+            },
+            .range => {
+                // Emit the range and store it in an alloca
+                const range_val = try self.emitExpr(expr);
+                const alloca = self.builder.buildAlloca(range_ty, "range.iter");
+                _ = self.builder.buildStore(range_val, alloca);
+                return alloca;
+            },
+            else => return EmitError.InvalidAST,
+        }
     }
 
     fn emitInfiniteLoop(self: *Emitter, loop: *ast.LoopStmt) EmitError!void {

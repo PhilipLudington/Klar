@@ -1,0 +1,49 @@
+// Test for-loop with Range[T] using iterator protocol
+// Expected exit code: 42
+
+fn main() -> i32 {
+    var sum: i32 = 0
+
+    // Test 1: for-loop with range literal (fast path)
+    for i: i32 in 0..5 {
+        sum = sum + i
+    }
+    // sum should be 0+1+2+3+4 = 10
+    if sum != 10 {
+        return 1
+    }
+
+    // Test 2: for-loop with Range[T] variable (iterator protocol)
+    var r: Range[i32] = 0..5
+    var sum2: i32 = 0
+    for x: i32 in r {
+        sum2 = sum2 + x
+    }
+    // sum2 should be 0+1+2+3+4 = 10
+    if sum2 != 10 {
+        return 2
+    }
+
+    // Test 3: for-loop with inclusive range literal
+    var sum3: i32 = 0
+    for j: i32 in 0..=4 {
+        sum3 = sum3 + j
+    }
+    // sum3 should be 0+1+2+3+4 = 10
+    if sum3 != 10 {
+        return 3
+    }
+
+    // Test 4: for-loop with inclusive Range[T] variable
+    var r2: Range[i32] = 0..=4
+    var sum4: i32 = 0
+    for y: i32 in r2 {
+        sum4 = sum4 + y
+    }
+    // sum4 should be 0+1+2+3+4 = 10
+    if sum4 != 10 {
+        return 4
+    }
+
+    return 42
+}

@@ -5771,6 +5771,7 @@ pub const TypeChecker = struct {
         const elem_type: Type = switch (iter_type) {
             .array => |a| a.element,
             .slice => |s| s.element,
+            .range => |r| r.element_type,
             else => blk: {
                 self.addError(.not_iterable, for_loop.span, "cannot iterate over this type", .{});
                 break :blk self.type_builder.unknownType();
