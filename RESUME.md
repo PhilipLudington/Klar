@@ -1,8 +1,8 @@
-# Resume Point: List[T] Feature Complete
+# Resume Point: String Type Implementation
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `List[T]` is now a **fully complete** builtin growable collection type with all planned methods implemented.
+Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `String` is now a **partially implemented** builtin heap-allocated string type with core methods working.
 
 ## Progress Summary
 
@@ -10,51 +10,49 @@ Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `List[T
 
 - **Milestone 6: Iterator Protocol** ✅
 - **List[T] Full Implementation** ✅
-- **For-loop iteration over List[T]** ✅
-- **List.with_capacity[T](n)** ✅ ← NEW
-- **list.clone()** ✅ ← NEW
-- **list.drop()** ✅ ← NEW
+- **String Type Basic Implementation** ✅ ← NEW
+  - Static constructors: `new()`, `from()`, `with_capacity()`
+  - Accessors: `len()`, `is_empty()`, `capacity()`
+  - Mutation: `push(char)` with automatic growth
 
 ---
 
-## Current State: List[T] Type
+## Current State: String Type
 
-`List[T]` is a dynamic/growable list type with the following layout:
+`String` is a heap-allocated, growable UTF-8 string type with the following layout:
 ```
-{ ptr: *T, len: i32, capacity: i32 }
+{ ptr: *u8, len: i32, capacity: i32 }
 ```
 
-### Methods Status - ALL COMPLETE
+### Methods Status
 
 | Method | Status | Implementation |
 |--------|--------|----------------|
-| `List.new[T]()` | ✅ Working | Inline - returns `{ null, 0, 0 }` |
-| `List.with_capacity[T](n)` | ✅ Working | Inline - malloc, returns `{ ptr, 0, n }` |
-| `list.len()` | ✅ Working | Inline - reads struct field |
-| `list.is_empty()` | ✅ Working | Inline - compares len to 0 |
-| `list.capacity()` | ✅ Working | Inline - reads struct field |
-| `list.push(value)` | ✅ Working | Inline - capacity check, realloc, store |
-| `list.pop()` | ✅ Working | Inline - returns ?T, decrements len |
-| `list.get(index)` | ✅ Working | Inline - bounds check, returns ?T |
-| `list.set(index, value)` | ✅ Working | Inline - bounds check, stores value |
-| `list.first()` | ✅ Working | Inline - returns ?T (first element) |
-| `list.last()` | ✅ Working | Inline - returns ?T (last element) |
-| `list.clear()` | ✅ Working | Inline - sets len to 0 |
-| `list.clone()` | ✅ Working | Inline - malloc + memcpy, deep copy |
-| `list.drop()` | ✅ Working | Inline - free + reset to empty |
-| **For-loop iteration** | ✅ Working | `for x in list { ... }` |
+| `String.new()` | ✅ Working | Inline - returns `{ null, 0, 0 }` |
+| `String.from(s)` | ✅ Working | Inline - strlen + malloc + memcpy |
+| `String.with_capacity(n)` | ✅ Working | Inline - malloc, returns `{ ptr, 0, n }` |
+| `s.len()` | ✅ Working | Inline - reads struct field |
+| `s.is_empty()` | ✅ Working | Inline - compares len to 0 |
+| `s.capacity()` | ✅ Working | Inline - reads struct field |
+| `s.push(char)` | ✅ Working | Inline - capacity check, realloc, store |
+| `s.concat(other)` | ❌ Not yet | Concatenate two strings |
+| `s.append(other)` | ❌ Not yet | Append another string |
+| `s.as_str()` | ❌ Not yet | Get as primitive string |
+| `s.clear()` | ❌ Not yet | Clear contents |
+| `s.clone()` | ❌ Not yet | Deep copy |
+| `s.drop()` | ❌ Not yet | Free memory |
+| `s.eq(other)` | ❌ Not yet | Equality comparison |
+| `s.hash()` | ❌ Not yet | Hash code |
 
 ### Test Files
 
-- `test/native/list_basic.kl` - Core operations (push, pop, get, len, etc.)
-- `test/native/for_list.kl` - For-loop iteration with break/continue
-- `test/native/list_with_capacity.kl` - Pre-allocated capacity
-- `test/native/list_clone.kl` - Deep copy verification
-- `test/native/list_drop.kl` - Memory cleanup and reuse
+- `test/native/string_basic.kl` - Core operations (new, from, with_capacity, len, is_empty, capacity)
+- `test/native/string_push.kl` - Push character with length verification
+- `test/native/string_simple.kl` - Minimal push test
 
 ### Verification
 
-All 374 tests pass (211 unit + 147 native + 10 app + 6 module).
+All 386 tests pass (220 unit + 150 native + 10 app + 6 module).
 
 ---
 
@@ -62,60 +60,73 @@ All 374 tests pass (211 unit + 147 native + 10 app + 6 module).
 
 | File | Changes |
 |------|---------|
-| `src/checker.zig` | Type checking for `with_capacity`, `clone`, `drop` |
-| `src/codegen/emit.zig` | `emitListWithCapacity`, `emitListClone`, `emitListDrop`, fixed method dispatch |
-| `src/runtime/list.zig` | Runtime functions (documented, not linked) |
+| `src/types.zig` | Added `StringDataType` definition |
+| `src/checker.zig` | Type checking for String methods, added `string_data` to len/is_empty checks |
+| `src/codegen/emit.zig` | String emitters, `is_string_data` flag, `isTypeStringData()` |
+| `src/runtime/string_heap.zig` | Runtime reference (inline codegen used) |
 | `src/runtime/mod.zig` | Runtime exports |
-| `test/native/list_with_capacity.kl` | Test for with_capacity |
-| `test/native/list_clone.kl` | Test for clone |
-| `test/native/list_drop.kl` | Test for drop |
-| `PLAN.md` | Updated to mark List[T] features complete |
+| `test/native/string_*.kl` | Test files |
+| `PLAN.md` | Updated String Type status |
 
 ### Key Functions Added in emit.zig
 
-**New List method emitters:**
-- `emitListWithCapacity()` - malloc capacity*size, returns `{ ptr, 0, capacity }`
-- `emitListClone()` - malloc + memcpy, returns deep copy
-- `emitListDrop()` - free ptr, reset to `{ null, 0, 0 }`
+**String method emitters:**
+- `emitStringNew()` - returns `{ null, 0, 0 }`
+- `emitStringFrom()` - strlen + malloc + memcpy
+- `emitStringWithCapacity()` - malloc, returns `{ ptr, 0, n }`
+- `emitStringDataLen()` - reads len field
+- `emitStringDataIsEmpty()` - compares len to 0
+- `emitStringCapacity()` - reads capacity field
+- `emitStringPush()` - capacity check, realloc if needed, store char
 
 **Bug Fix:**
-- Fixed method dispatch ordering - List.get/set/clone/drop now checked before Cell methods
+- Added `is_string_data` flag to `LocalValue` struct
+- Fixed scope state issue where type checker lookups failed during codegen
+- `isStringDataExpr()` now checks stored flag instead of calling type checker
 
 ---
 
 ## Architecture Notes
 
-All List methods are implemented as **inline LLVM IR** in `emit.zig`. No separate runtime library is linked. This approach:
+All String methods are implemented as **inline LLVM IR** in `emit.zig`, same as List[T]. This approach:
 - Eliminates linker dependencies
 - Enables optimization across method boundaries
 - Keeps executables self-contained
 
 Method dispatch in `emitMethodCall()`:
 1. Array methods (for `[T; N]`)
-2. **List methods** (for `List[T]`) ← Fixed ordering
-3. User-defined struct methods
-4. Cell methods
-5. Rc/Arc methods
-6. Builtin trait methods
+2. List methods (for `List[T]`)
+3. **String methods** (for `String`) ← NEW
+4. User-defined struct methods
+5. Cell methods
+6. Rc/Arc methods
+7. Builtin trait methods
 
 ---
 
 ## What's Next
 
-List[T] is **feature complete**. Remaining Milestone 4 work:
+String type needs remaining methods:
 
-1. **Map[K, V]** - Hash-based key-value store
-   - `new()`, `insert()`, `get()`, `remove()`
-   - `contains_key()`, `keys()`, `values()`
-   - Requires K: Hash + Eq
+1. **String mutation methods:**
+   - `concat(other)` - Create new string from two strings
+   - `append(other)` - Append in place
+   - `clear()` - Reset to empty
 
-2. **Set[T]** - Hash-based unique collection
-   - `new()`, `insert()`, `remove()`, `contains()`
-   - Requires T: Hash + Eq
+2. **String conversion:**
+   - `as_str()` - Get primitive string reference
 
-3. **String type** - Heap-allocated growable strings
-   - Methods: `len()`, `push()`, `concat()`, `slice()`
-   - UTF-8 support
+3. **Memory management:**
+   - `clone()` - Deep copy
+   - `drop()` - Free memory
+
+4. **Comparison/hashing:**
+   - `eq(other)` - Equality check
+   - `hash()` - Hash code for use in Map/Set
+
+Then continue with:
+- **Map[K, V]** - Hash-based key-value store
+- **Set[T]** - Hash-based unique collection
 
 ---
 
@@ -125,13 +136,11 @@ List[T] is **feature complete**. Remaining Milestone 4 work:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test list specifically
-./zig-out/bin/klar run test/native/list_basic.kl
-./zig-out/bin/klar run test/native/list_with_capacity.kl
-./zig-out/bin/klar run test/native/list_clone.kl
-./zig-out/bin/klar run test/native/list_drop.kl
+# Test String specifically
+./zig-out/bin/klar run test/native/string_basic.kl
+./zig-out/bin/klar run test/native/string_push.kl
 
 # Check generated IR
-./zig-out/bin/klar build test/native/list_clone.kl -o /tmp/test --emit-llvm
-cat list_clone.ll
+./zig-out/bin/klar build test/native/string_push.kl -o /tmp/test --emit-llvm
+cat string_push.ll
 ```
