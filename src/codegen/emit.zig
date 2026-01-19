@@ -8027,6 +8027,11 @@ pub const Emitter = struct {
             .identifier => |id| {
                 // Check the stored LLVM type structure
                 if (self.named_values.get(id.name)) |local| {
+                    // Exclude String types - String and List have same LLVM structure
+                    // but String has is_string_data flag set
+                    if (local.is_string_data) {
+                        return false;
+                    }
                     // Check LLVM type structure first
                     if (self.isListType(local.ty)) {
                         return true;
@@ -9457,55 +9462,370 @@ pub const Emitter = struct {
     }
 
     /// Emit string.append(other) - appends other string to this one (mutates).
+    /// Implemented inline with growth logic similar to push but for multiple bytes.
     fn emitStringAppend(self: *Emitter, str_ptr: llvm.ValueRef, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const append_fn = self.getOrDeclareStringAppend();
-        var args = [_]llvm.ValueRef{ str_ptr, other_ptr };
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(append_fn), append_fn, &args, "");
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // Load other's len first to check if empty
+        const other_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 1, "append.other_len_ptr");
+        const other_len = self.builder.buildLoad(i32_type, other_len_ptr, "append.other_len");
+
+        // Early return if other is empty: if (other.len == 0) return
+        const zero = llvm.Const.int32(self.ctx, 0);
+        const other_empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, other_len, zero, "append.other_empty");
+
+        const do_append_bb = llvm.appendBasicBlock(self.ctx, func, "append.do");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "append.end");
+
+        _ = self.builder.buildCondBr(other_empty, end_bb, do_append_bb);
+
+        // --- Do append block ---
+        self.builder.positionAtEnd(do_append_bb);
+
+        // Load self's ptr, len, capacity
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "append.ptr_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "append.len_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 2, "append.cap_ptr");
+
+        const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "append.current_ptr");
+        const current_len = self.builder.buildLoad(i32_type, len_ptr, "append.current_len");
+        const current_cap = self.builder.buildLoad(i32_type, cap_ptr, "append.current_cap");
+
+        // Load other's ptr
+        const other_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 0, "append.other_ptr_ptr");
+        const other_data_ptr = self.builder.buildLoad(ptr_type, other_ptr_ptr, "append.other_data");
+
+        // new_len = self.len + other.len
+        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, current_len, other_len, "append.new_len");
+
+        // need_space = new_len + 1 (for null terminator)
+        const one = llvm.Const.int32(self.ctx, 1);
+        const need_space = llvm.c.LLVMBuildAdd(self.builder.ref, new_len, one, "append.need_space");
+
+        // Check if we need to grow: need_space > capacity
+        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntSGT, need_space, current_cap, "append.need_grow");
+
+        const grow_bb = llvm.appendBasicBlock(self.ctx, func, "append.grow");
+        const copy_bb = llvm.appendBasicBlock(self.ctx, func, "append.copy");
+
+        _ = self.builder.buildCondBr(need_grow, grow_bb, copy_bb);
+
+        // --- Grow block ---
+        self.builder.positionAtEnd(grow_bb);
+
+        // Calculate new capacity: start with current cap (or 16 if 0), double until >= need_space
+        // For simplicity, use: new_cap = max(16, need_space * 2)
+        const sixteen = llvm.Const.int32(self.ctx, 16);
+        const need_space_doubled = llvm.c.LLVMBuildMul(self.builder.ref, need_space, llvm.Const.int32(self.ctx, 2), "append.need_doubled");
+        const cmp = self.builder.buildICmp(llvm.c.LLVMIntSGT, need_space_doubled, sixteen, "append.cmp");
+        const new_cap = llvm.c.LLVMBuildSelect(self.builder.ref, cmp, need_space_doubled, sixteen, "append.new_cap");
+
+        // realloc(ptr, new_cap)
+        const new_cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_cap, i64_type, "append.new_cap_i64");
+        const realloc_fn = self.getOrDeclareRealloc();
+        var realloc_args = [_]llvm.ValueRef{ current_ptr, new_cap_i64 };
+        const grown_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "append.grown_ptr");
+
+        // Store new ptr and capacity
+        _ = self.builder.buildStore(grown_ptr, ptr_ptr);
+        _ = self.builder.buildStore(new_cap, cap_ptr);
+
+        _ = self.builder.buildBr(copy_bb);
+
+        // --- Copy block ---
+        self.builder.positionAtEnd(copy_bb);
+
+        // PHI for data pointer
+        const data_phi = llvm.c.LLVMBuildPhi(self.builder.ref, ptr_type, "append.data_ptr");
+        var incoming_values = [_]llvm.ValueRef{ current_ptr, grown_ptr };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ do_append_bb, grow_bb };
+        llvm.c.LLVMAddIncoming(data_phi, &incoming_values, &incoming_blocks, 2);
+
+        // memcpy(data_ptr + current_len, other_data, other_len)
+        const current_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, current_len, i64_type, "append.cur_len_i64");
+        var dest_indices = [_]llvm.ValueRef{current_len_i64};
+        const dest_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_phi, &dest_indices, 1, "append.dest");
+
+        const other_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, other_len, i64_type, "append.other_len_i64");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ dest_ptr, other_data_ptr, other_len_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        // Store null terminator at data_ptr + new_len
+        const new_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_len, i64_type, "append.new_len_i64");
+        var null_indices = [_]llvm.ValueRef{new_len_i64};
+        const null_ptr_addr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_phi, &null_indices, 1, "append.null_ptr");
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_ptr_addr);
+
+        // Update len
+        _ = self.builder.buildStore(new_len, len_ptr);
+
+        _ = self.builder.buildBr(end_bb);
+
+        // --- End block ---
+        self.builder.positionAtEnd(end_bb);
+
         return llvm.Const.int32(self.ctx, 0);
     }
 
     /// Emit string.as_str() - returns pointer to null-terminated C string.
+    /// Simply returns the ptr field (which is already null-terminated).
     fn emitStringAsStr(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const as_ptr_fn = self.getOrDeclareStringAsPtr();
-        var args = [_]llvm.ValueRef{str_ptr};
-        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(as_ptr_fn), as_ptr_fn, &args, "str.as_str");
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "asstr.ptr_ptr");
+        return self.builder.buildLoad(ptr_type, ptr_ptr, "asstr.ptr");
     }
 
     /// Emit string.clear() - clears the string (keeps capacity).
+    /// Sets len to 0 and writes null terminator at start (if ptr is not null).
     fn emitStringClear(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const clear_fn = self.getOrDeclareStringClear();
-        var args = [_]llvm.ValueRef{str_ptr};
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(clear_fn), clear_fn, &args, "");
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // Set len = 0
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "clear.len_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_ptr);
+
+        // Load data pointer
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "clear.ptr_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "clear.data_ptr");
+
+        // Check if ptr is not null before writing null terminator
+        const null_ptr = llvm.Const.null_(ptr_type);
+        const is_not_null = self.builder.buildICmp(llvm.c.LLVMIntNE, data_ptr, null_ptr, "clear.is_not_null");
+
+        const write_bb = llvm.appendBasicBlock(self.ctx, func, "clear.write");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "clear.end");
+
+        _ = self.builder.buildCondBr(is_not_null, write_bb, end_bb);
+
+        // --- Write block ---
+        self.builder.positionAtEnd(write_bb);
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), data_ptr);
+        _ = self.builder.buildBr(end_bb);
+
+        // --- End block ---
+        self.builder.positionAtEnd(end_bb);
+
         return llvm.Const.int32(self.ctx, 0);
     }
 
     /// Emit string.clone() - creates a deep copy.
+    /// Allocates new buffer, copies data, returns new String struct.
     fn emitStringClone(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const clone_fn = self.getOrDeclareStringClone();
-        var args = [_]llvm.ValueRef{str_ptr};
-        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(clone_fn), clone_fn, &args, "str.clone");
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // Load source ptr, len
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "clone.src_ptr_ptr");
+        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "clone.src_len_ptr");
+        const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "clone.src_ptr");
+        const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "clone.src_len");
+
+        // new_cap = len + 1
+        const one = llvm.Const.int32(self.ctx, 1);
+        const new_cap = llvm.c.LLVMBuildAdd(self.builder.ref, src_len, one, "clone.new_cap");
+
+        // malloc(new_cap)
+        const new_cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_cap, i64_type, "clone.new_cap_i64");
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{new_cap_i64};
+        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "clone.new_ptr");
+
+        // memcpy(new_ptr, src_ptr, len)
+        const src_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, src_len, i64_type, "clone.src_len_i64");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ new_ptr, src_ptr, src_len_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        // Write null terminator
+        var null_indices = [_]llvm.ValueRef{src_len_i64};
+        const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, new_ptr, &null_indices, 1, "clone.null_ptr");
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_ptr);
+
+        // Build result String struct: { new_ptr, len, new_cap }
+        const result_alloca = self.builder.buildAlloca(string_type, "clone.result");
+        const result_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 0, "clone.result_ptr");
+        const result_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 1, "clone.result_len");
+        const result_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 2, "clone.result_cap");
+
+        _ = self.builder.buildStore(new_ptr, result_ptr_field);
+        _ = self.builder.buildStore(src_len, result_len_field);
+        _ = self.builder.buildStore(new_cap, result_cap_field);
+
+        return self.builder.buildLoad(string_type, result_alloca, "clone.result_val");
     }
 
     /// Emit string.drop() - frees the string's memory.
+    /// Calls free(ptr) and zeroes the struct.
     fn emitStringDrop(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const drop_fn = self.getOrDeclareStringDrop();
-        var args = [_]llvm.ValueRef{str_ptr};
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(drop_fn), drop_fn, &args, "");
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load ptr
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "drop.ptr_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "drop.data_ptr");
+
+        // free(ptr)
+        const free_fn = self.getOrDeclareFree();
+        var free_args = [_]llvm.ValueRef{data_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
+
+        // Zero the struct: ptr=null, len=0, cap=0
+        const null_ptr = llvm.Const.null_(ptr_type);
+        const zero = llvm.Const.int32(self.ctx, 0);
+
+        _ = self.builder.buildStore(null_ptr, ptr_ptr);
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "drop.len_ptr");
+        _ = self.builder.buildStore(zero, len_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 2, "drop.cap_ptr");
+        _ = self.builder.buildStore(zero, cap_ptr);
+
         return llvm.Const.int32(self.ctx, 0);
     }
 
     /// Emit string.eq(other) - compares two strings for equality.
+    /// Returns true if lengths match and all bytes match.
     fn emitStringEq(self: *Emitter, str_ptr: llvm.ValueRef, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const eq_fn = self.getOrDeclareStringEq();
-        var args = [_]llvm.ValueRef{ str_ptr, other_ptr };
-        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(eq_fn), eq_fn, &args, "str.eq");
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+
+        // Load len1, len2
+        const len1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "eq.len1_ptr");
+        const len2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 1, "eq.len2_ptr");
+        const len1 = self.builder.buildLoad(i32_type, len1_ptr, "eq.len1");
+        const len2 = self.builder.buildLoad(i32_type, len2_ptr, "eq.len2");
+
+        // First check: lengths must be equal
+        const lens_equal = self.builder.buildICmp(llvm.c.LLVMIntEQ, len1, len2, "eq.lens_equal");
+
+        const check_bytes_bb = llvm.appendBasicBlock(self.ctx, func, "eq.check_bytes");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "eq.end");
+
+        _ = self.builder.buildCondBr(lens_equal, check_bytes_bb, end_bb);
+
+        // --- Check bytes block ---
+        self.builder.positionAtEnd(check_bytes_bb);
+
+        // Use memcmp for byte comparison
+        const ptr1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "eq.ptr1_ptr");
+        const ptr2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 0, "eq.ptr2_ptr");
+        const ptr1 = self.builder.buildLoad(ptr_type, ptr1_ptr, "eq.ptr1");
+        const ptr2 = self.builder.buildLoad(ptr_type, ptr2_ptr, "eq.ptr2");
+
+        const i64_type = llvm.Types.int64(self.ctx);
+        const len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, len1, i64_type, "eq.len_i64");
+        const memcmp_fn = self.getOrDeclareMemcmp();
+        var memcmp_args = [_]llvm.ValueRef{ ptr1, ptr2, len_i64 };
+        const cmp_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcmp_fn), memcmp_fn, &memcmp_args, "eq.cmp_result");
+
+        // memcmp returns 0 if equal
+        const bytes_equal = self.builder.buildICmp(llvm.c.LLVMIntEQ, cmp_result, llvm.Const.int32(self.ctx, 0), "eq.bytes_equal");
+
+        _ = self.builder.buildBr(end_bb);
+
+        // --- End block ---
+        self.builder.positionAtEnd(end_bb);
+
+        // PHI: true from check_bytes if bytes_equal, false from entry if lens differ
+        const result_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i1_type, "eq.result");
+        const false_val = llvm.Const.int(i1_type, 0, false);
+        var incoming_values = [_]llvm.ValueRef{ false_val, bytes_equal };
+        const entry_bb = llvm.c.LLVMGetPreviousBasicBlock(check_bytes_bb);
+        var incoming_blocks = [_]llvm.BasicBlockRef{ entry_bb, check_bytes_bb };
+        llvm.c.LLVMAddIncoming(result_phi, &incoming_values, &incoming_blocks, 2);
+
+        return result_phi;
     }
 
-    /// Emit string.hash() for heap-allocated String type - computes hash code.
+    /// Emit string.hash() for heap-allocated String type - computes FNV-1a hash.
     fn emitStringDataHash(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const hash_fn = self.getOrDeclareStringDataHash();
-        var args = [_]llvm.ValueRef{str_ptr};
-        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(hash_fn), hash_fn, &args, "str.hash");
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // FNV-1a constants
+        const FNV_OFFSET: u64 = 14695981039346656037;
+        const FNV_PRIME: u64 = 1099511628211;
+
+        // Load ptr, len
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "hash.ptr_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "hash.len_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "hash.data_ptr");
+        const len = self.builder.buildLoad(i32_type, len_ptr, "hash.len");
+
+        // Initialize hash = FNV_OFFSET
+        const hash_alloca = self.builder.buildAlloca(i64_type, "hash.val");
+        _ = self.builder.buildStore(llvm.Const.int(i64_type, @bitCast(FNV_OFFSET), false), hash_alloca);
+
+        // Loop index
+        const idx_alloca = self.builder.buildAlloca(i32_type, "hash.idx");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
+
+        // Loop blocks
+        const loop_cond_bb = llvm.appendBasicBlock(self.ctx, func, "hash.loop_cond");
+        const loop_body_bb = llvm.appendBasicBlock(self.ctx, func, "hash.loop_body");
+        const loop_end_bb = llvm.appendBasicBlock(self.ctx, func, "hash.loop_end");
+
+        _ = self.builder.buildBr(loop_cond_bb);
+
+        // --- Loop condition ---
+        self.builder.positionAtEnd(loop_cond_bb);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "hash.idx_val");
+        const cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, len, "hash.cond");
+        _ = self.builder.buildCondBr(cond, loop_body_bb, loop_end_bb);
+
+        // --- Loop body ---
+        self.builder.positionAtEnd(loop_body_bb);
+
+        // Load byte at data_ptr[idx]
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "hash.idx_i64");
+        var gep_indices = [_]llvm.ValueRef{idx_i64};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &gep_indices, 1, "hash.byte_ptr");
+        const byte = self.builder.buildLoad(i8_type, byte_ptr, "hash.byte");
+        const byte_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, byte, i64_type, "hash.byte_i64");
+
+        // hash ^= byte
+        const current_hash = self.builder.buildLoad(i64_type, hash_alloca, "hash.current");
+        const xored = llvm.c.LLVMBuildXor(self.builder.ref, current_hash, byte_i64, "hash.xored");
+
+        // hash *= FNV_PRIME (wrapping)
+        const multiplied = llvm.c.LLVMBuildMul(self.builder.ref, xored, llvm.Const.int(i64_type, @bitCast(FNV_PRIME), false), "hash.multiplied");
+        _ = self.builder.buildStore(multiplied, hash_alloca);
+
+        // idx++
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "hash.next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+
+        _ = self.builder.buildBr(loop_cond_bb);
+
+        // --- Loop end ---
+        self.builder.positionAtEnd(loop_end_bb);
+
+        // Return hash as i64
+        return self.builder.buildLoad(i64_type, hash_alloca, "hash.result");
     }
 
     /// Get the LLVM struct type for String: { ptr, i32, i32 }
@@ -10881,6 +11201,22 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type, i64_type };
         const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 3, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    /// Declare or get the memcmp function.
+    fn getOrDeclareMemcmp(self: *Emitter) llvm.ValueRef {
+        const fn_name = "memcmp";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int memcmp(const void* s1, const void* s2, size_t n)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type, i64_type };
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 3, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 

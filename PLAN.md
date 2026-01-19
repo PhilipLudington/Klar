@@ -247,7 +247,7 @@
 
 **Objective:** Implement core standard library types.
 
-**Status:** In Progress. Optional, Result, builtin type methods (integer, string, array), List[T], and String (partial) are complete. String methods with arguments need codegen fix. Map and Set types not yet started.
+**Status:** In Progress. Optional, Result, builtin type methods (integer, string, array), List[T], and String are complete. Map and Set types not yet started.
 
 ### Option Type (Built-in as `?T`)
 - [x] Built-in `?T` syntax for Optional types
@@ -317,15 +317,15 @@ String is implemented as a builtin type in the compiler with heap-allocated memo
 - [x] `capacity()` -> i32 - Allocated capacity
 - [x] `push(char)` - Append a character (with automatic growth)
 
-**Not Yet Implemented:**
-- [ ] `concat(other)` - Concatenate two strings
-- [ ] `append(other)` - Append another string
-- [ ] `as_str()` -> string - Get as primitive string
-- [ ] `clear()` - Clear contents
-- [ ] `clone()` -> String - Deep copy
-- [ ] `drop()` - Free memory
-- [ ] `eq(other)` -> bool - Equality comparison
-- [ ] `hash()` -> i64 - Hash code
+**Also Implemented:**
+- [x] `concat(other)` - Concatenate two strings (returns new String, supports chaining)
+- [x] `append(other)` - Append another string (mutates self)
+- [x] `as_str()` -> string - Get as primitive string
+- [x] `clear()` - Clear contents (keeps capacity)
+- [x] `clone()` -> String - Deep copy
+- [x] `drop()` - Free memory
+- [x] `eq(other)` -> bool - Equality comparison
+- [x] `hash()` -> i64 - Hash code (FNV-1a)
 
 **Files Modified:**
 - `src/types.zig` - StringDataType definition

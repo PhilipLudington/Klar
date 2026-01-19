@@ -1,0 +1,17 @@
+// Test String.as_str() - converts to primitive string
+
+fn main() -> i32 {
+    // Convert to string literal
+    let s: String = String.from("Hello")
+    let str: string = s.as_str()
+    print(str)
+    print("\n")
+
+    // Can use in print directly
+    let s2: String = String.from("World")
+    print(s2.as_str())
+    print("\n")
+
+    print("All String.as_str tests passed!")
+    return 0
+}

@@ -1,0 +1,20 @@
+// Test String.hash() - returns FNV-1a hash code
+
+fn main() -> i32 {
+    // Hash of non-empty string
+    let s1: String = String.from("Hello")
+    let h1: i64 = s1.hash()
+
+    // Same string should have same hash
+    let s2: String = String.from("Hello")
+    let h2: i64 = s2.hash()
+    assert(h1 == h2)
+
+    // Different strings should (likely) have different hashes
+    let s3: String = String.from("World")
+    let h3: i64 = s3.hash()
+    assert(h1 != h3)
+
+    print("All String.hash tests passed!")
+    return 0
+}

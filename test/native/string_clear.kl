@@ -1,0 +1,18 @@
+// Test String.clear() - clears content but keeps capacity
+
+fn main() -> i32 {
+    // Clear non-empty string
+    var s1: String = String.from("Hello World")
+    assert(s1.len() == 11)
+    s1.clear()
+    assert(s1.len() == 0)
+    assert(s1.is_empty())
+
+    // Clear empty string (should be no-op)
+    var s2: String = String.new()
+    s2.clear()
+    assert(s2.len() == 0)
+
+    print("All String.clear tests passed!")
+    return 0
+}

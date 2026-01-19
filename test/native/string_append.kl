@@ -1,0 +1,27 @@
+// Test String.append() - appends another string (mutates self)
+
+fn main() -> i32 {
+    // Test basic append
+    var s1: String = String.from("Hello")
+    let s2: String = String.from(" World")
+    s1.append(s2)
+    assert(s1.len() == 11)
+
+    // Original s2 unchanged
+    assert(s2.len() == 6)
+
+    // Append empty string
+    var s3: String = String.from("Test")
+    let empty: String = String.new()
+    s3.append(empty)
+    assert(s3.len() == 4)
+
+    // Append to empty string
+    var s4: String = String.new()
+    let s5: String = String.from("Content")
+    s4.append(s5)
+    assert(s4.len() == 7)
+
+    print("All String.append tests passed!")
+    return 0
+}

@@ -1,8 +1,8 @@
-# Resume Point: String Type Implementation
+# Resume Point: String Type Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `String` is now a **partially implemented** builtin heap-allocated string type with core methods working.
+Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `String` is now a **fully implemented** builtin heap-allocated string type.
 
 ## Progress Summary
 
@@ -10,11 +10,14 @@ Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `String
 
 - **Milestone 6: Iterator Protocol** ✅
 - **List[T] Full Implementation** ✅
-- **String Type Basic Implementation** ✅
+- **String Type Full Implementation** ✅
   - Static constructors: `new()`, `from()`, `with_capacity()`
   - Accessors: `len()`, `is_empty()`, `capacity()`
-  - Mutation: `push(char)` with automatic growth
-  - **Concatenation: `concat(other)`** ✅ ← NEW (supports chained calls)
+  - Mutation: `push(char)`, `append(other)`, `clear()`
+  - Concatenation: `concat(other)` (supports chained calls)
+  - Conversion: `as_str()`
+  - Memory: `clone()`, `drop()`
+  - Comparison: `eq(other)`, `hash()`
 
 ---
 
@@ -25,111 +28,68 @@ Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `String
 { ptr: *u8, len: i32, capacity: i32 }
 ```
 
-### Methods Status
+### All Methods Implemented
 
-| Method | Status | Implementation |
-|--------|--------|----------------|
-| `String.new()` | ✅ Working | Inline - returns `{ null, 0, 0 }` |
-| `String.from(s)` | ✅ Working | Inline - strlen + malloc + memcpy |
-| `String.with_capacity(n)` | ✅ Working | Inline - malloc, returns `{ ptr, 0, n }` |
-| `s.len()` | ✅ Working | Inline - reads struct field |
-| `s.is_empty()` | ✅ Working | Inline - compares len to 0 |
-| `s.capacity()` | ✅ Working | Inline - reads struct field |
-| `s.push(char)` | ✅ Working | Inline - capacity check, realloc, store |
-| `s.concat(other)` | ✅ Working | Inline - malloc, 2x memcpy, returns new String |
-| `s.append(other)` | ❌ Not yet | Append another string |
-| `s.as_str()` | ❌ Not yet | Get as primitive string |
-| `s.clear()` | ❌ Not yet | Clear contents |
-| `s.clone()` | ❌ Not yet | Deep copy |
-| `s.drop()` | ❌ Not yet | Free memory |
-| `s.eq(other)` | ❌ Not yet | Equality comparison |
-| `s.hash()` | ❌ Not yet | Hash code |
+| Method | Implementation |
+|--------|----------------|
+| `String.new()` | Inline - returns `{ null, 0, 0 }` |
+| `String.from(s)` | Inline - strlen + malloc + memcpy |
+| `String.with_capacity(n)` | Inline - malloc, returns `{ ptr, 0, n }` |
+| `s.len()` | Inline - reads struct field |
+| `s.is_empty()` | Inline - compares len to 0 |
+| `s.capacity()` | Inline - reads struct field |
+| `s.push(char)` | Inline - capacity check, realloc, store |
+| `s.concat(other)` | Inline - malloc, 2x memcpy, returns new String |
+| `s.append(other)` | Inline - grow if needed, memcpy in place |
+| `s.as_str()` | Inline - returns ptr field |
+| `s.clear()` | Inline - sets len=0, null-terminates |
+| `s.clone()` | Inline - malloc + memcpy, returns new String |
+| `s.drop()` | Inline - free(ptr), zeros struct |
+| `s.eq(other)` | Inline - length check + memcmp |
+| `s.hash()` | Inline - FNV-1a loop |
 
 ### Test Files
 
-- `test/native/string_basic.kl` - Core operations (new, from, with_capacity, len, is_empty, capacity)
-- `test/native/string_push.kl` - Push character with length verification
-- `test/native/string_simple.kl` - Minimal push test
-- `test/native/string_concat.kl` - Concatenation including chained calls
+- `test/native/string_basic.kl` - Core operations
+- `test/native/string_push.kl` - Push character
+- `test/native/string_concat.kl` - Concatenation with chaining
+- `test/native/string_append.kl` - Append mutation
+- `test/native/string_clone.kl` - Deep copy
+- `test/native/string_clear.kl` - Clear contents
+- `test/native/string_drop.kl` - Memory free
+- `test/native/string_eq.kl` - Equality
+- `test/native/string_hash.kl` - Hash code
+- `test/native/string_as_str.kl` - Primitive conversion
 
 ### Verification
 
-All 387 tests pass (220 unit + 151 native + 10 app + 6 module).
+All 394 tests pass (220 unit + 158 native + 10 app + 6 module).
 
 ---
 
-## Files Modified (This Session)
+## Key Bug Fix
 
-| File | Changes |
-|------|---------|
-| `src/types.zig` | Added `StringDataType` definition |
-| `src/checker.zig` | Type checking for String methods, added `string_data` to len/is_empty checks |
-| `src/codegen/emit.zig` | String emitters, `is_string_data` flag, `isTypeStringData()` |
-| `src/runtime/string_heap.zig` | Runtime reference (inline codegen used) |
-| `src/runtime/mod.zig` | Runtime exports |
-| `test/native/string_*.kl` | Test files |
-| `PLAN.md` | Updated String Type status |
-
-### Key Functions Added in emit.zig
-
-**String method emitters:**
-- `emitStringNew()` - returns `{ null, 0, 0 }`
-- `emitStringFrom()` - strlen + malloc + memcpy
-- `emitStringWithCapacity()` - malloc, returns `{ ptr, 0, n }`
-- `emitStringDataLen()` - reads len field
-- `emitStringDataIsEmpty()` - compares len to 0
-- `emitStringCapacity()` - reads capacity field
-- `emitStringPush()` - capacity check, realloc if needed, store char
-- `emitStringConcat()` - malloc new buffer, 2x memcpy, returns new String struct
-
-**Bug Fixes:**
-- Added `is_string_data` flag to `LocalValue` struct
-- Fixed scope state issue where type checker lookups failed during codegen
-- `isStringDataExpr()` enhanced to detect String-returning method calls (for chained concat support)
-- String method dispatch now handles non-identifier objects by storing to temp alloca
-
----
-
-## Architecture Notes
-
-All String methods are implemented as **inline LLVM IR** in `emit.zig`, same as List[T]. This approach:
-- Eliminates linker dependencies
-- Enables optimization across method boundaries
-- Keeps executables self-contained
-
-Method dispatch in `emitMethodCall()`:
-1. Array methods (for `[T; N]`)
-2. List methods (for `List[T]`)
-3. **String methods** (for `String`) ← NEW
-4. User-defined struct methods
-5. Cell methods
-6. Rc/Arc methods
-7. Builtin trait methods
+**String/List type collision**: Both String and List have identical LLVM struct layout `{ ptr, i32, i32 }`. Fixed by adding `is_string_data` check in `isListExpr()` to exclude String types before checking LLVM structure. This prevented String methods from being incorrectly dispatched to List handlers.
 
 ---
 
 ## What's Next
 
-String type needs remaining methods:
+Continue with **Milestone 4: Standard Library - Core**:
 
-1. **String mutation methods:**
-   - `append(other)` - Append in place (mutates self)
-   - `clear()` - Reset to empty
+1. **Map[K, V]** - Hash-based key-value store
+   - Requires K: Hash + Eq bound
+   - `new()`, `insert()`, `get()`, `remove()`
+   - `contains_key()`, `keys()`, `values()`
 
-2. **String conversion:**
-   - `as_str()` - Get primitive string reference
+2. **Set[T]** - Hash-based unique collection
+   - Requires T: Hash + Eq bound
+   - `new()`, `insert()`, `contains()`, `remove()`
+   - `union()`, `intersection()`, `difference()`
 
-3. **Memory management:**
-   - `clone()` - Deep copy
-   - `drop()` - Free memory
-
-4. **Comparison/hashing:**
-   - `eq(other)` - Equality check
-   - `hash()` - Hash code for use in Map/Set
-
-Then continue with:
-- **Map[K, V]** - Hash-based key-value store
-- **Set[T]** - Hash-based unique collection
+3. **Prelude** - Auto-imported types
+   - Include Option, Result, String, List
+   - Include core traits (Eq, Clone, etc.)
 
 ---
 
@@ -140,10 +100,10 @@ Then continue with:
 ./build.sh && ./run-tests.sh
 
 # Test String specifically
-./zig-out/bin/klar run test/native/string_basic.kl
 ./zig-out/bin/klar run test/native/string_concat.kl
+./zig-out/bin/klar run test/native/string_clone.kl
+./zig-out/bin/klar run test/native/string_eq.kl
 
 # Check generated IR
 ./zig-out/bin/klar build test/native/string_concat.kl -o /tmp/test --emit-llvm
-cat string_concat.ll
 ```

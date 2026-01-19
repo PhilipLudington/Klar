@@ -1,0 +1,27 @@
+// Test String.eq() - equality comparison
+
+fn main() -> i32 {
+    // Equal strings
+    let s1: String = String.from("Hello")
+    let s2: String = String.from("Hello")
+    assert(s1.eq(s2))
+
+    // Different strings
+    let s3: String = String.from("World")
+    assert(s1.eq(s3) == false)
+
+    // Different lengths
+    let s4: String = String.from("Hello World")
+    assert(s1.eq(s4) == false)
+
+    // Empty strings are equal
+    let e1: String = String.new()
+    let e2: String = String.new()
+    assert(e1.eq(e2))
+
+    // Empty vs non-empty
+    assert(s1.eq(e1) == false)
+
+    print("All String.eq tests passed!")
+    return 0
+}

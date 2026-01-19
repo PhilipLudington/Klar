@@ -1,0 +1,23 @@
+// Test String.clone() - creates a deep copy
+
+fn main() -> i32 {
+    // Test basic clone
+    let s1: String = String.from("Original")
+    let s2: String = s1.clone()
+    assert(s1.len() == 8)
+    assert(s2.len() == 8)
+
+    // Clone of empty string
+    let empty: String = String.new()
+    let empty_clone: String = empty.clone()
+    assert(empty_clone.len() == 0)
+    assert(empty_clone.is_empty())
+
+    // Chained clone
+    let s3: String = String.from("Chain")
+    let s4: String = s3.clone().clone()
+    assert(s4.len() == 5)
+
+    print("All String.clone tests passed!")
+    return 0
+}

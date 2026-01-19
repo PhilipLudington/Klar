@@ -1,0 +1,24 @@
+// Test String.drop() - frees memory
+
+fn main() -> i32 {
+    // Drop allocated string
+    var s1: String = String.from("Drop me")
+    assert(s1.len() == 7)
+    s1.drop()
+    // After drop, the string should be reset
+    assert(s1.len() == 0)
+    assert(s1.is_empty())
+
+    // Can reallocate after drop
+    s1.push('N')
+    s1.push('e')
+    s1.push('w')
+    assert(s1.len() == 3)
+
+    // Drop empty string (should be safe)
+    var s2: String = String.new()
+    s2.drop()
+
+    print("All String.drop tests passed!")
+    return 0
+}
