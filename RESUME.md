@@ -113,8 +113,7 @@ Method dispatch in `emitMethodCall()`:
 String type needs remaining methods:
 
 1. **String mutation methods:**
-   - `concat(other)` - Create new string from two strings
-   - `append(other)` - Append in place
+   - `append(other)` - Append in place (mutates self)
    - `clear()` - Reset to empty
 
 2. **String conversion:**
@@ -142,9 +141,9 @@ Then continue with:
 
 # Test String specifically
 ./zig-out/bin/klar run test/native/string_basic.kl
-./zig-out/bin/klar run test/native/string_push.kl
+./zig-out/bin/klar run test/native/string_concat.kl
 
 # Check generated IR
-./zig-out/bin/klar build test/native/string_push.kl -o /tmp/test --emit-llvm
-cat string_push.ll
+./zig-out/bin/klar build test/native/string_concat.kl -o /tmp/test --emit-llvm
+cat string_concat.ll
 ```
