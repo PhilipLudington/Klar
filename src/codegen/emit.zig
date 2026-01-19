@@ -1012,6 +1012,9 @@ pub const Emitter = struct {
                 } else if (self.isArrayExpr(loop.iterable)) {
                     // Array iteration: for x in arr { body }
                     try self.emitForLoopArray(func, binding_name, loop.iterable, loop.body);
+                } else if (self.isListExpr(loop.iterable)) {
+                    // List iteration: for x in list { body }
+                    try self.emitForLoopList(func, binding_name, loop.iterable, loop.body);
                 } else {
                     return EmitError.UnsupportedFeature;
                 }
@@ -1379,6 +1382,150 @@ pub const Emitter = struct {
 
         // Remove loop variable from scope
         _ = self.named_values.remove(binding_name);
+    }
+
+    /// Emit for-loop for List[T] types using index iteration.
+    /// List layout: { ptr: *T, len: i32, capacity: i32 }
+    fn emitForLoopList(
+        self: *Emitter,
+        func: llvm.ValueRef,
+        binding_name: []const u8,
+        iterable: ast.Expr,
+        body: *ast.Block,
+    ) EmitError!void {
+        // Get the list alloca and element type
+        const list_info = try self.getListInfo(iterable);
+        const list_alloca = list_info.alloca;
+        const element_type = list_info.element_type;
+        const element_llvm_type = self.typeToLLVM(element_type);
+
+        const i32_type = llvm.Types.int32(self.ctx);
+        const list_type = self.getListStructType();
+
+        // Allocate index counter
+        const idx_alloca = self.builder.buildAlloca(i32_type, "forlist.idx");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
+
+        // Allocate loop variable (element binding)
+        const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(var_name);
+        const elem_alloca = self.builder.buildAlloca(element_llvm_type, var_name);
+
+        // Determine if element type is signed (for integer types)
+        const is_signed = self.isSignedType(element_llvm_type);
+
+        // Add loop variable to scope
+        self.named_values.put(binding_name, .{
+            .value = elem_alloca,
+            .is_alloca = true,
+            .ty = element_llvm_type,
+            .is_signed = is_signed,
+        }) catch return EmitError.OutOfMemory;
+
+        // Create blocks
+        const cond_bb = llvm.appendBasicBlock(self.ctx, func, "forlist.cond");
+        const body_bb = llvm.appendBasicBlock(self.ctx, func, "forlist.body");
+        const incr_bb = llvm.appendBasicBlock(self.ctx, func, "forlist.incr");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "forlist.end");
+
+        // Push loop context (continue goes to increment, break goes to end)
+        self.loop_stack.append(self.allocator, .{
+            .continue_block = incr_bb,
+            .break_block = end_bb,
+        }) catch return EmitError.OutOfMemory;
+        defer _ = self.loop_stack.pop();
+
+        // Branch to condition
+        _ = self.builder.buildBr(cond_bb);
+
+        // Emit condition: idx < len
+        self.builder.positionAtEnd(cond_bb);
+        const cur_idx = self.builder.buildLoad(i32_type, idx_alloca, "forlist.idx.cur");
+        // Load current length from list (it may change during iteration, but we snapshot it)
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, "forlist.len_ptr");
+        const list_len = self.builder.buildLoad(i32_type, len_ptr, "forlist.len");
+        const cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, cur_idx, list_len, "forlist.cmp");
+        _ = self.builder.buildCondBr(cmp, body_bb, end_bb);
+
+        // Emit body
+        self.builder.positionAtEnd(body_bb);
+        self.has_terminator = false;
+
+        // Load data pointer from list
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "forlist.ptr_ptr");
+        const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "forlist.data_ptr");
+
+        // Load current element: data_ptr[idx]
+        var gep_indices = [_]llvm.ValueRef{cur_idx};
+        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, element_llvm_type, data_ptr, &gep_indices, 1, "forlist.elem.ptr");
+        const elem_val = self.builder.buildLoad(element_llvm_type, elem_ptr, "forlist.elem.val");
+        _ = self.builder.buildStore(elem_val, elem_alloca);
+
+        // Emit body with loop scope for drop tracking
+        try self.pushScope(true); // is_loop = true
+        _ = try self.emitBlock(body);
+        if (!self.has_terminator) {
+            // Emit drops for variables declared in this iteration before continuing
+            self.popScope();
+            _ = self.builder.buildBr(incr_bb);
+        } else {
+            // Terminator already emitted (break/continue/return)
+            if (self.scope_stack.pop()) |scope| {
+                var s = scope;
+                s.droppables.deinit(self.allocator);
+            }
+        }
+
+        // Emit increment
+        self.builder.positionAtEnd(incr_bb);
+        const cur_idx2 = self.builder.buildLoad(i32_type, idx_alloca, "forlist.idx.cur2");
+        const one = llvm.Const.int32(self.ctx, 1);
+        const next_idx = self.builder.buildAdd(cur_idx2, one, "forlist.idx.next");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = self.builder.buildBr(cond_bb);
+
+        // Continue after loop
+        self.builder.positionAtEnd(end_bb);
+        self.has_terminator = false;
+
+        // Remove loop variable from scope
+        _ = self.named_values.remove(binding_name);
+    }
+
+    /// Get information about a List expression: its alloca pointer and element type.
+    const ListInfo = struct {
+        alloca: llvm.ValueRef,
+        element_type: types.Type,
+    };
+
+    fn getListInfo(self: *Emitter, expr: ast.Expr) EmitError!ListInfo {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.list_element_type) |elem_type| {
+                        return ListInfo{
+                            .alloca = local.value,
+                            .element_type = elem_type,
+                        };
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: use type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            if (expr_type == .list) {
+                // Emit the expression and hope it's an alloca
+                const list_val = try self.emitExpr(expr);
+                return ListInfo{
+                    .alloca = list_val,
+                    .element_type = expr_type.list.element,
+                };
+            }
+        }
+        return EmitError.InvalidAST;
     }
 
     /// Get information about an array expression: its alloca pointer, LLVM type, and length.

@@ -1,0 +1,62 @@
+// Test for-loop iteration over List[T]
+
+fn main() -> i32 {
+    // Create a list and add some elements
+    var nums: List[i32] = List.new[i32]()
+    nums.push(10)
+    nums.push(20)
+    nums.push(30)
+
+    // Sum all elements using for-loop
+    var sum: i32 = 0
+    for n: i32 in nums {
+        sum = sum + n
+    }
+
+    // Expected sum: 10 + 20 + 30 = 60
+    if sum != 60 {
+        return 1
+    }
+
+    // Test iteration over empty list
+    var empty: List[i32] = List.new[i32]()
+    var empty_count: i32 = 0
+    for x: i32 in empty {
+        empty_count = empty_count + 1
+    }
+
+    // Should iterate zero times
+    if empty_count != 0 {
+        return 2
+    }
+
+    // Test with break
+    var break_sum: i32 = 0
+    for n: i32 in nums {
+        if n == 20 {
+            break
+        }
+        break_sum = break_sum + n
+    }
+
+    // Should only have 10
+    if break_sum != 10 {
+        return 3
+    }
+
+    // Test with continue
+    var continue_sum: i32 = 0
+    for n: i32 in nums {
+        if n == 20 {
+            continue
+        }
+        continue_sum = continue_sum + n
+    }
+
+    // Should have 10 + 30 = 40
+    if continue_sum != 40 {
+        return 4
+    }
+
+    return 0
+}

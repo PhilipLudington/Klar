@@ -247,7 +247,7 @@
 
 **Objective:** Implement core standard library types.
 
-**Status:** In Progress. Optional, Result, and builtin type methods (integer, string, array) are complete. Heap-allocated collection types (String, List, Map, Set) not yet started.
+**Status:** In Progress. Optional, Result, builtin type methods (integer, string, array), and List[T] are complete. Heap-allocated String, Map, and Set types not yet started.
 
 ### Option Type (Built-in as `?T`)
 - [x] Built-in `?T` syntax for Optional types
@@ -311,14 +311,27 @@ The following methods are built into the compiler for primitive types:
 - [ ] Implement `chars()` iterator
 - [ ] Implement `Eq`, `Clone`, `Hash` for String
 
-### List Type
-- [ ] Implement `List[T]` struct in std/collections/list.kl
-- [ ] Manage heap allocation with capacity/length
-- [ ] Implement `new()`, `with_capacity()`, `push()`, `pop()`
-- [ ] Implement `get()`, `set()`, `len()`, `is_empty()`
-- [ ] Implement `iter()` for iteration
-- [ ] Implement `Clone` where T: Clone
-- [ ] Implement `Drop` to free memory
+### List Type (Builtin)
+List[T] is implemented as a builtin type in the compiler, not in the standard library.
+
+**Implemented:**
+- [x] `List.new[T]()` - Create an empty list
+- [x] `push(value)` - Add element to end
+- [x] `pop()` -> ?T - Remove and return last element
+- [x] `get(index)` -> ?T - Get element at index
+- [x] `set(index, value)` - Set element at index
+- [x] `len()` -> i32 - Current length
+- [x] `is_empty()` -> bool - Check if empty
+- [x] `first()` -> ?T - Get first element
+- [x] `last()` -> ?T - Get last element
+- [x] `clear()` - Remove all elements
+- [x] `capacity()` -> i32 - Allocated capacity
+- [x] For-loop iteration (`for x in list`)
+
+**Not Yet Implemented:**
+- [ ] `with_capacity(n)` - Create with pre-allocated capacity
+- [ ] Clone trait - Clone list with cloneable elements
+- [ ] Drop trait - Proper memory cleanup
 
 ### Map Type
 - [ ] Implement `Map[K, V]` struct in std/collections/map.kl
@@ -473,6 +486,7 @@ std/
 - [x] Support for-loops over Range literals (`for i in 0..10`)
 - [x] Support for-loops over Range variables (`var r = 0..10; for i in r`)
 - [x] Support for-loops over arrays (`for x in [1, 2, 3]`)
+- [x] Support for-loops over List[T] (`for x in list`)
 - [x] Handle loop variables correctly with proper scoping
 - [x] Support `break` and `continue` in for-loops
 - [ ] Desugar via `into_iter()` for custom types (currently only builtin types supported)
