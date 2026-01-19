@@ -10,10 +10,11 @@ Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `String
 
 - **Milestone 6: Iterator Protocol** ✅
 - **List[T] Full Implementation** ✅
-- **String Type Basic Implementation** ✅ ← NEW
+- **String Type Basic Implementation** ✅
   - Static constructors: `new()`, `from()`, `with_capacity()`
   - Accessors: `len()`, `is_empty()`, `capacity()`
   - Mutation: `push(char)` with automatic growth
+  - **Concatenation: `concat(other)`** ✅ ← NEW (supports chained calls)
 
 ---
 
@@ -35,7 +36,7 @@ Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `String
 | `s.is_empty()` | ✅ Working | Inline - compares len to 0 |
 | `s.capacity()` | ✅ Working | Inline - reads struct field |
 | `s.push(char)` | ✅ Working | Inline - capacity check, realloc, store |
-| `s.concat(other)` | ❌ Not yet | Concatenate two strings |
+| `s.concat(other)` | ✅ Working | Inline - malloc, 2x memcpy, returns new String |
 | `s.append(other)` | ❌ Not yet | Append another string |
 | `s.as_str()` | ❌ Not yet | Get as primitive string |
 | `s.clear()` | ❌ Not yet | Clear contents |
@@ -49,10 +50,11 @@ Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `String
 - `test/native/string_basic.kl` - Core operations (new, from, with_capacity, len, is_empty, capacity)
 - `test/native/string_push.kl` - Push character with length verification
 - `test/native/string_simple.kl` - Minimal push test
+- `test/native/string_concat.kl` - Concatenation including chained calls
 
 ### Verification
 
-All 386 tests pass (220 unit + 150 native + 10 app + 6 module).
+All 387 tests pass (220 unit + 151 native + 10 app + 6 module).
 
 ---
 
@@ -78,11 +80,13 @@ All 386 tests pass (220 unit + 150 native + 10 app + 6 module).
 - `emitStringDataIsEmpty()` - compares len to 0
 - `emitStringCapacity()` - reads capacity field
 - `emitStringPush()` - capacity check, realloc if needed, store char
+- `emitStringConcat()` - malloc new buffer, 2x memcpy, returns new String struct
 
-**Bug Fix:**
+**Bug Fixes:**
 - Added `is_string_data` flag to `LocalValue` struct
 - Fixed scope state issue where type checker lookups failed during codegen
-- `isStringDataExpr()` now checks stored flag instead of calling type checker
+- `isStringDataExpr()` enhanced to detect String-returning method calls (for chained concat support)
+- String method dispatch now handles non-identifier objects by storing to temp alloca
 
 ---
 

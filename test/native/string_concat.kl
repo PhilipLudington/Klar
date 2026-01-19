@@ -1,0 +1,36 @@
+// Test String.concat() - concatenates two strings into a new one
+
+fn main() -> i32 {
+    // Test basic concat
+    let s1: String = String.from("Hello")
+    let s2: String = String.from(" World")
+    let s3: String = s1.concat(s2)
+    assert(s3.len() == 11)
+
+    // Verify original strings unchanged
+    assert(s1.len() == 5)
+    assert(s2.len() == 6)
+
+    // Test concat with empty string
+    let empty: String = String.new()
+    let s4: String = s1.concat(empty)
+    assert(s4.len() == 5)
+
+    // Test empty concat with string
+    let s5: String = empty.concat(s2)
+    assert(s5.len() == 6)
+
+    // Test empty concat empty
+    let s6: String = empty.concat(empty)
+    assert(s6.len() == 0)
+
+    // Test chained concat
+    let a: String = String.from("a")
+    let b: String = String.from("b")
+    let c: String = String.from("c")
+    let abc: String = a.concat(b).concat(c)
+    assert(abc.len() == 3)
+
+    print("All String.concat tests passed!")
+    return 0
+}

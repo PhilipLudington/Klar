@@ -5228,14 +5228,29 @@ pub const Emitter = struct {
         // Check for String methods (heap-allocated string)
         if (self.isStringDataExpr(method.object)) {
             // For String methods, we need the alloca pointer, not the loaded value
-            const str_ptr = if (method.object == .identifier) blk: {
+            // If object is an identifier, get its alloca directly
+            // Otherwise, emit the expression and store to a temporary alloca
+            const ptr = if (method.object == .identifier) blk: {
                 if (self.named_values.get(method.object.identifier.name)) |local| {
                     break :blk local.value; // This is the alloca pointer
                 }
-                break :blk null;
-            } else null;
+                // Identifier not found in named_values, fall through to emit
+                const obj_val = try self.emitExpr(method.object);
+                const string_type = self.getStringStructType();
+                const tmp_alloca = self.builder.buildAlloca(string_type, "str.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                // Non-identifier object (e.g., method call result like a.concat(b))
+                // Emit the expression and store to a temporary alloca
+                const obj_val = try self.emitExpr(method.object);
+                const string_type = self.getStringStructType();
+                const tmp_alloca = self.builder.buildAlloca(string_type, "str.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
 
-            if (str_ptr) |ptr| {
+            {
                 if (std.mem.eql(u8, method.method_name, "len")) {
                     return self.emitStringDataLen(ptr);
                 }
@@ -5252,14 +5267,26 @@ pub const Emitter = struct {
                 }
                 if (std.mem.eql(u8, method.method_name, "concat")) {
                     if (method.args.len != 1) return EmitError.InvalidAST;
-                    const other_str = try self.emitExpr(method.args[0]);
                     // For concat we need the other string's pointer
+                    // If argument is an identifier, get its alloca directly
+                    // Otherwise, emit the expression and store to a temporary alloca
                     const other_ptr = if (method.args[0] == .identifier) other_blk: {
                         if (self.named_values.get(method.args[0].identifier.name)) |local| {
                             break :other_blk local.value;
                         }
-                        break :other_blk other_str;
-                    } else other_str;
+                        // Identifier not found in named_values, fall through to emit
+                        const other_val = try self.emitExpr(method.args[0]);
+                        const string_type = self.getStringStructType();
+                        const other_tmp = self.builder.buildAlloca(string_type, "str.arg.tmp");
+                        _ = self.builder.buildStore(other_val, other_tmp);
+                        break :other_blk other_tmp;
+                    } else other_blk: {
+                        const other_val = try self.emitExpr(method.args[0]);
+                        const string_type = self.getStringStructType();
+                        const other_tmp = self.builder.buildAlloca(string_type, "str.arg.tmp");
+                        _ = self.builder.buildStore(other_val, other_tmp);
+                        break :other_blk other_tmp;
+                    };
                     return self.emitStringConcat(ptr, other_ptr);
                 }
                 if (std.mem.eql(u8, method.method_name, "append")) {
@@ -8058,11 +8085,34 @@ pub const Emitter = struct {
 
     /// Check if an expression is a String (heap-allocated) type.
     fn isStringDataExpr(self: *Emitter, expr: ast.Expr) bool {
-        // First check if this is an identifier with stored is_string_data flag
         switch (expr) {
+            // Check if this is an identifier with stored is_string_data flag
             .identifier => |id| {
                 if (self.named_values.get(id.name)) |local| {
                     if (local.is_string_data) {
+                        return true;
+                    }
+                }
+            },
+            // Check for String static constructors and String-returning methods
+            .method_call => |mc| {
+                // String static methods: String.new(), String.from(), String.with_capacity()
+                if (mc.object == .identifier) {
+                    const name = mc.object.identifier.name;
+                    if (std.mem.eql(u8, name, "String")) {
+                        if (std.mem.eql(u8, mc.method_name, "new") or
+                            std.mem.eql(u8, mc.method_name, "from") or
+                            std.mem.eql(u8, mc.method_name, "with_capacity"))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                // String instance methods that return String: concat(), clone()
+                if (self.isStringDataExpr(mc.object)) {
+                    if (std.mem.eql(u8, mc.method_name, "concat") or
+                        std.mem.eql(u8, mc.method_name, "clone"))
+                    {
                         return true;
                     }
                 }
@@ -9340,10 +9390,70 @@ pub const Emitter = struct {
     }
 
     /// Emit string.concat(other) - concatenates two strings, returns new string.
+    /// Implemented inline: allocates new buffer, copies both strings, returns new String struct.
     fn emitStringConcat(self: *Emitter, str_ptr: llvm.ValueRef, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const concat_fn = self.getOrDeclareStringConcat();
-        var args = [_]llvm.ValueRef{ str_ptr, other_ptr };
-        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(concat_fn), concat_fn, &args, "str.concat");
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // Load ptr1, len1 from first string
+        const ptr1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "concat.ptr1_ptr");
+        const len1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "concat.len1_ptr");
+        const ptr1 = self.builder.buildLoad(ptr_type, ptr1_ptr, "concat.ptr1");
+        const len1 = self.builder.buildLoad(i32_type, len1_ptr, "concat.len1");
+
+        // Load ptr2, len2 from second string
+        const ptr2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 0, "concat.ptr2_ptr");
+        const len2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 1, "concat.len2_ptr");
+        const ptr2 = self.builder.buildLoad(ptr_type, ptr2_ptr, "concat.ptr2");
+        const len2 = self.builder.buildLoad(i32_type, len2_ptr, "concat.len2");
+
+        // total_len = len1 + len2
+        const total_len = llvm.c.LLVMBuildAdd(self.builder.ref, len1, len2, "concat.total_len");
+
+        // new_cap = total_len + 1 (for null terminator)
+        const one = llvm.Const.int32(self.ctx, 1);
+        const new_cap = llvm.c.LLVMBuildAdd(self.builder.ref, total_len, one, "concat.new_cap");
+
+        // Allocate: malloc(new_cap)
+        const new_cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_cap, i64_type, "concat.new_cap_i64");
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{new_cap_i64};
+        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "concat.new_ptr");
+
+        // memcpy(new_ptr, ptr1, len1)
+        const len1_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, len1, i64_type, "concat.len1_i64");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args1 = [_]llvm.ValueRef{ new_ptr, ptr1, len1_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args1, "");
+
+        // memcpy(new_ptr + len1, ptr2, len2)
+        var gep_indices = [_]llvm.ValueRef{len1_i64};
+        const dest2 = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, new_ptr, &gep_indices, 1, "concat.dest2");
+        const len2_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, len2, i64_type, "concat.len2_i64");
+        var memcpy_args2 = [_]llvm.ValueRef{ dest2, ptr2, len2_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args2, "");
+
+        // Store null terminator at new_ptr + total_len
+        const total_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, total_len, i64_type, "concat.total_len_i64");
+        var null_indices = [_]llvm.ValueRef{total_len_i64};
+        const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, new_ptr, &null_indices, 1, "concat.null_ptr");
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_ptr);
+
+        // Build result String struct: { new_ptr, total_len, new_cap }
+        const result_alloca = self.builder.buildAlloca(string_type, "concat.result");
+        const result_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 0, "concat.result_ptr");
+        const result_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 1, "concat.result_len");
+        const result_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 2, "concat.result_cap");
+
+        _ = self.builder.buildStore(new_ptr, result_ptr_field);
+        _ = self.builder.buildStore(total_len, result_len_field);
+        _ = self.builder.buildStore(new_cap, result_cap_field);
+
+        // Return loaded struct value
+        return self.builder.buildLoad(string_type, result_alloca, "concat.result_val");
     }
 
     /// Emit string.append(other) - appends other string to this one (mutates).
