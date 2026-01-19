@@ -1987,6 +1987,9 @@ pub const TypeChecker = struct {
                 if (l.element.eql(new_elem)) return typ;
                 return self.type_builder.listType(new_elem);
             },
+
+            // String - no type parameters to substitute
+            .string_data => typ,
         };
     }
 
@@ -2026,6 +2029,8 @@ pub const TypeChecker = struct {
             .cell => |c| self.containsTypeVar(c.inner),
             .range => |r| self.containsTypeVar(r.element_type),
             .list => |l| self.containsTypeVar(l.element),
+            // String has no type parameters
+            .string_data => false,
             // Associated type ref contains a type variable reference
             .associated_type_ref => true,
             .struct_, .enum_, .trait_ => false,
@@ -2182,6 +2187,11 @@ pub const TypeChecker = struct {
                 return self.unifyTypes(l.element, concrete.list.element, substitutions);
             },
 
+            // String has no type parameters - simple equality check
+            .string_data => {
+                return pattern.eql(concrete);
+            },
+
             .struct_, .enum_, .trait_ => {
                 return pattern.eql(concrete);
             },
@@ -2202,6 +2212,10 @@ pub const TypeChecker = struct {
                 // Check for void
                 if (std.mem.eql(u8, n.name, "void")) {
                     return self.type_builder.voidType();
+                }
+                // Check for String (heap-allocated string type)
+                if (std.mem.eql(u8, n.name, "String")) {
+                    return try self.type_builder.stringDataType();
                 }
                 // Check for Self
                 if (std.mem.eql(u8, n.name, "Self")) {
@@ -3150,6 +3164,51 @@ pub const TypeChecker = struct {
                 self.addError(.invalid_call, method.span, "List.with_capacity() requires a type argument: List.with_capacity[i32](10)", .{});
                 return self.type_builder.unknownType();
             }
+
+            // String.new() -> String - static constructor for empty string
+            if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, method.method_name, "new")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "String.new() takes no arguments", .{});
+                }
+                if (method.type_args != null) {
+                    self.addError(.invalid_call, method.span, "String.new() does not take type arguments", .{});
+                }
+                return self.type_builder.stringDataType() catch self.type_builder.unknownType();
+            }
+
+            // String.from(s: string) -> String - static constructor from string literal
+            if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, method.method_name, "from")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "String.from() takes exactly 1 argument", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (method.type_args != null) {
+                    self.addError(.invalid_call, method.span, "String.from() does not take type arguments", .{});
+                }
+                // Check that the argument is a string literal
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "String.from() expects a string argument", .{});
+                }
+                return self.type_builder.stringDataType() catch self.type_builder.unknownType();
+            }
+
+            // String.with_capacity(n: i32) -> String - static constructor with pre-allocated capacity
+            if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, method.method_name, "with_capacity")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "String.with_capacity() takes exactly 1 argument (capacity)", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (method.type_args != null) {
+                    self.addError(.invalid_call, method.span, "String.with_capacity() does not take type arguments", .{});
+                }
+                // Check that the argument is an integer
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or (arg_type.primitive != .i32_ and arg_type.primitive != .i64_)) {
+                    self.addError(.type_mismatch, method.span, "String.with_capacity() expects an integer argument", .{});
+                }
+                return self.type_builder.stringDataType() catch self.type_builder.unknownType();
+            }
         }
 
         const object_type = self.checkExpr(method.object);
@@ -3174,25 +3233,25 @@ pub const TypeChecker = struct {
             return self.type_builder.stringType();
         }
 
-        // Check for len method on arrays, tuples, strings, lists
+        // Check for len method on arrays, tuples, strings, lists, and String
         // Returns i32 for ergonomic use with loop counters
         if (std.mem.eql(u8, method.method_name, "len")) {
             if (object_type == .primitive and object_type.primitive == .string_) {
                 return .{ .primitive = .i32_ };
             }
-            if (object_type == .array or object_type == .slice or object_type == .tuple or object_type == .list) {
+            if (object_type == .array or object_type == .slice or object_type == .tuple or object_type == .list or object_type == .string_data) {
                 return .{ .primitive = .i32_ };
             }
             self.addError(.undefined_method, method.span, "len() requires array, tuple, string, or list", .{});
             return self.type_builder.unknownType();
         }
 
-        // Check for is_empty method on strings, arrays, lists
+        // Check for is_empty method on strings, arrays, lists, and String
         if (std.mem.eql(u8, method.method_name, "is_empty")) {
             if (object_type == .primitive and object_type.primitive == .string_) {
                 return self.type_builder.boolType();
             }
-            if (object_type == .list) {
+            if (object_type == .list or object_type == .string_data) {
                 return self.type_builder.boolType();
             }
             if (object_type == .array or object_type == .slice) {
@@ -3849,6 +3908,125 @@ pub const TypeChecker = struct {
                     self.addError(.invalid_call, method.span, "drop() takes no arguments", .{});
                 }
                 return self.type_builder.voidType();
+            }
+        }
+
+        // String methods (heap-allocated string)
+        if (object_type == .string_data) {
+            // len(&self) -> i32
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "len() takes no arguments", .{});
+                }
+                return self.type_builder.i32Type();
+            }
+
+            // is_empty(&self) -> bool
+            if (std.mem.eql(u8, method.method_name, "is_empty")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "is_empty() takes no arguments", .{});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // capacity(&self) -> i32
+            if (std.mem.eql(u8, method.method_name, "capacity")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "capacity() takes no arguments", .{});
+                }
+                return self.type_builder.i32Type();
+            }
+
+            // push(&mut self, c: char) -> void
+            if (std.mem.eql(u8, method.method_name, "push")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "push() expects exactly 1 argument", .{});
+                    return self.type_builder.voidType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .char_) {
+                    self.addError(.type_mismatch, method.span, "push() expects a char argument", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // concat(&self, other: String) -> String
+            if (std.mem.eql(u8, method.method_name, "concat")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "concat() expects exactly 1 argument", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .string_data) {
+                    self.addError(.type_mismatch, method.span, "concat() expects a String argument", .{});
+                }
+                return object_type; // Returns new String
+            }
+
+            // append(&mut self, other: String) -> void
+            if (std.mem.eql(u8, method.method_name, "append")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "append() expects exactly 1 argument", .{});
+                    return self.type_builder.voidType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .string_data) {
+                    self.addError(.type_mismatch, method.span, "append() expects a String argument", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // as_str(&self) -> string (get null-terminated C string)
+            if (std.mem.eql(u8, method.method_name, "as_str")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "as_str() takes no arguments", .{});
+                }
+                return self.type_builder.stringType();
+            }
+
+            // clear(&mut self) -> void
+            if (std.mem.eql(u8, method.method_name, "clear")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clear() takes no arguments", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // clone(&self) -> String
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
+                }
+                return object_type;
+            }
+
+            // drop(&mut self) -> void
+            if (std.mem.eql(u8, method.method_name, "drop")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "drop() takes no arguments", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // eq(&self, other: String) -> bool
+            if (std.mem.eql(u8, method.method_name, "eq")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "eq() expects exactly 1 argument", .{});
+                    return self.type_builder.boolType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .string_data) {
+                    self.addError(.type_mismatch, method.span, "eq() expects a String argument", .{});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // hash(&self) -> i64
+            if (std.mem.eql(u8, method.method_name, "hash")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "hash() takes no arguments", .{});
+                }
+                return self.type_builder.i64Type();
             }
         }
 
@@ -5440,6 +5618,7 @@ pub const TypeChecker = struct {
             .cell => "cell",
             .range => "range",
             .list => "list",
+            .string_data => "string",
             .void_ => "void",
             .never => "never",
             .unknown => "unknown",

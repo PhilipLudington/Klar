@@ -1,0 +1,21 @@
+// Test basic String type operations (working subset)
+
+fn main() -> i32 {
+    // Test String.new() - creates empty string
+    let s1: String = String.new()
+    assert(s1.len() == 0)
+    assert(s1.is_empty())
+
+    // Test String.from() - creates from literal
+    let s2: String = String.from("hello")
+    assert(s2.len() == 5)
+    assert(s2.is_empty() == false)
+
+    // Test String.with_capacity()
+    let s3: String = String.with_capacity(100)
+    assert(s3.len() == 0)
+    assert(s3.capacity() >= 100)
+
+    print("All String tests passed!")
+    return 0
+}

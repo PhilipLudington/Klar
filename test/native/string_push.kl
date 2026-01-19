@@ -1,0 +1,22 @@
+// Test String.push() functionality
+
+fn main() -> i32 {
+    var s: String = String.with_capacity(10)
+
+    // Initial state
+    assert(s.len() == 0)
+    assert(s.is_empty())
+
+    // Push first character
+    s.push('a')
+    assert(s.len() == 1)
+    assert(s.is_empty() == false)
+
+    // Push more characters
+    s.push('b')
+    s.push('c')
+    assert(s.len() == 3)
+
+    print("String push tests passed!")
+    return 0
+}

@@ -1,0 +1,7 @@
+// String test - simple push
+
+fn main() -> i32 {
+    var s: String = String.with_capacity(10)
+    s.push('a')
+    return 0
+}

@@ -11,6 +11,7 @@ pub const rc = @import("rc.zig");
 pub const arc = @import("arc.zig");
 pub const alloc = @import("alloc.zig");
 pub const string = @import("string.zig");
+pub const string_heap = @import("string_heap.zig");
 pub const list = @import("list.zig");
 
 // Re-export commonly used functions for C-compatible FFI
@@ -33,11 +34,30 @@ pub const klar_weak_arc_drop = arc.klar_weak_arc_drop;
 pub const klar_weak_arc_upgrade = arc.klar_weak_arc_upgrade;
 pub const klar_arc_downgrade = arc.klar_arc_downgrade;
 
-// String operations
+// String literal operations
 pub const klar_string_trim = string.klar_string_trim;
 pub const klar_string_to_uppercase = string.klar_string_to_uppercase;
 pub const klar_string_to_lowercase = string.klar_string_to_lowercase;
 pub const klar_string_chars = string.klar_string_chars;
+
+// Heap-allocated String operations
+pub const klar_string_new = string_heap.klar_string_new;
+pub const klar_string_with_capacity = string_heap.klar_string_with_capacity;
+pub const klar_string_from = string_heap.klar_string_from;
+pub const klar_string_clone_heap = string_heap.klar_string_clone_heap;
+pub const klar_string_len_heap = string_heap.klar_string_len_heap;
+pub const klar_string_is_empty_heap = string_heap.klar_string_is_empty_heap;
+pub const klar_string_capacity_heap = string_heap.klar_string_capacity;
+pub const klar_string_push_byte = string_heap.klar_string_push_byte;
+pub const klar_string_push_char = string_heap.klar_string_push_char;
+pub const klar_string_append = string_heap.klar_string_append;
+pub const klar_string_concat = string_heap.klar_string_concat;
+pub const klar_string_as_ptr = string_heap.klar_string_as_ptr;
+pub const klar_string_clear_heap = string_heap.klar_string_clear;
+pub const klar_string_drop_heap = string_heap.klar_string_drop;
+pub const klar_string_eq_heap = string_heap.klar_string_eq;
+pub const klar_string_eq_literal = string_heap.klar_string_eq_literal;
+pub const klar_string_hash_heap = string_heap.klar_string_hash_heap;
 
 // List operations
 pub const klar_list_new = list.klar_list_new;
@@ -60,5 +80,6 @@ test {
     _ = arc;
     _ = alloc;
     _ = string;
+    _ = string_heap;
     _ = list;
 }

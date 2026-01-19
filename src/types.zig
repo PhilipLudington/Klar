@@ -48,6 +48,7 @@ pub const Type = union(enum) {
 
     // Collection types
     list: *ListType,
+    string_data: *StringDataType,
 
     // Special types
     void_,
@@ -108,6 +109,8 @@ pub const Type = union(enum) {
             .range => |r| r.element_type.eql(other.range.element_type),
             // List type equality depends on element type
             .list => |l| l.element.eql(other.list.element),
+            // String data is a singleton type (no type parameters)
+            .string_data => true,
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -194,9 +197,10 @@ pub const Type = union(enum) {
             // - Arc/WeakArc (thread-safe reference counting, must use .clone())
             // - Cell (provides interior mutability, has move semantics)
             // - List (owns heap memory, must be moved or cloned)
+            // - String (heap-allocated string, must be moved or cloned)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .unknown, .error_type, .associated_type_ref => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .string_data, .unknown, .error_type, .associated_type_ref => false,
         };
     }
 };
@@ -527,6 +531,15 @@ pub const ListType = struct {
     element: Type,
 };
 
+/// String type for heap-allocated UTF-8 strings (String)
+/// A heap-allocated, dynamically-sized string.
+/// Layout: { ptr: *u8, len: i32, capacity: i32 }
+/// The data is null-terminated for C interop compatibility.
+pub const StringDataType = struct {
+    // No type parameters - String is not generic
+    // This is a marker struct to distinguish from primitive string_ type
+};
+
 // ============================================================================
 // Type Builder - Arena-based type allocation
 // ============================================================================
@@ -734,6 +747,13 @@ pub const TypeBuilder = struct {
         list.* = .{ .element = element };
         return .{ .list = list };
     }
+
+    // String data type constructor
+    pub fn stringDataType(self: *TypeBuilder) !Type {
+        const str = try self.arena.allocator().create(StringDataType);
+        str.* = .{};
+        return .{ .string_data = str };
+    }
 };
 
 // ============================================================================
@@ -836,6 +856,9 @@ pub fn formatType(writer: anytype, t: Type) !void {
             try writer.writeAll("List[");
             try formatType(writer, l.element);
             try writer.writeAll("]");
+        },
+        .string_data => {
+            try writer.writeAll("String");
         },
         .associated_type_ref => |a| {
             try writer.writeAll(a.type_var.name);

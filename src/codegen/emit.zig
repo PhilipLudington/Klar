@@ -114,8 +114,10 @@ pub const Emitter = struct {
         closure_return_type: ?llvm.TypeRef = null,
         /// For closure variables, the parameter types of the closure function.
         closure_param_types: ?[]const llvm.TypeRef = null,
-        /// True if this is a string type.
+        /// True if this is a primitive string type.
         is_string: bool = false,
+        /// True if this is a heap-allocated String type.
+        is_string_data: bool = false,
         /// True if this is an array or slice type.
         is_array: bool = false,
         /// For fixed-size arrays, the size. Null for slices.
@@ -795,6 +797,8 @@ pub const Emitter = struct {
                 const closure_info = self.tryGetClosureTypeInfo(decl.type_);
                 // Check if this is a string type
                 const is_string = self.isTypeString(decl.type_);
+                // Check if this is a heap-allocated String type
+                const is_string_data = self.isTypeStringData(decl.type_);
                 // Check if this is an array or slice type
                 const is_array = self.isTypeArray(decl.type_);
                 const array_info = self.getArrayTypeInfo(decl.type_);
@@ -811,6 +815,7 @@ pub const Emitter = struct {
                     .closure_return_type = if (closure_info) |ci| ci.return_type else null,
                     .closure_param_types = if (closure_info) |ci| ci.param_types else null,
                     .is_string = is_string,
+                    .is_string_data = is_string_data,
                     .is_array = is_array,
                     .array_size = if (array_info) |ai| ai.size else null,
                     .array_element_type = if (array_info) |ai| ai.element_type else null,
@@ -839,6 +844,8 @@ pub const Emitter = struct {
                 const closure_info = self.tryGetClosureTypeInfo(decl.type_);
                 // Check if this is a string type
                 const is_string = self.isTypeString(decl.type_);
+                // Check if this is a heap-allocated String type
+                const is_string_data = self.isTypeStringData(decl.type_);
                 // Check if this is an array or slice type
                 const is_array = self.isTypeArray(decl.type_);
                 const array_info = self.getArrayTypeInfo(decl.type_);
@@ -855,6 +862,7 @@ pub const Emitter = struct {
                     .closure_return_type = if (closure_info) |ci| ci.return_type else null,
                     .closure_param_types = if (closure_info) |ci| ci.param_types else null,
                     .is_string = is_string,
+                    .is_string_data = is_string_data,
                     .is_array = is_array,
                     .array_size = if (array_info) |ai| ai.size else null,
                     .array_element_type = if (array_info) |ai| ai.element_type else null,
@@ -3331,11 +3339,20 @@ pub const Emitter = struct {
         };
     }
 
-    /// Check if a type expression is a string type.
+    /// Check if a type expression is a primitive string type.
     fn isTypeString(self: *Emitter, type_expr: ast.TypeExpr) bool {
         _ = self;
         return switch (type_expr) {
             .named => |named| std.mem.eql(u8, named.name, "string"),
+            else => false,
+        };
+    }
+
+    /// Check if a type expression is a heap-allocated String type.
+    fn isTypeStringData(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .named => |named| std.mem.eql(u8, named.name, "String"),
             else => false,
         };
     }
@@ -3590,6 +3607,19 @@ pub const Emitter = struct {
                         // List.with_capacity[T](n) returns List struct { ptr, i32, i32 }
                         return self.getListStructType();
                     }
+                    // String static constructors
+                    if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, m.method_name, "new")) {
+                        // String.new() returns String struct { ptr, i32, i32 }
+                        return self.getStringStructType();
+                    }
+                    if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, m.method_name, "from")) {
+                        // String.from(s) returns String struct { ptr, i32, i32 }
+                        return self.getStringStructType();
+                    }
+                    if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, m.method_name, "with_capacity")) {
+                        // String.with_capacity(n) returns String struct { ptr, i32, i32 }
+                        return self.getStringStructType();
+                    }
                 }
 
                 // Array/slice methods - check FIRST before Cell methods (which also have .get())
@@ -3655,6 +3685,44 @@ pub const Emitter = struct {
                             elem_llvm_type, // value
                         };
                         return llvm.Types.struct_(self.ctx, &opt_fields, false);
+                    }
+                }
+
+                // String (heap-allocated) methods
+                if (self.isStringDataExpr(m.object)) {
+                    // len() and capacity() return i32
+                    if (std.mem.eql(u8, m.method_name, "len") or
+                        std.mem.eql(u8, m.method_name, "capacity"))
+                    {
+                        return llvm.Types.int32(self.ctx);
+                    }
+                    // is_empty(), eq() return bool
+                    if (std.mem.eql(u8, m.method_name, "is_empty") or
+                        std.mem.eql(u8, m.method_name, "eq"))
+                    {
+                        return llvm.Types.int1(self.ctx);
+                    }
+                    // hash() returns i64
+                    if (std.mem.eql(u8, m.method_name, "hash")) {
+                        return llvm.Types.int64(self.ctx);
+                    }
+                    // push(), append(), clear(), drop() return void (we use i32 as placeholder)
+                    if (std.mem.eql(u8, m.method_name, "push") or
+                        std.mem.eql(u8, m.method_name, "append") or
+                        std.mem.eql(u8, m.method_name, "clear") or
+                        std.mem.eql(u8, m.method_name, "drop"))
+                    {
+                        return llvm.Types.int32(self.ctx);
+                    }
+                    // clone(), concat() return String
+                    if (std.mem.eql(u8, m.method_name, "clone") or
+                        std.mem.eql(u8, m.method_name, "concat"))
+                    {
+                        return self.getStringStructType();
+                    }
+                    // as_str() returns string pointer
+                    if (std.mem.eql(u8, m.method_name, "as_str")) {
+                        return llvm.Types.pointer(self.ctx);
                     }
                 }
 
@@ -5068,6 +5136,21 @@ pub const Emitter = struct {
             if (std.mem.eql(u8, obj_name, "List") and std.mem.eql(u8, method.method_name, "with_capacity")) {
                 return self.emitListWithCapacity(method);
             }
+
+            // String.new() - creates an empty string
+            if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, method.method_name, "new")) {
+                return self.emitStringNew();
+            }
+
+            // String.from(s) - creates a string from a literal
+            if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, method.method_name, "from")) {
+                return self.emitStringFrom(method);
+            }
+
+            // String.with_capacity(n) - creates a string with pre-allocated capacity
+            if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, method.method_name, "with_capacity")) {
+                return self.emitStringWithCapacity(method);
+            }
         }
 
         // Emit the object
@@ -5138,6 +5221,83 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, method.method_name, "drop")) {
                     if (method.args.len != 0) return EmitError.InvalidAST;
                     return self.emitListDrop(ptr, method);
+                }
+            }
+        }
+
+        // Check for String methods (heap-allocated string)
+        if (self.isStringDataExpr(method.object)) {
+            // For String methods, we need the alloca pointer, not the loaded value
+            const str_ptr = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value; // This is the alloca pointer
+                }
+                break :blk null;
+            } else null;
+
+            if (str_ptr) |ptr| {
+                if (std.mem.eql(u8, method.method_name, "len")) {
+                    return self.emitStringDataLen(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "is_empty")) {
+                    return self.emitStringDataIsEmpty(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "capacity")) {
+                    return self.emitStringCapacity(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "push")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const char_val = try self.emitExpr(method.args[0]);
+                    return self.emitStringPush(ptr, char_val);
+                }
+                if (std.mem.eql(u8, method.method_name, "concat")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const other_str = try self.emitExpr(method.args[0]);
+                    // For concat we need the other string's pointer
+                    const other_ptr = if (method.args[0] == .identifier) other_blk: {
+                        if (self.named_values.get(method.args[0].identifier.name)) |local| {
+                            break :other_blk local.value;
+                        }
+                        break :other_blk other_str;
+                    } else other_str;
+                    return self.emitStringConcat(ptr, other_ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "append")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const other_str = try self.emitExpr(method.args[0]);
+                    const other_ptr = if (method.args[0] == .identifier) other_blk: {
+                        if (self.named_values.get(method.args[0].identifier.name)) |local| {
+                            break :other_blk local.value;
+                        }
+                        break :other_blk other_str;
+                    } else other_str;
+                    return self.emitStringAppend(ptr, other_ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "as_str")) {
+                    return self.emitStringAsStr(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "clear")) {
+                    return self.emitStringClear(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "clone")) {
+                    return self.emitStringClone(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "drop")) {
+                    return self.emitStringDrop(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "eq")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const other_str = try self.emitExpr(method.args[0]);
+                    const other_ptr = if (method.args[0] == .identifier) other_blk: {
+                        if (self.named_values.get(method.args[0].identifier.name)) |local| {
+                            break :other_blk local.value;
+                        }
+                        break :other_blk other_str;
+                    } else other_str;
+                    return self.emitStringEq(ptr, other_ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "hash")) {
+                    return self.emitStringDataHash(ptr);
                 }
             }
         }
@@ -7896,6 +8056,28 @@ pub const Emitter = struct {
         return width1 == 32 and width2 == 32;
     }
 
+    /// Check if an expression is a String (heap-allocated) type.
+    fn isStringDataExpr(self: *Emitter, expr: ast.Expr) bool {
+        // First check if this is an identifier with stored is_string_data flag
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.is_string_data) {
+                        return true;
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: check via type checker (for non-identifier expressions)
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .string_data;
+        }
+        return false;
+    }
+
     /// Get the element type for a List expression.
     fn getListElementType(self: *Emitter, expr: ast.Expr) ?types.Type {
         // First check if this is an identifier with stored list element type
@@ -8947,6 +9129,285 @@ pub const Emitter = struct {
         return llvm.Const.int32(self.ctx, 0);
     }
 
+    // ========================================================================
+    // String Methods (heap-allocated string)
+    // ========================================================================
+
+    /// Emit String.new() - creates an empty string.
+    fn emitStringNew(self: *Emitter) EmitError!llvm.ValueRef {
+        // Build String struct type (same as List)
+        const string_type = self.getStringStructType();
+
+        // Create an empty string struct { null, 0, 0 } directly
+        const null_ptr = llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+
+        var values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32 };
+        return llvm.c.LLVMConstNamedStruct(string_type, &values, 3);
+    }
+
+    /// Emit String.from(s) - creates a string from a string literal.
+    /// Implemented inline: calculates length, allocates memory, copies content.
+    fn emitStringFrom(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+
+        // Emit the string literal argument (pointer to null-terminated string)
+        const str_literal = try self.emitExpr(method.args[0]);
+
+        const string_type = self.getStringStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Call strlen to get the length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str_literal};
+        const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "str.len");
+
+        // Convert to i32 (String uses i32 for len)
+        const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "str.len_i32");
+
+        // Allocate memory: len + 1 for null terminator
+        const one_i32 = llvm.Const.int32(self.ctx, 1);
+        const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, one_i32, "str.alloc_len");
+        const alloc_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_len, i64_type, "str.alloc_len_i64");
+
+        // Call malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_len_i64};
+        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "str.ptr");
+
+        // Call memcpy to copy content (including null terminator)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ new_ptr, str_literal, alloc_len_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        // Build the String struct: { ptr, len, len } (capacity = len for from())
+        const string_alloca = self.builder.buildAlloca(string_type, "str.result");
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 0, "str.ptr_field");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 1, "str.len_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 2, "str.cap_field");
+
+        _ = self.builder.buildStore(new_ptr, ptr_field);
+        _ = self.builder.buildStore(len_i32, len_field);
+        _ = self.builder.buildStore(len_i32, cap_field); // capacity = len for from()
+
+        // Load and return the struct value
+        return self.builder.buildLoad(string_type, string_alloca, "str.from.result");
+    }
+
+    /// Emit String.with_capacity(n) - creates a string with pre-allocated capacity.
+    /// Implemented inline: allocates memory using malloc, returns { ptr, 0, capacity }.
+    fn emitStringWithCapacity(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+
+        // Emit the capacity argument (i32)
+        const capacity = try self.emitExpr(method.args[0]);
+
+        const string_type = self.getStringStructType();
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Allocate memory: capacity + 1 for null terminator
+        const one_i32 = llvm.Const.int32(self.ctx, 1);
+        const alloc_size_i32 = llvm.c.LLVMBuildAdd(self.builder.ref, capacity, one_i32, "str.alloc_size");
+        const alloc_size = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_size_i32, i64_type, "str.alloc_size_i64");
+
+        // Call malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "str.ptr");
+
+        // Build the String struct: { ptr, 0, capacity }
+        const string_alloca = self.builder.buildAlloca(string_type, "str.result");
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 0, "str.ptr_field");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 1, "str.len_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 2, "str.cap_field");
+
+        _ = self.builder.buildStore(new_ptr, ptr_field);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_field); // len = 0
+        _ = self.builder.buildStore(capacity, cap_field); // capacity from argument
+
+        // Load and return the struct value
+        return self.builder.buildLoad(string_type, string_alloca, "str.with_cap.result");
+    }
+
+    /// Emit string.len() for heap-allocated String type - returns the byte length.
+    fn emitStringDataLen(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "str.len_ptr");
+        return self.builder.buildLoad(llvm.Types.int32(self.ctx), len_ptr, "str.len");
+    }
+
+    /// Emit string.is_empty() for heap-allocated String type - checks if the string is empty.
+    fn emitStringDataIsEmpty(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const len = try self.emitStringDataLen(str_ptr);
+        const zero = llvm.Const.int32(self.ctx, 0);
+        return self.builder.buildICmp(llvm.c.LLVMIntEQ, len, zero, "str.is_empty");
+    }
+
+    /// Emit string.capacity() - returns the allocated capacity.
+    fn emitStringCapacity(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 2, "str.cap_ptr");
+        return self.builder.buildLoad(llvm.Types.int32(self.ctx), cap_ptr, "str.cap");
+    }
+
+    /// Emit string.push(char) - appends a character (UTF-8 encoded).
+    /// Implemented inline with growth logic similar to List.push.
+    fn emitStringPush(self: *Emitter, str_ptr: llvm.ValueRef, char_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // Load current ptr, len, capacity
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "push.ptr_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "push.len_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 2, "push.cap_ptr");
+
+        const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "push.current_ptr");
+        const current_len = self.builder.buildLoad(i32_type, len_ptr, "push.current_len");
+        const current_cap = self.builder.buildLoad(i32_type, cap_ptr, "push.current_cap");
+
+        // For now, assume single-byte character (ASCII). UTF-8 multi-byte would need more logic.
+        // Need 1 extra byte for the character
+        const one = llvm.Const.int32(self.ctx, 1);
+        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, current_len, one, "push.new_len");
+
+        // Check if we need to grow: new_len >= capacity (need space for null terminator)
+        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntSGE, new_len, current_cap, "push.need_grow");
+
+        // Create basic blocks for growth path
+        const grow_bb = llvm.appendBasicBlock(self.ctx, func, "push.grow");
+        const store_bb = llvm.appendBasicBlock(self.ctx, func, "push.store");
+
+        _ = self.builder.buildCondBr(need_grow, grow_bb, store_bb);
+
+        // --- Grow block ---
+        self.builder.positionAtEnd(grow_bb);
+
+        // New capacity = max(16, capacity * 2)
+        const doubled_cap = llvm.c.LLVMBuildMul(self.builder.ref, current_cap, llvm.Const.int32(self.ctx, 2), "push.doubled");
+        const sixteen = llvm.Const.int32(self.ctx, 16);
+        const cmp_sixteen = self.builder.buildICmp(llvm.c.LLVMIntSGT, doubled_cap, sixteen, "push.cmp_sixteen");
+        const new_cap = llvm.c.LLVMBuildSelect(self.builder.ref, cmp_sixteen, doubled_cap, sixteen, "push.new_cap");
+
+        // Calculate new size in bytes: new_cap (includes space for null terminator)
+        const new_cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_cap, i64_type, "push.new_cap_i64");
+
+        // Call realloc(ptr, new_size)
+        const realloc_fn = self.getOrDeclareRealloc();
+        var realloc_args = [_]llvm.ValueRef{ current_ptr, new_cap_i64 };
+        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "push.new_ptr");
+
+        // Store new ptr and capacity
+        _ = self.builder.buildStore(new_ptr, ptr_ptr);
+        _ = self.builder.buildStore(new_cap, cap_ptr);
+
+        _ = self.builder.buildBr(store_bb);
+
+        // --- Store block ---
+        self.builder.positionAtEnd(store_bb);
+
+        // PHI for the data pointer (either current_ptr or new_ptr from grow)
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, ptr_type, "push.data_ptr");
+        var incoming_values = [_]llvm.ValueRef{ current_ptr, new_ptr };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ llvm.c.LLVMGetPreviousBasicBlock(grow_bb), grow_bb };
+        llvm.c.LLVMAddIncoming(phi, &incoming_values, &incoming_blocks, 2);
+
+        // Calculate address: ptr + len
+        const len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, current_len, i64_type, "push.len_i64");
+        var gep_indices = [_]llvm.ValueRef{len_i64};
+        const char_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, phi, &gep_indices, 1, "push.char_ptr");
+
+        // Truncate char (i32) to i8 and store
+        const char_i8 = llvm.c.LLVMBuildTrunc(self.builder.ref, char_val, i8_type, "push.char_i8");
+        _ = self.builder.buildStore(char_i8, char_ptr);
+
+        // Store null terminator at len + 1
+        const null_offset = llvm.c.LLVMBuildAdd(self.builder.ref, len_i64, llvm.Const.int64(self.ctx, 1), "push.null_offset");
+        var null_indices = [_]llvm.ValueRef{null_offset};
+        const null_ptr_addr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, phi, &null_indices, 1, "push.null_ptr");
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_ptr_addr);
+
+        // Store new length
+        _ = self.builder.buildStore(new_len, len_ptr);
+
+        // Return void (represented as i32 0 for now)
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit string.concat(other) - concatenates two strings, returns new string.
+    fn emitStringConcat(self: *Emitter, str_ptr: llvm.ValueRef, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const concat_fn = self.getOrDeclareStringConcat();
+        var args = [_]llvm.ValueRef{ str_ptr, other_ptr };
+        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(concat_fn), concat_fn, &args, "str.concat");
+    }
+
+    /// Emit string.append(other) - appends other string to this one (mutates).
+    fn emitStringAppend(self: *Emitter, str_ptr: llvm.ValueRef, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const append_fn = self.getOrDeclareStringAppend();
+        var args = [_]llvm.ValueRef{ str_ptr, other_ptr };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(append_fn), append_fn, &args, "");
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit string.as_str() - returns pointer to null-terminated C string.
+    fn emitStringAsStr(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const as_ptr_fn = self.getOrDeclareStringAsPtr();
+        var args = [_]llvm.ValueRef{str_ptr};
+        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(as_ptr_fn), as_ptr_fn, &args, "str.as_str");
+    }
+
+    /// Emit string.clear() - clears the string (keeps capacity).
+    fn emitStringClear(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const clear_fn = self.getOrDeclareStringClear();
+        var args = [_]llvm.ValueRef{str_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(clear_fn), clear_fn, &args, "");
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit string.clone() - creates a deep copy.
+    fn emitStringClone(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const clone_fn = self.getOrDeclareStringClone();
+        var args = [_]llvm.ValueRef{str_ptr};
+        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(clone_fn), clone_fn, &args, "str.clone");
+    }
+
+    /// Emit string.drop() - frees the string's memory.
+    fn emitStringDrop(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const drop_fn = self.getOrDeclareStringDrop();
+        var args = [_]llvm.ValueRef{str_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(drop_fn), drop_fn, &args, "");
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit string.eq(other) - compares two strings for equality.
+    fn emitStringEq(self: *Emitter, str_ptr: llvm.ValueRef, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const eq_fn = self.getOrDeclareStringEq();
+        var args = [_]llvm.ValueRef{ str_ptr, other_ptr };
+        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(eq_fn), eq_fn, &args, "str.eq");
+    }
+
+    /// Emit string.hash() for heap-allocated String type - computes hash code.
+    fn emitStringDataHash(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const hash_fn = self.getOrDeclareStringDataHash();
+        var args = [_]llvm.ValueRef{str_ptr};
+        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(hash_fn), hash_fn, &args, "str.hash");
+    }
+
+    /// Get the LLVM struct type for String: { ptr, i32, i32 }
+    fn getStringStructType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // ptr
+            llvm.Types.int32(self.ctx), // len
+            llvm.Types.int32(self.ctx), // capacity
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
     /// Get the LLVM struct type for List: { ptr, i32, i32 }
     fn getListStructType(self: *Emitter) llvm.TypeRef {
         var fields = [_]llvm.TypeRef{
@@ -9201,6 +9662,153 @@ pub const Emitter = struct {
         const void_type = llvm.Types.void_(self.ctx);
         var param_types = [_]llvm.TypeRef{ ptr_type, i64_type, i8_type };
         const fn_type = llvm.c.LLVMFunctionType(void_type, &param_types, 3, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    // ========================================================================
+    // String Runtime Function Declarations
+    // ========================================================================
+
+    fn getOrDeclareStringFrom(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_from";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // StringHeader klar_string_from(const char* src)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const string_type = self.getStringStructType();
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(string_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStringWithCapacity(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_with_capacity";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // StringHeader klar_string_with_capacity(i32 capacity)
+        const i32_type = llvm.Types.int32(self.ctx);
+        const string_type = self.getStringStructType();
+        var param_types = [_]llvm.TypeRef{i32_type};
+        const fn_type = llvm.c.LLVMFunctionType(string_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStringPushChar(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_push_char";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // void klar_string_push_char(StringHeader* s, i32 codepoint)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const void_type = llvm.Types.void_(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, i32_type };
+        const fn_type = llvm.c.LLVMFunctionType(void_type, &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStringConcat(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_concat";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // StringHeader klar_string_concat(const StringHeader* a, const StringHeader* b)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const string_type = self.getStringStructType();
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(string_type, &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStringAppend(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_append";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // void klar_string_append(StringHeader* s, const StringHeader* other)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const void_type = llvm.Types.void_(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(void_type, &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStringAsPtr(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_as_ptr";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // const char* klar_string_as_ptr(const StringHeader* s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStringClear(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_clear";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // void klar_string_clear(StringHeader* s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const void_type = llvm.Types.void_(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(void_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStringClone(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_clone_heap";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // StringHeader klar_string_clone_heap(const StringHeader* s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const string_type = self.getStringStructType();
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(string_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStringDrop(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_drop";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // void klar_string_drop(StringHeader* s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const void_type = llvm.Types.void_(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(void_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStringEq(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_eq";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // bool klar_string_eq(const StringHeader* a, const StringHeader* b)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const bool_type = llvm.Types.int1(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(bool_type, &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStringDataHash(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_hash_heap";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // i64 klar_string_hash_heap(const StringHeader* s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(i64_type, &param_types, 1, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
@@ -12087,6 +12695,16 @@ pub const Emitter = struct {
             },
             .list => {
                 // List LLVM layout: { ptr: *T, len: i32, capacity: i32 }
+                var fields = [_]llvm.TypeRef{
+                    llvm.Types.pointer(self.ctx), // ptr
+                    llvm.Types.int32(self.ctx), // len
+                    llvm.Types.int32(self.ctx), // capacity
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
+            .string_data => {
+                // String LLVM layout: { ptr: *u8, len: i32, capacity: i32 }
+                // Same layout as List but fixed element type of u8
                 var fields = [_]llvm.TypeRef{
                     llvm.Types.pointer(self.ctx), // ptr
                     llvm.Types.int32(self.ctx), // len

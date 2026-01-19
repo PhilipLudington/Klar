@@ -247,7 +247,7 @@
 
 **Objective:** Implement core standard library types.
 
-**Status:** In Progress. Optional, Result, builtin type methods (integer, string, array), and List[T] are complete. Heap-allocated String, Map, and Set types not yet started.
+**Status:** In Progress. Optional, Result, builtin type methods (integer, string, array), List[T], and String (partial) are complete. String methods with arguments need codegen fix. Map and Set types not yet started.
 
 ### Option Type (Built-in as `?T`)
 - [x] Built-in `?T` syntax for Optional types
@@ -303,13 +303,36 @@ The following methods are built into the compiler for primitive types:
 - [x] Implement `get(index)` - returns `?T` (element at index or None)
 - [x] Implement `contains(value)` - check if value exists in array
 
-### String Type
-- [ ] Implement `String` struct in std/string.kl
-- [ ] Use Rc for memory management
-- [ ] Implement `new()`, `from()`, `len()`
-- [ ] Implement `push()`, `concat()`, `slice()`
-- [ ] Implement `chars()` iterator
-- [ ] Implement `Eq`, `Clone`, `Hash` for String
+### String Type (Builtin Heap-Allocated)
+String is implemented as a builtin type in the compiler with heap-allocated memory.
+
+**Type Representation:** `{ ptr: *u8, len: i32, capacity: i32 }`
+
+**Implemented:**
+- [x] `String.new()` - Create an empty string
+- [x] `String.from(s)` - Create from string literal
+- [x] `String.with_capacity(n)` - Create with pre-allocated capacity
+- [x] `len()` -> i32 - Current length in bytes
+- [x] `is_empty()` -> bool - Check if empty
+- [x] `capacity()` -> i32 - Allocated capacity
+- [x] `push(char)` - Append a character (with automatic growth)
+
+**Not Yet Implemented:**
+- [ ] `concat(other)` - Concatenate two strings
+- [ ] `append(other)` - Append another string
+- [ ] `as_str()` -> string - Get as primitive string
+- [ ] `clear()` - Clear contents
+- [ ] `clone()` -> String - Deep copy
+- [ ] `drop()` - Free memory
+- [ ] `eq(other)` -> bool - Equality comparison
+- [ ] `hash()` -> i64 - Hash code
+
+**Files Modified:**
+- `src/types.zig` - StringDataType definition
+- `src/checker.zig` - Type checking and method validation
+- `src/codegen/emit.zig` - LLVM codegen for String operations
+- `src/runtime/string_heap.zig` - Runtime functions (for reference, inline codegen used)
+- `test/native/string_basic.kl` - Basic tests
 
 ### List Type (Builtin)
 List[T] is implemented as a builtin type in the compiler, not in the standard library.
