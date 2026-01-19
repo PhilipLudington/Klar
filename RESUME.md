@@ -1,4 +1,4 @@
-# Resume Point: Iterator Protocol - Phase 1-2 Complete
+# Resume Point: Iterator Protocol - Codegen Blocker Resolved
 
 ## Context
 
@@ -10,16 +10,58 @@ Working on **Phase 4: Language Completion**. Implementing Milestone 6 (Iterator 
 
 - **Phase 1: Iterator Trait** ✅
 - **Phase 2: IntoIterator Trait** ✅
+- **Codegen for Reference Parameters (`&self`, `&mut self`)** ✅ ← NEW
 
-### Remaining
+### Ready to Implement
 
-- **Phase 3: Range Iterator** - Blocked on codegen for `&mut self` methods
+- **Phase 3: Range Iterator** - Now unblocked!
 - **Phase 4: For Loop Desugaring**
 - **Phase 5: Array Iterator**
 
 ---
 
-## What Was Implemented
+## What Was Just Implemented: Reference Parameter Codegen
+
+The blocker for `&self` and `&mut self` methods has been resolved. Methods with reference parameters now work correctly in native codegen.
+
+### Changes Made (src/codegen/emit.zig)
+
+1. **Extended `LocalValue` struct** (lines 125-129)
+   - Added `is_reference: bool` - marks if parameter is `&T` or `&mut T`
+   - Added `reference_inner_type: ?llvm.TypeRef` - LLVM type of pointed-to struct
+
+2. **Updated parameter setup in four functions:**
+   - `emitFunction` (lines 654-668) - from `ast.TypeExpr`
+   - `emitImplMethods` (lines 491-525) - non-generic methods
+   - `emitMonomorphizedFunction` (lines 10355-10378) - from `types.Type`
+   - `emitMonomorphizedMethod` (lines 10528-10553) - generic methods
+
+3. **Modified `emitFieldAccess`** (lines 3753-3763)
+   - For reference params, loads pointer from alloca before GEP
+   - Pattern: `load ptr -> GEP struct -> load field`
+
+4. **Modified `emitFieldAssignment`** (lines 1580-1600)
+   - Same pattern for field writes through references
+
+5. **Modified `emitUserDefinedMethod`** (lines 4770-4803)
+   - Passes alloca pointer (not loaded value) for `&self`/`&mut self` methods
+
+6. **Fixed method dispatch order** (lines 4461-4470)
+   - User-defined methods now checked before Cell methods
+   - Fixes name conflicts (e.g., user `.get()` vs `Cell.get()`)
+
+### New Test Files
+
+- `test/native/ref_self_method.kl` - Basic `&self` and `&mut self` test
+- `test/native/ref_self_generic.kl` - Generic struct with reference methods
+
+### Verification
+
+All 365 tests pass, including both new reference parameter tests.
+
+---
+
+## What Was Implemented Earlier (Phase 1-2)
 
 ### Iterator Trait (`src/checker.zig:1183-1252`)
 
@@ -29,10 +71,6 @@ trait Iterator {
     fn next(&mut self) -> ?Self.Item
 }
 ```
-
-- Registered as builtin trait (like Eq, Ordered, Clone)
-- Associated type `Item` with no bounds
-- Method `next` takes `&mut Self`, returns `?Self.Item`
 
 ### IntoIterator Trait (`src/checker.zig:1254-1327`)
 
@@ -44,92 +82,17 @@ trait IntoIterator {
 }
 ```
 
-- Associated type `Item`
-- Associated type `IntoIter` with Iterator bound
-- Method `into_iter` returns the iterator type
+### Supporting Infrastructure
 
-### Supporting Infrastructure Fixed
-
-1. **`verifyMethodSignature`** (`src/checker.zig:6409-6561`)
-   - Added `isSelfType()` helper for detecting Self (both `.unknown` and `.type_var`)
-   - Added `isRefToSelf()` helper for detecting `&Self` and `&mut Self`
-   - Properly validates reference parameters in trait impls
-   - Handles `?Self.Item` return types (optional of associated type)
-
-2. **Impl Method Self Parameter** (`src/checker.zig:6262-6282`)
-   - Now preserves reference types (`&self`, `&mut self`) instead of collapsing to value
-
-3. **Auto-Dereference for Field Access** (`src/checker.zig:2897-2900`)
-   - `checkField` auto-dereferences references before field lookup
-   - Enables `self.field` when `self: &mut Type`
-
-### Test Added
-
-`test/native/iter_trait_basic.kl` - Verifies Iterator trait is accessible as a generic bound.
+1. **`verifyMethodSignature`** - Validates reference parameters in trait impls
+2. **Impl Method Self Parameter** - Preserves `&self`/`&mut self` reference types
+3. **Auto-Dereference for Field Access** - `self.field` works when `self: &mut Type`
 
 ---
 
-## Blocker: Codegen for `&mut self` Methods
+## Next Steps: Phase 3 (Range Iterator)
 
-The next phases require calling `next()` which takes `&mut self`. Currently:
-
-1. **Type checking works** - impl blocks with `&mut self` methods validate correctly
-2. **Codegen fails** - LLVM codegen doesn't support methods with reference self parameters
-
-### What's Missing in Codegen
-
-When generating code for a method like:
-```klar
-fn next(self: &mut Counter) -> ?i32 {
-    if self.current < self.max {
-        let val: i32 = self.current
-        self.current = self.current + 1
-        return val
-    }
-}
-```
-
-The codegen needs to:
-1. Accept a pointer parameter for `self`
-2. Generate loads/stores through the pointer for field access
-3. Handle assignment to fields through the reference (`self.current = ...`)
-
-This is similar work needed for any mutable reference parameter, not just `self`.
-
----
-
-## Next Steps
-
-### Option A: Add Codegen Support for Reference Parameters
-
-Modify `src/codegen/emit.zig` to handle:
-- Function parameters that are reference types
-- Field access through references (GEP + load)
-- Field assignment through references (GEP + store)
-
-This would unblock not just iterators but any method with `&self` or `&mut self`.
-
-### Option B: Simplified Iterator (Self by Value)
-
-Redesign Iterator to take `self` by value:
-```klar
-trait Iterator {
-    type Item
-    fn next(self) -> (Self, ?Self.Item)  // Return updated self + next value
-}
-```
-
-This is less ergonomic but works with current codegen. However, it doesn't match Rust/other languages and would be confusing.
-
-### Recommendation
-
-**Option A** is the right long-term choice. Reference parameters are fundamental to the language and will be needed for many features beyond iterators.
-
----
-
-## Phase 3-5 Implementation Plan (After Codegen Fix)
-
-### Phase 3: Range Iterator
+Now that reference parameters work, implement Range iterator:
 
 ```klar
 struct Range[T] {
@@ -150,10 +113,16 @@ impl Range[T]: Iterator {
 }
 ```
 
-Tasks:
+### Tasks
+
 - [ ] Create Range[T] builtin struct type
 - [ ] Implement Iterator for Range
 - [ ] Make `start..end` syntax create Range values
+- [ ] Test with `for i in 0..10 { ... }`
+
+---
+
+## Phase 4-5 Plan
 
 ### Phase 4: For Loop Desugaring
 
@@ -174,12 +143,6 @@ Into:
     }
 }
 ```
-
-Tasks:
-- [ ] Detect non-range iterables in for loop
-- [ ] Call `into_iter()` on the iterable
-- [ ] Generate while loop with `next()` calls
-- [ ] Handle loop variable binding from `Some(x)`
 
 ### Phase 5: Array Iterator
 
@@ -203,12 +166,15 @@ impl [T]: IntoIterator {
 
 ---
 
-## Files Modified in Phase 1-2
+## Files Modified
 
 | File | Changes |
 |------|---------|
-| `src/checker.zig` | Iterator/IntoIterator traits, verifyMethodSignature fix, impl self parameter fix, field auto-deref |
-| `test/native/iter_trait_basic.kl` | New test for trait accessibility |
+| `src/codegen/emit.zig` | Reference parameter codegen (LocalValue fields, emitFieldAccess, emitFieldAssignment, emitUserDefinedMethod, method dispatch order) |
+| `src/checker.zig` | Iterator/IntoIterator traits, verifyMethodSignature, impl self parameter, field auto-deref |
+| `test/native/ref_self_method.kl` | New test for `&self`/`&mut self` |
+| `test/native/ref_self_generic.kl` | New test for generic reference methods |
+| `test/native/iter_trait_basic.kl` | Test for Iterator trait accessibility |
 
 ---
 
@@ -218,12 +184,13 @@ impl [T]: IntoIterator {
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
+# Test reference parameters specifically
+./zig-out/bin/klar run test/native/ref_self_method.kl
+./zig-out/bin/klar run test/native/ref_self_generic.kl
+
+# Check reference codegen implementation
+grep -n "is_reference\|reference_inner_type" src/codegen/emit.zig | head -20
+
 # Check Iterator/IntoIterator traits
 grep -n "Iterator trait\|IntoIterator trait" src/checker.zig
-
-# Check verifyMethodSignature
-grep -n "verifyMethodSignature\|isSelfType\|isRefToSelf" src/checker.zig
-
-# Find where reference codegen would need changes
-grep -n "reference\|\.reference" src/codegen/emit.zig | head -30
 ```

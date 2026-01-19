@@ -122,6 +122,11 @@ pub const Emitter = struct {
         array_size: ?usize = null,
         /// For arrays/slices, the element type.
         array_element_type: ?types.Type = null,
+        /// True if this is a reference parameter (&T or &mut T).
+        /// The alloca contains a pointer to the struct, not the struct itself.
+        is_reference: bool = false,
+        /// For reference params, the LLVM type of the pointed-to struct.
+        reference_inner_type: ?llvm.TypeRef = null,
     };
 
     const LoopContext = struct {
@@ -486,10 +491,28 @@ pub const Emitter = struct {
                 const is_signed = self.isTypeExprSigned(param.type_);
 
                 // For struct type parameters, record the struct type name for field resolution
+                // For reference parameters (&Self or &mut Self), extract the inner struct name
                 const param_struct_name: ?[]const u8 = switch (param.type_) {
                     .named => |n| n.name,
+                    .reference => |ref| blk: {
+                        // For self parameter, use the impl block's struct name
+                        if (std.mem.eql(u8, param.name, "self")) {
+                            break :blk struct_name;
+                        }
+                        // For other reference params, try to get inner type name
+                        break :blk switch (ref.inner) {
+                            .named => |n| n.name,
+                            else => null,
+                        };
+                    },
                     else => null,
                 };
+
+                // Check if this is a reference parameter
+                const is_ref = param.type_ == .reference;
+                const ref_inner_type: ?llvm.TypeRef = if (is_ref) blk: {
+                    break :blk try self.typeExprToLLVM(param.type_.reference.inner);
+                } else null;
 
                 self.named_values.put(param.name, .{
                     .value = alloca,
@@ -497,6 +520,8 @@ pub const Emitter = struct {
                     .ty = param_ty,
                     .is_signed = is_signed,
                     .struct_type_name = param_struct_name,
+                    .is_reference = is_ref,
+                    .reference_inner_type = ref_inner_type,
                 }) catch return EmitError.OutOfMemory;
             }
 
@@ -636,10 +661,22 @@ pub const Emitter = struct {
             const is_signed = self.isTypeSigned(param.type_);
 
             // For struct type parameters, record the struct type name for field resolution
+            // For reference parameters, we need to track that the alloca contains a pointer
             const param_struct_name: ?[]const u8 = switch (param.type_) {
                 .named => |n| n.name,
+                .reference => |ref| switch (ref.inner) {
+                    .named => |n| n.name,
+                    else => null,
+                },
                 else => null,
             };
+
+            // Check if this is a reference parameter
+            const is_ref = param.type_ == .reference;
+            const ref_inner_type: ?llvm.TypeRef = if (is_ref) blk: {
+                // Get the LLVM type for the pointed-to struct
+                break :blk try self.typeExprToLLVM(param.type_.reference.inner);
+            } else null;
 
             self.named_values.put(param.name, .{
                 .value = alloca,
@@ -647,6 +684,8 @@ pub const Emitter = struct {
                 .ty = param_ty,
                 .is_signed = is_signed,
                 .struct_type_name = param_struct_name,
+                .is_reference = is_ref,
+                .reference_inner_type = ref_inner_type,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -1558,15 +1597,27 @@ pub const Emitter = struct {
         // Evaluate the right-hand side
         const rhs = try self.emitExpr(bin.right);
 
+        // For reference parameters, load the pointer first, then GEP into it
+        // For regular struct parameters, GEP directly from the alloca
+        const base_ptr = if (local.is_reference)
+            self.builder.buildLoad(local.ty, local.value, "ref.load")
+        else
+            local.value;
+
+        const gep_type = if (local.is_reference)
+            local.reference_inner_type.?
+        else
+            local.ty;
+
         // GEP to get pointer to struct field
         var indices = [_]llvm.ValueRef{
             llvm.Const.int32(self.ctx, 0),
             llvm.Const.int32(self.ctx, @intCast(idx)),
         };
-        const field_ptr = self.builder.buildGEP(local.ty, local.value, &indices, "field.ptr");
+        const field_ptr = self.builder.buildGEP(gep_type, base_ptr, &indices, "field.ptr");
 
         // For compound assignment, need to load current value and operate
-        const field_type = llvm.c.LLVMStructGetTypeAtIndex(local.ty, idx);
+        const field_type = llvm.c.LLVMStructGetTypeAtIndex(gep_type, idx);
         const value = switch (bin.op) {
             .assign => rhs,
             .add_assign => blk: {
@@ -3731,15 +3782,27 @@ pub const Emitter = struct {
             const id = field.object.identifier;
             if (self.named_values.get(id.name)) |local| {
                 if (local.is_alloca) {
+                    // For reference parameters, load the pointer first, then GEP into it
+                    // For regular struct parameters, GEP directly from the alloca
+                    const base_ptr = if (local.is_reference)
+                        self.builder.buildLoad(local.ty, local.value, "ref.load")
+                    else
+                        local.value;
+
+                    const gep_type = if (local.is_reference)
+                        local.reference_inner_type.?
+                    else
+                        local.ty;
+
                     // First try numeric index (for tuples)
                     if (field_index) |idx| {
                         var indices = [_]llvm.ValueRef{
                             llvm.Const.int32(self.ctx, 0),
                             llvm.Const.int32(self.ctx, @intCast(idx)),
                         };
-                        const field_ptr = self.builder.buildGEP(local.ty, local.value, &indices, "field.ptr");
+                        const field_ptr = self.builder.buildGEP(gep_type, base_ptr, &indices, "field.ptr");
                         // Get the field type from struct type
-                        const field_type = llvm.c.LLVMStructGetTypeAtIndex(local.ty, idx);
+                        const field_type = llvm.c.LLVMStructGetTypeAtIndex(gep_type, idx);
                         return self.builder.buildLoad(field_type, field_ptr, "field.val");
                     }
 
@@ -3750,8 +3813,8 @@ pub const Emitter = struct {
                                 llvm.Const.int32(self.ctx, 0),
                                 llvm.Const.int32(self.ctx, @intCast(idx)),
                             };
-                            const field_ptr = self.builder.buildGEP(local.ty, local.value, &indices, "field.ptr");
-                            const field_type = llvm.c.LLVMStructGetTypeAtIndex(local.ty, idx);
+                            const field_ptr = self.builder.buildGEP(gep_type, base_ptr, &indices, "field.ptr");
+                            const field_type = llvm.c.LLVMStructGetTypeAtIndex(gep_type, idx);
                             return self.builder.buildLoad(field_type, field_ptr, "field.val");
                         }
                     }
@@ -4395,7 +4458,19 @@ pub const Emitter = struct {
             }
         }
 
+        // Check for user-defined struct methods FIRST before builtin methods
+        // This ensures user-defined methods like .get() take precedence over Cell.get()
+        if (self.type_checker) |tc| {
+            const struct_name = self.getStructNameFromExpr(method.object);
+            if (struct_name) |name| {
+                if (tc.lookupStructMethod(name, method.method_name)) |struct_method| {
+                    return self.emitUserDefinedMethod(method, object, name, struct_method);
+                }
+            }
+        }
+
         // Check for Cell methods: .get(), .set()
+        // Only applies if no user-defined method was found above
         if (std.mem.eql(u8, method.method_name, "get")) {
             // Cell.get() - load the value from the cell
             return self.emitCellGet(method, object, object_type);
@@ -4613,18 +4688,8 @@ pub const Emitter = struct {
             }
         }
 
-        // Check for user-defined struct methods
-        if (self.type_checker) |tc| {
-            // Get the struct type from the object
-            const struct_name = self.getStructNameFromExpr(method.object);
-            if (struct_name) |name| {
-                if (tc.lookupStructMethod(name, method.method_name)) |struct_method| {
-                    return self.emitUserDefinedMethod(method, object, name, struct_method);
-                }
-            }
-        }
-
         // For other methods, fall back to a placeholder for now
+        // (User-defined struct methods are checked earlier, before Cell methods)
         // TODO: Implement remaining method types
         return llvm.Const.int32(self.ctx, 0);
     }
@@ -4705,7 +4770,39 @@ pub const Emitter = struct {
 
         // Add 'self' if method has it
         if (struct_method.has_self) {
-            args.append(self.allocator, object) catch return EmitError.OutOfMemory;
+            // Check if self is a reference parameter (&self or &mut self)
+            // If so, we need to pass a pointer instead of the loaded value
+            const func_type = struct_method.func_type;
+            const self_is_ref = func_type == .function and
+                func_type.function.params.len > 0 and
+                func_type.function.params[0] == .reference;
+
+            if (self_is_ref) {
+                // For reference self, get the alloca pointer for the object
+                const self_ptr = switch (method.object) {
+                    .identifier => |ident| blk: {
+                        if (self.named_values.get(ident.name)) |local| {
+                            break :blk local.value; // This is the alloca pointer
+                        }
+                        // Fallback: store object to a temp and return pointer
+                        const obj_type = llvm.typeOf(object);
+                        const alloca = self.builder.buildAlloca(obj_type, "self.tmp");
+                        _ = self.builder.buildStore(object, alloca);
+                        break :blk alloca;
+                    },
+                    else => blk: {
+                        // For non-identifier objects (field access, etc.), create temp
+                        const obj_type = llvm.typeOf(object);
+                        const alloca = self.builder.buildAlloca(obj_type, "self.tmp");
+                        _ = self.builder.buildStore(object, alloca);
+                        break :blk alloca;
+                    },
+                };
+                args.append(self.allocator, self_ptr) catch return EmitError.OutOfMemory;
+            } else {
+                // For value self, pass the loaded object
+                args.append(self.allocator, object) catch return EmitError.OutOfMemory;
+            }
         }
 
         // Add other arguments
@@ -10324,7 +10421,8 @@ pub const Emitter = struct {
         // Add parameters to named values with concrete types
         for (func.params, 0..) |param, i| {
             const param_value = llvm.getParam(function, @intCast(i));
-            const param_ty = self.typeToLLVM(func_type.params[i]);
+            const concrete_param_type = func_type.params[i];
+            const param_ty = self.typeToLLVM(concrete_param_type);
 
             const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
             defer self.allocator.free(param_name);
@@ -10332,12 +10430,30 @@ pub const Emitter = struct {
             const alloca = self.builder.buildAlloca(param_ty, param_name);
             _ = self.builder.buildStore(param_value, alloca);
 
-            const is_signed = self.isCheckerTypeSigned(func_type.params[i]);
+            // Check if this is a reference parameter
+            const is_ref = concrete_param_type == .reference;
+            const ref_inner_type: ?llvm.TypeRef = if (is_ref) blk: {
+                break :blk self.typeToLLVM(concrete_param_type.reference.inner);
+            } else null;
+
+            // Get struct name for reference types
+            const param_struct_name: ?[]const u8 = if (is_ref) blk: {
+                const inner = concrete_param_type.reference.inner;
+                if (inner == .struct_) {
+                    break :blk inner.struct_.name;
+                }
+                break :blk null;
+            } else null;
+
+            const is_signed = self.isCheckerTypeSigned(concrete_param_type);
             self.named_values.put(param.name, .{
                 .value = alloca,
                 .is_alloca = true,
                 .ty = param_ty,
                 .is_signed = is_signed,
+                .struct_type_name = param_struct_name,
+                .is_reference = is_ref,
+                .reference_inner_type = ref_inner_type,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -10478,7 +10594,8 @@ pub const Emitter = struct {
         // Add parameters to named values with concrete types
         for (func.params, 0..) |param, i| {
             const param_value = llvm.getParam(function, @intCast(i));
-            const param_ty = self.typeToLLVM(func_type.params[i]);
+            const concrete_param_type = func_type.params[i];
+            const param_ty = self.typeToLLVM(concrete_param_type);
 
             const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
             defer self.allocator.free(param_name);
@@ -10486,22 +10603,32 @@ pub const Emitter = struct {
             const alloca = self.builder.buildAlloca(param_ty, param_name);
             _ = self.builder.buildStore(param_value, alloca);
 
+            // Check if this is a reference parameter
+            const is_ref = concrete_param_type == .reference;
+            const ref_inner_type: ?llvm.TypeRef = if (is_ref) blk: {
+                break :blk self.typeToLLVM(concrete_param_type.reference.inner);
+            } else null;
+
             // Check if this is a struct parameter (like 'self') that needs struct_type_name
+            // For reference parameters, use the mangled struct name for 'self'
             const param_struct_name: ?[]const u8 = blk: {
-                // If this is the first param named "self" and param type is struct, use the mangled struct name
+                // If this is the first param named "self", use the mangled struct name
+                // This works for both `self: Self` and `self: &Self` or `self: &mut Self`
                 if (std.mem.eql(u8, param.name, "self")) {
                     break :blk mangled_struct_name;
                 }
                 break :blk null;
             };
 
-            const is_signed = self.isCheckerTypeSigned(func_type.params[i]);
+            const is_signed = self.isCheckerTypeSigned(concrete_param_type);
             self.named_values.put(param.name, .{
                 .value = alloca,
                 .is_alloca = true,
                 .ty = param_ty,
                 .is_signed = is_signed,
                 .struct_type_name = param_struct_name,
+                .is_reference = is_ref,
+                .reference_inner_type = ref_inner_type,
             }) catch return EmitError.OutOfMemory;
         }
 

@@ -1,0 +1,23 @@
+// Test reference parameters (&self and &mut self) in generic struct methods
+
+struct Box[T] {
+    value: T,
+}
+
+impl[T] Box[T] {
+    fn get(self: &Box[T]) -> T {
+        return self.value
+    }
+
+    fn set(self: &mut Box[T], v: T) {
+        self.value = v
+    }
+}
+
+fn main() -> i32 {
+    var b: Box[i32] = Box[i32] { value: 10 }
+    b.set(20)
+    b.set(b.get() + 22)
+    return b.get()
+}
+// expect: 42

@@ -1,0 +1,23 @@
+// Test reference parameters (&self and &mut self) in methods
+
+struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    fn get(self: &Counter) -> i32 {
+        return self.value
+    }
+
+    fn increment(self: &mut Counter) {
+        self.value = self.value + 1
+    }
+}
+
+fn main() -> i32 {
+    var c: Counter = Counter { value: 40 }
+    c.increment()
+    c.increment()
+    return c.get()
+}
+// expect: 42
