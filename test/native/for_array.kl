@@ -1,0 +1,78 @@
+// Test for-loop with arrays
+// Expected exit code: 42
+
+fn main() -> i32 {
+    // Test 1: Basic array iteration
+    let arr: [i32; 3] = [1, 2, 3]
+    var sum: i32 = 0
+    for x: i32 in arr {
+        sum = sum + x
+    }
+    // sum should be 1+2+3 = 6
+    if sum != 6 {
+        return 1
+    }
+
+    // Test 2: Empty array iteration (should work, loop body never executes)
+    let empty: [i32; 0] = []
+    var count: i32 = 0
+    for y: i32 in empty {
+        count = count + 1
+    }
+    if count != 0 {
+        return 2
+    }
+
+    // Test 3: Array literal directly in for-loop
+    var sum2: i32 = 0
+    for z: i32 in [10, 20, 30] {
+        sum2 = sum2 + z
+    }
+    // sum2 should be 10+20+30 = 60
+    if sum2 != 60 {
+        return 3
+    }
+
+    // Test 4: Nested for-loops with arrays
+    let outer: [i32; 2] = [1, 2]
+    let inner: [i32; 3] = [10, 20, 30]
+    var total: i32 = 0
+    for a: i32 in outer {
+        for b: i32 in inner {
+            total = total + a * b
+        }
+    }
+    // total = 1*(10+20+30) + 2*(10+20+30) = 60 + 120 = 180
+    if total != 180 {
+        return 4
+    }
+
+    // Test 5: Break in array loop
+    let nums: [i32; 5] = [1, 2, 3, 4, 5]
+    var partial: i32 = 0
+    for n: i32 in nums {
+        if n > 3 {
+            break
+        }
+        partial = partial + n
+    }
+    // partial should be 1+2+3 = 6
+    if partial != 6 {
+        return 5
+    }
+
+    // Test 6: Continue in array loop
+    var even_sum: i32 = 0
+    for m: i32 in nums {
+        if m % 2 != 0 {
+            continue
+        }
+        even_sum = even_sum + m
+    }
+    // even_sum should be 2+4 = 6
+    if even_sum != 6 {
+        return 6
+    }
+
+    return 42
+}

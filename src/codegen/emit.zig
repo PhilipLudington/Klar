@@ -1001,6 +1001,9 @@ pub const Emitter = struct {
                 // Check if the iterable is a Range[T] type (e.g., a variable of type Range[i32])
                 if (self.isRangeExpr(loop.iterable)) {
                     try self.emitForLoopRangeIterator(func, binding_name, loop.iterable, loop.body);
+                } else if (self.isArrayExpr(loop.iterable)) {
+                    // Array iteration: for x in arr { body }
+                    try self.emitForLoopArray(func, binding_name, loop.iterable, loop.body);
                 } else {
                     return EmitError.UnsupportedFeature;
                 }
@@ -1246,6 +1249,178 @@ pub const Emitter = struct {
             },
             else => return EmitError.InvalidAST,
         }
+    }
+
+    /// Emit for-loop for arrays using direct index iteration.
+    fn emitForLoopArray(
+        self: *Emitter,
+        func: llvm.ValueRef,
+        binding_name: []const u8,
+        iterable: ast.Expr,
+        body: *ast.Block,
+    ) EmitError!void {
+        // For array iteration: for x in arr { body }
+        // We emit this as:
+        //   %idx = alloca i32
+        //   store 0, %idx
+        //   br cond
+        // cond:
+        //   %cur = load %idx
+        //   %cmp = icmp slt %cur, len
+        //   br %cmp, body, end
+        // body:
+        //   %elem_ptr = gep arr, 0, %cur
+        //   %elem = load %elem_ptr
+        //   ... loop body using %elem as binding ...
+        //   %next = add %cur, 1
+        //   store %next, %idx
+        //   br cond
+        // end:
+
+        // Get the array pointer and its type
+        const array_info = try self.getArrayInfo(iterable);
+        const array_ptr = array_info.ptr;
+        const array_type = array_info.ty;
+        const array_len = array_info.len;
+        const elem_type = llvm.c.LLVMGetElementType(array_type);
+
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Allocate index counter
+        const idx_alloca = self.builder.buildAlloca(i32_type, "for.idx");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
+
+        // Allocate loop variable (element binding)
+        const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(var_name);
+        const elem_alloca = self.builder.buildAlloca(elem_type, var_name);
+
+        // Determine if element type is signed (for integer types)
+        const is_signed = self.isSignedType(elem_type);
+
+        // Add loop variable to scope
+        self.named_values.put(binding_name, .{
+            .value = elem_alloca,
+            .is_alloca = true,
+            .ty = elem_type,
+            .is_signed = is_signed,
+        }) catch return EmitError.OutOfMemory;
+
+        // Create blocks
+        const cond_bb = llvm.appendBasicBlock(self.ctx, func, "forarr.cond");
+        const body_bb = llvm.appendBasicBlock(self.ctx, func, "forarr.body");
+        const incr_bb = llvm.appendBasicBlock(self.ctx, func, "forarr.incr");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "forarr.end");
+
+        // Push loop context (continue goes to increment, break goes to end)
+        self.loop_stack.append(self.allocator, .{
+            .continue_block = incr_bb,
+            .break_block = end_bb,
+        }) catch return EmitError.OutOfMemory;
+        defer _ = self.loop_stack.pop();
+
+        // Branch to condition
+        _ = self.builder.buildBr(cond_bb);
+
+        // Emit condition: idx < len
+        self.builder.positionAtEnd(cond_bb);
+        const cur_idx = self.builder.buildLoad(i32_type, idx_alloca, "for.idx.cur");
+        const len_val = llvm.Const.int32(self.ctx, @intCast(array_len));
+        const cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, cur_idx, len_val, "for.cmp");
+        _ = self.builder.buildCondBr(cmp, body_bb, end_bb);
+
+        // Emit body
+        self.builder.positionAtEnd(body_bb);
+        self.has_terminator = false;
+
+        // Load current element and store to binding
+        var indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            cur_idx,
+        };
+        const elem_ptr = self.builder.buildGEP(array_type, array_ptr, &indices, "elem.ptr");
+        const elem_val = self.builder.buildLoad(elem_type, elem_ptr, "elem.val");
+        _ = self.builder.buildStore(elem_val, elem_alloca);
+
+        // Emit body with loop scope for drop tracking
+        try self.pushScope(true); // is_loop = true
+        _ = try self.emitBlock(body);
+        if (!self.has_terminator) {
+            // Emit drops for variables declared in this iteration before continuing
+            self.popScope();
+            _ = self.builder.buildBr(incr_bb);
+        } else {
+            // Terminator already emitted (break/continue/return)
+            if (self.scope_stack.pop()) |scope| {
+                var s = scope;
+                s.droppables.deinit(self.allocator);
+            }
+        }
+
+        // Emit increment
+        self.builder.positionAtEnd(incr_bb);
+        const cur_idx2 = self.builder.buildLoad(i32_type, idx_alloca, "for.idx.cur2");
+        const one = llvm.Const.int32(self.ctx, 1);
+        const next_idx = self.builder.buildAdd(cur_idx2, one, "for.idx.next");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = self.builder.buildBr(cond_bb);
+
+        // Continue after loop
+        self.builder.positionAtEnd(end_bb);
+        self.has_terminator = false;
+
+        // Remove loop variable from scope
+        _ = self.named_values.remove(binding_name);
+    }
+
+    /// Get information about an array expression: its alloca pointer, LLVM type, and length.
+    const ArrayInfo = struct {
+        ptr: llvm.ValueRef,
+        ty: llvm.TypeRef,
+        len: u64,
+    };
+
+    fn getArrayInfo(self: *Emitter, expr: ast.Expr) EmitError!ArrayInfo {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.is_alloca and local.is_array) {
+                        // For arrays, local.ty is the LLVM array type
+                        const array_type = local.ty;
+                        const array_len = if (local.array_size) |sz| sz else llvm.Types.getArrayLength(array_type);
+                        return ArrayInfo{
+                            .ptr = local.value,
+                            .ty = array_type,
+                            .len = array_len,
+                        };
+                    }
+                }
+                return EmitError.InvalidAST;
+            },
+            .array_literal => |arr| {
+                // Emit the array literal and store it in an alloca
+                const array_val = try self.emitExpr(expr);
+                const array_type = llvm.typeOf(array_val);
+                const array_len = arr.elements.len;
+                const alloca = self.builder.buildAlloca(array_type, "arr.iter");
+                _ = self.builder.buildStore(array_val, alloca);
+                return ArrayInfo{
+                    .ptr = alloca,
+                    .ty = array_type,
+                    .len = array_len,
+                };
+            },
+            else => return EmitError.InvalidAST,
+        }
+    }
+
+    /// Check if an LLVM type is a signed integer type.
+    fn isSignedType(self: *Emitter, ty: llvm.TypeRef) bool {
+        _ = self;
+        // In LLVM, integer signedness is determined by the operations, not the type.
+        // We default to signed for integer types used in loops.
+        const kind = llvm.getTypeKind(ty);
+        return kind == llvm.c.LLVMIntegerTypeKind;
     }
 
     fn emitInfiniteLoop(self: *Emitter, loop: *ast.LoopStmt) EmitError!void {

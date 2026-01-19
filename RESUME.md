@@ -1,8 +1,8 @@
-# Resume Point: Iterator Protocol - Codegen Blocker Resolved
+# Resume Point: Iterator Protocol Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion**. Implementing Milestone 6 (Iterator Protocol) before Milestone 4 (Collections) because iterators use existing infrastructure while collections need new memory primitives.
+Working on **Phase 4: Language Completion**. Milestone 6 (Iterator Protocol) is now complete.
 
 ## Progress Summary
 
@@ -10,159 +10,89 @@ Working on **Phase 4: Language Completion**. Implementing Milestone 6 (Iterator 
 
 - **Phase 1: Iterator Trait** ✅
 - **Phase 2: IntoIterator Trait** ✅
-- **Codegen for Reference Parameters (`&self`, `&mut self`)** ✅ ← NEW
-
-### Ready to Implement
-
-- **Phase 3: Range Iterator** - Now unblocked!
-- **Phase 4: For Loop Desugaring**
-- **Phase 5: Array Iterator**
+- **Phase 3: Range Iterator** ✅
+- **Phase 4: For Loop Desugaring** ✅
+- **Phase 5: Array Iteration** ✅ ← NEW
 
 ---
 
-## What Was Just Implemented: Reference Parameter Codegen
+## What Was Just Implemented: Array Iteration
 
-The blocker for `&self` and `&mut self` methods has been resolved. Methods with reference parameters now work correctly in native codegen.
+For-loops now work with arrays using direct index iteration (efficient fast path).
 
 ### Changes Made (src/codegen/emit.zig)
 
-1. **Extended `LocalValue` struct** (lines 125-129)
-   - Added `is_reference: bool` - marks if parameter is `&T` or `&mut T`
-   - Added `reference_inner_type: ?llvm.TypeRef` - LLVM type of pointed-to struct
+1. **Modified `emitForLoop`** (lines 1000-1010)
+   - Added array detection: `self.isArrayExpr(loop.iterable)`
+   - Routes to new `emitForLoopArray` function
 
-2. **Updated parameter setup in four functions:**
-   - `emitFunction` (lines 654-668) - from `ast.TypeExpr`
-   - `emitImplMethods` (lines 491-525) - non-generic methods
-   - `emitMonomorphizedFunction` (lines 10355-10378) - from `types.Type`
-   - `emitMonomorphizedMethod` (lines 10528-10553) - generic methods
+2. **New `emitForLoopArray` function** (lines 1254-1373)
+   - Generates efficient index-based iteration
+   - Supports break/continue
+   - Handles nested loops correctly
 
-3. **Modified `emitFieldAccess`** (lines 3753-3763)
-   - For reference params, loads pointer from alloca before GEP
-   - Pattern: `load ptr -> GEP struct -> load field`
+3. **New `getArrayInfo` helper** (lines 1383-1414)
+   - Extracts array pointer, type, and length from expression
+   - Handles both array identifiers and array literals
 
-4. **Modified `emitFieldAssignment`** (lines 1580-1600)
-   - Same pattern for field writes through references
+4. **New `isSignedType` helper** (lines 1416-1423)
 
-5. **Modified `emitUserDefinedMethod`** (lines 4770-4803)
-   - Passes alloca pointer (not loaded value) for `&self`/`&mut self` methods
+### New Test File
 
-6. **Fixed method dispatch order** (lines 4461-4470)
-   - User-defined methods now checked before Cell methods
-   - Fixes name conflicts (e.g., user `.get()` vs `Cell.get()`)
-
-### New Test Files
-
-- `test/native/ref_self_method.kl` - Basic `&self` and `&mut self` test
-- `test/native/ref_self_generic.kl` - Generic struct with reference methods
+- `test/native/for_array.kl` - Comprehensive array iteration tests:
+  - Basic iteration
+  - Empty array
+  - Array literal in for-loop
+  - Nested loops
+  - Break/continue
 
 ### Verification
 
-All 365 tests pass, including both new reference parameter tests.
+All 369 tests pass.
 
 ---
 
-## What Was Implemented Earlier (Phase 1-2)
+## Iterator Protocol Summary
 
-### Iterator Trait (`src/checker.zig:1183-1252`)
+### What's Implemented
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Iterator trait | ✅ | `fn next(&mut self) -> ?Self.Item` |
+| IntoIterator trait | ✅ | `fn into_iter(self) -> Self.IntoIter` |
+| Range[T] builtin | ✅ | `0..10`, `0..=10` syntax |
+| For-loop with Range literal | ✅ | Fast path: direct index iteration |
+| For-loop with Range[T] variable | ✅ | Uses iterator protocol (`.next()`) |
+| For-loop with arrays | ✅ | Fast path: direct index iteration |
+
+### For-Loop Behavior
 
 ```klar
-trait Iterator {
-    type Item
-    fn next(&mut self) -> ?Self.Item
-}
+// Range literal (fast path)
+for i: i32 in 0..10 { ... }
+
+// Range variable (iterator protocol)
+var r: Range[i32] = 0..10
+for i: i32 in r { ... }
+
+// Array (fast path)
+let arr: [i32; 3] = [1, 2, 3]
+for x: i32 in arr { ... }
+
+// Array literal (fast path)
+for x: i32 in [1, 2, 3] { ... }
 ```
-
-### IntoIterator Trait (`src/checker.zig:1254-1327`)
-
-```klar
-trait IntoIterator {
-    type Item
-    type IntoIter: Iterator
-    fn into_iter(self) -> Self.IntoIter
-}
-```
-
-### Supporting Infrastructure
-
-1. **`verifyMethodSignature`** - Validates reference parameters in trait impls
-2. **Impl Method Self Parameter** - Preserves `&self`/`&mut self` reference types
-3. **Auto-Dereference for Field Access** - `self.field` works when `self: &mut Type`
 
 ---
 
-## Next Steps: Phase 3 (Range Iterator)
+## What's Next
 
-Now that reference parameters work, implement Range iterator:
+The iterator protocol is complete for the core use cases. Potential future work:
 
-```klar
-struct Range[T] {
-    start: T,
-    end: T,
-    current: T
-}
-
-impl Range[T]: Iterator {
-    type Item = T
-    fn next(self: &mut Self) -> ?T {
-        if self.current < self.end {
-            let val: T = self.current
-            self.current = self.current + 1
-            return val
-        }
-    }
-}
-```
-
-### Tasks
-
-- [ ] Create Range[T] builtin struct type
-- [ ] Implement Iterator for Range
-- [ ] Make `start..end` syntax create Range values
-- [ ] Test with `for i in 0..10 { ... }`
-
----
-
-## Phase 4-5 Plan
-
-### Phase 4: For Loop Desugaring
-
-Transform:
-```klar
-for x in collection { body }
-```
-
-Into:
-```klar
-{
-    var iter = collection.into_iter()
-    loop {
-        match iter.next() {
-            Some(x) => { body }
-            None => { break }
-        }
-    }
-}
-```
-
-### Phase 5: Array Iterator
-
-```klar
-struct ArrayIterator[T] {
-    array: [T],
-    index: i32
-}
-
-impl ArrayIterator[T]: Iterator {
-    type Item = T
-    fn next(self: &mut Self) -> ?T { ... }
-}
-
-impl [T]: IntoIterator {
-    type Item = T
-    type IntoIter = ArrayIterator[T]
-    fn into_iter(self) -> ArrayIterator[T] { ... }
-}
-```
+1. **Slice iteration** - Currently unsupported (`[T]` slices)
+2. **User-defined iterators** - Structs implementing Iterator trait
+3. **Iterator adapters** - `.map()`, `.filter()`, `.collect()`, etc.
+4. **IntoIterator for arrays** - Full trait implementation (currently uses fast path)
 
 ---
 
@@ -170,11 +100,8 @@ impl [T]: IntoIterator {
 
 | File | Changes |
 |------|---------|
-| `src/codegen/emit.zig` | Reference parameter codegen (LocalValue fields, emitFieldAccess, emitFieldAssignment, emitUserDefinedMethod, method dispatch order) |
-| `src/checker.zig` | Iterator/IntoIterator traits, verifyMethodSignature, impl self parameter, field auto-deref |
-| `test/native/ref_self_method.kl` | New test for `&self`/`&mut self` |
-| `test/native/ref_self_generic.kl` | New test for generic reference methods |
-| `test/native/iter_trait_basic.kl` | Test for Iterator trait accessibility |
+| `src/codegen/emit.zig` | `emitForLoopArray`, `getArrayInfo`, `isSignedType`, updated `emitForLoop` |
+| `test/native/for_array.kl` | New comprehensive test file |
 
 ---
 
@@ -184,13 +111,11 @@ impl [T]: IntoIterator {
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test reference parameters specifically
-./zig-out/bin/klar run test/native/ref_self_method.kl
-./zig-out/bin/klar run test/native/ref_self_generic.kl
+# Test array iteration specifically
+./zig-out/bin/klar run test/native/for_array.kl
 
-# Check reference codegen implementation
-grep -n "is_reference\|reference_inner_type" src/codegen/emit.zig | head -20
-
-# Check Iterator/IntoIterator traits
-grep -n "Iterator trait\|IntoIterator trait" src/checker.zig
+# Test all for-loop variants
+./zig-out/bin/klar run test/native/for_range.kl
+./zig-out/bin/klar run test/native/for_array.kl
+./zig-out/bin/klar run test/native/range_basic.kl
 ```

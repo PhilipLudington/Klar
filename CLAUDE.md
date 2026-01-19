@@ -4,13 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Klar is an **AI-native application programming language** designed for AI code generation. The core philosophy is **"No ambiguity. No surprises."** Key design principles:
+Klar is an **AI-native application programming language** designed for AI code generation. The core philosophy is **"No ambiguity. No surprises."**
 
-- Context-free grammar with keyword-driven operators (`and`, `or`, `not` instead of `&&`, `||`, `!`)
-- No undefined behavior - explicit overflow operators (`+%` wrapping, `+|` saturating)
-- Ownership-based memory safety without lifetime annotations
-- No implicit type conversions (requires `.as[]`, `.to[]`, `.trunc[]`)
-- **Explicit types required** - all `let`, `var`, and `for` declarations require type annotations
+### Design Principles
+
+1. **Parseable at a glance** — Syntax should be understandable without surrounding context. Every construct is self-describing. This benefits both humans reading code and AI generating it.
+   - `[i32; 3]` not `i32[3]` — array type is self-contained, no lookahead needed
+   - `and`, `or`, `not` not `&&`, `||`, `!` — keywords over symbols
+   - Explicit type annotations — `let x: i32 = 5` not `let x = 5`
+
+2. **No undefined behavior** — Every operation has defined semantics.
+   - Explicit overflow: `+%` (wrapping), `+|` (saturating)
+   - Bounds checking on array access
+   - No null pointers (use `?T` optionals)
+
+3. **No implicit conversions** — Type changes must be explicit.
+   - `.as[T]` for safe conversions
+   - `.to[T]` for fallible conversions
+   - `.trunc[T]` for truncating conversions
+
+4. **Ownership without complexity** — Memory safety via ownership, but simpler than Rust.
+   - No lifetime annotations
+   - Reference counting where needed (`Rc[T]`, `Arc[T]`)
 
 Klar targets application-level programming (like C#/Go), not bare-metal systems (like C/Rust/Zig). This is why `.len()` returns `i32` for ergonomic loop counter usage.
 
