@@ -21,6 +21,63 @@ export fn klar_list_new() ListHeader {
     };
 }
 
+/// Create a new list with pre-allocated capacity.
+/// element_size: size of each element in bytes
+/// element_align_log2: alignment of elements as log2 (e.g., 2 for 4-byte alignment)
+/// capacity: initial capacity to allocate
+export fn klar_list_with_capacity(element_size: usize, element_align_log2: u8, capacity: i32) ListHeader {
+    if (capacity <= 0) {
+        return ListHeader{
+            .ptr = null,
+            .len = 0,
+            .capacity = 0,
+        };
+    }
+
+    const size = @as(usize, @intCast(capacity)) * element_size;
+    const ptr = alloc.klar_alloc(size, element_align_log2);
+
+    return ListHeader{
+        .ptr = ptr,
+        .len = 0,
+        .capacity = if (ptr != null) capacity else 0,
+    };
+}
+
+/// Clone a list, creating a deep copy of all elements.
+/// Returns a new ListHeader with copies of all elements.
+export fn klar_list_clone(list: *const ListHeader, element_size: usize, element_align_log2: u8) ListHeader {
+    if (list.len == 0 or list.ptr == null) {
+        return ListHeader{
+            .ptr = null,
+            .len = 0,
+            .capacity = 0,
+        };
+    }
+
+    const size = @as(usize, @intCast(list.len)) * element_size;
+    const new_ptr = alloc.klar_alloc(size, element_align_log2);
+
+    if (new_ptr) |ptr| {
+        // Copy all elements
+        const src: [*]const u8 = @ptrCast(list.ptr.?);
+        const dest: [*]u8 = @ptrCast(ptr);
+        @memcpy(dest[0..size], src[0..size]);
+
+        return ListHeader{
+            .ptr = ptr,
+            .len = list.len,
+            .capacity = list.len, // Allocate exactly what's needed
+        };
+    }
+
+    return ListHeader{
+        .ptr = null,
+        .len = 0,
+        .capacity = 0,
+    };
+}
+
 /// Push an element onto the list, growing if necessary.
 /// element_size: size of each element in bytes
 /// element_align_log2: alignment of elements as log2 (e.g., 2 for 4-byte alignment)

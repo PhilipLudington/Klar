@@ -1,0 +1,60 @@
+// Test List[T].clone() - creates a deep copy of the list
+
+fn main() -> i32 {
+    // Create a list with some values
+    var list: List[i32] = List.new[i32]()
+    list.push(10)
+    list.push(20)
+    list.push(30)
+
+    // Clone the list
+    let cloned: List[i32] = list.clone()
+
+    // Verify cloned list has same length
+    let cloned_len: i32 = cloned.len()
+    if cloned_len != 3 {
+        return 1
+    }
+
+    // Verify cloned list has correct values
+    let first: ?i32 = cloned.get(0)
+    if (first ?? 0) != 10 {
+        return 2
+    }
+
+    let second: ?i32 = cloned.get(1)
+    if (second ?? 0) != 20 {
+        return 3
+    }
+
+    let third: ?i32 = cloned.get(2)
+    if (third ?? 0) != 30 {
+        return 4
+    }
+
+    // Modify original list - cloned should be unaffected
+    list.push(40)
+
+    // Original should have 4 elements
+    let orig_len: i32 = list.len()
+    if orig_len != 4 {
+        return 5
+    }
+
+    // Cloned should still have 3 elements (not affected by original's push)
+    let cloned_len2: i32 = cloned.len()
+    if cloned_len2 != 3 {
+        return 6
+    }
+
+    // Test cloning an empty list
+    var empty_list: List[i32] = List.new[i32]()
+    let empty_cloned: List[i32] = empty_list.clone()
+    let empty_len: i32 = empty_cloned.len()
+    if empty_len != 0 {
+        return 7
+    }
+
+    // Success!
+    return 42
+}

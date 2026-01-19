@@ -1,0 +1,57 @@
+// Test List.with_capacity[T](n) - creates a list with pre-allocated capacity
+
+fn main() -> i32 {
+    // Create a list with capacity for 100 elements
+    var list: List[i32] = List.with_capacity[i32](100)
+
+    // Should start with length 0 but capacity 100
+    let len: i32 = list.len()
+    if len != 0 {
+        return 1
+    }
+
+    let cap: i32 = list.capacity()
+    if cap != 100 {
+        return 2
+    }
+
+    let empty: bool = list.is_empty()
+    if not empty {
+        return 3
+    }
+
+    // Push some elements - should not trigger reallocation
+    list.push(10)
+    list.push(20)
+    list.push(30)
+
+    let len2: i32 = list.len()
+    if len2 != 3 {
+        return 4
+    }
+
+    // Capacity should still be 100 (no reallocation)
+    let cap2: i32 = list.capacity()
+    if cap2 != 100 {
+        return 5
+    }
+
+    // Verify values using list.get()
+    let first: ?i32 = list.get(0)
+    if (first ?? 0) != 10 {
+        return 6
+    }
+
+    let second: ?i32 = list.get(1)
+    if (second ?? 0) != 20 {
+        return 7
+    }
+
+    let third: ?i32 = list.get(2)
+    if (third ?? 0) != 30 {
+        return 8
+    }
+
+    // Success!
+    return 42
+}

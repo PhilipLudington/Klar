@@ -329,9 +329,9 @@ List[T] is implemented as a builtin type in the compiler, not in the standard li
 - [x] For-loop iteration (`for x in list`)
 
 **Not Yet Implemented:**
-- [ ] `with_capacity(n)` - Create with pre-allocated capacity
-- [ ] Clone trait - Clone list with cloneable elements
-- [ ] Drop trait - Proper memory cleanup
+- [x] `with_capacity(n)` - Create with pre-allocated capacity
+- [x] Clone trait - Clone list with cloneable elements
+- [x] Drop trait - Proper memory cleanup
 
 ### Map Type
 - [ ] Implement `Map[K, V]` struct in std/collections/map.kl

@@ -3125,6 +3125,31 @@ pub const TypeChecker = struct {
                 self.addError(.invalid_call, method.span, "List.new() requires a type argument: List.new[i32]()", .{});
                 return self.type_builder.unknownType();
             }
+
+            // List.with_capacity[T](n) -> List[T] - static constructor with pre-allocated capacity
+            if (std.mem.eql(u8, obj_name, "List") and std.mem.eql(u8, method.method_name, "with_capacity")) {
+                if (method.type_args) |type_args| {
+                    if (type_args.len != 1) {
+                        self.addError(.invalid_call, method.span, "List.with_capacity[T](n) expects exactly 1 type argument", .{});
+                        return self.type_builder.unknownType();
+                    }
+                    if (method.args.len != 1) {
+                        self.addError(.invalid_call, method.span, "List.with_capacity[T](n) takes exactly 1 argument (capacity)", .{});
+                        return self.type_builder.unknownType();
+                    }
+                    // Check that the argument is an integer (capacity)
+                    const arg_type = self.checkExpr(method.args[0]);
+                    if (arg_type != .primitive or (arg_type.primitive != .i32_ and arg_type.primitive != .i64_)) {
+                        self.addError(.type_mismatch, method.span, "List.with_capacity expects an integer capacity argument", .{});
+                    }
+                    const element_type = self.resolveTypeExpr(type_args[0]) catch {
+                        return self.type_builder.unknownType();
+                    };
+                    return self.type_builder.listType(element_type) catch self.type_builder.unknownType();
+                }
+                self.addError(.invalid_call, method.span, "List.with_capacity() requires a type argument: List.with_capacity[i32](10)", .{});
+                return self.type_builder.unknownType();
+            }
         }
 
         const object_type = self.checkExpr(method.object);
@@ -3808,6 +3833,22 @@ pub const TypeChecker = struct {
                     self.addError(.invalid_call, method.span, "capacity() takes no arguments", .{});
                 }
                 return self.type_builder.i32Type();
+            }
+
+            // clone(&self) -> List[T] (creates a deep copy of the list)
+            if (std.mem.eql(u8, method.method_name, "clone")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
+                }
+                return object_type; // Returns same List[T] type
+            }
+
+            // drop(&mut self) -> void (frees list memory)
+            if (std.mem.eql(u8, method.method_name, "drop")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "drop() takes no arguments", .{});
+                }
+                return self.type_builder.voidType();
             }
         }
 

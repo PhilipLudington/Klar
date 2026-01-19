@@ -1,0 +1,56 @@
+// Test List[T].drop() - explicitly frees list memory
+
+fn main() -> i32 {
+    // Create a list with some values
+    var list: List[i32] = List.new[i32]()
+    list.push(10)
+    list.push(20)
+    list.push(30)
+
+    // Verify list has values
+    let len_before: i32 = list.len()
+    if len_before != 3 {
+        return 1
+    }
+
+    // Drop the list (frees memory)
+    list.drop()
+
+    // After drop, the list should be empty
+    let len_after: i32 = list.len()
+    if len_after != 0 {
+        return 2
+    }
+
+    let cap_after: i32 = list.capacity()
+    if cap_after != 0 {
+        return 3
+    }
+
+    // Dropping an already-dropped list should be safe (no-op)
+    list.drop()
+
+    // Can still check properties after drop
+    let is_empty: bool = list.is_empty()
+    if not is_empty {
+        return 4
+    }
+
+    // Can push to a dropped list (starts fresh)
+    list.push(100)
+    let new_len: i32 = list.len()
+    if new_len != 1 {
+        return 5
+    }
+
+    let first: ?i32 = list.get(0)
+    if (first ?? 0) != 100 {
+        return 6
+    }
+
+    // Clean up
+    list.drop()
+
+    // Success!
+    return 42
+}

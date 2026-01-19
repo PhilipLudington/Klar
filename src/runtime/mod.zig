@@ -41,6 +41,8 @@ pub const klar_string_chars = string.klar_string_chars;
 
 // List operations
 pub const klar_list_new = list.klar_list_new;
+pub const klar_list_with_capacity = list.klar_list_with_capacity;
+pub const klar_list_clone = list.klar_list_clone;
 pub const klar_list_push = list.klar_list_push;
 pub const klar_list_pop = list.klar_list_pop;
 pub const klar_list_get = list.klar_list_get;
