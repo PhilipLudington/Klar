@@ -1,0 +1,50 @@
+// Test array element assignment
+// Expected exit code: 0
+
+fn main() -> i32 {
+    // Test basic assignment
+    var arr: [i32; 3] = [10, 20, 30]
+    arr[0] = 100
+    if arr[0] != 100 {
+        return 1
+    }
+
+    // Test middle element
+    arr[1] = 200
+    if arr[1] != 200 {
+        return 2
+    }
+
+    // Test last element
+    arr[2] = 300
+    if arr[2] != 300 {
+        return 3
+    }
+
+    // Test compound assignment (+=)
+    arr[0] += 10
+    if arr[0] != 110 {
+        return 4
+    }
+
+    // Test compound assignment (-=)
+    arr[1] -= 50
+    if arr[1] != 150 {
+        return 5
+    }
+
+    // Test compound assignment (*=)
+    arr[2] *= 2
+    if arr[2] != 600 {
+        return 6
+    }
+
+    // Test with variable index
+    var i: i32 = 1
+    arr[i] = 999
+    if arr[1] != 999 {
+        return 7
+    }
+
+    return 0
+}

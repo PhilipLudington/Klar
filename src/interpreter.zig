@@ -328,14 +328,63 @@ pub const Interpreter = struct {
                 try self.current_env.set(id.name, value);
             },
             .index => |idx| {
-                // TODO: implement array index assignment
-                _ = idx;
-                return RuntimeError.InvalidOperation;
+                // Array index assignment: arr[i] = value
+                // The array object must be an identifier for now
+                const arr_name = switch (idx.object) {
+                    .identifier => |id| id.name,
+                    else => return RuntimeError.InvalidOperation,
+                };
+
+                // Get the array value from the environment
+                const arr_val = self.current_env.get(arr_name) orelse
+                    return RuntimeError.UndefinedVariable;
+
+                if (arr_val != .array) {
+                    return RuntimeError.TypeError;
+                }
+
+                // Get the index
+                const index = try self.evaluate(idx.index);
+                if (index != .int) {
+                    return RuntimeError.TypeError;
+                }
+
+                const i = index.int.value;
+                if (i < 0) {
+                    return RuntimeError.IndexOutOfBounds;
+                }
+                const index_usize: usize = @intCast(i);
+
+                // Bounds check
+                if (index_usize >= arr_val.array.elements.len) {
+                    return RuntimeError.IndexOutOfBounds;
+                }
+
+                // Modify the array element in place
+                arr_val.array.elements[index_usize] = value;
             },
             .field => |fld| {
-                // TODO: implement field assignment
-                _ = fld;
-                return RuntimeError.InvalidOperation;
+                // Struct field assignment: s.field = value
+                // The struct object must be an identifier for now
+                const struct_name = switch (fld.object) {
+                    .identifier => |id| id.name,
+                    else => return RuntimeError.InvalidOperation,
+                };
+
+                // Get the struct value from the environment
+                const struct_val = self.current_env.get(struct_name) orelse
+                    return RuntimeError.UndefinedVariable;
+
+                if (struct_val != .struct_) {
+                    return RuntimeError.TypeError;
+                }
+
+                // Modify the struct field in place
+                if (struct_val.struct_.fields.getPtr(fld.field_name)) |field_ptr| {
+                    field_ptr.* = value;
+                } else {
+                    return RuntimeError.UndefinedVariable;
+                }
             },
             else => return RuntimeError.InvalidOperation,
         }

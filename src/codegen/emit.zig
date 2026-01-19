@@ -1349,10 +1349,20 @@ pub const Emitter = struct {
 
     /// Emit assignment (including compound assignment operators).
     fn emitAssignment(self: *Emitter, bin: *ast.Binary) EmitError!llvm.ValueRef {
-        // Get the target variable
+        // Handle array index assignment: arr[i] = value
+        if (bin.left == .index) {
+            return self.emitIndexAssignment(bin);
+        }
+
+        // Handle struct field assignment: s.field = value
+        if (bin.left == .field) {
+            return self.emitFieldAssignment(bin);
+        }
+
+        // Get the target variable for simple identifier assignment
         const target_id = switch (bin.left) {
             .identifier => |id| id,
-            else => return EmitError.UnsupportedFeature, // Only simple variable assignment for now
+            else => return EmitError.UnsupportedFeature,
         };
 
         const local = self.named_values.get(target_id.name) orelse
@@ -1395,6 +1405,197 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(value, local.value);
 
         // Return the stored value (assignments are expressions in Klar)
+        return value;
+    }
+
+    /// Emit array index assignment: arr[i] = value
+    fn emitIndexAssignment(self: *Emitter, bin: *ast.Binary) EmitError!llvm.ValueRef {
+        const idx = bin.left.index;
+
+        // For simple assignment, we need the array variable's alloca
+        // The array must be a variable (identifier) for assignment to work
+        const arr_id = switch (idx.object) {
+            .identifier => |id| id,
+            else => return EmitError.UnsupportedFeature, // Only support arr[i] = v, not (expr)[i] = v
+        };
+
+        const local = self.named_values.get(arr_id.name) orelse
+            return EmitError.InvalidAST;
+
+        if (!local.is_alloca) {
+            return EmitError.InvalidAST; // Can only assign to allocas
+        }
+
+        // Get the array type from the alloca
+        const arr_type = local.ty;
+        const arr_type_kind = llvm.getTypeKind(arr_type);
+
+        if (arr_type_kind != llvm.c.LLVMArrayTypeKind) {
+            return EmitError.UnsupportedFeature; // Only support fixed-size arrays for now
+        }
+
+        // Emit the index expression
+        const index_val = try self.emitExpr(idx.index);
+
+        // Get array length for bounds checking
+        const array_len = llvm.Types.getArrayLength(arr_type);
+        const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
+
+        // Zero-extend or sign-extend index to i64 for comparison
+        const index_type = llvm.typeOf(index_val);
+        const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        const index_i64 = if (index_bits < 64)
+            self.builder.buildZExt(index_val, i64_type, "idx.ext")
+        else if (index_bits > 64)
+            self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
+        else
+            index_val;
+
+        // Bounds check: index < length (unsigned comparison)
+        const in_bounds = self.builder.buildICmp(
+            llvm.c.LLVMIntULT,
+            index_i64,
+            len_val,
+            "bounds.check",
+        );
+
+        // Create blocks for bounds check
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
+        const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
+
+        // Branch based on bounds check
+        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+        // Fail block: trap/unreachable
+        self.builder.positionAtEnd(fail_block);
+        _ = self.builder.buildUnreachable();
+
+        // Continue in OK block
+        self.builder.positionAtEnd(ok_block);
+
+        // Evaluate the right-hand side
+        const rhs = try self.emitExpr(bin.right);
+
+        // GEP to get pointer to array element
+        var indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            index_val,
+        };
+        const elem_ptr = self.builder.buildGEP(arr_type, local.value, &indices, "elem.ptr");
+
+        // For compound assignment, need to load current value and operate
+        const value = switch (bin.op) {
+            .assign => rhs,
+            .add_assign => blk: {
+                const elem_type = llvm.c.LLVMGetElementType(arr_type);
+                const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
+                break :blk self.builder.buildAdd(lhs, rhs, "addtmp");
+            },
+            .sub_assign => blk: {
+                const elem_type = llvm.c.LLVMGetElementType(arr_type);
+                const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
+                break :blk self.builder.buildSub(lhs, rhs, "subtmp");
+            },
+            .mul_assign => blk: {
+                const elem_type = llvm.c.LLVMGetElementType(arr_type);
+                const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
+                break :blk self.builder.buildMul(lhs, rhs, "multmp");
+            },
+            .div_assign => blk: {
+                const elem_type = llvm.c.LLVMGetElementType(arr_type);
+                const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
+                break :blk self.builder.buildSDiv(lhs, rhs, "divtmp");
+            },
+            .mod_assign => blk: {
+                const elem_type = llvm.c.LLVMGetElementType(arr_type);
+                const lhs = self.builder.buildLoad(elem_type, elem_ptr, "loadtmp");
+                break :blk self.builder.buildSRem(lhs, rhs, "modtmp");
+            },
+            else => return EmitError.InvalidAST,
+        };
+
+        // Store the value to the element
+        _ = self.builder.buildStore(value, elem_ptr);
+
+        // Return the stored value
+        return value;
+    }
+
+    /// Emit struct field assignment: s.field = value
+    fn emitFieldAssignment(self: *Emitter, bin: *ast.Binary) EmitError!llvm.ValueRef {
+        const field = bin.left.field;
+
+        // The struct must be a variable (identifier) for assignment to work
+        const struct_id = switch (field.object) {
+            .identifier => |id| id,
+            else => return EmitError.UnsupportedFeature,
+        };
+
+        const local = self.named_values.get(struct_id.name) orelse
+            return EmitError.InvalidAST;
+
+        if (!local.is_alloca) {
+            return EmitError.InvalidAST;
+        }
+
+        // Get struct type info
+        const struct_name = local.struct_type_name orelse return EmitError.InvalidAST;
+        const struct_info = self.struct_types.get(struct_name) orelse return EmitError.InvalidAST;
+
+        // Find the field index
+        var field_idx: ?u32 = null;
+        for (struct_info.field_names, 0..) |name, i| {
+            if (std.mem.eql(u8, name, field.field_name)) {
+                field_idx = @intCast(i);
+                break;
+            }
+        }
+        const idx = field_idx orelse return EmitError.InvalidAST;
+
+        // Evaluate the right-hand side
+        const rhs = try self.emitExpr(bin.right);
+
+        // GEP to get pointer to struct field
+        var indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, @intCast(idx)),
+        };
+        const field_ptr = self.builder.buildGEP(local.ty, local.value, &indices, "field.ptr");
+
+        // For compound assignment, need to load current value and operate
+        const field_type = llvm.c.LLVMStructGetTypeAtIndex(local.ty, idx);
+        const value = switch (bin.op) {
+            .assign => rhs,
+            .add_assign => blk: {
+                const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
+                break :blk self.builder.buildAdd(lhs, rhs, "addtmp");
+            },
+            .sub_assign => blk: {
+                const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
+                break :blk self.builder.buildSub(lhs, rhs, "subtmp");
+            },
+            .mul_assign => blk: {
+                const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
+                break :blk self.builder.buildMul(lhs, rhs, "multmp");
+            },
+            .div_assign => blk: {
+                const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
+                break :blk self.builder.buildSDiv(lhs, rhs, "divtmp");
+            },
+            .mod_assign => blk: {
+                const lhs = self.builder.buildLoad(field_type, field_ptr, "loadtmp");
+                break :blk self.builder.buildSRem(lhs, rhs, "modtmp");
+            },
+            else => return EmitError.InvalidAST,
+        };
+
+        // Store the value to the field
+        _ = self.builder.buildStore(value, field_ptr);
+
+        // Return the stored value
         return value;
     }
 

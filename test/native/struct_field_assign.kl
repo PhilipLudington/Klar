@@ -1,0 +1,42 @@
+// Test struct field assignment
+// Expected exit code: 0
+
+struct Point {
+    x: i32,
+    y: i32
+}
+
+fn main() -> i32 {
+    // Test basic field assignment
+    var p: Point = Point { x: 10, y: 20 }
+
+    p.x = 100
+    if p.x != 100 {
+        return 1
+    }
+
+    p.y = 200
+    if p.y != 200 {
+        return 2
+    }
+
+    // Test compound assignment (+=)
+    p.x += 10
+    if p.x != 110 {
+        return 3
+    }
+
+    // Test compound assignment (-=)
+    p.y -= 50
+    if p.y != 150 {
+        return 4
+    }
+
+    // Test compound assignment (*=)
+    p.x *= 2
+    if p.x != 220 {
+        return 5
+    }
+
+    return 0
+}
