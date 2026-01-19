@@ -1179,6 +1179,152 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
+
+        // Iterator trait: trait Iterator { type Item; fn next(&mut self) -> ?Self.Item; }
+        // The core iterator protocol. Types that implement Iterator can be used in for loops.
+        // The associated type `Item` specifies what type of values the iterator yields.
+        // The `next` method returns Some(item) for each element, then None when exhausted.
+
+        // First create the trait type (needed for AssociatedTypeRef)
+        const iterator_trait_type = try self.allocator.create(types.TraitType);
+
+        // Create Self type variable for method signatures
+        const iter_self_type_var = types.TypeVar{
+            .id = 997, // Unique ID to avoid conflicts
+            .name = "Self",
+            .bounds = &.{},
+        };
+        const iter_self_type = Type{ .type_var = iter_self_type_var };
+
+        // Create &mut Self for the next() parameter
+        const iter_self_mut_ref = try self.type_builder.referenceType(iter_self_type, true);
+
+        // Create Self.Item (associated type reference)
+        const iter_item_type = try self.type_builder.associatedTypeRefType(
+            iter_self_type_var,
+            "Item",
+            iterator_trait_type,
+        );
+
+        // Create ?Self.Item (optional of the associated type)
+        const iter_next_return = try self.type_builder.optionalType(iter_item_type);
+
+        // Create next(&mut self) -> ?Self.Item
+        const iter_next_func = try self.type_builder.functionType(&.{iter_self_mut_ref}, iter_next_return);
+        const iter_next_method = types.TraitMethod{
+            .name = "next",
+            .signature = iter_next_func.function.*,
+            .has_default = false,
+        };
+
+        // Create the Item associated type declaration (no bounds, no default)
+        const iter_item_assoc = types.AssociatedType{
+            .name = "Item",
+            .bounds = &.{}, // No trait bounds on Item
+            .default = null, // No default type
+        };
+
+        // Complete the trait type
+        iterator_trait_type.* = .{
+            .name = "Iterator",
+            .type_params = &.{},
+            .associated_types = try self.allocator.dupe(types.AssociatedType, &.{iter_item_assoc}),
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{iter_next_method}),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, iterator_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "Iterator", .{
+            .trait_type = iterator_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "Iterator",
+            .type_ = .{ .trait_ = iterator_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // IntoIterator trait: trait IntoIterator { type Item; type IntoIter: Iterator; fn into_iter(self) -> Self.IntoIter; }
+        // Types that implement IntoIterator can be converted into iterators.
+        // This is what for loops use: `for x in collection` desugars to `for x in collection.into_iter()`.
+        // The `Item` associated type specifies what values are yielded.
+        // The `IntoIter` associated type must implement Iterator.
+
+        // Create the trait type first (needed for AssociatedTypeRef)
+        const into_iter_trait_type = try self.allocator.create(types.TraitType);
+
+        // Create Self type variable for method signatures
+        const into_iter_self_type_var = types.TypeVar{
+            .id = 996, // Unique ID to avoid conflicts
+            .name = "Self",
+            .bounds = &.{},
+        };
+        const into_iter_self_type = Type{ .type_var = into_iter_self_type_var };
+
+        // Create Self.IntoIter (associated type reference for return type)
+        const into_iter_return_type = try self.type_builder.associatedTypeRefType(
+            into_iter_self_type_var,
+            "IntoIter",
+            into_iter_trait_type,
+        );
+
+        // Create into_iter(self) -> Self.IntoIter
+        const into_iter_func = try self.type_builder.functionType(&.{into_iter_self_type}, into_iter_return_type);
+        const into_iter_method = types.TraitMethod{
+            .name = "into_iter",
+            .signature = into_iter_func.function.*,
+            .has_default = false,
+        };
+
+        // Create the Item associated type declaration (no bounds, no default)
+        const into_iter_item_assoc = types.AssociatedType{
+            .name = "Item",
+            .bounds = &.{}, // No trait bounds on Item
+            .default = null, // No default type
+        };
+
+        // Create the IntoIter associated type declaration (must implement Iterator)
+        // Store pointer to Iterator trait for bounds checking
+        const into_iter_bounds = try self.allocator.dupe(*types.TraitType, &.{iterator_trait_type});
+        const into_iter_iter_assoc = types.AssociatedType{
+            .name = "IntoIter",
+            .bounds = into_iter_bounds, // Must implement Iterator
+            .default = null, // No default type
+        };
+
+        // Complete the trait type
+        into_iter_trait_type.* = .{
+            .name = "IntoIterator",
+            .type_params = &.{},
+            .associated_types = try self.allocator.dupe(types.AssociatedType, &.{ into_iter_item_assoc, into_iter_iter_assoc }),
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{into_iter_method}),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, into_iter_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "IntoIterator", .{
+            .trait_type = into_iter_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "IntoIterator",
+            .type_ = .{ .trait_ = into_iter_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
     }
 
     // ========================================================================
@@ -2746,7 +2892,12 @@ pub const TypeChecker = struct {
     }
 
     fn checkField(self: *TypeChecker, fld: *ast.Field) Type {
-        const object_type = self.checkExpr(fld.object);
+        var object_type = self.checkExpr(fld.object);
+
+        // Auto-dereference references for field access
+        while (object_type == .reference) {
+            object_type = object_type.reference.inner;
+        }
 
         switch (object_type) {
             .struct_ => |s| {
@@ -6115,11 +6266,20 @@ pub const TypeChecker = struct {
 
             // Include all parameters (including self) in the function type
             for (method_decl.params) |param| {
-                // For 'self' parameter, use the target struct type
+                // For 'self' parameter, use the target struct type (possibly wrapped in reference)
                 if (std.mem.eql(u8, param.name, "self")) {
-                    // self could be: self, &self, &mut self
-                    // For now, treat it as the struct type itself
-                    param_types.append(self.allocator, target_type) catch {};
+                    // Check if self is by reference (&self or &mut self)
+                    if (param.type_ == .reference) {
+                        // Preserve the reference wrapper with the correct mutability
+                        const self_ref = self.type_builder.referenceType(target_type, param.type_.reference.mutable) catch {
+                            param_types.append(self.allocator, target_type) catch {};
+                            continue;
+                        };
+                        param_types.append(self.allocator, self_ref) catch {};
+                    } else {
+                        // self by value
+                        param_types.append(self.allocator, target_type) catch {};
+                    }
                 } else {
                     const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
                     param_types.append(self.allocator, param_type) catch {};
@@ -6260,9 +6420,27 @@ pub const TypeChecker = struct {
         return self.trait_impls.get(key) != null;
     }
 
+    /// Check if a type represents Self in a trait definition.
+    /// Self can be represented as:
+    /// - .unknown (used by Eq, Ordered, Hash, Drop)
+    /// - .type_var with name "Self" (used by Clone, Default, Iterator)
+    fn isSelfType(t: Type) bool {
+        return t == .unknown or (t == .type_var and std.mem.eql(u8, t.type_var.name, "Self"));
+    }
+
+    /// Check if a type is a reference to Self.
+    /// Returns the reference info if true, null otherwise.
+    fn isRefToSelf(t: Type) ?struct { mutable: bool } {
+        if (t != .reference) return null;
+        if (isSelfType(t.reference.inner)) {
+            return .{ .mutable = t.reference.mutable };
+        }
+        return null;
+    }
+
     /// Verify that an impl method signature matches the trait method signature.
     /// Returns true if signatures match, false otherwise.
-    /// The trait method uses 'unknown' type for Self, which matches any type in the impl.
+    /// The trait method uses 'unknown' or type_var "Self" for Self parameter.
     fn verifyMethodSignature(
         self: *TypeChecker,
         impl_method: StructMethod,
@@ -6285,17 +6463,47 @@ pub const TypeChecker = struct {
 
         // Check each parameter type
         for (impl_func.params, trait_sig.params, 0..) |impl_param, trait_param, idx| {
-            // The trait method uses 'unknown' type for Self parameter
-            // which should match the implementing type
-            if (trait_param == .unknown) {
-                // Self parameter - impl should use the implementing type (or compatible ref)
-                // For self parameter (idx 0), allow impl_type or reference to impl_type
+            // Check if trait parameter is Self type (unknown or type_var "Self")
+            if (isSelfType(trait_param)) {
+                // Self parameter by value - impl should use the implementing type
                 if (idx == 0) {
                     // Accept: impl_type, &impl_type, &mut impl_type
                     const matches = impl_param.eql(impl_type) or
                         (impl_param == .reference and impl_param.reference.inner.eql(impl_type));
                     if (!matches) {
                         self.addError(.type_mismatch, span, "method '{s}' parameter {d} should be Self type", .{
+                            trait_method.name,
+                            idx,
+                        });
+                        return false;
+                    }
+                }
+                continue;
+            }
+
+            // Check if trait parameter is a reference to Self (&Self or &mut Self)
+            if (isRefToSelf(trait_param)) |ref_info| {
+                // Reference to Self - impl should use reference to implementing type
+                if (idx == 0) {
+                    // Must be a reference type
+                    if (impl_param != .reference) {
+                        self.addError(.type_mismatch, span, "method '{s}' parameter {d} should be reference to Self", .{
+                            trait_method.name,
+                            idx,
+                        });
+                        return false;
+                    }
+                    // Inner type must match implementing type
+                    if (!impl_param.reference.inner.eql(impl_type)) {
+                        self.addError(.type_mismatch, span, "method '{s}' parameter {d} should be reference to Self", .{
+                            trait_method.name,
+                            idx,
+                        });
+                        return false;
+                    }
+                    // Mutability must match
+                    if (impl_param.reference.mutable != ref_info.mutable) {
+                        self.addError(.type_mismatch, span, "method '{s}' parameter {d} mutability mismatch", .{
                             trait_method.name,
                             idx,
                         });
@@ -6316,8 +6524,45 @@ pub const TypeChecker = struct {
         }
 
         // Check return type
-        // Handle unknown return type (Self) from trait
-        if (trait_sig.return_type != .unknown) {
+        // Note: 'unknown' is used for Self in user-defined traits AND for Self.Item,
+        // so we skip validation when return type is 'unknown' (can't distinguish here).
+        // For builtin traits, Self is represented as type_var with name "Self".
+        if (trait_sig.return_type == .type_var and
+            std.mem.eql(u8, trait_sig.return_type.type_var.name, "Self"))
+        {
+            // Self return type (builtin traits) - impl should return the implementing type
+            if (!impl_func.return_type.eql(impl_type)) {
+                self.addError(.type_mismatch, span, "method '{s}' return type should be Self", .{
+                    trait_method.name,
+                });
+                return false;
+            }
+        } else if (trait_sig.return_type == .optional) {
+            // Handle ?Self.Item - optional containing associated type ref or unknown
+            const inner = trait_sig.return_type.optional.*;
+            if (inner == .associated_type_ref or inner == .unknown) {
+                // The impl's return type should be optional with the concrete associated type
+                // For now, just verify it's an optional type - full validation would require
+                // looking up the associated type binding
+                if (impl_func.return_type != .optional) {
+                    self.addError(.type_mismatch, span, "method '{s}' return type should be optional", .{
+                        trait_method.name,
+                    });
+                    return false;
+                }
+                // Return type validated enough for now
+            } else if (!impl_func.return_type.eql(trait_sig.return_type)) {
+                self.addError(.type_mismatch, span, "method '{s}' return type mismatch", .{
+                    trait_method.name,
+                });
+                return false;
+            }
+        } else if (trait_sig.return_type == .associated_type_ref) {
+            // Handle Self.Item directly - the impl should return the concrete associated type
+            // For now, accept any type - full validation would require looking up the binding
+            _ = impl_func.return_type;
+        } else if (trait_sig.return_type != .unknown) {
+            // Skip validation for 'unknown' (used for both Self and Self.Item in user traits)
             if (!impl_func.return_type.eql(trait_sig.return_type)) {
                 self.addError(.type_mismatch, span, "method '{s}' return type mismatch", .{
                     trait_method.name,
