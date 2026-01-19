@@ -1,0 +1,27 @@
+// Test integer abs() method
+
+fn main() -> i32 {
+    // Test abs() on positive numbers
+    let pos: i32 = 42
+    assert pos.abs() == 42
+
+    // Test abs() on negative numbers
+    let neg: i32 = -42
+    assert neg.abs() == 42
+
+    // Test abs() on zero
+    let zero: i32 = 0
+    assert zero.abs() == 0
+
+    // Test with expressions
+    let x: i32 = -10
+    let y: i32 = x.abs()
+    assert y == 10
+
+    // Test chaining
+    let n: i32 = -5
+    let m: i32 = n.abs().abs()
+    assert m == 5
+
+    return 0
+}

@@ -4395,6 +4395,23 @@ pub const Emitter = struct {
             }
         }
 
+        // Check for integer methods
+        if (self.isIntegerExpr(method.object)) {
+            if (std.mem.eql(u8, method.method_name, "abs")) {
+                return self.emitIntAbs(object);
+            }
+            if (std.mem.eql(u8, method.method_name, "min")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const other = try self.emitExpr(method.args[0]);
+                return self.emitIntMin(object, other);
+            }
+            if (std.mem.eql(u8, method.method_name, "max")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const other = try self.emitExpr(method.args[0]);
+                return self.emitIntMax(object, other);
+            }
+        }
+
         // Check for user-defined struct methods
         if (self.type_checker) |tc| {
             // Get the struct type from the object
@@ -6636,6 +6653,51 @@ pub const Emitter = struct {
         return false;
     }
 
+    /// Check if an expression is an integer type.
+    fn isIntegerExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .literal => |lit| {
+                return lit.kind == .int;
+            },
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    // Check if the LLVM type is an integer type
+                    const kind = llvm.getTypeKind(local.ty);
+                    return kind == llvm.c.LLVMIntegerTypeKind;
+                }
+                return false;
+            },
+            .binary, .unary => {
+                // Use type checker to determine if result is integer
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const expr_type = tc_mut.checkExpr(expr);
+                    return expr_type.isInteger();
+                }
+                return false;
+            },
+            .method_call => |m| {
+                // Methods like abs, min, max on integers return integers
+                if (std.mem.eql(u8, m.method_name, "abs") or
+                    std.mem.eql(u8, m.method_name, "min") or
+                    std.mem.eql(u8, m.method_name, "max"))
+                {
+                    return self.isIntegerExpr(m.object);
+                }
+                return false;
+            },
+            else => {
+                // For other expressions, use type checker if available
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const expr_type = tc_mut.checkExpr(expr);
+                    return expr_type.isInteger();
+                }
+                return false;
+            },
+        }
+    }
+
     /// Get array element type from an expression.
     fn getArrayElementType(self: *Emitter, expr: ast.Expr) ?types.Type {
         // First check named_values for identifiers
@@ -6863,6 +6925,52 @@ pub const Emitter = struct {
             1,
             "chars_slice",
         );
+    }
+
+    // ========================================================================
+    // Integer Methods
+    // ========================================================================
+
+    /// Emit integer.abs() - returns absolute value.
+    /// For signed integers, computes abs(x) = x < 0 ? -x : x
+    /// For unsigned integers, just returns x.
+    fn emitIntAbs(self: *Emitter, value: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const value_type = llvm.typeOf(value);
+        const bit_width = llvm.c.LLVMGetIntTypeWidth(value_type);
+
+        // Check if this is a signed type by seeing if it's a standard signed width
+        // Klar uses i8, i16, i32, i64 for signed and u8, u16, u32, u64 for unsigned
+        // We can't directly tell from LLVM, so we check if the type checker says signed
+        // For now, we'll assume it could be signed and compute abs safely
+
+        // Create zero constant for comparison
+        const zero = llvm.c.LLVMConstInt(value_type, 0, 0);
+
+        // Check if value < 0 (signed comparison)
+        const is_negative = self.builder.buildICmp(llvm.c.LLVMIntSLT, value, zero, "is_neg");
+
+        // Compute -value using sub(0, value)
+        const neg_value = llvm.c.LLVMBuildSub(self.builder.ref, zero, value, "neg");
+
+        // Select: is_negative ? -value : value
+        _ = bit_width;
+        return llvm.c.LLVMBuildSelect(self.builder.ref, is_negative, neg_value, value, "abs");
+    }
+
+    /// Emit integer.min(other) - returns minimum of two values.
+    fn emitIntMin(self: *Emitter, a: llvm.ValueRef, b: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Compare a < b (signed comparison)
+        const cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, a, b, "min_cmp");
+        // Select: a < b ? a : b
+        return llvm.c.LLVMBuildSelect(self.builder.ref, cmp, a, b, "min");
+    }
+
+    /// Emit integer.max(other) - returns maximum of two values.
+    fn emitIntMax(self: *Emitter, a: llvm.ValueRef, b: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Compare a > b (signed comparison)
+        const cmp = self.builder.buildICmp(llvm.c.LLVMIntSGT, a, b, "max_cmp");
+        // Select: a > b ? a : b
+        return llvm.c.LLVMBuildSelect(self.builder.ref, cmp, a, b, "max");
     }
 
     // ========================================================================

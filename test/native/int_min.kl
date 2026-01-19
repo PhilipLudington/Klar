@@ -1,0 +1,36 @@
+// Test integer min() method
+
+fn main() -> i32 {
+    // Test min() with first smaller
+    let a: i32 = 5
+    let b: i32 = 10
+    assert a.min(b) == 5
+
+    // Test min() with second smaller
+    let c: i32 = 10
+    let d: i32 = 5
+    assert c.min(d) == 5
+
+    // Test min() with equal values
+    let e: i32 = 7
+    let f: i32 = 7
+    assert e.min(f) == 7
+
+    // Test min() with negative numbers
+    let g: i32 = -5
+    let h: i32 = -10
+    assert g.min(h) == -10
+
+    // Test min() with mixed signs
+    let i: i32 = -5
+    let j: i32 = 5
+    assert i.min(j) == -5
+
+    // Test with zero
+    let zero: i32 = 0
+    let pos: i32 = 5
+    assert zero.min(pos) == 0
+    assert pos.min(zero) == 0
+
+    return 0
+}

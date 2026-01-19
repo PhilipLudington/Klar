@@ -245,7 +245,7 @@
 
 **Objective:** Implement core standard library types.
 
-**Status:** In Progress. Optional and Result are built-in types with core methods implemented.
+**Status:** In Progress. Optional, Result, and builtin type methods (integer, string, array) are complete. Heap-allocated collection types (String, List, Map, Set) not yet started.
 
 ### Option Type (Built-in as `?T`)
 - [x] Built-in `?T` syntax for Optional types
@@ -272,6 +272,34 @@
 - [x] Implement `and_then(f)` for Optional chaining
 - [x] Implement `and_then(f)` for Result chaining
 - [x] Implement `Eq`, `Clone` for Result
+
+### Builtin Type Methods
+The following methods are built into the compiler for primitive types:
+
+**Integer Methods:**
+- [x] Implement `abs()` - returns absolute value
+- [x] Implement `min(other)` - returns minimum of two values
+- [x] Implement `max(other)` - returns maximum of two values
+
+**String Methods:**
+- [x] Implement `len()` - returns string length as i32
+- [x] Implement `is_empty()` - returns true if length is 0
+- [x] Implement `contains(pattern)` - check if pattern exists in string
+- [x] Implement `starts_with(prefix)` - check prefix match
+- [x] Implement `ends_with(suffix)` - check suffix match
+- [x] Implement `trim()` - remove leading/trailing whitespace
+- [x] Implement `to_uppercase()` - convert to uppercase
+- [x] Implement `to_lowercase()` - convert to lowercase
+- [x] Implement `bytes()` - returns `[u8]` slice of UTF-8 bytes
+- [x] Implement `chars()` - returns `[char]` slice of unicode codepoints
+
+**Array/Slice Methods:**
+- [x] Implement `len()` - returns length as i32
+- [x] Implement `is_empty()` - returns true if length is 0
+- [x] Implement `first()` - returns `?T` (first element or None)
+- [x] Implement `last()` - returns `?T` (last element or None)
+- [x] Implement `get(index)` - returns `?T` (element at index or None)
+- [x] Implement `contains(value)` - check if value exists in array
 
 ### String Type
 - [ ] Implement `String` struct in std/string.kl

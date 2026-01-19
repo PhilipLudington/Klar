@@ -1,0 +1,36 @@
+// Test integer max() method
+
+fn main() -> i32 {
+    // Test max() with first larger
+    let a: i32 = 10
+    let b: i32 = 5
+    assert a.max(b) == 10
+
+    // Test max() with second larger
+    let c: i32 = 5
+    let d: i32 = 10
+    assert c.max(d) == 10
+
+    // Test max() with equal values
+    let e: i32 = 7
+    let f: i32 = 7
+    assert e.max(f) == 7
+
+    // Test max() with negative numbers
+    let g: i32 = -5
+    let h: i32 = -10
+    assert g.max(h) == -5
+
+    // Test max() with mixed signs
+    let i: i32 = -5
+    let j: i32 = 5
+    assert i.max(j) == 5
+
+    // Test with zero
+    let zero: i32 = 0
+    let neg: i32 = -5
+    assert zero.max(neg) == 0
+    assert neg.max(zero) == 0
+
+    return 0
+}

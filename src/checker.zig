@@ -3163,10 +3163,25 @@ pub const TypeChecker = struct {
 
         // Integer methods
         if (object_type.isInteger()) {
-            if (std.mem.eql(u8, method.method_name, "abs") or
-                std.mem.eql(u8, method.method_name, "min") or
+            if (std.mem.eql(u8, method.method_name, "abs")) {
+                // abs() takes no arguments
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "abs() takes no arguments", .{});
+                }
+                return object_type;
+            }
+            if (std.mem.eql(u8, method.method_name, "min") or
                 std.mem.eql(u8, method.method_name, "max"))
             {
+                // min(other) and max(other) take exactly one argument of the same type
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "{s}() takes exactly 1 argument", .{method.method_name});
+                } else {
+                    const arg_type = self.checkExpr(method.args[0]);
+                    if (!arg_type.eql(object_type)) {
+                        self.addError(.type_mismatch, method.span, "{s}() argument must match receiver type", .{method.method_name});
+                    }
+                }
                 return object_type;
             }
         }
