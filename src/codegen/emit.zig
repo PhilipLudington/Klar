@@ -116,6 +116,12 @@ pub const Emitter = struct {
         closure_param_types: ?[]const llvm.TypeRef = null,
         /// True if this is a string type.
         is_string: bool = false,
+        /// True if this is an array or slice type.
+        is_array: bool = false,
+        /// For fixed-size arrays, the size. Null for slices.
+        array_size: ?usize = null,
+        /// For arrays/slices, the element type.
+        array_element_type: ?types.Type = null,
     };
 
     const LoopContext = struct {
@@ -748,6 +754,9 @@ pub const Emitter = struct {
                 const closure_info = self.tryGetClosureTypeInfo(decl.type_);
                 // Check if this is a string type
                 const is_string = self.isTypeString(decl.type_);
+                // Check if this is an array or slice type
+                const is_array = self.isTypeArray(decl.type_);
+                const array_info = self.getArrayTypeInfo(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -759,6 +768,9 @@ pub const Emitter = struct {
                     .closure_return_type = if (closure_info) |ci| ci.return_type else null,
                     .closure_param_types = if (closure_info) |ci| ci.param_types else null,
                     .is_string = is_string,
+                    .is_array = is_array,
+                    .array_size = if (array_info) |ai| ai.size else null,
+                    .array_element_type = if (array_info) |ai| ai.element_type else null,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -783,6 +795,9 @@ pub const Emitter = struct {
                 const closure_info = self.tryGetClosureTypeInfo(decl.type_);
                 // Check if this is a string type
                 const is_string = self.isTypeString(decl.type_);
+                // Check if this is an array or slice type
+                const is_array = self.isTypeArray(decl.type_);
+                const array_info = self.getArrayTypeInfo(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -794,6 +809,9 @@ pub const Emitter = struct {
                     .closure_return_type = if (closure_info) |ci| ci.return_type else null,
                     .closure_param_types = if (closure_info) |ci| ci.param_types else null,
                     .is_string = is_string,
+                    .is_array = is_array,
+                    .array_size = if (array_info) |ai| ai.size else null,
+                    .array_element_type = if (array_info) |ai| ai.element_type else null,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -2537,6 +2555,47 @@ pub const Emitter = struct {
         };
     }
 
+    /// Check if a type expression is an array or slice type.
+    fn isTypeArray(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return type_expr == .array or type_expr == .slice;
+    }
+
+    /// Get array info from a type expression.
+    /// Returns (element_type, size) where size is null for slices.
+    fn getArrayTypeInfo(self: *Emitter, type_expr: ast.TypeExpr) ?struct { element_type: ?types.Type, size: ?usize } {
+        switch (type_expr) {
+            .array => |arr| {
+                // For fixed-size arrays, get the size from the expression
+                const size: ?usize = if (arr.size == .literal) blk: {
+                    if (arr.size.literal.kind == .int) {
+                        // Get the integer value directly
+                        const int_val = arr.size.literal.kind.int;
+                        if (int_val >= 0 and int_val <= std.math.maxInt(usize)) {
+                            break :blk @intCast(int_val);
+                        }
+                    }
+                    break :blk null;
+                } else null;
+                // Convert the element type expression to a types.Type using type checker
+                const element_type: ?types.Type = if (self.type_checker) |tc| blk: {
+                    const tc_mut = @constCast(tc);
+                    break :blk tc_mut.resolveTypeExpr(arr.element) catch null;
+                } else null;
+                return .{ .element_type = element_type, .size = size };
+            },
+            .slice => |slc| {
+                // Slices don't have a size
+                const element_type: ?types.Type = if (self.type_checker) |tc| blk: {
+                    const tc_mut = @constCast(tc);
+                    break :blk tc_mut.resolveTypeExpr(slc.element) catch null;
+                } else null;
+                return .{ .element_type = element_type, .size = null };
+            },
+            else => return null,
+        }
+    }
+
     /// Infer LLVM type from expression (simplified).
     fn inferExprType(self: *Emitter, expr: ast.Expr) EmitError!llvm.TypeRef {
         return switch (expr) {
@@ -2714,6 +2773,36 @@ pub const Emitter = struct {
                         return llvm.Types.pointer(self.ctx);
                     }
                 }
+
+                // Array/slice methods - check FIRST before Cell methods (which also have .get())
+                if (self.isArrayExpr(m.object)) {
+                    // len() returns i32
+                    if (std.mem.eql(u8, m.method_name, "len")) {
+                        return llvm.Types.int32(self.ctx);
+                    }
+                    // is_empty() and contains() return bool
+                    if (std.mem.eql(u8, m.method_name, "is_empty") or
+                        std.mem.eql(u8, m.method_name, "contains"))
+                    {
+                        return llvm.Types.int1(self.ctx);
+                    }
+                    // first(), last(), get() return Optional[T] - struct { i1 tag, T value }
+                    if (std.mem.eql(u8, m.method_name, "first") or
+                        std.mem.eql(u8, m.method_name, "last") or
+                        std.mem.eql(u8, m.method_name, "get"))
+                    {
+                        const elem_llvm_type = if (self.getArrayElementType(m.object)) |element_type|
+                            self.typeToLLVM(element_type)
+                        else
+                            llvm.Types.int32(self.ctx); // Fallback to i32 if element type unknown
+                        var opt_fields = [_]llvm.TypeRef{
+                            llvm.Types.int1(self.ctx), // tag (bool, matches built-in Optional)
+                            elem_llvm_type, // value
+                        };
+                        return llvm.Types.struct_(self.ctx, &opt_fields, false);
+                    }
+                }
+
                 // downgrade() always returns pointer (Weak type)
                 if (std.mem.eql(u8, m.method_name, "downgrade")) {
                     return llvm.Types.pointer(self.ctx);
@@ -2732,7 +2821,7 @@ pub const Emitter = struct {
                     var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ptr_type };
                     return llvm.Types.struct_(self.ctx, &opt_fields, false);
                 }
-                // get() returns the inner type
+                // Cell methods: get() returns the inner type
                 if (std.mem.eql(u8, m.method_name, "get")) {
                     return self.inferCellInnerType(m.object);
                 }
@@ -2863,6 +2952,7 @@ pub const Emitter = struct {
                     };
                     return llvm.Types.struct_(self.ctx, &slice_fields, false);
                 }
+
                 // Default trait: TypeName.default() returns the type's default value
                 if (std.mem.eql(u8, m.method_name, "default")) {
                     if (m.object == .identifier) {
@@ -4068,6 +4158,41 @@ pub const Emitter = struct {
         // Emit the object
         const object = try self.emitExpr(method.object);
         const object_type = llvm.typeOf(object);
+
+        // Check for array/slice methods FIRST (before Cell methods which also have .get())
+        if (self.isArrayExpr(method.object)) {
+            // For arrays, we need the alloca pointer, not the loaded value
+            // Get the alloca pointer for identifier expressions
+            const array_ptr = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value; // This is the alloca pointer
+                }
+                break :blk object;
+            } else object;
+
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                return self.emitArrayLen(method.object, array_ptr);
+            }
+            if (std.mem.eql(u8, method.method_name, "is_empty")) {
+                return self.emitArrayIsEmpty(method.object, array_ptr);
+            }
+            if (std.mem.eql(u8, method.method_name, "first")) {
+                return self.emitArrayFirst(method.object, array_ptr);
+            }
+            if (std.mem.eql(u8, method.method_name, "last")) {
+                return self.emitArrayLast(method.object, array_ptr);
+            }
+            if (std.mem.eql(u8, method.method_name, "get")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const index = try self.emitExpr(method.args[0]);
+                return self.emitArrayGet(method.object, array_ptr, index);
+            }
+            if (std.mem.eql(u8, method.method_name, "contains")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const value = try self.emitExpr(method.args[0]);
+                return self.emitArrayContains(method.object, array_ptr, value);
+            }
+        }
 
         // Check for Cell methods: .get(), .set()
         if (std.mem.eql(u8, method.method_name, "get")) {
@@ -6485,6 +6610,83 @@ pub const Emitter = struct {
         }
     }
 
+    /// Check if an expression is an array or slice type.
+    fn isArrayExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                // Check if we have array info for this identifier in named_values
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.is_array) {
+                        return true;
+                    }
+                }
+            },
+            .array_literal => {
+                // Array literals are always array type
+                return true;
+            },
+            else => {},
+        }
+        // Fallback: use type checker if available (may not work during emission)
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .array or expr_type == .slice;
+        }
+        return false;
+    }
+
+    /// Get array element type from an expression.
+    fn getArrayElementType(self: *Emitter, expr: ast.Expr) ?types.Type {
+        // First check named_values for identifiers
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.is_array) {
+                        return local.array_element_type;
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: use type checker if available
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            if (expr_type == .array) {
+                return expr_type.array.element;
+            }
+            if (expr_type == .slice) {
+                return expr_type.slice.element;
+            }
+        }
+        return null;
+    }
+
+    /// Get array length from an expression (for fixed-size arrays).
+    fn getArraySize(self: *Emitter, expr: ast.Expr) ?usize {
+        // First check named_values for identifiers
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.is_array) {
+                        return local.array_size; // null for slices
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: use type checker if available
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            if (expr_type == .array) {
+                return expr_type.array.size;
+            }
+        }
+        return null;
+    }
+
     /// Emit string.len() - returns length as i32.
     fn emitStringLen(self: *Emitter, str: llvm.ValueRef) EmitError!llvm.ValueRef {
         const strlen_fn = self.getOrDeclareStrlen();
@@ -6661,6 +6863,434 @@ pub const Emitter = struct {
             1,
             "chars_slice",
         );
+    }
+
+    // ========================================================================
+    // Array/Slice Methods
+    // ========================================================================
+
+    /// Emit array.len() - returns length as i32.
+    /// For fixed-size arrays, returns the compile-time known size.
+    /// For slices, loads the length field from the slice struct.
+    fn emitArrayLen(self: *Emitter, expr: ast.Expr, object: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // For fixed-size arrays, we know the size at compile time
+        if (self.getArraySize(expr)) |size| {
+            return llvm.Const.int32(self.ctx, @intCast(size));
+        }
+
+        // For slices, load the length from the struct's second field
+        // Slice is { ptr, i64 }
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Build slice struct type
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // data pointer
+            i64_type, // length
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+
+        // Need to get length from slice struct - field 1
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, object, 1, "len_ptr");
+        const len_i64 = self.builder.buildLoad(i64_type, len_ptr, "len");
+        // Truncate from i64 to i32
+        return llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "len_i32");
+    }
+
+    /// Emit array.is_empty() - returns true if len == 0.
+    fn emitArrayIsEmpty(self: *Emitter, expr: ast.Expr, object: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // For fixed-size arrays, we know if it's empty at compile time
+        if (self.getArraySize(expr)) |size| {
+            return llvm.Const.int1(self.ctx, size == 0);
+        }
+
+        // For slices, compare length to 0
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Build slice struct type
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx),
+            i64_type,
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, object, 1, "len_ptr");
+        const len = self.builder.buildLoad(i64_type, len_ptr, "len");
+        const zero = llvm.Const.int64(self.ctx, 0);
+        return self.builder.buildICmp(llvm.c.LLVMIntEQ, len, zero, "is_empty");
+    }
+
+    /// Emit array.first() - returns Optional[T], Some(first element) or None if empty.
+    fn emitArrayFirst(self: *Emitter, expr: ast.Expr, object: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type = self.getArrayElementType(expr) orelse return EmitError.InvalidAST;
+        const elem_llvm_type = self.typeToLLVM(element_type);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Build optional type: { i1 tag, T value } where tag 0 = None, 1 = Some
+        // Uses i1 to match built-in Optional type
+        var opt_fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag (bool)
+            elem_llvm_type, // value
+        };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+
+        // Build slice struct type
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx),
+            i64_type,
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+
+        // Allocate space for the result
+        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, opt_type, "first_result");
+
+        // Get array length
+        const array_size = self.getArraySize(expr);
+        const is_fixed_array = array_size != null;
+
+        // For fixed arrays with size > 0, we know first() will always succeed
+        if (is_fixed_array) {
+            const size = array_size.?;
+            // Build the fixed array type for GEP
+            const array_type = llvm.Types.array(elem_llvm_type, @intCast(size));
+
+            if (size > 0) {
+                // Set tag to 1 (Some)
+                const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 0, "tag_ptr");
+                _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+                // Get first element - object is the alloca pointer to the array
+                const zero = llvm.Const.int64(self.ctx, 0);
+                var indices = [_]llvm.ValueRef{ zero, zero };
+                const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, array_type, object, &indices, 2, "first_elem_ptr");
+                const elem_val = self.builder.buildLoad(elem_llvm_type, elem_ptr, "first_elem");
+
+                // Store value
+                const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 1, "val_ptr");
+                _ = self.builder.buildStore(elem_val, val_ptr);
+            } else {
+                // Empty array - return None (tag = 0)
+                const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 0, "tag_ptr");
+                _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+            }
+        } else {
+            // For slices, we need runtime check
+            const current_fn = self.current_function orelse return EmitError.InvalidAST;
+            const some_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "first_some");
+            const none_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "first_none");
+            const merge_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "first_merge");
+
+            // Check if length > 0
+            const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, object, 1, "len_ptr");
+            const len = self.builder.buildLoad(i64_type, len_ptr, "len");
+            const zero = llvm.Const.int64(self.ctx, 0);
+            const is_nonempty = self.builder.buildICmp(llvm.c.LLVMIntUGT, len, zero, "is_nonempty");
+            _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_nonempty, some_bb, none_bb);
+
+            // Some block - get first element
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, some_bb);
+            const tag_ptr_some = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 0, "tag_ptr");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr_some);
+
+            // Get data pointer from slice
+            const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, object, 0, "data_ptr_ptr");
+            const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), data_ptr_ptr, "data_ptr");
+            const elem_val = self.builder.buildLoad(elem_llvm_type, data_ptr, "first_elem");
+
+            const val_ptr_some = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 1, "val_ptr");
+            _ = self.builder.buildStore(elem_val, val_ptr_some);
+            _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+
+            // None block
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, none_bb);
+            const tag_ptr_none = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 0, "tag_ptr");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr_none);
+            _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+
+            // Merge block
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, merge_bb);
+        }
+
+        // Load and return the result
+        return self.builder.buildLoad(opt_type, result_ptr, "first_opt");
+    }
+
+    /// Emit array.last() - returns Optional[T], Some(last element) or None if empty.
+    fn emitArrayLast(self: *Emitter, expr: ast.Expr, object: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type = self.getArrayElementType(expr) orelse return EmitError.InvalidAST;
+        const elem_llvm_type = self.typeToLLVM(element_type);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Build optional type: { i1 tag, T value } where tag 0 = None, 1 = Some
+        // Uses i1 to match built-in Optional type
+        var opt_fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag (bool)
+            elem_llvm_type, // value
+        };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+
+        // Build slice struct type
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx),
+            i64_type,
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+
+        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, opt_type, "last_result");
+
+        const array_size = self.getArraySize(expr);
+        const is_fixed_array = array_size != null;
+
+        if (is_fixed_array) {
+            const size = array_size.?;
+            const array_type = llvm.Types.array(elem_llvm_type, @intCast(size));
+
+            if (size > 0) {
+                const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 0, "tag_ptr");
+                _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+                // Get last element (index = size - 1)
+                const zero = llvm.Const.int64(self.ctx, 0);
+                const last_idx = llvm.Const.int64(self.ctx, @intCast(size - 1));
+                var indices = [_]llvm.ValueRef{ zero, last_idx };
+                const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, array_type, object, &indices, 2, "last_elem_ptr");
+                const elem_val = self.builder.buildLoad(elem_llvm_type, elem_ptr, "last_elem");
+
+                const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 1, "val_ptr");
+                _ = self.builder.buildStore(elem_val, val_ptr);
+            } else {
+                const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 0, "tag_ptr");
+                _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+            }
+        } else {
+            // For slices, we need runtime check
+            const current_fn = self.current_function orelse return EmitError.InvalidAST;
+            const some_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "last_some");
+            const none_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "last_none");
+            const merge_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "last_merge");
+
+            const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, object, 1, "len_ptr");
+            const len = self.builder.buildLoad(i64_type, len_ptr, "len");
+            const zero = llvm.Const.int64(self.ctx, 0);
+            const is_nonempty = self.builder.buildICmp(llvm.c.LLVMIntUGT, len, zero, "is_nonempty");
+            _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_nonempty, some_bb, none_bb);
+
+            // Some block
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, some_bb);
+            const tag_ptr_some = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 0, "tag_ptr");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr_some);
+
+            // Calculate last index = len - 1
+            const one = llvm.Const.int64(self.ctx, 1);
+            const last_idx = llvm.c.LLVMBuildSub(self.builder.ref, len, one, "last_idx");
+
+            // Get data pointer and index into it
+            const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, object, 0, "data_ptr_ptr");
+            const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), data_ptr_ptr, "data_ptr");
+            var gep_idx = [_]llvm.ValueRef{last_idx};
+            const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, elem_llvm_type, data_ptr, &gep_idx, 1, "last_elem_ptr");
+            const elem_val = self.builder.buildLoad(elem_llvm_type, elem_ptr, "last_elem");
+
+            const val_ptr_some = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 1, "val_ptr");
+            _ = self.builder.buildStore(elem_val, val_ptr_some);
+            _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+
+            // None block
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, none_bb);
+            const tag_ptr_none = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 0, "tag_ptr");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr_none);
+            _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+
+            // Merge block
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, merge_bb);
+        }
+
+        return self.builder.buildLoad(opt_type, result_ptr, "last_opt");
+    }
+
+    /// Emit array.get(index) - returns Optional[T], Some(element) if in bounds, None otherwise.
+    fn emitArrayGet(self: *Emitter, expr: ast.Expr, object: llvm.ValueRef, index: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type = self.getArrayElementType(expr) orelse return EmitError.InvalidAST;
+        const elem_llvm_type = self.typeToLLVM(element_type);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Build optional type: { i1 tag, T value } where tag 0 = None, 1 = Some
+        // Uses i1 to match built-in Optional type
+        var opt_fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag (bool)
+            elem_llvm_type, // value
+        };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+
+        // Build slice struct type
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx),
+            i64_type,
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+
+        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, opt_type, "get_result");
+
+        const current_fn = self.current_function orelse return EmitError.InvalidAST;
+        const some_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "get_some");
+        const none_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "get_none");
+        const merge_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "get_merge");
+
+        // Convert index to i64 if needed
+        const idx_type = llvm.typeOf(index);
+        const idx_i64 = if (idx_type == i64_type)
+            index
+        else
+            llvm.c.LLVMBuildSExt(self.builder.ref, index, i64_type, "idx_i64");
+
+        // Get array length
+        const array_size = self.getArraySize(expr);
+        const len = if (array_size) |size|
+            llvm.Const.int64(self.ctx, @intCast(size))
+        else blk: {
+            const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, object, 1, "len_ptr");
+            break :blk self.builder.buildLoad(i64_type, len_ptr, "len");
+        };
+
+        // Check if index < 0 or index >= len
+        const zero = llvm.Const.int64(self.ctx, 0);
+        const idx_negative = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx_i64, zero, "idx_negative");
+        const idx_ge_len = self.builder.buildICmp(llvm.c.LLVMIntSGE, idx_i64, len, "idx_ge_len");
+        const out_of_bounds = self.builder.buildOr(idx_negative, idx_ge_len, "out_of_bounds");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, out_of_bounds, none_bb, some_bb);
+
+        // Some block - index is valid
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, some_bb);
+        const tag_ptr_some = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 0, "tag_ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr_some);
+
+        // Get element at index
+        const elem_val = if (array_size) |size| blk: {
+            // Fixed array - use 2D GEP with explicit array type
+            const array_type = llvm.Types.array(elem_llvm_type, @intCast(size));
+            var indices = [_]llvm.ValueRef{ zero, idx_i64 };
+            const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, array_type, object, &indices, 2, "elem_ptr");
+            break :blk self.builder.buildLoad(elem_llvm_type, elem_ptr, "elem");
+        } else blk: {
+            // Slice - get data pointer and index
+            const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, object, 0, "data_ptr_ptr");
+            const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), data_ptr_ptr, "data_ptr");
+            var gep_idx = [_]llvm.ValueRef{idx_i64};
+            const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, elem_llvm_type, data_ptr, &gep_idx, 1, "elem_ptr");
+            break :blk self.builder.buildLoad(elem_llvm_type, elem_ptr, "elem");
+        };
+
+        const val_ptr_some = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 1, "val_ptr");
+        _ = self.builder.buildStore(elem_val, val_ptr_some);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+
+        // None block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, none_bb);
+        const tag_ptr_none = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, result_ptr, 0, "tag_ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr_none);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+
+        // Merge block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, merge_bb);
+
+        return self.builder.buildLoad(opt_type, result_ptr, "get_opt");
+    }
+
+    /// Emit array.contains(value) - returns true if any element equals value.
+    fn emitArrayContains(self: *Emitter, expr: ast.Expr, object: llvm.ValueRef, value: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type = self.getArrayElementType(expr) orelse return EmitError.InvalidAST;
+        const elem_llvm_type = self.typeToLLVM(element_type);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        const current_fn = self.current_function orelse return EmitError.InvalidAST;
+
+        // Build slice struct type
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx),
+            i64_type,
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+
+        // Allocate result variable
+        const i1_type = llvm.Types.int1(self.ctx);
+        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i1_type, "contains_result");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), result_ptr); // Initialize to false
+
+        // Get array length
+        const array_size = self.getArraySize(expr);
+        const len = if (array_size) |size|
+            llvm.Const.int64(self.ctx, @intCast(size))
+        else blk: {
+            const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, object, 1, "len_ptr");
+            break :blk self.builder.buildLoad(i64_type, len_ptr, "len");
+        };
+
+        // Loop through array
+        const loop_init_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "contains_init");
+        const loop_cond_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "contains_cond");
+        const loop_body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "contains_body");
+        const found_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "contains_found");
+        const loop_inc_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "contains_inc");
+        const loop_end_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "contains_end");
+
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_init_bb);
+
+        // Loop init - allocate index
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_init_bb);
+        const idx_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, i64_type, "idx_ptr");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), idx_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_cond_bb);
+
+        // Loop condition - idx < len
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_cond_bb);
+        const idx = self.builder.buildLoad(i64_type, idx_ptr, "idx");
+        const continue_loop = self.builder.buildICmp(llvm.c.LLVMIntULT, idx, len, "continue_loop");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_loop, loop_body_bb, loop_end_bb);
+
+        // Loop body - compare element
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_body_bb);
+        const elem_val = if (array_size) |size| blk: {
+            // Fixed array - use 2D GEP with explicit array type
+            const array_type = llvm.Types.array(elem_llvm_type, @intCast(size));
+            const zero = llvm.Const.int64(self.ctx, 0);
+            var indices = [_]llvm.ValueRef{ zero, idx };
+            const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, array_type, object, &indices, 2, "elem_ptr");
+            break :blk self.builder.buildLoad(elem_llvm_type, elem_ptr, "elem");
+        } else blk: {
+            const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, object, 0, "data_ptr_ptr");
+            const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), data_ptr_ptr, "data_ptr");
+            var gep_idx = [_]llvm.ValueRef{idx};
+            const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, elem_llvm_type, data_ptr, &gep_idx, 1, "elem_ptr");
+            break :blk self.builder.buildLoad(elem_llvm_type, elem_ptr, "elem");
+        };
+
+        // Compare with value
+        const is_eq = if (element_type.isInteger() or element_type == .primitive and element_type.primitive == .bool_)
+            self.builder.buildICmp(llvm.c.LLVMIntEQ, elem_val, value, "is_eq")
+        else if (element_type.isFloat())
+            self.builder.buildFCmp(llvm.c.LLVMRealOEQ, elem_val, value, "is_eq")
+        else
+            // For other types (strings, structs), use pointer comparison for now
+            // TODO: Use proper equality
+            self.builder.buildICmp(llvm.c.LLVMIntEQ, elem_val, value, "is_eq");
+
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_eq, found_bb, loop_inc_bb);
+
+        // Found block - set result to true and exit
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, found_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), result_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_end_bb);
+
+        // Loop increment
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_inc_bb);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int64(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_cond_bb);
+
+        // Loop end
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_end_bb);
+
+        return self.builder.buildLoad(i1_type, result_ptr, "contains");
     }
 
     /// Declare or get the klar_string_chars runtime function.
@@ -6944,7 +7574,7 @@ pub const Emitter = struct {
         // Add null terminator
         var gep_indices4 = [_]llvm.ValueRef{trimmed_len};
         const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_indices4, 1, "null_ptr");
-        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int8(self.ctx, 0), null_ptr);
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int1(self.ctx, false), null_ptr);
 
         _ = llvm.c.LLVMBuildBr(self.builder.ref, ret_bb);
 
@@ -7060,7 +7690,7 @@ pub const Emitter = struct {
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
         var gep_null = [_]llvm.ValueRef{len};
         const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_null, 1, "null_ptr");
-        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int8(self.ctx, 0), null_ptr);
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int1(self.ctx, false), null_ptr);
         _ = llvm.c.LLVMBuildRet(self.builder.ref, result);
 
         // Restore builder position
@@ -7171,7 +7801,7 @@ pub const Emitter = struct {
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
         var gep_null = [_]llvm.ValueRef{len};
         const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_null, 1, "null_ptr");
-        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int8(self.ctx, 0), null_ptr);
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int1(self.ctx, false), null_ptr);
         _ = llvm.c.LLVMBuildRet(self.builder.ref, result);
 
         // Restore builder position

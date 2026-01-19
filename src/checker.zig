@@ -3173,14 +3173,39 @@ pub const TypeChecker = struct {
 
         // Array methods
         if (object_type == .array or object_type == .slice) {
+            const element_type = if (object_type == .array) object_type.array.element else object_type.slice.element;
+
             if (std.mem.eql(u8, method.method_name, "first") or
-                std.mem.eql(u8, method.method_name, "last") or
-                std.mem.eql(u8, method.method_name, "get"))
+                std.mem.eql(u8, method.method_name, "last"))
             {
-                // Returns Optional[element_type] - for now return unknown
-                return self.type_builder.unknownType();
+                // first() and last() take no arguments, return Optional[element_type]
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "{s}() takes no arguments", .{method.method_name});
+                }
+                return self.type_builder.optionalType(element_type) catch self.type_builder.unknownType();
+            }
+            if (std.mem.eql(u8, method.method_name, "get")) {
+                // get(index) returns Optional[element_type]
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "get() takes exactly 1 argument (index)", .{});
+                } else {
+                    const arg_type = self.checkExpr(method.args[0]);
+                    if (!arg_type.isInteger()) {
+                        self.addError(.type_mismatch, method.span, "get() index must be an integer", .{});
+                    }
+                }
+                return self.type_builder.optionalType(element_type) catch self.type_builder.unknownType();
             }
             if (std.mem.eql(u8, method.method_name, "contains")) {
+                // contains(value) checks if array contains the value
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "contains() takes exactly 1 argument", .{});
+                } else {
+                    const arg_type = self.checkExpr(method.args[0]);
+                    if (!arg_type.eql(element_type)) {
+                        self.addError(.type_mismatch, method.span, "contains() argument must match array element type", .{});
+                    }
+                }
                 return self.type_builder.boolType();
             }
         }

@@ -1,0 +1,67 @@
+// Test array methods: len(), is_empty(), first(), last(), get(), contains()
+
+fn main() -> i32 {
+    // Test with non-empty fixed-size array
+    let arr: [i32; 3] = [10, 20, 30]
+
+    // Test len()
+    if arr.len() != 3 {
+        return 1
+    }
+
+    // Test is_empty() on non-empty array
+    if arr.is_empty() {
+        return 2
+    }
+
+    // Test first() - returns Optional
+    let first_val: ?i32 = arr.first()
+    if first_val.is_none() {
+        return 3
+    }
+    if first_val.unwrap() != 10 {
+        return 4
+    }
+
+    // Test last() - returns Optional
+    let last_val: ?i32 = arr.last()
+    if last_val.is_none() {
+        return 5
+    }
+    if last_val.unwrap() != 30 {
+        return 6
+    }
+
+    // Test get() with valid index
+    let middle: ?i32 = arr.get(1)
+    if middle.is_none() {
+        return 7
+    }
+    if middle.unwrap() != 20 {
+        return 8
+    }
+
+    // Test get() with out-of-bounds index
+    let oob: ?i32 = arr.get(10)
+    if oob.is_some() {
+        return 9
+    }
+
+    // Test get() with negative index
+    let neg: ?i32 = arr.get(-1)
+    if neg.is_some() {
+        return 10
+    }
+
+    // Test contains() - found
+    if not arr.contains(20) {
+        return 11
+    }
+
+    // Test contains() - not found
+    if arr.contains(99) {
+        return 12
+    }
+
+    return 0
+}
