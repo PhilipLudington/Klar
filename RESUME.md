@@ -1,36 +1,43 @@
-# Resume Point: Into Trait Implementation Complete
+# Resume Point: f64 Method Return Type Bug Fixed
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). Into trait is now implemented.
+Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). Fixed a codegen bug with struct method return types.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **Into Trait** ✅
-  - Added `Into[T]` trait as builtin in `checker.zig` with type parameter T (id 992)
-  - Method signature: `fn into(self: Self) -> T`
-  - Added type variable substitution for return types in `verifyMethodSignature()`
-  - Test: `test/native/into_trait.kl` demonstrates struct conversion
+- **f64 Method Return Type Bug** ✅ (Fixed)
+  - Root cause: `inferExprType` for method calls always fell back to `i32` for user-defined struct methods
+  - Fix: Look up the actual struct method function by name and return its real return type
+  - Also fixed: value-type struct parameters in monomorphized functions now have `struct_type_name` set
+  - Into trait test now uses f64 as originally intended
 
 ### Implementation Details
 
-#### Checker Changes (checker.zig)
-- Registered Into trait in `initBuiltins()` after From trait
-- Created Self type var (id 993) and T type var (id 992)
-- Method `into(self: Self) -> T` registered with proper signature
-- Added handling in `verifyMethodSignature()` for non-Self type variable return types
-  - When trait return type is a type_var (but not "Self"), substitute with concrete type from trait_type_args
+#### Bug Analysis
+- Variable allocated with wrong type when initialized from struct method call
+- `let v: f64 = w.get_value()` was allocating `v` as `i32` instead of `f64`
+- Caused by `inferExprType` returning `i32` as fallback for method calls
 
-#### Known Issue Discovered (Pre-existing)
-- f64 field access via struct methods returns incorrect values
-- Direct f64 field access works; methods accessing f64 fields don't
-- i32 methods work correctly
-- Test uses i32 to work around this unrelated codegen bug
+#### Codegen Fix (emit.zig)
+1. In `inferExprType` for `.method_call`:
+   - Try to get struct name from object expression via `getStructNameFromExpr()`
+   - Build mangled function name: `StructName_method_name`
+   - Look up function in module and return its actual return type
+   - Fall back to `i32` only if lookup fails
+
+2. In `getStructNameFromExpr`:
+   - Use `local.struct_type_name` directly instead of comparing LLVM type pointers
+
+3. In `emitMonomorphizedFunction`:
+   - Set `struct_type_name` for value-type struct parameters (not just reference types)
+   - This fixes method calls on generic type parameters
 
 ### Previously Completed
 
+- **Into Trait** ✅
 - **Debug Mode Location Tracking** ✅
 - **Error Chain Display** ✅
 - **Error Context for Result** ✅
@@ -69,17 +76,17 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test Into trait
+# Test Into trait with f64
 ./zig-out/bin/klar build test/native/into_trait.kl -o /tmp/test && /tmp/test
 
-# Example Into usage:
-# struct Wrapper { value: i32 }
-# struct Doubled { value: i32 }
-# impl Wrapper: Into[Doubled] {
-#     fn into(self: Wrapper) -> Doubled {
-#         return Doubled { value: self.value * 2 }
+# Example Into usage with f64:
+# struct Celsius { value: f64 }
+# struct Fahrenheit { value: f64 }
+# impl Celsius: Into[Fahrenheit] {
+#     fn into(self: Celsius) -> Fahrenheit {
+#         return Fahrenheit { value: self.value * 1.8 + 32.0 }
 #     }
 # }
-# let w: Wrapper = Wrapper { value: 21 }
-# let d: Doubled = w.into()  // d.value == 42
+# let c: Celsius = Celsius { value: 100.0 }
+# let f: Fahrenheit = c.into()  // f.value == 212.0
 ```

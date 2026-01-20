@@ -4739,6 +4739,24 @@ pub const Emitter = struct {
                     }
                 }
 
+                // Try to look up user-defined struct method by function name
+                // Function name format: StructName_method_name
+                if (self.getStructNameFromExpr(m.object)) |struct_name| {
+                    var fn_name_buf = std.ArrayListUnmanaged(u8){};
+                    defer fn_name_buf.deinit(self.allocator);
+                    fn_name_buf.appendSlice(self.allocator, struct_name) catch return EmitError.OutOfMemory;
+                    fn_name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
+                    fn_name_buf.appendSlice(self.allocator, m.method_name) catch return EmitError.OutOfMemory;
+
+                    const fn_name = self.allocator.dupeZ(u8, fn_name_buf.items) catch return EmitError.OutOfMemory;
+                    defer self.allocator.free(fn_name);
+
+                    if (self.module.getNamedFunction(fn_name)) |func| {
+                        const fn_type = llvm.getGlobalValueType(func);
+                        return llvm.getReturnType(fn_type);
+                    }
+                }
+
                 return llvm.Types.int32(self.ctx);
             },
             .closure => {
@@ -6814,14 +6832,10 @@ pub const Emitter = struct {
     fn getStructNameFromExpr(self: *Emitter, expr: ast.Expr) ?[]const u8 {
         switch (expr) {
             .identifier => |ident| {
-                // Look up the variable to get its type
+                // Look up the variable to get its struct_type_name directly
                 if (self.named_values.get(ident.name)) |local| {
-                    // Search our struct_types map to find which struct has this LLVM type
-                    var it = self.struct_types.iterator();
-                    while (it.next()) |entry| {
-                        if (entry.value_ptr.llvm_type == local.ty) {
-                            return entry.key_ptr.*;
-                        }
+                    if (local.struct_type_name) |name| {
+                        return name;
                     }
                 }
                 return null;
@@ -19804,13 +19818,15 @@ pub const Emitter = struct {
                 break :blk self.typeToLLVM(concrete_param_type.reference.inner);
             } else null;
 
-            // Get struct name for reference types
+            // Get struct name for reference types and value-type struct parameters
             const param_struct_name: ?[]const u8 = if (is_ref) blk: {
                 const inner = concrete_param_type.reference.inner;
                 if (inner == .struct_) {
                     break :blk inner.struct_.name;
                 }
                 break :blk null;
+            } else if (concrete_param_type == .struct_) blk: {
+                break :blk concrete_param_type.struct_.name;
             } else null;
 
             const is_signed = self.isCheckerTypeSigned(concrete_param_type);

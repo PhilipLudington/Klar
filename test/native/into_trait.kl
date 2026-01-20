@@ -1,29 +1,28 @@
 // Test Into[T] trait for type conversions
-// Uses i32 to avoid pre-existing codegen bug with f64 field access in methods
 
-struct Wrapper { value: i32 }
-struct Doubled { value: i32 }
+struct Celsius { value: f64 }
+struct Fahrenheit { value: f64 }
 
-impl Doubled {
-    fn get_value(self: Doubled) -> i32 {
+impl Fahrenheit {
+    fn get_value(self: Fahrenheit) -> f64 {
         return self.value
     }
 }
 
-impl Wrapper: Into[Doubled] {
-    fn into(self: Wrapper) -> Doubled {
-        return Doubled { value: self.value * 2 }
+impl Celsius: Into[Fahrenheit] {
+    fn into(self: Celsius) -> Fahrenheit {
+        return Fahrenheit { value: self.value * 1.8 + 32.0 }
     }
 }
 
 fn main() -> i32 {
-    let w: Wrapper = Wrapper { value: 21 }
-    let d: Doubled = w.into()
+    let c: Celsius = Celsius { value: 100.0 }
+    let f: Fahrenheit = c.into()
 
-    // 21 * 2 = 42
-    let result: i32 = d.get_value()
-    if result == 42 {
+    // 100 C = 212 F
+    let temp: f64 = f.get_value()
+    if temp > 211.9 and temp < 212.1 {
         return 0
     }
-    return result
+    return 1
 }
