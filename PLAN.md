@@ -640,11 +640,11 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 - [x] Test: result_context.kl verifies context wrapping, chaining, message/cause extraction
 - [x] Test: result_context_display.kl verifies display_chain formatting
 
-### Debug Mode Stack Traces
-- [ ] Capture stack trace on error creation (debug mode only)
-- [ ] Store trace in error metadata
-- [ ] Display trace on unhandled errors
-- [ ] Omit in release builds for performance
+### Debug Mode Location Tracking
+- [x] Capture file:line:column on `.context()` call (debug mode only)
+- [x] Store location in ContextError metadata (5-field layout: message, cause, file, line, column)
+- [x] Display location in `display_chain()` when file is non-null
+- [x] Omit location in release builds (file=null, line=0, column=0)
 
 ### Into Trait
 - [ ] Define `Into[T]` trait (inverse of From)

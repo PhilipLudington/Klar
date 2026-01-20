@@ -77,6 +77,9 @@ pub const Emitter = struct {
     di_file: ?llvm.MetadataRef,
     /// Current scope for debug locations.
     di_scope: ?llvm.MetadataRef,
+    /// Source filename for error location tracking (set when debug info is initialized).
+    /// Null-terminated for use with LLVM APIs.
+    source_filename: ?[:0]const u8,
 
     /// Reference to type checker for call resolution (generic functions).
     type_checker: ?*const TypeChecker,
@@ -227,6 +230,7 @@ pub const Emitter = struct {
             .di_compile_unit = null,
             .di_file = null,
             .di_scope = null,
+            .source_filename = null,
             .type_checker = null,
             .expected_type = null,
             .current_return_klar_type = null,
@@ -263,6 +267,8 @@ pub const Emitter = struct {
         self.di_compile_unit = di_compile_unit;
         self.di_file = di_file;
         self.di_scope = di_compile_unit;
+        // Allocate a null-terminated copy for use with LLVM string APIs
+        self.source_filename = self.allocator.dupeZ(u8, filename) catch null;
     }
 
     /// Finalize debug info. Must be called before module verification.
@@ -282,6 +288,10 @@ pub const Emitter = struct {
         // Dispose debug info builder first
         if (self.di_builder) |di_builder| {
             di_builder.dispose();
+        }
+        // Free allocated source filename
+        if (self.source_filename) |filename| {
+            self.allocator.free(filename);
         }
         self.loop_stack.deinit(self.allocator);
         // Clean up any remaining scopes (shouldn't normally have any)
@@ -3754,7 +3764,7 @@ pub const Emitter = struct {
                 return llvm.Types.struct_(self.ctx, &result_fields, false);
             },
             .generic_apply => |g| {
-                // Handle builtin generic types like Result[T, E]
+                // Handle builtin generic types like Result[T, E], ContextError[E], etc.
                 if (g.base == .named) {
                     const base_name = g.base.named.name;
                     if (std.mem.eql(u8, base_name, "Result") and g.args.len == 2) {
@@ -3767,6 +3777,18 @@ pub const Emitter = struct {
                             err_type, // err_value
                         };
                         return llvm.Types.struct_(self.ctx, &result_fields, false);
+                    }
+                    if (std.mem.eql(u8, base_name, "ContextError") and g.args.len == 1) {
+                        // ContextError[E] layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
+                        const inner_type = try self.typeExprToLLVM(g.args[0]);
+                        var context_err_fields = [_]llvm.TypeRef{
+                            llvm.Types.pointer(self.ctx), // message
+                            inner_type, // cause
+                            llvm.Types.pointer(self.ctx), // file
+                            llvm.Types.int32(self.ctx), // line
+                            llvm.Types.int32(self.ctx), // column
+                        };
+                        return llvm.Types.struct_(self.ctx, &context_err_fields, false);
                     }
                 }
                 // Other complex types - return pointer as placeholder
@@ -4584,8 +4606,14 @@ pub const Emitter = struct {
                     const ok_type = llvm.c.LLVMStructGetTypeAtIndex(object_type, 1);
                     // err_type is at index 2
                     const err_type = llvm.c.LLVMStructGetTypeAtIndex(object_type, 2);
-                    // ContextError[E] layout: { message: ptr (string), cause: E }
-                    var context_err_fields = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), err_type };
+                    // ContextError[E] layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
+                    var context_err_fields = [_]llvm.TypeRef{
+                        llvm.Types.pointer(self.ctx), // message
+                        err_type, // cause
+                        llvm.Types.pointer(self.ctx), // file
+                        llvm.Types.int32(self.ctx), // line
+                        llvm.Types.int32(self.ctx), // column
+                    };
                     const context_err_type = llvm.Types.struct_(self.ctx, &context_err_fields, false);
                     // Result[T, ContextError[E]] layout: { tag: i1, ok_value: T, err_value: ContextError[E] }
                     var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type, context_err_type };
@@ -4599,9 +4627,9 @@ pub const Emitter = struct {
                 // message() returns string (pointer)
                 if (std.mem.eql(u8, m.method_name, "message")) {
                     const object_type = try self.inferExprType(m.object);
-                    // Check if object type looks like a ContextError (struct with 2 fields)
+                    // Check if object type looks like a ContextError (struct with 5 fields)
                     if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
-                        if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                        if (llvm.c.LLVMCountStructElementTypes(object_type) == 5) {
                             return llvm.Types.pointer(self.ctx);
                         }
                     }
@@ -4609,9 +4637,9 @@ pub const Emitter = struct {
                 // cause() returns the inner error type
                 if (std.mem.eql(u8, m.method_name, "cause")) {
                     const object_type = try self.inferExprType(m.object);
-                    // Check if object type looks like a ContextError (struct with 2 fields)
+                    // Check if object type looks like a ContextError (struct with 5 fields)
                     if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
-                        if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                        if (llvm.c.LLVMCountStructElementTypes(object_type) == 5) {
                             // Return the cause type (second field)
                             return llvm.c.LLVMStructGetTypeAtIndex(object_type, 1);
                         }
@@ -4620,9 +4648,9 @@ pub const Emitter = struct {
                 // display_chain() returns string (pointer)
                 if (std.mem.eql(u8, m.method_name, "display_chain")) {
                     const object_type = try self.inferExprType(m.object);
-                    // Check if object type looks like a ContextError (struct with 2 fields)
+                    // Check if object type looks like a ContextError (struct with 5 fields)
                     if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
-                        if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                        if (llvm.c.LLVMCountStructElementTypes(object_type) == 5) {
                             return llvm.Types.pointer(self.ctx);
                         }
                     }
@@ -6378,16 +6406,16 @@ pub const Emitter = struct {
                 return EmitError.InvalidAST;
             }
             const msg_val = try self.emitExpr(method.args[0]);
-            return self.emitContextMethod(object, object_type, msg_val);
+            return self.emitContextMethod(object, object_type, msg_val, method.span);
         }
 
         // message() - gets context message from ContextError
-        // Only match if this looks like a ContextError type (struct with ptr + cause)
+        // Only match if this looks like a ContextError type (struct with 5 fields, first is pointer)
         if (std.mem.eql(u8, method.method_name, "message")) {
             // Check if object type is a struct (ContextError layout)
             if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
-                // ContextError has exactly 2 fields: message (ptr) + cause
-                if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                // ContextError has exactly 5 fields: message, cause, file, line, column
+                if (llvm.c.LLVMCountStructElementTypes(object_type) == 5) {
                     const first_field = llvm.c.LLVMStructGetTypeAtIndex(object_type, 0);
                     // First field should be a pointer (message)
                     if (llvm.c.LLVMGetTypeKind(first_field) == llvm.c.LLVMPointerTypeKind) {
@@ -6398,12 +6426,12 @@ pub const Emitter = struct {
         }
 
         // cause() - gets original error from ContextError
-        // Only match if this looks like a ContextError type (struct with ptr + cause)
+        // Only match if this looks like a ContextError type (struct with 5 fields, first is pointer)
         if (std.mem.eql(u8, method.method_name, "cause")) {
             // Check if object type is a struct (ContextError layout)
             if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
-                // ContextError has exactly 2 fields: message (ptr) + cause
-                if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                // ContextError has exactly 5 fields: message, cause, file, line, column
+                if (llvm.c.LLVMCountStructElementTypes(object_type) == 5) {
                     const first_field = llvm.c.LLVMStructGetTypeAtIndex(object_type, 0);
                     // First field should be a pointer (message)
                     if (llvm.c.LLVMGetTypeKind(first_field) == llvm.c.LLVMPointerTypeKind) {
@@ -6414,12 +6442,12 @@ pub const Emitter = struct {
         }
 
         // display_chain() - formats the full error chain as a string
-        // Only match if this looks like a ContextError type (struct with ptr + cause)
+        // Only match if this looks like a ContextError type (struct with 5 fields, first is pointer)
         if (std.mem.eql(u8, method.method_name, "display_chain")) {
             // Check if object type is a struct (ContextError layout)
             if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
-                // ContextError has exactly 2 fields: message (ptr) + cause
-                if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                // ContextError has exactly 5 fields: message, cause, file, line, column
+                if (llvm.c.LLVMCountStructElementTypes(object_type) == 5) {
                     const first_field = llvm.c.LLVMStructGetTypeAtIndex(object_type, 0);
                     // First field should be a pointer (message)
                     if (llvm.c.LLVMGetTypeKind(first_field) == llvm.c.LLVMPointerTypeKind) {
@@ -18103,7 +18131,8 @@ pub const Emitter = struct {
 
     /// Emit Result.context(msg) - wraps error with context message.
     /// For Result[T, E].context(msg: string) -> Result[T, ContextError[E]]: Ok(v) -> Ok(v), Err(e) -> Err(ContextError{msg, e})
-    fn emitContextMethod(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, msg_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+    /// In debug mode, captures file:line:column location of the .context() call.
+    fn emitContextMethod(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, msg_val: llvm.ValueRef, span: ast.Span) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Store value to temp for GEP access
@@ -18134,8 +18163,15 @@ pub const Emitter = struct {
         };
         const err_ptr = self.builder.buildGEP(value_type, val_alloca, &err_indices, "context.err.ptr");
 
-        // ContextError[E] layout: { message: ptr, cause: E }
-        var context_err_fields = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), err_type };
+        // ContextError[E] layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
+        // In debug mode, file/line/column are populated; in release, file=null, line=0, column=0
+        var context_err_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // message
+            err_type, // cause
+            llvm.Types.pointer(self.ctx), // file
+            llvm.Types.int32(self.ctx), // line
+            llvm.Types.int32(self.ctx), // column
+        };
         const context_err_type = llvm.Types.struct_(self.ctx, &context_err_fields, false);
 
         // Result[T, ContextError[E]] layout: { tag: i1, ok_value: T, err_value: ContextError[E] }
@@ -18202,6 +18238,42 @@ pub const Emitter = struct {
         };
         const ctx_cause_ptr = self.builder.buildGEP(context_err_type, ctx_err_alloca, &ctx_cause_indices, "context.ctx_err.cause.ptr");
         _ = self.builder.buildStore(err_val, ctx_cause_ptr);
+
+        // Store file (index 2) - null in release, filename in debug
+        var ctx_file_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 2),
+        };
+        const ctx_file_ptr = self.builder.buildGEP(context_err_type, ctx_err_alloca, &ctx_file_indices, "context.ctx_err.file.ptr");
+        const file_val = if (self.source_filename) |filename|
+            self.builder.buildGlobalStringPtr(filename, "context.file")
+        else
+            llvm.Const.null_(llvm.Types.pointer(self.ctx));
+        _ = self.builder.buildStore(file_val, ctx_file_ptr);
+
+        // Store line (index 3) - 0 in release, actual line in debug
+        var ctx_line_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 3),
+        };
+        const ctx_line_ptr = self.builder.buildGEP(context_err_type, ctx_err_alloca, &ctx_line_indices, "context.ctx_err.line.ptr");
+        const line_val = if (self.source_filename != null)
+            llvm.Const.int32(self.ctx, @intCast(span.line))
+        else
+            llvm.Const.int32(self.ctx, 0);
+        _ = self.builder.buildStore(line_val, ctx_line_ptr);
+
+        // Store column (index 4) - 0 in release, actual column in debug
+        var ctx_col_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 4),
+        };
+        const ctx_col_ptr = self.builder.buildGEP(context_err_type, ctx_err_alloca, &ctx_col_indices, "context.ctx_err.col.ptr");
+        const col_val = if (self.source_filename != null)
+            llvm.Const.int32(self.ctx, @intCast(span.column))
+        else
+            llvm.Const.int32(self.ctx, 0);
+        _ = self.builder.buildStore(col_val, ctx_col_ptr);
 
         // Load the ContextError
         const ctx_err_val = self.builder.buildLoad(context_err_type, ctx_err_alloca, "context.ctx_err.val");
@@ -18274,11 +18346,12 @@ pub const Emitter = struct {
         const i8_type = llvm.Types.int8(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
-        // Helper function to check if a type is a ContextError (struct with 2 fields, first is pointer)
+        // Helper function to check if a type is a ContextError (struct with 5 fields, first is pointer)
+        // ContextError layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
         const isContextErrorType = struct {
             fn check(ty: llvm.TypeRef) bool {
                 if (llvm.c.LLVMGetTypeKind(ty) != llvm.c.LLVMStructTypeKind) return false;
-                if (llvm.c.LLVMCountStructElementTypes(ty) != 2) return false;
+                if (llvm.c.LLVMCountStructElementTypes(ty) != 5) return false;
                 const first = llvm.c.LLVMStructGetTypeAtIndex(ty, 0);
                 return llvm.c.LLVMGetTypeKind(first) == llvm.c.LLVMPointerTypeKind;
             }
@@ -18312,8 +18385,10 @@ pub const Emitter = struct {
         const snprintf_fn = self.getOrDeclareSnprintf();
         const snprintf_type = llvm.c.LLVMGlobalGetValueType(snprintf_fn);
 
-        // First, write "Error: " prefix
+        // Format strings
         const error_prefix = self.builder.buildGlobalStringPtr("Error: %s", "display_chain.prefix");
+        const location_fmt = self.builder.buildGlobalStringPtr(" (at %s:%d:%d)", "display_chain.loc_fmt");
+        const i32_type = llvm.Types.int32(self.ctx);
         var current_ctx_err_type = ctx_err_type;
 
         // Store the ContextError for GEP access
@@ -18345,6 +18420,43 @@ pub const Emitter = struct {
         curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.curr_offset2");
         var new_offset = self.builder.buildAdd(curr_offset, written_ext, "display_chain.new_offset");
         _ = self.builder.buildStore(new_offset, offset_alloca);
+
+        // Get file/line/column from first ContextError and append location if file is non-null
+        var file_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 2) };
+        var file_ptr = self.builder.buildGEP(current_ctx_err_type, ctx_err_alloca, &file_indices, "display_chain.file_ptr");
+        var file_val = self.builder.buildLoad(ptr_type, file_ptr, "display_chain.file");
+        var line_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 3) };
+        var line_ptr = self.builder.buildGEP(current_ctx_err_type, ctx_err_alloca, &line_indices, "display_chain.line_ptr");
+        var line_val = self.builder.buildLoad(i32_type, line_ptr, "display_chain.line");
+        var col_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 4) };
+        var col_ptr = self.builder.buildGEP(current_ctx_err_type, ctx_err_alloca, &col_indices, "display_chain.col_ptr");
+        var col_val = self.builder.buildLoad(i32_type, col_ptr, "display_chain.col");
+
+        // Check if file is non-null
+        const null_ptr = llvm.Const.null_(ptr_type);
+        var has_loc = self.builder.buildICmp(llvm.c.LLVMIntNE, file_val, null_ptr, "display_chain.has_loc");
+
+        // Create blocks for conditional location output
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        var loc_block = llvm.appendBasicBlock(self.ctx, func, "display_chain.loc");
+        var no_loc_block = llvm.appendBasicBlock(self.ctx, func, "display_chain.no_loc");
+        _ = self.builder.buildCondBr(has_loc, loc_block, no_loc_block);
+
+        // Block: write location
+        self.builder.positionAtEnd(loc_block);
+        curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.curr_offset_loc");
+        remaining = self.builder.buildSub(llvm.Const.int64(self.ctx, @intCast(buffer_size)), curr_offset, "display_chain.remaining_loc");
+        dest_ptr = self.builder.buildGEP(i8_type, buffer_ptr, &[_]llvm.ValueRef{curr_offset}, "display_chain.dest_ptr_loc");
+        var loc_args = [_]llvm.ValueRef{ dest_ptr, remaining, location_fmt, file_val, line_val, col_val };
+        written = self.builder.buildCall(snprintf_type, snprintf_fn, &loc_args, "display_chain.written_loc");
+        written_ext = llvm.c.LLVMBuildSExt(self.builder.ref, written, i64_type, "display_chain.written_ext_loc");
+        curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.curr_offset_loc2");
+        new_offset = self.builder.buildAdd(curr_offset, written_ext, "display_chain.new_offset_loc");
+        _ = self.builder.buildStore(new_offset, offset_alloca);
+        _ = self.builder.buildBr(no_loc_block);
+
+        // Continue from no_loc_block
+        self.builder.positionAtEnd(no_loc_block);
 
         // Format string for subsequent causes
         const caused_by_fmt = self.builder.buildGlobalStringPtr("\n  Caused by: %s", "display_chain.caused_by");
@@ -18391,6 +18503,41 @@ pub const Emitter = struct {
             curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.curr_offset4");
             new_offset = self.builder.buildAdd(curr_offset, written_ext, "display_chain.new_offset2");
             _ = self.builder.buildStore(new_offset, offset_alloca);
+
+            // Get file/line/column from this ContextError and append location if file is non-null
+            file_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 2) };
+            file_ptr = self.builder.buildGEP(current_ctx_err_type, ctx_err_alloca, &file_indices, "display_chain.inner_file_ptr");
+            file_val = self.builder.buildLoad(ptr_type, file_ptr, "display_chain.inner_file");
+            line_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 3) };
+            line_ptr = self.builder.buildGEP(current_ctx_err_type, ctx_err_alloca, &line_indices, "display_chain.inner_line_ptr");
+            line_val = self.builder.buildLoad(i32_type, line_ptr, "display_chain.inner_line");
+            col_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 4) };
+            col_ptr = self.builder.buildGEP(current_ctx_err_type, ctx_err_alloca, &col_indices, "display_chain.inner_col_ptr");
+            col_val = self.builder.buildLoad(i32_type, col_ptr, "display_chain.inner_col");
+
+            // Check if file is non-null
+            has_loc = self.builder.buildICmp(llvm.c.LLVMIntNE, file_val, null_ptr, "display_chain.inner_has_loc");
+
+            // Create blocks for conditional location output
+            loc_block = llvm.appendBasicBlock(self.ctx, func, "display_chain.inner_loc");
+            no_loc_block = llvm.appendBasicBlock(self.ctx, func, "display_chain.inner_no_loc");
+            _ = self.builder.buildCondBr(has_loc, loc_block, no_loc_block);
+
+            // Block: write location
+            self.builder.positionAtEnd(loc_block);
+            curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.inner_curr_offset_loc");
+            remaining = self.builder.buildSub(llvm.Const.int64(self.ctx, @intCast(buffer_size)), curr_offset, "display_chain.inner_remaining_loc");
+            dest_ptr = self.builder.buildGEP(i8_type, buffer_ptr, &[_]llvm.ValueRef{curr_offset}, "display_chain.inner_dest_ptr_loc");
+            loc_args = [_]llvm.ValueRef{ dest_ptr, remaining, location_fmt, file_val, line_val, col_val };
+            written = self.builder.buildCall(snprintf_type, snprintf_fn, &loc_args, "display_chain.inner_written_loc");
+            written_ext = llvm.c.LLVMBuildSExt(self.builder.ref, written, i64_type, "display_chain.inner_written_ext_loc");
+            curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.inner_curr_offset_loc2");
+            new_offset = self.builder.buildAdd(curr_offset, written_ext, "display_chain.inner_new_offset_loc");
+            _ = self.builder.buildStore(new_offset, offset_alloca);
+            _ = self.builder.buildBr(no_loc_block);
+
+            // Continue from no_loc_block
+            self.builder.positionAtEnd(no_loc_block);
         }
 
         // Finally, write the root cause
@@ -19292,11 +19439,15 @@ pub const Emitter = struct {
             },
             .cell => llvm.Types.pointer(self.ctx),
             .context_error => |ce| {
-                // ContextError LLVM layout: { message: ptr (string), cause: E }
+                // ContextError LLVM layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
+                // In debug mode, file/line/column are populated; in release, file=null, line=0, column=0
                 const inner_ty = self.typeToLLVM(ce.inner_type);
                 var fields = [_]llvm.TypeRef{
                     llvm.Types.pointer(self.ctx), // message (string pointer)
                     inner_ty, // cause (inner error type)
+                    llvm.Types.pointer(self.ctx), // file (string pointer, null in release)
+                    llvm.Types.int32(self.ctx), // line (0 in release)
+                    llvm.Types.int32(self.ctx), // column (0 in release)
                 };
                 return llvm.Types.struct_(self.ctx, &fields, false);
             },

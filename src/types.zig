@@ -532,7 +532,9 @@ pub const CellType = struct {
 
 /// ContextError type for wrapping errors with context messages (ContextError[E])
 /// Wraps an error with a context message for better error reporting.
-/// Layout: { message: string, cause: E }
+/// Layout: { message: string, cause: E, file: ?string, line: i32, column: i32 }
+/// In debug builds, file/line/column track the location of the .context() call.
+/// In release builds, file=null, line=0, column=0.
 pub const ContextErrorType = struct {
     inner_type: Type, // The wrapped error type
 };

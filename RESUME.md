@@ -1,38 +1,38 @@
-# Resume Point: Error Chain Display Complete
+# Resume Point: Debug Mode Location Tracking Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). The `display_chain()` method for ContextError is now fully implemented.
+Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). Debug mode location tracking for ContextError is now implemented.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **Error Chain Display** ✅
-  - Added `ContextError[E].display_chain() -> string` method
-  - Formats full error chain from outermost context to root cause
-  - Output format: `Error: msg\n  Caused by: msg\n  Caused by: root`
-  - Works with arbitrary nesting depth (compile-time type detection)
-  - Test: `test/native/result_context_display.kl` verifies single and chained contexts
+- **Debug Mode Location Tracking** ✅
+  - ContextError now stores file:line:column of the `.context()` call site
+  - In debug builds (`-g`), location is populated and shown in `display_chain()`
+  - In release builds, location fields are null/0/0 (no overhead)
+  - ContextError layout: `{ message: ptr, cause: E, file: ptr, line: i32, column: i32 }`
+  - Output format: `Error: msg (at file:line:col)\n  Caused by: msg (at file:line:col)\n  Caused by: root`
 
 ### Implementation Details
 
-#### Type Checker (checker.zig:4221-4227)
-- Added `display_chain()` method validation (returns string, takes no arguments)
+#### Emitter Changes (emit.zig)
+- Added `source_filename: ?[:0]const u8` field to store filename for location tracking
+- `initDebugInfo()` allocates and stores null-terminated filename
+- `emitContextMethod()` now accepts span parameter and stores file/line/column
+- Updated `typeToLLVM` and `typeExprToLLVM` for 5-field ContextError layout
+- Updated `inferExprType` for context() method return type
+- Updated `emitContextErrorDisplayChain()` with conditional location output
+- All ContextError type checks updated from 2 fields to 5 fields
 
-#### Interpreter (interpreter.zig:1087-1112)
-- Traverses cause chain using `values.Value` union
-- Builds formatted string with `ArrayListUnmanaged`
-- Uses `values.valueToString()` to format root cause
-
-#### Code Generation (emit.zig)
-- Type inference returns pointer (string type)
-- Method dispatch detects ContextError by LLVM struct layout (2 fields, first is pointer)
-- `emitContextErrorDisplayChain()` uses `snprintf` to build formatted output
-- Detects nesting depth from LLVM types at compile time
-- Returns heap-allocated string via `strdup`
+#### Type System (types.zig)
+- Updated ContextErrorType comment to document 5-field layout
 
 ### Previously Completed
+
+- **Error Chain Display** ✅
+  - `ContextError[E].display_chain() -> string` method
 
 - **Error Context for Result** ✅
   - `Result[T, E].context(msg: string) -> Result[T, ContextError[E]]`
@@ -41,8 +41,6 @@ Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improv
 
 - **From Trait for Error Conversion** ✅
 - **`?` Operator for Early Return** ✅
-- **Set[T] and Map[K,V] Iterator Adapters** ✅
-- **List[T] Iterator Adapters** ✅
 - **Milestone 6: Iterator Protocol** ✅ (Core complete)
 - **Milestone 11: Comptime** ✅ (Core complete)
 
@@ -65,9 +63,9 @@ Continue with **Phase 4** tasks:
 1. **Standard Library I/O** (Milestone 5):
    - File, Read/Write traits, stdin/stdout
 
-2. **Debug Mode Stack Traces** (Optional enhancement):
-   - Capture stack trace on error creation
-   - Display trace on unhandled errors
+2. **Into Trait** (Milestone 7):
+   - Define `Into[T]` trait (inverse of From)
+   - Blanket implement Into when From exists
 
 ---
 
@@ -77,22 +75,21 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test display_chain
+# Test debug location tracking (with -g flag)
+./zig-out/bin/klar build test/native/result_context_display.kl -o /tmp/test -g && /tmp/test
+# Output with locations:
+# Error: failed to load config (at result_context_display.kl:8:12)
+#   Caused by: file not found
+
+# Test without debug info (no locations)
 ./zig-out/bin/klar build test/native/result_context_display.kl -o /tmp/test && /tmp/test
-# Output:
+# Output without locations:
 # Error: failed to load config
 #   Caused by: file not found
-# Error: initialization failed
-#   Caused by: failed to load config
+
+# Test nested context errors with locations
+./zig-out/bin/klar build scratch/nested_context_error.kl -o /tmp/test -g && /tmp/test
+# Error: failed to initialize application (at nested_context_error.kl:12:12)
+#   Caused by: failed to read config file (at nested_context_error.kl:8:12)
 #   Caused by: file not found
-
-# Test error context
-./zig-out/bin/klar run test/native/result_context.kl  # All tests pass
-
-# Test From conversion
-./zig-out/bin/klar run test/native/error_from_conversion.kl  # Returns 0 (success)
-
-# Test ? operator propagation
-./zig-out/bin/klar run test/native/optional_propagate.kl   # Returns 52
-./zig-out/bin/klar run test/native/result_propagate.kl     # Returns 52
 ```
