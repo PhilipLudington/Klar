@@ -1,95 +1,100 @@
-# Resume Point: Set[T] Type Complete
+# Resume Point: Set[T] Iteration Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 4 (Stdlib Core). `Set[T]` is now a **fully implemented** builtin hash set type.
+Working on **Phase 4: Language Completion** - Milestone 6 (Iterator Protocol). For-loop iteration over `Set[T]` is now implemented.
 
 ## Progress Summary
 
-### Completed
+### Just Completed
 
-- **Milestone 6: Iterator Protocol** ✅
+- **For-loop over Set[T]** ✅
+  - `for x: T in set { ... }` syntax
+  - Iterates over all occupied entries in the hash set
+  - Skips empty and tombstone entries
+  - Supports `break` and `continue`
+  - Test: `test/native/set_for.kl`
+
+### Previously Completed
+
+- **Milestone 6: Iterator Protocol** ✅ (Core complete)
+  - For-loops over Range literals and variables
+  - For-loops over arrays
+  - For-loops over List[T]
+  - For-loops over Set[T] (NEW)
 - **List[T] Full Implementation** ✅
 - **String Type Full Implementation** ✅
 - **Map[K,V] Full Implementation** ✅
 - **Set[T] Full Implementation** ✅
-  - Static constructors: `Set.new[T]()`, `Set.with_capacity[T](n)`
-  - Accessors: `len()`, `is_empty()`, `capacity()`
-  - Lookup: `contains(element) -> bool`
-  - Mutation: `insert(element) -> bool`, `remove(element) -> bool`, `clear()`
-  - Set operations: `union(other) -> Set[T]`, `intersection(other) -> Set[T]`, `difference(other) -> Set[T]`
-  - Memory: `clone()`, `drop()`
-  - Automatic resize/rehash at 75% load factor
 
 ---
 
-## Current State: Set[T] Type
+## Implementation Details: Set Iteration
 
-`Set[T]` is a hash set using open addressing with linear probing and tombstone deletion:
+### Type Checker (checker.zig)
+
+Added `.set` case to `checkFor()` to extract element type:
+
+```zig
+const elem_type: Type = switch (iter_type) {
+    .array => |a| a.element,
+    .list => |l| l.element,
+    .set => |s| s.element,  // NEW
+    // ...
+};
+```
+
+### Code Generation (emit.zig)
+
+Added `emitForLoopSet()` that:
+1. Iterates index from 0 to capacity
+2. For each index, checks if entry state == OCCUPIED (1)
+3. If occupied, loads element and executes loop body
+4. Skips EMPTY (0) and TOMBSTONE (2) entries
 
 ```
-Set layout:   { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
-Entry layout: { state: i8, cached_hash: i32, element: T }
-
-state: EMPTY=0, OCCUPIED=1, TOMBSTONE=2
-Initial capacity: 8
-Load factor threshold: 75%
-Growth factor: 2x
+Loop structure:
+  cond:  idx < capacity? -> check or end
+  check: state == OCCUPIED? -> body or incr
+  body:  load element, execute body -> incr
+  incr:  idx++, -> cond
+  end:   continue after loop
 ```
 
-### All Methods Implemented
+### Test Coverage
 
-| Method | Signature | Notes |
-|--------|-----------|-------|
-| `Set.new[T]()` | `() -> Set[T]` | Returns zeroed struct |
-| `Set.with_capacity[T](n)` | `(i32) -> Set[T]` | Pre-allocates entries |
-| `s.insert(element)` | `(T) -> bool` | Returns true if newly inserted |
-| `s.contains(element)` | `(T) -> bool` | Probe loop check |
-| `s.remove(element)` | `(T) -> bool` | Returns true if removed |
-| `s.len()` | `() -> i32` | Excludes tombstones |
-| `s.is_empty()` | `() -> bool` | len == 0 |
-| `s.capacity()` | `() -> i32` | Current allocated capacity |
-| `s.union(other)` | `(Set[T]) -> Set[T]` | Elements in either set |
-| `s.intersection(other)` | `(Set[T]) -> Set[T]` | Elements in both sets |
-| `s.difference(other)` | `(Set[T]) -> Set[T]` | Elements in self but not other |
-| `s.clear()` | `() -> void` | Resets to empty |
-| `s.clone()` | `() -> Set[T]` | Deep copy |
-| `s.drop()` | `() -> void` | Frees entries |
-
-### Test Files
-
-- `test/native/set_basic.kl` - Core operations: new, insert, contains, remove, len, is_empty, capacity, clone, clear, drop, with_capacity
-- `test/native/set_operations.kl` - Set operations: union, intersection, difference (including edge cases with empty sets and self)
-
-### Verification
-
-All 398 tests pass (220 unit + 162 native + 10 app + 6 module).
+`test/native/set_for.kl`:
+- Sum all elements (verifies iteration works)
+- Count elements (verifies correct count)
+- Empty set iteration (verifies zero iterations)
+- Break statement (verifies early exit)
 
 ---
 
-## Key Bug Fixes
+## Current Test Status
 
-1. **Struct size calculation missing padding**: `getLLVMTypeSize()` was summing field sizes without alignment padding. For Set's entry `{ i8, i32, i32 }`, calculated 9 bytes but LLVM uses 12 bytes. This caused buffer overflows at higher indices. Fixed by rewriting to properly calculate padding between fields.
-
-2. **Set operation methods expecting pointer, getting value**: `emitSetUnion`, `emitSetIntersection`, and `emitSetDifference` expected a pointer to the "other" Set, but `emitExpr()` loaded the value. Fixed by adding `getSetArgPtr()` helper that returns alloca pointer for identifiers.
-
-3. **isMapExpr matching Set types**: Since Map and Set have the same LLVM struct layout `{ptr, i32, i32, i32}`, `isMapExpr()` was incorrectly matching Set variables. Fixed by checking `is_set` flag before `is_map` flag.
-
-4. **Rehash probe loop not incrementing**: During resize, the probe loop for finding empty slots wasn't incrementing the probe index on collision. Fixed by adding `probe_next_block` that increments and wraps the index.
+All 400 tests pass:
+- Unit Tests: 220 passed
+- Native Tests: 164 passed (includes new set_for.kl and list_for.kl)
+- App Tests: 10 passed
+- Module Tests: 6 passed
 
 ---
 
 ## What's Next
 
-Continue with **Milestone 4: Standard Library - Core**:
+Continue with **Milestone 6: Iterator Protocol**:
 
-1. **Prelude** - Auto-imported types
-   - Include Option, Result, String, List, Map, Set
-   - Include core traits (Eq, Clone, Hash, etc.)
+1. **For-loop over Map[K,V]** - More complex, needs:
+   - Tuple pattern destructuring: `for k, v in map { ... }`
+   - Or entry-based: `for entry in map { entry.key, entry.value }`
 
-2. **Additional collection methods**
-   - Iterator support for List, Map, Set
-   - `from_list()` constructors
+2. **Iterator adapters** (Milestone 6):
+   - `map()`, `filter()`, `take()`, `skip()`, `enumerate()`, `zip()`
+
+3. **`?` operator for early return** (Milestone 7):
+   - For Result: return early on Err
+   - For Option: return early on None
 
 ---
 
@@ -99,10 +104,12 @@ Continue with **Milestone 4: Standard Library - Core**:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test Set specifically
-./zig-out/bin/klar run test/native/set_basic.kl
-./zig-out/bin/klar run test/native/set_operations.kl
+# Test iteration specifically
+./zig-out/bin/klar run test/native/set_for.kl
+./zig-out/bin/klar run test/native/list_for.kl
+./zig-out/bin/klar run test/native/for_range.kl
+./zig-out/bin/klar run test/native/for_array.kl
 
-# Check generated IR
-./zig-out/bin/klar build test/native/set_basic.kl -o /tmp/test --emit-llvm
+# Check generated IR for set iteration
+./zig-out/bin/klar build test/native/set_for.kl -o /tmp/test --emit-llvm
 ```

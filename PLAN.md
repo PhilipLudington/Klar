@@ -247,7 +247,7 @@
 
 **Objective:** Implement core standard library types.
 
-**Status:** In Progress. Optional, Result, builtin type methods (integer, string, array), List[T], and String are complete. Map and Set types not yet started.
+**Status:** In Progress. Optional, Result, builtin type methods (integer, string, array), List[T], String, Map[K,V], and Set[T] are complete. Ordering type and Prelude not yet started.
 
 ### Option Type (Built-in as `?T`)
 - [x] Built-in `?T` syntax for Optional types
@@ -356,20 +356,53 @@ List[T] is implemented as a builtin type in the compiler, not in the standard li
 - [x] Clone trait - Clone list with cloneable elements
 - [x] Drop trait - Proper memory cleanup
 
-### Map Type
-- [ ] Implement `Map[K, V]` struct in std/collections/map.kl
-- [ ] Use hash-based implementation
-- [ ] Implement `new()`, `insert()`, `get()`, `remove()`
-- [ ] Implement `contains_key()`, `keys()`, `values()`
-- [ ] Require K: Hash + Eq bound
-- [ ] Implement `Clone` where K: Clone, V: Clone
+### Map Type (Builtin)
+Map[K, V] is implemented as a builtin type in the compiler with hash-based implementation.
 
-### Set Type
-- [ ] Implement `Set[T]` struct in std/collections/set.kl
-- [ ] Build on Map implementation
-- [ ] Implement `new()`, `insert()`, `contains()`, `remove()`
-- [ ] Implement `union()`, `intersection()`, `difference()`
-- [ ] Require T: Hash + Eq bound
+**Implemented:**
+- [x] `Map.new[K, V]()` - Create an empty map
+- [x] `insert(key, value)` - Insert or update key-value pair
+- [x] `get(key)` -> ?V - Get value for key (optional)
+- [x] `remove(key)` -> ?V - Remove and return value
+- [x] `contains_key(key)` -> bool - Check if key exists
+- [x] `len()` -> i32 - Current number of entries
+- [x] `is_empty()` -> bool - Check if empty
+- [x] `capacity()` -> i32 - Allocated capacity
+- [x] `clear()` - Remove all entries
+- [x] `clone()` -> Map[K, V] - Deep copy
+- [x] `drop()` - Free memory
+- [x] Automatic resizing on insert
+
+**Files Modified:**
+- `src/checker.zig` - Map type checking and method validation
+- `src/codegen/emit.zig` - LLVM codegen for Map operations
+- `test/native/map_basic.kl` - Basic tests
+- `test/native/map_resize.kl` - Resize/capacity tests
+
+### Set Type (Builtin)
+Set[T] is implemented as a builtin type in the compiler with hash-based implementation.
+
+**Implemented:**
+- [x] `Set.new[T]()` - Create an empty set
+- [x] `Set.with_capacity[T](n)` - Create with pre-allocated capacity
+- [x] `insert(value)` -> bool - Insert element, returns true if new
+- [x] `contains(value)` -> bool - Check membership
+- [x] `remove(value)` -> bool - Remove element, returns true if existed
+- [x] `len()` -> i32 - Current number of elements
+- [x] `is_empty()` -> bool - Check if empty
+- [x] `capacity()` -> i32 - Allocated capacity
+- [x] `clear()` - Remove all elements
+- [x] `clone()` -> Set[T] - Deep copy
+- [x] `drop()` - Free memory
+- [x] `union(other)` -> Set[T] - Set union
+- [x] `intersection(other)` -> Set[T] - Set intersection
+- [x] `difference(other)` -> Set[T] - Set difference
+
+**Files Modified:**
+- `src/checker.zig` - Set type checking and method validation
+- `src/codegen/emit.zig` - LLVM codegen for Set operations
+- `test/native/set_basic.kl` - Basic tests
+- `test/native/set_operations.kl` - Set operation tests (union, intersection, difference)
 
 ### Ordering Type
 - [ ] Implement `Ordering` enum in std/core/ordering.kl
@@ -383,10 +416,12 @@ List[T] is implemented as a builtin type in the compiler, not in the standard li
 - [ ] Auto-import prelude in all modules
 
 ### Testing
-- [ ] Test: can create and manipulate strings
-- [ ] Test: List works for dynamic collections
-- [ ] Test: Map and Set work with hashable keys
-- [ ] Test: Option and Result methods work correctly
+- [x] Test: can create and manipulate strings (string_basic.kl, string_concat.kl, etc.)
+- [x] Test: List works for dynamic collections (list_basic.kl, list_capacity.kl, list_iter.kl)
+- [x] Test: Map works with hashable keys (map_basic.kl, map_resize.kl)
+- [x] Test: Set works with hashable elements (set_basic.kl, set_operations.kl)
+- [x] Test: Option methods work correctly (optional_*.kl tests)
+- [x] Test: Result methods work correctly (result_*.kl tests)
 
 **Files to Create:**
 ```
@@ -509,9 +544,11 @@ std/
 - [x] Support for-loops over Range literals (`for i in 0..10`)
 - [x] Support for-loops over Range variables (`var r = 0..10; for i in r`)
 - [x] Support for-loops over arrays (`for x in [1, 2, 3]`)
-- [x] Support for-loops over List[T] (`for x in list`)
+- [x] Support for-loops over List[T] (`for x in list`, test/native/list_for.kl)
 - [x] Handle loop variables correctly with proper scoping
 - [x] Support `break` and `continue` in for-loops
+- [ ] Support for-loops over Map[K,V] (`for k, v in map` or `for entry in map`)
+- [x] Support for-loops over Set[T] (`for x in set`, test/native/set_for.kl)
 - [ ] Desugar via `into_iter()` for custom types (currently only builtin types supported)
 
 ### Range Iterators

@@ -1,0 +1,35 @@
+// Test for-loop iteration over List[T]
+fn main() -> i32 {
+    // Create a list with some values
+    var list: List[i32] = List.new[i32]()
+    list.push(10)
+    list.push(20)
+    list.push(30)
+
+    // Sum the values using for-in loop
+    var sum: i32 = 0
+    for x: i32 in list {
+        sum = sum + x
+    }
+
+    // Expected sum: 10 + 20 + 30 = 60
+    if sum != 60 {
+        return 1
+    }
+
+    // Test with empty list
+    var empty: List[i32] = List.new[i32]()
+    var count: i32 = 0
+    for y: i32 in empty {
+        count = count + 1
+    }
+    if count != 0 {
+        return 2
+    }
+
+    // Clean up
+    list.drop()
+    empty.drop()
+
+    return 0  // Success
+}

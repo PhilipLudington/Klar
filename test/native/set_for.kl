@@ -1,0 +1,57 @@
+// Test for-loop iteration over Set[T]
+fn main() -> i32 {
+    // Create a set with some values
+    var s: Set[i32] = Set.new[i32]()
+    s.insert(10)
+    s.insert(20)
+    s.insert(30)
+
+    // Sum the values using for-in loop
+    // Note: order is not guaranteed in a hash set
+    var sum: i32 = 0
+    for x: i32 in s {
+        sum = sum + x
+    }
+
+    // Expected sum: 10 + 20 + 30 = 60
+    if sum != 60 {
+        return 1
+    }
+
+    // Count elements
+    var count: i32 = 0
+    for y: i32 in s {
+        count = count + 1
+    }
+    if count != 3 {
+        return 2
+    }
+
+    // Test with empty set
+    var empty: Set[i32] = Set.new[i32]()
+    var empty_count: i32 = 0
+    for z: i32 in empty {
+        empty_count = empty_count + 1
+    }
+    if empty_count != 0 {
+        return 3
+    }
+
+    // Test iteration with break
+    var found: i32 = 0
+    for v: i32 in s {
+        if v == 20 {
+            found = 1
+            break
+        }
+    }
+    if found != 1 {
+        return 4
+    }
+
+    // Clean up
+    s.drop()
+    empty.drop()
+
+    return 0  // Success
+}

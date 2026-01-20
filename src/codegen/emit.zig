@@ -1051,6 +1051,9 @@ pub const Emitter = struct {
                 } else if (self.isListExpr(loop.iterable)) {
                     // List iteration: for x in list { body }
                     try self.emitForLoopList(func, binding_name, loop.iterable, loop.body);
+                } else if (self.isSetExpr(loop.iterable)) {
+                    // Set iteration: for x in set { body }
+                    try self.emitForLoopSet(func, binding_name, loop.iterable, loop.body);
                 } else {
                     return EmitError.UnsupportedFeature;
                 }
@@ -1558,6 +1561,171 @@ pub const Emitter = struct {
                 return ListInfo{
                     .alloca = list_val,
                     .element_type = expr_type.list.element,
+                };
+            }
+        }
+        return EmitError.InvalidAST;
+    }
+
+    /// Emit for-loop for Set[T] types using index iteration over entries.
+    /// Set layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
+    /// Entry layout: { state: i8, cached_hash: i32, element: T }
+    /// State: 0=EMPTY, 1=OCCUPIED, 2=TOMBSTONE
+    fn emitForLoopSet(
+        self: *Emitter,
+        func: llvm.ValueRef,
+        binding_name: []const u8,
+        iterable: ast.Expr,
+        body: *ast.Block,
+    ) EmitError!void {
+        // Get the set alloca and element type
+        const set_info = try self.getSetInfo(iterable);
+        const set_alloca = set_info.alloca;
+        const element_type = set_info.element_type;
+        const element_llvm_type = self.typeToLLVM(element_type);
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const set_type = self.getSetStructType();
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        // Allocate index counter (iterates over capacity, not len)
+        const idx_alloca = self.builder.buildAlloca(i32_type, "forset.idx");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
+
+        // Allocate loop variable (element binding)
+        const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(var_name);
+        const elem_alloca = self.builder.buildAlloca(element_llvm_type, var_name);
+
+        // Determine if element type is signed (for integer types)
+        const is_signed = self.isSignedType(element_llvm_type);
+
+        // Add loop variable to scope
+        self.named_values.put(binding_name, .{
+            .value = elem_alloca,
+            .is_alloca = true,
+            .ty = element_llvm_type,
+            .is_signed = is_signed,
+        }) catch return EmitError.OutOfMemory;
+
+        // Create blocks
+        const cond_bb = llvm.appendBasicBlock(self.ctx, func, "forset.cond");
+        const check_bb = llvm.appendBasicBlock(self.ctx, func, "forset.check");
+        const body_bb = llvm.appendBasicBlock(self.ctx, func, "forset.body");
+        const incr_bb = llvm.appendBasicBlock(self.ctx, func, "forset.incr");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "forset.end");
+
+        // Push loop context (continue goes to increment, break goes to end)
+        self.loop_stack.append(self.allocator, .{
+            .continue_block = incr_bb,
+            .break_block = end_bb,
+        }) catch return EmitError.OutOfMemory;
+        defer _ = self.loop_stack.pop();
+
+        // Branch to condition
+        _ = self.builder.buildBr(cond_bb);
+
+        // Emit condition: idx < capacity
+        self.builder.positionAtEnd(cond_bb);
+        const cur_idx = self.builder.buildLoad(i32_type, idx_alloca, "forset.idx.cur");
+        // Load capacity from set (field index 2)
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_alloca, 2, "forset.cap_ptr");
+        const set_cap = self.builder.buildLoad(i32_type, cap_ptr, "forset.cap");
+        const cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, cur_idx, set_cap, "forset.cmp");
+        _ = self.builder.buildCondBr(cmp, check_bb, end_bb);
+
+        // Check if current entry is OCCUPIED (state == 1)
+        self.builder.positionAtEnd(check_bb);
+        const cur_idx2 = self.builder.buildLoad(i32_type, idx_alloca, "forset.idx.cur2");
+
+        // Load entries pointer from set (field index 0)
+        const entries_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_alloca, 0, "forset.entries_ptr_ptr");
+        const entries_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), entries_ptr_ptr, "forset.entries_ptr");
+
+        // Get pointer to current entry: entries[idx]
+        var gep_indices_entry = [_]llvm.ValueRef{cur_idx2};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries_ptr, &gep_indices_entry, 1, "forset.entry.ptr");
+
+        // Load state from entry (field index 0)
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "forset.state.ptr");
+        const state_val = self.builder.buildLoad(i8_type, state_ptr, "forset.state");
+
+        // Check if state == 1 (OCCUPIED)
+        const occupied = llvm.Const.int8(self.ctx, 1);
+        const is_occupied = self.builder.buildICmp(llvm.c.LLVMIntEQ, state_val, occupied, "forset.is_occupied");
+        _ = self.builder.buildCondBr(is_occupied, body_bb, incr_bb);
+
+        // Emit body
+        self.builder.positionAtEnd(body_bb);
+        self.has_terminator = false;
+
+        // Load element from entry (field index 2)
+        const elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "forset.elem.ptr");
+        const elem_val = self.builder.buildLoad(element_llvm_type, elem_ptr, "forset.elem.val");
+        _ = self.builder.buildStore(elem_val, elem_alloca);
+
+        // Emit body with loop scope for drop tracking
+        try self.pushScope(true); // is_loop = true
+        _ = try self.emitBlock(body);
+        if (!self.has_terminator) {
+            // Emit drops for variables declared in this iteration before continuing
+            self.popScope();
+            _ = self.builder.buildBr(incr_bb);
+        } else {
+            // Terminator already emitted (break/continue/return)
+            if (self.scope_stack.pop()) |scope| {
+                var s = scope;
+                s.droppables.deinit(self.allocator);
+            }
+        }
+
+        // Emit increment
+        self.builder.positionAtEnd(incr_bb);
+        const cur_idx3 = self.builder.buildLoad(i32_type, idx_alloca, "forset.idx.cur3");
+        const one = llvm.Const.int32(self.ctx, 1);
+        const next_idx = self.builder.buildAdd(cur_idx3, one, "forset.idx.next");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = self.builder.buildBr(cond_bb);
+
+        // Continue after loop
+        self.builder.positionAtEnd(end_bb);
+        self.has_terminator = false;
+
+        // Remove loop variable from scope
+        _ = self.named_values.remove(binding_name);
+    }
+
+    /// Get information about a Set expression: its alloca pointer and element type.
+    const SetInfo = struct {
+        alloca: llvm.ValueRef,
+        element_type: types.Type,
+    };
+
+    fn getSetInfo(self: *Emitter, expr: ast.Expr) EmitError!SetInfo {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.set_element_type) |elem_type| {
+                        return SetInfo{
+                            .alloca = local.value,
+                            .element_type = elem_type,
+                        };
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: use type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            if (expr_type == .set) {
+                // Emit the expression and hope it's an alloca
+                const set_val = try self.emitExpr(expr);
+                return SetInfo{
+                    .alloca = set_val,
+                    .element_type = expr_type.set.element,
                 };
             }
         }
