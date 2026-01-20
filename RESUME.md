@@ -1,48 +1,43 @@
-# Resume Point: Error Context for Result Complete
+# Resume Point: Error Chain Display Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). The `.context()` method for Result is now fully implemented.
+Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). The `display_chain()` method for ContextError is now fully implemented.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **Error Context for Result** ✅
-  - Added `ContextError[E]` built-in type that wraps errors with context messages
-  - `Result[T, E].context(msg: string) -> Result[T, ContextError[E]]`
-  - `ContextError[E].message() -> string` returns the context message
-  - `ContextError[E].cause() -> E` returns the original error
-  - Chaining creates nested types: `result.context("a").context("b")` -> `Result[T, ContextError[ContextError[E]]]`
-  - Test: `test/native/result_context.kl` verifies all functionality
+- **Error Chain Display** ✅
+  - Added `ContextError[E].display_chain() -> string` method
+  - Formats full error chain from outermost context to root cause
+  - Output format: `Error: msg\n  Caused by: msg\n  Caused by: root`
+  - Works with arbitrary nesting depth (compile-time type detection)
+  - Test: `test/native/result_context_display.kl` verifies single and chained contexts
 
 ### Implementation Details
 
-#### Type System (types.zig)
-- Added `ContextErrorType` struct with `inner_type: Type`
-- Added `context_error` variant to Type union
-- Added equality, copy-type check, formatting support
+#### Type Checker (checker.zig:4221-4227)
+- Added `display_chain()` method validation (returns string, takes no arguments)
 
-#### Type Checker (checker.zig)
-- Added `.context()` method to Result methods (returns `Result[T, ContextError[E]]`)
-- Added `ContextError` methods section with `message()` and `cause()`
-- Added `ContextError[E]` to type resolution (alongside `Result[T, E]`, `Option[T]`, etc.)
-- Added `context_error` handling to `substituteTypeParams`, `containsTypeVar`, `unifyTypes`
+#### Interpreter (interpreter.zig:1087-1112)
+- Traverses cause chain using `values.Value` union
+- Builds formatted string with `ArrayListUnmanaged`
+- Uses `values.valueToString()` to format root cause
 
 #### Code Generation (emit.zig)
-- Added LLVM type for ContextError: `{ ptr (message), E (cause) }`
-- Added `emitContextMethod()` for Result.context()
-- Added `emitContextErrorMessage()` and `emitContextErrorCause()` for ContextError methods
-- Added type inference for `context()`, `message()`, `cause()` methods
-- Fixed Ok/Err type inference to use expected_type from type annotations
-
-#### Interpreter (interpreter.zig, values.zig)
-- Added `ContextErrorValue` struct
-- Added `context_error` variant to Value union
-- Added Result methods: `is_ok`, `is_err`, `unwrap`, `unwrap_err`, `context`
-- Added ContextError methods: `message`, `cause`
+- Type inference returns pointer (string type)
+- Method dispatch detects ContextError by LLVM struct layout (2 fields, first is pointer)
+- `emitContextErrorDisplayChain()` uses `snprintf` to build formatted output
+- Detects nesting depth from LLVM types at compile time
+- Returns heap-allocated string via `strdup`
 
 ### Previously Completed
+
+- **Error Context for Result** ✅
+  - `Result[T, E].context(msg: string) -> Result[T, ContextError[E]]`
+  - `ContextError[E].message() -> string`
+  - `ContextError[E].cause() -> E`
 
 - **From Trait for Error Conversion** ✅
 - **`?` Operator for Early Return** ✅
@@ -55,9 +50,9 @@ Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improv
 
 ## Current Test Status
 
-All 422 tests pass:
+All 423 tests pass:
 - Unit Tests: 220 passed
-- Native Tests: 186 passed
+- Native Tests: 187 passed
 - App Tests: 10 passed
 - Module Tests: 6 passed
 
@@ -70,9 +65,9 @@ Continue with **Phase 4** tasks:
 1. **Standard Library I/O** (Milestone 5):
    - File, Read/Write traits, stdin/stdout
 
-2. **Error Chain Display** (Optional enhancement):
-   - Debug mode stack traces
-   - Error chain formatting
+2. **Debug Mode Stack Traces** (Optional enhancement):
+   - Capture stack trace on error creation
+   - Display trace on unhandled errors
 
 ---
 
@@ -81,6 +76,15 @@ Continue with **Phase 4** tasks:
 ```bash
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
+
+# Test display_chain
+./zig-out/bin/klar build test/native/result_context_display.kl -o /tmp/test && /tmp/test
+# Output:
+# Error: failed to load config
+#   Caused by: file not found
+# Error: initialization failed
+#   Caused by: failed to load config
+#   Caused by: file not found
 
 # Test error context
 ./zig-out/bin/klar run test/native/result_context.kl  # All tests pass

@@ -1083,6 +1083,33 @@ pub const Interpreter = struct {
             if (std.mem.eql(u8, method.method_name, "cause")) {
                 return ctx_err.cause.*;
             }
+
+            if (std.mem.eql(u8, method.method_name, "display_chain")) {
+                var result = std.ArrayListUnmanaged(u8){};
+                errdefer result.deinit(self.allocator);
+
+                result.appendSlice(self.allocator, "Error: ") catch return RuntimeError.OutOfMemory;
+                result.appendSlice(self.allocator, ctx_err.message) catch return RuntimeError.OutOfMemory;
+
+                // Traverse cause chain
+                var current: values.Value = ctx_err.cause.*;
+                while (true) {
+                    result.appendSlice(self.allocator, "\n  Caused by: ") catch return RuntimeError.OutOfMemory;
+                    if (current == .context_error) {
+                        const inner = current.context_error;
+                        result.appendSlice(self.allocator, inner.message) catch return RuntimeError.OutOfMemory;
+                        current = inner.cause.*;
+                    } else {
+                        // Root cause - format the value
+                        const formatted = values.valueToString(self.allocator, current) catch return RuntimeError.OutOfMemory;
+                        defer self.allocator.free(formatted);
+                        result.appendSlice(self.allocator, formatted) catch return RuntimeError.OutOfMemory;
+                        break;
+                    }
+                }
+
+                return self.builder.string(result.toOwnedSlice(self.allocator) catch return RuntimeError.OutOfMemory);
+            }
         }
 
         // Type conversion methods handled in type checker, just return the value

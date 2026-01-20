@@ -1,0 +1,22 @@
+// Test display_chain() method for ContextError
+// Formats the full error chain as a human-readable string
+
+fn main() -> i32 {
+    // Single context with string root
+    let r1: Result[i32, string] = Err("file not found")
+    let c1: Result[i32, ContextError[string]] = r1.context("failed to load config")
+    let err1: ContextError[string] = c1.unwrap_err()
+    println(err1.display_chain())
+    // Expected: Error: failed to load config
+    //             Caused by: file not found
+
+    // Double-chained context
+    let c2: Result[i32, ContextError[ContextError[string]]] = c1.context("initialization failed")
+    let err2: ContextError[ContextError[string]] = c2.unwrap_err()
+    println(err2.display_chain())
+    // Expected: Error: initialization failed
+    //             Caused by: failed to load config
+    //             Caused by: file not found
+
+    return 0
+}

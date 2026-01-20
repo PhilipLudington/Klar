@@ -4617,6 +4617,16 @@ pub const Emitter = struct {
                         }
                     }
                 }
+                // display_chain() returns string (pointer)
+                if (std.mem.eql(u8, m.method_name, "display_chain")) {
+                    const object_type = try self.inferExprType(m.object);
+                    // Check if object type looks like a ContextError (struct with 2 fields)
+                    if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
+                        if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                            return llvm.Types.pointer(self.ctx);
+                        }
+                    }
+                }
                 // String methods
                 // len() returns i32
                 if (std.mem.eql(u8, m.method_name, "len")) {
@@ -6398,6 +6408,22 @@ pub const Emitter = struct {
                     // First field should be a pointer (message)
                     if (llvm.c.LLVMGetTypeKind(first_field) == llvm.c.LLVMPointerTypeKind) {
                         return self.emitContextErrorCause(object, object_type);
+                    }
+                }
+            }
+        }
+
+        // display_chain() - formats the full error chain as a string
+        // Only match if this looks like a ContextError type (struct with ptr + cause)
+        if (std.mem.eql(u8, method.method_name, "display_chain")) {
+            // Check if object type is a struct (ContextError layout)
+            if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
+                // ContextError has exactly 2 fields: message (ptr) + cause
+                if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                    const first_field = llvm.c.LLVMStructGetTypeAtIndex(object_type, 0);
+                    // First field should be a pointer (message)
+                    if (llvm.c.LLVMGetTypeKind(first_field) == llvm.c.LLVMPointerTypeKind) {
+                        return self.emitContextErrorDisplayChain(object, object_type);
                     }
                 }
             }
@@ -18239,6 +18265,166 @@ pub const Emitter = struct {
         const cause_type = llvm.c.LLVMStructGetTypeAtIndex(ctx_err_type, 1);
         const cause_ptr = self.builder.buildGEP(ctx_err_type, ctx_err_alloca, &cause_indices, "ctx_err.cause.ptr");
         return self.builder.buildLoad(cause_type, cause_ptr, "ctx_err.cause");
+    }
+
+    /// Emit ContextError.display_chain() - returns formatted error chain as string.
+    /// Uses snprintf to build "Error: msg1\n  Caused by: msg2\n  Caused by: root"
+    fn emitContextErrorDisplayChain(self: *Emitter, ctx_err_val: llvm.ValueRef, ctx_err_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Helper function to check if a type is a ContextError (struct with 2 fields, first is pointer)
+        const isContextErrorType = struct {
+            fn check(ty: llvm.TypeRef) bool {
+                if (llvm.c.LLVMGetTypeKind(ty) != llvm.c.LLVMStructTypeKind) return false;
+                if (llvm.c.LLVMCountStructElementTypes(ty) != 2) return false;
+                const first = llvm.c.LLVMStructGetTypeAtIndex(ty, 0);
+                return llvm.c.LLVMGetTypeKind(first) == llvm.c.LLVMPointerTypeKind;
+            }
+        }.check;
+
+        // Count nesting depth using LLVM type info
+        var nesting_depth: usize = 0;
+        var current_llvm_type = ctx_err_type;
+        while (isContextErrorType(current_llvm_type)) {
+            nesting_depth += 1;
+            current_llvm_type = llvm.c.LLVMStructGetTypeAtIndex(current_llvm_type, 1);
+        }
+
+        // Allocate a buffer (1024 bytes should be enough for most error chains)
+        const buffer_size: u64 = 1024;
+        const buffer_type = llvm.Types.array(i8_type, buffer_size);
+        const buffer = self.builder.buildAlloca(buffer_type, "display_chain.buf");
+
+        // Get pointer to buffer start
+        var buf_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const buffer_ptr = self.builder.buildGEP(buffer_type, buffer, &buf_indices, "display_chain.buf_ptr");
+
+        // Track current position in buffer
+        const offset_alloca = self.builder.buildAlloca(i64_type, "display_chain.offset");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), offset_alloca);
+
+        // Helper to append a string to the buffer
+        const snprintf_fn = self.getOrDeclareSnprintf();
+        const snprintf_type = llvm.c.LLVMGlobalGetValueType(snprintf_fn);
+
+        // First, write "Error: " prefix
+        const error_prefix = self.builder.buildGlobalStringPtr("Error: %s", "display_chain.prefix");
+        var current_ctx_err_type = ctx_err_type;
+
+        // Store the ContextError for GEP access
+        var ctx_err_alloca = self.builder.buildAlloca(ctx_err_type, "display_chain.ctx_err");
+        _ = self.builder.buildStore(ctx_err_val, ctx_err_alloca);
+
+        // Get first message
+        var msg_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        var msg_ptr = self.builder.buildGEP(current_ctx_err_type, ctx_err_alloca, &msg_indices, "display_chain.msg_ptr");
+        var current_msg = self.builder.buildLoad(ptr_type, msg_ptr, "display_chain.msg");
+
+        // Write "Error: <first_message>"
+        var curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.curr_offset");
+        var remaining = self.builder.buildSub(
+            llvm.Const.int64(self.ctx, @intCast(buffer_size)),
+            curr_offset,
+            "display_chain.remaining",
+        );
+        var dest_ptr = self.builder.buildGEP(i8_type, buffer_ptr, &[_]llvm.ValueRef{curr_offset}, "display_chain.dest_ptr");
+
+        var snprintf_args = [_]llvm.ValueRef{ dest_ptr, remaining, error_prefix, current_msg };
+        var written = self.builder.buildCall(snprintf_type, snprintf_fn, &snprintf_args, "display_chain.written");
+
+        // Update offset (extend written from i32 to i64)
+        var written_ext = llvm.c.LLVMBuildSExt(self.builder.ref, written, i64_type, "display_chain.written_ext");
+        curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.curr_offset2");
+        var new_offset = self.builder.buildAdd(curr_offset, written_ext, "display_chain.new_offset");
+        _ = self.builder.buildStore(new_offset, offset_alloca);
+
+        // Format string for subsequent causes
+        const caused_by_fmt = self.builder.buildGlobalStringPtr("\n  Caused by: %s", "display_chain.caused_by");
+
+        // Now traverse each nested ContextError level
+        var depth: usize = 1;
+        while (depth < nesting_depth) : (depth += 1) {
+            // Get cause from current ContextError
+            var cause_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 1),
+            };
+            const cause_type = llvm.c.LLVMStructGetTypeAtIndex(current_ctx_err_type, 1);
+            const cause_ptr = self.builder.buildGEP(current_ctx_err_type, ctx_err_alloca, &cause_indices, "display_chain.cause_ptr");
+            const cause_val = self.builder.buildLoad(cause_type, cause_ptr, "display_chain.cause");
+
+            // Store the inner ContextError
+            current_ctx_err_type = cause_type;
+            ctx_err_alloca = self.builder.buildAlloca(cause_type, "display_chain.inner_ctx_err");
+            _ = self.builder.buildStore(cause_val, ctx_err_alloca);
+
+            // Get message from inner ContextError
+            msg_indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, 0),
+            };
+            msg_ptr = self.builder.buildGEP(cause_type, ctx_err_alloca, &msg_indices, "display_chain.inner_msg_ptr");
+            current_msg = self.builder.buildLoad(ptr_type, msg_ptr, "display_chain.inner_msg");
+
+            // Write "\n  Caused by: <message>"
+            curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.curr_offset3");
+            remaining = self.builder.buildSub(
+                llvm.Const.int64(self.ctx, @intCast(buffer_size)),
+                curr_offset,
+                "display_chain.remaining2",
+            );
+            dest_ptr = self.builder.buildGEP(i8_type, buffer_ptr, &[_]llvm.ValueRef{curr_offset}, "display_chain.dest_ptr2");
+
+            snprintf_args = [_]llvm.ValueRef{ dest_ptr, remaining, caused_by_fmt, current_msg };
+            written = self.builder.buildCall(snprintf_type, snprintf_fn, &snprintf_args, "display_chain.written2");
+
+            // Update offset
+            written_ext = llvm.c.LLVMBuildSExt(self.builder.ref, written, i64_type, "display_chain.written_ext2");
+            curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.curr_offset4");
+            new_offset = self.builder.buildAdd(curr_offset, written_ext, "display_chain.new_offset2");
+            _ = self.builder.buildStore(new_offset, offset_alloca);
+        }
+
+        // Finally, write the root cause
+        // Get cause from the innermost ContextError
+        var cause_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const final_cause_type = llvm.c.LLVMStructGetTypeAtIndex(current_ctx_err_type, 1);
+        const final_cause_ptr = self.builder.buildGEP(current_ctx_err_type, ctx_err_alloca, &cause_indices, "display_chain.final_cause_ptr");
+        const root_cause = self.builder.buildLoad(final_cause_type, final_cause_ptr, "display_chain.root_cause");
+
+        // Determine how to format the root cause based on its type
+        // For now, assume it's a string (most common case)
+        curr_offset = self.builder.buildLoad(i64_type, offset_alloca, "display_chain.curr_offset5");
+        remaining = self.builder.buildSub(
+            llvm.Const.int64(self.ctx, @intCast(buffer_size)),
+            curr_offset,
+            "display_chain.remaining3",
+        );
+        dest_ptr = self.builder.buildGEP(i8_type, buffer_ptr, &[_]llvm.ValueRef{curr_offset}, "display_chain.dest_ptr3");
+
+        snprintf_args = [_]llvm.ValueRef{ dest_ptr, remaining, caused_by_fmt, root_cause };
+        _ = self.builder.buildCall(snprintf_type, snprintf_fn, &snprintf_args, "display_chain.written3");
+
+        // Allocate the result string on the heap using strdup
+        const strdup_fn = self.getOrDeclareStrdup();
+        var strdup_args = [_]llvm.ValueRef{buffer_ptr};
+        return self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(strdup_fn),
+            strdup_fn,
+            &strdup_args,
+            "display_chain.result",
+        );
     }
 
     /// Emit the Eq trait's eq() method for equality comparison.

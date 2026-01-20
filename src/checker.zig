@@ -4217,6 +4217,14 @@ pub const TypeChecker = struct {
                 }
                 return context_error_type.inner_type;
             }
+
+            // display_chain() -> string - returns formatted error chain
+            if (std.mem.eql(u8, method.method_name, "display_chain")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "display_chain() takes no arguments", .{});
+                }
+                return self.type_builder.stringType();
+            }
         }
 
         // List methods

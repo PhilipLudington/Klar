@@ -634,9 +634,11 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 - [x] `Result[T, E].context(msg) -> Result[T, ContextError[E]]`
 - [x] `ContextError[E].message() -> string` returns context message
 - [x] `ContextError[E].cause() -> E` returns original error
+- [x] `ContextError[E].display_chain() -> string` formats full error chain
 - [x] Support chained error messages (nested ContextError types)
 - [x] Preserve original error for inspection
 - [x] Test: result_context.kl verifies context wrapping, chaining, message/cause extraction
+- [x] Test: result_context_display.kl verifies display_chain formatting
 
 ### Debug Mode Stack Traces
 - [ ] Capture stack trace on error creation (debug mode only)
@@ -656,15 +658,16 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 
 **Files Modified:**
 - `src/types.zig` - Added ContextErrorType to Type union ✓
-- `src/checker.zig` - Enhanced `?` operator checking, expected_type context, checkOkErrCall, .context() method, ContextError methods, ContextError[E] type resolution ✓
-- `src/codegen/emit.zig` - Generate `?` early return code, extended ReturnTypeInfo, expected_type propagation, inferExprType for unwrap_err/unwrap, ContextError codegen ✓
-- `src/interpreter.zig` - Added ContextError support, Result methods, ContextError methods ✓
+- `src/checker.zig` - Enhanced `?` operator checking, expected_type context, checkOkErrCall, .context() method, ContextError methods (message, cause, display_chain), ContextError[E] type resolution ✓
+- `src/codegen/emit.zig` - Generate `?` early return code, extended ReturnTypeInfo, expected_type propagation, inferExprType for unwrap_err/unwrap, ContextError codegen, display_chain implementation ✓
+- `src/interpreter.zig` - Added ContextError support, Result methods, ContextError methods (message, cause, display_chain) ✓
 - `src/values.zig` - Added ContextErrorValue ✓
 - `test/native/optional_propagate.kl` - Test `?` on Optional ✓
 - `test/native/result_propagate.kl` - Test `?` on Result ✓
 - `test/native/result_propagate_simple.kl` - Simpler `?` on Result test ✓
 - `test/native/error_from_conversion.kl` - Test From trait error conversion ✓
 - `test/native/result_context.kl` - Test .context() method and ContextError ✓
+- `test/native/result_context_display.kl` - Test display_chain() method ✓
 
 ---
 
