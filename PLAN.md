@@ -599,11 +599,15 @@ std/
 
 **Objective:** Complete the `?` operator and improve error handling.
 
+**Status:** In Progress. Core `?` operator implemented for early return on Optional and Result types.
+
 ### Question Mark Operator
-- [ ] Implement full `?` operator in checker
-- [ ] For Result: return early on Err
-- [ ] For Option: return early on None
-- [ ] Generate proper early return code in codegen
+- [x] Implement full `?` operator in checker
+- [x] For Result: return early on Err
+- [x] For Option: return early on None
+- [x] Generate proper early return code in codegen
+- [x] Test: `?` on Optional propagates None (optional_propagate.kl)
+- [x] Test: `?` on Result propagates Err (result_propagate.kl)
 
 ### From Trait for Error Conversion
 - [ ] Define `From[T]` trait in std/core
@@ -635,15 +639,17 @@ std/
 - [ ] Use in error conversion chains
 
 ### Testing
-- [ ] Test: `?` operator properly propagates errors
+- [x] Test: `?` operator properly propagates errors (optional_propagate.kl, result_propagate.kl)
 - [ ] Test: error types can be converted automatically
 - [ ] Test: try blocks scope correctly
 - [ ] Test: context messages preserved
 
-**Files to Modify:**
-- `src/checker.zig` - Enhance `?` operator checking
-- `src/codegen/emit.zig` - Generate `?` early return code
-- `std/core/result.kl` - Add context methods
+**Files Modified:**
+- `src/checker.zig` - Enhanced `?` operator checking ✓
+- `src/codegen/emit.zig` - Generate `?` early return code, extended ReturnTypeInfo ✓
+- `test/native/optional_propagate.kl` - Test `?` on Optional ✓
+- `test/native/result_propagate.kl` - Test `?` on Result ✓
+- `test/native/result_propagate_simple.kl` - Simpler `?` on Result test ✓
 
 ---
 

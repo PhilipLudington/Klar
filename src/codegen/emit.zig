@@ -89,7 +89,10 @@ pub const Emitter = struct {
     const ReturnTypeInfo = struct {
         llvm_type: llvm.TypeRef,
         is_optional: bool,
-        inner_type: ?llvm.TypeRef, // Non-null if is_optional
+        is_result: bool,
+        inner_type: ?llvm.TypeRef, // Non-null if is_optional (the T in Optional[T])
+        ok_type: ?llvm.TypeRef, // Non-null if is_result (the T in Result[T, E])
+        err_type: ?llvm.TypeRef, // Non-null if is_result (the E in Result[T, E])
     };
 
     const StructTypeInfo = struct {
@@ -471,11 +474,43 @@ pub const Emitter = struct {
             // Set up return type info
             if (method.return_type) |rt| {
                 const llvm_rt = try self.typeExprToLLVM(rt);
-                const is_opt = rt == .optional;
+                const is_opt = rt == .optional or (rt == .generic_apply and
+                    rt.generic_apply.base == .named and
+                    std.mem.eql(u8, rt.generic_apply.base.named.name, "Option"));
+                // Check for Result[T, E] which is parsed as generic_apply
+                const is_res = rt == .result or (rt == .generic_apply and
+                    rt.generic_apply.base == .named and
+                    std.mem.eql(u8, rt.generic_apply.base.named.name, "Result"));
+
+                // Extract inner types based on representation
+                var inner_type: ?llvm.TypeRef = null;
+                var ok_type: ?llvm.TypeRef = null;
+                var err_type: ?llvm.TypeRef = null;
+
+                if (is_opt) {
+                    if (rt == .optional) {
+                        inner_type = try self.typeExprToLLVM(rt.optional.inner);
+                    } else if (rt == .generic_apply and rt.generic_apply.args.len >= 1) {
+                        inner_type = try self.typeExprToLLVM(rt.generic_apply.args[0]);
+                    }
+                }
+                if (is_res) {
+                    if (rt == .result) {
+                        ok_type = try self.typeExprToLLVM(rt.result.ok_type);
+                        err_type = try self.typeExprToLLVM(rt.result.err_type);
+                    } else if (rt == .generic_apply and rt.generic_apply.args.len >= 2) {
+                        ok_type = try self.typeExprToLLVM(rt.generic_apply.args[0]);
+                        err_type = try self.typeExprToLLVM(rt.generic_apply.args[1]);
+                    }
+                }
+
                 self.current_return_type = .{
                     .llvm_type = llvm_rt,
                     .is_optional = is_opt,
-                    .inner_type = if (is_opt) try self.typeExprToLLVM(rt.optional.inner) else null,
+                    .is_result = is_res,
+                    .inner_type = inner_type,
+                    .ok_type = ok_type,
+                    .err_type = err_type,
                 };
             } else {
                 self.current_return_type = null;
@@ -591,11 +626,43 @@ pub const Emitter = struct {
         // Set up return type info
         if (func.return_type) |rt| {
             const llvm_rt = try self.typeExprToLLVM(rt);
-            const is_opt = rt == .optional;
+            const is_opt = rt == .optional or (rt == .generic_apply and
+                rt.generic_apply.base == .named and
+                std.mem.eql(u8, rt.generic_apply.base.named.name, "Option"));
+            // Check for Result[T, E] which is parsed as generic_apply
+            const is_res = rt == .result or (rt == .generic_apply and
+                rt.generic_apply.base == .named and
+                std.mem.eql(u8, rt.generic_apply.base.named.name, "Result"));
+
+            // Extract inner types based on representation
+            var inner_type: ?llvm.TypeRef = null;
+            var ok_type: ?llvm.TypeRef = null;
+            var err_type: ?llvm.TypeRef = null;
+
+            if (is_opt) {
+                if (rt == .optional) {
+                    inner_type = try self.typeExprToLLVM(rt.optional.inner);
+                } else if (rt == .generic_apply and rt.generic_apply.args.len >= 1) {
+                    inner_type = try self.typeExprToLLVM(rt.generic_apply.args[0]);
+                }
+            }
+            if (is_res) {
+                if (rt == .result) {
+                    ok_type = try self.typeExprToLLVM(rt.result.ok_type);
+                    err_type = try self.typeExprToLLVM(rt.result.err_type);
+                } else if (rt == .generic_apply and rt.generic_apply.args.len >= 2) {
+                    ok_type = try self.typeExprToLLVM(rt.generic_apply.args[0]);
+                    err_type = try self.typeExprToLLVM(rt.generic_apply.args[1]);
+                }
+            }
+
             self.current_return_type = .{
                 .llvm_type = llvm_rt,
                 .is_optional = is_opt,
-                .inner_type = if (is_opt) try self.typeExprToLLVM(rt.optional.inner) else null,
+                .is_result = is_res,
+                .inner_type = inner_type,
+                .ok_type = ok_type,
+                .err_type = err_type,
             };
         } else {
             self.current_return_type = null;
@@ -4025,11 +4092,14 @@ pub const Emitter = struct {
             },
             .postfix => |post| {
                 // Postfix operators (unwrap) return the inner type
+                // For Optional[T] (2-field struct): { i1, T } -> returns T
+                // For Result[T, E] (3-field struct): { i1, T, E } -> returns T (ok_value)
                 const operand_type = try self.inferExprType(post.operand);
                 const type_kind = llvm.getTypeKind(operand_type);
                 if (type_kind == llvm.c.LLVMStructTypeKind) {
-                    // For optional types (2-field struct), return the value field type
-                    if (llvm.c.LLVMCountStructElementTypes(operand_type) == 2) {
+                    const num_fields = llvm.c.LLVMCountStructElementTypes(operand_type);
+                    // Both Optional (2 fields) and Result (3 fields) have value at index 1
+                    if (num_fields == 2 or num_fields == 3) {
                         return llvm.c.LLVMStructGetTypeAtIndex(operand_type, 1);
                     }
                 }
@@ -5297,19 +5367,52 @@ pub const Emitter = struct {
                 return self.builder.buildLoad(val_type, val_ptr, "unwrap.val");
             },
             .unwrap => {
-                // ? operator: safe unwrap - for now, same as force_unwrap
-                // In full implementation, this would propagate None
+                // ? operator: early return on None/Err
                 const func = self.current_function orelse return EmitError.InvalidAST;
+                const rt_info = self.current_return_type orelse return EmitError.InvalidAST;
 
                 const ok_block = llvm.appendBasicBlock(self.ctx, func, "unwrap.ok");
-                const fail_block = llvm.appendBasicBlock(self.ctx, func, "unwrap.fail");
+                const propagate_block = llvm.appendBasicBlock(self.ctx, func, "unwrap.propagate");
 
                 // Branch based on tag
-                _ = self.builder.buildCondBr(tag, ok_block, fail_block);
+                _ = self.builder.buildCondBr(tag, ok_block, propagate_block);
 
-                // Fail block: unreachable/trap for now
-                self.builder.positionAtEnd(fail_block);
-                _ = self.builder.buildUnreachable();
+                // Propagate block: construct error return and return early
+                self.builder.positionAtEnd(propagate_block);
+
+                // Determine if operand is Optional (2 fields) or Result (3 fields)
+                const num_fields = llvm.c.LLVMCountStructElementTypes(operand_type);
+
+                if (rt_info.is_optional) {
+                    // Return None: { i1 = 0, T = undef }
+                    const none_val = self.emitNone(rt_info.llvm_type);
+                    _ = self.builder.buildRet(none_val);
+                } else if (rt_info.is_result) {
+                    // Return Err with same error value
+                    // For Result operand: extract error value from index 2
+                    // For Optional operand: this should have been caught by type checker
+                    if (num_fields == 3) {
+                        // Operand is Result[T, E] - extract error from index 2
+                        var err_indices = [_]llvm.ValueRef{
+                            llvm.Const.int32(self.ctx, 0),
+                            llvm.Const.int32(self.ctx, 2),
+                        };
+                        const err_ptr = self.builder.buildGEP(operand_type, opt_alloca, &err_indices, "propagate.err.ptr");
+                        const err_type_llvm = llvm.c.LLVMStructGetTypeAtIndex(operand_type, 2);
+                        const err_val = self.builder.buildLoad(err_type_llvm, err_ptr, "propagate.err.val");
+
+                        // Build Err result with the extracted error
+                        const err_result = self.emitErr(err_val, rt_info.ok_type.?, rt_info.err_type.?);
+                        _ = self.builder.buildRet(err_result);
+                    } else {
+                        // Operand is Optional but return is Result - shouldn't happen with proper type checking
+                        // Fall back to unreachable
+                        _ = self.builder.buildUnreachable();
+                    }
+                } else {
+                    // Return type is neither optional nor result - shouldn't happen with proper type checking
+                    _ = self.builder.buildUnreachable();
+                }
 
                 // OK block: load and return value
                 self.builder.positionAtEnd(ok_block);
@@ -7010,13 +7113,43 @@ pub const Emitter = struct {
         self.has_terminator = false;
 
         // Set up return type info
+        const rt = closure.return_type;
+        const is_opt = rt == .optional or (rt == .generic_apply and
+            rt.generic_apply.base == .named and
+            std.mem.eql(u8, rt.generic_apply.base.named.name, "Option"));
+        const is_res = rt == .result or (rt == .generic_apply and
+            rt.generic_apply.base == .named and
+            std.mem.eql(u8, rt.generic_apply.base.named.name, "Result"));
+
+        // Extract inner types based on representation
+        var inner_type: ?llvm.TypeRef = null;
+        var ok_type: ?llvm.TypeRef = null;
+        var err_type: ?llvm.TypeRef = null;
+
+        if (is_opt) {
+            if (rt == .optional) {
+                inner_type = try self.typeExprToLLVM(rt.optional.inner);
+            } else if (rt == .generic_apply and rt.generic_apply.args.len >= 1) {
+                inner_type = try self.typeExprToLLVM(rt.generic_apply.args[0]);
+            }
+        }
+        if (is_res) {
+            if (rt == .result) {
+                ok_type = try self.typeExprToLLVM(rt.result.ok_type);
+                err_type = try self.typeExprToLLVM(rt.result.err_type);
+            } else if (rt == .generic_apply and rt.generic_apply.args.len >= 2) {
+                ok_type = try self.typeExprToLLVM(rt.generic_apply.args[0]);
+                err_type = try self.typeExprToLLVM(rt.generic_apply.args[1]);
+            }
+        }
+
         self.current_return_type = .{
             .llvm_type = return_type,
-            .is_optional = closure.return_type == .optional,
-            .inner_type = if (closure.return_type == .optional)
-                try self.typeExprToLLVM(closure.return_type.optional.inner)
-            else
-                null,
+            .is_optional = is_opt,
+            .is_result = is_res,
+            .inner_type = inner_type,
+            .ok_type = ok_type,
+            .err_type = err_type,
         };
 
         // Create entry block for lifted function
@@ -18932,10 +19065,14 @@ pub const Emitter = struct {
         // Set up return type info
         const return_llvm_type = self.typeToLLVM(func_type.return_type);
         const is_optional = func_type.return_type == .optional;
+        const is_result = func_type.return_type == .result;
         self.current_return_type = .{
             .llvm_type = return_llvm_type,
             .is_optional = is_optional,
+            .is_result = is_result,
             .inner_type = if (is_optional) self.typeToLLVM(func_type.return_type.optional.*) else null,
+            .ok_type = if (is_result) self.typeToLLVM(func_type.return_type.result.ok_type) else null,
+            .err_type = if (is_result) self.typeToLLVM(func_type.return_type.result.err_type) else null,
         };
         defer self.current_return_type = null;
 
@@ -19095,10 +19232,14 @@ pub const Emitter = struct {
         // Set up return type info
         const return_llvm_type = self.typeToLLVM(func_type.return_type);
         const is_optional = func_type.return_type == .optional;
+        const is_result = func_type.return_type == .result;
         self.current_return_type = .{
             .llvm_type = return_llvm_type,
             .is_optional = is_optional,
+            .is_result = is_result,
             .inner_type = if (is_optional) self.typeToLLVM(func_type.return_type.optional.*) else null,
+            .ok_type = if (is_result) self.typeToLLVM(func_type.return_type.result.ok_type) else null,
+            .err_type = if (is_result) self.typeToLLVM(func_type.return_type.result.err_type) else null,
         };
         defer self.current_return_type = null;
 

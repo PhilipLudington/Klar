@@ -1,0 +1,16 @@
+// Simple test for ? operator on Result
+// Just test basic extraction without the complex logic
+
+fn get_ok() -> Result[i32, i32] {
+    return Ok(42)
+}
+
+fn try_propagate() -> Result[i32, i32] {
+    let value: i32 = get_ok()?
+    return Ok(value)
+}
+
+fn main() -> i32 {
+    let result: Result[i32, i32] = try_propagate()
+    return result!
+}

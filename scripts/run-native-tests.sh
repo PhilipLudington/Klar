@@ -35,6 +35,9 @@ get_expected() {
         optional_unwrap) echo 42 ;;  # Force unwrap Some(42)
         optional_coalesce) echo 99 ;;  # None ?? 99 = 99
         optional_coalesce_some) echo 42 ;;  # Some(42) ?? 99 = 42
+        optional_propagate) echo 52 ;;  # ? on Optional: 42 + 10 = 52
+        result_propagate) echo 52 ;;  # ? on Result: 42 + 10 = 52
+        result_propagate_simple) echo 42 ;;  # Simpler ? on Result test
         *) echo -1 ;;  # -1 means accept any result
     esac
 }

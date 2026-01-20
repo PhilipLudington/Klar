@@ -1,0 +1,33 @@
+// Test ? operator for optional propagation
+// When None: returns None from the function
+// When Some: extracts the value
+
+fn maybe_value(has_value: bool) -> ?i32 {
+    if has_value {
+        return 42
+    }
+    // Implicit None return at end of function
+}
+
+fn try_get_value(has_value: bool) -> ?i32 {
+    // ? on Some should extract value
+    // ? on None should return None early
+    let value: i32 = maybe_value(has_value)?
+    return value + 10
+}
+
+fn main() -> i32 {
+    // Test 1: With Some value - should get 42 + 10 = 52
+    let result1: ?i32 = try_get_value(true)
+    let val1: i32 = result1!
+
+    // Test 2: With None - should get None back
+    let result2: ?i32 = try_get_value(false)
+
+    // Return val1 if result2 is None (which it should be)
+    if result2.is_none() {
+        return val1  // Returns 52
+    }
+
+    return 0  // Should not reach here
+}

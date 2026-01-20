@@ -2830,12 +2830,35 @@ pub const TypeChecker = struct {
 
         switch (post.op) {
             .unwrap => {
-                // ? operator: optional -> inner type (returns optional on None)
-                if (operand_type != .optional) {
-                    self.addError(.invalid_operation, post.span, "'?' requires optional type", .{});
+                // ? operator: propagate error/none via early return
+                // Accepts both Optional and Result types
+
+                if (operand_type != .optional and operand_type != .result) {
+                    self.addError(.invalid_operation, post.span, "'?' requires optional or result type", .{});
                     return self.type_builder.unknownType();
                 }
-                return operand_type.optional.*;
+
+                // Validate function return type is compatible
+                const return_type = self.current_return_type orelse {
+                    self.addError(.invalid_operation, post.span, "'?' cannot be used outside a function", .{});
+                    return self.type_builder.unknownType();
+                };
+
+                if (operand_type == .optional) {
+                    // Optional? requires function to return Optional
+                    if (return_type != .optional) {
+                        self.addError(.type_mismatch, post.span, "'?' on optional requires function to return optional type", .{});
+                    }
+                    return operand_type.optional.*;
+                } else {
+                    // Result? requires function to return Result with same error type
+                    if (return_type != .result) {
+                        self.addError(.type_mismatch, post.span, "'?' on result requires function to return result type", .{});
+                    } else if (!operand_type.result.err_type.eql(return_type.result.err_type)) {
+                        self.addError(.type_mismatch, post.span, "error types must match for '?' propagation", .{});
+                    }
+                    return operand_type.result.ok_type;
+                }
             },
             .force_unwrap => {
                 // ! operator: optional -> inner type (traps on None)
