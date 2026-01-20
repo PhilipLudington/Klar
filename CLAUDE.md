@@ -277,3 +277,19 @@ Wrapper scripts write results to JSON files read by GitStat:
 - `.build-results.json` - Build status
 - `.test-results.json` - Unit test results
 - `.native-test-results.json` - Native compilation test results
+
+## Scratch Directory
+
+The `scratch/` directory is your sandbox. You have full freedom to:
+- Create any files or directories
+- Modify or delete anything
+- Run experiments and tests
+- Store working notes and analysis
+
+Use it liberally for:
+- Trying out Klar code implementations before proposing changes
+- Creating test fixtures and sample `.kl` files
+- Writing analysis and comparisons of approaches
+- Any temporary work that doesn't belong in the main codebase
+
+The scratch directory is gitignored and can be cleaned at any time.

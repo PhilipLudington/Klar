@@ -17,3 +17,6 @@ zig-out/
 
 # LLVM IR output (when debugging)
 *.ll
+
+# AI scratch/sandbox directory
+scratch/
