@@ -29,6 +29,7 @@
 - [x] VM: implicit optional return not wrapping as None - fixed by emitting op_none before op_return for optional return types
 - [x] Native codegen: array index assignment (`arr[i] = value`) and struct field assignment (`s.field = value`)
 - [x] Interpreter: array index assignment and struct field assignment
+- [x] Native codegen: struct method return type inference - fixed by looking up method function by mangled name instead of defaulting to i32
 
 ---
 
