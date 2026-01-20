@@ -111,7 +111,7 @@
 - [x] Validate trait definitions (unique method names, valid signatures)
 - [x] Check for conflicts in trait inheritance (first definition wins)
 - [x] Store Self type placeholder for trait methods
-- [ ] Handle associated types in traits
+- [x] Handle associated types in traits
 
 ### Trait Implementation
 - [x] Parse and check `impl Type: Trait { ... }` blocks
@@ -247,7 +247,7 @@
 
 **Objective:** Implement core standard library types.
 
-**Status:** In Progress. Optional, Result, builtin type methods (integer, string, array), List[T], String, Map[K,V], and Set[T] are complete. Ordering type and Prelude not yet started.
+**Status:** ✅ Core Complete. Optional, Result, builtin type methods (integer, string, array), List[T], String, Map[K,V], and Set[T] are all implemented as builtin types. Ordering type and Prelude not yet started (deferred - may not be needed given builtin approach).
 
 ### Option Type (Built-in as `?T`)
 - [x] Built-in `?T` syntax for Optional types
@@ -525,7 +525,7 @@ std/
 
 **Objective:** Implement iterators and for-loop integration.
 
-**Status:** Core functionality complete. For-loops work with Range[T] and arrays. Iterator adapters and collect not yet started.
+**Status:** ✅ Core Complete. For-loops work with Range[T], arrays, List[T], Set[T], and Map[K,V]. Iterator adapter methods implemented on collection types. Lazy iterator types and collect not yet started.
 
 ### Iterator Trait
 - [x] Define `Iterator` trait as builtin (in checker.zig)
@@ -537,7 +537,8 @@ std/
 - [x] Define `IntoIterator` trait as builtin (in checker.zig)
 - [x] Add associated types `type Item`, `type IntoIter`
 - [x] Add `into_iter(self) -> Self.IntoIter`
-- [ ] Implement for List, Set, Map, String
+- [x] For-loop iteration for List, Set, Map (via direct codegen, not trait dispatch)
+- [ ] Implement for String
 
 ### For Loop Implementation
 - [x] Parse `for x in collection { ... }` syntax
@@ -559,13 +560,15 @@ std/
 - [x] Implement `reset()`, `is_empty()`, `len()`, `clone()` methods
 - [x] Support integer element types
 
-### Iterator Adapters
-- [ ] Implement `map[B](f: fn(Self.Item) -> B) -> Map[Self, B]`
-- [ ] Implement `filter(pred: fn(&Self.Item) -> bool) -> Filter[Self]`
-- [ ] Implement `take(n: usize) -> Take[Self]`
-- [ ] Implement `skip(n: usize) -> Skip[Self]`
-- [ ] Implement `enumerate() -> Enumerate[Self]`
-- [ ] Implement `zip[U](other: U) -> Zip[Self, U.IntoIter]`
+### Iterator Adapters (as collection methods)
+Note: Implemented as eager methods on collection types, not lazy iterator types.
+- [x] `take(n)` - List, Set, Map
+- [x] `skip(n)` - List, Set, Map
+- [x] `filter(pred)` - List, Set, Map (Map uses 2-arg predicate)
+- [x] `map(f)` / `map_values(f)` - List, Set (returns List), Map (map_values)
+- [x] `enumerate()` - List, Set (returns List of tuples)
+- [x] `zip(other)` - List, Set (returns List of tuples)
+- [ ] Lazy iterator types (Map[Self, B], Filter[Self], etc.) - deferred
 
 ### Collect
 - [ ] Define `FromIterator[T]` trait
@@ -578,20 +581,29 @@ std/
 - [x] Test: for loops work with Range literals (for_range.kl)
 - [x] Test: for loops work with Range variables (for_range.kl)
 - [x] Test: for loops work with arrays (for_array.kl)
+- [x] Test: for loops work with List (list_for.kl)
+- [x] Test: for loops work with Set (set_for.kl)
+- [x] Test: for loops work with Map (map_for.kl)
 - [x] Test: range iterators work correctly (range_basic.kl, range_inclusive.kl)
 - [x] Test: Iterator trait can be used as bound (iter_trait_basic.kl)
-- [ ] Test: iterator chains are lazy (not evaluated until needed)
+- [x] Test: List adapters work (list_take.kl, list_skip.kl, list_filter.kl, list_map.kl, list_enumerate.kl, list_zip.kl)
+- [x] Test: Set adapters work (set_take.kl, set_skip.kl, set_filter.kl, set_map.kl, set_enumerate.kl, set_zip.kl)
+- [x] Test: Map adapters work (map_take.kl, map_skip.kl, map_filter.kl, map_values.kl)
+- [ ] Test: iterator chains are lazy (not evaluated until needed) - N/A for eager methods
 - [ ] Test: can collect into List, Set
 
 **Files Modified:**
-- `src/checker.zig` - Iterator/IntoIterator trait definitions, Range method checking
-- `src/codegen/emit.zig` - For-loop codegen for Range and arrays, emitRangeNext()
-- `src/types.zig` - RangeType definition
-- `test/native/for_range.kl` - Range for-loop tests
-- `test/native/for_array.kl` - Array for-loop tests
-- `test/native/range_basic.kl` - Manual Range iteration
-- `test/native/range_inclusive.kl` - Inclusive range tests
-- `test/native/iter_trait_basic.kl` - Iterator trait bound test
+- `src/checker.zig` - Iterator/IntoIterator trait definitions, Range method checking, collection adapter methods ✓
+- `src/codegen/emit.zig` - For-loop codegen for Range, arrays, List, Set, Map; iterator adapter emission ✓
+- `src/types.zig` - RangeType definition ✓
+- `test/native/for_range.kl` - Range for-loop tests ✓
+- `test/native/for_array.kl` - Array for-loop tests ✓
+- `test/native/list_for.kl` - List for-loop tests ✓
+- `test/native/set_for.kl` - Set for-loop tests ✓
+- `test/native/map_for.kl` - Map for-loop tests ✓
+- `test/native/list_*.kl` - List adapter tests ✓
+- `test/native/set_*.kl` - Set adapter tests ✓
+- `test/native/map_*.kl` - Map adapter tests ✓
 
 ---
 
@@ -964,9 +976,9 @@ Based on dependencies:
 3. **Milestone 3: Modules** (needed for stdlib) ✅
 4. **Milestone 10: REPL** (uses interpreter, enables AI workflow) ✅
 5. **Milestone 11: Comptime** (uses interpreter, enables metaprogramming) ✅ Core Complete
-6. **Milestone 6: Iterators** (for-loops with Range/arrays) ✅ Core Complete
-7. **Milestone 4: Stdlib Core** (needs generics, traits, modules) ← **CURRENT**
-8. **Milestone 7: Error Handling** (needs traits)
+6. **Milestone 6: Iterators** (for-loops, collection adapters) ✅ Core Complete
+7. **Milestone 4: Stdlib Core** (needs generics, traits, modules) ✅ Core Complete
+8. **Milestone 7: Error Handling** (`?` operator done, From/Into traits pending) ← **CURRENT**
 9. **Milestone 5: Stdlib I/O** (needs core)
 10. **Milestone 8: Package Manager** (needs modules)
 11. **Milestone 9: Tooling** (needs stable language)
@@ -981,9 +993,10 @@ Phase 4 is complete when:
 - [x] Generic functions and types work correctly
 - [x] Traits can be defined and implemented
 - [x] Multi-file projects compile
-- [ ] Standard library provides core functionality
+- [x] Standard library provides core functionality (as builtins: Optional, Result, List, String, Map, Set)
 - [x] Comptime enables compile-time metaprogramming (core features complete)
-- [x] For-loops work with Range and arrays
+- [x] For-loops work with Range, arrays, List, Set, Map
+- [x] `?` operator for error propagation
 
 **AI-Native Development:**
 - [x] REPL provides interactive code exploration
