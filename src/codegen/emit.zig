@@ -1029,6 +1029,15 @@ pub const Emitter = struct {
     fn emitForLoop(self: *Emitter, loop: *ast.ForLoop) EmitError!void {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
+        // Check for Map iteration with tuple pattern: for (k, v) in map { ... }
+        if (loop.pattern == .tuple_pattern) {
+            if (self.isMapExpr(loop.iterable)) {
+                try self.emitForLoopMap(func, loop.pattern.tuple_pattern, loop.iterable, loop.body);
+                return;
+            }
+            return EmitError.UnsupportedFeature; // Tuple patterns only for Map for now
+        }
+
         // Get the binding name from the pattern
         const binding_name = switch (loop.pattern) {
             .binding => |b| b.name,
@@ -1730,6 +1739,206 @@ pub const Emitter = struct {
             }
         }
         return EmitError.InvalidAST;
+    }
+
+    /// Get information about a Map expression: its alloca pointer, key type, and value type.
+    const MapInfo = struct {
+        alloca: llvm.ValueRef,
+        key_type: types.Type,
+        value_type: types.Type,
+    };
+
+    fn getMapInfo(self: *Emitter, expr: ast.Expr) EmitError!MapInfo {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.map_key_type != null and local.map_value_type != null) {
+                        return MapInfo{
+                            .alloca = local.value,
+                            .key_type = local.map_key_type.?,
+                            .value_type = local.map_value_type.?,
+                        };
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: use type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            if (expr_type == .map) {
+                // Emit the expression and hope it's an alloca
+                const map_val = try self.emitExpr(expr);
+                return MapInfo{
+                    .alloca = map_val,
+                    .key_type = expr_type.map.key,
+                    .value_type = expr_type.map.value,
+                };
+            }
+        }
+        return EmitError.InvalidAST;
+    }
+
+    /// Emit for-loop over Map[K,V] with tuple pattern: for (k, v) in map { body }
+    fn emitForLoopMap(
+        self: *Emitter,
+        func: llvm.ValueRef,
+        tuple_pattern: *ast.TuplePattern,
+        iterable: ast.Expr,
+        body: *ast.Block,
+    ) EmitError!void {
+        // Tuple pattern must have exactly 2 elements: (key, value)
+        if (tuple_pattern.elements.len != 2) {
+            return EmitError.UnsupportedFeature;
+        }
+
+        // Get binding names from tuple pattern elements
+        const key_binding = switch (tuple_pattern.elements[0]) {
+            .binding => |b| b.name,
+            else => return EmitError.UnsupportedFeature,
+        };
+        const value_binding = switch (tuple_pattern.elements[1]) {
+            .binding => |b| b.name,
+            else => return EmitError.UnsupportedFeature,
+        };
+
+        // Get the map alloca and key/value types
+        const map_info = try self.getMapInfo(iterable);
+        const map_alloca = map_info.alloca;
+        const key_type = map_info.key_type;
+        const value_type = map_info.value_type;
+        const key_llvm_type = self.typeToLLVM(key_type);
+        const value_llvm_type = self.typeToLLVM(value_type);
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const map_type = self.getMapStructType();
+        const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
+
+        // Allocate index counter (iterates over capacity, not len)
+        const idx_alloca = self.builder.buildAlloca(i32_type, "formap.idx");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
+
+        // Allocate loop variables (key and value bindings)
+        const key_var_name = self.allocator.dupeZ(u8, key_binding) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(key_var_name);
+        const key_alloca = self.builder.buildAlloca(key_llvm_type, key_var_name);
+
+        const value_var_name = self.allocator.dupeZ(u8, value_binding) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(value_var_name);
+        const value_alloca = self.builder.buildAlloca(value_llvm_type, value_var_name);
+
+        // Determine if types are signed
+        const key_is_signed = self.isSignedType(key_llvm_type);
+        const value_is_signed = self.isSignedType(value_llvm_type);
+
+        // Add loop variables to scope
+        self.named_values.put(key_binding, .{
+            .value = key_alloca,
+            .is_alloca = true,
+            .ty = key_llvm_type,
+            .is_signed = key_is_signed,
+        }) catch return EmitError.OutOfMemory;
+
+        self.named_values.put(value_binding, .{
+            .value = value_alloca,
+            .is_alloca = true,
+            .ty = value_llvm_type,
+            .is_signed = value_is_signed,
+        }) catch return EmitError.OutOfMemory;
+
+        // Create blocks
+        const cond_bb = llvm.appendBasicBlock(self.ctx, func, "formap.cond");
+        const check_bb = llvm.appendBasicBlock(self.ctx, func, "formap.check");
+        const body_bb = llvm.appendBasicBlock(self.ctx, func, "formap.body");
+        const incr_bb = llvm.appendBasicBlock(self.ctx, func, "formap.incr");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "formap.end");
+
+        // Push loop context (continue goes to increment, break goes to end)
+        self.loop_stack.append(self.allocator, .{
+            .continue_block = incr_bb,
+            .break_block = end_bb,
+        }) catch return EmitError.OutOfMemory;
+        defer _ = self.loop_stack.pop();
+
+        // Branch to condition
+        _ = self.builder.buildBr(cond_bb);
+
+        // Emit condition: idx < capacity
+        self.builder.positionAtEnd(cond_bb);
+        const cur_idx = self.builder.buildLoad(i32_type, idx_alloca, "formap.idx.cur");
+        // Load capacity from map (field index 2)
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, 2, "formap.cap_ptr");
+        const map_cap = self.builder.buildLoad(i32_type, cap_ptr, "formap.cap");
+        const cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, cur_idx, map_cap, "formap.cmp");
+        _ = self.builder.buildCondBr(cmp, check_bb, end_bb);
+
+        // Check if current entry is OCCUPIED (state == 1)
+        self.builder.positionAtEnd(check_bb);
+        const cur_idx2 = self.builder.buildLoad(i32_type, idx_alloca, "formap.idx.cur2");
+
+        // Load entries pointer from map (field index 0)
+        const entries_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, 0, "formap.entries_ptr_ptr");
+        const entries_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), entries_ptr_ptr, "formap.entries_ptr");
+
+        // Get pointer to current entry: entries[idx]
+        var gep_indices_entry = [_]llvm.ValueRef{cur_idx2};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries_ptr, &gep_indices_entry, 1, "formap.entry.ptr");
+
+        // Load state from entry (field index 0)
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "formap.state.ptr");
+        const state_val = self.builder.buildLoad(i8_type, state_ptr, "formap.state");
+
+        // Check if state == 1 (OCCUPIED)
+        const occupied = llvm.Const.int8(self.ctx, 1);
+        const is_occupied = self.builder.buildICmp(llvm.c.LLVMIntEQ, state_val, occupied, "formap.is_occupied");
+        _ = self.builder.buildCondBr(is_occupied, body_bb, incr_bb);
+
+        // Emit body
+        self.builder.positionAtEnd(body_bb);
+        self.has_terminator = false;
+
+        // Load key from entry (field index 2)
+        const key_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "formap.key.ptr");
+        const key_val = self.builder.buildLoad(key_llvm_type, key_ptr, "formap.key.val");
+        _ = self.builder.buildStore(key_val, key_alloca);
+
+        // Load value from entry (field index 3)
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 3, "formap.val.ptr");
+        const val_val = self.builder.buildLoad(value_llvm_type, val_ptr, "formap.val.val");
+        _ = self.builder.buildStore(val_val, value_alloca);
+
+        // Emit body with loop scope for drop tracking
+        try self.pushScope(true); // is_loop = true
+        _ = try self.emitBlock(body);
+        if (!self.has_terminator) {
+            // Emit drops for variables declared in this iteration before continuing
+            self.popScope();
+            _ = self.builder.buildBr(incr_bb);
+        } else {
+            // Terminator already emitted (break/continue/return)
+            if (self.scope_stack.pop()) |scope| {
+                var s = scope;
+                s.droppables.deinit(self.allocator);
+            }
+        }
+
+        // Emit increment
+        self.builder.positionAtEnd(incr_bb);
+        const cur_idx3 = self.builder.buildLoad(i32_type, idx_alloca, "formap.idx.cur3");
+        const one = llvm.Const.int32(self.ctx, 1);
+        const next_idx = self.builder.buildAdd(cur_idx3, one, "formap.idx.next");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = self.builder.buildBr(cond_bb);
+
+        // Continue after loop
+        self.builder.positionAtEnd(end_bb);
+        self.has_terminator = false;
+
+        // Remove loop variables from scope
+        _ = self.named_values.remove(key_binding);
+        _ = self.named_values.remove(value_binding);
     }
 
     /// Get information about an array expression: its alloca pointer, LLVM type, and length.

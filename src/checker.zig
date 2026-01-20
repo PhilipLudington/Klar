@@ -6578,6 +6578,11 @@ pub const TypeChecker = struct {
             .range => |r| r.element_type,
             .list => |l| l.element,
             .set => |s| s.element,
+            .map => |m| blk: {
+                // Map iteration yields (key, value) tuples
+                const tuple_elems = [_]Type{ m.key, m.value };
+                break :blk self.type_builder.tupleType(&tuple_elems) catch self.type_builder.unknownType();
+            },
             else => blk: {
                 self.addError(.not_iterable, for_loop.span, "cannot iterate over this type", .{});
                 break :blk self.type_builder.unknownType();

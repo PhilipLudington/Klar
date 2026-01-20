@@ -1,0 +1,80 @@
+// Test for-loop iteration over Map[K,V]
+fn main() -> i32 {
+    // Create a map with some key-value pairs
+    var m: Map[i32, i32] = Map.new[i32, i32]()
+    m.insert(1, 10)
+    m.insert(2, 20)
+    m.insert(3, 30)
+
+    // Sum the values using for-in loop with tuple pattern
+    // Note: order is not guaranteed in a hash map
+    var sum_values: i32 = 0
+    for (k, v) in m {
+        sum_values = sum_values + v
+    }
+
+    // Expected sum of values: 10 + 20 + 30 = 60
+    if sum_values != 60 {
+        return 1
+    }
+
+    // Sum the keys
+    var sum_keys: i32 = 0
+    for (k, v) in m {
+        sum_keys = sum_keys + k
+    }
+
+    // Expected sum of keys: 1 + 2 + 3 = 6
+    if sum_keys != 6 {
+        return 2
+    }
+
+    // Count elements
+    var count: i32 = 0
+    for (k, v) in m {
+        count = count + 1
+    }
+    if count != 3 {
+        return 3
+    }
+
+    // Test with empty map
+    var empty: Map[i32, i32] = Map.new[i32, i32]()
+    var empty_count: i32 = 0
+    for (k, v) in empty {
+        empty_count = empty_count + 1
+    }
+    if empty_count != 0 {
+        return 4
+    }
+
+    // Test iteration with break
+    var found_key: i32 = 0
+    for (k, v) in m {
+        if v == 20 {
+            found_key = k
+            break
+        }
+    }
+    if found_key != 2 {
+        return 5
+    }
+
+    // Test continue
+    var skip_count: i32 = 0
+    for (k, v) in m {
+        if k == 2 {
+            continue
+        }
+        skip_count = skip_count + 1
+    }
+    if skip_count != 2 {
+        return 6
+    }
+
+    // Clean up
+    m.drop()
+    empty.drop()
+
+    return 0  // Success
+}

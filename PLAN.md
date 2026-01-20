@@ -547,7 +547,7 @@ std/
 - [x] Support for-loops over List[T] (`for x in list`, test/native/list_for.kl)
 - [x] Handle loop variables correctly with proper scoping
 - [x] Support `break` and `continue` in for-loops
-- [ ] Support for-loops over Map[K,V] (`for k, v in map` or `for entry in map`)
+- [x] Support for-loops over Map[K,V] (`for (k, v) in map`, test/native/map_for.kl)
 - [x] Support for-loops over Set[T] (`for x in set`, test/native/set_for.kl)
 - [ ] Desugar via `into_iter()` for custom types (currently only builtin types supported)
 
