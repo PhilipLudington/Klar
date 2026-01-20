@@ -137,6 +137,10 @@ pub const Emitter = struct {
         map_key_type: ?types.Type = null,
         /// For Map[K,V] types, the value type.
         map_value_type: ?types.Type = null,
+        /// True if this is a Set type.
+        is_set: bool = false,
+        /// For Set[T] types, the element type.
+        set_element_type: ?types.Type = null,
     };
 
     const LoopContext = struct {
@@ -812,6 +816,8 @@ pub const Emitter = struct {
                 const list_element_type = self.getListTypeInfo(decl.type_);
                 // Check if this is a Map type
                 const map_info = self.getMapTypeInfo(decl.type_);
+                // Check if this is a Set type
+                const set_info = self.getSetTypeInfo(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -831,6 +837,8 @@ pub const Emitter = struct {
                     .is_map = map_info != null,
                     .map_key_type = if (map_info) |mi| mi.key_type else null,
                     .map_value_type = if (map_info) |mi| mi.value_type else null,
+                    .is_set = set_info != null,
+                    .set_element_type = set_info,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -864,6 +872,8 @@ pub const Emitter = struct {
                 const list_element_type = self.getListTypeInfo(decl.type_);
                 // Check if this is a Map type
                 const map_info = self.getMapTypeInfo(decl.type_);
+                // Check if this is a Set type
+                const set_info = self.getSetTypeInfo(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -883,6 +893,8 @@ pub const Emitter = struct {
                     .is_map = map_info != null,
                     .map_key_type = if (map_info) |mi| mi.key_type else null,
                     .map_value_type = if (map_info) |mi| mi.value_type else null,
+                    .is_set = set_info != null,
+                    .set_element_type = set_info,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -3461,6 +3473,26 @@ pub const Emitter = struct {
         }
     }
 
+    /// Check if a type expression is a Set type and extract element type.
+    fn getSetTypeInfo(self: *Emitter, type_expr: ast.TypeExpr) ?types.Type {
+        switch (type_expr) {
+            .generic_apply => |g| {
+                // Check if the base is "Set"
+                if (g.base == .named and std.mem.eql(u8, g.base.named.name, "Set")) {
+                    if (g.args.len == 1) {
+                        // Resolve the element type using type checker
+                        if (self.type_checker) |tc| {
+                            const tc_mut = @constCast(tc);
+                            return tc_mut.resolveTypeExpr(g.args[0]) catch null;
+                        }
+                    }
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
     /// Infer LLVM type from expression (simplified).
     fn inferExprType(self: *Emitter, expr: ast.Expr) EmitError!llvm.TypeRef {
         return switch (expr) {
@@ -3658,6 +3690,15 @@ pub const Emitter = struct {
                         // Map.with_capacity[K,V](n) returns Map struct { ptr, i32, i32, i32 }
                         return self.getMapStructType();
                     }
+                    // Set static constructors
+                    if (std.mem.eql(u8, obj_name, "Set") and std.mem.eql(u8, m.method_name, "new")) {
+                        // Set.new[T]() returns Set struct { ptr, i32, i32, i32 }
+                        return self.getSetStructType();
+                    }
+                    if (std.mem.eql(u8, obj_name, "Set") and std.mem.eql(u8, m.method_name, "with_capacity")) {
+                        // Set.with_capacity[T](n) returns Set struct { ptr, i32, i32, i32 }
+                        return self.getSetStructType();
+                    }
                     // String static constructors
                     if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, m.method_name, "new")) {
                         // String.new() returns String struct { ptr, i32, i32 }
@@ -3823,6 +3864,38 @@ pub const Emitter = struct {
                     // clone() returns Map[K,V]
                     if (std.mem.eql(u8, m.method_name, "clone")) {
                         return self.getMapStructType();
+                    }
+                }
+
+                // Set methods
+                if (self.isSetExpr(m.object)) {
+                    // len() and capacity() return i32
+                    if (std.mem.eql(u8, m.method_name, "len") or
+                        std.mem.eql(u8, m.method_name, "capacity"))
+                    {
+                        return llvm.Types.int32(self.ctx);
+                    }
+                    // is_empty(), contains(), insert(), remove() return bool
+                    if (std.mem.eql(u8, m.method_name, "is_empty") or
+                        std.mem.eql(u8, m.method_name, "contains") or
+                        std.mem.eql(u8, m.method_name, "insert") or
+                        std.mem.eql(u8, m.method_name, "remove"))
+                    {
+                        return llvm.Types.int1(self.ctx);
+                    }
+                    // clear(), drop() return void (we use i32 as placeholder)
+                    if (std.mem.eql(u8, m.method_name, "clear") or
+                        std.mem.eql(u8, m.method_name, "drop"))
+                    {
+                        return llvm.Types.int32(self.ctx);
+                    }
+                    // clone(), union(), intersection(), difference() return Set[T]
+                    if (std.mem.eql(u8, m.method_name, "clone") or
+                        std.mem.eql(u8, m.method_name, "union") or
+                        std.mem.eql(u8, m.method_name, "intersection") or
+                        std.mem.eql(u8, m.method_name, "difference"))
+                    {
+                        return self.getSetStructType();
                     }
                 }
 
@@ -5255,6 +5328,16 @@ pub const Emitter = struct {
                 return self.emitMapWithCapacity(method);
             }
 
+            // Set.new[T]() - creates an empty set
+            if (std.mem.eql(u8, obj_name, "Set") and std.mem.eql(u8, method.method_name, "new")) {
+                return self.emitSetNew(method);
+            }
+
+            // Set.with_capacity[T](n) - creates a set with pre-allocated capacity
+            if (std.mem.eql(u8, obj_name, "Set") and std.mem.eql(u8, method.method_name, "with_capacity")) {
+                return self.emitSetWithCapacity(method);
+            }
+
             // String.new() - creates an empty string
             if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitStringNew();
@@ -5823,6 +5906,71 @@ pub const Emitter = struct {
                 }
                 if (std.mem.eql(u8, method.method_name, "drop")) {
                     return self.emitMapDrop(ptr, method);
+                }
+            }
+        }
+
+        // Check for Set methods
+        if (self.isSetExpr(method.object)) {
+            // For Set methods, we need the alloca pointer, not the loaded value
+            const set_ptr = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value; // This is the alloca pointer
+                }
+                break :blk null;
+            } else null;
+
+            if (set_ptr) |ptr| {
+                if (std.mem.eql(u8, method.method_name, "len")) {
+                    return self.emitSetLen(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "is_empty")) {
+                    return self.emitSetIsEmpty(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "capacity")) {
+                    return self.emitSetCapacity(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "insert")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const element = try self.emitExpr(method.args[0]);
+                    return self.emitSetInsert(ptr, method, element);
+                }
+                if (std.mem.eql(u8, method.method_name, "contains")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const element = try self.emitExpr(method.args[0]);
+                    return self.emitSetContains(ptr, method, element);
+                }
+                if (std.mem.eql(u8, method.method_name, "remove")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const element = try self.emitExpr(method.args[0]);
+                    return self.emitSetRemove(ptr, method, element);
+                }
+                if (std.mem.eql(u8, method.method_name, "clear")) {
+                    return self.emitSetClear(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "clone")) {
+                    return self.emitSetClone(ptr, method);
+                }
+                if (std.mem.eql(u8, method.method_name, "drop")) {
+                    return self.emitSetDrop(ptr, method);
+                }
+                if (std.mem.eql(u8, method.method_name, "union")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    // Need the pointer to the other Set, not its value
+                    const other_ptr = try self.getSetArgPtr(method.args[0]);
+                    return self.emitSetUnion(ptr, method, other_ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "intersection")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    // Need the pointer to the other Set, not its value
+                    const other_ptr = try self.getSetArgPtr(method.args[0]);
+                    return self.emitSetIntersection(ptr, method, other_ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "difference")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    // Need the pointer to the other Set, not its value
+                    const other_ptr = try self.getSetArgPtr(method.args[0]);
+                    return self.emitSetDifference(ptr, method, other_ptr);
                 }
             }
         }
@@ -8279,17 +8427,18 @@ pub const Emitter = struct {
             .identifier => |id| {
                 // Check the stored is_map flag
                 if (self.named_values.get(id.name)) |local| {
-                    if (local.is_map) {
-                        return true;
+                    // Check is_set first - Set has same LLVM layout as Map
+                    if (local.is_set) {
+                        return false;
                     }
-                    // Check LLVM type structure
-                    if (self.isMapType(local.ty)) {
+                    if (local.is_map) {
                         return true;
                     }
                     // Fallback: check via type checker
                     if (self.type_checker) |tc| {
                         const tc_mut = @constCast(tc);
                         const expr_type = tc_mut.checkExpr(expr);
+                        // Make sure it's map and not set
                         return expr_type == .map;
                     }
                 }
@@ -8341,6 +8490,81 @@ pub const Emitter = struct {
         const width3 = llvm.c.LLVMGetIntTypeWidth(field3);
 
         return width1 == 32 and width2 == 32 and width3 == 32;
+    }
+
+    /// Check if an expression is a Set type.
+    fn isSetExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                // Check the stored is_set flag
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.is_set) {
+                        return true;
+                    }
+                    // Fallback: check via type checker
+                    if (self.type_checker) |tc| {
+                        const tc_mut = @constCast(tc);
+                        const expr_type = tc_mut.checkExpr(expr);
+                        return expr_type == .set;
+                    }
+                }
+                return false;
+            },
+            else => {
+                // For other expressions, check via type checker
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const expr_type = tc_mut.checkExpr(expr);
+                    return expr_type == .set;
+                }
+                return false;
+            },
+        }
+    }
+
+    /// Get the element type from a Set expression.
+    fn getSetElementType(self: *Emitter, expr: ast.Expr) ?types.Type {
+        // First check stored type info
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.set_element_type) |elem_type| {
+                        return elem_type;
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: check via type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            if (expr_type == .set) {
+                return expr_type.set.element;
+            }
+        }
+        return null;
+    }
+
+    /// Get a pointer to a Set argument (for methods that take Set as argument).
+    /// If the argument is a variable, returns its alloca pointer.
+    /// Otherwise, emits the value and stores it in a temporary alloca.
+    fn getSetArgPtr(self: *Emitter, arg: ast.Expr) EmitError!llvm.ValueRef {
+        // If it's an identifier, get the alloca pointer directly
+        switch (arg) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    return local.value; // This is the alloca pointer
+                }
+            },
+            else => {},
+        }
+        // Otherwise, emit the value and store in a temporary alloca
+        const set_type = self.getSetStructType();
+        const value = try self.emitExpr(arg);
+        const temp_alloca = self.builder.buildAlloca(set_type, "set_arg_tmp");
+        _ = self.builder.buildStore(value, temp_alloca);
+        return temp_alloca;
     }
 
     /// Check if an expression is a String (heap-allocated) type.
@@ -10799,6 +11023,913 @@ pub const Emitter = struct {
     }
 
     // ========================================================================
+    // Set Methods
+    // ========================================================================
+    // Set layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
+    // Entry layout: { state: i8, cached_hash: i32, element: T }
+    // State: 0=EMPTY, 1=OCCUPIED, 2=TOMBSTONE
+
+    /// Get the Set struct type: { ptr, i32, i32, i32 }
+    fn getSetStructType(self: *Emitter) llvm.TypeRef {
+        const i32_type = llvm.Types.int32(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var fields = [_]llvm.TypeRef{ ptr_type, i32_type, i32_type, i32_type };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the Set entry struct type for given element type.
+    /// Entry layout: { state: i8, cached_hash: i32, element: T }
+    fn getSetEntryType(self: *Emitter, element_type: llvm.TypeRef) llvm.TypeRef {
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var fields = [_]llvm.TypeRef{ i8_type, i32_type, element_type };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Emit Set.new[T]() - creates an empty set.
+    /// Returns a Set struct with { null, 0, 0, 0 }.
+    fn emitSetNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        _ = method; // Type args already validated by checker
+
+        const set_type = self.getSetStructType();
+
+        // Create an empty set struct { null, 0, 0, 0 }
+        const null_ptr = llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+
+        var values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
+        return llvm.c.LLVMConstNamedStruct(set_type, &values, 4);
+    }
+
+    /// Emit Set.with_capacity[T](n) - creates a set with pre-allocated capacity.
+    fn emitSetWithCapacity(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        // Get element type from type_args
+        const type_args = method.type_args orelse return EmitError.InvalidAST;
+        if (type_args.len != 1) return EmitError.InvalidAST;
+
+        // Resolve element type using type checker
+        var element_type_klar: types.Type = undefined;
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            element_type_klar = tc_mut.resolveTypeExpr(type_args[0]) catch return EmitError.InvalidAST;
+        } else {
+            return EmitError.InvalidAST;
+        }
+
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+        const entry_size = self.getLLVMTypeSize(entry_type);
+
+        // Emit the capacity argument
+        if (method.args.len != 1) return EmitError.InvalidAST;
+        const capacity = try self.emitExpr(method.args[0]);
+
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const set_type = self.getSetStructType();
+
+        // Convert capacity to i32 if needed
+        const cap_type = llvm.typeOf(capacity);
+        const cap_i32 = if (cap_type == i64_type)
+            llvm.c.LLVMBuildTrunc(self.builder.ref, capacity, i32_type, "cap_i32")
+        else
+            capacity;
+
+        // Calculate allocation size: capacity * entry_size
+        const cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, cap_i32, i64_type, "cap_i64");
+        const entry_size_val = llvm.Const.int64(self.ctx, @intCast(entry_size));
+        const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, cap_i64, entry_size_val, "alloc_size");
+
+        // Call malloc(size)
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const entries_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "set.entries");
+
+        // Zero-initialize the entries (all states = EMPTY = 0)
+        const memset_fn = self.getOrDeclareMemset();
+        var memset_args = [_]llvm.ValueRef{ entries_ptr, llvm.Const.int32(self.ctx, 0), alloc_size };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &memset_args, "");
+
+        // Build the set struct
+        const set_alloca = self.builder.buildAlloca(set_type, "set");
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_alloca, 0, "set.entries_ptr");
+        _ = self.builder.buildStore(entries_ptr, entries_field);
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_alloca, 1, "set.len_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_field);
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_alloca, 2, "set.cap_ptr");
+        _ = self.builder.buildStore(cap_i32, cap_field);
+        const tomb_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_alloca, 3, "set.tomb_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tomb_field);
+
+        return self.builder.buildLoad(set_type, set_alloca, "set.result");
+    }
+
+    /// Emit set.len() - returns length as i32.
+    fn emitSetLen(self: *Emitter, set_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const set_type = self.getSetStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // GEP to the len field (index 1)
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 1, "set.len_ptr");
+        return self.builder.buildLoad(i32_type, len_ptr, "set.len");
+    }
+
+    /// Emit set.is_empty() - returns true if len == 0.
+    fn emitSetIsEmpty(self: *Emitter, set_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const len = try self.emitSetLen(set_ptr);
+        return self.builder.buildICmp(llvm.c.LLVMIntEQ, len, llvm.Const.int32(self.ctx, 0), "set.is_empty");
+    }
+
+    /// Emit set.capacity() - returns capacity as i32.
+    fn emitSetCapacity(self: *Emitter, set_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const set_type = self.getSetStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // GEP to the capacity field (index 2)
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "set.cap_ptr");
+        return self.builder.buildLoad(i32_type, cap_ptr, "set.capacity");
+    }
+
+    /// Emit set.insert(element) - inserts an element, returns true if newly inserted.
+    fn emitSetInsert(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, element: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Get element type from stored info or type checker
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        const set_type = self.getSetStructType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load current capacity and length
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "set.cap_ptr");
+        const capacity = self.builder.buildLoad(i32_type, cap_ptr, "set.capacity");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 1, "set.len_ptr");
+        const len = self.builder.buildLoad(i32_type, len_ptr, "set.len");
+        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 3, "set.tomb_ptr");
+        const tombstones = self.builder.buildLoad(i32_type, tomb_ptr, "set.tombstones");
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "set.entries_ptr_field");
+        const entries_ptr = self.builder.buildLoad(ptr_type, entries_ptr_field, "set.entries");
+
+        // Compute hash of element
+        const hash = try self.emitHashValue(element, element_type_klar);
+
+        // Setup basic blocks for resize check, probe loop, and done
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const check_resize_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.check_resize");
+        const do_resize_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.do_resize");
+        const probe_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.probe");
+        const found_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.found");
+        const insert_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.insert");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.done");
+
+        // Result alloca for return value
+        const result_alloca = self.builder.buildAlloca(i1_type, "set.result");
+        _ = self.builder.buildStore(llvm.c.LLVMConstInt(i1_type, 0, 0), result_alloca);
+
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, check_resize_block);
+
+        // Check if we need to resize (load factor > 75%)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_resize_block);
+        // Check if capacity is 0 (need initial allocation)
+        const need_init = self.builder.buildICmp(llvm.c.LLVMIntEQ, capacity, llvm.Const.int32(self.ctx, 0), "need_init");
+        // occupied = len + tombstones
+        const occupied = llvm.c.LLVMBuildAdd(self.builder.ref, len, tombstones, "occupied");
+        // threshold = capacity * 3 / 4 (75% load factor)
+        const cap_3 = llvm.c.LLVMBuildMul(self.builder.ref, capacity, llvm.Const.int32(self.ctx, 3), "cap_3");
+        const threshold = llvm.c.LLVMBuildSDiv(self.builder.ref, cap_3, llvm.Const.int32(self.ctx, 4), "threshold");
+        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntSGE, occupied, threshold, "need_grow");
+        const need_resize = llvm.c.LLVMBuildOr(self.builder.ref, need_init, need_grow, "need_resize");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, need_resize, do_resize_block, probe_block);
+
+        // Do resize: double capacity (or init to 8)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, do_resize_block);
+        const new_cap = llvm.c.LLVMBuildSelect(self.builder.ref, need_init, llvm.Const.int32(self.ctx, 8), llvm.c.LLVMBuildMul(self.builder.ref, capacity, llvm.Const.int32(self.ctx, 2), "cap_2"), "new_cap");
+        // Allocate new entries
+        const entry_size = self.getLLVMTypeSize(entry_type);
+        const new_cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_cap, i64_type, "new_cap_i64");
+        const entry_size_val = llvm.Const.int64(self.ctx, @intCast(entry_size));
+        const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, new_cap_i64, entry_size_val, "alloc_size");
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const new_entries = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "new_entries");
+        // Zero-initialize the new entries
+        const memset_fn = self.getOrDeclareMemset();
+        var memset_args = [_]llvm.ValueRef{ new_entries, llvm.Const.int32(self.ctx, 0), alloc_size };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &memset_args, "");
+
+        // Rehash existing entries into new array
+        // For simplicity, we'll use a loop to copy non-empty, non-tombstone entries
+        const rehash_start_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.rehash_start");
+        const rehash_loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.rehash_loop");
+        const rehash_check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.rehash_check");
+        const rehash_copy_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.rehash_copy");
+        const rehash_next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.rehash_next");
+        const rehash_done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "set.rehash_done");
+
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, rehash_start_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, rehash_start_block);
+        const old_cap_phi = capacity;
+        const old_entries_phi = entries_ptr;
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, rehash_loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, rehash_loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, old_cap_phi, "cond");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cond, rehash_check_block, rehash_done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, rehash_check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const old_entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, old_entries_phi, &indices, 1, "old_entry");
+        const old_state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, old_entry_ptr, 0, "old_state_ptr");
+        const old_state = self.builder.buildLoad(i8_type, old_state_ptr, "old_state");
+        const is_occupied = self.builder.buildICmp(llvm.c.LLVMIntEQ, old_state, llvm.c.LLVMConstInt(i8_type, 1, 0), "is_occupied");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occupied, rehash_copy_block, rehash_next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, rehash_copy_block);
+        // Load element and hash from old entry
+        const old_hash_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, old_entry_ptr, 1, "old_hash_ptr");
+        const old_hash = self.builder.buildLoad(i32_type, old_hash_ptr, "old_hash");
+        const old_elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, old_entry_ptr, 2, "old_elem_ptr");
+        const old_elem = self.builder.buildLoad(element_llvm_type, old_elem_ptr, "old_elem");
+
+        // Find position in new array using linear probing
+        // new_idx = hash & (new_cap - 1)
+        const new_cap_minus_1 = llvm.c.LLVMBuildSub(self.builder.ref, new_cap, llvm.Const.int32(self.ctx, 1), "new_cap_m1");
+        const new_start_idx = llvm.c.LLVMBuildAnd(self.builder.ref, old_hash, new_cap_minus_1, "new_start_idx");
+
+        // Simple linear probe to find empty slot (new array has no collisions initially since it's larger)
+        const probe_idx_alloca = self.builder.buildAlloca(i32_type, "probe_idx");
+        _ = self.builder.buildStore(new_start_idx, probe_idx_alloca);
+        const find_slot_block = llvm.c.LLVMAppendBasicBlock(current_fn, "find_slot");
+        const slot_found_block = llvm.c.LLVMAppendBasicBlock(current_fn, "slot_found");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, find_slot_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, find_slot_block);
+        const probe_idx = self.builder.buildLoad(i32_type, probe_idx_alloca, "probe_idx");
+        const probe_idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, probe_idx, i64_type, "probe_idx_i64");
+        var new_indices = [_]llvm.ValueRef{probe_idx_i64};
+        const new_entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, new_entries, &new_indices, 1, "new_entry");
+        const new_state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, new_entry_ptr, 0, "new_state_ptr");
+        const new_state = self.builder.buildLoad(i8_type, new_state_ptr, "new_state");
+        const slot_empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, new_state, llvm.c.LLVMConstInt(i8_type, 0, 0), "slot_empty");
+        const probe_next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "probe_next");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, slot_empty, slot_found_block, probe_next_block);
+
+        // Increment probe index and continue searching
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, probe_next_block);
+        const next_probe = llvm.c.LLVMBuildAdd(self.builder.ref, probe_idx, llvm.Const.int32(self.ctx, 1), "next_probe");
+        const wrapped_probe = llvm.c.LLVMBuildAnd(self.builder.ref, next_probe, new_cap_minus_1, "wrapped_probe");
+        _ = self.builder.buildStore(wrapped_probe, probe_idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, find_slot_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, slot_found_block);
+        // Store element in new slot
+        _ = self.builder.buildStore(llvm.c.LLVMConstInt(i8_type, 1, 0), new_state_ptr);
+        const new_hash_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, new_entry_ptr, 1, "new_hash_ptr");
+        _ = self.builder.buildStore(old_hash, new_hash_ptr);
+        const new_elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, new_entry_ptr, 2, "new_elem_ptr");
+        _ = self.builder.buildStore(old_elem, new_elem_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, rehash_next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, rehash_next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, rehash_loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, rehash_done_block);
+        // Free old entries if not null
+        const old_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, old_entries_phi, llvm.c.LLVMConstNull(ptr_type), "old_is_null");
+        const free_old_block = llvm.c.LLVMAppendBasicBlock(current_fn, "free_old");
+        const after_free_block = llvm.c.LLVMAppendBasicBlock(current_fn, "after_free");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, old_is_null, after_free_block, free_old_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, free_old_block);
+        const free_fn = self.getOrDeclareFree();
+        var free_args = [_]llvm.ValueRef{old_entries_phi};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, after_free_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, after_free_block);
+        // Update set struct with new entries and capacity
+        _ = self.builder.buildStore(new_entries, entries_ptr_field);
+        _ = self.builder.buildStore(new_cap, cap_ptr);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tomb_ptr); // Reset tombstones after rehash
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, probe_block);
+
+        // Probe loop for insertion
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, probe_block);
+        // Reload entries and capacity (may have changed after resize)
+        const entries_after = self.builder.buildLoad(ptr_type, entries_ptr_field, "entries_after");
+        const cap_after = self.builder.buildLoad(i32_type, cap_ptr, "cap_after");
+        const cap_mask = llvm.c.LLVMBuildSub(self.builder.ref, cap_after, llvm.Const.int32(self.ctx, 1), "cap_mask");
+        const start_slot = llvm.c.LLVMBuildAnd(self.builder.ref, hash, cap_mask, "start_slot");
+
+        // Probe loop variables
+        const probe_slot_alloca = self.builder.buildAlloca(i32_type, "probe_slot");
+        _ = self.builder.buildStore(start_slot, probe_slot_alloca);
+        const first_tombstone_alloca = self.builder.buildAlloca(i32_type, "first_tombstone");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, -1), first_tombstone_alloca); // -1 means no tombstone found
+
+        const probe_loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "probe_loop");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, probe_loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, probe_loop_block);
+        const cur_slot = self.builder.buildLoad(i32_type, probe_slot_alloca, "cur_slot");
+        const cur_slot_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, cur_slot, i64_type, "cur_slot_i64");
+        var cur_indices = [_]llvm.ValueRef{cur_slot_i64};
+        const cur_entry = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries_after, &cur_indices, 1, "cur_entry");
+        const cur_state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, cur_entry, 0, "cur_state_ptr");
+        const cur_state = self.builder.buildLoad(i8_type, cur_state_ptr, "cur_state");
+
+        // Check if empty slot - insert here
+        const is_empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_state, llvm.c.LLVMConstInt(i8_type, 0, 0), "is_empty");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_empty, insert_block, found_block);
+
+        // Found block - check if occupied and element matches
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, found_block);
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_state, llvm.c.LLVMConstInt(i8_type, 1, 0), "is_occ");
+
+        const check_match_block = llvm.c.LLVMAppendBasicBlock(current_fn, "check_match");
+        const is_tombstone_block = llvm.c.LLVMAppendBasicBlock(current_fn, "is_tombstone");
+        const next_probe_block = llvm.c.LLVMAppendBasicBlock(current_fn, "next_probe");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, check_match_block, is_tombstone_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_match_block);
+        const cur_elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, cur_entry, 2, "cur_elem_ptr");
+        const cur_elem = self.builder.buildLoad(element_llvm_type, cur_elem_ptr, "cur_elem");
+        const elems_equal = try self.emitEqComparison(element, cur_elem, element_type_klar);
+        // If equal, element already exists - return false
+        const already_exists_block = llvm.c.LLVMAppendBasicBlock(current_fn, "already_exists");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, elems_equal, already_exists_block, next_probe_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, already_exists_block);
+        _ = self.builder.buildStore(llvm.c.LLVMConstInt(i1_type, 0, 0), result_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, is_tombstone_block);
+        // Record first tombstone position for potential reuse
+        const first_tomb = self.builder.buildLoad(i32_type, first_tombstone_alloca, "first_tomb");
+        const no_tomb_yet = self.builder.buildICmp(llvm.c.LLVMIntEQ, first_tomb, llvm.Const.int32(self.ctx, -1), "no_tomb_yet");
+        const new_first_tomb = llvm.c.LLVMBuildSelect(self.builder.ref, no_tomb_yet, cur_slot, first_tomb, "new_first_tomb");
+        _ = self.builder.buildStore(new_first_tomb, first_tombstone_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_probe_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_probe_block);
+        // Linear probe: next_slot = (cur_slot + 1) & cap_mask
+        const next_slot = llvm.c.LLVMBuildAnd(self.builder.ref, llvm.c.LLVMBuildAdd(self.builder.ref, cur_slot, llvm.Const.int32(self.ctx, 1), "next"), cap_mask, "next_slot");
+        _ = self.builder.buildStore(next_slot, probe_slot_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, probe_loop_block);
+
+        // Insert block - insert at first tombstone or current empty slot
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
+        const first_tomb_final = self.builder.buildLoad(i32_type, first_tombstone_alloca, "first_tomb_final");
+        const use_tombstone = self.builder.buildICmp(llvm.c.LLVMIntNE, first_tomb_final, llvm.Const.int32(self.ctx, -1), "use_tombstone");
+        const insert_slot = llvm.c.LLVMBuildSelect(self.builder.ref, use_tombstone, first_tomb_final, cur_slot, "insert_slot");
+        const insert_slot_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, insert_slot, i64_type, "insert_slot_i64");
+        var insert_indices = [_]llvm.ValueRef{insert_slot_i64};
+        const insert_entry = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries_after, &insert_indices, 1, "insert_entry");
+
+        // Store element
+        const ins_state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, insert_entry, 0, "ins_state_ptr");
+        _ = self.builder.buildStore(llvm.c.LLVMConstInt(i8_type, 1, 0), ins_state_ptr); // OCCUPIED
+        const ins_hash_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, insert_entry, 1, "ins_hash_ptr");
+        _ = self.builder.buildStore(hash, ins_hash_ptr);
+        const ins_elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, insert_entry, 2, "ins_elem_ptr");
+        _ = self.builder.buildStore(element, ins_elem_ptr);
+
+        // Increment len
+        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, len, llvm.Const.int32(self.ctx, 1), "new_len");
+        _ = self.builder.buildStore(new_len, len_ptr);
+
+        // If we used a tombstone slot, decrement tombstone count
+        const dec_tomb_block = llvm.c.LLVMAppendBasicBlock(current_fn, "dec_tomb");
+        const after_tomb_block = llvm.c.LLVMAppendBasicBlock(current_fn, "after_tomb");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, use_tombstone, dec_tomb_block, after_tomb_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, dec_tomb_block);
+        const cur_tombs = self.builder.buildLoad(i32_type, tomb_ptr, "cur_tombs");
+        const new_tombs = llvm.c.LLVMBuildSub(self.builder.ref, cur_tombs, llvm.Const.int32(self.ctx, 1), "new_tombs");
+        _ = self.builder.buildStore(new_tombs, tomb_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, after_tomb_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, after_tomb_block);
+        _ = self.builder.buildStore(llvm.c.LLVMConstInt(i1_type, 1, 0), result_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(i1_type, result_alloca, "set.insert.result");
+    }
+
+    /// Emit set.contains(element) - returns true if element exists.
+    fn emitSetContains(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, element: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        const set_type = self.getSetStructType();
+        const i1_type = llvm.Types.int1(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load capacity and entries
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "cap_ptr");
+        const capacity = self.builder.buildLoad(i32_type, cap_ptr, "capacity");
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_ptr_field");
+        const entries_ptr = self.builder.buildLoad(ptr_type, entries_ptr_field, "entries");
+
+        // Hash the element
+        const hash = try self.emitHashValue(element, element_type_klar);
+
+        // Result alloca
+        const result_alloca = self.builder.buildAlloca(i1_type, "result");
+        _ = self.builder.buildStore(llvm.c.LLVMConstInt(i1_type, 0, 0), result_alloca);
+
+        // Check if capacity is 0 (empty set)
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const probe_block = llvm.c.LLVMAppendBasicBlock(current_fn, "probe");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "done");
+        const empty_check = self.builder.buildICmp(llvm.c.LLVMIntEQ, capacity, llvm.Const.int32(self.ctx, 0), "empty_check");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, empty_check, done_block, probe_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, probe_block);
+        const cap_mask = llvm.c.LLVMBuildSub(self.builder.ref, capacity, llvm.Const.int32(self.ctx, 1), "cap_mask");
+        const start_slot = llvm.c.LLVMBuildAnd(self.builder.ref, hash, cap_mask, "start_slot");
+
+        const probe_slot_alloca = self.builder.buildAlloca(i32_type, "probe_slot");
+        _ = self.builder.buildStore(start_slot, probe_slot_alloca);
+
+        const probe_loop = llvm.c.LLVMAppendBasicBlock(current_fn, "probe_loop");
+        const found_block = llvm.c.LLVMAppendBasicBlock(current_fn, "found");
+        const not_found_block = llvm.c.LLVMAppendBasicBlock(current_fn, "not_found");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, probe_loop);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, probe_loop);
+        const cur_slot = self.builder.buildLoad(i32_type, probe_slot_alloca, "cur_slot");
+        const cur_slot_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, cur_slot, i64_type, "cur_slot_i64");
+        var indices = [_]llvm.ValueRef{cur_slot_i64};
+        const cur_entry = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries_ptr, &indices, 1, "cur_entry");
+        const cur_state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, cur_entry, 0, "cur_state_ptr");
+        const cur_state = self.builder.buildLoad(i8_type, cur_state_ptr, "cur_state");
+
+        // If empty, element not found
+        const is_empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_state, llvm.c.LLVMConstInt(i8_type, 0, 0), "is_empty");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_empty, not_found_block, found_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, found_block);
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_state, llvm.c.LLVMConstInt(i8_type, 1, 0), "is_occ");
+        const check_elem_block = llvm.c.LLVMAppendBasicBlock(current_fn, "check_elem");
+        const next_probe = llvm.c.LLVMAppendBasicBlock(current_fn, "next_probe");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, check_elem_block, next_probe);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_elem_block);
+        const cur_elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, cur_entry, 2, "cur_elem_ptr");
+        const cur_elem = self.builder.buildLoad(element_llvm_type, cur_elem_ptr, "cur_elem");
+        const elems_equal = try self.emitEqComparison(element, cur_elem, element_type_klar);
+        const elem_found_block = llvm.c.LLVMAppendBasicBlock(current_fn, "elem_found");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, elems_equal, elem_found_block, next_probe);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, elem_found_block);
+        _ = self.builder.buildStore(llvm.c.LLVMConstInt(i1_type, 1, 0), result_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_probe);
+        const next_slot = llvm.c.LLVMBuildAnd(self.builder.ref, llvm.c.LLVMBuildAdd(self.builder.ref, cur_slot, llvm.Const.int32(self.ctx, 1), "next"), cap_mask, "next_slot");
+        _ = self.builder.buildStore(next_slot, probe_slot_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, probe_loop);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, not_found_block);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(i1_type, result_alloca, "contains.result");
+    }
+
+    /// Emit set.remove(element) - removes an element, returns true if removed.
+    fn emitSetRemove(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, element: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        const set_type = self.getSetStructType();
+        const i1_type = llvm.Types.int1(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load fields
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "cap_ptr");
+        const capacity = self.builder.buildLoad(i32_type, cap_ptr, "capacity");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 1, "len_ptr");
+        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 3, "tomb_ptr");
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_ptr_field");
+        const entries_ptr = self.builder.buildLoad(ptr_type, entries_ptr_field, "entries");
+
+        const hash = try self.emitHashValue(element, element_type_klar);
+
+        const result_alloca = self.builder.buildAlloca(i1_type, "result");
+        _ = self.builder.buildStore(llvm.c.LLVMConstInt(i1_type, 0, 0), result_alloca);
+
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const probe_block = llvm.c.LLVMAppendBasicBlock(current_fn, "probe");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "done");
+        const empty_check = self.builder.buildICmp(llvm.c.LLVMIntEQ, capacity, llvm.Const.int32(self.ctx, 0), "empty_check");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, empty_check, done_block, probe_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, probe_block);
+        const cap_mask = llvm.c.LLVMBuildSub(self.builder.ref, capacity, llvm.Const.int32(self.ctx, 1), "cap_mask");
+        const start_slot = llvm.c.LLVMBuildAnd(self.builder.ref, hash, cap_mask, "start_slot");
+
+        const probe_slot_alloca = self.builder.buildAlloca(i32_type, "probe_slot");
+        _ = self.builder.buildStore(start_slot, probe_slot_alloca);
+
+        const probe_loop = llvm.c.LLVMAppendBasicBlock(current_fn, "probe_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "check");
+        const not_found_block = llvm.c.LLVMAppendBasicBlock(current_fn, "not_found");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, probe_loop);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, probe_loop);
+        const cur_slot = self.builder.buildLoad(i32_type, probe_slot_alloca, "cur_slot");
+        const cur_slot_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, cur_slot, i64_type, "cur_slot_i64");
+        var indices = [_]llvm.ValueRef{cur_slot_i64};
+        const cur_entry = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries_ptr, &indices, 1, "cur_entry");
+        const cur_state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, cur_entry, 0, "cur_state_ptr");
+        const cur_state = self.builder.buildLoad(i8_type, cur_state_ptr, "cur_state");
+
+        const is_empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_state, llvm.c.LLVMConstInt(i8_type, 0, 0), "is_empty");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_empty, not_found_block, check_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_state, llvm.c.LLVMConstInt(i8_type, 1, 0), "is_occ");
+        const check_elem_block = llvm.c.LLVMAppendBasicBlock(current_fn, "check_elem");
+        const next_probe = llvm.c.LLVMAppendBasicBlock(current_fn, "next_probe");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, check_elem_block, next_probe);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_elem_block);
+        const cur_elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, cur_entry, 2, "cur_elem_ptr");
+        const cur_elem = self.builder.buildLoad(element_llvm_type, cur_elem_ptr, "cur_elem");
+        const elems_equal = try self.emitEqComparison(element, cur_elem, element_type_klar);
+        const remove_block = llvm.c.LLVMAppendBasicBlock(current_fn, "remove");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, elems_equal, remove_block, next_probe);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, remove_block);
+        // Mark as tombstone
+        _ = self.builder.buildStore(llvm.c.LLVMConstInt(i8_type, 2, 0), cur_state_ptr); // TOMBSTONE
+        // Decrement len
+        const len = self.builder.buildLoad(i32_type, len_ptr, "len");
+        const new_len = llvm.c.LLVMBuildSub(self.builder.ref, len, llvm.Const.int32(self.ctx, 1), "new_len");
+        _ = self.builder.buildStore(new_len, len_ptr);
+        // Increment tombstones
+        const tombs = self.builder.buildLoad(i32_type, tomb_ptr, "tombs");
+        const new_tombs = llvm.c.LLVMBuildAdd(self.builder.ref, tombs, llvm.Const.int32(self.ctx, 1), "new_tombs");
+        _ = self.builder.buildStore(new_tombs, tomb_ptr);
+        _ = self.builder.buildStore(llvm.c.LLVMConstInt(i1_type, 1, 0), result_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_probe);
+        const next_slot = llvm.c.LLVMBuildAnd(self.builder.ref, llvm.c.LLVMBuildAdd(self.builder.ref, cur_slot, llvm.Const.int32(self.ctx, 1), "next"), cap_mask, "next_slot");
+        _ = self.builder.buildStore(next_slot, probe_slot_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, probe_loop);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, not_found_block);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(i1_type, result_alloca, "remove.result");
+    }
+
+    /// Emit set.clear() - resets to empty state.
+    fn emitSetClear(self: *Emitter, set_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const set_type = self.getSetStructType();
+
+        // Set len = 0
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 1, "set.len_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_ptr);
+
+        // Set tombstones = 0
+        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 3, "set.tomb_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tomb_ptr);
+
+        // Note: We don't free/clear entries here, just reset counters
+        // A full clear would need to zero the entries array
+
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit set.clone() - creates a deep copy of the set.
+    fn emitSetClone(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+        const entry_size = self.getLLVMTypeSize(entry_type);
+
+        const set_type = self.getSetStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load original set fields
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_ptr_field");
+        const entries_ptr = self.builder.buildLoad(ptr_type, entries_ptr_field, "entries");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 1, "len_ptr");
+        const len = self.builder.buildLoad(i32_type, len_ptr, "len");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "cap_ptr");
+        const capacity = self.builder.buildLoad(i32_type, cap_ptr, "capacity");
+        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 3, "tomb_ptr");
+        const tombstones = self.builder.buildLoad(i32_type, tomb_ptr, "tombstones");
+
+        // Allocate new entries array
+        const cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, capacity, i64_type, "cap_i64");
+        const entry_size_val = llvm.Const.int64(self.ctx, @intCast(entry_size));
+        const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, cap_i64, entry_size_val, "alloc_size");
+
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const new_entries = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "new_entries");
+
+        // Copy entries using memcpy
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ new_entries, entries_ptr, alloc_size };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        // Build new set struct
+        const clone_alloca = self.builder.buildAlloca(set_type, "clone");
+        const clone_entries_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, clone_alloca, 0, "clone_entries_ptr");
+        _ = self.builder.buildStore(new_entries, clone_entries_ptr);
+        const clone_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, clone_alloca, 1, "clone_len_ptr");
+        _ = self.builder.buildStore(len, clone_len_ptr);
+        const clone_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, clone_alloca, 2, "clone_cap_ptr");
+        _ = self.builder.buildStore(capacity, clone_cap_ptr);
+        const clone_tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, clone_alloca, 3, "clone_tomb_ptr");
+        _ = self.builder.buildStore(tombstones, clone_tomb_ptr);
+
+        return self.builder.buildLoad(set_type, clone_alloca, "set.clone.result");
+    }
+
+    /// Emit set.drop() - frees the set's memory.
+    fn emitSetDrop(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        _ = method;
+
+        const set_type = self.getSetStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load entries ptr
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "set.entries_ptr_field");
+        const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "set.entries");
+
+        // Free entries
+        const free_fn = self.getOrDeclareFree();
+        var free_args = [_]llvm.ValueRef{entries_ptr_val};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
+
+        // Set to null state
+        _ = self.builder.buildStore(llvm.c.LLVMConstNull(ptr_type), entries_ptr_field);
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 1, "set.len_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "set.cap_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), cap_ptr);
+        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 3, "set.tomb_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tomb_ptr);
+
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit set.union(other) - returns a new set with elements from both sets.
+    fn emitSetUnion(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        const set_type = self.getSetStructType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Clone self first
+        const result = try self.emitSetClone(set_ptr, method);
+
+        // Store result in temp alloca to insert elements from other
+        const result_alloca = self.builder.buildAlloca(set_type, "union_result");
+        _ = self.builder.buildStore(result, result_alloca);
+
+        // Load other set fields
+        const other_entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, other_ptr, 0, "other_entries_field");
+        const other_entries = self.builder.buildLoad(ptr_type, other_entries_field, "other_entries");
+        const other_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, other_ptr, 2, "other_cap_field");
+        const other_cap = self.builder.buildLoad(i32_type, other_cap_field, "other_cap");
+
+        // Iterate through other's entries and insert each occupied element
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "union_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "union_check");
+        const insert_block = llvm.c.LLVMAppendBasicBlock(current_fn, "union_insert");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "union_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "union_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, other_cap, "cond");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, other_entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.c.LLVMConstInt(i8_type, 1, 0), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, insert_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
+        const elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "elem_ptr");
+        const elem = self.builder.buildLoad(element_llvm_type, elem_ptr, "elem");
+        // Insert into result set (we call emitSetInsert with the result_alloca)
+        _ = try self.emitSetInsert(result_alloca, method, elem);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(set_type, result_alloca, "union.result");
+    }
+
+    /// Emit set.intersection(other) - returns a new set with elements in both sets.
+    fn emitSetIntersection(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        const set_type = self.getSetStructType();
+        const i1_type = llvm.Types.int1(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Create empty result set
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
+        const empty_set = llvm.c.LLVMConstNamedStruct(set_type, &result_values, 4);
+        const result_alloca = self.builder.buildAlloca(set_type, "intersect_result");
+        _ = self.builder.buildStore(empty_set, result_alloca);
+
+        // Load self set fields
+        const self_entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "self_entries_field");
+        const self_entries = self.builder.buildLoad(ptr_type, self_entries_field, "self_entries");
+        const self_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "self_cap_field");
+        const self_cap = self.builder.buildLoad(i32_type, self_cap_field, "self_cap");
+
+        // Iterate through self's entries
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "intersect_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "intersect_check");
+        const test_block = llvm.c.LLVMAppendBasicBlock(current_fn, "intersect_test");
+        const insert_block = llvm.c.LLVMAppendBasicBlock(current_fn, "intersect_insert");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "intersect_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "intersect_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, self_cap, "cond");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, self_entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.c.LLVMConstInt(i8_type, 1, 0), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, test_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, test_block);
+        const elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "elem_ptr");
+        const elem = self.builder.buildLoad(element_llvm_type, elem_ptr, "elem");
+        // Check if element is in other set
+        const in_other = try self.emitSetContains(other_ptr, method, elem);
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, in_other, insert_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
+        _ = try self.emitSetInsert(result_alloca, method, elem);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        _ = i1_type;
+        return self.builder.buildLoad(set_type, result_alloca, "intersect.result");
+    }
+
+    /// Emit set.difference(other) - returns a new set with elements in self but not in other.
+    fn emitSetDifference(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        const set_type = self.getSetStructType();
+        const i1_type = llvm.Types.int1(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Create empty result set
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
+        const empty_set = llvm.c.LLVMConstNamedStruct(set_type, &result_values, 4);
+        const result_alloca = self.builder.buildAlloca(set_type, "diff_result");
+        _ = self.builder.buildStore(empty_set, result_alloca);
+
+        // Load self set fields
+        const self_entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "self_entries_field");
+        const self_entries = self.builder.buildLoad(ptr_type, self_entries_field, "self_entries");
+        const self_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "self_cap_field");
+        const self_cap = self.builder.buildLoad(i32_type, self_cap_field, "self_cap");
+
+        // Iterate through self's entries
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "diff_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "diff_check");
+        const test_block = llvm.c.LLVMAppendBasicBlock(current_fn, "diff_test");
+        const insert_block = llvm.c.LLVMAppendBasicBlock(current_fn, "diff_insert");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "diff_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "diff_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, self_cap, "cond");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, self_entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.c.LLVMConstInt(i8_type, 1, 0), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, test_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, test_block);
+        const elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "elem_ptr");
+        const elem = self.builder.buildLoad(element_llvm_type, elem_ptr, "elem");
+        // Check if element is NOT in other set
+        const in_other = try self.emitSetContains(other_ptr, method, elem);
+        const not_in_other = llvm.c.LLVMBuildNot(self.builder.ref, in_other, "not_in_other");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, not_in_other, insert_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
+        _ = try self.emitSetInsert(result_alloca, method, elem);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        _ = i1_type;
+        return self.builder.buildLoad(set_type, result_alloca, "diff.result");
+    }
+
+    // ========================================================================
     // String Methods (heap-allocated string)
     // ========================================================================
 
@@ -11471,14 +12602,38 @@ pub const Emitter = struct {
             llvm.c.LLVMDoubleTypeKind => 8,
             llvm.c.LLVMPointerTypeKind => 8, // 64-bit pointers
             llvm.c.LLVMStructTypeKind => blk: {
-                // Sum of field sizes (simplified - doesn't account for padding)
+                // Calculate struct size with proper alignment padding
                 const num_fields = llvm.c.LLVMCountStructElementTypes(ty);
-                var total: u64 = 0;
+                if (num_fields == 0) break :blk 0;
+
+                var offset: u64 = 0;
+                var max_align: u64 = 1;
+
                 for (0..num_fields) |i| {
                     const field_ty = llvm.c.LLVMStructGetTypeAtIndex(ty, @intCast(i));
-                    total += self.getLLVMTypeSize(field_ty);
+                    const field_size = self.getLLVMTypeSize(field_ty);
+                    const field_align = self.getLLVMTypeAlignment(field_ty);
+
+                    // Track maximum alignment for struct alignment
+                    if (field_align > max_align) max_align = field_align;
+
+                    // Pad offset to field alignment
+                    const remainder = offset % field_align;
+                    if (remainder != 0) {
+                        offset += field_align - remainder;
+                    }
+
+                    // Add field size
+                    offset += field_size;
                 }
-                break :blk total;
+
+                // Pad struct size to struct alignment (max of field alignments)
+                const remainder = offset % max_align;
+                if (remainder != 0) {
+                    offset += max_align - remainder;
+                }
+
+                break :blk offset;
             },
             llvm.c.LLVMArrayTypeKind => blk: {
                 const elem_ty = llvm.c.LLVMGetElementType(ty);
@@ -11486,6 +12641,38 @@ pub const Emitter = struct {
                 break :blk self.getLLVMTypeSize(elem_ty) * @as(u64, elem_count);
             },
             else => 8, // Default
+        };
+    }
+
+    /// Get alignment for an LLVM type.
+    fn getLLVMTypeAlignment(self: *Emitter, ty: llvm.TypeRef) u64 {
+        const type_kind = llvm.getTypeKind(ty);
+        return switch (type_kind) {
+            llvm.c.LLVMIntegerTypeKind => blk: {
+                const bits = llvm.c.LLVMGetIntTypeWidth(ty);
+                const bytes = @as(u64, bits) / 8;
+                // Alignment is min(8, size) for integers
+                break :blk if (bytes > 8) 8 else if (bytes == 0) 1 else bytes;
+            },
+            llvm.c.LLVMFloatTypeKind => 4,
+            llvm.c.LLVMDoubleTypeKind => 8,
+            llvm.c.LLVMPointerTypeKind => 8,
+            llvm.c.LLVMStructTypeKind => blk: {
+                // Struct alignment is max of field alignments
+                const num_fields = llvm.c.LLVMCountStructElementTypes(ty);
+                var max_align: u64 = 1;
+                for (0..num_fields) |i| {
+                    const field_ty = llvm.c.LLVMStructGetTypeAtIndex(ty, @intCast(i));
+                    const field_align = self.getLLVMTypeAlignment(field_ty);
+                    if (field_align > max_align) max_align = field_align;
+                }
+                break :blk max_align;
+            },
+            llvm.c.LLVMArrayTypeKind => blk: {
+                const elem_ty = llvm.c.LLVMGetElementType(ty);
+                break :blk self.getLLVMTypeAlignment(elem_ty);
+            },
+            else => 8,
         };
     }
 
@@ -14781,6 +15968,17 @@ pub const Emitter = struct {
             .map => {
                 // Map LLVM layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
                 // Entry layout is handled separately
+                var fields = [_]llvm.TypeRef{
+                    llvm.Types.pointer(self.ctx), // entries ptr
+                    llvm.Types.int32(self.ctx), // len
+                    llvm.Types.int32(self.ctx), // capacity
+                    llvm.Types.int32(self.ctx), // tombstone_count
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
+            .set => {
+                // Set LLVM layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
+                // Same layout as Map (entry is different but ptr is opaque here)
                 var fields = [_]llvm.TypeRef{
                     llvm.Types.pointer(self.ctx), // entries ptr
                     llvm.Types.int32(self.ctx), // len

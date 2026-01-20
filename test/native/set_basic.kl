@@ -1,0 +1,124 @@
+// Basic Set[T] tests
+fn main() -> i32 {
+    // Create a new set
+    var s: Set[i32] = Set.new[i32]()
+
+    // Test initial state
+    if s.len() != 0 {
+        return 1
+    }
+    if not s.is_empty() {
+        return 2
+    }
+
+    // Insert a value - should return true (newly inserted)
+    let inserted1: bool = s.insert(42)
+    if not inserted1 {
+        return 3
+    }
+
+    // Test len and is_empty after insert
+    if s.len() != 1 {
+        return 4
+    }
+    if s.is_empty() {
+        return 5
+    }
+
+    // Test contains
+    if not s.contains(42) {
+        return 6
+    }
+
+    // Test contains for non-existent element
+    if s.contains(999) {
+        return 7
+    }
+
+    // Insert same value again - should return false (already exists)
+    let inserted2: bool = s.insert(42)
+    if inserted2 {
+        return 8
+    }
+    // Length should stay the same
+    if s.len() != 1 {
+        return 9
+    }
+
+    // Insert more values (sequential, no loop for now)
+    s.insert(10)
+    s.insert(20)
+    s.insert(30)
+    if s.len() != 4 {
+        return 10
+    }
+
+    // Test remove - should return true
+    let removed1: bool = s.remove(20)
+    if not removed1 {
+        return 11
+    }
+    if s.len() != 3 {
+        return 12
+    }
+    // Verify element is gone
+    if s.contains(20) {
+        return 13
+    }
+
+    // Remove non-existent element - should return false
+    let removed2: bool = s.remove(999)
+    if removed2 {
+        return 14
+    }
+
+    // Test capacity
+    let cap: i32 = s.capacity()
+    if cap < s.len() {
+        return 15
+    }
+
+    // Test clone
+    let s2: Set[i32] = s.clone()
+    if s2.len() != s.len() {
+        return 16
+    }
+    if not s2.contains(42) {
+        return 17
+    }
+    if not s2.contains(10) {
+        return 18
+    }
+    if not s2.contains(30) {
+        return 19
+    }
+
+    // Test clear
+    s.clear()
+    if s.len() != 0 {
+        return 20
+    }
+    if not s.is_empty() {
+        return 21
+    }
+    // Clone should be unaffected
+    if s2.len() != 3 {
+        return 22
+    }
+
+    // Test with_capacity
+    var s3: Set[i32] = Set.with_capacity[i32](100)
+    if s3.capacity() < 100 {
+        return 23
+    }
+    if not s3.is_empty() {
+        return 24
+    }
+
+    // Clean up
+    s.drop()
+    s2.drop()
+    s3.drop()
+
+    return 0  // Success
+}

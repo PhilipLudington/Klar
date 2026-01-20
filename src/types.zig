@@ -49,6 +49,7 @@ pub const Type = union(enum) {
     // Collection types
     list: *ListType,
     map: *MapType,
+    set: *SetType,
     string_data: *StringDataType,
 
     // Special types
@@ -112,6 +113,8 @@ pub const Type = union(enum) {
             .list => |l| l.element.eql(other.list.element),
             // Map type equality depends on key and value types
             .map => |m| m.key.eql(other.map.key) and m.value.eql(other.map.value),
+            // Set type equality depends on element type
+            .set => |s| s.element.eql(other.set.element),
             // String data is a singleton type (no type parameters)
             .string_data => true,
             .void_, .never, .unknown, .error_type => true,
@@ -201,10 +204,11 @@ pub const Type = union(enum) {
             // - Cell (provides interior mutability, has move semantics)
             // - List (owns heap memory, must be moved or cloned)
             // - Map (owns heap memory, must be moved or cloned)
+            // - Set (owns heap memory, must be moved or cloned)
             // - String (heap-allocated string, must be moved or cloned)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .string_data, .unknown, .error_type, .associated_type_ref => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .unknown, .error_type, .associated_type_ref => false,
         };
     }
 };
@@ -545,6 +549,15 @@ pub const MapType = struct {
     value: Type,
 };
 
+/// Set type for unique element collections (Set[T])
+/// A heap-allocated hash set using open addressing with linear probing.
+/// Layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
+/// Entry layout: { state: i8, cached_hash: i32, element: T }
+/// State: 0=EMPTY, 1=OCCUPIED, 2=TOMBSTONE
+pub const SetType = struct {
+    element: Type,
+};
+
 /// String type for heap-allocated UTF-8 strings (String)
 /// A heap-allocated, dynamically-sized string.
 /// Layout: { ptr: *u8, len: i32, capacity: i32 }
@@ -769,6 +782,13 @@ pub const TypeBuilder = struct {
         return .{ .map = map };
     }
 
+    // Set type constructor
+    pub fn setType(self: *TypeBuilder, element: Type) !Type {
+        const set = try self.arena.allocator().create(SetType);
+        set.* = .{ .element = element };
+        return .{ .set = set };
+    }
+
     // String data type constructor
     pub fn stringDataType(self: *TypeBuilder) !Type {
         const str = try self.arena.allocator().create(StringDataType);
@@ -883,6 +903,11 @@ pub fn formatType(writer: anytype, t: Type) !void {
             try formatType(writer, m.key);
             try writer.writeAll(", ");
             try formatType(writer, m.value);
+            try writer.writeAll("]");
+        },
+        .set => |s| {
+            try writer.writeAll("Set[");
+            try formatType(writer, s.element);
             try writer.writeAll("]");
         },
         .string_data => {
