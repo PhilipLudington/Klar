@@ -611,7 +611,7 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 
 **Objective:** Complete the `?` operator and improve error handling.
 
-**Status:** Core Complete. `?` operator implemented for early return on Optional and Result types, with automatic error conversion via From trait.
+**Status:** ✅ Core Complete. `?` operator implemented for early return on Optional and Result types, with automatic error conversion via From trait. Error context via `.context()` method implemented.
 
 ### Question Mark Operator
 - [x] Implement full `?` operator in checker
@@ -628,17 +628,15 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 - [x] Test: error_from_conversion.kl verifies From::from() is called during `?` propagation
 - [ ] Chain From implementations
 
-### Try Blocks
-- [ ] Parse `try { ... }` block expressions
-- [ ] Evaluate to Result type
-- [ ] Scope `?` operator within try block
-- [ ] Support early return within try
-
 ### Error Context
-- [ ] Add `.context(msg)` method to Result
-- [ ] Wrap errors with additional context
-- [ ] Support chained error messages
-- [ ] Preserve original error for inspection
+- [x] Add `.context(msg)` method to Result
+- [x] Add `ContextError[E]` builtin type with message and cause
+- [x] `Result[T, E].context(msg) -> Result[T, ContextError[E]]`
+- [x] `ContextError[E].message() -> string` returns context message
+- [x] `ContextError[E].cause() -> E` returns original error
+- [x] Support chained error messages (nested ContextError types)
+- [x] Preserve original error for inspection
+- [x] Test: result_context.kl verifies context wrapping, chaining, message/cause extraction
 
 ### Debug Mode Stack Traces
 - [ ] Capture stack trace on error creation (debug mode only)
@@ -654,16 +652,19 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 ### Testing
 - [x] Test: `?` operator properly propagates errors (optional_propagate.kl, result_propagate.kl)
 - [x] Test: error types can be converted automatically (error_from_conversion.kl)
-- [ ] Test: try blocks scope correctly
-- [ ] Test: context messages preserved
+- [x] Test: context messages preserved (result_context.kl)
 
 **Files Modified:**
-- `src/checker.zig` - Enhanced `?` operator checking, expected_type context, checkOkErrCall ✓
-- `src/codegen/emit.zig` - Generate `?` early return code, extended ReturnTypeInfo, expected_type propagation, inferExprType for unwrap_err/unwrap ✓
+- `src/types.zig` - Added ContextErrorType to Type union ✓
+- `src/checker.zig` - Enhanced `?` operator checking, expected_type context, checkOkErrCall, .context() method, ContextError methods, ContextError[E] type resolution ✓
+- `src/codegen/emit.zig` - Generate `?` early return code, extended ReturnTypeInfo, expected_type propagation, inferExprType for unwrap_err/unwrap, ContextError codegen ✓
+- `src/interpreter.zig` - Added ContextError support, Result methods, ContextError methods ✓
+- `src/values.zig` - Added ContextErrorValue ✓
 - `test/native/optional_propagate.kl` - Test `?` on Optional ✓
 - `test/native/result_propagate.kl` - Test `?` on Result ✓
 - `test/native/result_propagate_simple.kl` - Simpler `?` on Result test ✓
 - `test/native/error_from_conversion.kl` - Test From trait error conversion ✓
+- `test/native/result_context.kl` - Test .context() method and ContextError ✓
 
 ---
 

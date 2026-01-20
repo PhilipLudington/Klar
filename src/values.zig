@@ -26,6 +26,7 @@ pub const Value = union(enum) {
     // Optional/Result wrappers
     optional: *OptionalValue,
     result: *ResultValue,
+    context_error: *ContextErrorValue,
 
     // References
     reference: *ReferenceValue,
@@ -290,6 +291,11 @@ pub const OptionalValue = struct {
 pub const ResultValue = struct {
     is_ok: bool,
     value: *Value,
+};
+
+pub const ContextErrorValue = struct {
+    message: []const u8,
+    cause: *Value,
 };
 
 pub const ReferenceValue = struct {
@@ -617,6 +623,13 @@ pub fn formatValue(writer: anytype, value: Value) !void {
             }
             try formatValue(writer, r.value.*);
             try writer.writeAll(")");
+        },
+        .context_error => |ce| {
+            try writer.writeAll("ContextError { message: \"");
+            try writer.writeAll(ce.message);
+            try writer.writeAll("\", cause: ");
+            try formatValue(writer, ce.cause.*);
+            try writer.writeAll(" }");
         },
         .reference => |r| {
             if (r.mutable) {

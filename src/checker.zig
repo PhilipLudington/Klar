@@ -2027,6 +2027,13 @@ pub const TypeChecker = struct {
                 return self.type_builder.cellType(new_inner);
             },
 
+            // ContextError - substitute inner type
+            .context_error => |ce| {
+                const new_inner = try self.substituteTypeParams(ce.inner_type, substitutions);
+                if (ce.inner_type.eql(new_inner)) return typ;
+                return self.type_builder.contextErrorType(new_inner);
+            },
+
             // Associated type reference - resolve using trait impls
             .associated_type_ref => |assoc_ref| {
                 // Look up what concrete type was substituted for the type variable
@@ -2134,6 +2141,7 @@ pub const TypeChecker = struct {
             .arc => |arc| self.containsTypeVar(arc.inner),
             .weak_arc => |warc| self.containsTypeVar(warc.inner),
             .cell => |c| self.containsTypeVar(c.inner),
+            .context_error => |ce| self.containsTypeVar(ce.inner_type),
             .range => |r| self.containsTypeVar(r.element_type),
             .list => |l| self.containsTypeVar(l.element),
             .map => |m| self.containsTypeVar(m.key) or self.containsTypeVar(m.value),
@@ -2249,6 +2257,11 @@ pub const TypeChecker = struct {
             .cell => |c| {
                 if (concrete != .cell) return false;
                 return self.unifyTypes(c.inner, concrete.cell.inner, substitutions);
+            },
+
+            .context_error => |ce| {
+                if (concrete != .context_error) return false;
+                return self.unifyTypes(ce.inner_type, concrete.context_error.inner_type, substitutions);
             },
 
             .applied => |app| {
@@ -2476,6 +2489,16 @@ pub const TypeChecker = struct {
                         const ok_type = try self.resolveTypeExpr(g.args[0]);
                         const err_type = try self.resolveTypeExpr(g.args[1]);
                         return try self.type_builder.resultType(ok_type, err_type);
+                    }
+
+                    // ContextError[E] - error wrapper with context message
+                    if (std.mem.eql(u8, base_name, "ContextError")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "ContextError expects exactly 1 type argument", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner = try self.resolveTypeExpr(g.args[0]);
+                        return try self.type_builder.contextErrorType(inner);
                     }
 
                     // Option[T] - optional type (alternative syntax for ?T)
@@ -4111,6 +4134,22 @@ pub const TypeChecker = struct {
                 }
                 return object_type;
             }
+
+            // context(msg: string) -> Result[T, ContextError[E]]
+            // Wraps the error type with a context message
+            if (std.mem.eql(u8, method.method_name, "context")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "context() takes exactly 1 argument (a string message)", .{});
+                    return self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "context() argument must be a string", .{});
+                }
+                // Return Result[T, ContextError[E]]
+                const context_err_type = self.type_builder.contextErrorType(result_type.err_type) catch return self.type_builder.unknownType();
+                return self.type_builder.resultType(result_type.ok_type, context_err_type) catch self.type_builder.unknownType();
+            }
         }
 
         // Range methods
@@ -4156,6 +4195,27 @@ pub const TypeChecker = struct {
                     self.addError(.invalid_call, method.span, "clone() expects no arguments", .{});
                 }
                 return object_type;
+            }
+        }
+
+        // ContextError methods
+        if (object_type == .context_error) {
+            const context_error_type = object_type.context_error;
+
+            // message() -> string - returns the context message
+            if (std.mem.eql(u8, method.method_name, "message")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "message() takes no arguments", .{});
+                }
+                return self.type_builder.stringType();
+            }
+
+            // cause() -> E - returns the original error
+            if (std.mem.eql(u8, method.method_name, "cause")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "cause() takes no arguments", .{});
+                }
+                return context_error_type.inner_type;
             }
         }
 
@@ -6535,6 +6595,7 @@ pub const TypeChecker = struct {
             .arc => "arc",
             .weak_arc => "weak_arc",
             .cell => "cell",
+            .context_error => "context_error",
             .range => "range",
             .list => "list",
             .map => "map",

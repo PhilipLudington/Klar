@@ -46,6 +46,9 @@ pub const Type = union(enum) {
     // Range type
     range: *RangeType,
 
+    // Error context type
+    context_error: *ContextErrorType,
+
     // Collection types
     list: *ListType,
     map: *MapType,
@@ -107,6 +110,8 @@ pub const Type = union(enum) {
             .arc => |a| a.inner.eql(other.arc.inner),
             .weak_arc => |w| w.inner.eql(other.weak_arc.inner),
             .cell => |c| c.inner.eql(other.cell.inner),
+            // Context error equality depends on inner error type
+            .context_error => |ce| ce.inner_type.eql(other.context_error.inner_type),
             // Range type equality only depends on element type; inclusive is a runtime property
             .range => |r| r.element_type.eql(other.range.element_type),
             // List type equality depends on element type
@@ -206,9 +211,10 @@ pub const Type = union(enum) {
             // - Map (owns heap memory, must be moved or cloned)
             // - Set (owns heap memory, must be moved or cloned)
             // - String (heap-allocated string, must be moved or cloned)
+            // - ContextError (contains a string message)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .unknown, .error_type, .associated_type_ref => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .unknown, .error_type, .associated_type_ref => false,
         };
     }
 };
@@ -524,6 +530,13 @@ pub const CellType = struct {
     inner: Type, // The wrapped type (must be Copy)
 };
 
+/// ContextError type for wrapping errors with context messages (ContextError[E])
+/// Wraps an error with a context message for better error reporting.
+/// Layout: { message: string, cause: E }
+pub const ContextErrorType = struct {
+    inner_type: Type, // The wrapped error type
+};
+
 /// Range type for iteration (Range[T])
 /// Represents an iterator over a sequence of values from start to end.
 /// Layout: { start: T, end: T, current: T, inclusive: bool }
@@ -761,6 +774,13 @@ pub const TypeBuilder = struct {
         return .{ .cell = cell };
     }
 
+    // Context error type constructor
+    pub fn contextErrorType(self: *TypeBuilder, inner_type: Type) !Type {
+        const ctx_err = try self.arena.allocator().create(ContextErrorType);
+        ctx_err.* = .{ .inner_type = inner_type };
+        return .{ .context_error = ctx_err };
+    }
+
     // Range type constructor
     pub fn rangeType(self: *TypeBuilder, element_type: Type, inclusive: bool) !Type {
         const range = try self.arena.allocator().create(RangeType);
@@ -886,6 +906,11 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .cell => |c| {
             try writer.writeAll("Cell[");
             try formatType(writer, c.inner);
+            try writer.writeAll("]");
+        },
+        .context_error => |ce| {
+            try writer.writeAll("ContextError[");
+            try formatType(writer, ce.inner_type);
             try writer.writeAll("]");
         },
         .range => |r| {

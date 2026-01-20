@@ -4083,21 +4083,34 @@ pub const Emitter = struct {
                 };
 
                 // Handle builtin Result constructors: Ok(value) and Err(error)
+                // Use expected_type if available (from type annotation context)
                 if (std.mem.eql(u8, func_name, "Ok")) {
-                    // Ok(value) returns Result[T, i32] where T is inferred from argument
+                    // Ok(value) returns Result[T, E] - use expected type if available
                     if (call.args.len == 1) {
                         const ok_type = try self.inferExprType(call.args[0]);
-                        const err_type = llvm.Types.int32(self.ctx);
+                        // Use expected_type's err_type if available
+                        const err_type = if (self.expected_type) |et| blk: {
+                            if (et == .result) {
+                                break :blk self.typeToLLVM(et.result.err_type);
+                            }
+                            break :blk llvm.Types.int32(self.ctx);
+                        } else llvm.Types.int32(self.ctx);
                         return self.getResultType(ok_type, err_type);
                     }
                     return llvm.Types.int32(self.ctx);
                 }
 
                 if (std.mem.eql(u8, func_name, "Err")) {
-                    // Err(error) returns Result[i32, E] where E is inferred from argument
+                    // Err(error) returns Result[T, E] - use expected type if available
                     if (call.args.len == 1) {
                         const err_type = try self.inferExprType(call.args[0]);
-                        const ok_type = llvm.Types.int32(self.ctx);
+                        // Use expected_type's ok_type if available
+                        const ok_type = if (self.expected_type) |et| blk: {
+                            if (et == .result) {
+                                break :blk self.typeToLLVM(et.result.ok_type);
+                            }
+                            break :blk llvm.Types.int32(self.ctx);
+                        } else llvm.Types.int32(self.ctx);
                         return self.getResultType(ok_type, err_type);
                     }
                     return llvm.Types.int32(self.ctx);
@@ -4563,9 +4576,46 @@ pub const Emitter = struct {
                     var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type, llvm.Types.int32(self.ctx) };
                     return llvm.Types.struct_(self.ctx, &result_fields, false);
                 }
+                // context(msg) returns Result[T, ContextError[E]] where T and E come from the original Result
+                if (std.mem.eql(u8, m.method_name, "context")) {
+                    // Get the Result type from the object
+                    const object_type = try self.inferExprType(m.object);
+                    // ok_type is at index 1, unchanged
+                    const ok_type = llvm.c.LLVMStructGetTypeAtIndex(object_type, 1);
+                    // err_type is at index 2
+                    const err_type = llvm.c.LLVMStructGetTypeAtIndex(object_type, 2);
+                    // ContextError[E] layout: { message: ptr (string), cause: E }
+                    var context_err_fields = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), err_type };
+                    const context_err_type = llvm.Types.struct_(self.ctx, &context_err_fields, false);
+                    // Result[T, ContextError[E]] layout: { tag: i1, ok_value: T, err_value: ContextError[E] }
+                    var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type, context_err_type };
+                    return llvm.Types.struct_(self.ctx, &result_fields, false);
+                }
                 // Hash trait: hash() returns i64
                 if (std.mem.eql(u8, m.method_name, "hash")) {
                     return llvm.Types.int64(self.ctx);
+                }
+                // ContextError methods
+                // message() returns string (pointer)
+                if (std.mem.eql(u8, m.method_name, "message")) {
+                    const object_type = try self.inferExprType(m.object);
+                    // Check if object type looks like a ContextError (struct with 2 fields)
+                    if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
+                        if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                            return llvm.Types.pointer(self.ctx);
+                        }
+                    }
+                }
+                // cause() returns the inner error type
+                if (std.mem.eql(u8, m.method_name, "cause")) {
+                    const object_type = try self.inferExprType(m.object);
+                    // Check if object type looks like a ContextError (struct with 2 fields)
+                    if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
+                        if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                            // Return the cause type (second field)
+                            return llvm.c.LLVMStructGetTypeAtIndex(object_type, 1);
+                        }
+                    }
                 }
                 // String methods
                 // len() returns i32
@@ -4975,6 +5025,10 @@ pub const Emitter = struct {
                 try buf.appendSlice(self.allocator, atr.type_var.name);
                 try buf.append(self.allocator, '_');
                 try buf.appendSlice(self.allocator, atr.assoc_name);
+            },
+            .context_error => |ce| {
+                try buf.appendSlice(self.allocator, "ctx_err_");
+                try self.appendCheckerTypeNameForMangling(buf, ce.inner_type);
             },
             else => try buf.appendSlice(self.allocator, "unknown"),
         }
@@ -6306,6 +6360,47 @@ pub const Emitter = struct {
             }
             const func_val = try self.emitExpr(method.args[0]);
             return self.emitMapErrMethod(object, object_type, func_val, method);
+        }
+
+        // context(msg) - wraps error with context message
+        if (std.mem.eql(u8, method.method_name, "context")) {
+            if (method.args.len != 1) {
+                return EmitError.InvalidAST;
+            }
+            const msg_val = try self.emitExpr(method.args[0]);
+            return self.emitContextMethod(object, object_type, msg_val);
+        }
+
+        // message() - gets context message from ContextError
+        // Only match if this looks like a ContextError type (struct with ptr + cause)
+        if (std.mem.eql(u8, method.method_name, "message")) {
+            // Check if object type is a struct (ContextError layout)
+            if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
+                // ContextError has exactly 2 fields: message (ptr) + cause
+                if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                    const first_field = llvm.c.LLVMStructGetTypeAtIndex(object_type, 0);
+                    // First field should be a pointer (message)
+                    if (llvm.c.LLVMGetTypeKind(first_field) == llvm.c.LLVMPointerTypeKind) {
+                        return self.emitContextErrorMessage(object, object_type);
+                    }
+                }
+            }
+        }
+
+        // cause() - gets original error from ContextError
+        // Only match if this looks like a ContextError type (struct with ptr + cause)
+        if (std.mem.eql(u8, method.method_name, "cause")) {
+            // Check if object type is a struct (ContextError layout)
+            if (llvm.c.LLVMGetTypeKind(object_type) == llvm.c.LLVMStructTypeKind) {
+                // ContextError has exactly 2 fields: message (ptr) + cause
+                if (llvm.c.LLVMCountStructElementTypes(object_type) == 2) {
+                    const first_field = llvm.c.LLVMStructGetTypeAtIndex(object_type, 0);
+                    // First field should be a pointer (message)
+                    if (llvm.c.LLVMGetTypeKind(first_field) == llvm.c.LLVMPointerTypeKind) {
+                        return self.emitContextErrorCause(object, object_type);
+                    }
+                }
+            }
         }
 
         // Eq trait: eq() method for equality comparison
@@ -17980,6 +18075,172 @@ pub const Emitter = struct {
         return self.builder.buildCall(fn_type, fn_ptr, &call_args, "map.closure.call");
     }
 
+    /// Emit Result.context(msg) - wraps error with context message.
+    /// For Result[T, E].context(msg: string) -> Result[T, ContextError[E]]: Ok(v) -> Ok(v), Err(e) -> Err(ContextError{msg, e})
+    fn emitContextMethod(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, msg_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Store value to temp for GEP access
+        const val_alloca = self.builder.buildAlloca(value_type, "context.tmp");
+        _ = self.builder.buildStore(value, val_alloca);
+
+        // Get the tag (index 0)
+        var tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const tag_ptr = self.builder.buildGEP(value_type, val_alloca, &tag_indices, "context.tag.ptr");
+        const tag = self.builder.buildLoad(llvm.Types.int1(self.ctx), tag_ptr, "context.tag");
+
+        // Get the ok value (index 1)
+        const ok_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 1);
+        var ok_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const ok_ptr = self.builder.buildGEP(value_type, val_alloca, &ok_indices, "context.ok.ptr");
+
+        // Get the err value (index 2)
+        const err_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 2);
+        var err_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 2),
+        };
+        const err_ptr = self.builder.buildGEP(value_type, val_alloca, &err_indices, "context.err.ptr");
+
+        // ContextError[E] layout: { message: ptr, cause: E }
+        var context_err_fields = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), err_type };
+        const context_err_type = llvm.Types.struct_(self.ctx, &context_err_fields, false);
+
+        // Result[T, ContextError[E]] layout: { tag: i1, ok_value: T, err_value: ContextError[E] }
+        var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type, context_err_type };
+        const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
+
+        // Allocate result
+        const result_alloca = self.builder.buildAlloca(result_type, "context.result");
+
+        // Create basic blocks
+        const ok_block = llvm.appendBasicBlock(self.ctx, func, "context.ok");
+        const err_block = llvm.appendBasicBlock(self.ctx, func, "context.err");
+        const merge_block = llvm.appendBasicBlock(self.ctx, func, "context.merge");
+
+        // Branch based on tag (1 = Ok, 0 = Err)
+        _ = self.builder.buildCondBr(tag, ok_block, err_block);
+
+        // Ok block: create Ok(v) with new result type
+        self.builder.positionAtEnd(ok_block);
+        const ok_val = self.builder.buildLoad(ok_type, ok_ptr, "context.ok.val");
+
+        // Set tag to 1 (Ok)
+        var res_tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const res_tag_ptr = self.builder.buildGEP(result_type, result_alloca, &res_tag_indices, "context.result.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 1, false), res_tag_ptr);
+
+        // Store ok value
+        var res_ok_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const res_ok_ptr = self.builder.buildGEP(result_type, result_alloca, &res_ok_indices, "context.result.ok.ptr");
+        _ = self.builder.buildStore(ok_val, res_ok_ptr);
+
+        const ok_result = self.builder.buildLoad(result_type, result_alloca, "context.result.ok");
+        _ = self.builder.buildBr(merge_block);
+        const ok_end_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Err block: create Err(ContextError{msg, e})
+        self.builder.positionAtEnd(err_block);
+        const err_val = self.builder.buildLoad(err_type, err_ptr, "context.err.val");
+
+        // Allocate a new result for the error case
+        const err_result_alloca = self.builder.buildAlloca(result_type, "context.result.err.alloca");
+
+        // Allocate ContextError
+        const ctx_err_alloca = self.builder.buildAlloca(context_err_type, "context.ctx_err");
+
+        // Store message (index 0)
+        var ctx_msg_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const ctx_msg_ptr = self.builder.buildGEP(context_err_type, ctx_err_alloca, &ctx_msg_indices, "context.ctx_err.msg.ptr");
+        _ = self.builder.buildStore(msg_val, ctx_msg_ptr);
+
+        // Store cause (index 1)
+        var ctx_cause_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const ctx_cause_ptr = self.builder.buildGEP(context_err_type, ctx_err_alloca, &ctx_cause_indices, "context.ctx_err.cause.ptr");
+        _ = self.builder.buildStore(err_val, ctx_cause_ptr);
+
+        // Load the ContextError
+        const ctx_err_val = self.builder.buildLoad(context_err_type, ctx_err_alloca, "context.ctx_err.val");
+
+        // Set tag to 0 (Err) - compute GEP in this block
+        var err_res_tag_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const err_res_tag_ptr = self.builder.buildGEP(result_type, err_result_alloca, &err_res_tag_indices, "context.result.err.tag.ptr");
+        _ = self.builder.buildStore(llvm.Const.int(llvm.Types.int1(self.ctx), 0, false), err_res_tag_ptr);
+
+        // Store ContextError as err value
+        var res_err_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 2),
+        };
+        const res_err_ptr = self.builder.buildGEP(result_type, err_result_alloca, &res_err_indices, "context.result.err.ptr");
+        _ = self.builder.buildStore(ctx_err_val, res_err_ptr);
+
+        const err_result = self.builder.buildLoad(result_type, err_result_alloca, "context.result.err");
+        _ = self.builder.buildBr(merge_block);
+        const err_end_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Merge block
+        self.builder.positionAtEnd(merge_block);
+        var incoming_vals = [_]llvm.ValueRef{ ok_result, err_result };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ ok_end_block, err_end_block };
+        const phi = self.builder.buildPhi(result_type, "context.result");
+        llvm.addIncoming(phi, &incoming_vals, &incoming_blocks);
+
+        return phi;
+    }
+
+    /// Emit ContextError.message() - returns the context message string.
+    fn emitContextErrorMessage(self: *Emitter, ctx_err_val: llvm.ValueRef, ctx_err_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        // Store ContextError to temp for GEP access
+        const ctx_err_alloca = self.builder.buildAlloca(ctx_err_type, "ctx_err.msg.tmp");
+        _ = self.builder.buildStore(ctx_err_val, ctx_err_alloca);
+
+        // Get message (index 0)
+        var msg_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const msg_ptr = self.builder.buildGEP(ctx_err_type, ctx_err_alloca, &msg_indices, "ctx_err.msg.ptr");
+        return self.builder.buildLoad(llvm.Types.pointer(self.ctx), msg_ptr, "ctx_err.msg");
+    }
+
+    /// Emit ContextError.cause() - returns the original error.
+    fn emitContextErrorCause(self: *Emitter, ctx_err_val: llvm.ValueRef, ctx_err_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        // Store ContextError to temp for GEP access
+        const ctx_err_alloca = self.builder.buildAlloca(ctx_err_type, "ctx_err.cause.tmp");
+        _ = self.builder.buildStore(ctx_err_val, ctx_err_alloca);
+
+        // Get cause (index 1)
+        var cause_indices = [_]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 1),
+        };
+        const cause_type = llvm.c.LLVMStructGetTypeAtIndex(ctx_err_type, 1);
+        const cause_ptr = self.builder.buildGEP(ctx_err_type, ctx_err_alloca, &cause_indices, "ctx_err.cause.ptr");
+        return self.builder.buildLoad(cause_type, cause_ptr, "ctx_err.cause");
+    }
+
     /// Emit the Eq trait's eq() method for equality comparison.
     /// Works for primitives (integers, floats, bools, chars, strings).
     fn emitEqMethod(self: *Emitter, method: *ast.MethodCall, left: llvm.ValueRef, left_type: llvm.TypeRef) EmitError!llvm.ValueRef {
@@ -18844,6 +19105,15 @@ pub const Emitter = struct {
                 return llvm.Types.pointer(self.ctx);
             },
             .cell => llvm.Types.pointer(self.ctx),
+            .context_error => |ce| {
+                // ContextError LLVM layout: { message: ptr (string), cause: E }
+                const inner_ty = self.typeToLLVM(ce.inner_type);
+                var fields = [_]llvm.TypeRef{
+                    llvm.Types.pointer(self.ctx), // message (string pointer)
+                    inner_ty, // cause (inner error type)
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
             .range => |r| {
                 // Range LLVM layout: { start: T, end: T, current: T, inclusive: i1 }
                 const elem_ty = self.typeToLLVM(r.element_type);

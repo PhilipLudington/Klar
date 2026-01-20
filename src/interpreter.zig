@@ -1018,6 +1018,73 @@ pub const Interpreter = struct {
             }
         }
 
+        // Result methods
+        if (object == .result) {
+            const result = object.result;
+
+            if (std.mem.eql(u8, method.method_name, "is_ok")) {
+                return self.builder.boolean(result.is_ok);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "is_err")) {
+                return self.builder.boolean(!result.is_ok);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "unwrap")) {
+                if (result.is_ok) {
+                    return result.value.*;
+                }
+                return RuntimeError.NullUnwrap;
+            }
+
+            if (std.mem.eql(u8, method.method_name, "unwrap_err")) {
+                if (!result.is_ok) {
+                    return result.value.*;
+                }
+                return RuntimeError.NullUnwrap;
+            }
+
+            if (std.mem.eql(u8, method.method_name, "context")) {
+                if (args.items.len != 1 or args.items[0] != .string) {
+                    return RuntimeError.InvalidOperation;
+                }
+                const msg = args.items[0].string;
+
+                // Create a new Result with ContextError wrapping the error
+                const new_result = self.allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+                new_result.is_ok = result.is_ok;
+
+                if (result.is_ok) {
+                    // For Ok, just copy the value
+                    new_result.value = result.value;
+                } else {
+                    // For Err, wrap with ContextError
+                    const ctx_err = self.allocator.create(values.ContextErrorValue) catch return RuntimeError.OutOfMemory;
+                    ctx_err.message = msg;
+                    ctx_err.cause = result.value;
+
+                    const ctx_err_val = self.allocator.create(Value) catch return RuntimeError.OutOfMemory;
+                    ctx_err_val.* = .{ .context_error = ctx_err };
+                    new_result.value = ctx_err_val;
+                }
+
+                return .{ .result = new_result };
+            }
+        }
+
+        // ContextError methods
+        if (object == .context_error) {
+            const ctx_err = object.context_error;
+
+            if (std.mem.eql(u8, method.method_name, "message")) {
+                return self.builder.string(ctx_err.message);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "cause")) {
+                return ctx_err.cause.*;
+            }
+        }
+
         // Type conversion methods handled in type checker, just return the value
         // since types are checked at compile time
         if (std.mem.eql(u8, method.method_name, "as") or
@@ -1932,6 +1999,7 @@ fn builtinTypeOf(allocator: Allocator, args: []const Value) RuntimeError!Value {
         .enum_ => |e| e.type_name,
         .optional => "?T",
         .result => "Result[T, E]",
+        .context_error => "ContextError[E]",
         .reference => "&T",
         .function => "fn",
         .closure => "closure",

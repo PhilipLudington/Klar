@@ -1,51 +1,51 @@
-# Resume Point: From Trait for Error Conversion Complete
+# Resume Point: Error Context for Result Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). The From trait for automatic error conversion in the `?` operator is now fully implemented.
+Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). The `.context()` method for Result is now fully implemented.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **From Trait for Error Conversion** ✅
-  - Automatic error type conversion when using `?` operator
-  - `impl TargetError: From[SourceError]` enables `Result[T, SourceError]?` in functions returning `Result[U, TargetError]`
-  - The `from()` method is called to convert the error type before propagation
-  - Test: `test/native/error_from_conversion.kl` verifies conversion adds 1000 to error code
+- **Error Context for Result** ✅
+  - Added `ContextError[E]` built-in type that wraps errors with context messages
+  - `Result[T, E].context(msg: string) -> Result[T, ContextError[E]]`
+  - `ContextError[E].message() -> string` returns the context message
+  - `ContextError[E].cause() -> E` returns the original error
+  - Chaining creates nested types: `result.context("a").context("b")` -> `Result[T, ContextError[ContextError[E]]]`
+  - Test: `test/native/result_context.kl` verifies all functionality
 
 ### Implementation Details
 
+#### Type System (types.zig)
+- Added `ContextErrorType` struct with `inner_type: Type`
+- Added `context_error` variant to Type union
+- Added equality, copy-type check, formatting support
+
 #### Type Checker (checker.zig)
-- Added `expected_type: ?Type` field for type context propagation
-- Added `checkOkErrCall()` function to infer Result types from expected context
-- Modified `checkExprWithHint()` to set expected_type for call expressions
+- Added `.context()` method to Result methods (returns `Result[T, ContextError[E]]`)
+- Added `ContextError` methods section with `message()` and `cause()`
+- Added `ContextError[E]` to type resolution (alongside `Result[T, E]`, `Option[T]`, etc.)
+- Added `context_error` handling to `substituteTypeParams`, `containsTypeVar`, `unifyTypes`
 
 #### Code Generation (emit.zig)
+- Added LLVM type for ContextError: `{ ptr (message), E (cause) }`
+- Added `emitContextMethod()` for Result.context()
+- Added `emitContextErrorMessage()` and `emitContextErrorCause()` for ContextError methods
+- Added type inference for `context()`, `message()`, `cause()` methods
+- Fixed Ok/Err type inference to use expected_type from type annotations
 
-**New fields in Emitter struct:**
-```zig
-expected_type: ?types.Type       // For type context propagation
-current_return_klar_type: ?types.Type  // For return type context
-```
-
-**Key additions:**
-- `emitOkCall()` and `emitErrCall()` now use expected_type to determine Result type parameters
-- `getStructTypeNameFromAnnotation()` extracts struct type names from type annotations
-- `let_decl` and `var_decl` use annotation as fallback for struct_type_name
-- Return statements set expected_type from current_return_klar_type
-
-**Fixed `inferExprType` for method calls (~line 4507):**
-- Added handling for `unwrap_err()` - returns error type directly (struct index 2)
-- Added handling for `unwrap()` - returns ok type directly (struct index 1)
+#### Interpreter (interpreter.zig, values.zig)
+- Added `ContextErrorValue` struct
+- Added `context_error` variant to Value union
+- Added Result methods: `is_ok`, `is_err`, `unwrap`, `unwrap_err`, `context`
+- Added ContextError methods: `message`, `cause`
 
 ### Previously Completed
 
+- **From Trait for Error Conversion** ✅
 - **`?` Operator for Early Return** ✅
-  - For `Optional[T]`: `value?` extracts inner value on `Some`, or returns `None` early
-  - For `Result[T, E]`: `value?` extracts ok value on `Ok`, or returns `Err(e)` early
-  - With From trait: automatically converts error types during propagation
-
 - **Set[T] and Map[K,V] Iterator Adapters** ✅
 - **List[T] Iterator Adapters** ✅
 - **Milestone 6: Iterator Protocol** ✅ (Core complete)
@@ -55,9 +55,9 @@ current_return_klar_type: ?types.Type  // For return type context
 
 ## Current Test Status
 
-All 431 tests pass:
+All 422 tests pass:
 - Unit Tests: 220 passed
-- Native Tests: 195 passed
+- Native Tests: 186 passed
 - App Tests: 10 passed
 - Module Tests: 6 passed
 
@@ -70,11 +70,9 @@ Continue with **Phase 4** tasks:
 1. **Standard Library I/O** (Milestone 5):
    - File, Read/Write traits, stdin/stdout
 
-2. **Try Blocks** (Milestone 7):
-   - `try { ... }` block expressions
-
-3. **Error Context** (Milestone 7):
-   - `.context(msg)` method for Result
+2. **Error Chain Display** (Optional enhancement):
+   - Debug mode stack traces
+   - Error chain formatting
 
 ---
 
@@ -83,6 +81,9 @@ Continue with **Phase 4** tasks:
 ```bash
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
+
+# Test error context
+./zig-out/bin/klar run test/native/result_context.kl  # All tests pass
 
 # Test From conversion
 ./zig-out/bin/klar run test/native/error_from_conversion.kl  # Returns 0 (success)
