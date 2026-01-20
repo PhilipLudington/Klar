@@ -4298,6 +4298,20 @@ pub const Emitter = struct {
                     {
                         return self.getSetStructType();
                     }
+                    // take(n), skip(n), filter(fn) return Set[T]
+                    if (std.mem.eql(u8, m.method_name, "take") or
+                        std.mem.eql(u8, m.method_name, "skip") or
+                        std.mem.eql(u8, m.method_name, "filter"))
+                    {
+                        return self.getSetStructType();
+                    }
+                    // map(fn), enumerate(), zip(other) return List
+                    if (std.mem.eql(u8, m.method_name, "map") or
+                        std.mem.eql(u8, m.method_name, "enumerate") or
+                        std.mem.eql(u8, m.method_name, "zip"))
+                    {
+                        return self.getListStructType();
+                    }
                 }
 
                 // downgrade() always returns pointer (Weak type)
@@ -6082,7 +6096,8 @@ pub const Emitter = struct {
         }
 
         // map(f) - applies function f to inner value if Some/Ok
-        if (std.mem.eql(u8, method.method_name, "map")) {
+        // Skip for Set and Map types which have their own map methods
+        if (std.mem.eql(u8, method.method_name, "map") and !self.isSetExpr(method.object) and !self.isMapExpr(method.object)) {
             if (method.args.len != 1) {
                 return EmitError.InvalidAST;
             }
@@ -6336,6 +6351,27 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, method.method_name, "drop")) {
                     return self.emitMapDrop(ptr, method);
                 }
+                // Map iterator adapters
+                if (std.mem.eql(u8, method.method_name, "take")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const count = try self.emitExpr(method.args[0]);
+                    return self.emitMapTake(ptr, method, count);
+                }
+                if (std.mem.eql(u8, method.method_name, "skip")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const count = try self.emitExpr(method.args[0]);
+                    return self.emitMapSkip(ptr, method, count);
+                }
+                if (std.mem.eql(u8, method.method_name, "filter")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const closure = try self.emitFunctionOrClosure(method.args[0]);
+                    return self.emitMapFilter(ptr, method, closure);
+                }
+                if (std.mem.eql(u8, method.method_name, "map_values")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const closure = try self.emitFunctionOrClosure(method.args[0]);
+                    return self.emitMapMapValues(ptr, method, closure);
+                }
             }
         }
 
@@ -6400,6 +6436,35 @@ pub const Emitter = struct {
                     // Need the pointer to the other Set, not its value
                     const other_ptr = try self.getSetArgPtr(method.args[0]);
                     return self.emitSetDifference(ptr, method, other_ptr);
+                }
+                // Set iterator adapters
+                if (std.mem.eql(u8, method.method_name, "take")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const count = try self.emitExpr(method.args[0]);
+                    return self.emitSetTake(ptr, method, count);
+                }
+                if (std.mem.eql(u8, method.method_name, "skip")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const count = try self.emitExpr(method.args[0]);
+                    return self.emitSetSkip(ptr, method, count);
+                }
+                if (std.mem.eql(u8, method.method_name, "filter")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const closure = try self.emitFunctionOrClosure(method.args[0]);
+                    return self.emitSetFilter(ptr, method, closure);
+                }
+                if (std.mem.eql(u8, method.method_name, "map")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const closure = try self.emitFunctionOrClosure(method.args[0]);
+                    return self.emitSetMap(ptr, method, closure);
+                }
+                if (std.mem.eql(u8, method.method_name, "enumerate")) {
+                    return self.emitSetEnumerate(ptr, method);
+                }
+                if (std.mem.eql(u8, method.method_name, "zip")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const other_ptr = try self.getSetArgPtr(method.args[0]);
+                    return self.emitSetZip(ptr, method, other_ptr);
                 }
             }
         }
@@ -12291,6 +12356,387 @@ pub const Emitter = struct {
         return llvm.Const.int32(self.ctx, 0);
     }
 
+    // ========================================================================
+    // Map Iterator Adapters
+    // ========================================================================
+
+    /// Emit map.take(n) - returns a new map with first n entries.
+    fn emitMapTake(self: *Emitter, map_ptr: llvm.ValueRef, method: *ast.MethodCall, count: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const key_type_klar = self.getMapKeyType(method.object) orelse return EmitError.InvalidAST;
+        const value_type_klar = self.getMapValueType(method.object) orelse return EmitError.InvalidAST;
+
+        const key_llvm_type = self.typeToLLVM(key_type_klar);
+        const value_llvm_type = self.typeToLLVM(value_type_klar);
+        const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
+
+        const map_type = self.getMapStructType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Create empty result map
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
+        const empty_map = llvm.c.LLVMConstNamedStruct(map_type, &result_values, 4);
+        const result_alloca = self.builder.buildAlloca(map_type, "take_result");
+        _ = self.builder.buildStore(empty_map, result_alloca);
+
+        // Clamp count to >= 0
+        const count_clamped = llvm.c.LLVMBuildSelect(
+            self.builder.ref,
+            self.builder.buildICmp(llvm.c.LLVMIntSLT, count, zero_i32, "take.count_neg"),
+            zero_i32,
+            count,
+            "take.count_clamped",
+        );
+
+        // Load map fields
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "entries_field");
+        const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "cap_field");
+        const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
+
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_check");
+        const insert_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_insert");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const taken_alloca = self.builder.buildAlloca(i32_type, "taken");
+        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = self.builder.buildStore(zero_i32, taken_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const taken = self.builder.buildLoad(i32_type, taken_alloca, "taken");
+        const idx_ok = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, capacity, "idx_ok");
+        const taken_ok = self.builder.buildICmp(llvm.c.LLVMIntSLT, taken, count_clamped, "taken_ok");
+        const continue_cond = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ok, taken_ok, "continue");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.Const.int8(self.ctx, 1), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, insert_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
+        const key_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "key_ptr");
+        const key = self.builder.buildLoad(key_llvm_type, key_ptr, "key");
+        const value_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 3, "value_ptr");
+        const value = self.builder.buildLoad(value_llvm_type, value_ptr, "value");
+        _ = try self.emitMapInsert(result_alloca, method, key, value);
+        const new_taken = llvm.c.LLVMBuildAdd(self.builder.ref, taken, llvm.Const.int32(self.ctx, 1), "new_taken");
+        _ = self.builder.buildStore(new_taken, taken_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(map_type, result_alloca, "take.result");
+    }
+
+    /// Emit map.skip(n) - returns a new map skipping first n entries.
+    fn emitMapSkip(self: *Emitter, map_ptr: llvm.ValueRef, method: *ast.MethodCall, count: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const key_type_klar = self.getMapKeyType(method.object) orelse return EmitError.InvalidAST;
+        const value_type_klar = self.getMapValueType(method.object) orelse return EmitError.InvalidAST;
+
+        const key_llvm_type = self.typeToLLVM(key_type_klar);
+        const value_llvm_type = self.typeToLLVM(value_type_klar);
+        const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
+
+        const map_type = self.getMapStructType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Create empty result map
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
+        const empty_map = llvm.c.LLVMConstNamedStruct(map_type, &result_values, 4);
+        const result_alloca = self.builder.buildAlloca(map_type, "skip_result");
+        _ = self.builder.buildStore(empty_map, result_alloca);
+
+        // Clamp count to >= 0
+        const count_clamped = llvm.c.LLVMBuildSelect(
+            self.builder.ref,
+            self.builder.buildICmp(llvm.c.LLVMIntSLT, count, zero_i32, "skip.count_neg"),
+            zero_i32,
+            count,
+            "skip.count_clamped",
+        );
+
+        // Load map fields
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "entries_field");
+        const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "cap_field");
+        const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
+
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_check");
+        const process_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_process");
+        const insert_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_insert");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const skipped_alloca = self.builder.buildAlloca(i32_type, "skipped");
+        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = self.builder.buildStore(zero_i32, skipped_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const continue_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, capacity, "continue");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.Const.int8(self.ctx, 1), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, process_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, process_block);
+        const skipped = self.builder.buildLoad(i32_type, skipped_alloca, "skipped");
+        const should_insert = self.builder.buildICmp(llvm.c.LLVMIntSGE, skipped, count_clamped, "should_insert");
+        const new_skipped = llvm.c.LLVMBuildAdd(self.builder.ref, skipped, llvm.Const.int32(self.ctx, 1), "new_skipped");
+        _ = self.builder.buildStore(new_skipped, skipped_alloca);
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, should_insert, insert_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
+        const key_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "key_ptr");
+        const key = self.builder.buildLoad(key_llvm_type, key_ptr, "key");
+        const value_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 3, "value_ptr");
+        const value = self.builder.buildLoad(value_llvm_type, value_ptr, "value");
+        _ = try self.emitMapInsert(result_alloca, method, key, value);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(map_type, result_alloca, "skip.result");
+    }
+
+    /// Emit map.filter(predicate) - returns a new map with entries matching predicate.
+    fn emitMapFilter(self: *Emitter, map_ptr: llvm.ValueRef, method: *ast.MethodCall, closure_value: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const key_type_klar = self.getMapKeyType(method.object) orelse return EmitError.InvalidAST;
+        const value_type_klar = self.getMapValueType(method.object) orelse return EmitError.InvalidAST;
+
+        const key_llvm_type = self.typeToLLVM(key_type_klar);
+        const value_llvm_type = self.typeToLLVM(value_type_klar);
+        const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
+
+        const map_type = self.getMapStructType();
+        const i1_type = llvm.Types.int1(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Create empty result map
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
+        const empty_map = llvm.c.LLVMConstNamedStruct(map_type, &result_values, 4);
+        const result_alloca = self.builder.buildAlloca(map_type, "filter_result");
+        _ = self.builder.buildStore(empty_map, result_alloca);
+
+        // Extract closure
+        const closure_struct_type = self.getClosureStructType();
+        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "filter.closure_tmp");
+        _ = self.builder.buildStore(closure_value, closure_alloca);
+
+        var fn_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
+        const fn_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &fn_ptr_indices, "filter.fn_ptr_ptr");
+        const fn_ptr = self.builder.buildLoad(ptr_type, fn_ptr_gep, "filter.fn_ptr");
+
+        var env_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1) };
+        const env_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &env_ptr_indices, "filter.env_ptr_ptr");
+        const env_ptr = self.builder.buildLoad(ptr_type, env_ptr_gep, "filter.env_ptr");
+
+        // Build function type: fn(env_ptr, key, value) -> bool
+        var param_types = [_]llvm.TypeRef{ ptr_type, key_llvm_type, value_llvm_type };
+        const closure_fn_type = llvm.Types.function(i1_type, &param_types, false);
+
+        // Load map fields
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "entries_field");
+        const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "cap_field");
+        const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
+
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_check");
+        const test_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_test");
+        const insert_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_insert");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const continue_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, capacity, "continue");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.Const.int8(self.ctx, 1), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, test_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, test_block);
+        const key_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "key_ptr");
+        const key = self.builder.buildLoad(key_llvm_type, key_ptr, "key");
+        const value_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 3, "value_ptr");
+        const value = self.builder.buildLoad(value_llvm_type, value_ptr, "value");
+        // Call predicate closure with key and value
+        var call_args = [_]llvm.ValueRef{ env_ptr, key, value };
+        const pred_result = self.builder.buildCall(closure_fn_type, fn_ptr, &call_args, "pred_result");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, pred_result, insert_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
+        _ = try self.emitMapInsert(result_alloca, method, key, value);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(map_type, result_alloca, "filter.result");
+    }
+
+    /// Emit map.map_values(transform) - returns a new map with transformed values.
+    fn emitMapMapValues(self: *Emitter, map_ptr: llvm.ValueRef, method: *ast.MethodCall, closure_value: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const key_type_klar = self.getMapKeyType(method.object) orelse return EmitError.InvalidAST;
+        const value_type_klar = self.getMapValueType(method.object) orelse return EmitError.InvalidAST;
+
+        const key_llvm_type = self.typeToLLVM(key_type_klar);
+        const value_llvm_type = self.typeToLLVM(value_type_klar);
+        const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
+
+        // Get destination value type from closure's return type
+        const dest_value_type = if (self.type_checker) |tc| blk: {
+            const tc_mut = @constCast(tc);
+            const closure_type = tc_mut.checkExpr(method.args[0]);
+            if (closure_type == .function) {
+                break :blk closure_type.function.return_type;
+            }
+            break :blk value_type_klar;
+        } else value_type_klar;
+
+        const dest_value_llvm_type = self.typeToLLVM(dest_value_type);
+
+        const map_type = self.getMapStructType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Create empty result map
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
+        const empty_map = llvm.c.LLVMConstNamedStruct(map_type, &result_values, 4);
+        const result_alloca = self.builder.buildAlloca(map_type, "mapval_result");
+        _ = self.builder.buildStore(empty_map, result_alloca);
+
+        // Extract closure
+        const closure_struct_type = self.getClosureStructType();
+        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "mapval.closure_tmp");
+        _ = self.builder.buildStore(closure_value, closure_alloca);
+
+        var fn_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
+        const fn_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &fn_ptr_indices, "mapval.fn_ptr_ptr");
+        const fn_ptr = self.builder.buildLoad(ptr_type, fn_ptr_gep, "mapval.fn_ptr");
+
+        var env_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1) };
+        const env_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &env_ptr_indices, "mapval.env_ptr_ptr");
+        const env_ptr = self.builder.buildLoad(ptr_type, env_ptr_gep, "mapval.env_ptr");
+
+        // Build function type: fn(env_ptr, value) -> new_value
+        var param_types = [_]llvm.TypeRef{ ptr_type, value_llvm_type };
+        const closure_fn_type = llvm.Types.function(dest_value_llvm_type, &param_types, false);
+
+        // Load map fields
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "entries_field");
+        const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "cap_field");
+        const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
+
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "mapval_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "mapval_check");
+        const transform_block = llvm.c.LLVMAppendBasicBlock(current_fn, "mapval_transform");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "mapval_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "mapval_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const continue_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, capacity, "continue");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.Const.int8(self.ctx, 1), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, transform_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, transform_block);
+        const key_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "key_ptr");
+        const key = self.builder.buildLoad(key_llvm_type, key_ptr, "key");
+        const value_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 3, "value_ptr");
+        const value = self.builder.buildLoad(value_llvm_type, value_ptr, "value");
+        // Call transform closure with value
+        var call_args = [_]llvm.ValueRef{ env_ptr, value };
+        const transformed = self.builder.buildCall(closure_fn_type, fn_ptr, &call_args, "transformed");
+        // Insert key with new value
+        _ = try self.emitMapInsert(result_alloca, method, key, transformed);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(map_type, result_alloca, "mapval.result");
+    }
+
     /// Helper: Emit hash value for a key.
     fn emitHashValue(self: *Emitter, key: llvm.ValueRef, key_type: types.Type) EmitError!llvm.ValueRef {
         const i32_type = llvm.Types.int32(self.ctx);
@@ -13322,6 +13768,838 @@ pub const Emitter = struct {
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
         _ = i1_type;
         return self.builder.buildLoad(set_type, result_alloca, "diff.result");
+    }
+
+    // ========================================================================
+    // Set Iterator Adapters
+    // ========================================================================
+
+    /// Emit set.take(n) - returns a new set with first n elements.
+    fn emitSetTake(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, count: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        const set_type = self.getSetStructType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Create empty result set
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
+        const empty_set = llvm.c.LLVMConstNamedStruct(set_type, &result_values, 4);
+        const result_alloca = self.builder.buildAlloca(set_type, "take_result");
+        _ = self.builder.buildStore(empty_set, result_alloca);
+
+        // Clamp count to >= 0
+        const count_clamped = llvm.c.LLVMBuildSelect(
+            self.builder.ref,
+            self.builder.buildICmp(llvm.c.LLVMIntSLT, count, zero_i32, "take.count_neg"),
+            zero_i32,
+            count,
+            "take.count_clamped",
+        );
+
+        // Load set fields
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_field");
+        const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "cap_field");
+        const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
+
+        // Iterate through entries, insert first n occupied elements
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_check");
+        const insert_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_insert");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "take_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const taken_alloca = self.builder.buildAlloca(i32_type, "taken");
+        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = self.builder.buildStore(zero_i32, taken_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const taken = self.builder.buildLoad(i32_type, taken_alloca, "taken");
+        // Continue if idx < capacity AND taken < count
+        const idx_ok = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, capacity, "idx_ok");
+        const taken_ok = self.builder.buildICmp(llvm.c.LLVMIntSLT, taken, count_clamped, "taken_ok");
+        const continue_cond = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ok, taken_ok, "continue");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.Const.int8(self.ctx, 1), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, insert_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
+        const elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "elem_ptr");
+        const elem = self.builder.buildLoad(element_llvm_type, elem_ptr, "elem");
+        _ = try self.emitSetInsert(result_alloca, method, elem);
+        const new_taken = llvm.c.LLVMBuildAdd(self.builder.ref, taken, llvm.Const.int32(self.ctx, 1), "new_taken");
+        _ = self.builder.buildStore(new_taken, taken_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(set_type, result_alloca, "take.result");
+    }
+
+    /// Emit set.skip(n) - returns a new set skipping first n elements.
+    fn emitSetSkip(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, count: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        const set_type = self.getSetStructType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Create empty result set
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
+        const empty_set = llvm.c.LLVMConstNamedStruct(set_type, &result_values, 4);
+        const result_alloca = self.builder.buildAlloca(set_type, "skip_result");
+        _ = self.builder.buildStore(empty_set, result_alloca);
+
+        // Clamp count to >= 0
+        const count_clamped = llvm.c.LLVMBuildSelect(
+            self.builder.ref,
+            self.builder.buildICmp(llvm.c.LLVMIntSLT, count, zero_i32, "skip.count_neg"),
+            zero_i32,
+            count,
+            "skip.count_clamped",
+        );
+
+        // Load set fields
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_field");
+        const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "cap_field");
+        const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
+
+        // Iterate through entries, skip first n occupied, insert the rest
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_check");
+        const process_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_process");
+        const insert_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_insert");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "skip_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const skipped_alloca = self.builder.buildAlloca(i32_type, "skipped");
+        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = self.builder.buildStore(zero_i32, skipped_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const continue_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, capacity, "continue");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.Const.int8(self.ctx, 1), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, process_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, process_block);
+        const skipped = self.builder.buildLoad(i32_type, skipped_alloca, "skipped");
+        const should_insert = self.builder.buildICmp(llvm.c.LLVMIntSGE, skipped, count_clamped, "should_insert");
+        // Always increment skipped count
+        const new_skipped = llvm.c.LLVMBuildAdd(self.builder.ref, skipped, llvm.Const.int32(self.ctx, 1), "new_skipped");
+        _ = self.builder.buildStore(new_skipped, skipped_alloca);
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, should_insert, insert_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
+        const elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "elem_ptr");
+        const elem = self.builder.buildLoad(element_llvm_type, elem_ptr, "elem");
+        _ = try self.emitSetInsert(result_alloca, method, elem);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(set_type, result_alloca, "skip.result");
+    }
+
+    /// Emit set.filter(predicate) - returns a new set with elements matching predicate.
+    fn emitSetFilter(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, closure_value: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        const set_type = self.getSetStructType();
+        const i1_type = llvm.Types.int1(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Create empty result set
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
+        const empty_set = llvm.c.LLVMConstNamedStruct(set_type, &result_values, 4);
+        const result_alloca = self.builder.buildAlloca(set_type, "filter_result");
+        _ = self.builder.buildStore(empty_set, result_alloca);
+
+        // Extract closure function pointer and environment pointer
+        const closure_struct_type = self.getClosureStructType();
+        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "filter.closure_tmp");
+        _ = self.builder.buildStore(closure_value, closure_alloca);
+
+        var fn_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
+        const fn_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &fn_ptr_indices, "filter.fn_ptr_ptr");
+        const fn_ptr = self.builder.buildLoad(ptr_type, fn_ptr_gep, "filter.fn_ptr");
+
+        var env_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1) };
+        const env_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &env_ptr_indices, "filter.env_ptr_ptr");
+        const env_ptr = self.builder.buildLoad(ptr_type, env_ptr_gep, "filter.env_ptr");
+
+        // Build function type for closure: fn(env_ptr, element) -> bool
+        var param_types = [_]llvm.TypeRef{ ptr_type, element_llvm_type };
+        const closure_fn_type = llvm.Types.function(i1_type, &param_types, false);
+
+        // Load set fields
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_field");
+        const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "cap_field");
+        const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
+
+        // Iterate through entries, apply predicate, insert matching elements
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_check");
+        const test_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_test");
+        const insert_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_insert");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const continue_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, capacity, "continue");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.Const.int8(self.ctx, 1), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, test_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, test_block);
+        const elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "elem_ptr");
+        const elem = self.builder.buildLoad(element_llvm_type, elem_ptr, "elem");
+        // Call predicate closure
+        var call_args = [_]llvm.ValueRef{ env_ptr, elem };
+        const pred_result = self.builder.buildCall(closure_fn_type, fn_ptr, &call_args, "pred_result");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, pred_result, insert_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
+        _ = try self.emitSetInsert(result_alloca, method, elem);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(set_type, result_alloca, "filter.result");
+    }
+
+    /// Emit set.map(transform) - returns a new list with transformed elements.
+    /// Pre-allocates result list based on set's len field for efficiency.
+    fn emitSetMap(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, closure_value: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const src_element_type = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+        const src_element_llvm_type = self.typeToLLVM(src_element_type);
+        const entry_type = self.getSetEntryType(src_element_llvm_type);
+
+        // Get destination element type from closure's return type
+        const dest_element_type = if (self.type_checker) |tc| blk: {
+            const tc_mut = @constCast(tc);
+            const closure_type = tc_mut.checkExpr(method.args[0]);
+            if (closure_type == .function) {
+                break :blk closure_type.function.return_type;
+            }
+            break :blk src_element_type;
+        } else src_element_type;
+
+        const dest_element_llvm_type = self.typeToLLVM(dest_element_type);
+        const dest_element_size = self.getLLVMTypeSize(dest_element_llvm_type);
+
+        const set_type = self.getSetStructType();
+        const list_type = self.getListStructType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load set fields
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_field");
+        const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 1, "len_field");
+        const set_len = self.builder.buildLoad(i32_type, len_field, "set_len");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "cap_field");
+        const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
+
+        // Allocate result list on the stack
+        const result_alloca = self.builder.buildAlloca(list_type, "map.result");
+        const zero = llvm.Const.int32(self.ctx, 0);
+
+        // Check if set is empty
+        const is_empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, set_len, zero, "map.is_empty");
+
+        // Create basic blocks
+        const empty_bb = llvm.appendBasicBlock(self.ctx, func, "map.empty");
+        const alloc_bb = llvm.appendBasicBlock(self.ctx, func, "map.alloc");
+        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "map.loop");
+        const check_bb = llvm.appendBasicBlock(self.ctx, func, "map.check");
+        const transform_bb = llvm.appendBasicBlock(self.ctx, func, "map.transform");
+        const next_bb = llvm.appendBasicBlock(self.ctx, func, "map.next");
+        const done_bb = llvm.appendBasicBlock(self.ctx, func, "map.done");
+
+        _ = self.builder.buildCondBr(is_empty, empty_bb, alloc_bb);
+
+        // --- Empty block: return empty list ---
+        self.builder.positionAtEnd(empty_bb);
+        const empty_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.empty_ptr_field");
+        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), empty_ptr_field);
+        const empty_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "map.empty_len_field");
+        _ = self.builder.buildStore(zero, empty_len_field);
+        const empty_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "map.empty_cap_field");
+        _ = self.builder.buildStore(zero, empty_cap_field);
+        _ = self.builder.buildBr(done_bb);
+
+        // --- Allocate block: pre-allocate result array based on set len ---
+        self.builder.positionAtEnd(alloc_bb);
+
+        // Extract closure function pointer and environment pointer
+        const closure_struct_type = self.getClosureStructType();
+        const closure_alloca = self.builder.buildAlloca(closure_struct_type, "map.closure_tmp");
+        _ = self.builder.buildStore(closure_value, closure_alloca);
+
+        var fn_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
+        const fn_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &fn_ptr_indices, "map.fn_ptr_ptr");
+        const fn_ptr = self.builder.buildLoad(ptr_type, fn_ptr_gep, "map.fn_ptr");
+
+        var env_ptr_indices = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1) };
+        const env_ptr_gep = self.builder.buildGEP(closure_struct_type, closure_alloca, &env_ptr_indices, "map.env_ptr_ptr");
+        const env_ptr = self.builder.buildLoad(ptr_type, env_ptr_gep, "map.env_ptr");
+
+        // Build function type for closure: fn(env_ptr, src_element) -> dest_element
+        var param_types = [_]llvm.TypeRef{ ptr_type, src_element_llvm_type };
+        const closure_fn_type = llvm.Types.function(dest_element_llvm_type, &param_types, false);
+
+        // Allocate memory for result: set_len * dest_element_size
+        const len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, set_len, i64_type, "map.len_i64");
+        const dest_elem_size_val = llvm.Const.int64(self.ctx, @intCast(dest_element_size));
+        const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, len_i64, dest_elem_size_val, "map.alloc_size");
+
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const dest_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "map.dest_ptr");
+
+        // Store result list header (ptr, len=set_len, cap=set_len)
+        const alloc_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.alloc_ptr_field");
+        _ = self.builder.buildStore(dest_ptr, alloc_ptr_field);
+        const alloc_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "map.alloc_len_field");
+        _ = self.builder.buildStore(set_len, alloc_len_field);
+        const alloc_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "map.alloc_cap_field");
+        _ = self.builder.buildStore(set_len, alloc_cap_field);
+
+        // Loop counters: source index (over capacity) and result index (over elements found)
+        const src_idx_alloca = self.builder.buildAlloca(i32_type, "map.src_idx");
+        const res_idx_alloca = self.builder.buildAlloca(i32_type, "map.res_idx");
+        _ = self.builder.buildStore(zero, src_idx_alloca);
+        _ = self.builder.buildStore(zero, res_idx_alloca);
+
+        _ = self.builder.buildBr(loop_bb);
+
+        // --- Loop: iterate over source set's capacity ---
+        self.builder.positionAtEnd(loop_bb);
+        const src_idx = self.builder.buildLoad(i32_type, src_idx_alloca, "map.src_idx_val");
+        const res_idx = self.builder.buildLoad(i32_type, res_idx_alloca, "map.res_idx_val");
+        // Continue while src_idx < capacity AND res_idx < set_len
+        const src_ok = self.builder.buildICmp(llvm.c.LLVMIntSLT, src_idx, capacity, "map.src_ok");
+        const res_ok = self.builder.buildICmp(llvm.c.LLVMIntSLT, res_idx, set_len, "map.res_ok");
+        const loop_cond = llvm.c.LLVMBuildAnd(self.builder.ref, src_ok, res_ok, "map.loop_cond");
+        _ = self.builder.buildCondBr(loop_cond, check_bb, done_bb);
+
+        // --- Check: is this entry occupied? ---
+        self.builder.positionAtEnd(check_bb);
+        const src_idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, src_idx, i64_type, "map.src_idx_i64");
+        var entry_indices = [_]llvm.ValueRef{src_idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries, &entry_indices, 1, "map.entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "map.state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "map.state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.Const.int8(self.ctx, 1), "map.is_occ");
+        _ = self.builder.buildCondBr(is_occ, transform_bb, next_bb);
+
+        // --- Transform: load element, call closure, store result ---
+        self.builder.positionAtEnd(transform_bb);
+        const elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "map.elem_ptr");
+        const elem = self.builder.buildLoad(src_element_llvm_type, elem_ptr, "map.elem");
+
+        // Call closure
+        var call_args = [_]llvm.ValueRef{ env_ptr, elem };
+        const transformed = self.builder.buildCall(closure_fn_type, fn_ptr, &call_args, "map.transformed");
+
+        // Store to result at res_idx
+        const res_idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, res_idx, i64_type, "map.res_idx_i64");
+        var store_indices = [_]llvm.ValueRef{res_idx_i64};
+        const store_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, dest_element_llvm_type, dest_ptr, &store_indices, 1, "map.store_ptr");
+        _ = self.builder.buildStore(transformed, store_ptr);
+
+        // Increment res_idx
+        const new_res_idx = llvm.c.LLVMBuildAdd(self.builder.ref, res_idx, llvm.Const.int32(self.ctx, 1), "map.new_res_idx");
+        _ = self.builder.buildStore(new_res_idx, res_idx_alloca);
+
+        _ = self.builder.buildBr(next_bb);
+
+        // --- Next: increment src_idx, loop ---
+        self.builder.positionAtEnd(next_bb);
+        const next_src_idx = llvm.c.LLVMBuildAdd(self.builder.ref, src_idx, llvm.Const.int32(self.ctx, 1), "map.next_src_idx");
+        _ = self.builder.buildStore(next_src_idx, src_idx_alloca);
+        _ = self.builder.buildBr(loop_bb);
+
+        // --- Done: return result ---
+        self.builder.positionAtEnd(done_bb);
+        return self.builder.buildLoad(list_type, result_alloca, "map.result");
+    }
+
+    /// Emit set.enumerate() - returns List[(i32, T)] pairing each element with its index.
+    fn emitSetEnumerate(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        // Build tuple type (i32, T)
+        const set_type = self.getSetStructType();
+        const list_type = self.getListStructType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        var tuple_fields = [_]llvm.TypeRef{ i32_type, element_llvm_type };
+        const tuple_type = llvm.Types.struct_(self.ctx, &tuple_fields, false);
+        const tuple_size = self.getLLVMTypeSize(tuple_type);
+
+        // Create empty result list
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        const result_alloca = self.builder.buildAlloca(list_type, "enum_result");
+        _ = self.builder.buildStore(null_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, ""));
+        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, ""));
+        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, ""));
+
+        // Load set fields
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_field");
+        const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "cap_field");
+        const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
+
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop_block = llvm.c.LLVMAppendBasicBlock(current_fn, "enum_loop");
+        const check_block = llvm.c.LLVMAppendBasicBlock(current_fn, "enum_check");
+        const process_block = llvm.c.LLVMAppendBasicBlock(current_fn, "enum_process");
+        const next_block = llvm.c.LLVMAppendBasicBlock(current_fn, "enum_next");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "enum_done");
+
+        const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
+        const enum_idx_alloca = self.builder.buildAlloca(i32_type, "enum_idx");
+        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = self.builder.buildStore(zero_i32, enum_idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
+        const idx = self.builder.buildLoad(i32_type, idx_alloca, "idx");
+        const continue_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx, capacity, "continue");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, continue_cond, check_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_block);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+        var indices = [_]llvm.ValueRef{idx_i64};
+        const entry_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries, &indices, 1, "entry_ptr");
+        const state_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 0, "state_ptr");
+        const state = self.builder.buildLoad(i8_type, state_ptr, "state");
+        const is_occ = self.builder.buildICmp(llvm.c.LLVMIntEQ, state, llvm.Const.int8(self.ctx, 1), "is_occ");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ, process_block, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, process_block);
+        const elem_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry_ptr, 2, "elem_ptr");
+        const elem = self.builder.buildLoad(element_llvm_type, elem_ptr, "elem");
+        const enum_idx = self.builder.buildLoad(i32_type, enum_idx_alloca, "enum_idx");
+
+        // Build tuple value
+        var tuple_val = llvm.c.LLVMGetUndef(tuple_type);
+        tuple_val = llvm.c.LLVMBuildInsertValue(self.builder.ref, tuple_val, enum_idx, 0, "tuple.0");
+        tuple_val = llvm.c.LLVMBuildInsertValue(self.builder.ref, tuple_val, elem, 1, "tuple.1");
+
+        // Push to result list (inline push logic)
+        const res_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "res_ptr_ptr");
+        const res_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "res_len_ptr");
+        const res_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "res_cap_ptr");
+
+        const res_ptr = self.builder.buildLoad(ptr_type, res_ptr_ptr, "res_ptr");
+        const res_len = self.builder.buildLoad(i32_type, res_len_ptr, "res_len");
+        const res_cap = self.builder.buildLoad(i32_type, res_cap_ptr, "res_cap");
+
+        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntSGE, res_len, res_cap, "need_grow");
+
+        const grow_bb = llvm.c.LLVMAppendBasicBlock(current_fn, "enum.grow");
+        const store_bb = llvm.c.LLVMAppendBasicBlock(current_fn, "enum.store");
+
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, need_grow, grow_bb, store_bb);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, grow_bb);
+        const doubled_cap = llvm.c.LLVMBuildMul(self.builder.ref, res_cap, llvm.Const.int32(self.ctx, 2), "doubled");
+        const eight = llvm.Const.int32(self.ctx, 8);
+        const cmp_eight = self.builder.buildICmp(llvm.c.LLVMIntSGT, doubled_cap, eight, "cmp_eight");
+        const new_cap = llvm.c.LLVMBuildSelect(self.builder.ref, cmp_eight, doubled_cap, eight, "new_cap");
+
+        const new_cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_cap, i64_type, "new_cap_i64");
+        const tuple_size_val = llvm.Const.int64(self.ctx, @intCast(tuple_size));
+        const new_size = llvm.c.LLVMBuildMul(self.builder.ref, new_cap_i64, tuple_size_val, "new_size");
+
+        const realloc_fn = self.getOrDeclareRealloc();
+        var realloc_args = [_]llvm.ValueRef{ res_ptr, new_size };
+        const grown_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "grown_ptr");
+
+        _ = self.builder.buildStore(grown_ptr, res_ptr_ptr);
+        _ = self.builder.buildStore(new_cap, res_cap_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, store_bb);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, store_bb);
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, ptr_type, "data_ptr");
+        var incoming_values = [_]llvm.ValueRef{ res_ptr, grown_ptr };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ process_block, grow_bb };
+        llvm.c.LLVMAddIncoming(phi, &incoming_values, &incoming_blocks, 2);
+
+        const res_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, res_len, i64_type, "res_len_i64");
+        var store_indices = [_]llvm.ValueRef{res_len_i64};
+        const store_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, tuple_type, phi, &store_indices, 1, "store_ptr");
+        _ = self.builder.buildStore(tuple_val, store_ptr);
+
+        const new_res_len = llvm.c.LLVMBuildAdd(self.builder.ref, res_len, llvm.Const.int32(self.ctx, 1), "new_res_len");
+        _ = self.builder.buildStore(new_res_len, res_len_ptr);
+
+        // Increment enum index
+        const new_enum_idx = llvm.c.LLVMBuildAdd(self.builder.ref, enum_idx, llvm.Const.int32(self.ctx, 1), "new_enum_idx");
+        _ = self.builder.buildStore(new_enum_idx, enum_idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next_block);
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx, llvm.Const.int32(self.ctx, 1), "next_idx");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        return self.builder.buildLoad(list_type, result_alloca, "enum.result");
+    }
+
+    /// Emit set.zip(other) - returns List[(T, U)] combining two sets element-wise.
+    fn emitSetZip(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
+        const element_llvm_type = self.typeToLLVM(element_type_klar);
+        const entry_type = self.getSetEntryType(element_llvm_type);
+
+        // Get other set's element type
+        const other_element_type_klar = if (self.type_checker) |tc| blk: {
+            const tc_mut = @constCast(tc);
+            const arg_type = tc_mut.checkExpr(method.args[0]);
+            if (arg_type == .set) {
+                break :blk arg_type.set.element;
+            }
+            break :blk element_type_klar;
+        } else element_type_klar;
+
+        const other_element_llvm_type = self.typeToLLVM(other_element_type_klar);
+        const other_entry_type = self.getSetEntryType(other_element_llvm_type);
+
+        // Build tuple type (T, U)
+        const set_type = self.getSetStructType();
+        const list_type = self.getListStructType();
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        var tuple_fields = [_]llvm.TypeRef{ element_llvm_type, other_element_llvm_type };
+        const tuple_type = llvm.Types.struct_(self.ctx, &tuple_fields, false);
+        const tuple_size = self.getLLVMTypeSize(tuple_type);
+
+        // Create empty result list
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        const result_alloca = self.builder.buildAlloca(list_type, "zip_result");
+        _ = self.builder.buildStore(null_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, ""));
+        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, ""));
+        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, ""));
+
+        // Load set fields
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_field");
+        const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 2, "cap_field");
+        const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
+
+        // Load other set fields
+        const other_entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, other_ptr, 0, "other_entries_field");
+        const other_entries = self.builder.buildLoad(ptr_type, other_entries_field, "other_entries");
+        const other_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, other_ptr, 2, "other_cap_field");
+        const other_capacity = self.builder.buildLoad(i32_type, other_cap_field, "other_capacity");
+
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const loop1_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_loop1");
+        const check1_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_check1");
+        const store1_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_store1");
+        const next1_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_next1");
+        const loop2_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_loop2");
+        const check2_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_check2");
+        const store2_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_store2");
+        const next2_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_next2");
+        const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_done");
+
+        // Collect elements from first set into a temp buffer
+        const list1_alloca = self.builder.buildAlloca(list_type, "list1");
+        _ = self.builder.buildStore(null_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 0, ""));
+        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 1, ""));
+        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 2, ""));
+
+        const list2_alloca = self.builder.buildAlloca(list_type, "list2");
+        _ = self.builder.buildStore(null_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 0, ""));
+        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 1, ""));
+        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 2, ""));
+
+        const idx1_alloca = self.builder.buildAlloca(i32_type, "idx1");
+        _ = self.builder.buildStore(zero_i32, idx1_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop1_block);
+
+        // Loop 1: Collect from first set
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop1_block);
+        const idx1 = self.builder.buildLoad(i32_type, idx1_alloca, "idx1");
+        const cond1 = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx1, capacity, "cond1");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cond1, check1_block, loop2_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check1_block);
+        const idx1_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx1, i64_type, "idx1_i64");
+        var indices1 = [_]llvm.ValueRef{idx1_i64};
+        const entry1_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, entry_type, entries, &indices1, 1, "entry1_ptr");
+        const state1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry1_ptr, 0, "state1_ptr");
+        const state1 = self.builder.buildLoad(i8_type, state1_ptr, "state1");
+        const is_occ1 = self.builder.buildICmp(llvm.c.LLVMIntEQ, state1, llvm.Const.int8(self.ctx, 1), "is_occ1");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ1, store1_block, next1_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, store1_block);
+        const elem1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, entry_type, entry1_ptr, 2, "elem1_ptr");
+        const elem1 = self.builder.buildLoad(element_llvm_type, elem1_ptr, "elem1");
+        // Push to list1 (simplified - just use emitListPushInline pattern)
+        try self.emitListPushInline(list1_alloca, elem1, element_llvm_type);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next1_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next1_block);
+        const next_idx1 = llvm.c.LLVMBuildAdd(self.builder.ref, idx1, llvm.Const.int32(self.ctx, 1), "next_idx1");
+        _ = self.builder.buildStore(next_idx1, idx1_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop1_block);
+
+        // Loop 2: Collect from second set
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop2_block);
+        const idx2_alloca = self.builder.buildAlloca(i32_type, "idx2");
+        _ = self.builder.buildStore(zero_i32, idx2_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, check2_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check2_block);
+        const idx2 = self.builder.buildLoad(i32_type, idx2_alloca, "idx2");
+        const cond2 = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx2, other_capacity, "cond2");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, cond2, store2_block, done_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, store2_block);
+        const idx2_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx2, i64_type, "idx2_i64");
+        var indices2 = [_]llvm.ValueRef{idx2_i64};
+        const entry2_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, other_entry_type, other_entries, &indices2, 1, "entry2_ptr");
+        const state2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, other_entry_type, entry2_ptr, 0, "state2_ptr");
+        const state2 = self.builder.buildLoad(i8_type, state2_ptr, "state2");
+        const is_occ2 = self.builder.buildICmp(llvm.c.LLVMIntEQ, state2, llvm.Const.int8(self.ctx, 1), "is_occ2");
+
+        const add_tuple_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_add_tuple");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_occ2, add_tuple_block, next2_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, add_tuple_block);
+        const elem2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, other_entry_type, entry2_ptr, 2, "elem2_ptr");
+        const elem2 = self.builder.buildLoad(other_element_llvm_type, elem2_ptr, "elem2");
+        try self.emitListPushInline(list2_alloca, elem2, other_element_llvm_type);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, next2_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, next2_block);
+        const next_idx2 = llvm.c.LLVMBuildAdd(self.builder.ref, idx2, llvm.Const.int32(self.ctx, 1), "next_idx2");
+        _ = self.builder.buildStore(next_idx2, idx2_alloca);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, check2_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
+        // Now pair elements from list1 and list2
+        const list1_ptr = self.builder.buildLoad(ptr_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 0, ""), "list1_ptr");
+        const list1_len = self.builder.buildLoad(i32_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 1, ""), "list1_len");
+        const list2_ptr = self.builder.buildLoad(ptr_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 0, ""), "list2_ptr");
+        const list2_len = self.builder.buildLoad(i32_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 1, ""), "list2_len");
+
+        // min_len = min(list1_len, list2_len)
+        const len_cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, list1_len, list2_len, "len_cmp");
+        const min_len = llvm.c.LLVMBuildSelect(self.builder.ref, len_cmp, list1_len, list2_len, "min_len");
+
+        // Allocate result buffer
+        const min_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, min_len, i64_type, "min_len_i64");
+        const tuple_size_val = llvm.Const.int64(self.ctx, @intCast(tuple_size));
+        const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, min_len_i64, tuple_size_val, "alloc_size");
+
+        const is_zero = self.builder.buildICmp(llvm.c.LLVMIntEQ, min_len, zero_i32, "is_zero");
+
+        const alloc_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_alloc");
+        const build_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_build");
+        const final_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_final");
+
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_zero, final_block, alloc_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, alloc_block);
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const result_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "result_ptr");
+        _ = self.builder.buildStore(result_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, ""));
+        _ = self.builder.buildStore(min_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, ""));
+        _ = self.builder.buildStore(min_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, ""));
+
+        // Build tuples
+        const build_idx = self.builder.buildAlloca(i32_type, "build_idx");
+        _ = self.builder.buildStore(zero_i32, build_idx);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, build_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, build_block);
+        const bi = self.builder.buildLoad(i32_type, build_idx, "bi");
+        const build_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, bi, min_len, "build_cond");
+
+        const build_body = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_build_body");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, build_cond, build_body, final_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, build_body);
+        const bi_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, bi, i64_type, "bi_i64");
+
+        var idx_arr1 = [_]llvm.ValueRef{bi_i64};
+        const e1_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, element_llvm_type, list1_ptr, &idx_arr1, 1, "e1_ptr");
+        const e1 = self.builder.buildLoad(element_llvm_type, e1_ptr, "e1");
+
+        var idx_arr2 = [_]llvm.ValueRef{bi_i64};
+        const e2_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, other_element_llvm_type, list2_ptr, &idx_arr2, 1, "e2_ptr");
+        const e2 = self.builder.buildLoad(other_element_llvm_type, e2_ptr, "e2");
+
+        var tup = llvm.c.LLVMGetUndef(tuple_type);
+        tup = llvm.c.LLVMBuildInsertValue(self.builder.ref, tup, e1, 0, "tup.0");
+        tup = llvm.c.LLVMBuildInsertValue(self.builder.ref, tup, e2, 1, "tup.1");
+
+        var res_idx_arr = [_]llvm.ValueRef{bi_i64};
+        const res_elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, tuple_type, result_ptr, &res_idx_arr, 1, "res_elem_ptr");
+        _ = self.builder.buildStore(tup, res_elem_ptr);
+
+        const next_bi = llvm.c.LLVMBuildAdd(self.builder.ref, bi, llvm.Const.int32(self.ctx, 1), "next_bi");
+        _ = self.builder.buildStore(next_bi, build_idx);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, build_block);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, final_block);
+        return self.builder.buildLoad(list_type, result_alloca, "zip.result");
+    }
+
+    /// Helper to push an element to a list inline
+    fn emitListPushInline(self: *Emitter, list_alloca: llvm.ValueRef, elem: llvm.ValueRef, elem_type: llvm.TypeRef) EmitError!void {
+        const list_type = self.getListStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        const elem_size = self.getLLVMTypeSize(elem_type);
+
+        const res_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "res_ptr_ptr");
+        const res_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, "res_len_ptr");
+        const res_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 2, "res_cap_ptr");
+
+        const res_ptr = self.builder.buildLoad(ptr_type, res_ptr_ptr, "res_ptr");
+        const res_len = self.builder.buildLoad(i32_type, res_len_ptr, "res_len");
+        const res_cap = self.builder.buildLoad(i32_type, res_cap_ptr, "res_cap");
+
+        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntSGE, res_len, res_cap, "need_grow");
+
+        // Capture the entry block BEFORE creating the conditional branch
+        const entry_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(entry_bb);
+        const grow_bb = llvm.c.LLVMAppendBasicBlock(current_fn, "push.grow");
+        const store_bb = llvm.c.LLVMAppendBasicBlock(current_fn, "push.store");
+        const cont_bb = llvm.c.LLVMAppendBasicBlock(current_fn, "push.cont");
+
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, need_grow, grow_bb, store_bb);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, grow_bb);
+        const doubled_cap = llvm.c.LLVMBuildMul(self.builder.ref, res_cap, llvm.Const.int32(self.ctx, 2), "doubled");
+        const eight = llvm.Const.int32(self.ctx, 8);
+        const cmp_eight = self.builder.buildICmp(llvm.c.LLVMIntSGT, doubled_cap, eight, "cmp_eight");
+        const new_cap = llvm.c.LLVMBuildSelect(self.builder.ref, cmp_eight, doubled_cap, eight, "new_cap");
+
+        const new_cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_cap, i64_type, "new_cap_i64");
+        const elem_size_val = llvm.Const.int64(self.ctx, @intCast(elem_size));
+        const new_size = llvm.c.LLVMBuildMul(self.builder.ref, new_cap_i64, elem_size_val, "new_size");
+
+        const realloc_fn = self.getOrDeclareRealloc();
+        var realloc_args = [_]llvm.ValueRef{ res_ptr, new_size };
+        const grown_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "grown_ptr");
+
+        _ = self.builder.buildStore(grown_ptr, res_ptr_ptr);
+        _ = self.builder.buildStore(new_cap, res_cap_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, store_bb);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, store_bb);
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, ptr_type, "data_ptr");
+        var incoming_values = [_]llvm.ValueRef{ res_ptr, grown_ptr };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ entry_bb, grow_bb };
+        llvm.c.LLVMAddIncoming(phi, &incoming_values, &incoming_blocks, 2);
+
+        const res_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, res_len, i64_type, "res_len_i64");
+        var store_indices = [_]llvm.ValueRef{res_len_i64};
+        const store_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, elem_type, phi, &store_indices, 1, "store_ptr");
+        _ = self.builder.buildStore(elem, store_ptr);
+
+        const new_res_len = llvm.c.LLVMBuildAdd(self.builder.ref, res_len, llvm.Const.int32(self.ctx, 1), "new_res_len");
+        _ = self.builder.buildStore(new_res_len, res_len_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, cont_bb);
+
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, cont_bb);
     }
 
     // ========================================================================

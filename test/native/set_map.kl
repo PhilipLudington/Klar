@@ -1,0 +1,29 @@
+// Test Set.map() iterator adapter (returns List, not Set)
+
+fn double(x: i32) -> i32 {
+    return x * 2
+}
+
+fn main() -> i32 {
+    var s: Set[i32] = Set.new[i32]()
+    s.insert(1)
+    s.insert(2)
+    s.insert(3)
+
+    // Map with function
+    let doubled: List[i32] = s.map(double)
+    assert(doubled.len() == 3)
+    // Note: order not guaranteed in sets, but all values should be doubled
+
+    // Map with closure
+    let squared: List[i32] = s.map(|x: i32| -> i32 { return x * x })
+    assert(squared.len() == 3)
+
+    // Map empty set
+    var empty: Set[i32] = Set.new[i32]()
+    let empty_mapped: List[i32] = empty.map(double)
+    assert(empty_mapped.len() == 0)
+
+    print("set_map: PASS")
+    return 0
+}

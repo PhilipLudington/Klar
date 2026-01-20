@@ -1,0 +1,37 @@
+// Test Set.zip() iterator adapter (returns List[(T, U)])
+
+fn main() -> i32 {
+    var s1: Set[i32] = Set.new[i32]()
+    s1.insert(1)
+    s1.insert(2)
+    s1.insert(3)
+
+    var s2: Set[i32] = Set.new[i32]()
+    s2.insert(10)
+    s2.insert(20)
+    s2.insert(30)
+
+    // Zip two sets of same size
+    let zipped: List[(i32, i32)] = s1.zip(s2)
+    assert(zipped.len() == 3)
+
+    // Zip with smaller set
+    var small: Set[i32] = Set.new[i32]()
+    small.insert(100)
+    small.insert(200)
+
+    let partial: List[(i32, i32)] = s1.zip(small)
+    assert(partial.len() == 2)
+
+    // Zip with empty set
+    var empty: Set[i32] = Set.new[i32]()
+    let with_empty: List[(i32, i32)] = s1.zip(empty)
+    assert(with_empty.len() == 0)
+
+    // Zip empty with non-empty
+    let empty_first: List[(i32, i32)] = empty.zip(s1)
+    assert(empty_first.len() == 0)
+
+    print("set_zip: PASS")
+    return 0
+}

@@ -1,0 +1,29 @@
+// Test Set.take(n) iterator adapter
+
+fn main() -> i32 {
+    var s: Set[i32] = Set.new[i32]()
+    s.insert(1)
+    s.insert(2)
+    s.insert(3)
+    s.insert(4)
+    s.insert(5)
+
+    // Take first 3 elements
+    let taken: Set[i32] = s.take(3)
+    assert(taken.len() == 3)
+
+    // Take more than size
+    let all: Set[i32] = s.take(10)
+    assert(all.len() == 5)
+
+    // Take 0
+    let none: Set[i32] = s.take(0)
+    assert(none.len() == 0)
+
+    // Take negative (treated as 0)
+    let neg: Set[i32] = s.take(-5)
+    assert(neg.len() == 0)
+
+    print("set_take: PASS")
+    return 0
+}

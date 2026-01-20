@@ -1,0 +1,33 @@
+// Test Map.filter() iterator adapter (predicate takes key and value)
+
+fn value_even(k: i32, v: i32) -> bool {
+    return v % 2 == 0
+}
+
+fn main() -> i32 {
+    var m: Map[i32, i32] = Map.new[i32, i32]()
+    m.insert(1, 10)
+    m.insert(2, 21)
+    m.insert(3, 30)
+    m.insert(4, 41)
+    m.insert(5, 50)
+
+    // Filter for even values
+    let evens: Map[i32, i32] = m.filter(value_even)
+    assert(evens.len() == 3)
+    assert((evens.get(1) ?? 0) == 10)
+    assert((evens.get(3) ?? 0) == 30)
+    assert((evens.get(5) ?? 0) == 50)
+
+    // Filter with closure using both key and value
+    let filtered: Map[i32, i32] = m.filter(|k: i32, v: i32| -> bool { return k + v > 30 })
+    assert(filtered.len() == 3)
+
+    // Filter empty map
+    var empty: Map[i32, i32] = Map.new[i32, i32]()
+    let empty_filtered: Map[i32, i32] = empty.filter(value_even)
+    assert(empty_filtered.len() == 0)
+
+    print("map_filter: PASS")
+    return 0
+}

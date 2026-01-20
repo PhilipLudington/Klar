@@ -1,0 +1,34 @@
+// Test Map.map_values() iterator adapter
+
+fn double(x: i32) -> i32 {
+    return x * 2
+}
+
+fn main() -> i32 {
+    var m: Map[i32, i32] = Map.new[i32, i32]()
+    m.insert(1, 10)
+    m.insert(2, 20)
+    m.insert(3, 30)
+
+    // Map values with function
+    let doubled: Map[i32, i32] = m.map_values(double)
+    assert(doubled.len() == 3)
+    assert((doubled.get(1) ?? 0) == 20)
+    assert((doubled.get(2) ?? 0) == 40)
+    assert((doubled.get(3) ?? 0) == 60)
+
+    // Map values with closure
+    let squared: Map[i32, i32] = m.map_values(|v: i32| -> i32 { return v * v })
+    assert(squared.len() == 3)
+    assert((squared.get(1) ?? 0) == 100)
+    assert((squared.get(2) ?? 0) == 400)
+    assert((squared.get(3) ?? 0) == 900)
+
+    // Map empty map
+    var empty: Map[i32, i32] = Map.new[i32, i32]()
+    let empty_mapped: Map[i32, i32] = empty.map_values(double)
+    assert(empty_mapped.len() == 0)
+
+    print("map_values: PASS")
+    return 0
+}

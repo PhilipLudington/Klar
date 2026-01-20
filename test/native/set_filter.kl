@@ -1,0 +1,40 @@
+// Test Set.filter() iterator adapter
+
+fn is_even(x: i32) -> bool {
+    return x % 2 == 0
+}
+
+fn main() -> i32 {
+    var s: Set[i32] = Set.new[i32]()
+    s.insert(1)
+    s.insert(2)
+    s.insert(3)
+    s.insert(4)
+    s.insert(5)
+    s.insert(6)
+
+    // Filter for even numbers
+    let evens: Set[i32] = s.filter(is_even)
+    assert(evens.len() == 3)
+    assert(evens.contains(2))
+    assert(evens.contains(4))
+    assert(evens.contains(6))
+    assert(not evens.contains(1))
+    assert(not evens.contains(3))
+    assert(not evens.contains(5))
+
+    // Filter with closure
+    let large: Set[i32] = s.filter(|x: i32| -> bool { return x > 3 })
+    assert(large.len() == 3)
+    assert(large.contains(4))
+    assert(large.contains(5))
+    assert(large.contains(6))
+
+    // Filter empty set
+    var empty: Set[i32] = Set.new[i32]()
+    let empty_filtered: Set[i32] = empty.filter(is_even)
+    assert(empty_filtered.len() == 0)
+
+    print("set_filter: PASS")
+    return 0
+}

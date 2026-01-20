@@ -1,0 +1,29 @@
+// Test Map.take(n) iterator adapter
+
+fn main() -> i32 {
+    var m: Map[i32, i32] = Map.new[i32, i32]()
+    m.insert(1, 10)
+    m.insert(2, 20)
+    m.insert(3, 30)
+    m.insert(4, 40)
+    m.insert(5, 50)
+
+    // Take first 3 entries
+    let taken: Map[i32, i32] = m.take(3)
+    assert(taken.len() == 3)
+
+    // Take more than size
+    let all: Map[i32, i32] = m.take(10)
+    assert(all.len() == 5)
+
+    // Take 0
+    let none: Map[i32, i32] = m.take(0)
+    assert(none.len() == 0)
+
+    // Take negative (treated as 0)
+    let neg: Map[i32, i32] = m.take(-5)
+    assert(neg.len() == 0)
+
+    print("map_take: PASS")
+    return 0
+}

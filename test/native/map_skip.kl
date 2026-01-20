@@ -1,0 +1,29 @@
+// Test Map.skip(n) iterator adapter
+
+fn main() -> i32 {
+    var m: Map[i32, i32] = Map.new[i32, i32]()
+    m.insert(1, 10)
+    m.insert(2, 20)
+    m.insert(3, 30)
+    m.insert(4, 40)
+    m.insert(5, 50)
+
+    // Skip first 2 entries
+    let skipped: Map[i32, i32] = m.skip(2)
+    assert(skipped.len() == 3)
+
+    // Skip more than size
+    let none: Map[i32, i32] = m.skip(10)
+    assert(none.len() == 0)
+
+    // Skip 0
+    let all: Map[i32, i32] = m.skip(0)
+    assert(all.len() == 5)
+
+    // Skip negative (treated as 0)
+    let neg: Map[i32, i32] = m.skip(-5)
+    assert(neg.len() == 5)
+
+    print("map_skip: PASS")
+    return 0
+}

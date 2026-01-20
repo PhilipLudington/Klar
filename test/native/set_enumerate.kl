@@ -1,0 +1,30 @@
+// Test Set.enumerate() iterator adapter (returns List[(i32, T)])
+
+fn main() -> i32 {
+    var s: Set[i32] = Set.new[i32]()
+    s.insert(10)
+    s.insert(20)
+    s.insert(30)
+
+    // Enumerate produces (index, value) tuples
+    let enumerated: List[(i32, i32)] = s.enumerate()
+    assert(enumerated.len() == 3)
+
+    // Each tuple should have index 0, 1, 2 (order of values not guaranteed)
+    let first: (i32, i32) = enumerated.get(0) ?? (0, 0)
+    let second: (i32, i32) = enumerated.get(1) ?? (0, 0)
+    let third: (i32, i32) = enumerated.get(2) ?? (0, 0)
+
+    // Check indices are 0, 1, 2
+    assert(first.0 == 0)
+    assert(second.0 == 1)
+    assert(third.0 == 2)
+
+    // Enumerate empty set
+    var empty: Set[i32] = Set.new[i32]()
+    let empty_enum: List[(i32, i32)] = empty.enumerate()
+    assert(empty_enum.len() == 0)
+
+    print("set_enumerate: PASS")
+    return 0
+}

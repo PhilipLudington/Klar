@@ -1,0 +1,29 @@
+// Test Set.skip(n) iterator adapter
+
+fn main() -> i32 {
+    var s: Set[i32] = Set.new[i32]()
+    s.insert(1)
+    s.insert(2)
+    s.insert(3)
+    s.insert(4)
+    s.insert(5)
+
+    // Skip first 2 elements
+    let skipped: Set[i32] = s.skip(2)
+    assert(skipped.len() == 3)
+
+    // Skip more than size
+    let none: Set[i32] = s.skip(10)
+    assert(none.len() == 0)
+
+    // Skip 0
+    let all: Set[i32] = s.skip(0)
+    assert(all.len() == 5)
+
+    // Skip negative (treated as 0)
+    let neg: Set[i32] = s.skip(-5)
+    assert(neg.len() == 5)
+
+    print("set_skip: PASS")
+    return 0
+}

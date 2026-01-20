@@ -4314,6 +4314,85 @@ pub const TypeChecker = struct {
                 }
                 return self.type_builder.voidType();
             }
+
+            // take(n: i32) -> Map[K,V] (returns first n entries)
+            if (std.mem.eql(u8, method.method_name, "take")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "take() expects exactly 1 argument (count)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .i32_) {
+                    self.addError(.type_mismatch, method.span, "take() argument must be i32", .{});
+                }
+                return object_type; // Returns same Map[K,V] type
+            }
+
+            // skip(n: i32) -> Map[K,V] (skips first n entries)
+            if (std.mem.eql(u8, method.method_name, "skip")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "skip() expects exactly 1 argument (count)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .i32_) {
+                    self.addError(.type_mismatch, method.span, "skip() argument must be i32", .{});
+                }
+                return object_type; // Returns same Map[K,V] type
+            }
+
+            // filter(fn(K, V) -> bool) -> Map[K,V] (keeps entries where predicate returns true)
+            if (std.mem.eql(u8, method.method_name, "filter")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "filter() expects exactly 1 argument (predicate)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                // Validate it's a function fn(K, V) -> bool
+                if (arg_type != .function) {
+                    self.addError(.type_mismatch, method.span, "filter() argument must be a function", .{});
+                    return object_type;
+                }
+                const fn_type = arg_type.function;
+                if (fn_type.params.len != 2) {
+                    self.addError(.type_mismatch, method.span, "filter() predicate must take exactly 2 parameters (key, value)", .{});
+                    return object_type;
+                }
+                if (!fn_type.params[0].eql(key_type)) {
+                    self.addError(.type_mismatch, method.span, "filter() predicate first parameter type must match map key type", .{});
+                }
+                if (!fn_type.params[1].eql(value_type)) {
+                    self.addError(.type_mismatch, method.span, "filter() predicate second parameter type must match map value type", .{});
+                }
+                if (fn_type.return_type != .primitive or fn_type.return_type.primitive != .bool_) {
+                    self.addError(.type_mismatch, method.span, "filter() predicate must return bool", .{});
+                }
+                return object_type; // Returns same Map[K,V] type
+            }
+
+            // map_values(fn(V) -> U) -> Map[K,U] (transforms values, preserves keys)
+            if (std.mem.eql(u8, method.method_name, "map_values")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "map_values() expects exactly 1 argument (transform function)", .{});
+                    return self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                // Validate it's a function fn(V) -> U
+                if (arg_type != .function) {
+                    self.addError(.type_mismatch, method.span, "map_values() argument must be a function", .{});
+                    return self.type_builder.unknownType();
+                }
+                const fn_type = arg_type.function;
+                if (fn_type.params.len != 1) {
+                    self.addError(.type_mismatch, method.span, "map_values() transform function must take exactly 1 parameter", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (!fn_type.params[0].eql(value_type)) {
+                    self.addError(.type_mismatch, method.span, "map_values() transform function parameter type must match map value type", .{});
+                }
+                // Return Map[K,U] where U is the function's return type
+                return self.type_builder.mapType(key_type, fn_type.return_type) catch self.type_builder.unknownType();
+            }
         }
 
         // Set methods
@@ -4445,6 +4524,112 @@ pub const TypeChecker = struct {
                     self.addError(.type_mismatch, method.span, "difference() expects a Set with same element type", .{});
                 }
                 return object_type;
+            }
+
+            // take(n: i32) -> Set[T] (returns first n elements)
+            if (std.mem.eql(u8, method.method_name, "take")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "take() expects exactly 1 argument (count)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .i32_) {
+                    self.addError(.type_mismatch, method.span, "take() argument must be i32", .{});
+                }
+                return object_type; // Returns same Set[T] type
+            }
+
+            // skip(n: i32) -> Set[T] (skips first n elements)
+            if (std.mem.eql(u8, method.method_name, "skip")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "skip() expects exactly 1 argument (count)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .i32_) {
+                    self.addError(.type_mismatch, method.span, "skip() argument must be i32", .{});
+                }
+                return object_type; // Returns same Set[T] type
+            }
+
+            // filter(fn(T) -> bool) -> Set[T] (keeps elements where predicate returns true)
+            if (std.mem.eql(u8, method.method_name, "filter")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "filter() expects exactly 1 argument (predicate)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                // Validate it's a function fn(T) -> bool
+                if (arg_type != .function) {
+                    self.addError(.type_mismatch, method.span, "filter() argument must be a function", .{});
+                    return object_type;
+                }
+                const fn_type = arg_type.function;
+                if (fn_type.params.len != 1) {
+                    self.addError(.type_mismatch, method.span, "filter() predicate must take exactly 1 parameter", .{});
+                    return object_type;
+                }
+                if (!fn_type.params[0].eql(element_type)) {
+                    self.addError(.type_mismatch, method.span, "filter() predicate parameter type must match set element type", .{});
+                }
+                if (fn_type.return_type != .primitive or fn_type.return_type.primitive != .bool_) {
+                    self.addError(.type_mismatch, method.span, "filter() predicate must return bool", .{});
+                }
+                return object_type; // Returns same Set[T] type
+            }
+
+            // map(fn(T) -> U) -> List[U] (transforms each element, returns List since U may not be hashable)
+            if (std.mem.eql(u8, method.method_name, "map")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "map() expects exactly 1 argument (transform function)", .{});
+                    return self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                // Validate it's a function fn(T) -> U
+                if (arg_type != .function) {
+                    self.addError(.type_mismatch, method.span, "map() argument must be a function", .{});
+                    return self.type_builder.unknownType();
+                }
+                const fn_type = arg_type.function;
+                if (fn_type.params.len != 1) {
+                    self.addError(.type_mismatch, method.span, "map() transform function must take exactly 1 parameter", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (!fn_type.params[0].eql(element_type)) {
+                    self.addError(.type_mismatch, method.span, "map() transform function parameter type must match set element type", .{});
+                }
+                // Return List[U] where U is the function's return type
+                return self.type_builder.listType(fn_type.return_type) catch self.type_builder.unknownType();
+            }
+
+            // enumerate() -> List[(i32, T)] (pairs each element with its index)
+            if (std.mem.eql(u8, method.method_name, "enumerate")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "enumerate() takes no arguments", .{});
+                }
+                // Build tuple type (i32, T)
+                const i32_type = self.type_builder.i32Type();
+                const tuple_types = [_]Type{ i32_type, element_type };
+                const tuple_type = self.type_builder.tupleType(&tuple_types) catch self.type_builder.unknownType();
+                return self.type_builder.listType(tuple_type) catch self.type_builder.unknownType();
+            }
+
+            // zip(other: Set[U]) -> List[(T, U)] (combines two sets element-wise)
+            if (std.mem.eql(u8, method.method_name, "zip")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "zip() expects exactly 1 argument (other set)", .{});
+                    return self.type_builder.unknownType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .set) {
+                    self.addError(.type_mismatch, method.span, "zip() argument must be a Set", .{});
+                    return self.type_builder.unknownType();
+                }
+                const other_element_type = arg_type.set.element;
+                // Build tuple type (T, U)
+                const tuple_types = [_]Type{ element_type, other_element_type };
+                const tuple_type = self.type_builder.tupleType(&tuple_types) catch self.type_builder.unknownType();
+                return self.type_builder.listType(tuple_type) catch self.type_builder.unknownType();
             }
         }
 
