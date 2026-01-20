@@ -311,6 +311,14 @@ pub const TypeChecker = struct {
     /// but not evaluated (the interpreter handles evaluation).
     checking_comptime_function_body: bool,
 
+    /// Maps Postfix ? expressions to their error conversion info.
+    /// Used by codegen to emit From::from calls when error types differ.
+    error_conversions: std.AutoHashMapUnmanaged(*ast.Postfix, ErrorConversionInfo),
+
+    /// Expected type context for type inference in Ok/Err constructors.
+    /// Set when checking variable declarations with type annotations.
+    expected_type: ?Type,
+
     /// Maximum recursion depth for comptime functions.
     const max_comptime_depth: u32 = 1000;
 
@@ -407,6 +415,18 @@ pub const TypeChecker = struct {
         associated_type_bindings: []const AssociatedTypeBinding,
         /// The methods implementing the trait
         methods: []const StructMethod,
+    };
+
+    /// Information about an error conversion needed for the ? operator.
+    /// When a function returns Result[T, TargetError] and uses ? on Result[U, SourceError],
+    /// this records the From[SourceError] conversion to be generated in codegen.
+    pub const ErrorConversionInfo = struct {
+        /// The source error type (from the operand's Result type)
+        source_type: Type,
+        /// The target error type (from the function's return type)
+        target_type: Type,
+        /// Mangled name of the from method (e.g., "AppError_from_IoError")
+        from_method_name: []const u8,
     };
 
     /// Information about a method defined in an impl block.
@@ -538,6 +558,8 @@ pub const TypeChecker = struct {
             .comptime_interpreter = null,
             .comptime_depth = 0,
             .checking_comptime_function_body = false,
+            .error_conversions = .{},
+            .expected_type = null,
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -765,6 +787,13 @@ pub const TypeChecker = struct {
             }
         }
         self.constant_values.deinit(self.allocator);
+
+        // Clean up error conversions (free allocated method names)
+        var error_conv_iter = self.error_conversions.valueIterator();
+        while (error_conv_iter.next()) |conv| {
+            self.allocator.free(conv.from_method_name);
+        }
+        self.error_conversions.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -1321,6 +1350,69 @@ pub const TypeChecker = struct {
         try self.current_scope.define(.{
             .name = "IntoIterator",
             .type_ = .{ .trait_ = into_iter_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // From trait: trait From[E] { fn from(err: E) -> Self; }
+        // Enables automatic error type conversion in the ? operator.
+        // When a function returns Result[T, TargetError] and uses ? on Result[U, SourceError],
+        // the compiler calls TargetError.from(source_error) if impl TargetError: From[SourceError] exists.
+
+        // Create the trait type first
+        const from_trait_type = try self.allocator.create(types.TraitType);
+
+        // Create Self type variable for return type
+        const from_self_type_var = types.TypeVar{
+            .id = 995, // Unique ID to avoid conflicts
+            .name = "Self",
+            .bounds = &.{},
+        };
+        const from_self_type = Type{ .type_var = from_self_type_var };
+
+        // Create E type parameter (the source error type)
+        const from_e_type_var = types.TypeVar{
+            .id = 994, // Unique ID to avoid conflicts
+            .name = "E",
+            .bounds = &.{},
+        };
+        const from_e_type = Type{ .type_var = from_e_type_var };
+
+        // Create from(err: E) -> Self
+        const from_func = try self.type_builder.functionType(&.{from_e_type}, from_self_type);
+        const from_method = types.TraitMethod{
+            .name = "from",
+            .signature = from_func.function.*,
+            .has_default = false,
+        };
+
+        // Store the type parameter E
+        const from_type_params = try self.allocator.dupe(types.TypeVar, &.{from_e_type_var});
+        try self.type_var_slices.append(self.allocator, from_type_params);
+
+        // Complete the trait type
+        from_trait_type.* = .{
+            .name = "From",
+            .type_params = from_type_params,
+            .associated_types = &.{},
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{from_method}),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, from_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "From", .{
+            .trait_type = from_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "From",
+            .type_ = .{ .trait_ = from_trait_type },
             .kind = .trait_,
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
@@ -2590,7 +2682,13 @@ pub const TypeChecker = struct {
             .binary => |b| self.checkBinary(b),
             .unary => |u| self.checkUnary(u),
             .postfix => |p| self.checkPostfix(p),
-            .call => |c| self.checkCall(c),
+            .call => |c| blk: {
+                // Set expected_type for Ok/Err type inference
+                const prev_expected = self.expected_type;
+                self.expected_type = hint;
+                defer self.expected_type = prev_expected;
+                break :blk self.checkCall(c);
+            },
             .index => |i| self.checkIndex(i),
             .field => |f| self.checkField(f),
             .method_call => |m| self.checkMethodCall(m),
@@ -2851,11 +2949,37 @@ pub const TypeChecker = struct {
                     }
                     return operand_type.optional.*;
                 } else {
-                    // Result? requires function to return Result with same error type
+                    // Result? requires function to return Result with same or convertible error type
                     if (return_type != .result) {
                         self.addError(.type_mismatch, post.span, "'?' on result requires function to return result type", .{});
                     } else if (!operand_type.result.err_type.eql(return_type.result.err_type)) {
-                        self.addError(.type_mismatch, post.span, "error types must match for '?' propagation", .{});
+                        // Error types differ - check if From trait conversion exists
+                        const source_err = operand_type.result.err_type;
+                        const target_err = return_type.result.err_type;
+
+                        if (self.hasFromImpl(target_err, source_err)) {
+                            // From impl exists - record the conversion for codegen
+                            // Method name follows struct method naming: {TypeName}_{method_name}
+                            const target_name = self.getTypeName(target_err) orelse "unknown";
+                            const from_method_name = std.fmt.allocPrint(
+                                self.allocator,
+                                "{s}_from",
+                                .{target_name},
+                            ) catch "";
+
+                            self.error_conversions.put(self.allocator, post, .{
+                                .source_type = source_err,
+                                .target_type = target_err,
+                                .from_method_name = from_method_name,
+                            }) catch {};
+                        } else {
+                            self.addError(.type_mismatch, post.span, "error type mismatch: cannot convert from '{s}' to '{s}'; consider implementing From[{s}] for {s}", .{
+                                self.getTypeName(source_err) orelse "unknown",
+                                self.getTypeName(target_err) orelse "unknown",
+                                self.getTypeName(source_err) orelse "unknown",
+                                self.getTypeName(target_err) orelse "unknown",
+                            });
+                        }
                     }
                     return operand_type.result.ok_type;
                 }
@@ -2874,7 +2998,57 @@ pub const TypeChecker = struct {
         }
     }
 
+    /// Special type checking for Ok/Err constructors that infers Result type from context.
+    /// This enables Result[T, E] to work with any types, not just i32.
+    fn checkOkErrCall(self: *TypeChecker, call: *ast.Call, is_ok: bool) Type {
+        // Require exactly 1 argument
+        if (call.args.len != 1) {
+            const name = if (is_ok) "Ok" else "Err";
+            self.addError(.invalid_call, call.span, "{s} requires exactly 1 argument, got {d}", .{ name, call.args.len });
+            return self.type_builder.unknownType();
+        }
+
+        // Check the argument type
+        const arg_type = self.checkExpr(call.args[0]);
+
+        // If we have expected_type and it's a Result type, use its type parameters
+        if (self.expected_type) |expected| {
+            if (expected == .result) {
+                const result = expected.result;
+                if (is_ok) {
+                    // Ok(value) - argument should match ok_type
+                    if (!self.isTypeCompatible(result.ok_type, arg_type)) {
+                        self.addError(.type_mismatch, call.args[0].span(), "argument type mismatch", .{});
+                    }
+                } else {
+                    // Err(error) - argument should match err_type
+                    if (!self.isTypeCompatible(result.err_type, arg_type)) {
+                        self.addError(.type_mismatch, call.args[0].span(), "argument type mismatch", .{});
+                    }
+                }
+                // Return the expected Result type (fully specified)
+                return expected;
+            }
+        }
+
+        // No expected type context - infer Result[arg_type, i32] for Ok, Result[i32, arg_type] for Err
+        const i32_type = self.type_builder.i32Type();
+        if (is_ok) {
+            return self.type_builder.resultType(arg_type, i32_type) catch self.type_builder.unknownType();
+        } else {
+            return self.type_builder.resultType(i32_type, arg_type) catch self.type_builder.unknownType();
+        }
+    }
+
     fn checkCall(self: *TypeChecker, call: *ast.Call) Type {
+        // Special handling for Ok/Err constructors to infer Result type from context
+        if (call.callee == .identifier) {
+            const func_name = call.callee.identifier.name;
+            if (std.mem.eql(u8, func_name, "Ok") or std.mem.eql(u8, func_name, "Err")) {
+                return self.checkOkErrCall(call, std.mem.eql(u8, func_name, "Ok"));
+            }
+        }
+
         const callee_type = self.checkExpr(call.callee);
 
         if (callee_type != .function) {
@@ -7363,29 +7537,53 @@ pub const TypeChecker = struct {
             return;
         };
 
-        // Get the struct name - we only support impl blocks for structs currently
+        // Get the type name - we support impl blocks for structs and enums
         // For generic impls like impl[T] Pair[T], the target_type is an applied type
         const struct_name = switch (target_type) {
             .struct_ => |s| s.name,
+            .enum_ => |e| e.name,
             .applied => |a| blk: {
-                // For generic impls, the base should be a struct
+                // For generic impls, the base should be a struct or enum
                 if (a.base == .struct_) {
                     break :blk a.base.struct_.name;
                 }
-                self.addError(.invalid_operation, impl_decl.span, "impl blocks currently only support structs", .{});
+                if (a.base == .enum_) {
+                    break :blk a.base.enum_.name;
+                }
+                self.addError(.invalid_operation, impl_decl.span, "impl blocks currently only support structs and enums", .{});
                 return;
             },
             else => {
-                self.addError(.invalid_operation, impl_decl.span, "impl blocks currently only support structs", .{});
+                self.addError(.invalid_operation, impl_decl.span, "impl blocks currently only support structs and enums", .{});
                 return;
             },
         };
 
         // Handle trait implementations (impl Type: Trait { ... })
         var trait_info: ?TraitInfo = null;
+        // For generic traits like From[E], store the type arguments
+        var trait_type_args: []const Type = &.{};
         if (impl_decl.trait_type) |trait_type_expr| {
-            // Resolve the trait type
-            const resolved_trait = self.resolveTypeExpr(trait_type_expr) catch {
+            // Check if this is a generic trait application (e.g., From[IoError])
+            const resolved_trait: Type = if (trait_type_expr == .generic_apply) blk: {
+                const generic_apply = trait_type_expr.generic_apply;
+                // Resolve the base trait type
+                const base_trait = self.resolveTypeExpr(generic_apply.base) catch {
+                    self.addError(.undefined_type, impl_decl.span, "cannot resolve trait type", .{});
+                    return;
+                };
+
+                // Resolve type arguments
+                var resolved_args = std.ArrayListUnmanaged(Type){};
+                for (generic_apply.args) |arg_expr| {
+                    const arg_type = self.resolveTypeExpr(arg_expr) catch continue;
+                    resolved_args.append(self.allocator, arg_type) catch {};
+                }
+                trait_type_args = resolved_args.toOwnedSlice(self.allocator) catch &.{};
+                self.substituted_type_slices.append(self.allocator, trait_type_args) catch {};
+
+                break :blk base_trait;
+            } else self.resolveTypeExpr(trait_type_expr) catch {
                 self.addError(.undefined_type, impl_decl.span, "cannot resolve trait type", .{});
                 return;
             };
@@ -7585,7 +7783,8 @@ pub const TypeChecker = struct {
                         if (std.mem.eql(u8, impl_method.name, trait_method.name)) {
                             found = true;
                             // Verify method signature matches trait signature
-                            _ = self.verifyMethodSignature(impl_method, trait_method, target_type, impl_decl.span);
+                            // Pass trait type parameters and their bindings for substitution
+                            _ = self.verifyMethodSignature(impl_method, trait_method, target_type, trait_type.type_params, trait_type_args, impl_decl.span);
                             break;
                         }
                     }
@@ -7597,7 +7796,11 @@ pub const TypeChecker = struct {
             }
 
             // Register this trait implementation
-            const impl_key = self.makeTraitImplKey(struct_name, trait_type.name);
+            // For generic traits like From[IoError], include type args in key
+            const impl_key = if (trait_type_args.len > 0)
+                self.makeGenericTraitImplKey(struct_name, trait_type.name, trait_type_args)
+            else
+                self.makeTraitImplKey(struct_name, trait_type.name);
             const impl_result = self.trait_impls.getOrPut(self.allocator, impl_key) catch return;
             if (!impl_result.found_existing) {
                 impl_result.value_ptr.* = .{};
@@ -7618,11 +7821,59 @@ pub const TypeChecker = struct {
         return std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ type_name, trait_name }) catch "";
     }
 
+    /// Create a key for generic trait implementations like From[IoError].
+    /// Format: "TypeName:TraitName[TypeArg1,TypeArg2,...]"
+    fn makeGenericTraitImplKey(self: *TypeChecker, type_name: []const u8, trait_name: []const u8, type_args: []const Type) []const u8 {
+        // Build the type args string
+        var args_buf = std.ArrayListUnmanaged(u8){};
+        defer args_buf.deinit(self.allocator);
+
+        args_buf.append(self.allocator, '[') catch {};
+        for (type_args, 0..) |arg, i| {
+            if (i > 0) args_buf.append(self.allocator, ',') catch {};
+            const arg_name = self.getTypeName(arg) orelse "unknown";
+            args_buf.appendSlice(self.allocator, arg_name) catch {};
+        }
+        args_buf.append(self.allocator, ']') catch {};
+
+        return std.fmt.allocPrint(self.allocator, "{s}:{s}{s}", .{
+            type_name,
+            trait_name,
+            args_buf.items,
+        }) catch "";
+    }
+
     /// Check if a type implements a trait
     pub fn typeImplementsTrait(self: *TypeChecker, type_name: []const u8, trait_name: []const u8) bool {
         const key = self.makeTraitImplKey(type_name, trait_name);
         defer self.allocator.free(key);
         return self.trait_impls.get(key) != null;
+    }
+
+    /// Check if target_type implements From[source_type].
+    /// Used by the ? operator to determine if automatic error conversion is possible.
+    /// Returns true if impl target_type: From[source_type] exists.
+    pub fn hasFromImpl(self: *TypeChecker, target_type: Type, source_type: Type) bool {
+        // Get the target type name (must be an enum for error types)
+        const target_name = self.getTypeName(target_type) orelse return false;
+        const source_name = self.getTypeName(source_type) orelse return false;
+
+        // Build the key "TargetError:From[SourceError]"
+        const key = std.fmt.allocPrint(self.allocator, "{s}:From[{s}]", .{ target_name, source_name }) catch return false;
+        defer self.allocator.free(key);
+
+        return self.trait_impls.get(key) != null;
+    }
+
+    /// Get the name of a type for trait implementation lookup.
+    /// Returns null for types that cannot implement traits.
+    fn getTypeName(self: *TypeChecker, t: Type) ?[]const u8 {
+        _ = self;
+        return switch (t) {
+            .struct_ => |s| s.name,
+            .enum_ => |e| e.name,
+            else => null,
+        };
     }
 
     /// Check if a type implements both Hash and Eq traits (required for Map keys).
@@ -7693,11 +7944,15 @@ pub const TypeChecker = struct {
     /// Verify that an impl method signature matches the trait method signature.
     /// Returns true if signatures match, false otherwise.
     /// The trait method uses 'unknown' or type_var "Self" for Self parameter.
+    /// For generic traits like From[E], trait_type_params contains [E] and trait_type_args
+    /// contains the concrete types [NetworkError]. Type variables in trait_sig are substituted.
     fn verifyMethodSignature(
         self: *TypeChecker,
         impl_method: StructMethod,
         trait_method: types.TraitMethod,
         impl_type: Type,
+        trait_type_params: []const types.TypeVar,
+        trait_type_args: []const Type,
         span: Span,
     ) bool {
         const impl_func = impl_method.func_type.function;
@@ -7765,8 +8020,23 @@ pub const TypeChecker = struct {
                 continue;
             }
 
-            // Regular parameter - types should match exactly
-            if (!impl_param.eql(trait_param)) {
+            // Check if trait parameter is a type variable (like E in From[E])
+            // Substitute with the concrete type from trait_type_args
+            var expected_param = trait_param;
+            if (trait_param == .type_var) {
+                // Look up the type variable in trait_type_params to find its index
+                for (trait_type_params, 0..) |tp, ti| {
+                    if (tp.id == trait_param.type_var.id) {
+                        if (ti < trait_type_args.len) {
+                            expected_param = trait_type_args[ti];
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // Regular parameter - types should match (after substitution)
+            if (!impl_param.eql(expected_param)) {
                 self.addError(.type_mismatch, span, "method '{s}' parameter {d} type mismatch", .{
                     trait_method.name,
                     idx,

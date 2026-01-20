@@ -1,56 +1,50 @@
-# Resume Point: `?` Operator for Early Return Complete
+# Resume Point: From Trait for Error Conversion Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). The `?` operator for early return/propagation is now fully implemented for both Optional and Result types.
+Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). The From trait for automatic error conversion in the `?` operator is now fully implemented.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **`?` Operator for Early Return** ✅
-  - For `Optional[T]`: `value?` extracts inner value on `Some`, or returns `None` early from function
-  - For `Result[T, E]`: `value?` extracts ok value on `Ok`, or returns `Err(e)` early with same error
-  - Type checker validates return type compatibility (function must return compatible Optional/Result)
-  - Error types must match for Result propagation
-  - Tests: `test/native/optional_propagate.kl`, `result_propagate.kl`, `result_propagate_simple.kl`
+- **From Trait for Error Conversion** ✅
+  - Automatic error type conversion when using `?` operator
+  - `impl TargetError: From[SourceError]` enables `Result[T, SourceError]?` in functions returning `Result[U, TargetError]`
+  - The `from()` method is called to convert the error type before propagation
+  - Test: `test/native/error_from_conversion.kl` verifies conversion adds 1000 to error code
 
 ### Implementation Details
 
-#### Type Checker (checker.zig ~lines 2828-2862)
-- Modified `checkPostfix()` for `.unwrap` case to accept both Optional and Result types
-- Validates that function return type is compatible:
-  - `Optional?` requires function to return Optional
-  - `Result?` requires function to return Result with same error type
+#### Type Checker (checker.zig)
+- Added `expected_type: ?Type` field for type context propagation
+- Added `checkOkErrCall()` function to infer Result types from expected context
+- Modified `checkExprWithHint()` to set expected_type for call expressions
 
 #### Code Generation (emit.zig)
 
-**ReturnTypeInfo struct extended (~line 89):**
+**New fields in Emitter struct:**
 ```zig
-const ReturnTypeInfo = struct {
-    llvm_type: llvm.TypeRef,
-    is_optional: bool,
-    is_result: bool,           // NEW
-    inner_type: ?llvm.TypeRef, // For Optional: the T in Optional[T]
-    ok_type: ?llvm.TypeRef,    // NEW: For Result: the T in Result[T, E]
-    err_type: ?llvm.TypeRef,   // NEW: For Result: the E in Result[T, E]
-};
+expected_type: ?types.Type       // For type context propagation
+current_return_klar_type: ?types.Type  // For return type context
 ```
 
-**Return type setup updated (5 locations):**
-- Detects `Result[T, E]` via `generic_apply` pattern (Result is parsed as generic_apply, not .result)
-- Extracts ok_type and err_type for Result propagation
+**Key additions:**
+- `emitOkCall()` and `emitErrCall()` now use expected_type to determine Result type parameters
+- `getStructTypeNameFromAnnotation()` extracts struct type names from type annotations
+- `let_decl` and `var_decl` use annotation as fallback for struct_type_name
+- Return statements set expected_type from current_return_klar_type
 
-**emitPostfix `.unwrap` case (~line 5369):**
-- Generates early return instead of trap
-- For Optional: returns `None` value
-- For Result: extracts error value and returns `Err(e)`
-
-**inferExprType `.postfix` case (~line 4099):**
-- Extended to handle both 2-field (Optional) and 3-field (Result) structs
-- Returns index 1 (the value type) for both cases
+**Fixed `inferExprType` for method calls (~line 4507):**
+- Added handling for `unwrap_err()` - returns error type directly (struct index 2)
+- Added handling for `unwrap()` - returns ok type directly (struct index 1)
 
 ### Previously Completed
+
+- **`?` Operator for Early Return** ✅
+  - For `Optional[T]`: `value?` extracts inner value on `Some`, or returns `None` early
+  - For `Result[T, E]`: `value?` extracts ok value on `Ok`, or returns `Err(e)` early
+  - With From trait: automatically converts error types during propagation
 
 - **Set[T] and Map[K,V] Iterator Adapters** ✅
 - **List[T] Iterator Adapters** ✅
@@ -61,9 +55,9 @@ const ReturnTypeInfo = struct {
 
 ## Current Test Status
 
-All 420 tests pass:
+All 431 tests pass:
 - Unit Tests: 220 passed
-- Native Tests: 184 passed (includes 3 new propagation tests)
+- Native Tests: 195 passed
 - App Tests: 10 passed
 - Module Tests: 6 passed
 
@@ -73,15 +67,14 @@ All 420 tests pass:
 
 Continue with **Phase 4** tasks:
 
-1. **From Trait for Error Conversion** (Milestone 7):
-   - Automatic error type conversion in `?` operator
-   - `impl AppError: From[IoError]`
-
-2. **Standard Library I/O** (Milestone 5):
+1. **Standard Library I/O** (Milestone 5):
    - File, Read/Write traits, stdin/stdout
 
-3. **Try Blocks** (Milestone 7):
+2. **Try Blocks** (Milestone 7):
    - `try { ... }` block expressions
+
+3. **Error Context** (Milestone 7):
+   - `.context(msg)` method for Result
 
 ---
 
@@ -91,8 +84,10 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
+# Test From conversion
+./zig-out/bin/klar run test/native/error_from_conversion.kl  # Returns 0 (success)
+
 # Test ? operator propagation
 ./zig-out/bin/klar run test/native/optional_propagate.kl   # Returns 52
 ./zig-out/bin/klar run test/native/result_propagate.kl     # Returns 52
-./zig-out/bin/klar run test/native/result_propagate_simple.kl  # Returns 42
 ```

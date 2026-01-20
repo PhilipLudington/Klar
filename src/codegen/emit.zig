@@ -81,6 +81,13 @@ pub const Emitter = struct {
     /// Reference to type checker for call resolution (generic functions).
     type_checker: ?*const TypeChecker,
 
+    /// Expected type context for expression emission (set during var declarations).
+    /// Used by Ok/Err constructors to infer Result types from annotations.
+    expected_type: ?types.Type,
+
+    /// Current function's return type as Klar type (for expected_type in returns).
+    current_return_klar_type: ?types.Type,
+
     /// Cache of allocated mangled enum names (for cleanup).
     mangled_enum_names: std.ArrayListUnmanaged([]const u8),
 
@@ -221,6 +228,8 @@ pub const Emitter = struct {
             .di_file = null,
             .di_scope = null,
             .type_checker = null,
+            .expected_type = null,
+            .current_return_klar_type = null,
             .mangled_enum_names = .{},
         };
     }
@@ -512,10 +521,13 @@ pub const Emitter = struct {
                     .ok_type = ok_type,
                     .err_type = err_type,
                 };
+                self.current_return_klar_type = self.resolveExpectedType(rt);
             } else {
                 self.current_return_type = null;
+                self.current_return_klar_type = null;
             }
             defer self.current_return_type = null;
+            defer self.current_return_klar_type = null;
 
             // Create entry block
             const entry = llvm.appendBasicBlock(self.ctx, function, "entry");
@@ -664,10 +676,13 @@ pub const Emitter = struct {
                 .ok_type = ok_type,
                 .err_type = err_type,
             };
+            self.current_return_klar_type = self.resolveExpectedType(rt);
         } else {
             self.current_return_type = null;
+            self.current_return_klar_type = null;
         }
         defer self.current_return_type = null;
+        defer self.current_return_klar_type = null;
 
         // Create debug info for function if enabled
         if (self.di_builder) |di_builder| {
@@ -856,6 +871,11 @@ pub const Emitter = struct {
     fn emitStmt(self: *Emitter, stmt: ast.Stmt) EmitError!void {
         switch (stmt) {
             .let_decl => |decl| {
+                // Set expected type context from annotation for constructors like Ok/Err
+                const prev_expected = self.expected_type;
+                self.expected_type = self.resolveExpectedType(decl.type_);
+                defer self.expected_type = prev_expected;
+
                 const value = try self.emitExpr(decl.value);
                 // For let (immutable), we can store directly
                 // But for consistency, use alloca
@@ -865,8 +885,9 @@ pub const Emitter = struct {
                 const alloca = self.builder.buildAlloca(ty, name);
                 _ = self.builder.buildStore(value, alloca);
                 const is_signed = self.isTypeSigned(decl.type_);
-                // Extract struct type name if this is a struct literal
-                const struct_type_name = self.getStructTypeName(decl.value);
+                // Extract struct type name - try expression first, then type annotation
+                const struct_type_name = self.getStructTypeName(decl.value) orelse
+                    self.getStructTypeNameFromAnnotation(decl.type_);
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
@@ -914,6 +935,11 @@ pub const Emitter = struct {
                 }
             },
             .var_decl => |decl| {
+                // Set expected type context from annotation for constructors like Ok/Err
+                const prev_expected = self.expected_type;
+                self.expected_type = self.resolveExpectedType(decl.type_);
+                defer self.expected_type = prev_expected;
+
                 const value = try self.emitExpr(decl.value);
                 const ty = try self.inferExprType(decl.value);
                 const name = self.allocator.dupeZ(u8, decl.name) catch return EmitError.OutOfMemory;
@@ -921,8 +947,9 @@ pub const Emitter = struct {
                 const alloca = self.builder.buildAlloca(ty, name);
                 _ = self.builder.buildStore(value, alloca);
                 const is_signed = self.isTypeSigned(decl.type_);
-                // Extract struct type name if this is a struct literal
-                const struct_type_name = self.getStructTypeName(decl.value);
+                // Extract struct type name - try expression first, then type annotation
+                const struct_type_name = self.getStructTypeName(decl.value) orelse
+                    self.getStructTypeNameFromAnnotation(decl.type_);
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
@@ -974,6 +1001,11 @@ pub const Emitter = struct {
                 self.emitDropsForReturn();
 
                 if (ret.value) |val| {
+                    // Set expected type from return type for Ok/Err inference
+                    const prev_expected = self.expected_type;
+                    self.expected_type = self.current_return_klar_type;
+                    defer self.expected_type = prev_expected;
+
                     var result = try self.emitExpr(val);
                     // If return type is optional, wrap value in Some if needed
                     if (self.current_return_type) |rt_info| {
@@ -3937,6 +3969,16 @@ pub const Emitter = struct {
         }
     }
 
+    /// Resolve a type expression to a types.Type for use as expected_type context.
+    /// Used to propagate type annotations to constructors like Ok/Err.
+    fn resolveExpectedType(self: *Emitter, type_expr: ast.TypeExpr) ?types.Type {
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            return tc_mut.resolveTypeExpr(type_expr) catch null;
+        }
+        return null;
+    }
+
     /// Infer LLVM type from expression (simplified).
     fn inferExprType(self: *Emitter, expr: ast.Expr) EmitError!llvm.TypeRef {
         return switch (expr) {
@@ -4462,6 +4504,20 @@ pub const Emitter = struct {
                     var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), err_type };
                     return llvm.Types.struct_(self.ctx, &opt_fields, false);
                 }
+                // Result.unwrap_err() returns E directly where Result is Result[T, E]
+                if (std.mem.eql(u8, m.method_name, "unwrap_err")) {
+                    // Get the Result type from the object
+                    const result_type = try self.inferExprType(m.object);
+                    // err_type is at index 2 in the Result struct {tag, ok_value, err_value}
+                    return llvm.c.LLVMStructGetTypeAtIndex(result_type, 2);
+                }
+                // Result.unwrap() returns T directly where Result is Result[T, E]
+                if (std.mem.eql(u8, m.method_name, "unwrap")) {
+                    // Get the Result type from the object
+                    const result_type = try self.inferExprType(m.object);
+                    // ok_type is at index 1 in the Result struct {tag, ok_value, err_value}
+                    return llvm.c.LLVMStructGetTypeAtIndex(result_type, 1);
+                }
                 // map(f) returns Optional[U] or Result[U, E] where U is the function's return type
                 if (std.mem.eql(u8, m.method_name, "map")) {
                     // The return type is determined by the function argument's return type
@@ -4787,6 +4843,17 @@ pub const Emitter = struct {
                 }
                 return null;
             },
+            else => null,
+        };
+    }
+
+    /// Extract struct type name from a type annotation (TypeExpr).
+    /// Used as fallback when the expression doesn't provide a struct name
+    /// (e.g., for method calls that return structs).
+    fn getStructTypeNameFromAnnotation(self: *Emitter, type_expr: ast.TypeExpr) ?[]const u8 {
+        _ = self;
+        return switch (type_expr) {
+            .named => |n| n.name,
             else => null,
         };
     }
@@ -5399,9 +5466,24 @@ pub const Emitter = struct {
                         };
                         const err_ptr = self.builder.buildGEP(operand_type, opt_alloca, &err_indices, "propagate.err.ptr");
                         const err_type_llvm = llvm.c.LLVMStructGetTypeAtIndex(operand_type, 2);
-                        const err_val = self.builder.buildLoad(err_type_llvm, err_ptr, "propagate.err.val");
+                        var err_val = self.builder.buildLoad(err_type_llvm, err_ptr, "propagate.err.val");
 
-                        // Build Err result with the extracted error
+                        // Check if we need From::from conversion for error type
+                        if (self.type_checker) |tc| {
+                            if (tc.error_conversions.get(post)) |conv| {
+                                // Call the From::from method to convert the error
+                                const from_method_z = self.allocator.dupeZ(u8, conv.from_method_name) catch "";
+                                defer if (from_method_z.len > 0) self.allocator.free(from_method_z);
+
+                                if (self.module.getNamedFunction(from_method_z)) |from_fn| {
+                                    const fn_type = llvm.c.LLVMGlobalGetValueType(from_fn);
+                                    const args_slice = &[_]llvm.ValueRef{err_val};
+                                    err_val = self.builder.buildCall(fn_type, from_fn, args_slice, "from.result");
+                                }
+                            }
+                        }
+
+                        // Build Err result with the extracted (and possibly converted) error
                         const err_result = self.emitErr(err_val, rt_info.ok_type.?, rt_info.err_type.?);
                         _ = self.builder.buildRet(err_result);
                     } else {
@@ -7151,6 +7233,7 @@ pub const Emitter = struct {
             .ok_type = ok_type,
             .err_type = err_type,
         };
+        self.current_return_klar_type = self.resolveExpectedType(rt);
 
         // Create entry block for lifted function
         const entry_bb = llvm.appendBasicBlock(self.ctx, lifted_fn, "entry");
@@ -16844,8 +16927,8 @@ pub const Emitter = struct {
     }
 
     /// Emit Ok(value) - Result::Ok constructor.
-    /// For now, we infer error type as i32 (simple error codes).
-    /// Type annotation will provide actual types in full implementation.
+    /// Uses expected_type from context if available (e.g., from type annotation),
+    /// otherwise defaults to Result[T, i32] where T is the value type.
     fn emitOkCall(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
         if (args.len != 1) {
             return EmitError.InvalidAST;
@@ -16855,15 +16938,20 @@ pub const Emitter = struct {
         const value = try self.emitExpr(args[0]);
         const ok_type = llvm.typeOf(value);
 
-        // Default error type to i32 (can be refined with type inference)
-        const err_type = llvm.Types.int32(self.ctx);
+        // Use expected_type if it's a Result type, otherwise default to i32
+        const err_type = if (self.expected_type) |et| blk: {
+            if (et == .result) {
+                break :blk self.typeToLLVM(et.result.err_type);
+            }
+            break :blk llvm.Types.int32(self.ctx);
+        } else llvm.Types.int32(self.ctx);
 
         return self.emitOk(value, ok_type, err_type);
     }
 
     /// Emit Err(error) - Result::Err constructor.
-    /// For now, we infer ok type as i32 (placeholder).
-    /// Type annotation will provide actual types in full implementation.
+    /// Uses expected_type from context if available (e.g., from type annotation),
+    /// otherwise defaults to Result[i32, E] where E is the error type.
     fn emitErrCall(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
         if (args.len != 1) {
             return EmitError.InvalidAST;
@@ -16873,8 +16961,13 @@ pub const Emitter = struct {
         const error_val = try self.emitExpr(args[0]);
         const err_type = llvm.typeOf(error_val);
 
-        // Default ok type to i32 (can be refined with type inference)
-        const ok_type = llvm.Types.int32(self.ctx);
+        // Use expected_type if it's a Result type, otherwise default to i32
+        const ok_type = if (self.expected_type) |et| blk: {
+            if (et == .result) {
+                break :blk self.typeToLLVM(et.result.ok_type);
+            }
+            break :blk llvm.Types.int32(self.ctx);
+        } else llvm.Types.int32(self.ctx);
 
         return self.emitErr(error_val, ok_type, err_type);
     }
@@ -19074,7 +19167,9 @@ pub const Emitter = struct {
             .ok_type = if (is_result) self.typeToLLVM(func_type.return_type.result.ok_type) else null,
             .err_type = if (is_result) self.typeToLLVM(func_type.return_type.result.err_type) else null,
         };
+        self.current_return_klar_type = func_type.return_type;
         defer self.current_return_type = null;
+        defer self.current_return_klar_type = null;
 
         // Create entry block
         const entry = llvm.appendBasicBlock(self.ctx, function, "entry");
@@ -19241,7 +19336,9 @@ pub const Emitter = struct {
             .ok_type = if (is_result) self.typeToLLVM(func_type.return_type.result.ok_type) else null,
             .err_type = if (is_result) self.typeToLLVM(func_type.return_type.result.err_type) else null,
         };
+        self.current_return_klar_type = func_type.return_type;
         defer self.current_return_type = null;
+        defer self.current_return_klar_type = null;
 
         // Create entry block
         const entry = llvm.appendBasicBlock(self.ctx, function, "entry");

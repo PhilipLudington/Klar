@@ -1,0 +1,41 @@
+// Test From[E] trait for automatic error conversion in ? operator
+
+// Define two different error types
+struct SourceError { code: i32 }
+struct TargetError { code: i32 }
+
+// Implement From[SourceError] for TargetError
+// The conversion adds 1000 to the error code to verify conversion happened
+impl TargetError: From[SourceError] {
+    fn from(err: SourceError) -> TargetError {
+        return TargetError { code: err.code + 1000 }
+    }
+}
+
+// Function that returns Result with SourceError
+fn fetch_data() -> Result[i32, SourceError] {
+    return Err(SourceError { code: 42 })
+}
+
+// Function that returns Result with TargetError
+// Uses ? operator which should auto-convert SourceError to TargetError
+fn process_data() -> Result[i32, TargetError] {
+    let x: i32 = fetch_data()?  // Should convert SourceError -> TargetError via From
+    return Ok(x + 10)
+}
+
+fn main() -> i32 {
+    let result: Result[i32, TargetError] = process_data()
+
+    if result.is_err() {
+        // Error was propagated with conversion
+        // Original error code was 42, after From::from it should be 42 + 1000 = 1042
+        let err: TargetError = result.unwrap_err()
+        if err.code == 1042 {
+            return 0  // Success: conversion worked correctly
+        }
+        return err.code  // Return actual code for debugging
+    }
+
+    return 99  // Should not reach here
+}

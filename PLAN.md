@@ -611,7 +611,7 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 
 **Objective:** Complete the `?` operator and improve error handling.
 
-**Status:** In Progress. Core `?` operator implemented for early return on Optional and Result types.
+**Status:** Core Complete. `?` operator implemented for early return on Optional and Result types, with automatic error conversion via From trait.
 
 ### Question Mark Operator
 - [x] Implement full `?` operator in checker
@@ -622,9 +622,10 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 - [x] Test: `?` on Result propagates Err (result_propagate.kl)
 
 ### From Trait for Error Conversion
-- [ ] Define `From[T]` trait in std/core
-- [ ] Implement automatic error conversion in `?`
-- [ ] Allow `IoError -> AppError` via `impl AppError: From[IoError]`
+- [x] Define `From[T]` trait as builtin (in checker.zig)
+- [x] Implement automatic error conversion in `?`
+- [x] Allow `IoError -> AppError` via `impl AppError: From[IoError]`
+- [x] Test: error_from_conversion.kl verifies From::from() is called during `?` propagation
 - [ ] Chain From implementations
 
 ### Try Blocks
@@ -652,16 +653,17 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 
 ### Testing
 - [x] Test: `?` operator properly propagates errors (optional_propagate.kl, result_propagate.kl)
-- [ ] Test: error types can be converted automatically
+- [x] Test: error types can be converted automatically (error_from_conversion.kl)
 - [ ] Test: try blocks scope correctly
 - [ ] Test: context messages preserved
 
 **Files Modified:**
-- `src/checker.zig` - Enhanced `?` operator checking ✓
-- `src/codegen/emit.zig` - Generate `?` early return code, extended ReturnTypeInfo ✓
+- `src/checker.zig` - Enhanced `?` operator checking, expected_type context, checkOkErrCall ✓
+- `src/codegen/emit.zig` - Generate `?` early return code, extended ReturnTypeInfo, expected_type propagation, inferExprType for unwrap_err/unwrap ✓
 - `test/native/optional_propagate.kl` - Test `?` on Optional ✓
 - `test/native/result_propagate.kl` - Test `?` on Result ✓
 - `test/native/result_propagate_simple.kl` - Simpler `?` on Result test ✓
+- `test/native/error_from_conversion.kl` - Test From trait error conversion ✓
 
 ---
 
