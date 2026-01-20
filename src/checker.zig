@@ -1417,6 +1417,68 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
+
+        // Into trait: trait Into[T] { fn into(self) -> T; }
+        // The inverse of From - converts Self into a target type T.
+        // While From constructs Self from another type, Into converts Self to another type.
+
+        // Create the trait type first
+        const into_trait_type = try self.allocator.create(types.TraitType);
+
+        // Create Self type variable for self parameter
+        const into_self_type_var = types.TypeVar{
+            .id = 993, // Unique ID to avoid conflicts with From's 995, 994
+            .name = "Self",
+            .bounds = &.{},
+        };
+        const into_self_type = Type{ .type_var = into_self_type_var };
+
+        // Create T type parameter (the target type)
+        const into_t_type_var = types.TypeVar{
+            .id = 992, // Unique ID to avoid conflicts
+            .name = "T",
+            .bounds = &.{},
+        };
+        const into_t_type = Type{ .type_var = into_t_type_var };
+
+        // Create into(self: Self) -> T
+        const into_func = try self.type_builder.functionType(&.{into_self_type}, into_t_type);
+        const into_method = types.TraitMethod{
+            .name = "into",
+            .signature = into_func.function.*,
+            .has_default = false,
+        };
+
+        // Store the type parameter T
+        const into_type_params = try self.allocator.dupe(types.TypeVar, &.{into_t_type_var});
+        try self.type_var_slices.append(self.allocator, into_type_params);
+
+        // Complete the trait type
+        into_trait_type.* = .{
+            .name = "Into",
+            .type_params = into_type_params,
+            .associated_types = &.{},
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{into_method}),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, into_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "Into", .{
+            .trait_type = into_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "Into",
+            .type_ = .{ .trait_ = into_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
     }
 
     // ========================================================================
@@ -8124,6 +8186,23 @@ pub const TypeChecker = struct {
             // Self return type (builtin traits) - impl should return the implementing type
             if (!impl_func.return_type.eql(impl_type)) {
                 self.addError(.type_mismatch, span, "method '{s}' return type should be Self", .{
+                    trait_method.name,
+                });
+                return false;
+            }
+        } else if (trait_sig.return_type == .type_var) {
+            // Non-Self type variable (like T in Into[T]) - substitute with concrete type
+            var expected_return = trait_sig.return_type;
+            for (trait_type_params, 0..) |tp, ti| {
+                if (tp.id == trait_sig.return_type.type_var.id) {
+                    if (ti < trait_type_args.len) {
+                        expected_return = trait_type_args[ti];
+                    }
+                    break;
+                }
+            }
+            if (!impl_func.return_type.eql(expected_return)) {
+                self.addError(.type_mismatch, span, "method '{s}' return type mismatch", .{
                     trait_method.name,
                 });
                 return false;

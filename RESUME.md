@@ -1,44 +1,39 @@
-# Resume Point: Debug Mode Location Tracking Complete
+# Resume Point: Into Trait Implementation Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). Debug mode location tracking for ContextError is now implemented.
+Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improvements). Into trait is now implemented.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **Debug Mode Location Tracking** ✅
-  - ContextError now stores file:line:column of the `.context()` call site
-  - In debug builds (`-g`), location is populated and shown in `display_chain()`
-  - In release builds, location fields are null/0/0 (no overhead)
-  - ContextError layout: `{ message: ptr, cause: E, file: ptr, line: i32, column: i32 }`
-  - Output format: `Error: msg (at file:line:col)\n  Caused by: msg (at file:line:col)\n  Caused by: root`
+- **Into Trait** ✅
+  - Added `Into[T]` trait as builtin in `checker.zig` with type parameter T (id 992)
+  - Method signature: `fn into(self: Self) -> T`
+  - Added type variable substitution for return types in `verifyMethodSignature()`
+  - Test: `test/native/into_trait.kl` demonstrates struct conversion
 
 ### Implementation Details
 
-#### Emitter Changes (emit.zig)
-- Added `source_filename: ?[:0]const u8` field to store filename for location tracking
-- `initDebugInfo()` allocates and stores null-terminated filename
-- `emitContextMethod()` now accepts span parameter and stores file/line/column
-- Updated `typeToLLVM` and `typeExprToLLVM` for 5-field ContextError layout
-- Updated `inferExprType` for context() method return type
-- Updated `emitContextErrorDisplayChain()` with conditional location output
-- All ContextError type checks updated from 2 fields to 5 fields
+#### Checker Changes (checker.zig)
+- Registered Into trait in `initBuiltins()` after From trait
+- Created Self type var (id 993) and T type var (id 992)
+- Method `into(self: Self) -> T` registered with proper signature
+- Added handling in `verifyMethodSignature()` for non-Self type variable return types
+  - When trait return type is a type_var (but not "Self"), substitute with concrete type from trait_type_args
 
-#### Type System (types.zig)
-- Updated ContextErrorType comment to document 5-field layout
+#### Known Issue Discovered (Pre-existing)
+- f64 field access via struct methods returns incorrect values
+- Direct f64 field access works; methods accessing f64 fields don't
+- i32 methods work correctly
+- Test uses i32 to work around this unrelated codegen bug
 
 ### Previously Completed
 
+- **Debug Mode Location Tracking** ✅
 - **Error Chain Display** ✅
-  - `ContextError[E].display_chain() -> string` method
-
 - **Error Context for Result** ✅
-  - `Result[T, E].context(msg: string) -> Result[T, ContextError[E]]`
-  - `ContextError[E].message() -> string`
-  - `ContextError[E].cause() -> E`
-
 - **From Trait for Error Conversion** ✅
 - **`?` Operator for Early Return** ✅
 - **Milestone 6: Iterator Protocol** ✅ (Core complete)
@@ -48,9 +43,9 @@ Working on **Phase 4: Language Completion** - Milestone 7 (Error Handling Improv
 
 ## Current Test Status
 
-All 423 tests pass:
+All 424 tests pass:
 - Unit Tests: 220 passed
-- Native Tests: 187 passed
+- Native Tests: 188 passed
 - App Tests: 10 passed
 - Module Tests: 6 passed
 
@@ -63,9 +58,8 @@ Continue with **Phase 4** tasks:
 1. **Standard Library I/O** (Milestone 5):
    - File, Read/Write traits, stdin/stdout
 
-2. **Into Trait** (Milestone 7):
-   - Define `Into[T]` trait (inverse of From)
-   - Blanket implement Into when From exists
+2. **Blanket Into Implementation** (Milestone 7 - stretch):
+   - Auto-implement Into when From exists
 
 ---
 
@@ -75,21 +69,17 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test debug location tracking (with -g flag)
-./zig-out/bin/klar build test/native/result_context_display.kl -o /tmp/test -g && /tmp/test
-# Output with locations:
-# Error: failed to load config (at result_context_display.kl:8:12)
-#   Caused by: file not found
+# Test Into trait
+./zig-out/bin/klar build test/native/into_trait.kl -o /tmp/test && /tmp/test
 
-# Test without debug info (no locations)
-./zig-out/bin/klar build test/native/result_context_display.kl -o /tmp/test && /tmp/test
-# Output without locations:
-# Error: failed to load config
-#   Caused by: file not found
-
-# Test nested context errors with locations
-./zig-out/bin/klar build scratch/nested_context_error.kl -o /tmp/test -g && /tmp/test
-# Error: failed to initialize application (at nested_context_error.kl:12:12)
-#   Caused by: failed to read config file (at nested_context_error.kl:8:12)
-#   Caused by: file not found
+# Example Into usage:
+# struct Wrapper { value: i32 }
+# struct Doubled { value: i32 }
+# impl Wrapper: Into[Doubled] {
+#     fn into(self: Wrapper) -> Doubled {
+#         return Doubled { value: self.value * 2 }
+#     }
+# }
+# let w: Wrapper = Wrapper { value: 21 }
+# let d: Doubled = w.into()  // d.value == 42
 ```

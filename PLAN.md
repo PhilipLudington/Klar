@@ -647,7 +647,9 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 - [x] Omit location in release builds (file=null, line=0, column=0)
 
 ### Into Trait
-- [ ] Define `Into[T]` trait (inverse of From)
+- [x] Define `Into[T]` trait (inverse of From)
+- [x] Method signature: `fn into(self: Self) -> T`
+- [x] Type variable substitution for return types in verifyMethodSignature()
 - [ ] Blanket implement Into when From exists
 - [ ] Use in error conversion chains
 
@@ -655,6 +657,7 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 - [x] Test: `?` operator properly propagates errors (optional_propagate.kl, result_propagate.kl)
 - [x] Test: error types can be converted automatically (error_from_conversion.kl)
 - [x] Test: context messages preserved (result_context.kl)
+- [x] Test: Into trait works for type conversion (into_trait.kl)
 
 **Files Modified:**
 - `src/types.zig` - Added ContextErrorType to Type union ✓
@@ -668,6 +671,7 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 - `test/native/error_from_conversion.kl` - Test From trait error conversion ✓
 - `test/native/result_context.kl` - Test .context() method and ContextError ✓
 - `test/native/result_context_display.kl` - Test display_chain() method ✓
+- `test/native/into_trait.kl` - Test Into trait type conversion ✓
 
 ---
 
