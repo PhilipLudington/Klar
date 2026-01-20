@@ -1,0 +1,55 @@
+// Test List.filter() iterator adapter
+
+fn is_even(n: i32) -> bool {
+    return n % 2 == 0
+}
+
+fn is_positive(n: i32) -> bool {
+    return n > 0
+}
+
+fn main() -> i32 {
+    // Test 1: filter even numbers
+    var nums: List[i32] = List.new[i32]()
+    nums.push(1)
+    nums.push(2)
+    nums.push(3)
+    nums.push(4)
+    nums.push(5)
+    nums.push(6)
+
+    let evens: List[i32] = nums.filter(is_even)
+    assert_eq(evens.len(), 3)
+    assert_eq(evens.get(0) ?? -1, 2)
+    assert_eq(evens.get(1) ?? -1, 4)
+    assert_eq(evens.get(2) ?? -1, 6)
+
+    // Test 2: filter with closure (keep all positive)
+    var mixed: List[i32] = List.new[i32]()
+    mixed.push(1)
+    mixed.push(2)
+    mixed.push(3)
+
+    let positives: List[i32] = mixed.filter(is_positive)
+    assert_eq(positives.len(), 3)
+
+    // Test 3: filter resulting in empty list
+    var small: List[i32] = List.new[i32]()
+    small.push(1)
+    small.push(3)
+    small.push(5)
+
+    let no_evens: List[i32] = small.filter(is_even)
+    assert_eq(no_evens.len(), 0)
+
+    // Test 4: filter empty list
+    var empty_list: List[i32] = List.new[i32]()
+    let from_empty: List[i32] = empty_list.filter(is_even)
+    assert_eq(from_empty.len(), 0)
+
+    // Test 5: original list is unchanged
+    assert_eq(nums.len(), 6)
+
+    print("All list.filter() tests passed!")
+    return 0
+}

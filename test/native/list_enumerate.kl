@@ -1,0 +1,38 @@
+// Test List.enumerate() iterator adapter
+
+fn main() -> i32 {
+    // Test 1: enumerate non-empty list
+    var nums: List[i32] = List.new[i32]()
+    nums.push(10)
+    nums.push(20)
+    nums.push(30)
+
+    let enumerated: List[(i32, i32)] = nums.enumerate()
+    assert_eq(enumerated.len(), 3)
+
+    // Get first tuple (0, 10)
+    let t0: (i32, i32) = enumerated.get(0) ?? (99, 99)
+    assert_eq(t0.0, 0)
+    assert_eq(t0.1, 10)
+
+    // Get second tuple (1, 20)
+    let t1: (i32, i32) = enumerated.get(1) ?? (99, 99)
+    assert_eq(t1.0, 1)
+    assert_eq(t1.1, 20)
+
+    // Get third tuple (2, 30)
+    let t2: (i32, i32) = enumerated.get(2) ?? (99, 99)
+    assert_eq(t2.0, 2)
+    assert_eq(t2.1, 30)
+
+    // Test 2: enumerate empty list
+    var empty_list: List[i32] = List.new[i32]()
+    let from_empty: List[(i32, i32)] = empty_list.enumerate()
+    assert_eq(from_empty.len(), 0)
+
+    // Test 3: original list is unchanged
+    assert_eq(nums.len(), 3)
+
+    print("All list.enumerate() tests passed!")
+    return 0
+}

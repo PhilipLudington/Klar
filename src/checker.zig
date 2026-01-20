@@ -4081,6 +4081,112 @@ pub const TypeChecker = struct {
                 }
                 return self.type_builder.voidType();
             }
+
+            // take(n: i32) -> List[T] (returns first n elements)
+            if (std.mem.eql(u8, method.method_name, "take")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "take() expects exactly 1 argument (count)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .i32_) {
+                    self.addError(.type_mismatch, method.span, "take() argument must be i32", .{});
+                }
+                return object_type; // Returns same List[T] type
+            }
+
+            // skip(n: i32) -> List[T] (skips first n elements)
+            if (std.mem.eql(u8, method.method_name, "skip")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "skip() expects exactly 1 argument (count)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .i32_) {
+                    self.addError(.type_mismatch, method.span, "skip() argument must be i32", .{});
+                }
+                return object_type; // Returns same List[T] type
+            }
+
+            // filter(fn(T) -> bool) -> List[T] (keeps elements where predicate returns true)
+            if (std.mem.eql(u8, method.method_name, "filter")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "filter() expects exactly 1 argument (predicate)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                // Validate it's a function fn(T) -> bool
+                if (arg_type != .function) {
+                    self.addError(.type_mismatch, method.span, "filter() argument must be a function", .{});
+                    return object_type;
+                }
+                const fn_type = arg_type.function;
+                if (fn_type.params.len != 1) {
+                    self.addError(.type_mismatch, method.span, "filter() predicate must take exactly 1 parameter", .{});
+                    return object_type;
+                }
+                if (!fn_type.params[0].eql(element_type)) {
+                    self.addError(.type_mismatch, method.span, "filter() predicate parameter type must match list element type", .{});
+                }
+                if (fn_type.return_type != .primitive or fn_type.return_type.primitive != .bool_) {
+                    self.addError(.type_mismatch, method.span, "filter() predicate must return bool", .{});
+                }
+                return object_type; // Returns same List[T] type
+            }
+
+            // map(fn(T) -> U) -> List[U] (transforms each element)
+            if (std.mem.eql(u8, method.method_name, "map")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "map() expects exactly 1 argument (transform function)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                // Validate it's a function fn(T) -> U
+                if (arg_type != .function) {
+                    self.addError(.type_mismatch, method.span, "map() argument must be a function", .{});
+                    return object_type;
+                }
+                const fn_type = arg_type.function;
+                if (fn_type.params.len != 1) {
+                    self.addError(.type_mismatch, method.span, "map() transform function must take exactly 1 parameter", .{});
+                    return object_type;
+                }
+                if (!fn_type.params[0].eql(element_type)) {
+                    self.addError(.type_mismatch, method.span, "map() transform function parameter type must match list element type", .{});
+                }
+                // Return List[U] where U is the function's return type
+                return self.type_builder.listType(fn_type.return_type) catch self.type_builder.unknownType();
+            }
+
+            // enumerate() -> List[(i32, T)] (pairs each element with its index)
+            if (std.mem.eql(u8, method.method_name, "enumerate")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "enumerate() takes no arguments", .{});
+                }
+                // Build tuple type (i32, T)
+                const i32_type = self.type_builder.i32Type();
+                const tuple_types = [_]Type{ i32_type, element_type };
+                const tuple_type = self.type_builder.tupleType(&tuple_types) catch self.type_builder.unknownType();
+                return self.type_builder.listType(tuple_type) catch self.type_builder.unknownType();
+            }
+
+            // zip(other: List[U]) -> List[(T, U)] (combines two lists element-wise)
+            if (std.mem.eql(u8, method.method_name, "zip")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "zip() expects exactly 1 argument (other list)", .{});
+                    return object_type;
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .list) {
+                    self.addError(.type_mismatch, method.span, "zip() argument must be a List", .{});
+                    return object_type;
+                }
+                const other_element_type = arg_type.list.element;
+                // Build tuple type (T, U)
+                const tuple_types = [_]Type{ element_type, other_element_type };
+                const tuple_type = self.type_builder.tupleType(&tuple_types) catch self.type_builder.unknownType();
+                return self.type_builder.listType(tuple_type) catch self.type_builder.unknownType();
+            }
         }
 
         // Map methods

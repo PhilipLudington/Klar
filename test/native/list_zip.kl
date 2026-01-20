@@ -1,0 +1,64 @@
+// Test List.zip() iterator adapter
+
+fn main() -> i32 {
+    // Test 1: zip equal length lists
+    var nums: List[i32] = List.new[i32]()
+    nums.push(1)
+    nums.push(2)
+    nums.push(3)
+
+    var letters: List[i32] = List.new[i32]()
+    letters.push(10)
+    letters.push(20)
+    letters.push(30)
+
+    let zipped: List[(i32, i32)] = nums.zip(letters)
+    assert_eq(zipped.len(), 3)
+
+    let t0: (i32, i32) = zipped.get(0) ?? (99, 99)
+    assert_eq(t0.0, 1)
+    assert_eq(t0.1, 10)
+
+    let t1: (i32, i32) = zipped.get(1) ?? (99, 99)
+    assert_eq(t1.0, 2)
+    assert_eq(t1.1, 20)
+
+    let t2: (i32, i32) = zipped.get(2) ?? (99, 99)
+    assert_eq(t2.0, 3)
+    assert_eq(t2.1, 30)
+
+    // Test 2: zip unequal length lists (first shorter)
+    var short: List[i32] = List.new[i32]()
+    short.push(100)
+    short.push(200)
+
+    let zipped2: List[(i32, i32)] = short.zip(nums)
+    assert_eq(zipped2.len(), 2)
+
+    let u0: (i32, i32) = zipped2.get(0) ?? (99, 99)
+    assert_eq(u0.0, 100)
+    assert_eq(u0.1, 1)
+
+    let u1: (i32, i32) = zipped2.get(1) ?? (99, 99)
+    assert_eq(u1.0, 200)
+    assert_eq(u1.1, 2)
+
+    // Test 3: zip unequal length lists (second shorter)
+    let zipped3: List[(i32, i32)] = nums.zip(short)
+    assert_eq(zipped3.len(), 2)
+
+    // Test 4: zip with empty list
+    var empty_list: List[i32] = List.new[i32]()
+    let zipped4: List[(i32, i32)] = nums.zip(empty_list)
+    assert_eq(zipped4.len(), 0)
+
+    let zipped5: List[(i32, i32)] = empty_list.zip(nums)
+    assert_eq(zipped5.len(), 0)
+
+    // Test 5: original lists are unchanged
+    assert_eq(nums.len(), 3)
+    assert_eq(letters.len(), 3)
+
+    print("All list.zip() tests passed!")
+    return 0
+}

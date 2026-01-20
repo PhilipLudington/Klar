@@ -1,0 +1,42 @@
+// Test List.map() iterator adapter
+
+fn double(n: i32) -> i32 {
+    return n * 2
+}
+
+fn square(n: i32) -> i32 {
+    return n * n
+}
+
+fn main() -> i32 {
+    // Test 1: map with double
+    var nums: List[i32] = List.new[i32]()
+    nums.push(1)
+    nums.push(2)
+    nums.push(3)
+
+    let doubled: List[i32] = nums.map(double)
+    assert_eq(doubled.len(), 3)
+    assert_eq(doubled.get(0) ?? -1, 2)
+    assert_eq(doubled.get(1) ?? -1, 4)
+    assert_eq(doubled.get(2) ?? -1, 6)
+
+    // Test 2: map with square
+    let squared: List[i32] = nums.map(square)
+    assert_eq(squared.len(), 3)
+    assert_eq(squared.get(0) ?? -1, 1)
+    assert_eq(squared.get(1) ?? -1, 4)
+    assert_eq(squared.get(2) ?? -1, 9)
+
+    // Test 3: map empty list
+    var empty_list: List[i32] = List.new[i32]()
+    let from_empty: List[i32] = empty_list.map(double)
+    assert_eq(from_empty.len(), 0)
+
+    // Test 4: original list is unchanged
+    assert_eq(nums.len(), 3)
+    assert_eq(nums.get(0) ?? -1, 1)
+
+    print("All list.map() tests passed!")
+    return 0
+}
