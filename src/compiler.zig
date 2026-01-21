@@ -696,10 +696,68 @@ pub const Compiler = struct {
                 // The bytecode VM should never see them - they are replaced by their evaluated values
                 try self.addError(.internal_error, expr.span(), "comptime blocks not yet supported in bytecode VM");
             },
-            .builtin_call => {
-                // Builtin calls are evaluated at compile time
-                // The bytecode VM should never see them
-                try self.addError(.internal_error, expr.span(), "builtin calls not yet supported in bytecode VM");
+            .builtin_call => |bc| {
+                // Handle @repeat builtin specially - compile it as an array literal
+                if (std.mem.eql(u8, bc.name, "repeat") and bc.args.len == 2) {
+                    // Get count from the second argument (must be an integer literal)
+                    const count_expr = switch (bc.args[1]) {
+                        .expr_arg => |e| e,
+                        .type_arg => {
+                            try self.addError(.internal_error, expr.span(), "@repeat count must be an integer");
+                            return;
+                        },
+                    };
+
+                    // Extract the count value from the literal
+                    const count: usize = switch (count_expr) {
+                        .literal => |lit| switch (lit.kind) {
+                            .int => |v| blk: {
+                                if (v < 0) {
+                                    try self.addError(.internal_error, expr.span(), "@repeat count must be non-negative");
+                                    return;
+                                }
+                                break :blk @intCast(v);
+                            },
+                            else => {
+                                try self.addError(.internal_error, expr.span(), "@repeat count must be an integer literal");
+                                return;
+                            },
+                        },
+                        else => {
+                            try self.addError(.internal_error, expr.span(), "@repeat count must be a literal");
+                            return;
+                        },
+                    };
+
+                    if (count == 0) {
+                        try self.addError(.internal_error, expr.span(), "@repeat count must be > 0 for bytecode VM");
+                        return;
+                    }
+
+                    // Compile the value expression count times
+                    const value_expr = switch (bc.args[0]) {
+                        .expr_arg => |e| e,
+                        .type_arg => {
+                            try self.addError(.internal_error, expr.span(), "@repeat first argument must be a value");
+                            return;
+                        },
+                    };
+
+                    const line = bc.span.line;
+                    for (0..count) |_| {
+                        try self.compileExpr(value_expr);
+                    }
+
+                    // Emit array instruction
+                    if (count > 255) {
+                        try self.addError(.too_many_constants, bc.span, "too many array elements");
+                        return;
+                    }
+                    try self.emitOp2(.op_array, @intCast(count), line);
+                } else {
+                    // Other builtin calls are evaluated at compile time
+                    try self.addError(.internal_error, expr.span(), "builtin calls not yet supported in bytecode VM");
+                }
             },
         }
     }

@@ -275,6 +275,11 @@ pub const TypeChecker = struct {
     /// Used by codegen for @sizeOf, @alignOf, etc.
     comptime_ints: std.AutoHashMapUnmanaged(*ast.BuiltinCall, i64),
 
+    /// Storage for @repeat(value, count) builtin info.
+    /// Maps BuiltinCall AST node pointers to their repeat information.
+    /// Used by codegen to emit array initialization.
+    comptime_repeats: std.AutoHashMapUnmanaged(*ast.BuiltinCall, RepeatInfo),
+
     /// Storage for comptime block values.
     /// Maps ComptimeBlock AST node pointers to their evaluated values.
     /// Used by codegen to emit the correct compile-time constant values.
@@ -352,6 +357,17 @@ pub const TypeChecker = struct {
         element_type: Type,
         /// Array elements in order
         elements: []const ComptimeValue,
+    };
+
+    /// Information for @repeat(value, count) builtin.
+    /// Stores the element type and count for codegen.
+    pub const RepeatInfo = struct {
+        /// The type of the repeated element
+        element_type: Type,
+        /// The number of times to repeat (comptime-known)
+        count: usize,
+        /// The value expression to repeat
+        value_expr: ast.Expr,
     };
 
     /// Symbols exported from a module.
@@ -550,6 +566,7 @@ pub const TypeChecker = struct {
             .comptime_strings = .{},
             .comptime_bools = .{},
             .comptime_ints = .{},
+            .comptime_repeats = .{},
             .comptime_values = .{},
             .comptime_functions = .{},
             .comptime_call_values = .{},
@@ -752,6 +769,9 @@ pub const TypeChecker = struct {
 
         // Clean up comptime ints (no values to free, just the map)
         self.comptime_ints.deinit(self.allocator);
+
+        // Clean up comptime repeats (no values to free, just the map)
+        self.comptime_repeats.deinit(self.allocator);
 
         // Clean up comptime values (need to free strings)
         var comptime_values_iter = self.comptime_values.valueIterator();
@@ -3269,9 +3289,14 @@ pub const TypeChecker = struct {
                 return self.type_builder.boolType();
             },
             .ref => {
-                return self.type_builder.referenceType(operand_type, false) catch self.type_builder.unknownType();
+                // With new syntax, mutability is determined by whether the operand is mutable
+                // `ref x` where x is `var` -> inout T (mutable reference)
+                // `ref x` where x is `let` -> ref T (immutable reference)
+                const is_mutable = self.isMutable(un.operand);
+                return self.type_builder.referenceType(operand_type, is_mutable) catch self.type_builder.unknownType();
             },
             .ref_mut => {
+                // Legacy syntax support (for backward compatibility during transition)
                 if (!self.isMutable(un.operand)) {
                     self.addError(.mutability_error, un.span, "cannot take mutable reference to immutable value", .{});
                 }
@@ -6958,6 +6983,8 @@ pub const TypeChecker = struct {
             return self.checkBuiltinAlignOf(builtin);
         } else if (std.mem.eql(u8, builtin.name, "assert")) {
             return self.checkBuiltinAssert(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "repeat")) {
+            return self.checkBuiltinRepeat(builtin);
         } else {
             self.addError(.undefined_function, builtin.span, "unknown builtin '@{s}'", .{builtin.name});
             return self.type_builder.unknownType();
@@ -7336,6 +7363,72 @@ pub const TypeChecker = struct {
         }
 
         return self.type_builder.voidType();
+    }
+
+    /// @repeat(value, count) -> [typeof(value); count]
+    /// Creates an array of `count` elements, all initialized to `value`.
+    /// `count` must be a comptime-known integer.
+    fn checkBuiltinRepeat(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len != 2) {
+            self.addError(.wrong_number_of_args, builtin.span, "@repeat expects 2 arguments (value, count), got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
+        }
+
+        // First arg is the value to repeat - must be an expression
+        const value_expr = switch (builtin.args[0]) {
+            .expr_arg => |expr| expr,
+            .type_arg => {
+                self.addError(.type_mismatch, builtin.span, "@repeat first argument must be a value, not a type", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        // Type-check the value expression
+        const element_type = self.checkExpr(value_expr);
+        if (element_type == .unknown or element_type == .error_type) {
+            return self.type_builder.unknownType();
+        }
+
+        // Second arg is the count - must be a comptime-known integer
+        const count_expr = switch (builtin.args[1]) {
+            .expr_arg => |expr| expr,
+            .type_arg => {
+                self.addError(.type_mismatch, builtin.span, "@repeat second argument must be an integer, not a type", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        // Evaluate count at compile time
+        const count_value = self.evaluateComptimeExpr(count_expr);
+        if (count_value == null) {
+            self.addError(.comptime_error, builtin.span, "@repeat count must be comptime-known", .{});
+            return self.type_builder.unknownType();
+        }
+
+        // Check that it's an integer
+        const count: usize = switch (count_value.?) {
+            .int => |i| blk: {
+                if (i.value < 0) {
+                    self.addError(.type_mismatch, builtin.span, "@repeat count must be non-negative, got {d}", .{i.value});
+                    return self.type_builder.unknownType();
+                }
+                break :blk @intCast(i.value);
+            },
+            else => {
+                self.addError(.type_mismatch, builtin.span, "@repeat count must be an integer", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        // Store repeat info for codegen
+        self.comptime_repeats.put(self.allocator, builtin, .{
+            .element_type = element_type,
+            .count = count,
+            .value_expr = value_expr,
+        }) catch {};
+
+        // Return the array type
+        return self.type_builder.arrayType(element_type, count) catch self.type_builder.unknownType();
     }
 
     /// @hasField(T, "field_name") -> bool

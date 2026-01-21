@@ -1,15 +1,15 @@
-// Test reference parameters (&self and &mut self) in generic struct methods
+// Test reference parameters (ref self and inout self) in generic struct methods
 
 struct Box[T] {
     value: T,
 }
 
 impl[T] Box[T] {
-    fn get(self: &Box[T]) -> T {
+    fn get(self: ref Box[T]) -> T {
         return self.value
     }
 
-    fn set(self: &mut Box[T], v: T) {
+    fn set(self: inout Box[T], v: T) {
         self.value = v
     }
 }

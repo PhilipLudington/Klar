@@ -1,0 +1,37 @@
+// Test ref T and inout T reference syntax
+
+// Function taking an immutable reference (read-only)
+// Note: ref T can accept both ref T and inout T (covariant)
+fn read_value(x: ref i32) -> i32 {
+    return *x
+}
+
+// Function taking a mutable reference (can modify)
+fn increment(x: inout i32) {
+    *x = *x + 1
+}
+
+// Function taking a mutable reference and returning through it
+fn double(x: inout i32) {
+    *x = *x * 2
+}
+
+fn main() -> i32 {
+    // Test read-only reference from let (creates ref T)
+    let n: i32 = 42
+    if read_value(ref n) != 42 { return 1 }
+
+    // Test mutable reference from var (creates inout T)
+    var m: i32 = 5
+    increment(ref m)
+    if m != 6 { return 2 }
+
+    // Test multiple modifications
+    double(ref m)
+    if m != 12 { return 3 }
+
+    increment(ref m)
+    if m != 13 { return 4 }
+
+    return 0
+}

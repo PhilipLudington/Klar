@@ -8,7 +8,7 @@ fn main() -> i32 {
     let msg: string = "Write trait works!\n"
     let buf: [u8] = msg.bytes()
 
-    let result: Result[i32, IoError] = out.write(&buf)
+    let result: Result[i32, IoError] = out.write(ref buf)
 
     if not result.is_ok() {
         return 1

@@ -1770,6 +1770,8 @@ pub const Interpreter = struct {
             return self.evalBuiltinCompileError(builtin);
         } else if (std.mem.eql(u8, builtin.name, "hasField")) {
             return self.evalBuiltinHasField(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "repeat")) {
+            return self.evalBuiltinRepeat(builtin);
         } else {
             // Check if this is a call to a user-defined comptime function
             // (registered in the environment by the checker's registerComptimeFunctionsInInterpreter)
@@ -1897,6 +1899,44 @@ pub const Interpreter = struct {
         // TODO: Implement actual field checking
         // For now, return false as placeholder
         return .{ .bool_ = false };
+    }
+
+    /// @repeat(value, count) -> array of value repeated count times
+    fn evalBuiltinRepeat(self: *Interpreter, builtin: *ast.BuiltinCall) RuntimeError!Value {
+        if (builtin.args.len != 2) return RuntimeError.InvalidOperation;
+
+        // Evaluate the value
+        const value_expr = switch (builtin.args[0]) {
+            .expr_arg => |e| e,
+            .type_arg => return RuntimeError.TypeError,
+        };
+        const value = try self.evaluate(value_expr);
+
+        // Evaluate the count
+        const count_expr = switch (builtin.args[1]) {
+            .expr_arg => |e| e,
+            .type_arg => return RuntimeError.TypeError,
+        };
+        const count_value = try self.evaluate(count_expr);
+        const count: usize = switch (count_value) {
+            .int => |i| blk: {
+                if (i.value < 0) return RuntimeError.InvalidOperation;
+                break :blk @intCast(i.value);
+            },
+            else => return RuntimeError.TypeError,
+        };
+
+        // Create the array with repeated values
+        var elements = std.ArrayListUnmanaged(Value){};
+        elements.ensureTotalCapacity(self.allocator, count) catch return RuntimeError.OutOfMemory;
+        for (0..count) |_| {
+            elements.appendAssumeCapacity(value);
+        }
+
+        // Create the array value
+        const array_val = self.allocator.create(values.ArrayValue) catch return RuntimeError.OutOfMemory;
+        array_val.* = .{ .elements = elements.items };
+        return .{ .array = array_val };
     }
 };
 

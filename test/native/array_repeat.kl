@@ -1,0 +1,25 @@
+// Test @repeat(value, count) builtin for array initialization
+
+fn main() -> i32 {
+    // Create an array of 10 u8 values, all initialized to 0
+    var buf: [u8; 10] = @repeat(0.as[u8], 10)
+
+    // Verify initial values are 0
+    if buf[0] != 0.as[u8] { return 1 }
+    if buf[5] != 0.as[u8] { return 2 }
+    if buf[9] != 0.as[u8] { return 3 }
+
+    // Modify some values
+    buf[5] = 42.as[u8]
+
+    // Verify the modification
+    if buf[5] != 42.as[u8] { return 4 }
+    if buf[0] != 0.as[u8] { return 5 }  // Other elements unchanged
+
+    // Test with i32
+    var nums: [i32; 5] = @repeat(100, 5)
+    if nums[0] != 100 { return 6 }
+    if nums[4] != 100 { return 7 }
+
+    return 0
+}

@@ -1,15 +1,15 @@
-// Test reference parameters (&self and &mut self) in methods
+// Test reference parameters (ref self and inout self) in methods
 
 struct Counter {
     value: i32,
 }
 
 impl Counter {
-    fn get(self: &Counter) -> i32 {
+    fn get(self: ref Counter) -> i32 {
         return self.value
     }
 
-    fn increment(self: &mut Counter) {
+    fn increment(self: inout Counter) {
         self.value = self.value + 1
     }
 }

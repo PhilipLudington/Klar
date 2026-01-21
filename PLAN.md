@@ -449,16 +449,23 @@ std/
 
 **Status:** 🟡 Read/Write Traits Complete. Basic file I/O types and stdout/stderr implemented as builtins. Buffered I/O and filesystem operations not yet started.
 
+### Mutable Buffer Allocation
+- [x] `@repeat(value, count)` builtin for array initialization: `var buf: [u8; 256] = @repeat(0.as[u8], 256)`
+- [x] `ref T` syntax for immutable references (replaces `&T`)
+- [x] `inout T` syntax for mutable references (replaces `&mut T`)
+- [x] `ref x` expression for creating references (replaces `&x`, mutability determined by whether x is `var` or `let`)
+- [x] Deref assignment support: `*ptr = value`
+
 ### Read Trait
 - [x] Define `Read` trait as builtin (in checker.zig)
-- [x] Add `read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]`
+- [x] Add `read(self: inout Self, buf: [u8]) -> Result[i32, IoError]` (slice by value)
 - [x] Register `File:Read` implementation
 - [ ] Add default `read_all()`, `read_to_string()`
 
 ### Write Trait
 - [x] Define `Write` trait as builtin (in checker.zig)
-- [x] Add `write(&mut self, buf: &[u8]) -> Result[i32, IoError]`
-- [x] Add `flush(&mut self) -> Result[void, IoError]`
+- [x] Add `write(self: inout Self, buf: [u8]) -> Result[i32, IoError]` (slice by value)
+- [x] Add `flush(self: inout Self) -> Result[void, IoError]`
 - [x] Register `File:Write`, `Stdout:Write`, `Stderr:Write` implementations
 - [ ] Add default `write_all()`
 

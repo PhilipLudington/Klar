@@ -474,6 +474,8 @@ pub const Lexer = struct {
         .{ "static", .static },
         .{ "self", .self },
         .{ "Self", .self_type },
+        .{ "ref", .ref },
+        .{ "inout", .inout },
     });
 };
 

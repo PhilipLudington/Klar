@@ -2479,6 +2479,14 @@ pub const Emitter = struct {
             return self.emitFieldAssignment(bin);
         }
 
+        // Handle deref assignment: *ptr = value
+        if (bin.left == .unary) {
+            const un = bin.left.unary;
+            if (un.op == .deref) {
+                return self.emitDerefAssignment(bin, un);
+            }
+        }
+
         // Get the target variable for simple identifier assignment
         const target_id = switch (bin.left) {
             .identifier => |id| id,
@@ -2726,6 +2734,48 @@ pub const Emitter = struct {
 
         // Store the value to the field
         _ = self.builder.buildStore(value, field_ptr);
+
+        // Return the stored value
+        return value;
+    }
+
+    /// Emit deref assignment: *ptr = value
+    fn emitDerefAssignment(self: *Emitter, bin: *ast.Binary, un: *ast.Unary) EmitError!llvm.ValueRef {
+        // Get the pointer from the deref operand (which should be a reference/pointer)
+        const ptr = try self.emitExpr(un.operand);
+
+        // Evaluate the right-hand side
+        const rhs = try self.emitExpr(bin.right);
+
+        // For compound assignment, need to load current value and operate
+        const ptr_elem_type = llvm.c.LLVMGetElementType(llvm.typeOf(ptr));
+        const value = switch (bin.op) {
+            .assign => rhs,
+            .add_assign => blk: {
+                const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
+                break :blk self.builder.buildAdd(lhs, rhs, "addtmp");
+            },
+            .sub_assign => blk: {
+                const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
+                break :blk self.builder.buildSub(lhs, rhs, "subtmp");
+            },
+            .mul_assign => blk: {
+                const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
+                break :blk self.builder.buildMul(lhs, rhs, "multmp");
+            },
+            .div_assign => blk: {
+                const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
+                break :blk self.builder.buildSDiv(lhs, rhs, "divtmp");
+            },
+            .mod_assign => blk: {
+                const lhs = self.builder.buildLoad(ptr_elem_type, ptr, "loadtmp");
+                break :blk self.builder.buildSRem(lhs, rhs, "modtmp");
+            },
+            else => return EmitError.InvalidAST,
+        };
+
+        // Store the value through the pointer
+        _ = self.builder.buildStore(value, ptr);
 
         // Return the stored value
         return value;
@@ -4971,6 +5021,15 @@ pub const Emitter = struct {
                 // @sizeOf and @alignOf return i32
                 if (std.mem.eql(u8, bc.name, "sizeOf") or std.mem.eql(u8, bc.name, "alignOf")) {
                     return llvm.Types.int32(self.ctx);
+                }
+                // @repeat returns an array type
+                if (std.mem.eql(u8, bc.name, "repeat")) {
+                    if (self.type_checker) |tc| {
+                        if (tc.comptime_repeats.get(bc)) |repeat_info| {
+                            const elem_llvm_type = self.typeToLLVM(repeat_info.element_type);
+                            return llvm.Types.array(elem_llvm_type, repeat_info.count);
+                        }
+                    }
                 }
                 // Default to i32 for unknown builtins
                 return llvm.Types.int32(self.ctx);
@@ -8726,9 +8785,38 @@ pub const Emitter = struct {
             if (tc.comptime_ints.get(bc)) |computed_int| {
                 return llvm.Const.int32(self.ctx, @intCast(computed_int));
             }
+            // Check for @repeat(value, count) results
+            if (tc.comptime_repeats.get(bc)) |repeat_info| {
+                return self.emitRepeat(repeat_info);
+            }
         }
         // Fallback: return 0 if not found
         return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit @repeat(value, count) as an array with the value repeated count times.
+    fn emitRepeat(self: *Emitter, repeat_info: TypeChecker.RepeatInfo) EmitError!llvm.ValueRef {
+        const element_llvm_type = self.typeToLLVM(repeat_info.element_type);
+        const array_type = llvm.Types.array(element_llvm_type, repeat_info.count);
+
+        // Allocate the array
+        const array_alloca = self.builder.buildAlloca(array_type, "repeat_arr");
+
+        // Emit the value once
+        const value = try self.emitExpr(repeat_info.value_expr);
+
+        // Store the value at each index
+        for (0..repeat_info.count) |i| {
+            var indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, @intCast(i)),
+            };
+            const elem_ptr = self.builder.buildGEP(array_type, array_alloca, &indices, "repeat_elem");
+            _ = self.builder.buildStore(value, elem_ptr);
+        }
+
+        // Load and return the array
+        return self.builder.buildLoad(array_type, array_alloca, "repeat_val");
     }
 
     /// Emit a ComptimeValue as an LLVM constant.

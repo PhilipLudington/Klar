@@ -1,11 +1,11 @@
-// Test address-of operator (&)
+// Test address-of operator (ref)
 // This test creates a reference to a value and dereferences it
 
 fn main() -> i32 {
     var x: i32 = 42
 
-    // Take address of x (creates a reference)
-    let ptr: &i32 = &x
+    // Take address of x (creates a mutable reference since x is var)
+    let ptr: inout i32 = ref x
 
     // Dereference the reference to get the value
     let value: i32 = *ptr

@@ -249,7 +249,7 @@ pub const Parser = struct {
             // Unary operators
             .minus => self.parseUnary(.negate),
             .not => self.parseUnary(.not),
-            .amp => self.parseRefOrRefMut(),
+            .ref => self.parseRefExpr(),
             .star => self.parseUnary(.deref),
 
             // @ can be: comptime block @{ ... } or builtin call @name(...)
@@ -1081,16 +1081,17 @@ pub const Parser = struct {
         return .{ .unary = unary };
     }
 
-    fn parseRefOrRefMut(self: *Parser) ParseError!ast.Expr {
+    fn parseRefExpr(self: *Parser) ParseError!ast.Expr {
         const start_span = self.spanFromToken(self.current);
-        self.advance(); // consume '&'
+        self.advance(); // consume 'ref'
 
-        const op: ast.UnaryOp = if (self.match(.mut)) .ref_mut else .ref;
+        // With new syntax, mutability is determined by the operand's type (var vs let)
+        // The type checker will determine if this becomes ref or ref_mut
         const operand = try self.parsePrecedence(.unary);
         const end_span = operand.span();
 
         const unary = try self.create(ast.Unary, .{
-            .op = op,
+            .op = .ref,
             .operand = operand,
             .span = ast.Span.merge(start_span, end_span),
         });
@@ -1753,16 +1754,24 @@ pub const Parser = struct {
             return .{ .optional = opt };
         }
 
-        // Reference type: &T or &mut T
-        if (self.match(.amp)) {
-            const mutable = self.match(.mut);
+        // Reference type: ref T (read-only) or inout T (mutable)
+        if (self.match(.ref)) {
             const inner = try self.parseType();
-            const ref = try self.create(ast.ReferenceType, .{
+            const reference = try self.create(ast.ReferenceType, .{
                 .inner = inner,
-                .mutable = mutable,
+                .mutable = false,
                 .span = inner.span(),
             });
-            return .{ .reference = ref };
+            return .{ .reference = reference };
+        }
+        if (self.match(.inout)) {
+            const inner = try self.parseType();
+            const reference = try self.create(ast.ReferenceType, .{
+                .inner = inner,
+                .mutable = true,
+                .span = inner.span(),
+            });
+            return .{ .reference = reference };
         }
 
         // Slice type: [T] or Array type: [T; size]
