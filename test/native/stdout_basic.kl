@@ -1,0 +1,8 @@
+// Test basic stdout functionality
+fn main() -> i32 {
+    var out: Stdout = stdout()
+    // Don't check the Result for now - just call write_string and flush
+    out.write_string("Hello from Klar stdout!")
+    out.flush()
+    return 42
+}

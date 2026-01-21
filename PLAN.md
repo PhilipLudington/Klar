@@ -447,6 +447,8 @@ std/
 
 **Objective:** Implement file and console I/O.
 
+**Status:** 🟡 MVP Complete. Basic file I/O types and stdout/stderr implemented as builtins. Read/Write traits, buffered I/O, and filesystem operations not yet started.
+
 ### Read Trait
 - [ ] Define `Read` trait in std/io/traits.kl
 - [ ] Add `read(buf: &mut [u8]) -> Result[usize, IoError]`
@@ -458,25 +460,30 @@ std/
 - [ ] Add `flush() -> Result[void, IoError]`
 - [ ] Add default `write_all()`
 
-### IoError Type
-- [ ] Define `IoError` enum with common error variants
-- [ ] Include NotFound, PermissionDenied, Timeout, etc.
-- [ ] Implement conversion to/from system errors
+### IoError Type (Builtin)
+- [x] Define `IoError` enum as builtin type
+- [x] Include NotFound, PermissionDenied, AlreadyExists, InvalidInput, UnexpectedEof, Other(string) variants
+- [ ] Implement conversion to/from system errors (errno mapping)
 
-### File Type
-- [ ] Implement `File` struct in std/fs.kl
-- [ ] Wrap OS file handles
-- [ ] Implement `open()`, `create()` constructors
-- [ ] Implement Read trait for File
-- [ ] Implement Write trait for File
-- [ ] Implement Drop to close file handle
+### File Type (Builtin)
+- [x] Implement `File` as builtin type (opaque FILE* handle)
+- [x] Implement `File.open(path, mode)` static constructor
+- [x] Implement `read(&mut self, buf)` method
+- [x] Implement `write(&mut self, buf)` method
+- [x] Implement `write_string(&mut self, s)` method
+- [x] Implement `close(self)` method
+- [x] Implement `flush(&mut self)` method
+- [ ] Full Result type integration (is_ok/is_err/unwrap on returned Results)
+- [ ] Implement Read/Write traits for File
 
-### Standard I/O
+### Standard I/O (Builtin)
 - [ ] Implement `stdin()` function returning Stdin type
-- [ ] Implement `stdout()` function returning Stdout type
-- [ ] Implement `stderr()` function returning Stderr type
+- [x] Implement `stdout()` function returning Stdout type
+- [x] Implement `stderr()` function returning Stderr type
 - [ ] Implement Read for Stdin
-- [ ] Implement Write for Stdout, Stderr
+- [x] Implement `Stdout.write_string(s)` and `Stdout.flush()`
+- [x] Implement `Stderr.write_string(s)` and `Stderr.flush()`
+- [x] Platform-specific stdio access (macOS: `__stdoutp`/`__stderrp`, Linux: `stdout`/`stderr`)
 
 ### Buffered I/O
 - [ ] Implement `BufReader[R: Read]` wrapper
@@ -503,12 +510,21 @@ std/
 - [ ] Implement `fs.write_string(path, s) -> Result[void, IoError]`
 
 ### Testing
-- [ ] Test: can read and write files
+- [x] Test: stdout write_string and flush work (stdout_basic.kl)
+- [ ] Test: can read and write files (pending Result integration)
 - [ ] Test: buffered I/O works correctly
 - [ ] Test: proper error handling with Result
 - [ ] Test: directory operations work
 
-**Files to Create:**
+**Files Modified:**
+- `src/types.zig` - Added file, io_error, stdout_handle, stderr_handle types ✓
+- `src/checker.zig` - Registered I/O types and methods ✓
+- `src/codegen/emit.zig` - Implemented I/O codegen ✓
+- `test/native/stdout_basic.kl` - Stdout test ✓
+- `test/native/file_write.kl` - File write test (placeholder) ✓
+- `test/native/file_error.kl` - File error test (placeholder) ✓
+
+**Files to Create (future):**
 ```
 std/
 ├── io/

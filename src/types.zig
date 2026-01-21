@@ -55,6 +55,12 @@ pub const Type = union(enum) {
     set: *SetType,
     string_data: *StringDataType,
 
+    // I/O types
+    file: void, // Opaque FILE* handle
+    io_error: void, // IoError enum type
+    stdout_handle: void, // Stdout marker type
+    stderr_handle: void, // Stderr marker type
+
     // Special types
     void_,
     never,
@@ -122,6 +128,8 @@ pub const Type = union(enum) {
             .set => |s| s.element.eql(other.set.element),
             // String data is a singleton type (no type parameters)
             .string_data => true,
+            // I/O types are singleton types
+            .file, .io_error, .stdout_handle, .stderr_handle => true,
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -212,9 +220,12 @@ pub const Type = union(enum) {
             // - Set (owns heap memory, must be moved or cloned)
             // - String (heap-allocated string, must be moved or cloned)
             // - ContextError (contains a string message)
+            // - File (owns file handle resource)
+            // - IoError (may contain string payload)
+            // - Stdout/Stderr (unique handles)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .unknown, .error_type, .associated_type_ref => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .unknown, .error_type, .associated_type_ref => false,
         };
     }
 };
@@ -817,6 +828,27 @@ pub const TypeBuilder = struct {
         str.* = .{};
         return .{ .string_data = str };
     }
+
+    // I/O type constructors
+    pub fn fileType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .file = {} };
+    }
+
+    pub fn ioErrorType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .io_error = {} };
+    }
+
+    pub fn stdoutType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .stdout_handle = {} };
+    }
+
+    pub fn stderrType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .stderr_handle = {} };
+    }
 };
 
 // ============================================================================
@@ -940,6 +972,10 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .string_data => {
             try writer.writeAll("String");
         },
+        .file => try writer.writeAll("File"),
+        .io_error => try writer.writeAll("IoError"),
+        .stdout_handle => try writer.writeAll("Stdout"),
+        .stderr_handle => try writer.writeAll("Stderr"),
         .associated_type_ref => |a| {
             try writer.writeAll(a.type_var.name);
             try writer.writeAll(".");

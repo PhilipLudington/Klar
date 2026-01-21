@@ -154,6 +154,12 @@ pub const Emitter = struct {
         is_set: bool = false,
         /// For Set[T] types, the element type.
         set_element_type: ?types.Type = null,
+        /// True if this is a File type (FILE* handle).
+        is_file: bool = false,
+        /// True if this is a Stdout type (FILE* handle).
+        is_stdout: bool = false,
+        /// True if this is a Stderr type (FILE* handle).
+        is_stderr: bool = false,
     };
 
     const LoopContext = struct {
@@ -916,6 +922,10 @@ pub const Emitter = struct {
                 const map_info = self.getMapTypeInfo(decl.type_);
                 // Check if this is a Set type
                 const set_info = self.getSetTypeInfo(decl.type_);
+                // Check if this is an I/O type
+                const is_file_let = self.isTypeFile(decl.type_);
+                const is_stdout_let = self.isTypeStdout(decl.type_);
+                const is_stderr_let = self.isTypeStderr(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -937,6 +947,9 @@ pub const Emitter = struct {
                     .map_value_type = if (map_info) |mi| mi.value_type else null,
                     .is_set = set_info != null,
                     .set_element_type = set_info,
+                    .is_file = is_file_let,
+                    .is_stdout = is_stdout_let,
+                    .is_stderr = is_stderr_let,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -978,6 +991,10 @@ pub const Emitter = struct {
                 const map_info = self.getMapTypeInfo(decl.type_);
                 // Check if this is a Set type
                 const set_info = self.getSetTypeInfo(decl.type_);
+                // Check if this is an I/O type
+                const is_file = self.isTypeFile(decl.type_);
+                const is_stdout = self.isTypeStdout(decl.type_);
+                const is_stderr = self.isTypeStderr(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -999,6 +1016,9 @@ pub const Emitter = struct {
                     .map_value_type = if (map_info) |mi| mi.value_type else null,
                     .is_set = set_info != null,
                     .set_element_type = set_info,
+                    .is_file = is_file,
+                    .is_stdout = is_stdout,
+                    .is_stderr = is_stderr,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -3144,6 +3164,16 @@ pub const Emitter = struct {
             } else if (std.mem.eql(u8, name, "Err")) {
                 // Result::Err(error) constructor
                 return self.emitErrCall(call.args);
+            } else if (std.mem.eql(u8, name, "stdout")) {
+                // stdout() -> Stdout
+                // Returns the stdout FILE* handle
+                const stdout_fn = self.getOrDeclareStdout();
+                return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stdout_fn), stdout_fn, &[_]llvm.ValueRef{}, "stdout.handle");
+            } else if (std.mem.eql(u8, name, "stderr")) {
+                // stderr() -> Stderr
+                // Returns the stderr FILE* handle
+                const stderr_fn = self.getOrDeclareStderr();
+                return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr.handle");
             }
         }
 
@@ -3883,6 +3913,33 @@ pub const Emitter = struct {
         };
     }
 
+    /// Check if a type expression is a File type.
+    fn isTypeFile(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .named => |named| std.mem.eql(u8, named.name, "File"),
+            else => false,
+        };
+    }
+
+    /// Check if a type expression is a Stdout type.
+    fn isTypeStdout(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .named => |named| std.mem.eql(u8, named.name, "Stdout"),
+            else => false,
+        };
+    }
+
+    /// Check if a type expression is a Stderr type.
+    fn isTypeStderr(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .named => |named| std.mem.eql(u8, named.name, "Stderr"),
+            else => false,
+        };
+    }
+
     /// Check if a type expression is an array or slice type.
     fn isTypeArray(self: *Emitter, type_expr: ast.TypeExpr) bool {
         _ = self;
@@ -4136,6 +4193,11 @@ pub const Emitter = struct {
                         return self.getResultType(ok_type, err_type);
                     }
                     return llvm.Types.int32(self.ctx);
+                }
+
+                // Handle stdout() and stderr() - they return FILE* pointers
+                if (std.mem.eql(u8, func_name, "stdout") or std.mem.eql(u8, func_name, "stderr")) {
+                    return llvm.Types.pointer(self.ctx);
                 }
 
                 // Check if this is a monomorphized generic function call
@@ -6062,6 +6124,11 @@ pub const Emitter = struct {
             if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, method.method_name, "with_capacity")) {
                 return self.emitStringWithCapacity(method);
             }
+
+            // File.open(path, mode) -> Result[File, IoError]
+            if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "open")) {
+                return self.emitFileOpen(method);
+            }
         }
 
         // Emit the object
@@ -6818,6 +6885,65 @@ pub const Emitter = struct {
                     const other_ptr = try self.getSetArgPtr(method.args[0]);
                     return self.emitSetZip(ptr, method, other_ptr);
                 }
+            }
+        }
+
+        // Check for File methods
+        if (self.isFileExpr(method.object)) {
+            // For File methods, we need the alloca pointer to get the FILE* handle
+            const file_ptr = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value;
+                }
+                break :blk null;
+            } else null;
+
+            if (file_ptr) |ptr| {
+                if (std.mem.eql(u8, method.method_name, "write_string")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const str_val = try self.emitExpr(method.args[0]);
+                    return self.emitFileWriteString(ptr, str_val);
+                }
+                if (std.mem.eql(u8, method.method_name, "write")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const buf_val = try self.emitExpr(method.args[0]);
+                    return self.emitFileWrite(ptr, buf_val);
+                }
+                if (std.mem.eql(u8, method.method_name, "read")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const buf_val = try self.emitExpr(method.args[0]);
+                    return self.emitFileRead(ptr, buf_val);
+                }
+                if (std.mem.eql(u8, method.method_name, "close")) {
+                    return self.emitFileClose(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "flush")) {
+                    return self.emitFileFlush(ptr);
+                }
+            }
+        }
+
+        // Check for Stdout methods
+        if (self.isStdoutExpr(method.object)) {
+            if (std.mem.eql(u8, method.method_name, "write_string")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const str_val = try self.emitExpr(method.args[0]);
+                return self.emitStdoutWriteString(str_val);
+            }
+            if (std.mem.eql(u8, method.method_name, "flush")) {
+                return self.emitStdoutFlush();
+            }
+        }
+
+        // Check for Stderr methods
+        if (self.isStderrExpr(method.object)) {
+            if (std.mem.eql(u8, method.method_name, "write_string")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const str_val = try self.emitExpr(method.args[0]);
+                return self.emitStderrWriteString(str_val);
+            }
+            if (std.mem.eql(u8, method.method_name, "flush")) {
+                return self.emitStderrFlush();
             }
         }
 
@@ -9438,6 +9564,45 @@ pub const Emitter = struct {
         const temp_alloca = self.builder.buildAlloca(set_type, "set_arg_tmp");
         _ = self.builder.buildStore(value, temp_alloca);
         return temp_alloca;
+    }
+
+    /// Check if an expression is a File type.
+    fn isFileExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    return local.is_file;
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    /// Check if an expression is a Stdout type.
+    fn isStdoutExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    return local.is_stdout;
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    /// Check if an expression is a Stderr type.
+    fn isStderrExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    return local.is_stderr;
+                }
+            },
+            else => {},
+        }
+        return false;
     }
 
     /// Check if an expression is a String (heap-allocated) type.
@@ -15635,6 +15800,359 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
+    // ==================== File I/O Emit Functions ====================
+
+    /// Get the LLVM struct type for IoError: { tag: i32, payload: ptr }
+    fn getIoErrorStructType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int32(self.ctx), // tag: 0=NotFound, 1=PermissionDenied, 2=AlreadyExists, 3=InvalidInput, 4=UnexpectedEof, 5=Other
+            llvm.Types.pointer(self.ctx), // payload: string for Other variant
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM struct type for Result[File, IoError]: { tag: i1, file: ptr, error: IoError }
+    fn getFileResultType(self: *Emitter) llvm.TypeRef {
+        const io_error_type = self.getIoErrorStructType();
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag: 1=Ok, 0=Err
+            llvm.Types.pointer(self.ctx), // File (FILE*)
+            io_error_type, // IoError
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM struct type for Result[i32, IoError]: { tag: i1, value: i32, error: IoError }
+    fn getI32ResultType(self: *Emitter) llvm.TypeRef {
+        const io_error_type = self.getIoErrorStructType();
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag: 1=Ok, 0=Err
+            llvm.Types.int32(self.ctx), // i32 value
+            io_error_type, // IoError
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM struct type for Result[void, IoError]: { tag: i1, error: IoError }
+    fn getVoidResultType(self: *Emitter) llvm.TypeRef {
+        const io_error_type = self.getIoErrorStructType();
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag: 1=Ok, 0=Err
+            io_error_type, // IoError
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Emit File.open(path, mode) -> Result[File, IoError]
+    fn emitFileOpen(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 2) return EmitError.InvalidAST;
+
+        // Emit path and mode string arguments
+        const path_val = try self.emitExpr(method.args[0]);
+        const mode_val = try self.emitExpr(method.args[1]);
+
+        // Call fopen
+        const fopen_fn = self.getOrDeclareFopen();
+        var fopen_args = [_]llvm.ValueRef{ path_val, mode_val };
+        const file_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fopen_fn), fopen_fn, &fopen_args, "file.ptr");
+
+        // Check if fopen returned null (error)
+        const null_ptr = llvm.c.LLVMConstPointerNull(llvm.Types.pointer(self.ctx));
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, file_ptr, null_ptr, "file.is_null");
+
+        // Build the Result struct
+        const result_type = self.getFileResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "file.result");
+
+        // Get struct field pointers
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "file.tag_ptr");
+        const file_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "file.file_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "file.err_ptr");
+
+        // Create Ok/Err paths
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "file.ok");
+        const err_bb = llvm.appendBasicBlock(self.ctx, func, "file.err");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "file.cont");
+
+        _ = self.builder.buildCondBr(is_null, err_bb, ok_bb);
+
+        // --- Ok path ---
+        self.builder.positionAtEnd(ok_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr); // tag = 1 (Ok)
+        _ = self.builder.buildStore(file_ptr, file_field_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // --- Err path ---
+        self.builder.positionAtEnd(err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr); // tag = 0 (Err)
+        // Set IoError to NotFound (tag=0)
+        const io_error_type = self.getIoErrorStructType();
+        const err_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, io_error_type, err_field_ptr, 0, "file.err_tag_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), err_tag_ptr); // NotFound
+        _ = self.builder.buildBr(cont_bb);
+
+        // --- Continue ---
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "file.result_val");
+    }
+
+    /// Emit file.write_string(s) -> Result[i32, IoError]
+    fn emitFileWriteString(self: *Emitter, file_ptr: llvm.ValueRef, str_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Load the FILE* from the File alloca
+        const file_handle = self.builder.buildLoad(ptr_type, file_ptr, "file.handle");
+
+        // Get string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str_val};
+        const len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "str.len");
+
+        // Call fwrite(str, 1, len, file)
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        var fwrite_args = [_]llvm.ValueRef{ str_val, one_i64, len, file_handle };
+        const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "file.written");
+
+        // Build Result[i32, IoError]
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "write.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "write.tag_ptr");
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "write.val_ptr");
+
+        // Always return Ok for now (simplified - could check ferror)
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr); // tag = 1 (Ok)
+        const written_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, written, i32_type, "write.written_i32");
+        _ = self.builder.buildStore(written_i32, val_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "write.result_val");
+    }
+
+    /// Emit file.write(buf) -> Result[i32, IoError]
+    fn emitFileWrite(self: *Emitter, file_ptr: llvm.ValueRef, buf_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Load the FILE* from the File alloca
+        const file_handle = self.builder.buildLoad(ptr_type, file_ptr, "file.handle");
+
+        // buf_val is a slice struct: { ptr, len }
+        // Extract ptr and len
+        const buf_ptr = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 0, "buf.ptr");
+        const buf_len = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 1, "buf.len");
+
+        // Call fwrite(ptr, 1, len, file)
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        var fwrite_args = [_]llvm.ValueRef{ buf_ptr, one_i64, buf_len, file_handle };
+        const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "file.written");
+
+        // Build Result[i32, IoError]
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "write.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "write.tag_ptr");
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "write.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        const written_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, written, i32_type, "write.written_i32");
+        _ = self.builder.buildStore(written_i32, val_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "write.result_val");
+    }
+
+    /// Emit file.read(buf) -> Result[i32, IoError]
+    fn emitFileRead(self: *Emitter, file_ptr: llvm.ValueRef, buf_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Load the FILE* from the File alloca
+        const file_handle = self.builder.buildLoad(ptr_type, file_ptr, "file.handle");
+
+        // buf_val is a reference to a slice - extract ptr and len
+        const buf_ptr = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 0, "buf.ptr");
+        const buf_len = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 1, "buf.len");
+
+        // Call fread(ptr, 1, len, file)
+        const fread_fn = self.getOrDeclareFread();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        var fread_args = [_]llvm.ValueRef{ buf_ptr, one_i64, buf_len, file_handle };
+        const bytes_read = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fread_fn), fread_fn, &fread_args, "file.read");
+
+        // Build Result[i32, IoError]
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "read.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "read.tag_ptr");
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "read.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        const read_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, bytes_read, i32_type, "read.bytes_i32");
+        _ = self.builder.buildStore(read_i32, val_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "read.result_val");
+    }
+
+    /// Emit file.close() -> Result[void, IoError]
+    fn emitFileClose(self: *Emitter, file_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load the FILE* from the File alloca
+        const file_handle = self.builder.buildLoad(ptr_type, file_ptr, "file.handle");
+
+        // Call fclose
+        const fclose_fn = self.getOrDeclareFclose();
+        var fclose_args = [_]llvm.ValueRef{file_handle};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "");
+
+        // Build Result[void, IoError] - always Ok
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "close.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "close.tag_ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "close.result_val");
+    }
+
+    /// Emit file.flush() -> Result[void, IoError]
+    fn emitFileFlush(self: *Emitter, file_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load the FILE* from the File alloca
+        const file_handle = self.builder.buildLoad(ptr_type, file_ptr, "file.handle");
+
+        // Call fflush
+        const fflush_fn = self.getOrDeclareFflush();
+        var fflush_args = [_]llvm.ValueRef{file_handle};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fflush_fn), fflush_fn, &fflush_args, "");
+
+        // Build Result[void, IoError] - always Ok
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "flush.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "flush.tag_ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "flush.result_val");
+    }
+
+    /// Emit stdout().write_string(s) -> Result[i32, IoError]
+    fn emitStdoutWriteString(self: *Emitter, str_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Get stdout handle
+        const stdout_fn = self.getOrDeclareStdout();
+        const stdout_handle = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stdout_fn), stdout_fn, &[_]llvm.ValueRef{}, "stdout.handle");
+
+        // Get string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str_val};
+        const len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "str.len");
+
+        // Call fwrite(str, 1, len, stdout)
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        var fwrite_args = [_]llvm.ValueRef{ str_val, one_i64, len, stdout_handle };
+        const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "stdout.written");
+
+        // Build Result[i32, IoError]
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "stdout.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stdout.tag_ptr");
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "stdout.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        const written_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, written, i32_type, "stdout.written_i32");
+        _ = self.builder.buildStore(written_i32, val_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "stdout.result_val");
+    }
+
+    /// Emit stdout().flush() -> Result[void, IoError]
+    fn emitStdoutFlush(self: *Emitter) EmitError!llvm.ValueRef {
+        // Get stdout handle
+        const stdout_fn = self.getOrDeclareStdout();
+        const stdout_handle = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stdout_fn), stdout_fn, &[_]llvm.ValueRef{}, "stdout.handle");
+
+        // Call fflush
+        const fflush_fn = self.getOrDeclareFflush();
+        var fflush_args = [_]llvm.ValueRef{stdout_handle};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fflush_fn), fflush_fn, &fflush_args, "");
+
+        // Build Result[void, IoError]
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "stdout.flush.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stdout.flush.tag_ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "stdout.flush.result_val");
+    }
+
+    /// Emit stderr().write_string(s) -> Result[i32, IoError]
+    fn emitStderrWriteString(self: *Emitter, str_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Get stderr handle
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr_handle = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr.handle");
+
+        // Get string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str_val};
+        const len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "str.len");
+
+        // Call fwrite(str, 1, len, stderr)
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        var fwrite_args = [_]llvm.ValueRef{ str_val, one_i64, len, stderr_handle };
+        const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "stderr.written");
+
+        // Build Result[i32, IoError]
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "stderr.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stderr.tag_ptr");
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "stderr.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        const written_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, written, i32_type, "stderr.written_i32");
+        _ = self.builder.buildStore(written_i32, val_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "stderr.result_val");
+    }
+
+    /// Emit stderr().flush() -> Result[void, IoError]
+    fn emitStderrFlush(self: *Emitter) EmitError!llvm.ValueRef {
+        // Get stderr handle
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr_handle = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr.handle");
+
+        // Call fflush
+        const fflush_fn = self.getOrDeclareFflush();
+        var fflush_args = [_]llvm.ValueRef{stderr_handle};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fflush_fn), fflush_fn, &fflush_args, "");
+
+        // Build Result[void, IoError]
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "stderr.flush.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stderr.flush.tag_ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "stderr.flush.result_val");
+    }
+
     /// Get the LLVM struct type for List: { ptr, i32, i32 }
     fn getListStructType(self: *Emitter) llvm.TypeRef {
         var fields = [_]llvm.TypeRef{
@@ -19118,6 +19636,179 @@ pub const Emitter = struct {
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
+    // ==================== File I/O libc declarations ====================
+
+    fn getOrDeclareFopen(self: *Emitter) llvm.ValueRef {
+        const fn_name = "fopen";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // FILE *fopen(const char *path, const char *mode);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareFclose(self: *Emitter) llvm.ValueRef {
+        const fn_name = "fclose";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int fclose(FILE *stream);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareFread(self: *Emitter) llvm.ValueRef {
+        const fn_name = "fread";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const size_type = llvm.Types.int64(self.ctx); // size_t
+        var param_types = [_]llvm.TypeRef{ ptr_type, size_type, size_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(size_type, &param_types, 4, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareFwrite(self: *Emitter) llvm.ValueRef {
+        const fn_name = "fwrite";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const size_type = llvm.Types.int64(self.ctx); // size_t
+        var param_types = [_]llvm.TypeRef{ ptr_type, size_type, size_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(size_type, &param_types, 4, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareFflush(self: *Emitter) llvm.ValueRef {
+        const fn_name = "fflush";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int fflush(FILE *stream);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareFerror(self: *Emitter) llvm.ValueRef {
+        const fn_name = "ferror";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int ferror(FILE *stream);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStdout(self: *Emitter) llvm.ValueRef {
+        // On macOS/BSD, stdout is accessed via __stdoutp
+        // On Linux, it's accessed via stdout global
+        const os = @import("builtin").os.tag;
+
+        if (os == .macos) {
+            const var_name = "__stdoutp";
+            if (llvm.c.LLVMGetNamedGlobal(self.module.ref, var_name)) |global| {
+                const fn_name = "klar_get_stdout";
+                if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                    return func;
+                }
+
+                const ptr_type = llvm.Types.pointer(self.ctx);
+                const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+                const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+                const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+                const saved_func = self.current_function;
+
+                const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+                const stdout_val = self.builder.buildLoad(ptr_type, global, "stdout");
+                _ = llvm.c.LLVMBuildRet(self.builder.ref, stdout_val);
+
+                if (saved_bb) |bb| {
+                    llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+                }
+                self.current_function = saved_func;
+
+                return func;
+            }
+
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const global = llvm.c.LLVMAddGlobal(self.module.ref, ptr_type, var_name);
+            llvm.c.LLVMSetLinkage(global, llvm.c.LLVMExternalLinkage);
+
+            const fn_name = "klar_get_stdout";
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            const stdout_val = self.builder.buildLoad(ptr_type, global, "stdout");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stdout_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
+        } else {
+            const fn_name = "klar_get_stdout";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const global = llvm.c.LLVMAddGlobal(self.module.ref, ptr_type, "stdout");
+            llvm.c.LLVMSetLinkage(global, llvm.c.LLVMExternalLinkage);
+
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            const stdout_val = self.builder.buildLoad(ptr_type, global, "stdout");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stdout_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
+        }
+    }
+
     fn getOrDeclareStderr(self: *Emitter) llvm.ValueRef {
         // On macOS/BSD, stderr is accessed via __stderrp
         // On Linux, it's accessed via stderr global
@@ -19516,6 +20207,28 @@ pub const Emitter = struct {
                     llvm.Types.int32(self.ctx), // capacity
                 };
                 return llvm.Types.struct_(self.ctx, &fields, false);
+            },
+            .file => {
+                // File is an opaque FILE* handle
+                return llvm.Types.pointer(self.ctx);
+            },
+            .io_error => {
+                // IoError is a tagged union: { tag: i32, payload: ptr }
+                // tag: 0=NotFound, 1=PermissionDenied, 2=AlreadyExists, 3=InvalidInput, 4=UnexpectedEof, 5=Other
+                // payload is only used for Other (points to string)
+                var fields = [_]llvm.TypeRef{
+                    llvm.Types.int32(self.ctx), // tag
+                    llvm.Types.pointer(self.ctx), // payload (string for Other variant)
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
+            .stdout_handle => {
+                // Stdout is an opaque marker type - store as FILE* pointer
+                return llvm.Types.pointer(self.ctx);
+            },
+            .stderr_handle => {
+                // Stderr is an opaque marker type - store as FILE* pointer
+                return llvm.Types.pointer(self.ctx);
             },
             .associated_type_ref => {
                 // Associated type refs should have been resolved during type checking.

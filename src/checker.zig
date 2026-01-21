@@ -1479,6 +1479,66 @@ pub const TypeChecker = struct {
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
+
+        // ====================================================================
+        // Register I/O types
+        // ====================================================================
+
+        // File type - opaque handle for file I/O
+        try self.current_scope.define(.{
+            .name = "File",
+            .type_ = self.type_builder.fileType(),
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // IoError type - error enum for I/O operations
+        try self.current_scope.define(.{
+            .name = "IoError",
+            .type_ = self.type_builder.ioErrorType(),
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // Stdout type - handle for standard output
+        try self.current_scope.define(.{
+            .name = "Stdout",
+            .type_ = self.type_builder.stdoutType(),
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // Stderr type - handle for standard error
+        try self.current_scope.define(.{
+            .name = "Stderr",
+            .type_ = self.type_builder.stderrType(),
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // stdout() -> Stdout - builtin function to get stdout handle
+        const stdout_fn_type = try self.type_builder.functionType(&.{}, self.type_builder.stdoutType());
+        try self.current_scope.define(.{
+            .name = "stdout",
+            .type_ = stdout_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // stderr() -> Stderr - builtin function to get stderr handle
+        const stderr_fn_type = try self.type_builder.functionType(&.{}, self.type_builder.stderrType());
+        try self.current_scope.define(.{
+            .name = "stderr",
+            .type_ = stderr_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
     }
 
     // ========================================================================
@@ -1960,7 +2020,8 @@ pub const TypeChecker = struct {
             },
 
             // Primitive types - no substitution needed
-            .primitive, .void_, .never, .unknown, .error_type => typ,
+            // I/O types also don't need substitution (they have no type parameters)
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle => typ,
 
             // Array - substitute element type
             .array => |arr| {
@@ -2173,7 +2234,7 @@ pub const TypeChecker = struct {
     pub fn containsTypeVar(self: *TypeChecker, typ: Type) bool {
         return switch (typ) {
             .type_var => true,
-            .primitive, .void_, .never, .unknown, .error_type => false,
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle => false,
             .array => |arr| self.containsTypeVar(arr.element),
             .slice => |sl| self.containsTypeVar(sl.element),
             .tuple => |tup| {
@@ -2236,7 +2297,7 @@ pub const TypeChecker = struct {
                 return true;
             },
 
-            .primitive, .void_, .never, .unknown, .error_type => {
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle => {
                 return pattern.eql(concrete);
             },
 
@@ -3662,6 +3723,28 @@ pub const TypeChecker = struct {
                     self.addError(.type_mismatch, method.span, "String.with_capacity() expects an integer argument", .{});
                 }
                 return self.type_builder.stringDataType() catch self.type_builder.unknownType();
+            }
+
+            // File.open(path: string, mode: string) -> Result[File, IoError]
+            if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "open")) {
+                if (method.args.len != 2) {
+                    self.addError(.invalid_call, method.span, "File.open() takes exactly 2 arguments (path, mode)", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (method.type_args != null) {
+                    self.addError(.invalid_call, method.span, "File.open() does not take type arguments", .{});
+                }
+                // Check that both arguments are strings
+                const path_type = self.checkExpr(method.args[0]);
+                if (path_type != .primitive or path_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "File.open() expects a string path argument", .{});
+                }
+                const mode_type = self.checkExpr(method.args[1]);
+                if (mode_type != .primitive or mode_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "File.open() expects a string mode argument", .{});
+                }
+                // Return Result[File, IoError]
+                return self.type_builder.resultType(self.type_builder.fileType(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
             }
         }
 
@@ -5274,6 +5357,114 @@ pub const TypeChecker = struct {
             }
         }
 
+        // File methods
+        if (object_type == .file) {
+            // read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "read")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "read() expects exactly 1 argument (buffer)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const buf_type = self.checkExpr(method.args[0]);
+                // Check that argument is a mutable reference to a slice of u8
+                if (buf_type != .reference or !buf_type.reference.mutable or buf_type.reference.inner != .slice) {
+                    self.addError(.type_mismatch, method.span, "read() expects a &mut [u8] buffer argument", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // write(&mut self, buf: &[u8]) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "write")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "write() expects exactly 1 argument (buffer)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const buf_type = self.checkExpr(method.args[0]);
+                // Check that argument is a reference to a slice of u8
+                if (buf_type != .reference or buf_type.reference.inner != .slice) {
+                    self.addError(.type_mismatch, method.span, "write() expects a &[u8] buffer argument", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // write_string(&mut self, s: string) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "write_string")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "write_string() expects exactly 1 argument (string)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const str_type = self.checkExpr(method.args[0]);
+                if (str_type != .primitive or str_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "write_string() expects a string argument", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // close(self: File) -> Result[void, IoError]
+            if (std.mem.eql(u8, method.method_name, "close")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "close() takes no arguments", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // flush(&mut self) -> Result[void, IoError]
+            if (std.mem.eql(u8, method.method_name, "flush")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "flush() takes no arguments", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+        }
+
+        // Stdout methods
+        if (object_type == .stdout_handle) {
+            // write_string(&mut self, s: string) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "write_string")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "write_string() expects exactly 1 argument (string)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const str_type = self.checkExpr(method.args[0]);
+                if (str_type != .primitive or str_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "write_string() expects a string argument", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // flush(&mut self) -> Result[void, IoError]
+            if (std.mem.eql(u8, method.method_name, "flush")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "flush() takes no arguments", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+        }
+
+        // Stderr methods
+        if (object_type == .stderr_handle) {
+            // write_string(&mut self, s: string) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "write_string")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "write_string() expects exactly 1 argument (string)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const str_type = self.checkExpr(method.args[0]);
+                if (str_type != .primitive or str_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "write_string() expects a string argument", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // flush(&mut self) -> Result[void, IoError]
+            if (std.mem.eql(u8, method.method_name, "flush")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "flush() takes no arguments", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+        }
+
         // Look up user-defined method on struct types
         if (object_type == .struct_) {
             const struct_type = object_type.struct_;
@@ -6671,6 +6862,10 @@ pub const TypeChecker = struct {
             .map => "map",
             .set => "set",
             .string_data => "string",
+            .file => "file",
+            .io_error => "io_error",
+            .stdout_handle => "stdout",
+            .stderr_handle => "stderr",
             .void_ => "void",
             .never => "never",
             .unknown => "unknown",

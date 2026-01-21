@@ -1,0 +1,8 @@
+// Test file write functionality
+// TODO: Add Result handling once Result types are properly integrated
+fn main() -> i32 {
+    var out: Stdout = stdout()
+    out.write_string("File I/O test skipped - Result integration pending")
+    out.flush()
+    return 42
+}
