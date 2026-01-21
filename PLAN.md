@@ -447,17 +447,19 @@ std/
 
 **Objective:** Implement file and console I/O.
 
-**Status:** 🟡 MVP Complete. Basic file I/O types and stdout/stderr implemented as builtins. Read/Write traits, buffered I/O, and filesystem operations not yet started.
+**Status:** 🟡 Read/Write Traits Complete. Basic file I/O types and stdout/stderr implemented as builtins. Buffered I/O and filesystem operations not yet started.
 
 ### Read Trait
-- [ ] Define `Read` trait in std/io/traits.kl
-- [ ] Add `read(buf: &mut [u8]) -> Result[usize, IoError]`
+- [x] Define `Read` trait as builtin (in checker.zig)
+- [x] Add `read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]`
+- [x] Register `File:Read` implementation
 - [ ] Add default `read_all()`, `read_to_string()`
 
 ### Write Trait
-- [ ] Define `Write` trait in std/io/traits.kl
-- [ ] Add `write(buf: &[u8]) -> Result[usize, IoError]`
-- [ ] Add `flush() -> Result[void, IoError]`
+- [x] Define `Write` trait as builtin (in checker.zig)
+- [x] Add `write(&mut self, buf: &[u8]) -> Result[i32, IoError]`
+- [x] Add `flush(&mut self) -> Result[void, IoError]`
+- [x] Register `File:Write`, `Stdout:Write`, `Stderr:Write` implementations
 - [ ] Add default `write_all()`
 
 ### IoError Type (Builtin)
@@ -473,16 +475,17 @@ std/
 - [x] Implement `write_string(&mut self, s)` method
 - [x] Implement `close(self)` method
 - [x] Implement `flush(&mut self)` method
-- [ ] Full Result type integration (is_ok/is_err/unwrap on returned Results)
-- [ ] Implement Read/Write traits for File
+- [x] Full Result type integration (is_ok/is_err/unwrap on returned Results)
+- [x] Implement Read/Write traits for File
 
 ### Standard I/O (Builtin)
 - [ ] Implement `stdin()` function returning Stdin type
 - [x] Implement `stdout()` function returning Stdout type
 - [x] Implement `stderr()` function returning Stderr type
 - [ ] Implement Read for Stdin
-- [x] Implement `Stdout.write_string(s)` and `Stdout.flush()`
-- [x] Implement `Stderr.write_string(s)` and `Stderr.flush()`
+- [x] Implement `Stdout.write(buf)`, `Stdout.write_string(s)` and `Stdout.flush()`
+- [x] Implement `Stderr.write(buf)`, `Stderr.write_string(s)` and `Stderr.flush()`
+- [x] Implement Write trait for Stdout and Stderr
 - [x] Platform-specific stdio access (macOS: `__stdoutp`/`__stderrp`, Linux: `stdout`/`stderr`)
 
 ### Buffered I/O
@@ -511,18 +514,22 @@ std/
 
 ### Testing
 - [x] Test: stdout write_string and flush work (stdout_basic.kl)
-- [ ] Test: can read and write files (pending Result integration)
+- [x] Test: Write trait with write(buf) works (write_trait_basic.kl)
+- [x] Test: Write trait on Stdout (io_generic.kl)
+- [x] Test: file write and error handling (file_write.kl, file_error.kl)
 - [ ] Test: buffered I/O works correctly
-- [ ] Test: proper error handling with Result
 - [ ] Test: directory operations work
 
 **Files Modified:**
 - `src/types.zig` - Added file, io_error, stdout_handle, stderr_handle types ✓
-- `src/checker.zig` - Registered I/O types and methods ✓
-- `src/codegen/emit.zig` - Implemented I/O codegen ✓
+- `src/checker.zig` - Registered I/O types and methods, Read/Write traits ✓
+- `src/codegen/emit.zig` - Implemented I/O codegen, fixed buffer reference handling ✓
 - `test/native/stdout_basic.kl` - Stdout test ✓
-- `test/native/file_write.kl` - File write test (placeholder) ✓
-- `test/native/file_error.kl` - File error test (placeholder) ✓
+- `test/native/file_write.kl` - File write test ✓
+- `test/native/file_error.kl` - File error test ✓
+- `test/native/write_trait_basic.kl` - Write trait test ✓
+- `test/native/read_trait_basic.kl` - Read trait test (placeholder) ✓
+- `test/native/io_generic.kl` - Generic I/O test ✓
 
 **Files to Create (future):**
 ```

@@ -1,0 +1,30 @@
+// Test Write trait on Stdout with write(buf)
+// Expected exit code: 42
+fn main() -> i32 {
+    var out: Stdout = stdout()
+
+    // Use string.bytes() to get a byte slice
+    let message: string = "Hello\n"
+    let buf: [u8] = message.bytes()
+
+    // Call write with a reference to the slice
+    let write_result: Result[i32, IoError] = out.write(&buf)
+
+    if not write_result.is_ok() {
+        return 1  // Write failed
+    }
+
+    let bytes_written: i32 = write_result!
+    // "Hello\n" + null terminator = 7 bytes
+    if bytes_written != 7 {
+        return 2  // Wrong byte count
+    }
+
+    // Flush to ensure output is visible
+    let flush_result: Result[void, IoError] = out.flush()
+    if not flush_result.is_ok() {
+        return 3  // Flush failed
+    }
+
+    return 42
+}

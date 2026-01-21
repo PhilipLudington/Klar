@@ -1481,6 +1481,134 @@ pub const TypeChecker = struct {
         });
 
         // ====================================================================
+        // Write trait: trait Write { fn write(&mut self, buf: &[u8]) -> Result[i32, IoError]; fn flush(&mut self) -> Result[void, IoError]; }
+        // ====================================================================
+
+        // Create the trait type first
+        const write_trait_type = try self.allocator.create(types.TraitType);
+
+        // Create Self type variable for self parameter
+        const write_self_type_var = types.TypeVar{
+            .id = 990, // Unique ID
+            .name = "Self",
+            .bounds = &.{},
+        };
+        const write_self_type = Type{ .type_var = write_self_type_var };
+
+        // Create &mut Self type for self parameter
+        const write_self_mut_ref = try self.type_builder.referenceType(write_self_type, true);
+
+        // Create &[u8] type for buffer parameter
+        const u8_type = Type{ .primitive = .u8_ };
+        const u8_slice = try self.type_builder.sliceType(u8_type);
+        const u8_slice_ref = try self.type_builder.referenceType(u8_slice, false);
+
+        // Create Result[i32, IoError] return type for write
+        const write_result_type = try self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType());
+
+        // Create Result[void, IoError] return type for flush
+        const flush_result_type = try self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType());
+
+        // Create write(&mut self, buf: &[u8]) -> Result[i32, IoError]
+        const write_func = try self.type_builder.functionType(&.{ write_self_mut_ref, u8_slice_ref }, write_result_type);
+        const write_method = types.TraitMethod{
+            .name = "write",
+            .signature = write_func.function.*,
+            .has_default = false,
+        };
+
+        // Create flush(&mut self) -> Result[void, IoError]
+        const flush_func = try self.type_builder.functionType(&.{write_self_mut_ref}, flush_result_type);
+        const flush_method = types.TraitMethod{
+            .name = "flush",
+            .signature = flush_func.function.*,
+            .has_default = false,
+        };
+
+        // Complete the trait type (no type parameters)
+        write_trait_type.* = .{
+            .name = "Write",
+            .type_params = &.{},
+            .associated_types = &.{},
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{ write_method, flush_method }),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, write_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "Write", .{
+            .trait_type = write_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "Write",
+            .type_ = .{ .trait_ = write_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
+        // Read trait: trait Read { fn read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]; }
+        // ====================================================================
+
+        // Create the trait type first
+        const read_trait_type = try self.allocator.create(types.TraitType);
+
+        // Create Self type variable for self parameter
+        const read_self_type_var = types.TypeVar{
+            .id = 989, // Unique ID
+            .name = "Self",
+            .bounds = &.{},
+        };
+        const read_self_type = Type{ .type_var = read_self_type_var };
+
+        // Create &mut Self type for self parameter
+        const read_self_mut_ref = try self.type_builder.referenceType(read_self_type, true);
+
+        // Create &mut [u8] type for buffer parameter (mutable reference for reading into)
+        const u8_slice_mut_ref = try self.type_builder.referenceType(u8_slice, true);
+
+        // Create read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]
+        const read_func = try self.type_builder.functionType(&.{ read_self_mut_ref, u8_slice_mut_ref }, write_result_type);
+        const read_method = types.TraitMethod{
+            .name = "read",
+            .signature = read_func.function.*,
+            .has_default = false,
+        };
+
+        // Complete the trait type (no type parameters)
+        read_trait_type.* = .{
+            .name = "Read",
+            .type_params = &.{},
+            .associated_types = &.{},
+            .methods = try self.allocator.dupe(types.TraitMethod, &.{read_method}),
+            .super_traits = &.{},
+        };
+
+        // Track for cleanup
+        try self.trait_types.append(self.allocator, read_trait_type);
+
+        // Register in trait registry
+        try self.trait_registry.put(self.allocator, "Read", .{
+            .trait_type = read_trait_type,
+            .decl = null, // Builtin trait, no AST declaration
+        });
+
+        // Register in symbol table as a trait
+        try self.current_scope.define(.{
+            .name = "Read",
+            .type_ = .{ .trait_ = read_trait_type },
+            .kind = .trait_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
         // Register I/O types
         // ====================================================================
 
@@ -1538,6 +1666,66 @@ pub const TypeChecker = struct {
             .kind = .function,
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
+        // Register builtin trait implementations for I/O types
+        // ====================================================================
+
+        // File: Write
+        const file_write_key = try std.fmt.allocPrint(self.allocator, "File:Write", .{});
+        const file_write_result = try self.trait_impls.getOrPut(self.allocator, file_write_key);
+        if (!file_write_result.found_existing) {
+            file_write_result.value_ptr.* = .{};
+        }
+        try file_write_result.value_ptr.append(self.allocator, .{
+            .trait_name = "Write",
+            .impl_type_name = "File",
+            .impl_type_params = &.{},
+            .associated_type_bindings = &.{},
+            .methods = &.{},
+        });
+
+        // File: Read
+        const file_read_key = try std.fmt.allocPrint(self.allocator, "File:Read", .{});
+        const file_read_result = try self.trait_impls.getOrPut(self.allocator, file_read_key);
+        if (!file_read_result.found_existing) {
+            file_read_result.value_ptr.* = .{};
+        }
+        try file_read_result.value_ptr.append(self.allocator, .{
+            .trait_name = "Read",
+            .impl_type_name = "File",
+            .impl_type_params = &.{},
+            .associated_type_bindings = &.{},
+            .methods = &.{},
+        });
+
+        // Stdout: Write
+        const stdout_write_key = try std.fmt.allocPrint(self.allocator, "Stdout:Write", .{});
+        const stdout_write_result = try self.trait_impls.getOrPut(self.allocator, stdout_write_key);
+        if (!stdout_write_result.found_existing) {
+            stdout_write_result.value_ptr.* = .{};
+        }
+        try stdout_write_result.value_ptr.append(self.allocator, .{
+            .trait_name = "Write",
+            .impl_type_name = "Stdout",
+            .impl_type_params = &.{},
+            .associated_type_bindings = &.{},
+            .methods = &.{},
+        });
+
+        // Stderr: Write
+        const stderr_write_key = try std.fmt.allocPrint(self.allocator, "Stderr:Write", .{});
+        const stderr_write_result = try self.trait_impls.getOrPut(self.allocator, stderr_write_key);
+        if (!stderr_write_result.found_existing) {
+            stderr_write_result.value_ptr.* = .{};
+        }
+        try stderr_write_result.value_ptr.append(self.allocator, .{
+            .trait_name = "Write",
+            .impl_type_name = "Stderr",
+            .impl_type_params = &.{},
+            .associated_type_bindings = &.{},
+            .methods = &.{},
         });
     }
 
@@ -5419,6 +5607,20 @@ pub const TypeChecker = struct {
 
         // Stdout methods
         if (object_type == .stdout_handle) {
+            // write(&mut self, buf: &[u8]) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "write")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "write() expects exactly 1 argument (buffer)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const buf_type = self.checkExpr(method.args[0]);
+                // Check that argument is a reference to a slice of u8
+                if (buf_type != .reference or buf_type.reference.inner != .slice) {
+                    self.addError(.type_mismatch, method.span, "write() expects a &[u8] buffer argument", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
             // write_string(&mut self, s: string) -> Result[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "write_string")) {
                 if (method.args.len != 1) {
@@ -5443,6 +5645,20 @@ pub const TypeChecker = struct {
 
         // Stderr methods
         if (object_type == .stderr_handle) {
+            // write(&mut self, buf: &[u8]) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "write")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "write() expects exactly 1 argument (buffer)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const buf_type = self.checkExpr(method.args[0]);
+                // Check that argument is a reference to a slice of u8
+                if (buf_type != .reference or buf_type.reference.inner != .slice) {
+                    self.addError(.type_mismatch, method.span, "write() expects a &[u8] buffer argument", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
             // write_string(&mut self, s: string) -> Result[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "write_string")) {
                 if (method.args.len != 1) {

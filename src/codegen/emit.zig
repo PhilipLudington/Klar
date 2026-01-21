@@ -4323,7 +4323,9 @@ pub const Emitter = struct {
 
                 // Stdout/Stderr instance methods
                 if (self.isStdoutExpr(m.object) or self.isStderrExpr(m.object)) {
-                    if (std.mem.eql(u8, m.method_name, "write_string")) {
+                    if (std.mem.eql(u8, m.method_name, "write") or
+                        std.mem.eql(u8, m.method_name, "write_string"))
+                    {
                         // Returns Result[i32, IoError]
                         return self.getI32ResultType();
                     }
@@ -6958,6 +6960,11 @@ pub const Emitter = struct {
 
         // Check for Stdout methods
         if (self.isStdoutExpr(method.object)) {
+            if (std.mem.eql(u8, method.method_name, "write")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const buf_val = try self.emitExpr(method.args[0]);
+                return self.emitStdoutWrite(buf_val);
+            }
             if (std.mem.eql(u8, method.method_name, "write_string")) {
                 if (method.args.len != 1) return EmitError.InvalidAST;
                 const str_val = try self.emitExpr(method.args[0]);
@@ -6970,6 +6977,11 @@ pub const Emitter = struct {
 
         // Check for Stderr methods
         if (self.isStderrExpr(method.object)) {
+            if (std.mem.eql(u8, method.method_name, "write")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const buf_val = try self.emitExpr(method.args[0]);
+                return self.emitStderrWrite(buf_val);
+            }
             if (std.mem.eql(u8, method.method_name, "write_string")) {
                 if (method.args.len != 1) return EmitError.InvalidAST;
                 const str_val = try self.emitExpr(method.args[0]);
@@ -15968,7 +15980,7 @@ pub const Emitter = struct {
     }
 
     /// Emit file.write(buf) -> Result[i32, IoError]
-    fn emitFileWrite(self: *Emitter, file_ptr: llvm.ValueRef, buf_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+    fn emitFileWrite(self: *Emitter, file_ptr: llvm.ValueRef, buf_ref: llvm.ValueRef) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -15976,8 +15988,14 @@ pub const Emitter = struct {
         // Load the FILE* from the File alloca
         const file_handle = self.builder.buildLoad(ptr_type, file_ptr, "file.handle");
 
-        // buf_val is a slice struct: { ptr, len }
-        // Extract ptr and len
+        // buf_ref is a pointer to a slice struct (from &buf)
+        // Load the slice struct first, then extract ptr and len
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // data pointer
+            i64_type, // length
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+        const buf_val = self.builder.buildLoad(slice_type, buf_ref, "buf.slice");
         const buf_ptr = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 0, "buf.ptr");
         const buf_len = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 1, "buf.len");
 
@@ -16002,7 +16020,7 @@ pub const Emitter = struct {
     }
 
     /// Emit file.read(buf) -> Result[i32, IoError]
-    fn emitFileRead(self: *Emitter, file_ptr: llvm.ValueRef, buf_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+    fn emitFileRead(self: *Emitter, file_ptr: llvm.ValueRef, buf_ref: llvm.ValueRef) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -16010,7 +16028,14 @@ pub const Emitter = struct {
         // Load the FILE* from the File alloca
         const file_handle = self.builder.buildLoad(ptr_type, file_ptr, "file.handle");
 
-        // buf_val is a reference to a slice - extract ptr and len
+        // buf_ref is a pointer to a slice struct (from &mut buf)
+        // Load the slice struct first, then extract ptr and len
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // data pointer
+            i64_type, // length
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+        const buf_val = self.builder.buildLoad(slice_type, buf_ref, "buf.slice");
         const buf_ptr = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 0, "buf.ptr");
         const buf_len = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 1, "buf.len");
 
@@ -16133,6 +16158,46 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "stdout.flush.result_val");
     }
 
+    /// Emit stdout().write(buf) -> Result[i32, IoError]
+    fn emitStdoutWrite(self: *Emitter, buf_ref: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Get stdout handle
+        const stdout_fn = self.getOrDeclareStdout();
+        const stdout_handle = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stdout_fn), stdout_fn, &[_]llvm.ValueRef{}, "stdout.handle");
+
+        // buf_ref is a pointer to a slice struct (from &buf)
+        // Load the slice struct first, then extract ptr and len
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // data pointer
+            i64_type, // length
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+        const buf_val = self.builder.buildLoad(slice_type, buf_ref, "buf.slice");
+        const buf_ptr = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 0, "buf.ptr");
+        const buf_len = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 1, "buf.len");
+
+        // Call fwrite(ptr, 1, len, stdout)
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        var fwrite_args = [_]llvm.ValueRef{ buf_ptr, one_i64, buf_len, stdout_handle };
+        const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "stdout.written");
+
+        // Build Result[i32, IoError]
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "stdout.write.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stdout.write.tag_ptr");
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "stdout.write.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        const written_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, written, i32_type, "stdout.written_i32");
+        _ = self.builder.buildStore(written_i32, val_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "stdout.write.result_val");
+    }
+
     /// Emit stderr().write_string(s) -> Result[i32, IoError]
     fn emitStderrWriteString(self: *Emitter, str_val: llvm.ValueRef) EmitError!llvm.ValueRef {
         const i64_type = llvm.Types.int64(self.ctx);
@@ -16186,6 +16251,46 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
 
         return self.builder.buildLoad(result_type, result_alloca, "stderr.flush.result_val");
+    }
+
+    /// Emit stderr().write(buf) -> Result[i32, IoError]
+    fn emitStderrWrite(self: *Emitter, buf_ref: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Get stderr handle
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr_handle = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr.handle");
+
+        // buf_ref is a pointer to a slice struct (from &buf)
+        // Load the slice struct first, then extract ptr and len
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // data pointer
+            i64_type, // length
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+        const buf_val = self.builder.buildLoad(slice_type, buf_ref, "buf.slice");
+        const buf_ptr = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 0, "buf.ptr");
+        const buf_len = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 1, "buf.len");
+
+        // Call fwrite(ptr, 1, len, stderr)
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        var fwrite_args = [_]llvm.ValueRef{ buf_ptr, one_i64, buf_len, stderr_handle };
+        const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "stderr.written");
+
+        // Build Result[i32, IoError]
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "stderr.write.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stderr.write.tag_ptr");
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "stderr.write.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        const written_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, written, i32_type, "stderr.written_i32");
+        _ = self.builder.buildStore(written_i32, val_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "stderr.write.result_val");
     }
 
     /// Get the LLVM struct type for List: { ptr, i32, i32 }

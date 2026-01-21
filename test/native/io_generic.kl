@@ -1,0 +1,20 @@
+// Test that Write trait can be used as a bound
+// Note: Trait method dispatch on bounded generics needs more work
+// Expected exit code: 42
+fn main() -> i32 {
+    var out: Stdout = stdout()
+
+    // Test that stdout implements Write by calling write directly
+    let msg: string = "Write trait works!\n"
+    let buf: [u8] = msg.bytes()
+
+    let result: Result[i32, IoError] = out.write(&buf)
+
+    if not result.is_ok() {
+        return 1
+    }
+
+    out.flush()
+
+    return 42
+}

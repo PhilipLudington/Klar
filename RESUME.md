@@ -1,48 +1,51 @@
-# Resume Point: File I/O Result Integration Complete
+# Resume Point: Read/Write Traits Implementation Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 5 (Standard Library I/O). Completed Result type integration for File I/O operations.
+Working on **Phase 4: Language Completion** - Milestone 5 (Standard Library I/O). Completed Read/Write traits implementation.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **File I/O Result Integration** ✅
-  - Fixed `getVoidResultType` to use 3-field layout with placeholder for void ok_value
-  - This ensures consistent field indices across all Result types: `{i1 tag, T ok_value, E err_value}`
-  - Added File/Stdout/Stderr method return types to `inferExprType`:
-    - `File.open(path, mode)` → `Result[File, IoError]`
-    - `file.write_string(s)`, `file.write(buf)`, `file.read(buf)` → `Result[i32, IoError]`
-    - `file.close()`, `file.flush()` → `Result[void, IoError]`
-    - `stdout.write_string(s)`, `stderr.write_string(s)` → `Result[i32, IoError]`
-    - `stdout.flush()`, `stderr.flush()` → `Result[void, IoError]`
-  - Updated test files `test/native/file_write.kl` and `test/native/file_error.kl`
-  - Result methods (`is_ok()`, `is_err()`, `unwrap()`, etc.) now work correctly with File I/O Results
+- **Read/Write Traits Implementation** ✅
+  - Defined `Write` trait with two methods:
+    - `write(&mut self, buf: &[u8]) -> Result[i32, IoError]`
+    - `flush(&mut self) -> Result[void, IoError]`
+  - Defined `Read` trait with one method:
+    - `read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]`
+  - Registered builtin trait implementations:
+    - `File:Write`, `File:Read`
+    - `Stdout:Write`, `Stderr:Write`
+  - Added `write(buf)` method for Stdout and Stderr types
+  - Fixed pre-existing bug in `emitFileWrite()` and `emitFileRead()` - they were treating reference arguments as values instead of pointers
+  - Added type inference for `write` method on Stdout/Stderr in `inferExprType()`
 
 ### Technical Details
 
-The root cause was a **layout mismatch** between Result types:
-- Generic `Result[T, E]` uses 3 fields: `{i1 tag, T ok_value, E err_value}`
-- `Result[void, IoError]` was using 2 fields: `{i1 tag, IoError err_value}`
+The `write()` method takes a reference to a byte slice (`&[u8]`). When emitted:
+1. The argument is a pointer to a slice struct `{ ptr: *u8, len: i64 }`
+2. Must load the slice struct from the pointer first
+3. Then extract `ptr` and `len` fields for `fwrite()` call
 
-This broke Result methods like `unwrap_err()` which access field index 2 for the error value.
+Fixed the same pattern in existing `emitFileWrite()` and `emitFileRead()` functions.
 
-**Fix**: Changed `getVoidResultType()` to use a 3-field layout with an `i8` placeholder for the void ok_value, maintaining consistent field indices.
+### Test Files Created
+
+- `test/native/write_trait_basic.kl` - Tests Write trait on Stdout with `write(buf)`
+- `test/native/read_trait_basic.kl` - Placeholder (full read testing needs mutable buffer allocation)
+- `test/native/io_generic.kl` - Tests Write trait usage
 
 ### Previously Completed
 
+- **File I/O Result Integration** ✅
 - **Standard Library I/O MVP** ✅
-  - Added `File`, `IoError`, `Stdout`, `Stderr` builtin types
-  - Implemented `stdout()`, `stderr()`, `File.open()`, file methods
-  - Platform-specific stdout/stderr access (macOS/Linux)
 - **Into Trait** ✅
 - **Debug Mode Location Tracking** ✅
 - **Error Chain Display** ✅
 - **Error Context for Result** ✅
 - **From Trait for Error Conversion** ✅
 - **`?` Operator for Early Return** ✅
-- **f64 Method Return Type Bug** ✅
 - **Milestone 6: Iterator Protocol** ✅ (Core complete)
 - **Milestone 11: Comptime** ✅ (Core complete)
 
@@ -50,9 +53,9 @@ This broke Result methods like `unwrap_err()` which access field index 2 for the
 
 ## Current Test Status
 
-All 427 tests pass:
+All 430 tests pass:
 - Unit Tests: 220 passed
-- Native Tests: 191 passed
+- Native Tests: 194 passed
 - App Tests: 10 passed
 - Module Tests: 6 passed
 
@@ -62,15 +65,19 @@ All 427 tests pass:
 
 Continue with **Phase 4** tasks:
 
-1. **Read/Write Traits** (Milestone 5 - stretch):
-   - Define Read and Write traits
-   - Implement for File, Stdout, Stderr
+1. **Stdin support** (Milestone 5):
+   - Implement `stdin()` function returning Stdin type
+   - Implement Read trait for Stdin
 
-2. **File.read() with slice buffers** (Milestone 5 - stretch):
-   - Currently `file.read(buf)` expects a slice struct
-   - Need convenient way to create/pass byte buffers
+2. **Mutable buffer allocation** (Milestone 5):
+   - Need a way to create mutable byte buffers for `file.read()`
+   - Current workaround: `string.bytes()` returns immutable data
 
-3. **Blanket Into Implementation** (Milestone 7 - stretch):
+3. **Generic trait method dispatch** (Milestone 2 - stretch):
+   - Calling trait methods on generic type parameters with trait bounds
+   - Currently `writer.write(data)` fails when `W: Write`
+
+4. **Blanket Into Implementation** (Milestone 7 - stretch):
    - Auto-implement Into when From exists
 
 ---
@@ -81,15 +88,12 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test file I/O
-./zig-out/bin/klar run test/native/file_write.kl
-./zig-out/bin/klar run test/native/file_error.kl
+# Test Write trait
+./zig-out/bin/klar run test/native/write_trait_basic.kl
+./zig-out/bin/klar run test/native/io_generic.kl
 
-# Example file I/O usage:
-# let result: Result[File, IoError] = File.open("test.txt", "w")
-# if result.is_ok() {
-#     var file: File = result!
-#     file.write_string("Hello!")
-#     file.close()
-# }
+# Example usage:
+# var out: Stdout = stdout()
+# let buf: [u8] = "Hello".bytes()
+# let result: Result[i32, IoError] = out.write(&buf)
 ```

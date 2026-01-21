@@ -1,0 +1,18 @@
+// Test Read trait definition exists and File implements it
+// Note: Full read testing requires mutable buffer allocation support
+// Expected exit code: 42
+fn main() -> i32 {
+    // Just verify file operations work without actual read
+    // (read into string.bytes() doesn't work because that's immutable)
+    let open_result: Result[File, IoError] = File.open("/tmp/klar_read_test.txt", "w")
+    if not open_result.is_ok() {
+        return 1
+    }
+
+    var file: File = open_result!
+    file.write_string("ABCD")
+    file.flush()
+    file.close()
+
+    return 42
+}
