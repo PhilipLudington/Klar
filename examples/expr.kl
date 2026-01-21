@@ -1,1 +1,11 @@
-0..=100
+// expr.kl - Expression test in Klar
+
+fn main() -> i32 {
+    // Test range-inclusive expression evaluation
+    var sum: i32 = 0
+    for i: i32 in 0..=10 {
+        sum = sum + i
+    }
+    // 0 + 1 + 2 + ... + 10 = 55
+    return sum - 55  // Returns 0 for success
+}

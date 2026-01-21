@@ -1,45 +1,45 @@
 // Mandelbrot Set ASCII Renderer in Klar
 // Renders the Mandelbrot set using ASCII characters
 
-fn main() {
+fn main() -> i32 {
     // Image dimensions (characters)
-    let width = 80
-    let height = 40
+    let width: i32 = 80
+    let height: i32 = 40
 
     // Complex plane bounds - zoomed in a bit for better detail
-    let x_min = -2.0
-    let x_max = 1.0
-    let y_min = -1.2
-    let y_max = 1.2
+    let x_min: f64 = -2.0
+    let x_max: f64 = 1.0
+    let y_min: f64 = -1.2
+    let y_max: f64 = 1.2
 
     // Maximum iterations before considering point in set
-    let max_iter = 50
+    let max_iter: i32 = 50
 
     // ASCII gradient - reversed so set is darker, edges show detail
-    let num_chars = 10
+    let num_chars: i32 = 10
 
     // Iterate over each row
-    var row = 0
+    var row: i32 = 0
     while row < height {
         // Map row to imaginary component (y-axis, inverted for display)
-        let y0 = y_max - (row.as[f64] / height.as[f64]) * (y_max - y_min)
+        let y0: f64 = y_max - (row.as[f64] / height.as[f64]) * (y_max - y_min)
 
         // Iterate over each column
-        var col = 0
+        var col: i32 = 0
         while col < width {
             // Map column to real component (x-axis)
-            let x0 = x_min + (col.as[f64] / width.as[f64]) * (x_max - x_min)
+            let x0: f64 = x_min + (col.as[f64] / width.as[f64]) * (x_max - x_min)
 
             // Mandelbrot iteration: z = z^2 + c
             // Starting with z = 0, c = (x0, y0)
-            var x = 0.0
-            var y = 0.0
-            var iter = 0
+            var x: f64 = 0.0
+            var y: f64 = 0.0
+            var iter: i32 = 0
 
             // Iterate until escape or max iterations
             while iter < max_iter {
-                let x_sq = x * x
-                let y_sq = y * y
+                let x_sq: f64 = x * x
+                let y_sq: f64 = y * y
 
                 // Check if escaped (|z|^2 > 4)
                 if x_sq + y_sq > 4.0 {
@@ -48,7 +48,7 @@ fn main() {
 
                 // z = z^2 + c
                 // (x + yi)^2 = x^2 - y^2 + 2xyi
-                let x_new = x_sq - y_sq + x0
+                let x_new: f64 = x_sq - y_sq + x0
                 y = 2.0 * x * y + y0
                 x = x_new
 
@@ -65,7 +65,7 @@ fn main() {
                 // Point escaped - use iteration count for shading
                 // Gradient: " .'`^\",:;Il!i><~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
                 // Simplified gradient for better visibility
-                let shade = iter % 12
+                let shade: i32 = iter % 12
                 if shade == 0 {
                     print(" ")
                 } else if shade == 1 {
@@ -100,4 +100,5 @@ fn main() {
         println("")
         row = row + 1
     }
+    return 0
 }

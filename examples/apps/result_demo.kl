@@ -3,34 +3,34 @@
 // Note: ! unwrap works best in return position
 
 fn get_ok_value() -> i32 {
-    let result = Ok(42)
-    result!
+    let result: Result[i32, i32] = Ok(42)
+    return result!
 }
 
 fn get_err_value() -> i32 {
-    let result = Err(99)
-    result.unwrap_err()
+    let result: Result[i32, i32] = Err(99)
+    return result.unwrap_err()
 }
 
 fn check_ok() -> i32 {
-    let result = Ok(100)
+    let result: Result[i32, i32] = Ok(100)
     if result.is_ok() {
-        1  // true
+        return 1  // true
     } else {
-        0  // false
+        return 0  // false
     }
 }
 
 fn check_err() -> i32 {
-    let result = Err(50)
+    let result: Result[i32, i32] = Err(50)
     if result.is_ok() {
-        1  // true
+        return 1  // true
     } else {
-        0  // false
+        return 0  // false
     }
 }
 
-fn main() {
+fn main() -> i32 {
     println("=== Result Types Demo ===")
     println("")
 
@@ -60,14 +60,14 @@ fn main() {
 
     // More complex example
     println("Conditional example:")
-    let success = Ok(200)
+    let success: Result[i32, i32] = Ok(200)
     if success.is_ok() {
         println("  success is Ok - can unwrap safely")
     } else {
         println("  success is Err")
     }
 
-    let failure = Err(404)
+    let failure: Result[i32, i32] = Err(404)
     if failure.is_ok() {
         println("  failure is Ok")
     } else {
@@ -81,6 +81,7 @@ fn main() {
     println("- .is_ok() method")
     println("- ! operator (unwrap in return)")
     println("- .unwrap_err() method")
+    return 0
 }
 
 // Helper to print numbers
@@ -94,8 +95,8 @@ fn print_num(n: i32) {
         print_d(n / 10)
         print_d(n - (n / 10) * 10)
     } else {
-        let h = n / 100
-        let rem = n - h * 100
+        let h: i32 = n / 100
+        let rem: i32 = n - h * 100
         print_d(h)
         print_d(rem / 10)
         print_d(rem - (rem / 10) * 10)

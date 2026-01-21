@@ -3,19 +3,19 @@
 
 fn main() -> i32 {
     // Basic arithmetic
-    let a = 10
-    let b = 3
+    let a: i32 = 10
+    let b: i32 = 3
 
-    let sum = a + b          // 13
-    let diff = a - b         // 7
-    let prod = a * b         // 30
-    let quot = a / b         // 3
-    let rem = a % b          // 1
+    let sum: i32 = a + b          // 13
+    let diff: i32 = a - b         // 7
+    let prod: i32 = a * b         // 30
+    let quot: i32 = a / b         // 3
+    let rem: i32 = a % b          // 1
 
     // Chain operations
-    let x = 10 + 20 * 3      // 70 (20*3=60, 60+10=70)
-    let y = x / 2            // 35
+    let x: i32 = 10 + 20 * 3      // 70 (20*3=60, 60+10=70)
+    let y: i32 = x / 2            // 35
 
     // Return result for verification
-    y
+    return y
 }

@@ -1,19 +1,19 @@
 // Array Demo in Klar
 // Demonstrates: array literals, indexing, len(), iteration display
 
-fn main() {
+fn main() -> i32 {
     println("=== Klar Array Demo ===")
     println("")
 
     // Create arrays
-    let heights = [5, 2, 8, 1, 9, 3, 7, 4, 6]
-    let n = 9
+    let heights: [i32; 9] = [5, 2, 8, 1, 9, 3, 7, 4, 6]
+    let n: i32 = 9
 
     // Display as bar chart
     println("Bar Chart Visualization:")
-    var row = 9
+    var row: i32 = 9
     while row > 0 {
-        var col = 0
+        var col: i32 = 0
         while col < n {
             if heights[col] >= row {
                 print("# ")
@@ -27,7 +27,7 @@ fn main() {
     }
 
     // Print separator
-    var sep = 0
+    var sep: i32 = 0
     while sep < n {
         print("--")
         sep = sep + 1
@@ -36,12 +36,12 @@ fn main() {
     println("")
 
     // Find max and min
-    var max = heights[0]
-    var min = heights[0]
-    var sum = 0
-    var idx = 0
+    var max: i32 = heights[0]
+    var min: i32 = heights[0]
+    var sum: i32 = 0
+    var idx: i32 = 0
     while idx < n {
-        let val = heights[idx]
+        let val: i32 = heights[idx]
         if val > max {
             max = val
         }
@@ -72,6 +72,7 @@ fn main() {
     println("- Iteration via while + index")
     println("")
     println("Note: Array mutation (arr[i] = x) not yet supported")
+    return 0
 }
 
 // Print a single digit
@@ -94,8 +95,8 @@ fn print_num(n: i32) {
     if n < 10 {
         print_digit(n)
     } else {
-        let tens = n / 10
-        let ones = n - tens * 10
+        let tens: i32 = n / 10
+        let ones: i32 = n - tens * 10
         print_digit(tens)
         print_digit(ones)
     }

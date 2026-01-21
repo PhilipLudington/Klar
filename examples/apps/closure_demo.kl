@@ -3,23 +3,23 @@
 
 // Higher-order function: applies a transformation
 fn transform(f: fn(i32) -> i32, x: i32) -> i32 {
-    f(x)
+    return f(x)
 }
 
 // Apply a function twice
 fn apply_twice(f: fn(i32) -> i32, x: i32) -> i32 {
-    f(f(x))
+    return f(f(x))
 }
 
-fn main() {
+fn main() -> i32 {
     println("=== Closure Demo ===")
     println("")
 
     // Simple closures
     println("Simple closures:")
-    let double = |x: i32| x * 2
-    let square = |x: i32| x * x
-    let increment = |x: i32| x + 1
+    let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
+    let square: fn(i32) -> i32 = |x: i32| -> i32 { return x * x }
+    let increment: fn(i32) -> i32 = |x: i32| -> i32 { return x + 1 }
 
     print("  double(5) = ")
     print_num(double(5))
@@ -36,8 +36,8 @@ fn main() {
 
     // Closures with capture
     println("Closures with capture:")
-    let factor = 7
-    let multiply_by_factor = |x: i32| x * factor
+    let factor: i32 = 7
+    let multiply_by_factor: fn(i32) -> i32 = |x: i32| -> i32 { return x * factor }
 
     print("  factor = ")
     print_num(factor)
@@ -46,8 +46,8 @@ fn main() {
     print_num(multiply_by_factor(6))
     println(" (expected 42)")
 
-    let offset = 100
-    let add_offset = |x: i32| x + offset
+    let offset: i32 = 100
+    let add_offset: fn(i32) -> i32 = |x: i32| -> i32 { return x + offset }
 
     print("  offset = ")
     print_num(offset)
@@ -59,9 +59,9 @@ fn main() {
 
     // Multi-capture
     println("Multi-variable capture:")
-    let a = 10
-    let b = 20
-    let combine = |x: i32| x + a + b
+    let a: i32 = 10
+    let b: i32 = 20
+    let combine: fn(i32) -> i32 = |x: i32| -> i32 { return x + a + b }
 
     print("  a = ")
     print_num(a)
@@ -94,7 +94,7 @@ fn main() {
 
     // Chained operations
     println("Chained operations:")
-    let result = transform(double, transform(square, 3))
+    let result: i32 = transform(double, transform(square, 3))
     print("  double(square(3)) = ")
     print_num(result)
     println(" (expected 18)")
@@ -107,6 +107,7 @@ fn main() {
     println("- Multi-variable capture")
     println("- Higher-order functions (fn as param)")
     println("- Function composition")
+    return 0
 }
 
 // Helper to print numbers
@@ -120,8 +121,8 @@ fn print_num(n: i32) {
         print_d(n / 10)
         print_d(n - (n / 10) * 10)
     } else {
-        let h = n / 100
-        let rem = n - h * 100
+        let h: i32 = n / 100
+        let rem: i32 = n - h * 100
         print_d(h)
         print_d(rem / 10)
         print_d(rem - (rem / 10) * 10)

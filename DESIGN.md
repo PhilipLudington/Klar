@@ -234,7 +234,7 @@ fn max[T: Ordered](a: T, b: T) -> T {
 
 // Async function
 async fn fetch(url: string) -> Result[Response, HttpError] {
-    let response = http.get(url).await?
+    let response: Response = http.get(url).await?
     return Ok(response)
 }
 ```
@@ -247,7 +247,7 @@ All variables require explicit type annotations. This follows the "explicit over
 let x: i32 = 5          // immutable
 var y: i32 = 10         // mutable
 let name: string = "Alice"
-var items: List[i32] = List.new()
+var items: List[i32] = List.new[i32]()
 ```
 
 ### Structs
@@ -335,7 +335,7 @@ match value {
 }
 
 // For loop
-for item in list {
+for item: Item in list {
     process(item)
 }
 
@@ -615,7 +615,7 @@ buffer.borrow_mut().write(data)
 
 ```klar
 unsafe {
-    let ptr = raw_allocate(1024)
+    let ptr: RawPtr[u8] = raw_allocate(1024)
     ptr.write(0, 42)
     raw_free(ptr)
 }
@@ -735,9 +735,10 @@ async fn fetch_data(url: string) -> Result[Data, HttpError] {
     return Ok(parse(body))
 }
 
-async fn main() {
+async fn main() -> i32 {
     let data: Data = fetch_data("https://api.example.com").await?
     process(data)
+    return 0
 }
 ```
 
@@ -771,12 +772,12 @@ let first: Data = await_first(
 ### Structured Concurrency
 
 ```klar
-async fn process_batch(items: List[Item]) -> List[Result] {
-    let mapper: fn(Item) -> Task[Result] = |item: Item| -> Task[Result] {
+async fn process_batch(items: List[Item]) -> List[ProcessResult] {
+    let mapper: fn(Item) -> Task[ProcessResult] = |item: Item| -> Task[ProcessResult] {
         return spawn process_item(item)
     }
-    let tasks: List[Task[Result]] = items.map(mapper)
-    let results: List[Result] = await_all(tasks)
+    let tasks: List[Task[ProcessResult]] = items.map(mapper)
+    let results: List[ProcessResult] = await_all(tasks)
     // All tasks guaranteed complete here
     return results
 }
@@ -830,14 +831,14 @@ loop {
 
 ```klar
 // Mutex
-let data: Mutex[HashMap[string, i32]] = Mutex.new(HashMap.new())
+let data: Mutex[HashMap[string, i32]] = Mutex.new(HashMap.new[string, i32]())
 {
     var guard: MutexGuard[HashMap[string, i32]] = data.lock()
     guard.insert("key", value)
 }
 
 // RwLock
-let cache: RwLock[HashMap[string, i32]] = RwLock.new(HashMap.new())
+let cache: RwLock[HashMap[string, i32]] = RwLock.new(HashMap.new[string, i32]())
 {
     let view: ReadGuard[HashMap[string, i32]] = cache.read()      // many readers
 }
@@ -1051,8 +1052,8 @@ struct List[T] {
     fn new() -> List[T]
     fn push(self: inout Self, item: T)
     fn pop(self: inout Self) -> Option[T]
-    fn get(self: ref Self, index: usize) -> Option[T]
-    fn len(self: ref Self) -> usize
+    fn get(self: ref Self, index: i32) -> Option[T]
+    fn len(self: ref Self) -> i32  // i32 for ergonomic loop counters
     fn iter(self: ref Self) -> ListIter[T]
     // ...
 }
@@ -1079,7 +1080,7 @@ struct Set[T: Hash + Eq] {
 ```klar
 struct String {
     fn new() -> String
-    fn len(self: ref Self) -> usize
+    fn len(self: ref Self) -> i32
     fn chars(self: ref Self) -> CharIter
     fn contains(self: ref Self, pattern: ref str) -> bool
     fn split(self: ref Self, sep: ref str) -> List[String]

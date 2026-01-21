@@ -6,15 +6,15 @@ struct Point {
     y: i32,
 }
 
-fn main() {
+fn main() -> i32 {
     println("=== Struct & Tuple Demo ===")
     println("")
 
     // Create some points
     println("Creating points...")
-    let origin = Point { x: 0, y: 0 }
-    let p1 = Point { x: 3, y: 4 }
-    let p2 = Point { x: 6, y: 8 }
+    let origin: Point = Point { x: 0, y: 0 }
+    let p1: Point = Point { x: 3, y: 4 }
+    let p2: Point = Point { x: 6, y: 8 }
 
     // Access fields
     print("origin = (")
@@ -40,25 +40,25 @@ fn main() {
     println("Distance squared calculations:")
 
     // origin to p1: (3-0)^2 + (4-0)^2 = 9 + 16 = 25
-    let dx1 = p1.x - origin.x
-    let dy1 = p1.y - origin.y
-    let d1 = dx1 * dx1 + dy1 * dy1
+    let dx1: i32 = p1.x - origin.x
+    let dy1: i32 = p1.y - origin.y
+    let d1: i32 = dx1 * dx1 + dy1 * dy1
     print("  origin to p1: ")
     print_num(d1)
     println(" (expected 25)")
 
     // origin to p2: 6^2 + 8^2 = 36 + 64 = 100
-    let dx2 = p2.x - origin.x
-    let dy2 = p2.y - origin.y
-    let d2 = dx2 * dx2 + dy2 * dy2
+    let dx2: i32 = p2.x - origin.x
+    let dy2: i32 = p2.y - origin.y
+    let d2: i32 = dx2 * dx2 + dy2 * dy2
     print("  origin to p2: ")
     print_num(d2)
     println(" (expected 100)")
 
     // p1 to p2: (6-3)^2 + (8-4)^2 = 9 + 16 = 25
-    let dx3 = p2.x - p1.x
-    let dy3 = p2.y - p1.y
-    let d3 = dx3 * dx3 + dy3 * dy3
+    let dx3: i32 = p2.x - p1.x
+    let dy3: i32 = p2.y - p1.y
+    let d3: i32 = dx3 * dx3 + dy3 * dy3
     print("  p1 to p2: ")
     print_num(d3)
     println(" (expected 25)")
@@ -66,19 +66,19 @@ fn main() {
 
     // Tuple demonstration
     println("Tuple Demo:")
-    let pair = (42, 17)
+    let pair: (i32, i32) = (42, 17)
     print("  pair = (")
     print_num(pair.0)
     print(", ")
     print_num(pair.1)
     println(")")
 
-    let sum = pair.0 + pair.1
+    let sum: i32 = pair.0 + pair.1
     print("  pair.0 + pair.1 = ")
     print_num(sum)
     println(" (expected 59)")
 
-    let triple = (10, 20, 30)
+    let triple: (i32, i32, i32) = (10, 20, 30)
     print("  triple sum = ")
     print_num(triple.0 + triple.1 + triple.2)
     println(" (expected 60)")
@@ -90,6 +90,7 @@ fn main() {
     println("- Field access (.x, .y)")
     println("- Tuple literals")
     println("- Tuple indexing (.0, .1, .2)")
+    return 0
 }
 
 // Helper to print numbers up to 999
@@ -103,8 +104,8 @@ fn print_num(n: i32) {
         print_d(n / 10)
         print_d(n - (n / 10) * 10)
     } else {
-        let h = n / 100
-        let rem = n - h * 100
+        let h: i32 = n / 100
+        let rem: i32 = n - h * 100
         print_d(h)
         print_d(rem / 10)
         print_d(rem - (rem / 10) * 10)

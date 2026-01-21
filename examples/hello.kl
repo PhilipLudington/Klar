@@ -1,12 +1,13 @@
 // hello.kl - Hello World in Klar
 
 fn add(a: i32, b: i32) -> i32 {
-    a + b
+    return a + b
 }
 
-fn main() {
+fn main() -> i32 {
     let x: i32 = 10
-    let y = 20
-    let sum = add(x, y)
+    let y: i32 = 20
+    let sum: i32 = add(x, y)
     println("Hello, Klar!")
+    return sum - 30  // Returns 0 for success
 }

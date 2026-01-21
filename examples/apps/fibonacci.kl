@@ -1,14 +1,14 @@
 // Fibonacci Sequence Visualizer in Klar
 // Demonstrates: recursion, functions with parameters and return values
 
-fn main() {
+fn main() -> i32 {
     println("=== Fibonacci Sequence ===")
     println("")
 
     // Calculate and visualize first 15 Fibonacci numbers
-    var i = 0
+    var i: i32 = 0
     while i < 15 {
-        let fib_val = fib(i)
+        let fib_val: i32 = fib(i)
 
         // Print index
         if i < 10 {
@@ -21,9 +21,9 @@ fn main() {
         print(": ")
 
         // Print bar (scaled logarithmically for visibility)
-        var bar = fib_val
+        var bar: i32 = fib_val
         if bar > 50 { bar = 50 }
-        var b = 0
+        var b: i32 = 0
         while b < bar {
             print("#")
             b = b + 1
@@ -43,14 +43,15 @@ fn main() {
     println("- Functions with i32 parameters")
     println("- Return values")
     println("- While loops")
+    return 0
 }
 
 // Recursive Fibonacci
 fn fib(n: i32) -> i32 {
     if n <= 1 {
-        n
+        return n
     } else {
-        fib(n - 1) + fib(n - 2)
+        return fib(n - 1) + fib(n - 2)
     }
 }
 
@@ -62,8 +63,8 @@ fn print_num(n: i32) {
         print_d(n / 10)
         print_d(n - (n / 10) * 10)
     } else {
-        let h = n / 100
-        let rem = n - h * 100
+        let h: i32 = n / 100
+        let rem: i32 = n - h * 100
         print_d(h)
         print_d(rem / 10)
         print_d(rem - (rem / 10) * 10)

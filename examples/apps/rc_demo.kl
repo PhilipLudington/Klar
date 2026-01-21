@@ -1,7 +1,7 @@
 // Reference Counting Demo in Klar
 // Demonstrates: Rc (reference counting), Arc (atomic ref counting), clone
 
-fn main() {
+fn main() -> i32 {
     println("=== Reference Counting Demo ===")
     println("")
 
@@ -13,10 +13,10 @@ fn main() {
     println("")
 
     // Create Rc values
-    let rc1 = Rc.new(42)
+    let rc1: Rc[i32] = Rc.new(42)
     println("  Created: let rc1 = Rc.new(42)")
 
-    let rc2 = rc1.clone()
+    let rc2: Rc[i32] = rc1.clone()
     println("  Cloned:  let rc2 = rc1.clone()")
     println("  Both rc1 and rc2 point to the same value")
     println("")
@@ -28,19 +28,19 @@ fn main() {
     println("  Same API as Rc but with atomic operations")
     println("")
 
-    let arc1 = Arc.new(100)
+    let arc1: Arc[i32] = Arc.new(100)
     println("  Created: let arc1 = Arc.new(100)")
 
-    let arc2 = arc1.clone()
+    let arc2: Arc[i32] = arc1.clone()
     println("  Cloned:  let arc2 = arc1.clone()")
     println("")
 
     // Multiple clones
     println("Multiple clones:")
-    let base = Rc.new(999)
-    let clone1 = base.clone()
-    let clone2 = base.clone()
-    let clone3 = base.clone()
+    let base: Rc[i32] = Rc.new(999)
+    let clone1: Rc[i32] = base.clone()
+    let clone2: Rc[i32] = base.clone()
+    let clone3: Rc[i32] = base.clone()
     println("  Created base Rc and 3 clones")
     println("  All 4 references point to same value")
     println("  Value freed when all 4 go out of scope")
@@ -53,4 +53,5 @@ fn main() {
     println("- Automatic drop when references go out of scope")
     println("")
     println("Note: Getting inner value (.get()) not yet available")
+    return 0
 }

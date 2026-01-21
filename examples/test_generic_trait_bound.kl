@@ -11,10 +11,10 @@ struct Point {
 }
 
 fn show[T: Displayable](item: T) -> i32 {
-    42
+    return 42
 }
 
 fn main() -> i32 {
-    let p = Point { x: 1, y: 2 }
-    show(p)
+    let p: Point = Point { x: 1, y: 2 }
+    return show(p)
 }

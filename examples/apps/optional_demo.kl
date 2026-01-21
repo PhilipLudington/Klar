@@ -18,25 +18,25 @@ fn find_value(id: i32) -> ?i32 {
 
 // Find the square root if it's a perfect square
 fn integer_sqrt(n: i32) -> ?i32 {
-    var i = 0
+    var i: i32 = 0
     while i * i <= n {
         if i * i == n {
             return i
         }
         i = i + 1
     }
-    // Not a perfect square, return None
+    // Not a perfect square - implicit None returned at end of function
 }
 
-fn main() {
+fn main() -> i32 {
     println("=== Optional Types Demo ===")
     println("")
 
     // Basic optional returns
     println("Optional return values (force unwrap !):")
 
-    let v1 = find_value(1)
-    let v2 = find_value(2)
+    let v1: ?i32 = find_value(1)
+    let v2: ?i32 = find_value(2)
 
     print("  find_value(1)! = ")
     print_num(v1!)  // Force unwrap - we know it's Some
@@ -50,22 +50,22 @@ fn main() {
     // Perfect square finder
     println("Integer square root (perfect squares only):")
 
-    let sqrt_16 = integer_sqrt(16)
+    let sqrt_16: ?i32 = integer_sqrt(16)
     print("  sqrt(16)! = ")
     print_num(sqrt_16!)
     println(" (perfect square)")
 
-    let sqrt_25 = integer_sqrt(25)
+    let sqrt_25: ?i32 = integer_sqrt(25)
     print("  sqrt(25)! = ")
     print_num(sqrt_25!)
     println(" (perfect square)")
 
-    let sqrt_49 = integer_sqrt(49)
+    let sqrt_49: ?i32 = integer_sqrt(49)
     print("  sqrt(49)! = ")
     print_num(sqrt_49!)
     println(" (perfect square)")
 
-    let sqrt_100 = integer_sqrt(100)
+    let sqrt_100: ?i32 = integer_sqrt(100)
     print("  sqrt(100)! = ")
     print_num(sqrt_100!)
     println(" (perfect square)")
@@ -81,8 +81,8 @@ fn main() {
 
     // Testing implicit None returns
     println("Search results:")
-    let found1 = find_value(1)
-    let found99 = find_value(99)
+    let found1: ?i32 = find_value(1)
+    let found99: ?i32 = find_value(99)
 
     print("  find_value(1) found: ")
     print_num(found1!)
@@ -98,6 +98,7 @@ fn main() {
     println("- Returning None (implicit, no return)")
     println("- Force unwrap with !")
     println("- Null coalescing with ?? (in returns)")
+    return 0
 }
 
 // Helper to print numbers
@@ -111,8 +112,8 @@ fn print_num(n: i32) {
         print_d(n / 10)
         print_d(n - (n / 10) * 10)
     } else {
-        let h = n / 100
-        let rem = n - h * 100
+        let h: i32 = n / 100
+        let rem: i32 = n - h * 100
         print_d(h)
         print_d(rem / 10)
         print_d(rem - (rem / 10) * 10)

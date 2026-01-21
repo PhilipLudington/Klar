@@ -2,13 +2,14 @@
 
 fn fib(n: i32) -> i32 {
     if n <= 1 {
-        n
+        return n
     } else {
-        fib(n - 1) + fib(n - 2)
+        return fib(n - 1) + fib(n - 2)
     }
 }
 
-fn main() {
-    let result = fib(30)
+fn main() -> i32 {
+    let result: i32 = fib(30)
     println("Done")
+    return 0
 }

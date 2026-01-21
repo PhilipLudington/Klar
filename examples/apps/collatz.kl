@@ -4,20 +4,20 @@
 //   - if odd:  n = 3n + 1
 // Eventually reaches 1
 
-fn main() {
+fn main() -> i32 {
     println("=== Collatz Conjecture (3n+1) ===")
     println("")
 
     // Starting from 7
     println("Starting from 7:")
-    var n = 7
-    var steps = 0
+    var n: i32 = 7
+    var steps: i32 = 0
 
     while n > 1 {
         // Print bar proportional to value (scaled)
-        var bar = n / 2
+        var bar: i32 = n / 2
         if bar > 40 { bar = 40 }
-        var b = 0
+        var b: i32 = 0
         while b < bar {
             print("#")
             b = b + 1
@@ -61,9 +61,9 @@ fn main() {
     steps = 0
 
     while n > 1 {
-        var bar = n / 4
+        var bar: i32 = n / 4
         if bar > 50 { bar = 50 }
-        var b = 0
+        var b: i32 = 0
         while b < bar {
             print("#")
             b = b + 1
@@ -89,11 +89,12 @@ fn main() {
         }
     } else {
         print_d(steps / 100)
-        let rem = steps - (steps / 100) * 100
+        let rem: i32 = steps - (steps / 100) * 100
         print_d(rem / 10)
         print_d(rem - (rem / 10) * 10)
     }
     println(" steps")
+    return 0
 }
 
 fn print_d(d: i32) {

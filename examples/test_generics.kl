@@ -41,12 +41,13 @@ enum Either[L, R] {
 
 // This test function exercises basic operations that don't require
 // full monomorphization - just type parameter recognition
-fn main() {
+fn main() -> i32 {
     // If we got here without type errors, the type parameters were recognized
-    println("Generic type parameter tracking test passed!");
+    println("Generic type parameter tracking test passed!")
 
     // Basic sanity check - these should all type check correctly
-    let x: i32 = 42;
-    let s: string = "hello";
-    println(s);
+    let x: i32 = 42
+    let s: string = "hello"
+    println(s)
+    return 0
 }

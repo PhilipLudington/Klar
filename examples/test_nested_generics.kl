@@ -48,6 +48,7 @@ fn double_param[T](x: T, y: T) -> T {
     return x;
 }
 
-fn main() {
-    println("Nested generic scopes test passed!");
+fn main() -> i32 {
+    println("Nested generic scopes test passed!")
+    return 0
 }

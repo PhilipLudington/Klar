@@ -1,29 +1,31 @@
 // fizzbuzz.kl - Classic FizzBuzz in Klar
 //
-// Print numbers 1 to 100, but:
+// Print numbers 1 to 20, but:
 // - For multiples of 3, print "Fizz"
 // - For multiples of 5, print "Buzz"
 // - For multiples of both, print "FizzBuzz"
 
-fn fizzbuzz(n: i32) -> string {
-    let div3 = n % 3 == 0
-    let div5 = n % 5 == 0
+fn fizzbuzz(n: i32) {
+    let div3: bool = n % 3 == 0
+    let div5: bool = n % 5 == 0
 
     if div3 and div5 {
-        "FizzBuzz"
+        println("FizzBuzz")
     } else if div3 {
-        "Fizz"
+        println("Fizz")
     } else if div5 {
-        "Buzz"
+        println("Buzz")
     } else {
-        n.to_string()
+        // For numbers, just print empty line for now (no int-to-string yet)
+        println("")
     }
 }
 
-fn main() {
-    var i = 1
+fn main() -> i32 {
+    var i: i32 = 1
     while i <= 20 {
-        println(fizzbuzz(i))
+        fizzbuzz(i)
         i = i + 1
     }
+    return 0
 }

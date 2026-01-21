@@ -1,19 +1,19 @@
 // Sorting Visualizer in Klar
 // Demonstrates: arrays, indexing, mutation, while loops
 
-fn main() {
+fn main() -> i32 {
     println("=== Sorting Visualizer ===")
     println("")
 
     // Create an unsorted array
-    var data = [5, 2, 8, 1, 9, 3, 7, 4, 6]
-    let n = 9  // Array length
+    var data: [i32; 9] = [5, 2, 8, 1, 9, 3, 7, 4, 6]
+    let n: i32 = 9  // Array length
 
     // Print initial array
     println("Initial array:")
-    var row = 9
+    var row: i32 = 9
     while row > 0 {
-        var col = 0
+        var col: i32 = 0
         while col < n {
             if data[col] >= row {
                 print("# ")
@@ -26,7 +26,7 @@ fn main() {
         row = row - 1
     }
     // Print separator
-    var sep = 0
+    var sep: i32 = 0
     while sep < n {
         print("--")
         sep = sep + 1
@@ -38,16 +38,16 @@ fn main() {
     println("")
 
     // Bubble sort with visualization
-    var swapped = true
-    var pass = 0
+    var swapped: bool = true
+    var pass: i32 = 0
 
     while swapped {
         swapped = false
-        var i = 0
+        var i: i32 = 0
         while i < n - 1 - pass {
             if data[i] > data[i + 1] {
                 // Swap
-                let temp = data[i]
+                let temp: i32 = data[i]
                 data[i] = data[i + 1]
                 data[i + 1] = temp
                 swapped = true
@@ -70,9 +70,9 @@ fn main() {
             else { println("Pass ?:") }
 
             // Print bars
-            var row2 = 9
+            var row2: i32 = 9
             while row2 > 0 {
-                var col2 = 0
+                var col2: i32 = 0
                 while col2 < n {
                     if data[col2] >= row2 {
                         print("# ")
@@ -85,7 +85,7 @@ fn main() {
                 row2 = row2 - 1
             }
             // Print separator
-            var sep2 = 0
+            var sep2: i32 = 0
             while sep2 < n {
                 print("--")
                 sep2 = sep2 + 1
@@ -96,4 +96,5 @@ fn main() {
     }
 
     println("Sorting complete!")
+    return 0
 }
