@@ -1101,13 +1101,13 @@ struct StringBuilder {
 
 ```klar
 trait Read {
-    fn read(self: inout Self, buf: [u8]) -> Result[usize, IoError]
+    fn read(self: inout Self, buf: inout [u8]) -> Result[i32, IoError]
     fn read_all(self: inout Self) -> Result[List[u8], IoError]
     fn read_string(self: inout Self) -> Result[String, IoError]
 }
 
 trait Write {
-    fn write(self: inout Self, buf: [u8]) -> Result[usize, IoError]
+    fn write(self: inout Self, buf: ref [u8]) -> Result[i32, IoError]
     fn flush(self: inout Self) -> Result[void, IoError]
 }
 
@@ -1116,11 +1116,24 @@ fn stdout() -> Stdout
 fn stderr() -> Stderr
 ```
 
-Note: I/O methods take slices by value (`buf: [u8]`) since slices already contain a pointer internally. Use `@repeat(value, count)` to create mutable buffers:
+Note: I/O methods accept both slices (`[u8]`) and fixed-size arrays (`[u8; N]`). Use `@repeat(value, count)` to create mutable buffers:
 
 ```klar
+// Create mutable buffer with @repeat
 var buf: [u8; 256] = @repeat(0.as[u8], 256)
-let bytes_read: i32 = stdin.read(ref buf)?
+
+// Read from stdin into the buffer
+var input: Stdin = stdin()
+let bytes_read: i32 = input.read(ref buf)?
+
+// Read from file into the buffer
+var file: File = File.open("/path/to/file", "r")!
+let n: i32 = file.read(ref buf)!
+
+// Access bytes in the buffer
+if buf[0] == 72.as[u8] {  // 'H'
+    print("First byte is H")
+}
 ```
 
 ### std.fs

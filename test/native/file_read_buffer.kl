@@ -1,0 +1,55 @@
+// Test reading into a mutable buffer using @repeat
+// This test verifies that file.read() works with array buffers
+// Expected exit code: 42
+fn main() -> i32 {
+    // Step 1: Create test file with known content
+    let create_result: Result[File, IoError] = File.open("/tmp/klar_buf_test.txt", "w")
+    if not create_result.is_ok() {
+        return 1  // Failed to create file
+    }
+    var write_file: File = create_result!
+    write_file.write_string("HELLO")
+    write_file.flush()
+    write_file.close()
+
+    // Step 2: Create a mutable buffer with @repeat
+    var buf: [u8; 256] = @repeat(0.as[u8], 256)
+
+    // Step 3: Open file for reading
+    let open_result: Result[File, IoError] = File.open("/tmp/klar_buf_test.txt", "r")
+    if not open_result.is_ok() {
+        return 2  // Failed to open file
+    }
+    var read_file: File = open_result!
+
+    // Step 4: Read into the mutable buffer
+    let read_result: Result[i32, IoError] = read_file.read(ref buf)
+    if not read_result.is_ok() {
+        return 3  // Read failed
+    }
+
+    let bytes_read: i32 = read_result!
+    if bytes_read != 5 {
+        return 4  // Wrong byte count (expected 5 for "HELLO")
+    }
+
+    // Step 5: Verify buffer contents
+    if buf[0] != 72.as[u8] {  // 'H'
+        return 10
+    }
+    if buf[1] != 69.as[u8] {  // 'E'
+        return 11
+    }
+    if buf[2] != 76.as[u8] {  // 'L'
+        return 12
+    }
+    if buf[3] != 76.as[u8] {  // 'L'
+        return 13
+    }
+    if buf[4] != 79.as[u8] {  // 'O'
+        return 14
+    }
+
+    read_file.close()
+    return 42
+}

@@ -447,7 +447,7 @@ std/
 
 **Objective:** Implement file and console I/O.
 
-**Status:** 🟡 Read/Write Traits Complete. Basic file I/O types and stdout/stderr implemented as builtins. Buffered I/O and filesystem operations not yet started.
+**Status:** 🟡 Read/Write Traits Complete. Mutable buffer I/O with arrays working. Basic file I/O types and stdout/stderr implemented as builtins. Buffered I/O and filesystem operations not yet started.
 
 ### Mutable Buffer Allocation
 - [x] `@repeat(value, count)` builtin for array initialization: `var buf: [u8; 256] = @repeat(0.as[u8], 256)`
@@ -455,6 +455,7 @@ std/
 - [x] `inout T` syntax for mutable references (replaces `&mut T`)
 - [x] `ref x` expression for creating references (replaces `&x`, mutability determined by whether x is `var` or `let`)
 - [x] Deref assignment support: `*ptr = value`
+- [x] read()/write() accept both `[u8]` slices and `[u8; N]` arrays
 
 ### Read Trait
 - [x] Define `Read` trait as builtin (in checker.zig)
@@ -525,13 +526,14 @@ std/
 - [x] Test: Write trait on Stdout (io_generic.kl)
 - [x] Test: file write and error handling (file_write.kl, file_error.kl)
 - [x] Test: stdin type exists and can be obtained (stdin_basic.kl)
+- [x] Test: file read with mutable array buffer (file_read_buffer.kl)
 - [ ] Test: buffered I/O works correctly
 - [ ] Test: directory operations work
 
 **Files Modified:**
 - `src/types.zig` - Added file, io_error, stdout_handle, stderr_handle, stdin_handle types ✓
-- `src/checker.zig` - Registered I/O types and methods, Read/Write traits, Stdin:Read ✓
-- `src/codegen/emit.zig` - Implemented I/O codegen, fixed buffer reference handling, stdin support ✓
+- `src/checker.zig` - Registered I/O types and methods, Read/Write traits, Stdin:Read, array buffer support ✓
+- `src/codegen/emit.zig` - Implemented I/O codegen, fixed buffer reference handling, stdin support, extractBufferPtrAndLen helper ✓
 - `test/native/stdout_basic.kl` - Stdout test ✓
 - `test/native/stdin_basic.kl` - Stdin test ✓
 - `test/native/file_write.kl` - File write test ✓
@@ -539,6 +541,7 @@ std/
 - `test/native/write_trait_basic.kl` - Write trait test ✓
 - `test/native/read_trait_basic.kl` - Read trait test (placeholder) ✓
 - `test/native/io_generic.kl` - Generic I/O test ✓
+- `test/native/file_read_buffer.kl` - File read with mutable array buffer ✓
 
 **Files to Create (future):**
 ```

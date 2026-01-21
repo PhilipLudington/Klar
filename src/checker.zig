@@ -5612,9 +5612,16 @@ pub const TypeChecker = struct {
                     return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
                 }
                 const buf_type = self.checkExpr(method.args[0]);
-                // Check that argument is a mutable reference to a slice of u8
-                if (buf_type != .reference or !buf_type.reference.mutable or buf_type.reference.inner != .slice) {
-                    self.addError(.type_mismatch, method.span, "read() expects a &mut [u8] buffer argument", .{});
+                // Check that argument is a mutable reference to a slice or array of u8
+                const is_valid_buf = blk: {
+                    if (buf_type != .reference or !buf_type.reference.mutable) break :blk false;
+                    const inner = buf_type.reference.inner;
+                    if (inner == .slice and inner.slice.element == .primitive and inner.slice.element.primitive == .u8_) break :blk true;
+                    if (inner == .array and inner.array.element == .primitive and inner.array.element.primitive == .u8_) break :blk true;
+                    break :blk false;
+                };
+                if (!is_valid_buf) {
+                    self.addError(.type_mismatch, method.span, "read() expects a mutable reference to [u8] or [u8; N] buffer", .{});
                 }
                 return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
             }
@@ -5626,9 +5633,16 @@ pub const TypeChecker = struct {
                     return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
                 }
                 const buf_type = self.checkExpr(method.args[0]);
-                // Check that argument is a reference to a slice of u8
-                if (buf_type != .reference or buf_type.reference.inner != .slice) {
-                    self.addError(.type_mismatch, method.span, "write() expects a &[u8] buffer argument", .{});
+                // Check that argument is a reference to a slice or array of u8
+                const is_valid_buf = blk: {
+                    if (buf_type != .reference) break :blk false;
+                    const inner = buf_type.reference.inner;
+                    if (inner == .slice and inner.slice.element == .primitive and inner.slice.element.primitive == .u8_) break :blk true;
+                    if (inner == .array and inner.array.element == .primitive and inner.array.element.primitive == .u8_) break :blk true;
+                    break :blk false;
+                };
+                if (!is_valid_buf) {
+                    self.addError(.type_mismatch, method.span, "write() expects a reference to [u8] or [u8; N] buffer", .{});
                 }
                 return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
             }
@@ -5672,9 +5686,16 @@ pub const TypeChecker = struct {
                     return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
                 }
                 const buf_type = self.checkExpr(method.args[0]);
-                // Check that argument is a reference to a slice of u8
-                if (buf_type != .reference or buf_type.reference.inner != .slice) {
-                    self.addError(.type_mismatch, method.span, "write() expects a &[u8] buffer argument", .{});
+                // Check that argument is a reference to a slice or array of u8
+                const is_valid_buf = blk: {
+                    if (buf_type != .reference) break :blk false;
+                    const inner = buf_type.reference.inner;
+                    if (inner == .slice and inner.slice.element == .primitive and inner.slice.element.primitive == .u8_) break :blk true;
+                    if (inner == .array and inner.array.element == .primitive and inner.array.element.primitive == .u8_) break :blk true;
+                    break :blk false;
+                };
+                if (!is_valid_buf) {
+                    self.addError(.type_mismatch, method.span, "write() expects a reference to [u8] or [u8; N] buffer", .{});
                 }
                 return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
             }
@@ -5710,9 +5731,16 @@ pub const TypeChecker = struct {
                     return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
                 }
                 const buf_type = self.checkExpr(method.args[0]);
-                // Check that argument is a reference to a slice of u8
-                if (buf_type != .reference or buf_type.reference.inner != .slice) {
-                    self.addError(.type_mismatch, method.span, "write() expects a &[u8] buffer argument", .{});
+                // Check that argument is a reference to a slice or array of u8
+                const is_valid_buf = blk: {
+                    if (buf_type != .reference) break :blk false;
+                    const inner = buf_type.reference.inner;
+                    if (inner == .slice and inner.slice.element == .primitive and inner.slice.element.primitive == .u8_) break :blk true;
+                    if (inner == .array and inner.array.element == .primitive and inner.array.element.primitive == .u8_) break :blk true;
+                    break :blk false;
+                };
+                if (!is_valid_buf) {
+                    self.addError(.type_mismatch, method.span, "write() expects a reference to [u8] or [u8; N] buffer", .{});
                 }
                 return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
             }
@@ -5748,9 +5776,16 @@ pub const TypeChecker = struct {
                     return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
                 }
                 const buf_type = self.checkExpr(method.args[0]);
-                // Check that argument is a mutable reference to a slice of u8
-                if (buf_type != .reference or buf_type.reference.inner != .slice or !buf_type.reference.mutable) {
-                    self.addError(.type_mismatch, method.span, "read() expects a &mut [u8] buffer argument", .{});
+                // Check that argument is a mutable reference to a slice or array of u8
+                const is_valid_buf = blk: {
+                    if (buf_type != .reference or !buf_type.reference.mutable) break :blk false;
+                    const inner = buf_type.reference.inner;
+                    if (inner == .slice and inner.slice.element == .primitive and inner.slice.element.primitive == .u8_) break :blk true;
+                    if (inner == .array and inner.array.element == .primitive and inner.array.element.primitive == .u8_) break :blk true;
+                    break :blk false;
+                };
+                if (!is_valid_buf) {
+                    self.addError(.type_mismatch, method.span, "read() expects a mutable reference to [u8] or [u8; N] buffer", .{});
                 }
                 return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
             }

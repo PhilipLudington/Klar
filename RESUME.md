@@ -1,80 +1,46 @@
-# Resume Point: Mutable Buffer + Reference Syntax Complete
+# Resume Point: Mutable Buffer I/O Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 5 (Standard Library I/O). Completed mutable buffer allocation and new reference syntax.
+Working on **Phase 4: Language Completion** - Milestone 5 (Standard Library I/O). Completed mutable buffer I/O with arrays.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **Mutable Buffer Allocation via `@repeat`** ✅
-  - Added `@repeat(value, count)` builtin for array initialization
-  - Example: `var buf: [u8; 256] = @repeat(0.as[u8], 256)`
-  - Implemented in parser, checker, codegen, bytecode compiler, and interpreter
-  - Type checking validates count is comptime-known integer
+- **Mutable Buffer I/O with Arrays** ✅
+  - Updated checker to accept both `[u8]` slices and `[u8; N]` arrays for read/write methods
+  - Updated codegen to extract pointer/length from array references
+  - File.read(), Stdin.read() now work with `var buf: [u8; 256] = @repeat(0.as[u8], 256)`
+  - File.write(), Stdout.write(), Stderr.write() now work with array references
 
-- **New Reference Syntax** ✅
-  - `ref T` - read-only reference type (replaces `&T`)
-  - `inout T` - mutable reference type (replaces `&mut T`)
-  - `ref x` - creates reference (replaces `&x`)
-    - On `var`: creates `inout T` (mutable reference)
-    - On `let`: creates `ref T` (immutable reference)
-  - Added `ref` and `inout` keywords to lexer/token
-  - Updated parser to parse new type and expression syntax
-  - Removed old `&T` / `&mut T` / `&x` / `&mut x` syntax
-
-- **Deref Assignment** ✅
-  - Added support for `*ptr = value` in codegen
-  - Supports simple assignment and compound assignment (`*ptr += 1`, etc.)
-
-### Technical Details
-
-**New Syntax Examples:**
+**Example Usage:**
 ```klar
-// Array initialization with repeated value
+// Create a mutable buffer with @repeat
 var buf: [u8; 256] = @repeat(0.as[u8], 256)
 
-// Read-only reference parameter
-fn read_value(x: ref i32) -> i32 {
-    return *x
+// Read from file into the buffer
+var file: File = File.open("/tmp/test.txt", "r")!
+let bytes_read: i32 = file.read(ref buf)!
+
+// Access bytes in the buffer
+if buf[0] == 72.as[u8] {  // 'H'
+    print("First byte is H")
 }
-
-// Mutable reference parameter
-fn increment(x: inout i32) {
-    *x = *x + 1
-}
-
-// Creating references
-let n: i32 = 42
-read_value(ref n)    // ref on let -> immutable
-
-var m: i32 = 5
-increment(ref m)     // ref on var -> mutable
 ```
 
 **Files Modified:**
-- `src/token.zig` - Added `ref`, `inout` keywords
-- `src/lexer.zig` - Added keyword mappings
-- `src/parser.zig` - Parse `ref T`, `inout T` types; `ref x` expressions
-- `src/checker.zig` - `@repeat` type checking, auto-determine mutability for `ref x`
-- `src/codegen/emit.zig` - `@repeat` emission, deref assignment, `inferExprType` for repeat
-- `src/compiler.zig` - `@repeat` bytecode compilation
-- `src/interpreter.zig` - `@repeat` interpretation
-
-**Tests Updated:**
-- `test/native/ref_addr.kl` - Updated to new syntax
-- `test/native/ref_self_method.kl` - Updated method receivers
-- `test/native/ref_self_generic.kl` - Updated generic method receivers
-- `test/native/io_generic.kl` - Updated `&buf` to `ref buf`
-- `test/native/write_trait_basic.kl` - Updated `&buf` to `ref buf`
+- `src/checker.zig` - Accept `inout [u8; N]` for read() and `ref [u8; N]` for write()
+- `src/codegen/emit.zig` - Added `extractBufferPtrAndLen()` helper to handle both slice and array references
 
 **New Tests:**
-- `test/native/array_repeat.kl` - Tests `@repeat` builtin
-- `test/native/ref_inout.kl` - Tests `ref`/`inout` syntax
+- `test/native/file_read_buffer.kl` - Tests reading into mutable array buffer
 
 ### Previously Completed
 
+- **Mutable Buffer Allocation via `@repeat`** ✅
+- **New Reference Syntax** ✅ (`ref T`, `inout T`, `ref x`)
+- **Deref Assignment** ✅
 - **Stdin Support Implementation** ✅
 - **Read/Write Traits Implementation** ✅
 - **File I/O Result Integration** ✅
@@ -92,9 +58,9 @@ increment(ref m)     // ref on var -> mutable
 
 ## Current Test Status
 
-All 433 tests pass:
+All 434 tests pass:
 - Unit Tests: 220 passed
-- Native Tests: 197 passed
+- Native Tests: 198 passed
 - App Tests: 10 passed
 - Module Tests: 6 passed
 
@@ -104,16 +70,16 @@ All 433 tests pass:
 
 Continue with **Phase 4** tasks:
 
-1. **I/O with mutable buffers** (Milestone 5):
-   - Now possible: `var buf: [u8; 256] = @repeat(0.as[u8], 256)`
-   - Can use with `file.read(ref buf)` or `stdin.read(ref buf)`
-
-2. **Generic trait method dispatch** (Milestone 2 - stretch):
+1. **Generic trait method dispatch** (Milestone 2 - stretch):
    - Calling trait methods on generic type parameters with trait bounds
    - Currently `writer.write(data)` fails when `W: Write`
 
-3. **Blanket Into Implementation** (Milestone 7 - stretch):
-   - Auto-implement Into when From exists
+2. **Convenience I/O methods**:
+   - `read_to_string()` on Read trait
+   - `read_all()` for complete file reads
+
+3. **Buffered I/O** (if needed):
+   - `BufReader`, `BufWriter` types
 
 ---
 
@@ -123,13 +89,11 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test @repeat builtin
-./zig-out/bin/klar run test/native/array_repeat.kl
+# Test file read with mutable buffer
+./zig-out/bin/klar run test/native/file_read_buffer.kl
 
-# Test ref/inout syntax
-./zig-out/bin/klar run test/native/ref_inout.kl
-
-# Example I/O usage:
-# var buf: [u8; 256] = @repeat(0.as[u8], 256)
-# let n: i32 = stdin.read(ref buf)?
+# Example: read file into buffer
+var buf: [u8; 256] = @repeat(0.as[u8], 256)
+let file: File = File.open("/tmp/test.txt", "r")!
+let n: i32 = file.read(ref buf)!
 ```
