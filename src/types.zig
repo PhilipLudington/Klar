@@ -60,6 +60,7 @@ pub const Type = union(enum) {
     io_error: void, // IoError enum type
     stdout_handle: void, // Stdout marker type
     stderr_handle: void, // Stderr marker type
+    stdin_handle: void, // Stdin marker type
 
     // Special types
     void_,
@@ -129,7 +130,7 @@ pub const Type = union(enum) {
             // String data is a singleton type (no type parameters)
             .string_data => true,
             // I/O types are singleton types
-            .file, .io_error, .stdout_handle, .stderr_handle => true,
+            .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => true,
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -222,10 +223,10 @@ pub const Type = union(enum) {
             // - ContextError (contains a string message)
             // - File (owns file handle resource)
             // - IoError (may contain string payload)
-            // - Stdout/Stderr (unique handles)
+            // - Stdout/Stderr/Stdin (unique handles)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .unknown, .error_type, .associated_type_ref => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .unknown, .error_type, .associated_type_ref => false,
         };
     }
 };
@@ -849,6 +850,11 @@ pub const TypeBuilder = struct {
         _ = self;
         return .{ .stderr_handle = {} };
     }
+
+    pub fn stdinType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .stdin_handle = {} };
+    }
 };
 
 // ============================================================================
@@ -976,6 +982,7 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .io_error => try writer.writeAll("IoError"),
         .stdout_handle => try writer.writeAll("Stdout"),
         .stderr_handle => try writer.writeAll("Stderr"),
+        .stdin_handle => try writer.writeAll("Stdin"),
         .associated_type_ref => |a| {
             try writer.writeAll(a.type_var.name);
             try writer.writeAll(".");

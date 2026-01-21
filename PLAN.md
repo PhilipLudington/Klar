@@ -479,14 +479,14 @@ std/
 - [x] Implement Read/Write traits for File
 
 ### Standard I/O (Builtin)
-- [ ] Implement `stdin()` function returning Stdin type
+- [x] Implement `stdin()` function returning Stdin type
 - [x] Implement `stdout()` function returning Stdout type
 - [x] Implement `stderr()` function returning Stderr type
-- [ ] Implement Read for Stdin
+- [x] Implement Read for Stdin (`read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]`)
 - [x] Implement `Stdout.write(buf)`, `Stdout.write_string(s)` and `Stdout.flush()`
 - [x] Implement `Stderr.write(buf)`, `Stderr.write_string(s)` and `Stderr.flush()`
 - [x] Implement Write trait for Stdout and Stderr
-- [x] Platform-specific stdio access (macOS: `__stdoutp`/`__stderrp`, Linux: `stdout`/`stderr`)
+- [x] Platform-specific stdio access (macOS: `__stdoutp`/`__stderrp`/`__stdinp`, Linux: `stdout`/`stderr`/`stdin`)
 
 ### Buffered I/O
 - [ ] Implement `BufReader[R: Read]` wrapper
@@ -517,14 +517,16 @@ std/
 - [x] Test: Write trait with write(buf) works (write_trait_basic.kl)
 - [x] Test: Write trait on Stdout (io_generic.kl)
 - [x] Test: file write and error handling (file_write.kl, file_error.kl)
+- [x] Test: stdin type exists and can be obtained (stdin_basic.kl)
 - [ ] Test: buffered I/O works correctly
 - [ ] Test: directory operations work
 
 **Files Modified:**
-- `src/types.zig` - Added file, io_error, stdout_handle, stderr_handle types ✓
-- `src/checker.zig` - Registered I/O types and methods, Read/Write traits ✓
-- `src/codegen/emit.zig` - Implemented I/O codegen, fixed buffer reference handling ✓
+- `src/types.zig` - Added file, io_error, stdout_handle, stderr_handle, stdin_handle types ✓
+- `src/checker.zig` - Registered I/O types and methods, Read/Write traits, Stdin:Read ✓
+- `src/codegen/emit.zig` - Implemented I/O codegen, fixed buffer reference handling, stdin support ✓
 - `test/native/stdout_basic.kl` - Stdout test ✓
+- `test/native/stdin_basic.kl` - Stdin test ✓
 - `test/native/file_write.kl` - File write test ✓
 - `test/native/file_error.kl` - File error test ✓
 - `test/native/write_trait_basic.kl` - Write trait test ✓

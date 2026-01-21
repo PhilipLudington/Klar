@@ -1,0 +1,12 @@
+// Test Stdin type exists and stdin() function works
+// Note: Full read testing requires mutable buffer allocation support
+// Expected exit code: 42
+fn main() -> i32 {
+    // Verify we can get a stdin handle
+    var input: Stdin = stdin()
+
+    // Note: We can't test read() without mutable buffer support
+    // Just verify the type system accepts Stdin
+
+    return 42
+}

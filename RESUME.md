@@ -1,43 +1,37 @@
-# Resume Point: Read/Write Traits Implementation Complete
+# Resume Point: Stdin Support Implementation Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 5 (Standard Library I/O). Completed Read/Write traits implementation.
+Working on **Phase 4: Language Completion** - Milestone 5 (Standard Library I/O). Completed Stdin support.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **Read/Write Traits Implementation** ✅
-  - Defined `Write` trait with two methods:
-    - `write(&mut self, buf: &[u8]) -> Result[i32, IoError]`
-    - `flush(&mut self) -> Result[void, IoError]`
-  - Defined `Read` trait with one method:
-    - `read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]`
-  - Registered builtin trait implementations:
-    - `File:Write`, `File:Read`
-    - `Stdout:Write`, `Stderr:Write`
-  - Added `write(buf)` method for Stdout and Stderr types
-  - Fixed pre-existing bug in `emitFileWrite()` and `emitFileRead()` - they were treating reference arguments as values instead of pointers
-  - Added type inference for `write` method on Stdout/Stderr in `inferExprType()`
+- **Stdin Support Implementation** ✅
+  - Added `stdin_handle` type variant in `types.zig`
+  - Registered `Stdin` type and `stdin()` function in `checker.zig`
+  - Registered `Stdin:Read` trait implementation
+  - Added Stdin method validation (`read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]`)
+  - Implemented platform-specific `getOrDeclareStdin()` in `emit.zig`:
+    - macOS: Uses `__stdinp` global
+    - Linux: Uses `stdin` global
+  - Added `emitStdinRead()` for codegen (calls `fread()`)
+  - Added LLVM type mapping for `stdin_handle` (FILE* pointer)
+  - Created test file `test/native/stdin_basic.kl`
 
 ### Technical Details
 
-The `write()` method takes a reference to a byte slice (`&[u8]`). When emitted:
-1. The argument is a pointer to a slice struct `{ ptr: *u8, len: i64 }`
-2. Must load the slice struct from the pointer first
-3. Then extract `ptr` and `len` fields for `fwrite()` call
+The Stdin implementation mirrors Stdout/Stderr:
+1. `stdin()` function returns a `Stdin` type (FILE* handle)
+2. `Stdin.read(&mut buf)` calls `fread(ptr, 1, len, stdin)` and returns `Result[i32, IoError]`
+3. The variable is tracked with `is_stdin` flag for method dispatch
 
-Fixed the same pattern in existing `emitFileWrite()` and `emitFileRead()` functions.
-
-### Test Files Created
-
-- `test/native/write_trait_basic.kl` - Tests Write trait on Stdout with `write(buf)`
-- `test/native/read_trait_basic.kl` - Placeholder (full read testing needs mutable buffer allocation)
-- `test/native/io_generic.kl` - Tests Write trait usage
+**Limitation**: Full read testing requires mutable buffer allocation support. Currently, creating a mutable `[u8]` buffer for `read()` is not straightforward.
 
 ### Previously Completed
 
+- **Read/Write Traits Implementation** ✅
 - **File I/O Result Integration** ✅
 - **Standard Library I/O MVP** ✅
 - **Into Trait** ✅
@@ -53,9 +47,9 @@ Fixed the same pattern in existing `emitFileWrite()` and `emitFileRead()` functi
 
 ## Current Test Status
 
-All 430 tests pass:
+All 431 tests pass:
 - Unit Tests: 220 passed
-- Native Tests: 194 passed
+- Native Tests: 195 passed
 - App Tests: 10 passed
 - Module Tests: 6 passed
 
@@ -65,19 +59,15 @@ All 430 tests pass:
 
 Continue with **Phase 4** tasks:
 
-1. **Stdin support** (Milestone 5):
-   - Implement `stdin()` function returning Stdin type
-   - Implement Read trait for Stdin
-
-2. **Mutable buffer allocation** (Milestone 5):
-   - Need a way to create mutable byte buffers for `file.read()`
+1. **Mutable buffer allocation** (Milestone 5):
+   - Need a way to create mutable byte buffers for `file.read()` and `stdin.read()`
    - Current workaround: `string.bytes()` returns immutable data
 
-3. **Generic trait method dispatch** (Milestone 2 - stretch):
+2. **Generic trait method dispatch** (Milestone 2 - stretch):
    - Calling trait methods on generic type parameters with trait bounds
    - Currently `writer.write(data)` fails when `W: Write`
 
-4. **Blanket Into Implementation** (Milestone 7 - stretch):
+3. **Blanket Into Implementation** (Milestone 7 - stretch):
    - Auto-implement Into when From exists
 
 ---
@@ -88,12 +78,11 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test Write trait
-./zig-out/bin/klar run test/native/write_trait_basic.kl
-./zig-out/bin/klar run test/native/io_generic.kl
+# Test Stdin type
+./zig-out/bin/klar run test/native/stdin_basic.kl
 
-# Example usage:
-# var out: Stdout = stdout()
-# let buf: [u8] = "Hello".bytes()
-# let result: Result[i32, IoError] = out.write(&buf)
+# Example usage (once mutable buffers supported):
+# var input: Stdin = stdin()
+# var buf: [u8; 256] = ...  # Need way to create mutable buffer
+# let result: Result[i32, IoError] = input.read(&mut buf)
 ```

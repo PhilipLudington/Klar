@@ -1668,6 +1668,25 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
+        // Stdin type - handle for standard input
+        try self.current_scope.define(.{
+            .name = "Stdin",
+            .type_ = self.type_builder.stdinType(),
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // stdin() -> Stdin - builtin function to get stdin handle
+        const stdin_fn_type = try self.type_builder.functionType(&.{}, self.type_builder.stdinType());
+        try self.current_scope.define(.{
+            .name = "stdin",
+            .type_ = stdin_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
         // ====================================================================
         // Register builtin trait implementations for I/O types
         // ====================================================================
@@ -1723,6 +1742,20 @@ pub const TypeChecker = struct {
         try stderr_write_result.value_ptr.append(self.allocator, .{
             .trait_name = "Write",
             .impl_type_name = "Stderr",
+            .impl_type_params = &.{},
+            .associated_type_bindings = &.{},
+            .methods = &.{},
+        });
+
+        // Stdin: Read
+        const stdin_read_key = try std.fmt.allocPrint(self.allocator, "Stdin:Read", .{});
+        const stdin_read_result = try self.trait_impls.getOrPut(self.allocator, stdin_read_key);
+        if (!stdin_read_result.found_existing) {
+            stdin_read_result.value_ptr.* = .{};
+        }
+        try stdin_read_result.value_ptr.append(self.allocator, .{
+            .trait_name = "Read",
+            .impl_type_name = "Stdin",
             .impl_type_params = &.{},
             .associated_type_bindings = &.{},
             .methods = &.{},
@@ -2209,7 +2242,7 @@ pub const TypeChecker = struct {
 
             // Primitive types - no substitution needed
             // I/O types also don't need substitution (they have no type parameters)
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle => typ,
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => typ,
 
             // Array - substitute element type
             .array => |arr| {
@@ -2422,7 +2455,7 @@ pub const TypeChecker = struct {
     pub fn containsTypeVar(self: *TypeChecker, typ: Type) bool {
         return switch (typ) {
             .type_var => true,
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle => false,
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => false,
             .array => |arr| self.containsTypeVar(arr.element),
             .slice => |sl| self.containsTypeVar(sl.element),
             .tuple => |tup| {
@@ -2485,7 +2518,7 @@ pub const TypeChecker = struct {
                 return true;
             },
 
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle => {
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => {
                 return pattern.eql(concrete);
             },
 
@@ -5681,6 +5714,23 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Stdin methods
+        if (object_type == .stdin_handle) {
+            // read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "read")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "read() expects exactly 1 argument (buffer)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const buf_type = self.checkExpr(method.args[0]);
+                // Check that argument is a mutable reference to a slice of u8
+                if (buf_type != .reference or buf_type.reference.inner != .slice or !buf_type.reference.mutable) {
+                    self.addError(.type_mismatch, method.span, "read() expects a &mut [u8] buffer argument", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+        }
+
         // Look up user-defined method on struct types
         if (object_type == .struct_) {
             const struct_type = object_type.struct_;
@@ -7082,6 +7132,7 @@ pub const TypeChecker = struct {
             .io_error => "io_error",
             .stdout_handle => "stdout",
             .stderr_handle => "stderr",
+            .stdin_handle => "stdin",
             .void_ => "void",
             .never => "never",
             .unknown => "unknown",

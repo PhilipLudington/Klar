@@ -160,6 +160,8 @@ pub const Emitter = struct {
         is_stdout: bool = false,
         /// True if this is a Stderr type (FILE* handle).
         is_stderr: bool = false,
+        /// True if this is a Stdin type (FILE* handle).
+        is_stdin: bool = false,
     };
 
     const LoopContext = struct {
@@ -926,6 +928,7 @@ pub const Emitter = struct {
                 const is_file_let = self.isTypeFile(decl.type_);
                 const is_stdout_let = self.isTypeStdout(decl.type_);
                 const is_stderr_let = self.isTypeStderr(decl.type_);
+                const is_stdin_let = self.isTypeStdin(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -950,6 +953,7 @@ pub const Emitter = struct {
                     .is_file = is_file_let,
                     .is_stdout = is_stdout_let,
                     .is_stderr = is_stderr_let,
+                    .is_stdin = is_stdin_let,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -995,6 +999,7 @@ pub const Emitter = struct {
                 const is_file = self.isTypeFile(decl.type_);
                 const is_stdout = self.isTypeStdout(decl.type_);
                 const is_stderr = self.isTypeStderr(decl.type_);
+                const is_stdin = self.isTypeStdin(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -1019,6 +1024,7 @@ pub const Emitter = struct {
                     .is_file = is_file,
                     .is_stdout = is_stdout,
                     .is_stderr = is_stderr,
+                    .is_stdin = is_stdin,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -3174,6 +3180,11 @@ pub const Emitter = struct {
                 // Returns the stderr FILE* handle
                 const stderr_fn = self.getOrDeclareStderr();
                 return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr.handle");
+            } else if (std.mem.eql(u8, name, "stdin")) {
+                // stdin() -> Stdin
+                // Returns the stdin FILE* handle
+                const stdin_fn = self.getOrDeclareStdin();
+                return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stdin_fn), stdin_fn, &[_]llvm.ValueRef{}, "stdin.handle");
             }
         }
 
@@ -3936,6 +3947,15 @@ pub const Emitter = struct {
         _ = self;
         return switch (type_expr) {
             .named => |named| std.mem.eql(u8, named.name, "Stderr"),
+            else => false,
+        };
+    }
+
+    /// Check if a type expression is a Stdin type.
+    fn isTypeStdin(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .named => |named| std.mem.eql(u8, named.name, "Stdin"),
             else => false,
         };
     }
@@ -6992,6 +7012,15 @@ pub const Emitter = struct {
             }
         }
 
+        // Check for Stdin methods
+        if (self.isStdinExpr(method.object)) {
+            if (std.mem.eql(u8, method.method_name, "read")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const buf_val = try self.emitExpr(method.args[0]);
+                return self.emitStdinRead(buf_val);
+            }
+        }
+
         // For other methods, fall back to a placeholder for now
         // (User-defined struct methods are checked earlier, before Cell methods)
         // TODO: Implement remaining method types
@@ -9643,6 +9672,19 @@ pub const Emitter = struct {
             .identifier => |id| {
                 if (self.named_values.get(id.name)) |local| {
                     return local.is_stderr;
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    /// Check if an expression is a Stdin type.
+    fn isStdinExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    return local.is_stdin;
                 }
             },
             else => {},
@@ -16293,6 +16335,46 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "stderr.write.result_val");
     }
 
+    /// Emit stdin().read(buf) -> Result[i32, IoError]
+    fn emitStdinRead(self: *Emitter, buf_ref: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Get stdin handle
+        const stdin_fn = self.getOrDeclareStdin();
+        const stdin_handle = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stdin_fn), stdin_fn, &[_]llvm.ValueRef{}, "stdin.handle");
+
+        // buf_ref is a pointer to a slice struct (from &mut buf)
+        // Load the slice struct first, then extract ptr and len
+        var slice_fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // data pointer
+            i64_type, // length
+        };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+        const buf_val = self.builder.buildLoad(slice_type, buf_ref, "buf.slice");
+        const buf_ptr = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 0, "buf.ptr");
+        const buf_len = llvm.c.LLVMBuildExtractValue(self.builder.ref, buf_val, 1, "buf.len");
+
+        // Call fread(ptr, 1, len, stdin)
+        const fread_fn = self.getOrDeclareFread();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        var fread_args = [_]llvm.ValueRef{ buf_ptr, one_i64, buf_len, stdin_handle };
+        const bytes_read = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fread_fn), fread_fn, &fread_args, "stdin.read");
+
+        // Build Result[i32, IoError]
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "stdin.read.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "stdin.read.tag_ptr");
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "stdin.read.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        const read_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, bytes_read, i32_type, "stdin.read_i32");
+        _ = self.builder.buildStore(read_i32, val_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "stdin.read.result_val");
+    }
+
     /// Get the LLVM struct type for List: { ptr, i32, i32 }
     fn getListStructType(self: *Emitter) llvm.TypeRef {
         var fields = [_]llvm.TypeRef{
@@ -20046,6 +20128,103 @@ pub const Emitter = struct {
         }
     }
 
+    fn getOrDeclareStdin(self: *Emitter) llvm.ValueRef {
+        // On macOS/BSD, stdin is accessed via __stdinp
+        // On Linux, it's accessed via stdin global
+        const os = @import("builtin").os.tag;
+
+        if (os == .macos) {
+            // macOS: use __stdinp pointer
+            const var_name = "__stdinp";
+            if (llvm.c.LLVMGetNamedGlobal(self.module.ref, var_name)) |global| {
+                // Declare a function that loads the global
+                const fn_name = "klar_get_stdin";
+                if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                    return func;
+                }
+
+                const ptr_type = llvm.Types.pointer(self.ctx);
+                const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+                const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+                // Create function body to load __stdinp
+                const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+                const saved_func = self.current_function;
+
+                const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+                const stdin_val = self.builder.buildLoad(ptr_type, global, "stdin");
+                _ = llvm.c.LLVMBuildRet(self.builder.ref, stdin_val);
+
+                if (saved_bb) |bb| {
+                    llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+                }
+                self.current_function = saved_func;
+
+                return func;
+            }
+
+            // Declare __stdinp external global
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const global = llvm.c.LLVMAddGlobal(self.module.ref, ptr_type, var_name);
+            llvm.c.LLVMSetLinkage(global, llvm.c.LLVMExternalLinkage);
+
+            // Now create getter function
+            const fn_name = "klar_get_stdin";
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            // Create function body to load __stdinp
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            const stdin_val = self.builder.buildLoad(ptr_type, global, "stdin");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stdin_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
+        } else {
+            // Linux: use stdin directly (declared as extern)
+            const fn_name = "klar_get_stdin";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+
+            // Declare stdin external global
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const global = llvm.c.LLVMAddGlobal(self.module.ref, ptr_type, "stdin");
+            llvm.c.LLVMSetLinkage(global, llvm.c.LLVMExternalLinkage);
+
+            // Create getter function
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            const stdin_val = self.builder.buildLoad(ptr_type, global, "stdin");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stdin_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
+        }
+    }
+
     fn getOrDeclareAbort(self: *Emitter) llvm.ValueRef {
         const fn_name = "abort";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
@@ -20368,6 +20547,10 @@ pub const Emitter = struct {
             },
             .stderr_handle => {
                 // Stderr is an opaque marker type - store as FILE* pointer
+                return llvm.Types.pointer(self.ctx);
+            },
+            .stdin_handle => {
+                // Stdin is an opaque marker type - store as FILE* pointer
                 return llvm.Types.pointer(self.ctx);
             },
             .associated_type_ref => {
