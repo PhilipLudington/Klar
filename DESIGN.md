@@ -104,6 +104,9 @@ true     false    self     Self
 // Operators (word-form)
 and      or       not      is       in       as
 
+// References (keyword-based, not symbols)
+ref      inout
+
 // Special
 where    dyn      mut
 ```
@@ -136,8 +139,8 @@ and  or  not        // word-form, not && || !
 // Assignment
 =   +=  -=  *=  /=  %=
 
-// Reference
-&       &mut
+// Reference (keyword-based)
+ref     inout
 
 // Special
 ?       !       ??      ..      ..=
@@ -418,7 +421,7 @@ let scale: fn(i32) -> i32 = |x: i32| -> i32 { return x * factor }
 |-------|-----------|---------------|
 | 1 | `.` `()` `[]` | Left |
 | 2 | `?` `!` (postfix) | Left |
-| 3 | `-` `not` `&` `&mut` `*` (prefix) | Right |
+| 3 | `-` `not` `ref` `*` (prefix) | Right |
 | 4 | `*` `/` `%` `*%` `*|` | Left |
 | 5 | `+` `-` `+%` `-%` `+|` `-|` | Left |
 | 6 | `<<` `>>` | Left |
@@ -536,18 +539,24 @@ struct Point: Copy {
 
 ### Borrowing
 
+Klar uses keyword-based reference syntax following the "keywords over symbols" principle:
+- `ref T` — read-only reference (like `&T` in other languages)
+- `inout T` — mutable reference (like `&mut T` in other languages)
+
+The `ref x` expression creates a reference. Mutability is determined by whether `x` is `var` (mutable) or `let` (immutable).
+
 ```klar
-fn print_length(buf: &Buffer) {    // immutable borrow
+fn print_length(buf: ref Buffer) {    // immutable borrow
     print(buf.len)
 }
 
-fn modify(buf: &mut Buffer) {      // mutable borrow
+fn modify(buf: inout Buffer) {        // mutable borrow
     buf.write(data)
 }
 
-let buffer: Buffer = Buffer.new(1024)
-print_length(&buffer)              // lend immutably
-modify(&mut buffer)                // lend mutably
+var buffer: Buffer = Buffer.new(1024)
+print_length(ref buffer)              // lend (immutable since fn expects ref)
+modify(ref buffer)                    // lend mutably (var -> inout)
 ```
 
 ### Borrow Rules
@@ -560,7 +569,7 @@ modify(&mut buffer)                // lend mutably
 ```klar
 // NOT ALLOWED
 struct Parser {
-    source: &string     // ERROR: no refs in structs
+    source: ref string     // ERROR: no refs in structs
 }
 
 // INSTEAD: own the data
@@ -864,7 +873,7 @@ fn max[T: Ordered](a: T, b: T) -> T {
     return b
 }
 
-fn swap[T](a: &mut T, b: &mut T) {
+fn swap[T](a: inout T, b: inout T) {
     let temp: T = *a
     *a = *b
     *b = temp
@@ -938,12 +947,12 @@ where
 ```klar
 trait Iterator {
     type Item
-    fn next(self: &mut Self) -> Option[Self.Item]
+    fn next(self: inout Self) -> Option[Self.Item]
 }
 
 impl List[T]: Iterator {
     type Item = T
-    fn next(self: &mut Self) -> Option[T] { ... }
+    fn next(self: inout Self) -> Option[T] { ... }
 }
 ```
 
@@ -1040,27 +1049,27 @@ panic(msg: string) -> !
 ```klar
 struct List[T] {
     fn new() -> List[T]
-    fn push(self: &mut Self, item: T)
-    fn pop(self: &mut Self) -> Option[T]
-    fn get(self: &Self, index: usize) -> Option[&T]
-    fn len(self: &Self) -> usize
-    fn iter(self: &Self) -> ListIter[T]
+    fn push(self: inout Self, item: T)
+    fn pop(self: inout Self) -> Option[T]
+    fn get(self: ref Self, index: usize) -> Option[T]
+    fn len(self: ref Self) -> usize
+    fn iter(self: ref Self) -> ListIter[T]
     // ...
 }
 
 struct Map[K: Hash + Eq, V] {
     fn new() -> Map[K, V]
-    fn insert(self: &mut Self, key: K, value: V) -> Option[V]
-    fn get(self: &Self, key: &K) -> Option[&V]
-    fn contains_key(self: &Self, key: &K) -> bool
+    fn insert(self: inout Self, key: K, value: V) -> Option[V]
+    fn get(self: ref Self, key: ref K) -> Option[V]
+    fn contains_key(self: ref Self, key: ref K) -> bool
     // ...
 }
 
 struct Set[T: Hash + Eq] {
     fn new() -> Set[T]
-    fn insert(self: &mut Self, item: T) -> bool
-    fn contains(self: &Self, item: &T) -> bool
-    fn union(self: &Self, other: &Set[T]) -> Set[T]
+    fn insert(self: inout Self, item: T) -> bool
+    fn contains(self: ref Self, item: ref T) -> bool
+    fn union(self: ref Self, other: ref Set[T]) -> Set[T]
     // ...
 }
 ```
@@ -1070,19 +1079,19 @@ struct Set[T: Hash + Eq] {
 ```klar
 struct String {
     fn new() -> String
-    fn len(self: &Self) -> usize
-    fn chars(self: &Self) -> CharIter
-    fn contains(self: &Self, pattern: &str) -> bool
-    fn split(self: &Self, sep: &str) -> List[String]
-    fn trim(self: &Self) -> &str
-    fn to_uppercase(self: &Self) -> String
-    fn replace(self: &Self, from: &str, to: &str) -> String
+    fn len(self: ref Self) -> usize
+    fn chars(self: ref Self) -> CharIter
+    fn contains(self: ref Self, pattern: ref str) -> bool
+    fn split(self: ref Self, sep: ref str) -> List[String]
+    fn trim(self: ref Self) -> string
+    fn to_uppercase(self: ref Self) -> String
+    fn replace(self: ref Self, from: ref str, to: ref str) -> String
     // ...
 }
 
 struct StringBuilder {
     fn new() -> StringBuilder
-    fn append(self: &mut Self, s: &str) -> &mut Self
+    fn append(self: inout Self, s: ref str) -> inout Self
     fn build(self) -> String
 }
 ```
@@ -1091,14 +1100,14 @@ struct StringBuilder {
 
 ```klar
 trait Read {
-    fn read(self: &mut Self, buf: &mut [u8]) -> Result[usize, IoError]
-    fn read_all(self: &mut Self) -> Result[List[u8], IoError]
-    fn read_string(self: &mut Self) -> Result[String, IoError]
+    fn read(self: inout Self, buf: [u8]) -> Result[usize, IoError]
+    fn read_all(self: inout Self) -> Result[List[u8], IoError]
+    fn read_string(self: inout Self) -> Result[String, IoError]
 }
 
 trait Write {
-    fn write(self: &mut Self, buf: &[u8]) -> Result[usize, IoError]
-    fn flush(self: &mut Self) -> Result[void, IoError]
+    fn write(self: inout Self, buf: [u8]) -> Result[usize, IoError]
+    fn flush(self: inout Self) -> Result[void, IoError]
 }
 
 fn stdin() -> Stdin
@@ -1106,24 +1115,31 @@ fn stdout() -> Stdout
 fn stderr() -> Stderr
 ```
 
+Note: I/O methods take slices by value (`buf: [u8]`) since slices already contain a pointer internally. Use `@repeat(value, count)` to create mutable buffers:
+
+```klar
+var buf: [u8; 256] = @repeat(0.as[u8], 256)
+let bytes_read: i32 = stdin.read(ref buf)?
+```
+
 ### std.fs
 
 ```klar
-fn read(path: &Path) -> Result[List[u8], IoError]
-fn read_string(path: &Path) -> Result[String, IoError]
-fn write(path: &Path, data: &[u8]) -> Result[void, IoError]
-fn write_string(path: &Path, s: &str) -> Result[void, IoError]
-fn exists(path: &Path) -> bool
-fn create_dir(path: &Path) -> Result[void, IoError]
-fn remove(path: &Path) -> Result[void, IoError]
-fn read_dir(path: &Path) -> Result[DirIter, IoError]
+fn read(path: ref Path) -> Result[List[u8], IoError]
+fn read_string(path: ref Path) -> Result[String, IoError]
+fn write(path: ref Path, data: [u8]) -> Result[void, IoError]
+fn write_string(path: ref Path, s: ref str) -> Result[void, IoError]
+fn exists(path: ref Path) -> bool
+fn create_dir(path: ref Path) -> Result[void, IoError]
+fn remove(path: ref Path) -> Result[void, IoError]
+fn read_dir(path: ref Path) -> Result[DirIter, IoError]
 ```
 
 ### std.net.http
 
 ```klar
-async fn get(url: &str) -> Result[Response, HttpError]
-async fn post(url: &str, body: &[u8]) -> Result[Response, HttpError]
+async fn get(url: ref str) -> Result[Response, HttpError]
+async fn post(url: ref str, body: [u8]) -> Result[Response, HttpError]
 
 struct Response {
     status: u16
@@ -1139,17 +1155,17 @@ struct Response {
 struct Duration {
     fn from_secs(secs: u64) -> Duration
     fn from_millis(ms: u64) -> Duration
-    fn as_secs(self: &Self) -> u64
+    fn as_secs(self: ref Self) -> u64
 }
 
 struct Instant {
     fn now() -> Instant
-    fn elapsed(self: &Self) -> Duration
+    fn elapsed(self: ref Self) -> Duration
 }
 
 struct DateTime {
     fn now() -> DateTime
-    fn format(self: &Self, format: &str) -> String
+    fn format(self: ref Self, format: ref str) -> String
 }
 
 async fn sleep(duration: Duration)
@@ -1168,16 +1184,16 @@ enum Json {
 }
 
 impl Json {
-    fn parse(s: &str) -> Result[Json, JsonError]
-    fn to_string(self: &Self) -> String
+    fn parse(s: ref str) -> Result[Json, JsonError]
+    fn to_string(self: ref Self) -> String
 }
 
 trait Serialize {
-    fn to_json(self: &Self) -> Json
+    fn to_json(self: ref Self) -> Json
 }
 
 trait Deserialize {
-    fn from_json(json: &Json) -> Result[Self, JsonError]
+    fn from_json(json: ref Json) -> Result[Self, JsonError]
 }
 
 #[derive(Serialize, Deserialize)]
