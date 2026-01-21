@@ -943,6 +943,38 @@ where
 }
 ```
 
+### Generic Trait Method Dispatch
+
+Trait methods can be called through generic type parameters. This works with all receiver types including `ref Self` and `inout Self`:
+
+```klar
+trait Writer {
+    fn write(self: inout Self, data: i32) -> i32
+}
+
+struct Buffer {
+    count: i32,
+}
+
+impl Buffer: Writer {
+    fn write(self: inout Buffer, data: i32) -> i32 {
+        self.count = self.count + data
+        return data
+    }
+}
+
+// Generic function calls trait method through bound
+fn write_to[W: Writer](writer: inout W, data: i32) -> i32 {
+    return writer.write(data)  // Resolves to W's implementation
+}
+
+fn main() -> i32 {
+    var buf: Buffer = Buffer { count: 0 }
+    write_to(ref buf, 42)  // Calls Buffer.write through trait dispatch
+    return buf.count       // Returns 42
+}
+```
+
 ### Associated Types
 
 ```klar

@@ -1,0 +1,27 @@
+// Test calling trait methods with ref Self through generic bounds
+// This tests generic trait method dispatch when trait methods take ref Self
+
+trait Reader {
+    fn read(self: ref Self) -> i32
+}
+
+struct Buffer {
+    count: i32,
+}
+
+impl Buffer: Reader {
+    fn read(self: ref Buffer) -> i32 {
+        return self.count
+    }
+}
+
+// Generic function that uses a Reader bound with ref parameter
+fn read_from[R: Reader](reader: ref R) -> i32 {
+    return reader.read()
+}
+
+fn main() -> i32 {
+    let buf: Buffer = Buffer { count: 42 }
+    return read_from(ref buf)
+}
+// expect: 42

@@ -5853,8 +5853,13 @@ pub const TypeChecker = struct {
         // Handle method calls on type variables with trait bounds
         // When T: SomeTrait, calling item.method() on an item: T should resolve
         // to the trait method from SomeTrait
-        if (object_type == .type_var) {
-            const type_var = object_type.type_var;
+        // Also handle ref T and inout T (references to type variables)
+        var inner_type = object_type;
+        if (inner_type == .reference) {
+            inner_type = inner_type.reference.inner;
+        }
+        if (inner_type == .type_var) {
+            const type_var = inner_type.type_var;
 
             // Search all trait bounds for the method
             var found_trait: ?*types.TraitType = null;

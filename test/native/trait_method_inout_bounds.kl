@@ -1,0 +1,29 @@
+// Test calling trait methods with inout Self through generic bounds
+// This tests generic trait method dispatch when trait methods take inout Self
+
+trait Writer {
+    fn write(self: inout Self, data: i32) -> i32
+}
+
+struct Buffer {
+    count: i32,
+}
+
+impl Buffer: Writer {
+    fn write(self: inout Buffer, data: i32) -> i32 {
+        self.count = self.count + data
+        return data
+    }
+}
+
+// Generic function that uses a Writer bound with inout parameter
+fn write_to[W: Writer](writer: inout W, data: i32) -> i32 {
+    return writer.write(data)
+}
+
+fn main() -> i32 {
+    var buf: Buffer = Buffer { count: 0 }
+    write_to(ref buf, 42)  // ref buffer -> inout since buf is var
+    return buf.count
+}
+// expect: 42

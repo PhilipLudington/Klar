@@ -1,43 +1,58 @@
-# Resume Point: Mutable Buffer I/O Complete
+# Resume Point: Generic Trait Method Dispatch Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 5 (Standard Library I/O). Completed mutable buffer I/O with arrays.
+Working on **Phase 4: Language Completion** - Milestone 2 (Traits and Polymorphism). Completed generic trait method dispatch with reference parameters.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **Mutable Buffer I/O with Arrays** ✅
-  - Updated checker to accept both `[u8]` slices and `[u8; N]` arrays for read/write methods
-  - Updated codegen to extract pointer/length from array references
-  - File.read(), Stdin.read() now work with `var buf: [u8; 256] = @repeat(0.as[u8], 256)`
-  - File.write(), Stdout.write(), Stderr.write() now work with array references
+- **Generic Trait Method Dispatch with ref/inout Self** ✅
+  - Fixed checker to resolve trait methods when receiver type is `ref TypeVar` or `inout TypeVar`
+  - Fixed codegen to correctly pass pointer values for reference parameters when calling methods
+  - Trait methods like `writer.write(data)` now work when `W: Writer` and method takes `inout Self`
 
 **Example Usage:**
 ```klar
-// Create a mutable buffer with @repeat
-var buf: [u8; 256] = @repeat(0.as[u8], 256)
+trait Writer {
+    fn write(self: inout Self, data: i32) -> i32
+}
 
-// Read from file into the buffer
-var file: File = File.open("/tmp/test.txt", "r")!
-let bytes_read: i32 = file.read(ref buf)!
+struct Buffer {
+    count: i32,
+}
 
-// Access bytes in the buffer
-if buf[0] == 72.as[u8] {  // 'H'
-    print("First byte is H")
+impl Buffer: Writer {
+    fn write(self: inout Buffer, data: i32) -> i32 {
+        self.count = self.count + data
+        return data
+    }
+}
+
+// Generic function with trait bound - now works!
+fn write_to[W: Writer](writer: inout W, data: i32) -> i32 {
+    return writer.write(data)  // Trait method dispatch through bounds
+}
+
+fn main() -> i32 {
+    var buf: Buffer = Buffer { count: 0 }
+    write_to(ref buf, 42)
+    return buf.count  // Returns 42
 }
 ```
 
 **Files Modified:**
-- `src/checker.zig` - Accept `inout [u8; N]` for read() and `ref [u8; N]` for write()
-- `src/codegen/emit.zig` - Added `extractBufferPtrAndLen()` helper to handle both slice and array references
+- `src/checker.zig` - Unwrap reference types when checking for type_var trait bounds in method calls
+- `src/codegen/emit.zig` - Load pointer value from alloca when variable is a reference parameter
 
 **New Tests:**
-- `test/native/file_read_buffer.kl` - Tests reading into mutable array buffer
+- `test/native/trait_method_ref_bounds.kl` - Tests trait methods with `ref Self` through generic bounds
+- `test/native/trait_method_inout_bounds.kl` - Tests trait methods with `inout Self` through generic bounds
 
 ### Previously Completed
 
+- **Mutable Buffer I/O with Arrays** ✅
 - **Mutable Buffer Allocation via `@repeat`** ✅
 - **New Reference Syntax** ✅ (`ref T`, `inout T`, `ref x`)
 - **Deref Assignment** ✅
@@ -58,9 +73,9 @@ if buf[0] == 72.as[u8] {  // 'H'
 
 ## Current Test Status
 
-All 434 tests pass:
+All 436 tests pass:
 - Unit Tests: 220 passed
-- Native Tests: 198 passed
+- Native Tests: 200 passed
 - App Tests: 10 passed
 - Module Tests: 6 passed
 
@@ -70,16 +85,15 @@ All 434 tests pass:
 
 Continue with **Phase 4** tasks:
 
-1. **Generic trait method dispatch** (Milestone 2 - stretch):
-   - Calling trait methods on generic type parameters with trait bounds
-   - Currently `writer.write(data)` fails when `W: Write`
-
-2. **Convenience I/O methods**:
+1. **Convenience I/O methods**:
    - `read_to_string()` on Read trait
    - `read_all()` for complete file reads
 
-3. **Buffered I/O** (if needed):
+2. **Buffered I/O** (if needed):
    - `BufReader`, `BufWriter` types
+
+3. **Associated types** (Milestone 2 - stretch):
+   - User-definable associated types in traits
 
 ---
 
@@ -89,11 +103,12 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test file read with mutable buffer
-./zig-out/bin/klar run test/native/file_read_buffer.kl
+# Test generic trait dispatch with ref/inout
+./zig-out/bin/klar run test/native/trait_method_ref_bounds.kl
+./zig-out/bin/klar run test/native/trait_method_inout_bounds.kl
 
-# Example: read file into buffer
-var buf: [u8; 256] = @repeat(0.as[u8], 256)
-let file: File = File.open("/tmp/test.txt", "r")!
-let n: i32 = file.read(ref buf)!
+# Example: generic function with trait bound
+fn write_to[W: Writer](writer: inout W, data: i32) -> i32 {
+    return writer.write(data)
+}
 ```

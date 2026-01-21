@@ -7170,6 +7170,11 @@ pub const Emitter = struct {
                 const self_ptr = switch (method.object) {
                     .identifier => |ident| blk: {
                         if (self.named_values.get(ident.name)) |local| {
+                            // If the variable is a reference parameter (ref T or inout T),
+                            // the alloca contains a pointer - we need to load it
+                            if (local.is_reference) {
+                                break :blk self.builder.buildLoad(local.ty, local.value, "ref.load");
+                            }
                             break :blk local.value; // This is the alloca pointer
                         }
                         // Fallback: store object to a temp and return pointer

@@ -152,6 +152,8 @@
 - [x] Test: trait bounds restrict generic parameters (trait_bounds.kl)
 - [x] Test: method calls resolve to correct implementation (trait_default.kl)
 - [x] Test: trait method calls through generic bounds (trait_method_through_bounds.kl, trait_method_with_args.kl)
+- [x] Test: trait method calls with ref Self through generic bounds (trait_method_ref_bounds.kl)
+- [x] Test: trait method calls with inout Self through generic bounds (trait_method_inout_bounds.kl)
 - [x] Test: trait inheritance works correctly (trait_inheritance.kl, trait_multi_inherit.kl)
 - [x] Test: Eq trait works for primitives (eq_trait.kl, eq_trait_bool.kl, eq_trait_string.kl)
 - [x] Test: Ordered trait works for primitives (ordered_trait.kl, ordered_trait_float.kl, ordered_trait_string.kl)
