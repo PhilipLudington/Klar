@@ -1,8 +1,13 @@
 // Test file error handling
-// TODO: Add Result handling once Result types are properly integrated
+// Expected exit code: 42
 fn main() -> i32 {
-    var out: Stdout = stdout()
-    out.write_string("File error test skipped - Result integration pending")
-    out.flush()
-    return 42
+    // Try to open a file that doesn't exist for reading
+    let result: Result[File, IoError] = File.open("/nonexistent/path/file.txt", "r")
+
+    // Should fail (is_err should be true)
+    if result.is_err() {
+        return 42  // Correctly detected error
+    } else {
+        return 1  // Should have failed but didn't
+    }
 }

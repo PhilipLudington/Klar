@@ -1,51 +1,41 @@
-# Resume Point: Standard Library I/O MVP Implemented
+# Resume Point: File I/O Result Integration Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 5 (Standard Library I/O). Implemented basic file I/O types and stdout/stderr functionality.
+Working on **Phase 4: Language Completion** - Milestone 5 (Standard Library I/O). Completed Result type integration for File I/O operations.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **Standard Library I/O MVP** ✅
-  - Added `File`, `IoError`, `Stdout`, `Stderr` builtin types to `types.zig`
-  - Registered I/O types and methods in `checker.zig`
-  - Implemented `stdout()` and `stderr()` builtin functions
-  - Implemented `Stdout.write_string()`, `Stdout.flush()`, `Stderr.write_string()`, `Stderr.flush()`
-  - Implemented `File.open()` static method (codegen complete, Result integration pending)
-  - Implemented `File.write_string()`, `File.read()`, `File.write()`, `File.close()`, `File.flush()` methods
-  - Added libc declarations: `fopen`, `fclose`, `fread`, `fwrite`, `fflush`, `ferror`
-  - Platform-specific stdout/stderr access (macOS: `__stdoutp`/`__stderrp`, Linux: `stdout`/`stderr`)
+- **File I/O Result Integration** ✅
+  - Fixed `getVoidResultType` to use 3-field layout with placeholder for void ok_value
+  - This ensures consistent field indices across all Result types: `{i1 tag, T ok_value, E err_value}`
+  - Added File/Stdout/Stderr method return types to `inferExprType`:
+    - `File.open(path, mode)` → `Result[File, IoError]`
+    - `file.write_string(s)`, `file.write(buf)`, `file.read(buf)` → `Result[i32, IoError]`
+    - `file.close()`, `file.flush()` → `Result[void, IoError]`
+    - `stdout.write_string(s)`, `stderr.write_string(s)` → `Result[i32, IoError]`
+    - `stdout.flush()`, `stderr.flush()` → `Result[void, IoError]`
+  - Updated test files `test/native/file_write.kl` and `test/native/file_error.kl`
+  - Result methods (`is_ok()`, `is_err()`, `unwrap()`, etc.) now work correctly with File I/O Results
 
-### Implementation Details
+### Technical Details
 
-#### Types Added (types.zig)
-- `file: void` - Opaque FILE* handle
-- `io_error: void` - IoError enum type
-- `stdout_handle: void` - Stdout marker type
-- `stderr_handle: void` - Stderr marker type
+The root cause was a **layout mismatch** between Result types:
+- Generic `Result[T, E]` uses 3 fields: `{i1 tag, T ok_value, E err_value}`
+- `Result[void, IoError]` was using 2 fields: `{i1 tag, IoError err_value}`
 
-#### Checker Changes (checker.zig)
-- Registered File, IoError, Stdout, Stderr types in `initBuiltins()`
-- Added `stdout()` and `stderr()` builtin functions returning their respective types
-- Added method checking for File (open, read, write, write_string, close, flush)
-- Added method checking for Stdout/Stderr (write_string, flush)
+This broke Result methods like `unwrap_err()` which access field index 2 for the error value.
 
-#### Codegen Changes (emit.zig)
-- Added libc function declarations
-- Added `LocalValue` flags: `is_file`, `is_stdout`, `is_stderr`
-- Implemented `isTypeFile()`, `isTypeStdout()`, `isTypeStderr()` helpers
-- Implemented `isFileExpr()`, `isStdoutExpr()`, `isStderrExpr()` for method dispatch
-- Implemented emit functions for all File, Stdout, Stderr methods
-- Updated `inferExprType` to return pointer type for `stdout()`/`stderr()` calls
-
-### Pending Work
-
-File methods return `Result[T, IoError]`, but full integration with existing `is_ok()`, `is_err()`, `unwrap()` methods requires the custom Result type layouts to match the existing Result handling code. This can be addressed in a follow-up task.
+**Fix**: Changed `getVoidResultType()` to use a 3-field layout with an `i8` placeholder for the void ok_value, maintaining consistent field indices.
 
 ### Previously Completed
 
+- **Standard Library I/O MVP** ✅
+  - Added `File`, `IoError`, `Stdout`, `Stderr` builtin types
+  - Implemented `stdout()`, `stderr()`, `File.open()`, file methods
+  - Platform-specific stdout/stderr access (macOS/Linux)
 - **Into Trait** ✅
 - **Debug Mode Location Tracking** ✅
 - **Error Chain Display** ✅
@@ -72,13 +62,13 @@ All 427 tests pass:
 
 Continue with **Phase 4** tasks:
 
-1. **File I/O Result Integration** (Milestone 5):
-   - Fix Result type layout compatibility for File.open() and other methods
-   - Enable full file read/write test cases
-
-2. **Read/Write Traits** (Milestone 5 - stretch):
+1. **Read/Write Traits** (Milestone 5 - stretch):
    - Define Read and Write traits
    - Implement for File, Stdout, Stderr
+
+2. **File.read() with slice buffers** (Milestone 5 - stretch):
+   - Currently `file.read(buf)` expects a slice struct
+   - Need convenient way to create/pass byte buffers
 
 3. **Blanket Into Implementation** (Milestone 7 - stretch):
    - Auto-implement Into when From exists
@@ -91,11 +81,15 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test stdout functionality
-./zig-out/bin/klar build test/native/stdout_basic.kl -o /tmp/test && /tmp/test
+# Test file I/O
+./zig-out/bin/klar run test/native/file_write.kl
+./zig-out/bin/klar run test/native/file_error.kl
 
-# Example stdout usage:
-# var out: Stdout = stdout()
-# out.write_string("Hello from Klar!")
-# out.flush()
+# Example file I/O usage:
+# let result: Result[File, IoError] = File.open("test.txt", "w")
+# if result.is_ok() {
+#     var file: File = result!
+#     file.write_string("Hello!")
+#     file.close()
+# }
 ```

@@ -1,8 +1,38 @@
-// Test file write functionality
-// TODO: Add Result handling once Result types are properly integrated
+// Test file write functionality with Result handling
+// Expected exit code: 42
 fn main() -> i32 {
-    var out: Stdout = stdout()
-    out.write_string("File I/O test skipped - Result integration pending")
-    out.flush()
+    // Open a file for writing
+    let open_result: Result[File, IoError] = File.open("/tmp/klar_file_test.txt", "w")
+
+    if not open_result.is_ok() {
+        return 1  // Open failed
+    }
+
+    // Get the file handle
+    var file: File = open_result!
+
+    // Write to the file
+    let write_result: Result[i32, IoError] = file.write_string("Hello from Klar file I/O test!")
+    if not write_result.is_ok() {
+        return 2  // Write failed
+    }
+
+    let bytes_written: i32 = write_result!
+    if bytes_written <= 0 {
+        return 3  // No bytes written
+    }
+
+    // Flush the file
+    let flush_result: Result[void, IoError] = file.flush()
+    if not flush_result.is_ok() {
+        return 4  // Flush failed
+    }
+
+    // Close the file
+    let close_result: Result[void, IoError] = file.close()
+    if not close_result.is_ok() {
+        return 5  // Close failed
+    }
+
     return 42
 }

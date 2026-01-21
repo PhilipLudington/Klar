@@ -4298,6 +4298,39 @@ pub const Emitter = struct {
                         // String.with_capacity(n) returns String struct { ptr, i32, i32 }
                         return self.getStringStructType();
                     }
+                    // File.open(path, mode) -> Result[File, IoError]
+                    if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, m.method_name, "open")) {
+                        return self.getFileResultType();
+                    }
+                }
+
+                // File instance methods (file.write_string, file.read, etc.)
+                if (self.isFileExpr(m.object)) {
+                    if (std.mem.eql(u8, m.method_name, "write_string") or
+                        std.mem.eql(u8, m.method_name, "write") or
+                        std.mem.eql(u8, m.method_name, "read"))
+                    {
+                        // Returns Result[i32, IoError]
+                        return self.getI32ResultType();
+                    }
+                    if (std.mem.eql(u8, m.method_name, "close") or
+                        std.mem.eql(u8, m.method_name, "flush"))
+                    {
+                        // Returns Result[void, IoError]
+                        return self.getVoidResultType();
+                    }
+                }
+
+                // Stdout/Stderr instance methods
+                if (self.isStdoutExpr(m.object) or self.isStderrExpr(m.object)) {
+                    if (std.mem.eql(u8, m.method_name, "write_string")) {
+                        // Returns Result[i32, IoError]
+                        return self.getI32ResultType();
+                    }
+                    if (std.mem.eql(u8, m.method_name, "flush")) {
+                        // Returns Result[void, IoError]
+                        return self.getVoidResultType();
+                    }
                 }
 
                 // Array/slice methods - check FIRST before Cell methods (which also have .get())
@@ -15833,12 +15866,14 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Get the LLVM struct type for Result[void, IoError]: { tag: i1, error: IoError }
+    /// Get the LLVM struct type for Result[void, IoError]: { tag: i1, placeholder: i8, error: IoError }
+    /// Uses 3-field layout for consistency with other Result types (ok_value at index 1, err_value at index 2).
     fn getVoidResultType(self: *Emitter) llvm.TypeRef {
         const io_error_type = self.getIoErrorStructType();
         var fields = [_]llvm.TypeRef{
             llvm.Types.int1(self.ctx), // tag: 1=Ok, 0=Err
-            io_error_type, // IoError
+            llvm.Types.int8(self.ctx), // placeholder for void ok_value (maintains consistent field indices)
+            io_error_type, // IoError at index 2, same as other Result types
         };
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
