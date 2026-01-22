@@ -132,6 +132,10 @@ const CompilerScope = struct {
     /// Stack of break jump locations to patch.
     break_jumps: std.ArrayListUnmanaged(usize),
 
+    /// Whether the current function has an optional return type.
+    /// When true, explicit return statements wrap the value in Some.
+    returns_optional: bool,
+
     fn init(allocator: Allocator, function: *Function, function_type: FunctionType, enclosing: ?*CompilerScope) CompilerScope {
         var scope = CompilerScope{
             .function = function,
@@ -142,6 +146,7 @@ const CompilerScope = struct {
             .upvalue_count = 0,
             .scope_depth = 0,
             .enclosing = enclosing,
+            .returns_optional = false,
             .loop_depth = 0,
             .loop_starts = undefined,
             .loop_scope_depths = undefined,
@@ -288,6 +293,13 @@ pub const Compiler = struct {
         const previous = self.current;
         self.current = &scope;
 
+        // Track if this function returns an optional type
+        if (func.return_type) |ret_type| {
+            if (ret_type == .optional) {
+                self.current.returns_optional = true;
+            }
+        }
+
         // Begin a new scope for the function body.
         self.beginScope();
 
@@ -431,9 +443,19 @@ pub const Compiler = struct {
     fn compileReturnStmt(self: *Compiler, r: *ast.ReturnStmt) Error!void {
         if (r.value) |value| {
             try self.compileExpr(value);
+            // If the function returns ?T, wrap the value in Some
+            if (self.current.returns_optional) {
+                try self.emitOp(.op_some, r.span.line);
+            }
             try self.emitOp(.op_return, r.span.line);
         } else {
-            try self.emitOp(.op_return_void, r.span.line);
+            // Empty return in optional function => return None
+            if (self.current.returns_optional) {
+                try self.emitOp(.op_none, r.span.line);
+                try self.emitOp(.op_return, r.span.line);
+            } else {
+                try self.emitOp(.op_return_void, r.span.line);
+            }
         }
     }
 

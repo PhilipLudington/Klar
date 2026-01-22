@@ -306,7 +306,7 @@ pub const VM = struct {
                 .op_int_4 => try self.push(Value.fromInt(4)),
                 .op_int_5 => try self.push(Value.fromInt(5)),
                 .op_none => {
-                    const opt = try ObjOptional.createNone(self.allocator);
+                    const opt = try ObjOptional.createNoneGC(&self.gc);
                     try self.push(.{ .optional = opt });
                 },
 
@@ -720,7 +720,7 @@ pub const VM = struct {
                 // -------------------------------------------------------------
                 .op_some => {
                     const value = try self.pop();
-                    const opt = try ObjOptional.createSome(self.allocator, value);
+                    const opt = try ObjOptional.createSomeGC(&self.gc, value);
                     try self.push(.{ .optional = opt });
                 },
                 .op_unwrap => {
@@ -1422,20 +1422,20 @@ pub const VM = struct {
             if (arg_count != 0) return RuntimeError.WrongArity;
             _ = try self.pop();
             if (arr.items.len > 0) {
-                const opt = try ObjOptional.createSome(self.allocator, arr.items[0]);
+                const opt = try ObjOptional.createSomeGC(&self.gc, arr.items[0]);
                 try self.push(.{ .optional = opt });
             } else {
-                const opt = try ObjOptional.createNone(self.allocator);
+                const opt = try ObjOptional.createNoneGC(&self.gc);
                 try self.push(.{ .optional = opt });
             }
         } else if (std.mem.eql(u8, method, "last")) {
             if (arg_count != 0) return RuntimeError.WrongArity;
             _ = try self.pop();
             if (arr.items.len > 0) {
-                const opt = try ObjOptional.createSome(self.allocator, arr.items[arr.items.len - 1]);
+                const opt = try ObjOptional.createSomeGC(&self.gc, arr.items[arr.items.len - 1]);
                 try self.push(.{ .optional = opt });
             } else {
-                const opt = try ObjOptional.createNone(self.allocator);
+                const opt = try ObjOptional.createNoneGC(&self.gc);
                 try self.push(.{ .optional = opt });
             }
         } else if (std.mem.eql(u8, method, "get")) {
@@ -1444,10 +1444,10 @@ pub const VM = struct {
             _ = try self.pop();
             const idx = idx_val.asInt() orelse return RuntimeError.TypeError;
             if (idx < 0 or idx >= arr.items.len) {
-                const opt = try ObjOptional.createNone(self.allocator);
+                const opt = try ObjOptional.createNoneGC(&self.gc);
                 try self.push(.{ .optional = opt });
             } else {
-                const opt = try ObjOptional.createSome(self.allocator, arr.items[@intCast(idx)]);
+                const opt = try ObjOptional.createSomeGC(&self.gc, arr.items[@intCast(idx)]);
                 try self.push(.{ .optional = opt });
             }
         } else if (std.mem.eql(u8, method, "contains")) {
