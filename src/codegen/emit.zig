@@ -94,6 +94,17 @@ pub const Emitter = struct {
     /// Cache of allocated mangled enum names (for cleanup).
     mangled_enum_names: std.ArrayListUnmanaged([]const u8),
 
+    /// Sret (struct return) pointer for the current function.
+    /// Set when the function uses sret calling convention for returning aggregates.
+    current_sret_ptr: ?llvm.ValueRef,
+
+    /// Cached sret attribute kind ID (lazily initialized).
+    sret_attr_kind: ?c_uint,
+
+    /// Set of function names that use sret calling convention.
+    /// Used to detect sret at call sites.
+    sret_functions: std.StringHashMap(llvm.TypeRef),
+
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
 
     const ReturnTypeInfo = struct {
@@ -253,6 +264,9 @@ pub const Emitter = struct {
             .expected_type = null,
             .current_return_klar_type = null,
             .mangled_enum_names = .{},
+            .current_sret_ptr = null,
+            .sret_attr_kind = null,
+            .sret_functions = std.StringHashMap(llvm.TypeRef).init(allocator),
         };
     }
 
@@ -336,6 +350,12 @@ pub const Emitter = struct {
             self.allocator.free(name);
         }
         self.mangled_enum_names.deinit(self.allocator);
+        // Free sret function name allocations
+        var sret_it = self.sret_functions.keyIterator();
+        while (sret_it.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.sret_functions.deinit();
         self.layout_calc.deinit();
         self.builder.dispose();
         self.module.dispose();
@@ -404,25 +424,45 @@ pub const Emitter = struct {
             return;
         }
 
+        // Check if return type requires sret calling convention
+        const needs_sret = if (func.return_type) |rt| self.requiresSretForTypeExpr(rt) else false;
+        const return_llvm_type = if (func.return_type) |rt|
+            try self.typeExprToLLVM(rt)
+        else
+            llvm.Types.void_(self.ctx);
+
         // Build parameter types
         var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
         defer param_types.deinit(self.allocator);
+
+        // If sret is needed, add pointer parameter as first param
+        if (needs_sret) {
+            param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
+        }
 
         for (func.params) |param| {
             const param_ty = try self.typeExprToLLVM(param.type_);
             param_types.append(self.allocator, param_ty) catch return EmitError.OutOfMemory;
         }
 
-        // Get return type
-        const return_type = if (func.return_type) |rt|
-            try self.typeExprToLLVM(rt)
-        else
-            llvm.Types.void_(self.ctx);
+        // Get return type - void if using sret
+        const return_type = if (needs_sret) llvm.Types.void_(self.ctx) else return_llvm_type;
 
         const fn_type = llvm.Types.function(return_type, param_types.items, false);
         const name = self.allocator.dupeZ(u8, func.name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
         const llvm_func = llvm.addFunction(self.module, name, fn_type);
+
+        // Add sret attribute to first parameter if needed
+        if (needs_sret) {
+            const sret_kind = self.getSretAttrKind();
+            const sret_attr = llvm.createTypeAttribute(self.ctx, sret_kind, return_llvm_type);
+            llvm.addAttributeAtIndex(llvm_func, 1, sret_attr); // Index 1 = first param
+
+            // Register this function as using sret so call sites can handle it
+            const name_copy = self.allocator.dupe(u8, func.name) catch return EmitError.OutOfMemory;
+            self.sret_functions.put(name_copy, return_llvm_type) catch return EmitError.OutOfMemory;
+        }
 
         // Set the calling convention for proper ABI compliance
         llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
@@ -770,9 +810,22 @@ pub const Emitter = struct {
         // Clear named values for new scope
         self.named_values.clearRetainingCapacity();
 
+        // Check if return type requires sret calling convention
+        const needs_sret = if (func.return_type) |rt| self.requiresSretForTypeExpr(rt) else false;
+
+        // Handle sret parameter if needed
+        // First LLVM param is the sret pointer, user params start at index 1
+        const param_offset: u32 = if (needs_sret) 1 else 0;
+        if (needs_sret) {
+            self.current_sret_ptr = llvm.getParam(function, 0);
+        } else {
+            self.current_sret_ptr = null;
+        }
+        defer self.current_sret_ptr = null;
+
         // Add parameters to named values
         for (func.params, 0..) |param, i| {
-            const param_value = llvm.getParam(function, @intCast(i));
+            const param_value = llvm.getParam(function, @intCast(i + param_offset));
             const param_ty = try self.typeExprToLLVM(param.type_);
 
             // Allocate stack space for parameter
@@ -828,8 +881,13 @@ pub const Emitter = struct {
                     self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
                 } else if (result) |val| {
-                    // If return type is optional and value isn't already optional, wrap in Some
-                    if (self.current_return_type) |rt_info| {
+                    // Handle sret: store to sret pointer and return void
+                    if (self.current_sret_ptr) |sret_ptr| {
+                        self.emitDropsForReturn();
+                        _ = self.builder.buildStore(val, sret_ptr);
+                        _ = self.builder.buildRetVoid();
+                    } else if (self.current_return_type) |rt_info| {
+                        // If return type is optional and value isn't already optional, wrap in Some
                         if (rt_info.is_optional) {
                             const val_type = llvm.typeOf(val);
                             const val_kind = llvm.getTypeKind(val_type);
@@ -846,15 +904,23 @@ pub const Emitter = struct {
                                 return;
                             }
                         }
+                        self.emitDropsForReturn();
+                        _ = self.builder.buildRet(val);
+                    } else {
+                        self.emitDropsForReturn();
+                        _ = self.builder.buildRet(val);
                     }
-                    self.emitDropsForReturn();
-                    _ = self.builder.buildRet(val);
                 } else if (self.current_return_type) |rt_info| {
                     if (rt_info.is_optional) {
                         // Return None for optional type with no value
                         self.emitDropsForReturn();
                         const none_val = self.emitNone(rt_info.llvm_type);
-                        _ = self.builder.buildRet(none_val);
+                        if (self.current_sret_ptr) |sret_ptr| {
+                            _ = self.builder.buildStore(none_val, sret_ptr);
+                            _ = self.builder.buildRetVoid();
+                        } else {
+                            _ = self.builder.buildRet(none_val);
+                        }
                     } else {
                         self.emitDropsForReturn();
                         _ = self.builder.buildRetVoid();
@@ -1087,14 +1153,25 @@ pub const Emitter = struct {
                             }
                         }
                     }
-                    _ = self.builder.buildRet(result);
+                    // If using sret, store to sret pointer and return void
+                    if (self.current_sret_ptr) |sret_ptr| {
+                        _ = self.builder.buildStore(result, sret_ptr);
+                        _ = self.builder.buildRetVoid();
+                    } else {
+                        _ = self.builder.buildRet(result);
+                    }
                 } else {
                     // Return with no value
                     if (self.current_return_type) |rt_info| {
                         if (rt_info.is_optional) {
                             // Return None for optional type
                             const none_val = self.emitNone(rt_info.llvm_type);
-                            _ = self.builder.buildRet(none_val);
+                            if (self.current_sret_ptr) |sret_ptr| {
+                                _ = self.builder.buildStore(none_val, sret_ptr);
+                                _ = self.builder.buildRetVoid();
+                            } else {
+                                _ = self.builder.buildRet(none_val);
+                            }
                         } else {
                             _ = self.builder.buildRetVoid();
                         }
@@ -3279,7 +3356,35 @@ pub const Emitter = struct {
                 defer self.allocator.free(mangled_z);
 
                 if (self.module.getNamedFunction(mangled_z)) |func| {
-                    // Call the monomorphized function
+                    // Check if this function uses sret
+                    if (self.sret_functions.get(mangled_name)) |sret_return_type| {
+                        // Sret call: allocate space, prepend pointer, call, load result
+                        const sret_alloca = self.builder.buildAlloca(sret_return_type, "sret.tmp");
+
+                        var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                        defer args.deinit(self.allocator);
+
+                        // First argument is the sret pointer
+                        args.append(self.allocator, sret_alloca) catch return EmitError.OutOfMemory;
+
+                        // Then the user arguments
+                        for (call.args) |arg| {
+                            args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                        }
+
+                        const fn_type = llvm.getGlobalValueType(func);
+                        const call_inst = self.builder.buildCall(fn_type, func, args.items, "");
+
+                        // Add sret attribute to the call site
+                        const sret_kind = self.getSretAttrKind();
+                        const sret_attr = llvm.createTypeAttribute(self.ctx, sret_kind, sret_return_type);
+                        llvm.addCallSiteAttribute(call_inst, 1, sret_attr);
+
+                        // Load and return the result
+                        return self.builder.buildLoad(sret_return_type, sret_alloca, "sret.load");
+                    }
+
+                    // Normal call (non-sret)
                     var args = std.ArrayListUnmanaged(llvm.ValueRef){};
                     defer args.deinit(self.allocator);
 
@@ -3313,7 +3418,35 @@ pub const Emitter = struct {
             defer self.allocator.free(name_z);
 
             if (self.module.getNamedFunction(name_z)) |func| {
-                // Direct function call
+                // Check if this function uses sret
+                if (self.sret_functions.get(lookup_name)) |sret_return_type| {
+                    // Sret call: allocate space, prepend pointer, call, load result
+                    const sret_alloca = self.builder.buildAlloca(sret_return_type, "sret.tmp");
+
+                    var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                    defer args.deinit(self.allocator);
+
+                    // First argument is the sret pointer
+                    args.append(self.allocator, sret_alloca) catch return EmitError.OutOfMemory;
+
+                    // Then the user arguments
+                    for (call.args) |arg| {
+                        args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                    }
+
+                    const fn_type = llvm.getGlobalValueType(func);
+                    const call_inst = self.builder.buildCall(fn_type, func, args.items, "");
+
+                    // Add sret attribute to the call site
+                    const sret_kind = self.getSretAttrKind();
+                    const sret_attr = llvm.createTypeAttribute(self.ctx, sret_kind, sret_return_type);
+                    llvm.addCallSiteAttribute(call_inst, 1, sret_attr);
+
+                    // Load and return the result
+                    return self.builder.buildLoad(sret_return_type, sret_alloca, "sret.load");
+                }
+
+                // Normal direct function call (non-sret)
                 var args = std.ArrayListUnmanaged(llvm.ValueRef){};
                 defer args.deinit(self.allocator);
 
@@ -4325,6 +4458,11 @@ pub const Emitter = struct {
                 // Check if this is a monomorphized generic function call
                 if (self.type_checker) |checker| {
                     if (checker.getCallResolution(call)) |mangled_name| {
+                        // Check if this function uses sret (return type is in sret_functions)
+                        if (self.sret_functions.get(mangled_name)) |sret_type| {
+                            return sret_type;
+                        }
+
                         const mangled_z = self.allocator.dupeZ(u8, mangled_name) catch return EmitError.OutOfMemory;
                         defer self.allocator.free(mangled_z);
 
@@ -4340,6 +4478,11 @@ pub const Emitter = struct {
                     if (local.closure_return_type) |ret_type| {
                         return ret_type;
                     }
+                }
+
+                // Check if this function uses sret (return type is in sret_functions)
+                if (self.sret_functions.get(func_name)) |sret_type| {
+                    return sret_type;
                 }
 
                 const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
@@ -21732,6 +21875,140 @@ pub const Emitter = struct {
     }
 
     // =========================================================================
+    // Sret (Struct Return) Helpers
+    // =========================================================================
+
+    /// Check if a Klar type requires sret (struct return) calling convention.
+    /// Arrays always need sret. Large structs may need sret based on ABI.
+    fn requiresSret(self: *Emitter, klar_type: types.Type) bool {
+        return switch (klar_type) {
+            // Arrays always need sret - they can't be returned in registers
+            .array => true,
+            // Structs need sret if too large for register return
+            .struct_ => |s| {
+                const size = self.getSizeOfKlarType(klar_type);
+                return size > self.abi.maxRegisterReturnSize() or s.fields.len > 2;
+            },
+            // Applied types (generic instantiations) need to check the concrete type
+            .applied => |a| {
+                if (a.base == .struct_) {
+                    const size = self.getSizeOfKlarType(klar_type);
+                    return size > self.abi.maxRegisterReturnSize();
+                }
+                return false;
+            },
+            // Tuples with more than 2 elements or large size need sret
+            .tuple => |t| {
+                if (t.elements.len > 2) return true;
+                const size = self.getSizeOfKlarType(klar_type);
+                return size > self.abi.maxRegisterReturnSize();
+            },
+            // Other types can be returned in registers
+            else => false,
+        };
+    }
+
+    /// Get the size of a Klar type in bytes.
+    fn getSizeOfKlarType(self: *Emitter, klar_type: types.Type) usize {
+        return switch (klar_type) {
+            .primitive => |prim| switch (prim) {
+                .i8_, .u8_ => 1,
+                .i16_, .u16_ => 2,
+                .i32_, .u32_, .f32_, .char_ => 4,
+                .i64_, .u64_, .f64_, .isize_, .usize_ => 8,
+                .i128_, .u128_ => 16,
+                .bool_ => 1,
+                .string_ => 8, // pointer
+            },
+            .void_, .never, .unknown, .error_type => 0,
+            .array => |arr| {
+                const elem_size = self.getSizeOfKlarType(arr.element);
+                return elem_size * arr.size;
+            },
+            .slice => 16, // ptr + len
+            .tuple => |t| {
+                var total: usize = 0;
+                for (t.elements) |elem| {
+                    total += self.getSizeOfKlarType(elem);
+                }
+                return total;
+            },
+            .optional => |opt| {
+                // 1 byte tag + inner type (with alignment)
+                const inner_size = self.getSizeOfKlarType(opt.*);
+                return 8 + inner_size; // Simplified: assume 8-byte alignment for tag
+            },
+            .result => |res| {
+                const ok_size = self.getSizeOfKlarType(res.ok_type);
+                const err_size = self.getSizeOfKlarType(res.err_type);
+                return 8 + ok_size + err_size; // tag + both variants
+            },
+            .function => 16, // closure struct: fn_ptr + env_ptr
+            .reference => 8, // pointer
+            .struct_ => |s| {
+                var total: usize = 0;
+                for (s.fields) |field| {
+                    total += self.getSizeOfKlarType(field.type_);
+                }
+                return total;
+            },
+            .applied => |a| {
+                // For applied types, try to get the size from the base
+                if (a.base == .struct_) {
+                    var total: usize = 0;
+                    for (a.base.struct_.fields) |field| {
+                        // Fields may reference type params, so this is approximate
+                        total += self.getSizeOfKlarType(field.type_);
+                    }
+                    return total;
+                }
+                return 8; // Default to pointer size
+            },
+            .enum_ => 8, // tag + max variant size (simplified)
+            .trait_ => 8, // pointer
+            .type_var => 8, // generic - assume pointer
+            .associated_type_ref => 8, // assume pointer
+            .rc, .arc, .weak_rc, .weak_arc => 8, // pointer
+            // Additional types - all use pointer or small fixed size
+            .cell => 8, // pointer to value
+            .range => 16, // start + end
+            .context_error => 8, // pointer
+            .list, .map, .set => 8, // pointer to internal structure
+            .string_data => 8, // pointer to string data
+            .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => 8, // handles/pointers
+            .buf_reader, .buf_writer => 8, // pointers to buffered I/O structures
+        };
+    }
+
+    /// Get or create the sret attribute kind ID.
+    fn getSretAttrKind(self: *Emitter) c_uint {
+        if (self.sret_attr_kind) |kind| {
+            return kind;
+        }
+        const kind = llvm.getEnumAttributeKindForName("sret");
+        self.sret_attr_kind = kind;
+        return kind;
+    }
+
+    /// Get or create the noalias attribute kind ID.
+    fn getNoaliasAttrKind(_: *Emitter) c_uint {
+        return llvm.getEnumAttributeKindForName("noalias");
+    }
+
+    /// Check if an AST TypeExpr requires sret calling convention.
+    /// This is used for non-generic functions where we have AST types instead of checker types.
+    fn requiresSretForTypeExpr(_: *Emitter, type_expr: ast.TypeExpr) bool {
+        return switch (type_expr) {
+            // Arrays always need sret - they can't be returned in registers
+            .array => true,
+            // Tuple types with more than 2 elements likely need sret
+            .tuple => |t| t.elements.len > 2,
+            // Other types can generally be returned in registers
+            else => false,
+        };
+    }
+
+    // =========================================================================
     // Type Conversion from Checker Types
     // =========================================================================
 
@@ -22179,17 +22456,26 @@ pub const Emitter = struct {
     fn declareMonomorphizedFunction(self: *Emitter, mono: TypeChecker.MonomorphizedFunction) EmitError!void {
         const func_type = mono.concrete_type.function;
 
+        // Check if return type requires sret calling convention
+        const needs_sret = self.requiresSret(func_type.return_type);
+        const return_llvm_type = self.typeToLLVM(func_type.return_type);
+
         // Build parameter types from the concrete function type
         var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
         defer param_types.deinit(self.allocator);
+
+        // If sret is needed, add pointer parameter as first param
+        if (needs_sret) {
+            param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
+        }
 
         for (func_type.params) |param_ty| {
             const llvm_param_ty = self.typeToLLVM(param_ty);
             param_types.append(self.allocator, llvm_param_ty) catch return EmitError.OutOfMemory;
         }
 
-        // Get return type
-        const return_type = self.typeToLLVM(func_type.return_type);
+        // Get return type - void if using sret
+        const return_type = if (needs_sret) llvm.Types.void_(self.ctx) else return_llvm_type;
 
         // Create LLVM function type
         const fn_type = llvm.Types.function(return_type, param_types.items, false);
@@ -22199,6 +22485,17 @@ pub const Emitter = struct {
         defer self.allocator.free(mangled_name);
 
         const llvm_func = llvm.addFunction(self.module, mangled_name, fn_type);
+
+        // Add sret attribute to first parameter if needed
+        if (needs_sret) {
+            const sret_kind = self.getSretAttrKind();
+            const sret_attr = llvm.createTypeAttribute(self.ctx, sret_kind, return_llvm_type);
+            llvm.addAttributeAtIndex(llvm_func, 1, sret_attr); // Index 1 = first param
+
+            // Register this function as using sret so call sites can handle it
+            const name_copy = self.allocator.dupe(u8, mono.mangled_name) catch return EmitError.OutOfMemory;
+            self.sret_functions.put(name_copy, return_llvm_type) catch return EmitError.OutOfMemory;
+        }
 
         // Set the calling convention
         llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
@@ -22215,6 +22512,9 @@ pub const Emitter = struct {
 
         const function = self.module.getNamedFunction(mangled_name) orelse return EmitError.InvalidAST;
         self.current_function = function;
+
+        // Check if return type requires sret calling convention
+        const needs_sret = self.requiresSret(func_type.return_type);
 
         // Set up return type info
         const return_llvm_type = self.typeToLLVM(func_type.return_type);
@@ -22240,9 +22540,19 @@ pub const Emitter = struct {
         // Clear named values
         self.named_values.clearRetainingCapacity();
 
+        // Handle sret parameter if needed
+        // First LLVM param is the sret pointer, user params start at index 1
+        const param_offset: u32 = if (needs_sret) 1 else 0;
+        if (needs_sret) {
+            self.current_sret_ptr = llvm.getParam(function, 0);
+        } else {
+            self.current_sret_ptr = null;
+        }
+        defer self.current_sret_ptr = null;
+
         // Add parameters to named values with concrete types
         for (func.params, 0..) |param, i| {
-            const param_value = llvm.getParam(function, @intCast(i));
+            const param_value = llvm.getParam(function, @intCast(i + param_offset));
             const concrete_param_type = func_type.params[i];
             const param_ty = self.typeToLLVM(concrete_param_type);
 
@@ -22293,7 +22603,12 @@ pub const Emitter = struct {
                     self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
                 } else if (result) |val| {
-                    if (self.current_return_type) |rt_info| {
+                    if (self.current_sret_ptr) |sret_ptr| {
+                        // Store result to sret pointer and return void
+                        self.emitDropsForReturn();
+                        _ = self.builder.buildStore(val, sret_ptr);
+                        _ = self.builder.buildRetVoid();
+                    } else if (self.current_return_type) |rt_info| {
                         if (rt_info.is_optional) {
                             self.emitDropsForReturn();
                             const wrapped = self.emitSome(val, rt_info.inner_type.?);

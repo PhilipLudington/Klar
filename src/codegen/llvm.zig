@@ -894,3 +894,36 @@ pub fn getSubprogram(func: ValueRef) ?MetadataRef {
     if (sp == null) return null;
     return sp;
 }
+
+// ============================================================================
+// Attribute API (for sret, noalias, etc.)
+// ============================================================================
+
+/// Get the unique attribute kind ID for a named attribute.
+/// Returns 0 if the attribute name is not recognized.
+pub fn getEnumAttributeKindForName(name: []const u8) c_uint {
+    return c.LLVMGetEnumAttributeKindForName(name.ptr, name.len);
+}
+
+/// Create an enum attribute with the given kind ID and optional value.
+pub fn createEnumAttribute(ctx: Context, kind_id: c_uint, val: u64) c.LLVMAttributeRef {
+    return c.LLVMCreateEnumAttribute(ctx.ref, kind_id, val);
+}
+
+/// Create a type attribute (e.g., sret, byval) with an associated type.
+pub fn createTypeAttribute(ctx: Context, kind_id: c_uint, ty: TypeRef) c.LLVMAttributeRef {
+    return c.LLVMCreateTypeAttribute(ctx.ref, kind_id, ty);
+}
+
+/// Add an attribute to a function at the specified index.
+/// Index 0 = return value, 1+ = parameters (1-based).
+/// Use LLVMAttributeFunctionIndex for function-level attributes.
+pub fn addAttributeAtIndex(func: ValueRef, idx: c_uint, attr: c.LLVMAttributeRef) void {
+    c.LLVMAddAttributeAtIndex(func, idx, attr);
+}
+
+/// Add an attribute to a call instruction at the specified index.
+/// Index 0 = return value, 1+ = arguments (1-based).
+pub fn addCallSiteAttribute(call: ValueRef, idx: c_uint, attr: c.LLVMAttributeRef) void {
+    c.LLVMAddCallSiteAttribute(call, idx, attr);
+}

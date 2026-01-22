@@ -1,0 +1,28 @@
+// Test fixed-size array returns using sret calling convention
+
+fn make_ints() -> [i32; 3] {
+    return [10, 20, 12]
+}
+
+fn make_more_ints() -> [i32; 5] {
+    return [1, 2, 3, 4, 5]
+}
+
+fn sum_array(arr: [i32; 3]) -> i32 {
+    return arr[0] + arr[1] + arr[2]
+}
+
+fn main() -> i32 {
+    // Test returning and using int array
+    let ints: [i32; 3] = make_ints()
+    if ints[0] + ints[1] + ints[2] != 42 { return 1 }
+
+    // Test with helper function
+    if sum_array(make_ints()) != 42 { return 2 }
+
+    // Test larger array
+    let more: [i32; 5] = make_more_ints()
+    if more[0] + more[4] != 6 { return 3 }
+
+    return 0
+}
