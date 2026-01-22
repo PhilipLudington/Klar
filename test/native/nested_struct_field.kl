@@ -1,0 +1,28 @@
+// Test nested struct field access on function call results
+
+struct Point { x: i32, y: i32 }
+struct Rectangle { origin: Point, width: i32, height: i32 }
+
+fn make_point(x: i32, y: i32) -> Point {
+    return Point { x: x, y: y }
+}
+
+fn make_rect() -> Rectangle {
+    return Rectangle { origin: Point { x: 5, y: 6 }, width: 100, height: 200 }
+}
+
+fn main() -> i32 {
+    // Primitive field on function call (already works)
+    let x: i32 = make_point(10, 20).x
+
+    // Struct field on function call (the bug fix)
+    let origin: Point = make_rect().origin
+
+    // Chained access
+    let ox: i32 = make_rect().origin.x
+
+    if x == 10 and origin.x == 5 and origin.y == 6 and ox == 5 {
+        return 42
+    }
+    return 1
+}

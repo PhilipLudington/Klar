@@ -4376,7 +4376,19 @@ pub const Emitter = struct {
                 return llvm.Types.array(elem_ty, @intCast(arr.elements.len));
             },
             .struct_literal => |s| {
-                // Infer struct type from field values
+                // First check if there's a type name - if so, use the registered struct type
+                if (s.type_name) |type_name| {
+                    const name = switch (type_name) {
+                        .named => |n| n.name,
+                        else => null,
+                    };
+                    if (name) |n| {
+                        if (self.struct_types.get(n)) |struct_info| {
+                            return struct_info.llvm_type;
+                        }
+                    }
+                }
+                // Fallback: Infer struct type from field values (anonymous struct)
                 var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
                 defer field_types.deinit(self.allocator);
                 for (s.fields) |field_init| {
@@ -4386,7 +4398,21 @@ pub const Emitter = struct {
                 return llvm.Types.struct_(self.ctx, field_types.items, false);
             },
             .field => |f| {
-                // Field access on a composite - get the base type and extract field type
+                // Get the struct type name from the object expression (handles call expressions too)
+                const struct_name = self.getStructTypeNameFromExpr(f.object);
+                if (struct_name) |name| {
+                    // Use lookupFieldType for correct struct type resolution
+                    if (self.lookupFieldType(name, f.field_name)) |field_ty| {
+                        return field_ty;
+                    }
+                    // Fallback to LLVMStructGetTypeAtIndex for non-struct fields
+                    if (self.struct_types.get(name)) |struct_info| {
+                        if (self.lookupFieldIndex(name, f.field_name)) |idx| {
+                            return llvm.c.LLVMStructGetTypeAtIndex(struct_info.llvm_type, idx);
+                        }
+                    }
+                }
+                // Fallback: Field access on a composite - get the base type and extract field type
                 const base_ty = try self.inferExprType(f.object);
                 const type_kind = llvm.getTypeKind(base_ty);
                 if (type_kind == llvm.c.LLVMStructTypeKind) {
@@ -4394,7 +4420,7 @@ pub const Emitter = struct {
                     if (std.fmt.parseInt(u32, f.field_name, 10)) |idx| {
                         return llvm.c.LLVMStructGetTypeAtIndex(base_ty, idx);
                     } else |_| {
-                        // Named field - for now return i32 as placeholder
+                        // Named field - fallback to i32 as placeholder
                         return llvm.Types.int32(self.ctx);
                     }
                 }
@@ -5339,6 +5365,13 @@ pub const Emitter = struct {
     /// Extract struct type name from an expression if it's a struct literal.
     fn getStructTypeName(self: *Emitter, expr: ast.Expr) ?[]const u8 {
         return switch (expr) {
+            .identifier => |id| {
+                // Look up variable's struct type name
+                if (self.named_values.get(id.name)) |local| {
+                    return local.struct_type_name;
+                }
+                return null;
+            },
             .struct_literal => |lit| {
                 if (lit.type_name) |type_name| {
                     return switch (type_name) {
@@ -5388,6 +5421,84 @@ pub const Emitter = struct {
         };
     }
 
+    /// Extract struct type name from an expression, including call expressions and field access.
+    /// For call expressions, looks up the function's return type.
+    /// For field expressions, looks up the field's type in the parent struct.
+    fn getStructTypeNameFromExpr(self: *Emitter, expr: ast.Expr) ?[]const u8 {
+        // First try the basic getStructTypeName for identifiers and struct literals
+        if (self.getStructTypeName(expr)) |name| {
+            return name;
+        }
+
+        // For call expressions, look up the function's return type
+        if (expr == .call) {
+            const call = expr.call;
+            const func_name = switch (call.callee) {
+                .identifier => |id| id.name,
+                else => return null,
+            };
+
+            // Check if we have type checker info for the function's return type
+            if (self.type_checker) |tc| {
+                // Look up the function symbol to get its return type
+                if (tc.global_scope.lookup(func_name)) |sym| {
+                    if (sym.type_ == .function) {
+                        const ret_type = sym.type_.function.return_type;
+                        if (ret_type == .struct_) {
+                            return ret_type.struct_.name;
+                        }
+                    }
+                }
+            }
+        }
+
+        // For field expressions, look up the field's type in the parent struct
+        if (expr == .field) {
+            const field = expr.field;
+            // Recursively get the struct type name of the object
+            const parent_struct_name = self.getStructTypeNameFromExpr(field.object) orelse return null;
+            // Look up the field type
+            return self.lookupFieldStructTypeName(parent_struct_name, field.field_name);
+        }
+
+        return null;
+    }
+
+    /// Look up the struct type name of a field, if the field is a struct type.
+    fn lookupFieldStructTypeName(self: *Emitter, struct_type_name: []const u8, field_name: []const u8) ?[]const u8 {
+        const tc = self.type_checker orelse return null;
+
+        // Try global scope for non-generic structs
+        if (tc.global_scope.lookup(struct_type_name)) |sym| {
+            if (sym.type_ == .struct_) {
+                for (sym.type_.struct_.fields) |field| {
+                    if (std.mem.eql(u8, field.name, field_name)) {
+                        if (field.type_ == .struct_) {
+                            return field.type_.struct_.name;
+                        }
+                        return null;
+                    }
+                }
+            }
+        }
+
+        // Try monomorphized structs for generic types
+        for (tc.getMonomorphizedStructs()) |mono| {
+            if (std.mem.eql(u8, mono.mangled_name, struct_type_name)) {
+                for (mono.concrete_type.fields) |field| {
+                    if (std.mem.eql(u8, field.name, field_name)) {
+                        if (field.type_ == .struct_) {
+                            return field.type_.struct_.name;
+                        }
+                        return null;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
     /// Look up a field index by name for a struct type.
     fn lookupFieldIndex(self: *Emitter, struct_type_name: []const u8, field_name: []const u8) ?u32 {
         if (self.struct_types.get(struct_type_name)) |info| {
@@ -5397,6 +5508,37 @@ pub const Emitter = struct {
                 }
             }
         }
+        return null;
+    }
+
+    /// Look up the LLVM type for a field, using registered struct types for struct-typed fields.
+    /// This is necessary because LLVMStructGetTypeAtIndex may return a type reference that
+    /// differs from the registered struct type in struct_types, causing load failures.
+    fn lookupFieldType(self: *Emitter, struct_type_name: []const u8, field_name: []const u8) ?llvm.TypeRef {
+        const tc = self.type_checker orelse return null;
+
+        // Try global scope for non-generic structs
+        if (tc.global_scope.lookup(struct_type_name)) |sym| {
+            if (sym.type_ == .struct_) {
+                for (sym.type_.struct_.fields) |field| {
+                    if (std.mem.eql(u8, field.name, field_name)) {
+                        return self.typeToLLVM(field.type_);
+                    }
+                }
+            }
+        }
+
+        // Try monomorphized structs for generic types
+        for (tc.getMonomorphizedStructs()) |mono| {
+            if (std.mem.eql(u8, mono.mangled_name, struct_type_name)) {
+                for (mono.concrete_type.fields) |field| {
+                    if (std.mem.eql(u8, field.name, field_name)) {
+                        return self.typeToLLVM(field.type_);
+                    }
+                }
+            }
+        }
+
         return null;
     }
 
@@ -5790,7 +5932,8 @@ pub const Emitter = struct {
                                 llvm.Const.int32(self.ctx, @intCast(idx)),
                             };
                             const field_ptr = self.builder.buildGEP(gep_type, base_ptr, &indices, "field.ptr");
-                            const field_type = llvm.c.LLVMStructGetTypeAtIndex(gep_type, idx);
+                            const field_type = self.lookupFieldType(struct_name, field.field_name) orelse
+                                llvm.c.LLVMStructGetTypeAtIndex(gep_type, idx);
                             return self.builder.buildLoad(field_type, field_ptr, "field.val");
                         }
                     }
@@ -5821,8 +5964,21 @@ pub const Emitter = struct {
                 const field_type = llvm.c.LLVMStructGetTypeAtIndex(obj_type, idx);
                 return self.builder.buildLoad(field_type, field_ptr, "field.val");
             } else {
-                // Named field access on non-identifier struct - need type context from expression
-                // For now, search all registered struct types to find a match by field count
+                // Named field access on non-identifier struct
+                // Get struct type name from expression to look up field index
+                if (self.getStructTypeNameFromExpr(field.object)) |struct_name| {
+                    if (self.lookupFieldIndex(struct_name, field.field_name)) |idx| {
+                        var indices = [_]llvm.ValueRef{
+                            llvm.Const.int32(self.ctx, 0),
+                            llvm.Const.int32(self.ctx, @intCast(idx)),
+                        };
+                        // Use obj_type for consistency (alloca was created with obj_type)
+                        const field_ptr = self.builder.buildGEP(obj_type, alloca, &indices, "field.ptr");
+                        const field_type = self.lookupFieldType(struct_name, field.field_name) orelse
+                            llvm.c.LLVMStructGetTypeAtIndex(obj_type, idx);
+                        return self.builder.buildLoad(field_type, field_ptr, "field.val");
+                    }
+                }
                 return EmitError.UnsupportedFeature;
             }
         }
