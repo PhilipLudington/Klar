@@ -1,56 +1,55 @@
-# Resume Point: Convenience I/O Methods Complete
+# Resume Point: Buffered I/O Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 2 (Traits and Polymorphism). Added convenience I/O methods for file reading.
+Working on **Phase 4: Language Completion** - Milestone 5 (Standard Library - I/O). Implemented buffered I/O types.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **File.read_to_string(path)** - Static convenience method to read entire file as String
-  - `File.read_to_string(path: string) -> Result[String, IoError]`
-  - Opens file, reads all content, closes file, returns String
-  - Uses fseek/ftell/fread pattern for efficient single-read
+- **BufReader[R: Read]** - Buffered reader wrapper for any Read implementor
+  - `BufReader.new[R](reader: R) -> BufReader[R]`
+  - `read(self: inout Self, buf: ref [u8]) -> Result[i32, IoError]`
+  - 8KB internal buffer for efficient reading
+  - Struct layout: `{ inner: FILE*, buffer: [8192]u8, pos: i32, cap: i32 }`
 
-- **File.read_all(path)** - Static convenience method to read entire file as bytes
-  - `File.read_all(path: string) -> Result[List[u8], IoError]`
-  - Opens file in binary mode, reads all bytes, closes file, returns List[u8]
+- **BufWriter[W: Write]** - Buffered writer wrapper for any Write implementor
+  - `BufWriter.new[W](writer: W) -> BufWriter[W]`
+  - `write_string(self: inout Self, s: string) -> Result[i32, IoError]`
+  - `flush(self: inout Self) -> Result[void, IoError]`
+  - 8KB internal buffer, auto-flushes when full
+  - Struct layout: `{ inner: FILE*, buffer: [8192]u8, len: i32 }`
 
 **Example Usage:**
 ```klar
-// Read file as string
-let result: Result[String, IoError] = File.read_to_string("config.txt")
-if result.is_ok() {
-    let content: String = result!
-    // Use content.len(), content.contains(), etc.
-}
+// Buffered reading
+var file: File = File.open("/tmp/test.txt", "r")!
+var reader: BufReader[File] = BufReader.new[File](file)
+var buf: [u8; 256] = @repeat(0.as[u8], 256)
+let bytes_read: i32 = reader.read(ref buf)!
 
-// Read file as bytes
-let bytes_result: Result[List[u8], IoError] = File.read_all("image.png")
-if bytes_result.is_ok() {
-    let bytes: List[u8] = bytes_result!
-    // Use bytes.len(), bytes.get(i), etc.
-}
+// Buffered writing
+var file: File = File.open("/tmp/output.txt", "w")!
+var writer: BufWriter[File] = BufWriter.new[File](file)
+writer.write_string("Hello")!
+writer.write_string(" World")!
+writer.flush()!
 ```
 
 **Files Modified:**
-- `src/checker.zig` - Added type checking for File.read_to_string and File.read_all
-- `src/codegen/emit.zig` - Added:
-  - `emitFileReadToString` - LLVM codegen for read_to_string
-  - `emitFileReadAll` - LLVM codegen for read_all
-  - `getStringResultType` - Result[String, IoError] LLVM type
-  - `getListResultType` - Result[List[u8], IoError] LLVM type
-  - `getOrDeclareFseek` - C fseek function declaration
-  - `getOrDeclareFtell` - C ftell function declaration
-  - Updated `inferExprType` for new methods
+- `src/types.zig` - Added BufReaderType and BufWriterType to Type union
+- `src/checker.zig` - Added trait bounds validation to recordStructMonomorphization, registered BufReader/BufWriter types and methods
+- `src/codegen/emit.zig` - Added LLVM struct types, method codegen, variable tracking flags
 
 **New Tests:**
-- `test/native/file_read_to_string.kl` - Tests File.read_to_string
-- `test/native/file_read_all.kl` - Tests File.read_all with byte verification
+- `test/native/bufreader_basic.kl` - Tests BufReader with File
+- `test/native/bufwriter_basic.kl` - Tests BufWriter with File
+- `test/native/bufwriter_writestr.kl` - Tests BufWriter.write_string
 
 ### Previously Completed
 
+- **File.read_to_string(path)** and **File.read_all(path)** - Static convenience methods
 - **Generic Trait Method Dispatch with ref/inout Self** ✅
 - **Mutable Buffer I/O with Arrays** ✅
 - **Mutable Buffer Allocation via `@repeat`** ✅
@@ -73,9 +72,9 @@ if bytes_result.is_ok() {
 
 ## Current Test Status
 
-All 438 tests pass:
+All 440 tests pass:
 - Unit Tests: 220 passed
-- Native Tests: 202 passed
+- Native Tests: 204 passed
 - App Tests: 10 passed
 - Module Tests: 6 passed
 
@@ -85,14 +84,17 @@ All 438 tests pass:
 
 Continue with **Phase 4** tasks:
 
-1. **Buffered I/O** (if needed):
-   - `BufReader`, `BufWriter` types for efficient streaming
+1. **Buffered I/O enhancements** (optional):
+   - `read_line()` method for line-by-line reading
+   - Auto-flush on drop via Drop trait
 
-2. **Associated types** (Milestone 2 - stretch):
-   - User-definable associated types in traits
+2. **Filesystem operations**:
+   - Path type for path manipulation
+   - Directory operations (create, remove, read_dir)
 
-3. **Module system enhancements**:
-   - Standard library organization
+3. **Package Manager** (Milestone 8):
+   - klar.toml manifest format
+   - Dependency resolution
 
 ---
 
@@ -102,11 +104,11 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test convenience I/O methods
-./zig-out/bin/klar run test/native/file_read_to_string.kl
-./zig-out/bin/klar run test/native/file_read_all.kl
+# Test buffered I/O
+./zig-out/bin/klar run test/native/bufreader_basic.kl
+./zig-out/bin/klar run test/native/bufwriter_basic.kl
 
 # Example usage:
-let content: Result[String, IoError] = File.read_to_string("config.txt")
-let bytes: Result[List[u8], IoError] = File.read_all("data.bin")
+var file: File = File.open("data.txt", "r")!
+var reader: BufReader[File] = BufReader.new[File](file)
 ```

@@ -449,7 +449,7 @@ std/
 
 **Objective:** Implement file and console I/O.
 
-**Status:** 🟡 Read/Write Traits Complete. Mutable buffer I/O with arrays working. Basic file I/O types and stdout/stderr implemented as builtins. Buffered I/O and filesystem operations not yet started.
+**Status:** 🟡 Read/Write Traits Complete. Mutable buffer I/O with arrays working. Basic file I/O types and stdout/stderr implemented as builtins. Buffered I/O complete. Filesystem operations not yet started.
 
 ### Mutable Buffer Allocation
 - [x] `@repeat(value, count)` builtin for array initialization: `var buf: [u8; 256] = @repeat(0.as[u8], 256)`
@@ -501,8 +501,8 @@ std/
 - [x] Platform-specific stdio access (macOS: `__stdoutp`/`__stderrp`/`__stdinp`, Linux: `stdout`/`stderr`/`stdin`)
 
 ### Buffered I/O
-- [ ] Implement `BufReader[R: Read]` wrapper
-- [ ] Implement `BufWriter[W: Write]` wrapper
+- [x] Implement `BufReader[R: Read]` wrapper
+- [x] Implement `BufWriter[W: Write]` wrapper
 - [ ] Add buffered read_line() method
 - [ ] Handle buffer flushing on drop
 
@@ -531,7 +531,7 @@ std/
 - [x] Test: file write and error handling (file_write.kl, file_error.kl)
 - [x] Test: stdin type exists and can be obtained (stdin_basic.kl)
 - [x] Test: file read with mutable array buffer (file_read_buffer.kl)
-- [ ] Test: buffered I/O works correctly
+- [x] Test: buffered I/O works correctly (bufreader_basic.kl, bufwriter_basic.kl, bufwriter_writestr.kl)
 - [ ] Test: directory operations work
 
 **Files Modified:**

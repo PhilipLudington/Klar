@@ -1,0 +1,30 @@
+// Test basic BufReader functionality
+// expect: 42
+
+fn main() -> i32 {
+    // Create a test file to read from
+    var file: File = File.open("/tmp/bufreader_test.txt", "w")!
+    file.write_string("Hello World")!
+    file.close()!
+
+    // Open file for reading
+    var read_file: File = File.open("/tmp/bufreader_test.txt", "r")!
+
+    // Wrap in BufReader
+    var reader: BufReader[File] = BufReader.new[File](read_file)
+
+    // Read into a buffer using @repeat to create 11 zero bytes
+    var buf: [u8; 11] = @repeat(0.as[u8], 11)
+    let bytes_read: i32 = reader.read(ref buf)!
+
+    if bytes_read != 11 {
+        return 1
+    }
+
+    // Verify first byte is 'H' (72)
+    if buf[0] != 72.as[u8] {
+        return 2
+    }
+
+    return 42
+}

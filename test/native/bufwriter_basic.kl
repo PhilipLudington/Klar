@@ -1,0 +1,27 @@
+// Test basic BufWriter functionality
+// expect: 42
+
+fn main() -> i32 {
+    // Create a file to write to
+    var file: File = File.open("/tmp/bufwriter_test.txt", "w")!
+
+    // Wrap in BufWriter for buffered writing
+    var writer: BufWriter[File] = BufWriter.new[File](file)
+
+    // Write some data
+    writer.write_string("Hello")!
+    writer.write_string(" ")!
+    writer.write_string("World")!
+
+    // Flush to ensure data is written
+    writer.flush()!
+
+    // Read back the file to verify
+    let content: String = File.read_to_string("/tmp/bufwriter_test.txt")!
+
+    if content.len() != 11 {
+        return 1
+    }
+
+    return 42
+}

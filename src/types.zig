@@ -62,6 +62,10 @@ pub const Type = union(enum) {
     stderr_handle: void, // Stderr marker type
     stdin_handle: void, // Stdin marker type
 
+    // Buffered I/O types
+    buf_reader: *BufReaderType, // BufReader[R: Read] buffered reader wrapper
+    buf_writer: *BufWriterType, // BufWriter[W: Write] buffered writer wrapper
+
     // Special types
     void_,
     never,
@@ -129,6 +133,9 @@ pub const Type = union(enum) {
             .set => |s| s.element.eql(other.set.element),
             // String data is a singleton type (no type parameters)
             .string_data => true,
+            // Buffered I/O type equality depends on inner reader/writer type
+            .buf_reader => |br| br.inner.eql(other.buf_reader.inner),
+            .buf_writer => |bw| bw.inner.eql(other.buf_writer.inner),
             // I/O types are singleton types
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => true,
             .void_, .never, .unknown, .error_type => true,
@@ -224,9 +231,10 @@ pub const Type = union(enum) {
             // - File (owns file handle resource)
             // - IoError (may contain string payload)
             // - Stdout/Stderr/Stdin (unique handles)
+            // - BufReader/BufWriter (wrap I/O types, have internal state)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .unknown, .error_type, .associated_type_ref => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .unknown, .error_type, .associated_type_ref => false,
         };
     }
 };
@@ -594,6 +602,20 @@ pub const StringDataType = struct {
     // This is a marker struct to distinguish from primitive string_ type
 };
 
+/// BufReader type for buffered reading (BufReader[R: Read])
+/// Wraps a Read implementation with an internal buffer for efficient I/O.
+/// Layout: { inner: R, buffer: [u8; 8192], pos: i32, cap: i32 }
+pub const BufReaderType = struct {
+    inner: Type, // The wrapped reader type (must implement Read)
+};
+
+/// BufWriter type for buffered writing (BufWriter[W: Write])
+/// Wraps a Write implementation with an internal buffer for efficient I/O.
+/// Layout: { inner: W, buffer: [u8; 8192], len: i32 }
+pub const BufWriterType = struct {
+    inner: Type, // The wrapped writer type (must implement Write)
+};
+
 // ============================================================================
 // Type Builder - Arena-based type allocation
 // ============================================================================
@@ -855,6 +877,19 @@ pub const TypeBuilder = struct {
         _ = self;
         return .{ .stdin_handle = {} };
     }
+
+    // Buffered I/O type constructors
+    pub fn bufReaderType(self: *TypeBuilder, inner: Type) !Type {
+        const br = try self.arena.allocator().create(BufReaderType);
+        br.* = .{ .inner = inner };
+        return .{ .buf_reader = br };
+    }
+
+    pub fn bufWriterType(self: *TypeBuilder, inner: Type) !Type {
+        const bw = try self.arena.allocator().create(BufWriterType);
+        bw.* = .{ .inner = inner };
+        return .{ .buf_writer = bw };
+    }
 };
 
 // ============================================================================
@@ -983,6 +1018,16 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .stdout_handle => try writer.writeAll("Stdout"),
         .stderr_handle => try writer.writeAll("Stderr"),
         .stdin_handle => try writer.writeAll("Stdin"),
+        .buf_reader => |br| {
+            try writer.writeAll("BufReader[");
+            try formatType(writer, br.inner);
+            try writer.writeAll("]");
+        },
+        .buf_writer => |bw| {
+            try writer.writeAll("BufWriter[");
+            try formatType(writer, bw.inner);
+            try writer.writeAll("]");
+        },
         .associated_type_ref => |a| {
             try writer.writeAll(a.type_var.name);
             try writer.writeAll(".");

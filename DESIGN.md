@@ -1146,6 +1146,18 @@ trait Write {
 fn stdin() -> Stdin
 fn stdout() -> Stdout
 fn stderr() -> Stderr
+
+// Buffered I/O wrappers
+struct BufReader[R: Read] {
+    fn new(reader: R) -> BufReader[R]
+    fn read(self: inout Self, buf: ref [u8]) -> Result[i32, IoError]
+}
+
+struct BufWriter[W: Write] {
+    fn new(writer: W) -> BufWriter[W]
+    fn write_string(self: inout Self, s: string) -> Result[i32, IoError]
+    fn flush(self: inout Self) -> Result[void, IoError]
+}
 ```
 
 Note: I/O methods accept both slices (`[u8]`) and fixed-size arrays (`[u8; N]`). Use `@repeat(value, count)` to create mutable buffers:

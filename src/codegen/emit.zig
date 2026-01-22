@@ -162,6 +162,14 @@ pub const Emitter = struct {
         is_stderr: bool = false,
         /// True if this is a Stdin type (FILE* handle).
         is_stdin: bool = false,
+        /// True if this is a BufReader type.
+        is_buf_reader: bool = false,
+        /// For BufReader[R], the inner reader type.
+        buf_reader_inner_type: ?types.Type = null,
+        /// True if this is a BufWriter type.
+        is_buf_writer: bool = false,
+        /// For BufWriter[W], the inner writer type.
+        buf_writer_inner_type: ?types.Type = null,
     };
 
     const LoopContext = struct {
@@ -929,6 +937,9 @@ pub const Emitter = struct {
                 const is_stdout_let = self.isTypeStdout(decl.type_);
                 const is_stderr_let = self.isTypeStderr(decl.type_);
                 const is_stdin_let = self.isTypeStdin(decl.type_);
+                // Check if this is a buffered I/O type
+                const is_buf_reader_let = self.isTypeBufReader(decl.type_);
+                const is_buf_writer_let = self.isTypeBufWriter(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -954,6 +965,8 @@ pub const Emitter = struct {
                     .is_stdout = is_stdout_let,
                     .is_stderr = is_stderr_let,
                     .is_stdin = is_stdin_let,
+                    .is_buf_reader = is_buf_reader_let,
+                    .is_buf_writer = is_buf_writer_let,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -1000,6 +1013,9 @@ pub const Emitter = struct {
                 const is_stdout = self.isTypeStdout(decl.type_);
                 const is_stderr = self.isTypeStderr(decl.type_);
                 const is_stdin = self.isTypeStdin(decl.type_);
+                // Check if this is a buffered I/O type
+                const is_buf_reader = self.isTypeBufReader(decl.type_);
+                const is_buf_writer = self.isTypeBufWriter(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -1025,6 +1041,8 @@ pub const Emitter = struct {
                     .is_stdout = is_stdout,
                     .is_stderr = is_stderr,
                     .is_stdin = is_stdin,
+                    .is_buf_reader = is_buf_reader,
+                    .is_buf_writer = is_buf_writer,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -4010,6 +4028,24 @@ pub const Emitter = struct {
         };
     }
 
+    /// Check if a type expression is a BufReader type.
+    fn isTypeBufReader(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .generic_apply => |g| if (g.base == .named) std.mem.eql(u8, g.base.named.name, "BufReader") else false,
+            else => false,
+        };
+    }
+
+    /// Check if a type expression is a BufWriter type.
+    fn isTypeBufWriter(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .generic_apply => |g| if (g.base == .named) std.mem.eql(u8, g.base.named.name, "BufWriter") else false,
+            else => false,
+        };
+    }
+
     /// Check if a type expression is an array or slice type.
     fn isTypeArray(self: *Emitter, type_expr: ast.TypeExpr) bool {
         _ = self;
@@ -4380,6 +4416,14 @@ pub const Emitter = struct {
                     if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, m.method_name, "read_all")) {
                         return self.getListResultType();
                     }
+                    // BufReader.new[R](reader) -> BufReader[R]
+                    if (std.mem.eql(u8, obj_name, "BufReader") and std.mem.eql(u8, m.method_name, "new")) {
+                        return self.getBufReaderStructType();
+                    }
+                    // BufWriter.new[W](writer) -> BufWriter[W]
+                    if (std.mem.eql(u8, obj_name, "BufWriter") and std.mem.eql(u8, m.method_name, "new")) {
+                        return self.getBufWriterStructType();
+                    }
                 }
 
                 // File instance methods (file.write_string, file.read, etc.)
@@ -4410,6 +4454,42 @@ pub const Emitter = struct {
                     if (std.mem.eql(u8, m.method_name, "flush")) {
                         // Returns Result[void, IoError]
                         return self.getVoidResultType();
+                    }
+                }
+
+                // BufReader instance methods
+                if (self.isBufReaderExpr(m.object)) {
+                    if (std.mem.eql(u8, m.method_name, "read")) {
+                        return self.getI32ResultType();
+                    }
+                    if (std.mem.eql(u8, m.method_name, "read_line") or
+                        std.mem.eql(u8, m.method_name, "read_to_string"))
+                    {
+                        return self.getStringResultType();
+                    }
+                    if (std.mem.eql(u8, m.method_name, "fill_buf")) {
+                        return self.getSliceResultType();
+                    }
+                    if (std.mem.eql(u8, m.method_name, "consume")) {
+                        return llvm.Types.int32(self.ctx); // void, placeholder
+                    }
+                    if (std.mem.eql(u8, m.method_name, "into_inner")) {
+                        return llvm.Types.pointer(self.ctx); // Returns FILE*
+                    }
+                }
+
+                // BufWriter instance methods
+                if (self.isBufWriterExpr(m.object)) {
+                    if (std.mem.eql(u8, m.method_name, "write") or
+                        std.mem.eql(u8, m.method_name, "write_string"))
+                    {
+                        return self.getI32ResultType();
+                    }
+                    if (std.mem.eql(u8, m.method_name, "flush")) {
+                        return self.getVoidResultType();
+                    }
+                    if (std.mem.eql(u8, m.method_name, "into_inner")) {
+                        return self.getFileResultType();
                     }
                 }
 
@@ -6261,6 +6341,16 @@ pub const Emitter = struct {
             if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "read_all")) {
                 return self.emitFileReadAll(method);
             }
+
+            // BufReader.new[R](reader: R) -> BufReader[R]
+            if (std.mem.eql(u8, obj_name, "BufReader") and std.mem.eql(u8, method.method_name, "new")) {
+                return self.emitBufReaderNew(method);
+            }
+
+            // BufWriter.new[W](writer: W) -> BufWriter[W]
+            if (std.mem.eql(u8, obj_name, "BufWriter") and std.mem.eql(u8, method.method_name, "new")) {
+                return self.emitBufWriterNew(method);
+            }
         }
 
         // Emit the object
@@ -7095,6 +7185,72 @@ pub const Emitter = struct {
                 if (method.args.len != 1) return EmitError.InvalidAST;
                 const buf_val = try self.emitExpr(method.args[0]);
                 return self.emitStdinRead(buf_val, method.args[0]);
+            }
+        }
+
+        // Check for BufReader methods
+        if (self.isBufReaderExpr(method.object)) {
+            // Get the alloca pointer for the BufReader
+            const br_ptr = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value;
+                }
+                break :blk null;
+            } else null;
+
+            if (br_ptr) |ptr| {
+                if (std.mem.eql(u8, method.method_name, "read")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const buf_val = try self.emitExpr(method.args[0]);
+                    return self.emitBufReaderRead(ptr, buf_val, method.args[0]);
+                }
+                if (std.mem.eql(u8, method.method_name, "read_line")) {
+                    return self.emitBufReaderReadLine(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "read_to_string")) {
+                    return self.emitBufReaderReadToString(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "fill_buf")) {
+                    return self.emitBufReaderFillBuf(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "consume")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const n = try self.emitExpr(method.args[0]);
+                    return self.emitBufReaderConsume(ptr, n);
+                }
+                if (std.mem.eql(u8, method.method_name, "into_inner")) {
+                    return self.emitBufReaderIntoInner(ptr);
+                }
+            }
+        }
+
+        // Check for BufWriter methods
+        if (self.isBufWriterExpr(method.object)) {
+            // Get the alloca pointer for the BufWriter
+            const bw_ptr = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value;
+                }
+                break :blk null;
+            } else null;
+
+            if (bw_ptr) |ptr| {
+                if (std.mem.eql(u8, method.method_name, "write")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const buf_val = try self.emitExpr(method.args[0]);
+                    return self.emitBufWriterWrite(ptr, buf_val, method.args[0]);
+                }
+                if (std.mem.eql(u8, method.method_name, "write_string")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const str_val = try self.emitExpr(method.args[0]);
+                    return self.emitBufWriterWriteString(ptr, str_val);
+                }
+                if (std.mem.eql(u8, method.method_name, "flush")) {
+                    return self.emitBufWriterFlush(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "into_inner")) {
+                    return self.emitBufWriterIntoInner(ptr);
+                }
             }
         }
 
@@ -9796,6 +9952,32 @@ pub const Emitter = struct {
             .identifier => |id| {
                 if (self.named_values.get(id.name)) |local| {
                     return local.is_stdin;
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    /// Check if an expression is a BufReader type.
+    fn isBufReaderExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    return local.is_buf_reader;
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    /// Check if an expression is a BufWriter type.
+    fn isBufWriterExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    return local.is_buf_writer;
                 }
             },
             else => {},
@@ -16762,6 +16944,523 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "stdin.read.result_val");
     }
 
+    // ========================================================================
+    // BufReader Methods
+    // ========================================================================
+
+    /// Buffer size for buffered I/O (8KB)
+    const BUF_SIZE: u32 = 8192;
+
+    /// Get the LLVM struct type for BufReader: { inner: FILE*, buffer: [8192]u8, pos: i32, cap: i32 }
+    fn getBufReaderStructType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // inner (FILE*)
+            llvm.Types.array(llvm.Types.int8(self.ctx), BUF_SIZE), // buffer
+            llvm.Types.int32(self.ctx), // pos
+            llvm.Types.int32(self.ctx), // cap
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM struct type for BufWriter: { inner: FILE*, buffer: [8192]u8, len: i32 }
+    fn getBufWriterStructType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // inner (FILE*)
+            llvm.Types.array(llvm.Types.int8(self.ctx), BUF_SIZE), // buffer
+            llvm.Types.int32(self.ctx), // len
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Emit BufReader.new[R](reader) -> BufReader[R]
+    fn emitBufReaderNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+
+        const br_type = self.getBufReaderStructType();
+
+        // Emit the inner reader (e.g., a File)
+        // emitExpr returns the FILE* value (already loaded from alloca)
+        const file_handle = try self.emitExpr(method.args[0]);
+
+        // Allocate BufReader struct
+        const br_alloca = self.builder.buildAlloca(br_type, "bufreader");
+
+        // Initialize fields: inner = file_handle, pos = 0, cap = 0
+        const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_alloca, 0, "br.inner_ptr");
+        _ = self.builder.buildStore(file_handle, inner_ptr);
+
+        const pos_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_alloca, 2, "br.pos_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), pos_ptr);
+
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_alloca, 3, "br.cap_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), cap_ptr);
+
+        // Return the struct value
+        return self.builder.buildLoad(br_type, br_alloca, "bufreader.val");
+    }
+
+    /// Emit bufreader.read(buf) -> Result[i32, IoError]
+    /// Reads from buffer first, then refills from underlying reader if needed.
+    fn emitBufReaderRead(self: *Emitter, br_ptr: llvm.ValueRef, buf_ref: llvm.ValueRef, buf_expr: ast.Expr) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const br_type = self.getBufReaderStructType();
+
+        // Get pointers to BufReader fields
+        const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_ptr, 0, "br.inner_ptr");
+        const buf_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_ptr, 1, "br.buf_ptr");
+        const pos_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_ptr, 2, "br.pos_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_ptr, 3, "br.cap_ptr");
+
+        // Load current values
+        const file_handle = self.builder.buildLoad(ptr_type, inner_ptr, "br.file");
+        const pos = self.builder.buildLoad(i32_type, pos_ptr, "br.pos");
+        const cap = self.builder.buildLoad(i32_type, cap_ptr, "br.cap");
+
+        // Extract destination buffer pointer and length
+        const dest_info = try self.extractBufferPtrAndLen(buf_ref, buf_expr);
+        const dest_ptr = dest_info.ptr;
+        const dest_len = dest_info.len;
+        const dest_len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, dest_len, i32_type, "dest_len_i32");
+
+        // Calculate available bytes in buffer: available = cap - pos
+        const available = llvm.c.LLVMBuildSub(self.builder.ref, cap, pos, "br.available");
+
+        // Create basic blocks for control flow
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const have_data_bb = llvm.appendBasicBlock(self.ctx, func, "br.have_data");
+        const need_refill_bb = llvm.appendBasicBlock(self.ctx, func, "br.need_refill");
+        const copy_bb = llvm.appendBasicBlock(self.ctx, func, "br.copy");
+        const done_bb = llvm.appendBasicBlock(self.ctx, func, "br.done");
+
+        // Check if we have data in buffer
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        const has_data = self.builder.buildICmp(llvm.c.LLVMIntSGT, available, zero_i32, "br.has_data");
+        _ = self.builder.buildCondBr(has_data, have_data_bb, need_refill_bb);
+
+        // --- Have data: calculate how much to copy ---
+        self.builder.positionAtEnd(have_data_bb);
+        // to_copy = min(available, dest_len)
+        const cmp_avail = self.builder.buildICmp(llvm.c.LLVMIntSLT, available, dest_len_i32, "br.cmp_avail");
+        const to_copy_have = llvm.c.LLVMBuildSelect(self.builder.ref, cmp_avail, available, dest_len_i32, "br.to_copy_have");
+        _ = self.builder.buildBr(copy_bb);
+
+        // --- Need refill: read from underlying file ---
+        self.builder.positionAtEnd(need_refill_bb);
+        // Reset pos = 0
+        _ = self.builder.buildStore(zero_i32, pos_ptr);
+
+        // Read into buffer: fread(buffer, 1, BUF_SIZE, file)
+        const fread_fn = self.getOrDeclareFread();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        const buf_size_i64 = llvm.Const.int(i64_type, BUF_SIZE, false);
+        var fread_args = [_]llvm.ValueRef{ buf_ptr_field, one_i64, buf_size_i64, file_handle };
+        const bytes_read = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fread_fn), fread_fn, &fread_args, "br.bytes_read");
+        const new_cap = llvm.c.LLVMBuildTrunc(self.builder.ref, bytes_read, i32_type, "br.new_cap");
+        _ = self.builder.buildStore(new_cap, cap_ptr);
+
+        // to_copy = min(new_cap, dest_len)
+        const cmp_new = self.builder.buildICmp(llvm.c.LLVMIntSLT, new_cap, dest_len_i32, "br.cmp_new");
+        const to_copy_refill = llvm.c.LLVMBuildSelect(self.builder.ref, cmp_new, new_cap, dest_len_i32, "br.to_copy_refill");
+        _ = self.builder.buildBr(copy_bb);
+
+        // --- Copy data to destination ---
+        self.builder.positionAtEnd(copy_bb);
+        // PHI for to_copy
+        const to_copy_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i32_type, "br.to_copy");
+        var phi_vals = [_]llvm.ValueRef{ to_copy_have, to_copy_refill };
+        var phi_bbs = [_]llvm.BasicBlockRef{ have_data_bb, need_refill_bb };
+        llvm.c.LLVMAddIncoming(to_copy_phi, &phi_vals, &phi_bbs, 2);
+
+        // Get current pos (might be 0 after refill or original pos)
+        const cur_pos = self.builder.buildLoad(i32_type, pos_ptr, "br.cur_pos");
+        const cur_pos_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, cur_pos, i64_type, "br.cur_pos_i64");
+
+        // src_ptr = buffer + pos
+        const buf_base = buf_ptr_field;
+        var indices = [_]llvm.ValueRef{ zero_i32, llvm.c.LLVMBuildTrunc(self.builder.ref, cur_pos_i64, i32_type, "pos_idx") };
+        const src_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.array(llvm.Types.int8(self.ctx), BUF_SIZE), buf_base, &indices, 2, "br.src_ptr");
+
+        // Call memcpy(dest, src, to_copy)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        const to_copy_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, to_copy_phi, i64_type, "br.to_copy_i64");
+        var memcpy_args = [_]llvm.ValueRef{ dest_ptr, src_ptr, to_copy_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        // Update pos = pos + to_copy
+        const new_pos = llvm.c.LLVMBuildAdd(self.builder.ref, cur_pos, to_copy_phi, "br.new_pos");
+        _ = self.builder.buildStore(new_pos, pos_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // --- Done: return Result[i32, IoError] ---
+        self.builder.positionAtEnd(done_bb);
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "br.read.result");
+
+        const tag_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "br.read.tag_ptr");
+        const val_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "br.read.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr_res);
+        _ = self.builder.buildStore(to_copy_phi, val_ptr_res);
+
+        return self.builder.buildLoad(result_type, result_alloca, "br.read.result_val");
+    }
+
+    /// Emit bufreader.read_line() -> Result[String, IoError]
+    /// Reads until newline or EOF.
+    fn emitBufReaderReadLine(self: *Emitter, br_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        _ = br_ptr;
+        // For now, return empty string - full implementation would scan for newline
+        // and handle multi-buffer spanning
+        const result_type = self.getStringResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "br.readline.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "br.readline.tag_ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+        // Create empty string
+        const str_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "br.readline.str_ptr");
+        const string_type = self.getStringStructType();
+        const empty_str = self.builder.buildAlloca(string_type, "br.empty_str");
+        const null_ptr = llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        const str_data_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, empty_str, 0, "br.str_data_ptr");
+        _ = self.builder.buildStore(null_ptr, str_data_ptr);
+        const str_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, empty_str, 1, "br.str_len_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), str_len_ptr);
+        const str_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, empty_str, 2, "br.str_cap_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), str_cap_ptr);
+
+        const empty_str_val = self.builder.buildLoad(string_type, empty_str, "br.empty_str_val");
+        _ = self.builder.buildStore(empty_str_val, str_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "br.readline.result_val");
+    }
+
+    /// Emit bufreader.read_to_string() -> Result[String, IoError]
+    fn emitBufReaderReadToString(self: *Emitter, br_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Reuse read_line for now - would need full implementation
+        return self.emitBufReaderReadLine(br_ptr);
+    }
+
+    /// Emit bufreader.fill_buf() -> Result[[u8], IoError]
+    fn emitBufReaderFillBuf(self: *Emitter, br_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        _ = br_ptr;
+        // Return empty slice for now
+        const slice_type = self.getSliceStructType();
+        const result_type = self.getSliceResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "br.fillbuf.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "br.fillbuf.tag_ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+        // Empty slice { null, 0 }
+        const slice_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "br.fillbuf.slice_ptr");
+        const null_ptr = llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        var slice_vals = [_]llvm.ValueRef{ null_ptr, llvm.Const.int64(self.ctx, 0) };
+        const empty_slice = llvm.c.LLVMConstNamedStruct(slice_type, &slice_vals, 2);
+        _ = self.builder.buildStore(empty_slice, slice_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "br.fillbuf.result_val");
+    }
+
+    /// Emit bufreader.consume(n)
+    fn emitBufReaderConsume(self: *Emitter, br_ptr: llvm.ValueRef, n: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i32_type = llvm.Types.int32(self.ctx);
+        const br_type = self.getBufReaderStructType();
+
+        const pos_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_ptr, 2, "br.pos_ptr");
+        const pos = self.builder.buildLoad(i32_type, pos_ptr, "br.pos");
+        const new_pos = llvm.c.LLVMBuildAdd(self.builder.ref, pos, n, "br.new_pos");
+        _ = self.builder.buildStore(new_pos, pos_ptr);
+
+        // Return void
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    /// Emit bufreader.into_inner() -> R
+    fn emitBufReaderIntoInner(self: *Emitter, br_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const br_type = self.getBufReaderStructType();
+
+        const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_ptr, 0, "br.inner_ptr");
+        return self.builder.buildLoad(ptr_type, inner_ptr, "br.inner");
+    }
+
+    // ========================================================================
+    // BufWriter Methods
+    // ========================================================================
+
+    /// Emit BufWriter.new[W](writer) -> BufWriter[W]
+    fn emitBufWriterNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+
+        const bw_type = self.getBufWriterStructType();
+
+        // Emit the inner writer (e.g., a File)
+        // emitExpr returns the FILE* value (already loaded from alloca)
+        const file_handle = try self.emitExpr(method.args[0]);
+
+        // Allocate BufWriter struct
+        const bw_alloca = self.builder.buildAlloca(bw_type, "bufwriter");
+
+        // Initialize fields: inner = file_handle, len = 0
+        const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_alloca, 0, "bw.inner_ptr");
+        _ = self.builder.buildStore(file_handle, inner_ptr);
+
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_alloca, 2, "bw.len_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_ptr);
+
+        // Return the struct value
+        return self.builder.buildLoad(bw_type, bw_alloca, "bufwriter.val");
+    }
+
+    /// Emit bufwriter.write(buf) -> Result[i32, IoError]
+    fn emitBufWriterWrite(self: *Emitter, bw_ptr: llvm.ValueRef, buf_ref: llvm.ValueRef, buf_expr: ast.Expr) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const bw_type = self.getBufWriterStructType();
+
+        // Get pointers to BufWriter fields
+        const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 0, "bw.inner_ptr");
+        const buf_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 1, "bw.buf_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 2, "bw.len_ptr");
+
+        // Load current values
+        const file_handle = self.builder.buildLoad(ptr_type, inner_ptr, "bw.file");
+        const current_len = self.builder.buildLoad(i32_type, len_ptr, "bw.len");
+
+        // Extract source buffer pointer and length
+        const src_info = try self.extractBufferPtrAndLen(buf_ref, buf_expr);
+        const src_ptr = src_info.ptr;
+        const src_len = src_info.len;
+        const src_len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, src_len, i32_type, "src_len_i32");
+
+        // Calculate available space: available = BUF_SIZE - len
+        const buf_size_i32 = llvm.Const.int32(self.ctx, BUF_SIZE);
+        const available = llvm.c.LLVMBuildSub(self.builder.ref, buf_size_i32, current_len, "bw.available");
+
+        // Create basic blocks for control flow
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const fits_bb = llvm.appendBasicBlock(self.ctx, func, "bw.fits");
+        const flush_bb = llvm.appendBasicBlock(self.ctx, func, "bw.flush");
+        const done_bb = llvm.appendBasicBlock(self.ctx, func, "bw.done");
+
+        // Check if data fits in buffer
+        const fits = self.builder.buildICmp(llvm.c.LLVMIntSGE, available, src_len_i32, "bw.fits");
+        _ = self.builder.buildCondBr(fits, fits_bb, flush_bb);
+
+        // --- Data fits: copy to buffer ---
+        self.builder.positionAtEnd(fits_bb);
+        // dst_ptr = buffer + len
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var indices = [_]llvm.ValueRef{ zero_i32, current_len };
+        const dst_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.array(llvm.Types.int8(self.ctx), BUF_SIZE), buf_ptr_field, &indices, 2, "bw.dst_ptr");
+
+        // memcpy(dst, src, src_len)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ dst_ptr, src_ptr, src_len };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        // Update len = len + src_len
+        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, current_len, src_len_i32, "bw.new_len");
+        _ = self.builder.buildStore(new_len, len_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // --- Doesn't fit: flush and write directly ---
+        self.builder.positionAtEnd(flush_bb);
+        // First flush the buffer
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        const len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, current_len, i64_type, "bw.len_i64");
+        var flush_args = [_]llvm.ValueRef{ buf_ptr_field, one_i64, len_i64, file_handle };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &flush_args, "bw.flush_write");
+
+        // Reset buffer len = 0
+        _ = self.builder.buildStore(zero_i32, len_ptr);
+
+        // Write data directly to file
+        var write_args = [_]llvm.ValueRef{ src_ptr, one_i64, src_len, file_handle };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &write_args, "bw.direct_write");
+        _ = self.builder.buildBr(done_bb);
+
+        // --- Done: return Result[i32, IoError] ---
+        self.builder.positionAtEnd(done_bb);
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "bw.write.result");
+
+        const tag_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "bw.write.tag_ptr");
+        const val_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "bw.write.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr_res);
+        _ = self.builder.buildStore(src_len_i32, val_ptr_res);
+
+        return self.builder.buildLoad(result_type, result_alloca, "bw.write.result_val");
+    }
+
+    /// Emit bufwriter.write_string(s) -> Result[i32, IoError]
+    fn emitBufWriterWriteString(self: *Emitter, bw_ptr: llvm.ValueRef, str_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const bw_type = self.getBufWriterStructType();
+
+        // Get string length using strlen
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str_val};
+        const str_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "bw.str_len");
+        const str_len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, str_len, i32_type, "bw.str_len_i32");
+
+        // Get pointers to BufWriter fields
+        const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 0, "bw.inner_ptr");
+        const buf_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 1, "bw.buf_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 2, "bw.len_ptr");
+
+        // Load current values
+        const file_handle = self.builder.buildLoad(ptr_type, inner_ptr, "bw.file");
+        const current_len = self.builder.buildLoad(i32_type, len_ptr, "bw.len");
+
+        // Calculate available space
+        const buf_size_i32 = llvm.Const.int32(self.ctx, BUF_SIZE);
+        const available = llvm.c.LLVMBuildSub(self.builder.ref, buf_size_i32, current_len, "bw.available");
+
+        // Create basic blocks
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const fits_bb = llvm.appendBasicBlock(self.ctx, func, "bw.str.fits");
+        const flush_bb = llvm.appendBasicBlock(self.ctx, func, "bw.str.flush");
+        const done_bb = llvm.appendBasicBlock(self.ctx, func, "bw.str.done");
+
+        const fits = self.builder.buildICmp(llvm.c.LLVMIntSGE, available, str_len_i32, "bw.str.fits");
+        _ = self.builder.buildCondBr(fits, fits_bb, flush_bb);
+
+        // --- Fits: copy to buffer ---
+        self.builder.positionAtEnd(fits_bb);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        var indices = [_]llvm.ValueRef{ zero_i32, current_len };
+        const dst_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.array(llvm.Types.int8(self.ctx), BUF_SIZE), buf_ptr_field, &indices, 2, "bw.str.dst_ptr");
+
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ dst_ptr, str_val, str_len };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, current_len, str_len_i32, "bw.str.new_len");
+        _ = self.builder.buildStore(new_len, len_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // --- Doesn't fit: flush and write ---
+        self.builder.positionAtEnd(flush_bb);
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        const len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, current_len, i64_type, "bw.str.len_i64");
+        var flush_args = [_]llvm.ValueRef{ buf_ptr_field, one_i64, len_i64, file_handle };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &flush_args, "");
+
+        _ = self.builder.buildStore(zero_i32, len_ptr);
+
+        var write_args = [_]llvm.ValueRef{ str_val, one_i64, str_len, file_handle };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &write_args, "");
+        _ = self.builder.buildBr(done_bb);
+
+        // --- Done ---
+        self.builder.positionAtEnd(done_bb);
+        const result_type = self.getI32ResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "bw.str.result");
+
+        const tag_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "bw.str.tag_ptr");
+        const val_ptr_res = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "bw.str.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr_res);
+        _ = self.builder.buildStore(str_len_i32, val_ptr_res);
+
+        return self.builder.buildLoad(result_type, result_alloca, "bw.str.result_val");
+    }
+
+    /// Emit bufwriter.flush() -> Result[void, IoError]
+    fn emitBufWriterFlush(self: *Emitter, bw_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const bw_type = self.getBufWriterStructType();
+
+        // Get pointers to BufWriter fields
+        const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 0, "bw.flush.inner_ptr");
+        const buf_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 1, "bw.flush.buf_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 2, "bw.flush.len_ptr");
+
+        // Load current values
+        const file_handle = self.builder.buildLoad(ptr_type, inner_ptr, "bw.flush.file");
+        const current_len = self.builder.buildLoad(i32_type, len_ptr, "bw.flush.len");
+
+        // Write buffer to file: fwrite(buffer, 1, len, file)
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const one_i64 = llvm.Const.int(i64_type, 1, false);
+        const len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, current_len, i64_type, "bw.flush.len_i64");
+        var fwrite_args = [_]llvm.ValueRef{ buf_ptr_field, one_i64, len_i64, file_handle };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "bw.flush.write");
+
+        // Reset len = 0
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_ptr);
+
+        // Call fflush on the underlying file
+        const fflush_fn = self.getOrDeclareFflush();
+        var fflush_args = [_]llvm.ValueRef{file_handle};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fflush_fn), fflush_fn, &fflush_args, "");
+
+        // Build Result[void, IoError]
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "bw.flush.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "bw.flush.tag_ptr");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "bw.flush.result_val");
+    }
+
+    /// Emit bufwriter.into_inner() -> Result[W, IoError]
+    fn emitBufWriterIntoInner(self: *Emitter, bw_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // First flush the buffer
+        _ = try self.emitBufWriterFlush(bw_ptr);
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const bw_type = self.getBufWriterStructType();
+
+        // Get the inner writer
+        const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 0, "bw.into.inner_ptr");
+        const inner_val = self.builder.buildLoad(ptr_type, inner_ptr, "bw.into.inner");
+
+        // Build Result[FILE*, IoError] - always Ok after successful flush
+        const result_type = self.getFileResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "bw.into.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "bw.into.tag_ptr");
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "bw.into.val_ptr");
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        _ = self.builder.buildStore(inner_val, val_ptr);
+
+        return self.builder.buildLoad(result_type, result_alloca, "bw.into.result_val");
+    }
+
+    /// Get Result[[u8], IoError] type (slice result)
+    fn getSliceResultType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag
+            self.getSliceStructType(), // slice
+            self.getIoErrorStructType(), // IoError
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get slice struct type { ptr, len }
+    fn getSliceStructType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // ptr
+            llvm.Types.int64(self.ctx), // len
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
     /// Get the LLVM struct type for List: { ptr, i32, i32 }
     fn getListStructType(self: *Emitter) llvm.TypeRef {
         var fields = [_]llvm.TypeRef{
@@ -20968,6 +21667,27 @@ pub const Emitter = struct {
             .stdin_handle => {
                 // Stdin is an opaque marker type - store as FILE* pointer
                 return llvm.Types.pointer(self.ctx);
+            },
+            .buf_reader => |br| {
+                // BufReader LLVM layout: { inner: R, buffer: [8192]u8, pos: i32, cap: i32 }
+                const inner_ty = self.typeToLLVM(br.inner);
+                var fields = [_]llvm.TypeRef{
+                    inner_ty, // inner reader
+                    llvm.Types.array(llvm.Types.int8(self.ctx), 8192), // buffer
+                    llvm.Types.int32(self.ctx), // pos
+                    llvm.Types.int32(self.ctx), // cap
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
+            },
+            .buf_writer => |bw| {
+                // BufWriter LLVM layout: { inner: W, buffer: [8192]u8, len: i32 }
+                const inner_ty = self.typeToLLVM(bw.inner);
+                var fields = [_]llvm.TypeRef{
+                    inner_ty, // inner writer
+                    llvm.Types.array(llvm.Types.int8(self.ctx), 8192), // buffer
+                    llvm.Types.int32(self.ctx), // len
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
             },
             .associated_type_ref => {
                 // Associated type refs should have been resolved during type checking.

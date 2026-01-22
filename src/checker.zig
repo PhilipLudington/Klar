@@ -2066,6 +2066,7 @@ pub const TypeChecker = struct {
         struct_name: []const u8,
         original_struct: *types.StructType,
         type_args: []const Type,
+        span: Span,
     ) !*types.StructType {
         // Check if this instantiation already exists
         for (self.monomorphized_structs.items) |existing| {
@@ -2092,6 +2093,15 @@ pub const TypeChecker = struct {
         for (original_struct.type_params, 0..) |type_param, i| {
             if (i < type_args.len) {
                 try substitutions.put(self.allocator, type_param.id, type_args[i]);
+            }
+        }
+
+        // Validate trait bounds for each type argument
+        for (original_struct.type_params, 0..) |type_param, i| {
+            if (i < type_args.len and type_param.bounds.len > 0) {
+                if (!self.typeSatisfiesBounds(type_args[i], type_param.bounds, span)) {
+                    return error.TypeCheckError;
+                }
             }
         }
 
@@ -2468,6 +2478,20 @@ pub const TypeChecker = struct {
 
             // String - no type parameters to substitute
             .string_data => typ,
+
+            // BufReader - substitute inner type
+            .buf_reader => |br| {
+                const new_inner = try self.substituteTypeParams(br.inner, substitutions);
+                if (br.inner.eql(new_inner)) return typ;
+                return self.type_builder.bufReaderType(new_inner);
+            },
+
+            // BufWriter - substitute inner type
+            .buf_writer => |bw| {
+                const new_inner = try self.substituteTypeParams(bw.inner, substitutions);
+                if (bw.inner.eql(new_inner)) return typ;
+                return self.type_builder.bufWriterType(new_inner);
+            },
         };
     }
 
@@ -2512,6 +2536,9 @@ pub const TypeChecker = struct {
             .set => |s| self.containsTypeVar(s.element),
             // String has no type parameters
             .string_data => false,
+            // Buffered I/O types have inner type that may contain type variables
+            .buf_reader => |br| self.containsTypeVar(br.inner),
+            .buf_writer => |bw| self.containsTypeVar(bw.inner),
             // Associated type ref contains a type variable reference
             .associated_type_ref => true,
             .struct_, .enum_, .trait_ => false,
@@ -2690,6 +2717,16 @@ pub const TypeChecker = struct {
             // String has no type parameters - simple equality check
             .string_data => {
                 return pattern.eql(concrete);
+            },
+
+            .buf_reader => |br| {
+                if (concrete != .buf_reader) return false;
+                return self.unifyTypes(br.inner, concrete.buf_reader.inner, substitutions);
+            },
+
+            .buf_writer => |bw| {
+                if (concrete != .buf_writer) return false;
+                return self.unifyTypes(bw.inner, concrete.buf_writer.inner, substitutions);
             },
 
             .struct_, .enum_, .trait_ => {
@@ -2927,6 +2964,38 @@ pub const TypeChecker = struct {
                         }
                         return try self.type_builder.setType(element_type);
                     }
+
+                    // BufReader[R] - buffered reader wrapper (R must implement Read)
+                    if (std.mem.eql(u8, base_name, "BufReader")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "BufReader expects exactly 1 type argument (reader type)", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner_type = try self.resolveTypeExpr(g.args[0]);
+                        // Validate that inner type implements Read trait
+                        if (self.trait_registry.get("Read")) |read_trait| {
+                            if (!self.typeSatisfiesBounds(inner_type, &.{read_trait.trait_type}, g.span)) {
+                                // Error already reported by typeSatisfiesBounds
+                            }
+                        }
+                        return try self.type_builder.bufReaderType(inner_type);
+                    }
+
+                    // BufWriter[W] - buffered writer wrapper (W must implement Write)
+                    if (std.mem.eql(u8, base_name, "BufWriter")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "BufWriter expects exactly 1 type argument (writer type)", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner_type = try self.resolveTypeExpr(g.args[0]);
+                        // Validate that inner type implements Write trait
+                        if (self.trait_registry.get("Write")) |write_trait| {
+                            if (!self.typeSatisfiesBounds(inner_type, &.{write_trait.trait_type}, g.span)) {
+                                // Error already reported by typeSatisfiesBounds
+                            }
+                        }
+                        return try self.type_builder.bufWriterType(inner_type);
+                    }
                 }
 
                 // Generic user-defined type
@@ -2964,6 +3033,7 @@ pub const TypeChecker = struct {
                             struct_type.name,
                             struct_type,
                             args.items,
+                            g.span,
                         ) catch return self.type_builder.unknownType();
                         return .{ .struct_ = concrete_struct };
                     }
@@ -4030,6 +4100,70 @@ pub const TypeChecker = struct {
                 const u8_type = Type{ .primitive = .u8_ };
                 const list_u8_type = self.type_builder.listType(u8_type) catch return self.type_builder.unknownType();
                 return self.type_builder.resultType(list_u8_type, self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // BufReader.new[R](reader: R) -> BufReader[R]
+            // Creates a new buffered reader wrapping the given reader
+            if (std.mem.eql(u8, obj_name, "BufReader") and std.mem.eql(u8, method.method_name, "new")) {
+                if (method.type_args) |type_args| {
+                    if (type_args.len != 1) {
+                        self.addError(.invalid_call, method.span, "BufReader.new[R]() expects exactly 1 type argument", .{});
+                        return self.type_builder.unknownType();
+                    }
+                    if (method.args.len != 1) {
+                        self.addError(.invalid_call, method.span, "BufReader.new[R](reader) takes exactly 1 argument", .{});
+                        return self.type_builder.unknownType();
+                    }
+                    const inner_type = self.resolveTypeExpr(type_args[0]) catch {
+                        return self.type_builder.unknownType();
+                    };
+                    // Validate that inner type implements Read trait
+                    if (self.trait_registry.get("Read")) |read_trait| {
+                        if (!self.typeSatisfiesBounds(inner_type, &.{read_trait.trait_type}, method.span)) {
+                            // Error already reported
+                        }
+                    }
+                    // Check that argument matches the type parameter
+                    const arg_type = self.checkExpr(method.args[0]);
+                    if (!arg_type.eql(inner_type)) {
+                        self.addError(.type_mismatch, method.span, "argument type must match type parameter", .{});
+                    }
+                    return self.type_builder.bufReaderType(inner_type) catch self.type_builder.unknownType();
+                }
+                self.addError(.invalid_call, method.span, "BufReader.new() requires a type argument: BufReader.new[File](file)", .{});
+                return self.type_builder.unknownType();
+            }
+
+            // BufWriter.new[W](writer: W) -> BufWriter[W]
+            // Creates a new buffered writer wrapping the given writer
+            if (std.mem.eql(u8, obj_name, "BufWriter") and std.mem.eql(u8, method.method_name, "new")) {
+                if (method.type_args) |type_args| {
+                    if (type_args.len != 1) {
+                        self.addError(.invalid_call, method.span, "BufWriter.new[W]() expects exactly 1 type argument", .{});
+                        return self.type_builder.unknownType();
+                    }
+                    if (method.args.len != 1) {
+                        self.addError(.invalid_call, method.span, "BufWriter.new[W](writer) takes exactly 1 argument", .{});
+                        return self.type_builder.unknownType();
+                    }
+                    const inner_type = self.resolveTypeExpr(type_args[0]) catch {
+                        return self.type_builder.unknownType();
+                    };
+                    // Validate that inner type implements Write trait
+                    if (self.trait_registry.get("Write")) |write_trait| {
+                        if (!self.typeSatisfiesBounds(inner_type, &.{write_trait.trait_type}, method.span)) {
+                            // Error already reported
+                        }
+                    }
+                    // Check that argument matches the type parameter
+                    const arg_type = self.checkExpr(method.args[0]);
+                    if (!arg_type.eql(inner_type)) {
+                        self.addError(.type_mismatch, method.span, "argument type must match type parameter", .{});
+                    }
+                    return self.type_builder.bufWriterType(inner_type) catch self.type_builder.unknownType();
+                }
+                self.addError(.invalid_call, method.span, "BufWriter.new() requires a type argument: BufWriter.new[File](file)", .{});
+                return self.type_builder.unknownType();
             }
         }
 
@@ -5830,6 +5964,134 @@ pub const TypeChecker = struct {
             }
         }
 
+        // BufReader methods
+        if (object_type == .buf_reader) {
+            const inner_type = object_type.buf_reader.inner;
+
+            // read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "read")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "read() expects exactly 1 argument (buffer)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const buf_type = self.checkExpr(method.args[0]);
+                const is_valid_buf = blk: {
+                    if (buf_type != .reference or !buf_type.reference.mutable) break :blk false;
+                    const inner = buf_type.reference.inner;
+                    if (inner == .slice and inner.slice.element == .primitive and inner.slice.element.primitive == .u8_) break :blk true;
+                    if (inner == .array and inner.array.element == .primitive and inner.array.element.primitive == .u8_) break :blk true;
+                    break :blk false;
+                };
+                if (!is_valid_buf) {
+                    self.addError(.type_mismatch, method.span, "read() expects a mutable reference to [u8] or [u8; N] buffer", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // read_line(&mut self) -> Result[String, IoError]
+            if (std.mem.eql(u8, method.method_name, "read_line")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "read_line() takes no arguments", .{});
+                }
+                const string_type = self.type_builder.stringDataType() catch self.type_builder.unknownType();
+                return self.type_builder.resultType(string_type, self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // read_to_string(&mut self) -> Result[String, IoError]
+            if (std.mem.eql(u8, method.method_name, "read_to_string")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "read_to_string() takes no arguments", .{});
+                }
+                const string_type = self.type_builder.stringDataType() catch self.type_builder.unknownType();
+                return self.type_builder.resultType(string_type, self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // fill_buf(&mut self) -> Result[[u8], IoError]
+            if (std.mem.eql(u8, method.method_name, "fill_buf")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "fill_buf() takes no arguments", .{});
+                }
+                const slice_u8 = self.type_builder.sliceType(.{ .primitive = .u8_ }) catch self.type_builder.unknownType();
+                return self.type_builder.resultType(slice_u8, self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // consume(&mut self, n: i32)
+            if (std.mem.eql(u8, method.method_name, "consume")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "consume() expects exactly 1 argument (n)", .{});
+                    return self.type_builder.voidType();
+                }
+                const n_type = self.checkExpr(method.args[0]);
+                if (n_type != .primitive or n_type.primitive != .i32_) {
+                    self.addError(.type_mismatch, method.span, "consume() expects an i32 argument", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // into_inner(self) -> R
+            if (std.mem.eql(u8, method.method_name, "into_inner")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "into_inner() takes no arguments", .{});
+                }
+                return inner_type;
+            }
+        }
+
+        // BufWriter methods
+        if (object_type == .buf_writer) {
+            const inner_type = object_type.buf_writer.inner;
+
+            // write(&mut self, buf: &[u8]) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "write")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "write() expects exactly 1 argument (buffer)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const buf_type = self.checkExpr(method.args[0]);
+                const is_valid_buf = blk: {
+                    if (buf_type != .reference) break :blk false;
+                    const inner = buf_type.reference.inner;
+                    if (inner == .slice and inner.slice.element == .primitive and inner.slice.element.primitive == .u8_) break :blk true;
+                    if (inner == .array and inner.array.element == .primitive and inner.array.element.primitive == .u8_) break :blk true;
+                    break :blk false;
+                };
+                if (!is_valid_buf) {
+                    self.addError(.type_mismatch, method.span, "write() expects a reference to [u8] or [u8; N] buffer", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // write_string(&mut self, s: string) -> Result[i32, IoError]
+            if (std.mem.eql(u8, method.method_name, "write_string")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "write_string() expects exactly 1 argument (string)", .{});
+                    return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+                }
+                const str_type = self.checkExpr(method.args[0]);
+                if (str_type != .primitive or str_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "write_string() expects a string argument", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // flush(&mut self) -> Result[void, IoError]
+            if (std.mem.eql(u8, method.method_name, "flush")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "flush() takes no arguments", .{});
+                }
+                return self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // into_inner(self) -> Result[W, IoError]
+            // Flushes buffer and returns the inner writer. Returns error if flush fails.
+            if (std.mem.eql(u8, method.method_name, "into_inner")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "into_inner() takes no arguments", .{});
+                }
+                return self.type_builder.resultType(inner_type, self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+        }
+
         // Look up user-defined method on struct types
         if (object_type == .struct_) {
             const struct_type = object_type.struct_;
@@ -7239,6 +7501,8 @@ pub const TypeChecker = struct {
             .stdout_handle => "stdout",
             .stderr_handle => "stderr",
             .stdin_handle => "stdin",
+            .buf_reader => "buf_reader",
+            .buf_writer => "buf_writer",
             .void_ => "void",
             .never => "never",
             .unknown => "unknown",
