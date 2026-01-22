@@ -95,3 +95,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Implement bytecode VM core (Phase 2, Milestone 3)
 - Implement bytecode compiler (Phase 2, Milestone 2)
 - Implement bytecode instruction set for VM (Phase 2, Milestone 1)
+
+## [v0.1.0] - 2026-01-14
+
+### Added
+
+- Initial release with tree-walking interpreter
+- Core language: variables, functions, structs, enums, closures
+- Type system with type inference
+- Optional and Result types
+- Pattern matching
+- Ownership system foundation
+
+[Unreleased]: https://github.com/PhilipLudington/Klar/compare/v0.3.0...HEAD
+[v0.3.0]: https://github.com/PhilipLudington/Klar/compare/v0.2.0...v0.3.0
+[v0.2.0]: https://github.com/PhilipLudington/Klar/compare/v0.1.0...v0.2.0
+[v0.1.0]: https://github.com/PhilipLudington/Klar/releases/tag/v0.1.0
