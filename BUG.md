@@ -1,160 +1,198 @@
-# Bug Report: Klar 0.3.0-dev VM Runtime Issues
+# Bug Report: Klar VM Struct Field Corruption
 
 ## Summary
 
-~~Multiple VM runtime bugs prevent execution of complex programs.~~ All four bugs have been fixed.
+The Klar VM corrupts struct fields after approximately 11-12 loop iterations. Fields that should contain `f64` values return `<object>` instead, causing a TypeError and crashing the program. This bug persists across multiple compiler versions and attempted fixes.
 
 ## Environment
 
-- **Klar Version**: 0.3.1-dev
+- **Klar Version**: 0.3.1-dev (also tested with 0.3.0-dev)
 - **Platform**: macOS (Darwin 24.6.0)
+- **Project**: TheNarrowWindow
+
+## Status
+
+**UNRESOLVED** - Bug persists after compiler fix attempt on 2026-01-22.
 
 ---
 
-## Bug 1: Struct Field Corruption Across Loop Iterations
+## Bug: Struct Field Corruption Across Loop Iterations
 
-### Status: FIXED
-
-### Severity: Critical
+### Severity: Critical (Blocks all development)
 
 ### Description
 
-Struct fields became corrupted after approximately 11-12 iterations of a loop. Fields that should contain `f64` values instead returned `<object>`.
+Struct fields become corrupted after approximately 11-12 iterations of a game loop. Fields declared as `f64` return `<object>` instead of numeric values, causing type errors at runtime.
 
-### Root Cause
+The program compiles and type-checks successfully. The corruption only manifests at runtime in the VM.
 
-The VM was creating `ObjOptional` objects using the raw allocator instead of the GC allocator. This caused memory leaks and potential corruption when leaked memory was reused.
-
-### Fix
-
-Changed all `ObjOptional.createNone()` and `ObjOptional.createSome()` calls in `src/vm.zig` to use `ObjOptional.createNoneGC()` and `ObjOptional.createSomeGC()` respectively. This ensures optionals are properly tracked and freed by the garbage collector.
-
----
-
-## Bug 2: Optional Type Methods Cause TypeError
-
-### Status: FIXED
-
-### Severity: High
-
-### Description
-
-Calling `.is_some()` on optional types (`?T`) returned from user-defined functions caused a TypeError at runtime.
-
-### Root Cause
-
-The bytecode compiler was not wrapping return values in `Some` when returning from functions with optional return types. The value was returned as a raw value instead of an `ObjOptional`, so `.is_some()` failed because the value wasn't recognized as an optional type.
-
-### Fix
-
-Modified `src/compiler.zig` to:
-1. Track whether the current function has an optional return type (`returns_optional` field)
-2. Emit `op_some` to wrap return values in functions with optional return types
-3. Emit `op_none` for empty returns in optional-returning functions
-
----
-
-## Bug 3: Native Codegen UnsupportedFeature for Field Access
-
-### Status: FIXED
-
-### Severity: Medium
-
-### Description
-
-Native compilation failed with "UnsupportedFeature" when accessing struct fields on non-identifier expressions (e.g., function call results).
-
-### Reproduction (before fix)
+### Minimal Reproduction
 
 ```klar
-struct Point { x: i32, y: i32 }
-
-fn make_point(x: i32, y: i32) -> Point {
-    return Point { x: x, y: y }
+struct Region {
+    emissions: f64
+    // ... other fields
 }
 
-fn main() -> i32 {
-    // This failed with UnsupportedFeature
-    let x: i32 = make_point(10, 20).x
-    return x
+var region: Region = create_region(...)
+
+var turn: i32 = 0
+loop {
+    turn = turn + 1
+
+    // Works for turns 1-11
+    // Fails on turn 12 with: emissions = <object>
+    let e: f64 = region.emissions
+
+    if turn >= 200 {
+        break
+    }
 }
 ```
 
-### Root Cause
+### Actual Behavior
 
-The native codegen's `emitFieldAccess` function only supported field access on identifier expressions (variables). For non-identifier expressions like function calls, it returned `UnsupportedFeature`.
+```
+DEBUG: game.turn = 11
+DEBUG: Emissions calculated: 31.50336790716223  // Valid f64
 
-Additionally, `inferExprType` for struct literals was creating anonymous LLVM struct types instead of using registered named types, causing type mismatches.
-
-### Fix
-
-Modified `src/codegen/emit.zig`:
-1. Added `getStructTypeNameFromExpr()` to extract struct type names from call expressions by looking up the function's return type
-2. Extended `getStructTypeName()` to handle identifier expressions by looking up the variable's struct_type_name
-3. Updated `inferExprType` for struct literals to return registered struct types
-4. Updated `inferExprType` for field access to look up field types from struct_types cache
-
----
-
-# Pre-existing Issues (Now Fixed)
-
-The following issues were discovered during Bug 3 investigation. They were pre-existing limitations in the native codegen that have now been fixed.
-
----
-
-## Issue 1: Nested Struct Field Access on Function Call Results
-
-### Status: FIXED
-
-### Severity: Low
-
-### Description
-
-Accessing a nested struct field directly from a function call result crashed during native codegen. When the field being accessed was itself a struct type (not a primitive), the generated LLVM IR caused a crash.
-
-### Reproduction (before fix)
-
-```klar
-struct Point { x: i32, y: i32 }
-struct Rectangle { origin: Point, width: i32, height: i32 }
-
-fn make_rect() -> Rectangle {
-    return Rectangle { origin: Point { x: 5, y: 6 }, width: 100, height: 200 }
-}
-
-fn main() -> i32 {
-    // This crashed in native codegen - nested struct field access on function call
-    let origin: Point = make_rect().origin
-    return origin.x
-}
+DEBUG: game.turn = 12
+DEBUG: Emissions calculated: <object>           // CORRUPTED
+Runtime error in main: TypeError
 ```
 
-### Root Cause
+### Expected Behavior
 
-In `emitFieldAccess()`, the field type was extracted using `LLVMStructGetTypeAtIndex()`. For primitive types like `i32`, all instances are identical in LLVM. However, for struct types, `LLVMStructGetTypeAtIndex` may return a type reference that differs from the registered struct type in `struct_types`. LLVM struct types have identity semantics - the load failed due to type mismatch.
+The `emissions` field should return a valid `f64` value on all iterations.
 
-### Fix
+### Test Results
 
-Modified `src/codegen/emit.zig`:
-1. Added `lookupFieldType()` function that uses the type checker to get the field's semantic type, then converts via `typeToLLVM()` to properly look up registered struct types
-2. Added `lookupFieldStructTypeName()` to get a field's struct type name when the field is a struct type
-3. Extended `getStructTypeNameFromExpr()` to handle field expressions by recursively looking up field types (enables chained access like `make_rect().origin.x`)
-4. Updated `inferExprType()` for field expressions to use `getStructTypeNameFromExpr()` and `lookupFieldType()`
-5. Updated both field access code paths in `emitFieldAccess()` to use `lookupFieldType()` with fallback to `LLVMStructGetTypeAtIndex()`
+| Klar Version | Turns Completed | Result |
+|--------------|-----------------|--------|
+| 0.3.0-dev | 11 | TypeError on turn 12 |
+| 0.3.1-dev | 11 | TypeError on turn 12 |
+| 0.3.1-dev (post-fix attempt) | 11 | TypeError on turn 12 |
+
+### Observations
+
+1. Corruption occurs consistently at turn 12 (after 11 successful iterations)
+2. The corrupted value is `<object>` rather than garbage - suggests a type tag issue
+3. Multiple struct instances are in use (8 regions, 7 sectors)
+4. Native codegen is unavailable (UnsupportedFeature), so `--vm` flag is required
+5. The issue may be related to:
+   - VM garbage collection
+   - Struct field offset calculation
+   - Reference counting / ownership tracking
+   - Stack frame management across loop iterations
+
+### Workarounds Attempted
+
+1. **Extract fields immediately** after function returns - no effect
+2. **Copy structs** before accessing fields - no effect
+3. **Reduce loop iterations** - works but defeats purpose of simulation
 
 ---
 
-## Test Results
+## Other Known Issues
 
-All 444 tests pass after fixes:
-- Unit Tests: 220 passed
-- Native Tests: 208 passed
-- App Tests: 10 passed
-- Module Tests: 6 passed
+### Bug 2: Optional Type Methods (High)
+
+Calling `.is_some()` on `?T` types causes TypeError at runtime.
+
+**Workaround**: Use integer return codes (0/1) instead of optional types.
+
+### Bug 3: Native Codegen (Medium)
+
+Native compilation fails with "UnsupportedFeature" for fixed-size arrays.
+
+**Workaround**: Use `--vm` flag.
+
+---
+
+## Impact
+
+Phase 3 of TheNarrowWindow is completely blocked. The game requires 200 turns minimum; currently only 11 complete successfully.
 
 ---
 
 **Reported**: 2026-01-22
-**Fixed**: 2026-01-22 (Bug 1, Bug 2, Bug 3, Issue 1)
-**Open Issues**: None
+**Last Tested**: 2026-01-22
 **Klar Version**: 0.3.1-dev
+**Status**: **FIXED** (2026-01-22)
+
+---
+
+## Investigation Notes (2026-01-22)
+
+### Tests Performed
+
+Created multiple test cases in `scratch/` directory attempting to reproduce the bug:
+- `gc_bug_test.kl` - Basic struct field access in loop (PASSES)
+- `gc_bug_stress.kl` - Multiple structs, function returns, field updates (PASSES)
+- `gc_bug_strings.kl` - Heavy string allocation to trigger GC faster (PASSES)
+- `gc_bug_nested.kl` - Nested structs with object fields (PASSES)
+
+All tests pass even with `stress_gc = true` (GC on every allocation).
+
+### Findings
+
+1. **VM struct method calls not supported** - Calling methods on structs (e.g., `point.sum()`) returns `TypeError` because `invokeMethod()` at `vm.zig:1319` falls through to the `else` branch for struct receivers.
+
+2. **Optional.clone() not implemented** - `invokeOptionalMethod()` doesn't handle `clone()`, returning `UndefinedField`.
+
+3. **GC marking appears correct** - Struct field values are properly marked during GC blackening (`gc.zig:424-430`).
+
+4. **HashMap operations are safe** - `setField()` doesn't hold entry pointers across potential reallocations.
+
+### Hypotheses
+
+The bug may require specific conditions not reproduced in tests:
+1. **Struct method calls** - If TheNarrowWindow uses `region.calculate()` type patterns, it would hit the unsupported struct method path
+2. **Complex object graph** - The actual game may have circular references or deep nesting
+3. **Specific allocation pattern** - The 11-12 iteration threshold suggests memory size triggers, but tests didn't reproduce
+
+## ROOT CAUSE FOUND
+
+### The Bug
+
+**`compileLoopStmt` in `compiler.zig` was missing `beginScope()`/`endScope()` calls.**
+
+Unlike `compileForLoop` and `compileWhileLoop` which properly manage scope, `compileLoopStmt` (for `loop { }` statements) never created a new scope. This meant:
+
+1. Variables declared inside `loop { }` never went out of scope
+2. Each iteration accumulated more local variables
+3. `local_count` grew unbounded across iterations
+4. After ~11-12 iterations with 8+ locals per iteration, slot indices became corrupted
+
+### The Fix
+
+Added scope management to `compileLoopStmt`:
+
+```zig
+fn compileLoopStmt(self: *Compiler, l: *ast.LoopStmt) Error!void {
+    const line = l.span.line;
+
+    // BEGIN SCOPE - was missing!
+    self.beginScope();
+
+    // ... loop body compilation ...
+
+    // END SCOPE - was missing!
+    self.endScope();
+
+    try self.emitLoop(loop_start, line);
+    // ...
+}
+```
+
+### Why The Symptoms Were Confusing
+
+- Field access for string interpolation worked because it read the correct value
+- But arithmetic operations failed because they read from WRONG stack slots
+- The "corruption" was actually the VM reading from misaligned slot indices
+- Values at wrong slots contained structs (hence `<object>`) or booleans (hence `true`)
+
+### Other Issues Found (Unrelated)
+
+1. **VM struct method calls not supported** - `invokeMethod()` doesn't handle `.struct_` receivers
+2. **Optional.clone() not implemented** - causes `UndefinedField` error

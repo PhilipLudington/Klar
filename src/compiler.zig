@@ -589,6 +589,9 @@ pub const Compiler = struct {
     fn compileLoopStmt(self: *Compiler, l: *ast.LoopStmt) Error!void {
         const line = l.span.line;
 
+        // Begin a new scope for the loop body.
+        self.beginScope();
+
         // Mark the loop start and scope depth for break cleanup.
         const loop_start = self.currentChunk().currentOffset();
         self.current.loop_starts[self.current.loop_depth] = loop_start;
@@ -597,6 +600,9 @@ pub const Compiler = struct {
 
         // Compile body (no value produced by loop body).
         try self.compileBlockStatements(l.body);
+
+        // End the loop scope (pops locals declared in loop body).
+        self.endScope();
 
         // Loop back unconditionally.
         try self.emitLoop(loop_start, line);
