@@ -157,31 +157,33 @@ The bug may require specific conditions not reproduced in tests:
 
 **`compileLoopStmt` in `compiler.zig` was missing `beginScope()`/`endScope()` calls.**
 
-Unlike `compileForLoop` and `compileWhileLoop` which properly manage scope, `compileLoopStmt` (for `loop { }` statements) never created a new scope. This meant:
+Both `compileLoopStmt` (for `loop { }`) and `compileWhileLoop` (for `while condition { }`) were missing `beginScope()`/`endScope()` calls. Only `compileForLoop` properly managed scope. This meant:
 
-1. Variables declared inside `loop { }` never went out of scope
+1. Variables declared inside loop bodies never went out of scope
 2. Each iteration accumulated more local variables
 3. `local_count` grew unbounded across iterations
 4. After ~11-12 iterations with 8+ locals per iteration, slot indices became corrupted
 
 ### The Fix
 
-Added scope management to `compileLoopStmt`:
+Added scope management to both `compileLoopStmt` and `compileWhileLoop`:
 
 ```zig
+// compileLoopStmt fix:
 fn compileLoopStmt(self: *Compiler, l: *ast.LoopStmt) Error!void {
-    const line = l.span.line;
-
-    // BEGIN SCOPE - was missing!
-    self.beginScope();
-
-    // ... loop body compilation ...
-
-    // END SCOPE - was missing!
-    self.endScope();
-
+    self.beginScope();  // Added
+    // ... body compilation ...
+    self.endScope();    // Added
     try self.emitLoop(loop_start, line);
-    // ...
+}
+
+// compileWhileLoop fix:
+fn compileWhileLoop(self: *Compiler, w: *ast.WhileLoop) Error!void {
+    // ... condition evaluation ...
+    self.beginScope();  // Added
+    try self.compileBlockStatements(w.body);
+    self.endScope();    // Added
+    try self.emitLoop(loop_start, line);
 }
 ```
 

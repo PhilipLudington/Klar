@@ -518,8 +518,14 @@ pub const Compiler = struct {
         // Jump out if false.
         const exit_jump = try self.emitJump(.op_jump_if_false, line);
 
+        // Begin a new scope for the loop body.
+        self.beginScope();
+
         // Compile body (no value produced by loop body).
         try self.compileBlockStatements(w.body);
+
+        // End the loop scope (pops locals declared in loop body).
+        self.endScope();
 
         // Loop back to condition.
         try self.emitLoop(loop_start, line);
