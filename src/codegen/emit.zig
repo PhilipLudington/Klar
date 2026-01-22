@@ -186,6 +186,8 @@ pub const Emitter = struct {
         is_rc: bool,
         /// True if this is an Arc type (uses atomic operations).
         is_arc: bool = false,
+        /// True if this is a BufWriter type (needs flush on drop).
+        is_buf_writer: bool = false,
     };
 
     /// Info about a scope for drop tracking.
@@ -973,6 +975,11 @@ pub const Emitter = struct {
                 if (inner_type) |it| {
                     try self.registerDroppable(decl.name, alloca, it, true, is_arc);
                 }
+
+                // Register BufWriter variables for automatic flushing on drop
+                if (is_buf_writer_let) {
+                    try self.registerBufWriterDroppable(decl.name, alloca);
+                }
             },
             .var_decl => |decl| {
                 // Set expected type context from annotation for constructors like Ok/Err
@@ -1048,6 +1055,11 @@ pub const Emitter = struct {
                 // Register Rc/Arc variables for automatic dropping
                 if (inner_type) |it| {
                     try self.registerDroppable(decl.name, alloca, it, true, is_arc);
+                }
+
+                // Register BufWriter variables for automatic flushing on drop
+                if (is_buf_writer) {
+                    try self.registerBufWriterDroppable(decl.name, alloca);
                 }
             },
             .return_stmt => |ret| {
@@ -2214,7 +2226,11 @@ pub const Emitter = struct {
             .unary => |un| try self.emitUnary(un),
             .call => |call| try self.emitCall(call),
             .block => |blk| blk: {
+                // Push scope for drop tracking - variables in the block will be dropped at block end
+                try self.pushScope(false);
                 const result = try self.emitBlock(blk);
+                // Pop scope and emit drops for variables declared in this block
+                self.popScope();
                 break :blk result orelse llvm.Const.int32(self.ctx, 0);
             },
             .grouped => |g| try self.emitExpr(g.expr),
@@ -21650,6 +21666,10 @@ pub const Emitter = struct {
                 4,
                 "",
             );
+        } else if (v.is_buf_writer) {
+            // Flush BufWriter buffer on drop - call emitBufWriterFlush
+            // This ensures any buffered data is written before the variable goes out of scope
+            _ = self.emitBufWriterFlush(v.alloca) catch {};
         }
         // For non-Rc types that need dropping (future: closures, custom destructors),
         // we would add additional cases here.
@@ -21694,6 +21714,20 @@ pub const Emitter = struct {
             .inner_type = inner_type,
             .is_rc = is_rc,
             .is_arc = is_arc,
+        }) catch return EmitError.OutOfMemory;
+    }
+
+    /// Register a BufWriter variable in the current scope for automatic flushing on drop.
+    fn registerBufWriterDroppable(self: *Emitter, name: []const u8, alloca: llvm.ValueRef) EmitError!void {
+        if (self.scope_stack.items.len == 0) return;
+
+        const scope = &self.scope_stack.items[self.scope_stack.items.len - 1];
+        scope.droppables.append(self.allocator, .{
+            .name = name,
+            .alloca = alloca,
+            .inner_type = llvm.Types.int32(self.ctx), // Placeholder, not used for BufWriter
+            .is_rc = false,
+            .is_buf_writer = true,
         }) catch return EmitError.OutOfMemory;
     }
 

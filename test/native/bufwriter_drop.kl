@@ -1,0 +1,41 @@
+// Test BufWriter automatic flush on drop
+// Expected: 0
+
+fn main() -> i32 {
+    let path: string = "/tmp/bufwriter_drop_test.txt"
+
+    // Scope block to test drop behavior
+    {
+        // Open file and wrap in BufWriter
+        let open_result: Result[File, IoError] = File.open(path, "w")
+        if not open_result.is_ok() {
+            return 1
+        }
+        var file: File = open_result!
+        var writer: BufWriter[File] = BufWriter.new[File](file)
+
+        // Write some data - this should be buffered
+        let write_result: Result[i32, IoError] = writer.write_string("Hello, World!")
+        if not write_result.is_ok() {
+            return 2
+        }
+
+        // Do NOT call flush() explicitly
+        // When this block ends, writer goes out of scope
+        // and should automatically flush any buffered data
+    }
+
+    // Read the file back to verify data was flushed
+    let read_result: Result[String, IoError] = File.read_to_string(path)
+    if not read_result.is_ok() {
+        return 3
+    }
+    let content: String = read_result!
+
+    // Check content length (13 = "Hello, World!")
+    if content.len() != 13 {
+        return 4
+    }
+
+    return 0
+}

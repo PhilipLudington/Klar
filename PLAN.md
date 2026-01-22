@@ -503,8 +503,8 @@ std/
 ### Buffered I/O
 - [x] Implement `BufReader[R: Read]` wrapper
 - [x] Implement `BufWriter[W: Write]` wrapper
-- [ ] Add buffered read_line() method
-- [ ] Handle buffer flushing on drop
+- [x] Add buffered read_line() method
+- [x] Handle buffer flushing on drop (BufWriter automatically flushes when going out of scope)
 
 ### Path Type
 - [ ] Implement `Path` struct in std/path.kl
@@ -532,6 +532,8 @@ std/
 - [x] Test: stdin type exists and can be obtained (stdin_basic.kl)
 - [x] Test: file read with mutable array buffer (file_read_buffer.kl)
 - [x] Test: buffered I/O works correctly (bufreader_basic.kl, bufwriter_basic.kl, bufwriter_writestr.kl)
+- [x] Test: BufReader.read_line() works correctly (bufreader_readline.kl)
+- [x] Test: BufWriter automatic flush on drop works correctly (bufwriter_drop.kl)
 - [ ] Test: directory operations work
 
 **Files Modified:**

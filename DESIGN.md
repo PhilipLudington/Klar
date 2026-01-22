@@ -512,6 +512,29 @@ let d: i32 = a +| a             // saturate to max
 
 Every value has exactly one owner. When the owner goes out of scope, the value is destroyed.
 
+### Scope-Based Cleanup
+
+Block expressions create scopes for automatic cleanup. When a block ends, all variables declared within it are properly cleaned up:
+
+```klar
+fn process_data() {
+    // Outer scope
+    {
+        // Inner block scope
+        var writer: BufWriter[File] = BufWriter.new[File](file)
+        writer.write_string("data")
+        // writer automatically flushed when block ends
+    }
+    // writer is no longer accessible, cleanup completed
+}
+```
+
+Types that need cleanup (BufWriter, Rc, Arc) are automatically handled when their scope ends, including:
+- Function returns
+- Block expression exits
+- Loop iteration boundaries
+- Early returns via `break`, `continue`, or `return`
+
 ### Move Semantics
 
 ```klar
@@ -1151,12 +1174,14 @@ fn stderr() -> Stderr
 struct BufReader[R: Read] {
     fn new(reader: R) -> BufReader[R]
     fn read(self: inout Self, buf: ref [u8]) -> Result[i32, IoError]
+    fn read_line(self: inout Self) -> Result[String, IoError]
 }
 
 struct BufWriter[W: Write] {
     fn new(writer: W) -> BufWriter[W]
     fn write_string(self: inout Self, s: string) -> Result[i32, IoError]
     fn flush(self: inout Self) -> Result[void, IoError]
+    // Note: BufWriter automatically flushes when going out of scope
 }
 ```
 
