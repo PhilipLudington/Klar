@@ -1057,10 +1057,13 @@ pub const Compiler = struct {
         // Jump to else branch if false.
         const then_jump = try self.emitJump(.op_jump_if_false, line);
 
-        // Compile then branch (as a block, doesn't leave value on stack).
+        // Compile then branch as a block.
+        // compileBlock leaves a value on the stack (final_expr or void).
+        // Since if statements don't produce values, we must pop it.
         self.beginScope();
         try self.compileBlock(if_stmt.then_branch);
         self.endScope();
+        try self.emitOp(.op_pop, line);
 
         // Jump over else branch if present.
         var else_jump: ?usize = null;
@@ -1078,6 +1081,7 @@ pub const Compiler = struct {
                     self.beginScope();
                     try self.compileBlock(block);
                     self.endScope();
+                    try self.emitOp(.op_pop, line);
                 },
                 .if_stmt => |nested_if| try self.compileIfStmt(nested_if),
             }

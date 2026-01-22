@@ -12,7 +12,7 @@ The Klar VM corrupts struct fields after approximately 11-12 loop iterations. Fi
 
 ## Status
 
-**UNRESOLVED** - Bug persists after compiler fix attempt on 2026-01-22.
+**FIXED** - Root cause found and fixed on 2026-01-22. See "Second Root Cause" below.
 
 ---
 
@@ -198,3 +198,57 @@ fn compileWhileLoop(self: *Compiler, w: *ast.WhileLoop) Error!void {
 
 1. **VM struct method calls not supported** - `invokeMethod()` doesn't handle `.struct_` receivers
 2. **Optional.clone() not implemented** - causes `UndefinedField` error
+
+## SECOND ROOT CAUSE FOUND (2026-01-22)
+
+### The Bug
+
+**`compileIfStmt` was not popping the value left on the stack by `compileBlock`.**
+
+The `compileBlock` function always leaves a value on the stack:
+- If the block has a `final_expr` (last expression without trailing newline/semicolon), that expression's value is left on the stack
+- Otherwise, `op_void` is emitted, leaving `void` on the stack
+
+The parser treats the last expression in a block as `final_expr` if it's immediately followed by `}` without a newline. For example:
+
+```klar
+if game.month > 12 {
+    game.month = 1
+    game.year = game.year + 1  // No newline before }
+}
+```
+
+Here, `game.year = game.year + 1` is parsed as `final_expr`, not a statement. This means:
+1. The assignment compiles via `compileExpr`, not `compileExprStmt`
+2. No `op_pop` is emitted after the assignment
+3. The result (the `game` object) is left on the stack
+
+### Why This Caused Corruption
+
+Every time the `if` branch executed, an extra value was left on the stack. This shifted all subsequent local variable slot indices:
+- Variables at slot N were now at stack position N+1
+- The compiler's bytecode used slot indices calculated at compile time
+- At runtime, the misaligned slots caused reads from wrong positions
+- Struct fields (like `r0.emissions`) were read as objects or other types
+
+### The Fix
+
+Added `op_pop` after `compileBlock` in both the then-branch and else-branch of `compileIfStmt`:
+
+```zig
+// Compile then branch
+self.beginScope();
+try self.compileBlock(if_stmt.then_branch);
+self.endScope();
+try self.emitOp(.op_pop, line);  // Added: pop the block's result value
+```
+
+### Why The Previous Fix Didn't Work
+
+The previous fix (adding `beginScope()`/`endScope()` to `compileLoopStmt` and `compileWhileLoop`) was correct but incomplete. It fixed one stack leak but not the one from `compileIfStmt`.
+
+The bug was only triggered when:
+1. An `if` statement inside a loop had a final expression (no newline before `}`)
+2. The condition was initially false for several iterations
+3. When the condition first became true, the leaked value caused slot misalignment
+4. On subsequent iterations, the misaligned slots caused the corruption
