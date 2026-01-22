@@ -1,57 +1,57 @@
-# Resume Point: Generic Trait Method Dispatch Complete
+# Resume Point: Convenience I/O Methods Complete
 
 ## Context
 
-Working on **Phase 4: Language Completion** - Milestone 2 (Traits and Polymorphism). Completed generic trait method dispatch with reference parameters.
+Working on **Phase 4: Language Completion** - Milestone 2 (Traits and Polymorphism). Added convenience I/O methods for file reading.
 
 ## Progress Summary
 
 ### Just Completed
 
-- **Generic Trait Method Dispatch with ref/inout Self** ✅
-  - Fixed checker to resolve trait methods when receiver type is `ref TypeVar` or `inout TypeVar`
-  - Fixed codegen to correctly pass pointer values for reference parameters when calling methods
-  - Trait methods like `writer.write(data)` now work when `W: Writer` and method takes `inout Self`
+- **File.read_to_string(path)** - Static convenience method to read entire file as String
+  - `File.read_to_string(path: string) -> Result[String, IoError]`
+  - Opens file, reads all content, closes file, returns String
+  - Uses fseek/ftell/fread pattern for efficient single-read
+
+- **File.read_all(path)** - Static convenience method to read entire file as bytes
+  - `File.read_all(path: string) -> Result[List[u8], IoError]`
+  - Opens file in binary mode, reads all bytes, closes file, returns List[u8]
 
 **Example Usage:**
 ```klar
-trait Writer {
-    fn write(self: inout Self, data: i32) -> i32
+// Read file as string
+let result: Result[String, IoError] = File.read_to_string("config.txt")
+if result.is_ok() {
+    let content: String = result!
+    // Use content.len(), content.contains(), etc.
 }
 
-struct Buffer {
-    count: i32,
-}
-
-impl Buffer: Writer {
-    fn write(self: inout Buffer, data: i32) -> i32 {
-        self.count = self.count + data
-        return data
-    }
-}
-
-// Generic function with trait bound - now works!
-fn write_to[W: Writer](writer: inout W, data: i32) -> i32 {
-    return writer.write(data)  // Trait method dispatch through bounds
-}
-
-fn main() -> i32 {
-    var buf: Buffer = Buffer { count: 0 }
-    write_to(ref buf, 42)
-    return buf.count  // Returns 42
+// Read file as bytes
+let bytes_result: Result[List[u8], IoError] = File.read_all("image.png")
+if bytes_result.is_ok() {
+    let bytes: List[u8] = bytes_result!
+    // Use bytes.len(), bytes.get(i), etc.
 }
 ```
 
 **Files Modified:**
-- `src/checker.zig` - Unwrap reference types when checking for type_var trait bounds in method calls
-- `src/codegen/emit.zig` - Load pointer value from alloca when variable is a reference parameter
+- `src/checker.zig` - Added type checking for File.read_to_string and File.read_all
+- `src/codegen/emit.zig` - Added:
+  - `emitFileReadToString` - LLVM codegen for read_to_string
+  - `emitFileReadAll` - LLVM codegen for read_all
+  - `getStringResultType` - Result[String, IoError] LLVM type
+  - `getListResultType` - Result[List[u8], IoError] LLVM type
+  - `getOrDeclareFseek` - C fseek function declaration
+  - `getOrDeclareFtell` - C ftell function declaration
+  - Updated `inferExprType` for new methods
 
 **New Tests:**
-- `test/native/trait_method_ref_bounds.kl` - Tests trait methods with `ref Self` through generic bounds
-- `test/native/trait_method_inout_bounds.kl` - Tests trait methods with `inout Self` through generic bounds
+- `test/native/file_read_to_string.kl` - Tests File.read_to_string
+- `test/native/file_read_all.kl` - Tests File.read_all with byte verification
 
 ### Previously Completed
 
+- **Generic Trait Method Dispatch with ref/inout Self** ✅
 - **Mutable Buffer I/O with Arrays** ✅
 - **Mutable Buffer Allocation via `@repeat`** ✅
 - **New Reference Syntax** ✅ (`ref T`, `inout T`, `ref x`)
@@ -73,9 +73,9 @@ fn main() -> i32 {
 
 ## Current Test Status
 
-All 436 tests pass:
+All 438 tests pass:
 - Unit Tests: 220 passed
-- Native Tests: 200 passed
+- Native Tests: 202 passed
 - App Tests: 10 passed
 - Module Tests: 6 passed
 
@@ -85,15 +85,14 @@ All 436 tests pass:
 
 Continue with **Phase 4** tasks:
 
-1. **Convenience I/O methods**:
-   - `read_to_string()` on Read trait
-   - `read_all()` for complete file reads
+1. **Buffered I/O** (if needed):
+   - `BufReader`, `BufWriter` types for efficient streaming
 
-2. **Buffered I/O** (if needed):
-   - `BufReader`, `BufWriter` types
-
-3. **Associated types** (Milestone 2 - stretch):
+2. **Associated types** (Milestone 2 - stretch):
    - User-definable associated types in traits
+
+3. **Module system enhancements**:
+   - Standard library organization
 
 ---
 
@@ -103,12 +102,11 @@ Continue with **Phase 4** tasks:
 # Rebuild and run tests
 ./build.sh && ./run-tests.sh
 
-# Test generic trait dispatch with ref/inout
-./zig-out/bin/klar run test/native/trait_method_ref_bounds.kl
-./zig-out/bin/klar run test/native/trait_method_inout_bounds.kl
+# Test convenience I/O methods
+./zig-out/bin/klar run test/native/file_read_to_string.kl
+./zig-out/bin/klar run test/native/file_read_all.kl
 
-# Example: generic function with trait bound
-fn write_to[W: Writer](writer: inout W, data: i32) -> i32 {
-    return writer.write(data)
-}
+# Example usage:
+let content: Result[String, IoError] = File.read_to_string("config.txt")
+let bytes: Result[List[u8], IoError] = File.read_all("data.bin")
 ```

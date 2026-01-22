@@ -1,0 +1,33 @@
+// Test File.read_to_string convenience method
+// Expected: 0
+
+fn main() -> i32 {
+    // First, create a test file
+    let write_result: Result[File, IoError] = File.open("/tmp/test_read_to_string.txt", "w")
+    if not write_result.is_ok() {
+        return 1
+    }
+    var file: File = write_result!
+    let write_res: Result[i32, IoError] = file.write_string("Hello, Klar!")
+    if not write_res.is_ok() {
+        return 2
+    }
+    let close_res: Result[void, IoError] = file.close()
+    if not close_res.is_ok() {
+        return 3
+    }
+
+    // Now read it back using File.read_to_string
+    let read_result: Result[String, IoError] = File.read_to_string("/tmp/test_read_to_string.txt")
+    if not read_result.is_ok() {
+        return 4
+    }
+    let content: String = read_result!
+
+    // Check content length (12 = "Hello, Klar!")
+    if content.len() != 12 {
+        return 5
+    }
+
+    return 0
+}

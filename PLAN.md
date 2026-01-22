@@ -463,7 +463,7 @@ std/
 - [x] Define `Read` trait as builtin (in checker.zig)
 - [x] Add `read(self: inout Self, buf: [u8]) -> Result[i32, IoError]` (slice by value)
 - [x] Register `File:Read` implementation
-- [ ] Add default `read_all()`, `read_to_string()`
+- [x] Add `File.read_all(path)`, `File.read_to_string(path)` static convenience methods
 
 ### Write Trait
 - [x] Define `Write` trait as builtin (in checker.zig)
@@ -480,6 +480,8 @@ std/
 ### File Type (Builtin)
 - [x] Implement `File` as builtin type (opaque FILE* handle)
 - [x] Implement `File.open(path, mode)` static constructor
+- [x] Implement `File.read_to_string(path)` convenience method (opens, reads, closes)
+- [x] Implement `File.read_all(path)` convenience method (opens, reads bytes, closes)
 - [x] Implement `read(&mut self, buf)` method
 - [x] Implement `write(&mut self, buf)` method
 - [x] Implement `write_string(&mut self, s)` method

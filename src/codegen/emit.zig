@@ -4372,6 +4372,14 @@ pub const Emitter = struct {
                     if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, m.method_name, "open")) {
                         return self.getFileResultType();
                     }
+                    // File.read_to_string(path) -> Result[String, IoError]
+                    if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, m.method_name, "read_to_string")) {
+                        return self.getStringResultType();
+                    }
+                    // File.read_all(path) -> Result[List[u8], IoError]
+                    if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, m.method_name, "read_all")) {
+                        return self.getListResultType();
+                    }
                 }
 
                 // File instance methods (file.write_string, file.read, etc.)
@@ -6242,6 +6250,16 @@ pub const Emitter = struct {
             // File.open(path, mode) -> Result[File, IoError]
             if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "open")) {
                 return self.emitFileOpen(method);
+            }
+
+            // File.read_to_string(path) -> Result[String, IoError]
+            if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "read_to_string")) {
+                return self.emitFileReadToString(method);
+            }
+
+            // File.read_all(path) -> Result[List[u8], IoError]
+            if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "read_all")) {
+                return self.emitFileReadAll(method);
             }
         }
 
@@ -16025,6 +16043,30 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
+    /// Get the LLVM struct type for Result[String, IoError]: { tag: i1, string: { ptr, len, cap }, error: IoError }
+    fn getStringResultType(self: *Emitter) llvm.TypeRef {
+        const io_error_type = self.getIoErrorStructType();
+        const string_type = self.getStringStructType();
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag: 1=Ok, 0=Err
+            string_type, // String { ptr, len, capacity }
+            io_error_type, // IoError
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM struct type for Result[List[u8], IoError]: { tag: i1, list: List, error: IoError }
+    fn getListResultType(self: *Emitter) llvm.TypeRef {
+        const io_error_type = self.getIoErrorStructType();
+        const list_type = self.getListStructType();
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag: 1=Ok, 0=Err
+            list_type, // List { ptr, len, capacity }
+            io_error_type, // IoError
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
     /// Emit File.open(path, mode) -> Result[File, IoError]
     fn emitFileOpen(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         if (method.args.len != 2) return EmitError.InvalidAST;
@@ -16077,6 +16119,224 @@ pub const Emitter = struct {
         // --- Continue ---
         self.builder.positionAtEnd(cont_bb);
         return self.builder.buildLoad(result_type, result_alloca, "file.result_val");
+    }
+
+    /// Emit File.read_to_string(path) -> Result[String, IoError]
+    /// Opens the file, reads entire content as a null-terminated string, closes file.
+    fn emitFileReadToString(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // Emit path argument
+        const path_val = try self.emitExpr(method.args[0]);
+
+        // Get C runtime functions
+        const fopen_fn = self.getOrDeclareFopen();
+        const fseek_fn = self.getOrDeclareFseek();
+        const ftell_fn = self.getOrDeclareFtell();
+        const fread_fn = self.getOrDeclareFread();
+        const fclose_fn = self.getOrDeclareFclose();
+        const malloc_fn = self.getOrDeclareMalloc();
+
+        // Open file for reading: fopen(path, "r")
+        const mode_str = self.builder.buildGlobalStringPtr("r", "mode.r");
+        var fopen_args = [_]llvm.ValueRef{ path_val, mode_str };
+        const file_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fopen_fn), fopen_fn, &fopen_args, "readstr.file");
+
+        // Build Result[String, IoError] struct
+        const result_type = self.getStringResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "readstr.result");
+
+        // Get struct field pointers
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "readstr.tag_ptr");
+        const str_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "readstr.str_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "readstr.err_ptr");
+
+        // Check if fopen returned null
+        const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, file_ptr, null_ptr, "readstr.is_null");
+
+        // Create basic blocks
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const open_ok_bb = llvm.appendBasicBlock(self.ctx, func, "readstr.open_ok");
+        const open_err_bb = llvm.appendBasicBlock(self.ctx, func, "readstr.open_err");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "readstr.cont");
+
+        _ = self.builder.buildCondBr(is_null, open_err_bb, open_ok_bb);
+
+        // --- Open error path ---
+        self.builder.positionAtEnd(open_err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr); // tag = 0 (Err)
+        const io_error_type = self.getIoErrorStructType();
+        const err_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, io_error_type, err_field_ptr, 0, "readstr.err_tag");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), err_tag_ptr); // NotFound
+        _ = self.builder.buildBr(cont_bb);
+
+        // --- Open OK path ---
+        self.builder.positionAtEnd(open_ok_bb);
+
+        // Seek to end: fseek(file, 0, SEEK_END=2)
+        var fseek_args = [_]llvm.ValueRef{ file_ptr, llvm.Const.int64(self.ctx, 0), llvm.Const.int32(self.ctx, 2) };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fseek_fn), fseek_fn, &fseek_args, "readstr.seek_end");
+
+        // Get file size: ftell(file)
+        var ftell_args = [_]llvm.ValueRef{file_ptr};
+        const file_size = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(ftell_fn), ftell_fn, &ftell_args, "readstr.size");
+
+        // Seek back to start: fseek(file, 0, SEEK_SET=0)
+        var fseek_args2 = [_]llvm.ValueRef{ file_ptr, llvm.Const.int64(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fseek_fn), fseek_fn, &fseek_args2, "readstr.seek_start");
+
+        // Allocate buffer: malloc(size + 1) for null terminator
+        const size_plus_one = llvm.c.LLVMBuildAdd(self.builder.ref, file_size, llvm.Const.int64(self.ctx, 1), "readstr.size_plus_one");
+        var malloc_args = [_]llvm.ValueRef{size_plus_one};
+        const buffer = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "readstr.buffer");
+
+        // Read file: fread(buffer, 1, size, file)
+        var fread_args = [_]llvm.ValueRef{ buffer, llvm.Const.int64(self.ctx, 1), file_size, file_ptr };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fread_fn), fread_fn, &fread_args, "readstr.read");
+
+        // Null-terminate the buffer
+        var null_idx = [_]llvm.ValueRef{file_size};
+        const null_pos = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, buffer, &null_idx, 1, "readstr.null_pos");
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_pos);
+
+        // Close file: fclose(file)
+        var fclose_args = [_]llvm.ValueRef{file_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "readstr.close");
+
+        // Build String struct { ptr, len, capacity }
+        const string_type = self.getStringStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Store ptr (field 0)
+        const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 0, "readstr.str_ptr_field");
+        _ = self.builder.buildStore(buffer, str_ptr_field);
+
+        // Store len (field 1) - truncate i64 to i32
+        const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, file_size, i32_type, "readstr.len_i32");
+        const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 1, "readstr.str_len_field");
+        _ = self.builder.buildStore(len_i32, str_len_field);
+
+        // Store capacity (field 2) - same as len
+        const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 2, "readstr.str_cap_field");
+        _ = self.builder.buildStore(len_i32, str_cap_field);
+
+        // Store Ok result
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr); // tag = 1 (Ok)
+
+        _ = self.builder.buildBr(cont_bb);
+
+        // --- Continue ---
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "readstr.result_val");
+    }
+
+    /// Emit File.read_all(path) -> Result[List[u8], IoError]
+    /// Opens the file, reads entire content as bytes, closes file.
+    fn emitFileReadAll(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Emit path argument
+        const path_val = try self.emitExpr(method.args[0]);
+
+        // Get C runtime functions
+        const fopen_fn = self.getOrDeclareFopen();
+        const fseek_fn = self.getOrDeclareFseek();
+        const ftell_fn = self.getOrDeclareFtell();
+        const fread_fn = self.getOrDeclareFread();
+        const fclose_fn = self.getOrDeclareFclose();
+        const malloc_fn = self.getOrDeclareMalloc();
+
+        // Open file for reading: fopen(path, "rb") - binary mode for raw bytes
+        const mode_str = self.builder.buildGlobalStringPtr("rb", "mode.rb");
+        var fopen_args = [_]llvm.ValueRef{ path_val, mode_str };
+        const file_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fopen_fn), fopen_fn, &fopen_args, "readall.file");
+
+        // Build Result[List[u8], IoError] struct
+        const list_type = self.getListStructType();
+        const result_type = self.getListResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "readall.result");
+
+        // Get struct field pointers
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "readall.tag_ptr");
+        const list_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "readall.list_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "readall.err_ptr");
+
+        // Check if fopen returned null
+        const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, file_ptr, null_ptr, "readall.is_null");
+
+        // Create basic blocks
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const open_ok_bb = llvm.appendBasicBlock(self.ctx, func, "readall.open_ok");
+        const open_err_bb = llvm.appendBasicBlock(self.ctx, func, "readall.open_err");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "readall.cont");
+
+        _ = self.builder.buildCondBr(is_null, open_err_bb, open_ok_bb);
+
+        // --- Open error path ---
+        self.builder.positionAtEnd(open_err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr); // tag = 0 (Err)
+        const io_error_type = self.getIoErrorStructType();
+        const err_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, io_error_type, err_field_ptr, 0, "readall.err_tag");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), err_tag_ptr); // NotFound
+        _ = self.builder.buildBr(cont_bb);
+
+        // --- Open OK path ---
+        self.builder.positionAtEnd(open_ok_bb);
+
+        // Seek to end: fseek(file, 0, SEEK_END=2)
+        var fseek_args = [_]llvm.ValueRef{ file_ptr, llvm.Const.int64(self.ctx, 0), llvm.Const.int32(self.ctx, 2) };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fseek_fn), fseek_fn, &fseek_args, "readall.seek_end");
+
+        // Get file size: ftell(file)
+        var ftell_args = [_]llvm.ValueRef{file_ptr};
+        const file_size = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(ftell_fn), ftell_fn, &ftell_args, "readall.size");
+
+        // Seek back to start: fseek(file, 0, SEEK_SET=0)
+        var fseek_args2 = [_]llvm.ValueRef{ file_ptr, llvm.Const.int64(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fseek_fn), fseek_fn, &fseek_args2, "readall.seek_start");
+
+        // Allocate buffer: malloc(size)
+        var malloc_args = [_]llvm.ValueRef{file_size};
+        const buffer = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "readall.buffer");
+
+        // Read file: fread(buffer, 1, size, file)
+        var fread_args = [_]llvm.ValueRef{ buffer, llvm.Const.int64(self.ctx, 1), file_size, file_ptr };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fread_fn), fread_fn, &fread_args, "readall.read");
+
+        // Close file: fclose(file)
+        var fclose_args = [_]llvm.ValueRef{file_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "readall.close");
+
+        // Build List[u8] struct { ptr, len, capacity }
+        // Store ptr (field 0)
+        const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readall.list_ptr_field");
+        _ = self.builder.buildStore(buffer, list_ptr_field);
+
+        // Store len (field 1) - truncate i64 to i32
+        const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, file_size, i32_type, "readall.len_i32");
+        const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 1, "readall.list_len_field");
+        _ = self.builder.buildStore(len_i32, list_len_field);
+
+        // Store capacity (field 2) - same as len
+        const list_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 2, "readall.list_cap_field");
+        _ = self.builder.buildStore(len_i32, list_cap_field);
+
+        // Store Ok result
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr); // tag = 1 (Ok)
+
+        _ = self.builder.buildBr(cont_bb);
+
+        // --- Continue ---
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "readall.result_val");
     }
 
     /// Emit file.write_string(s) -> Result[i32, IoError]
@@ -20053,6 +20313,35 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
         var param_types = [_]llvm.TypeRef{ptr_type};
         const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareFseek(self: *Emitter) llvm.ValueRef {
+        const fn_name = "fseek";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // int fseek(FILE *stream, long offset, int whence);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx); // long
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, i64_type, i32_type };
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 3, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareFtell(self: *Emitter) llvm.ValueRef {
+        const fn_name = "ftell";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // long ftell(FILE *stream);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx); // long
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(i64_type, &param_types, 1, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 

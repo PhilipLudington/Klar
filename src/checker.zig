@@ -3992,6 +3992,45 @@ pub const TypeChecker = struct {
                 // Return Result[File, IoError]
                 return self.type_builder.resultType(self.type_builder.fileType(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
             }
+
+            // File.read_to_string(path: string) -> Result[String, IoError]
+            if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "read_to_string")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "File.read_to_string() takes exactly 1 argument (path)", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (method.type_args != null) {
+                    self.addError(.invalid_call, method.span, "File.read_to_string() does not take type arguments", .{});
+                }
+                // Check that the argument is a string
+                const path_type = self.checkExpr(method.args[0]);
+                if (path_type != .primitive or path_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "File.read_to_string() expects a string path argument", .{});
+                }
+                // Return Result[String, IoError]
+                const string_type = self.type_builder.stringDataType() catch return self.type_builder.unknownType();
+                return self.type_builder.resultType(string_type, self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+
+            // File.read_all(path: string) -> Result[List[u8], IoError]
+            if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "read_all")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "File.read_all() takes exactly 1 argument (path)", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (method.type_args != null) {
+                    self.addError(.invalid_call, method.span, "File.read_all() does not take type arguments", .{});
+                }
+                // Check that the argument is a string
+                const path_type = self.checkExpr(method.args[0]);
+                if (path_type != .primitive or path_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "File.read_all() expects a string path argument", .{});
+                }
+                // Return Result[List[u8], IoError]
+                const u8_type = Type{ .primitive = .u8_ };
+                const list_u8_type = self.type_builder.listType(u8_type) catch return self.type_builder.unknownType();
+                return self.type_builder.resultType(list_u8_type, self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
         }
 
         const object_type = self.checkExpr(method.object);

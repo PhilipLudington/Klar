@@ -1170,6 +1170,24 @@ if buf[0] == 72.as[u8] {  // 'H'
 
 ### std.fs
 
+**Currently implemented** on `File`:
+
+```klar
+// Static convenience methods (implemented)
+File.open(path: string, mode: string) -> Result[File, IoError]
+File.read_to_string(path: string) -> Result[String, IoError]
+File.read_all(path: string) -> Result[List[u8], IoError]
+
+// Instance methods (implemented)
+file.read(buf: inout [u8]) -> Result[i32, IoError]
+file.write(buf: ref [u8]) -> Result[i32, IoError]
+file.write_string(s: string) -> Result[i32, IoError]
+file.flush() -> Result[void, IoError]
+file.close() -> Result[void, IoError]
+```
+
+**Planned** (future standard library):
+
 ```klar
 fn read(path: ref Path) -> Result[List[u8], IoError]
 fn read_string(path: ref Path) -> Result[String, IoError]

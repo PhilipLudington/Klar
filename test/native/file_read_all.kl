@@ -1,0 +1,51 @@
+// Test File.read_all convenience method
+// Expected: 0
+
+fn main() -> i32 {
+    // First, create a test file with binary data
+    let write_result: Result[File, IoError] = File.open("/tmp/test_read_all.txt", "w")
+    if not write_result.is_ok() {
+        return 1
+    }
+    var file: File = write_result!
+    let write_res: Result[i32, IoError] = file.write_string("ABCDE")
+    if not write_res.is_ok() {
+        return 2
+    }
+    let close_res: Result[void, IoError] = file.close()
+    if not close_res.is_ok() {
+        return 3
+    }
+
+    // Now read it back using File.read_all
+    let read_result: Result[List[u8], IoError] = File.read_all("/tmp/test_read_all.txt")
+    if not read_result.is_ok() {
+        return 4
+    }
+    let bytes: List[u8] = read_result!
+
+    // Check length
+    if bytes.len() != 5 {
+        return 5
+    }
+
+    // Check first byte is 'A' (65)
+    let first: ?u8 = bytes.get(0)
+    if first.is_none() {
+        return 6
+    }
+    if first! != 65.as[u8] {
+        return 7
+    }
+
+    // Check last byte is 'E' (69)
+    let last: ?u8 = bytes.get(4)
+    if last.is_none() {
+        return 8
+    }
+    if last! != 69.as[u8] {
+        return 9
+    }
+
+    return 0
+}
