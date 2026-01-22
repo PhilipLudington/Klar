@@ -1,0 +1,44 @@
+// Test BufReader.read_line() functionality
+// expect: 42
+
+fn main() -> i32 {
+    // Create test file with newlines (ASCII 10)
+    var newline: [u8; 1] = @repeat(10.as[u8], 1)
+    var file: File = File.open("/tmp/readline_test.txt", "w")!
+    file.write_string("Hello")!
+    file.write(ref newline)!
+    file.write_string("World")!
+    file.write(ref newline)!
+    file.write_string("Test")!
+    file.close()!
+
+    // Open file for reading with BufReader
+    var read_file: File = File.open("/tmp/readline_test.txt", "r")!
+    var reader: BufReader[File] = BufReader.new[File](read_file)
+
+    // Read first line: "Hello\n" is 6 bytes
+    let line1: String = reader.read_line()!
+    if line1.len() != 6 {
+        return 1
+    }
+
+    // Read second line: "World\n" is 6 bytes
+    let line2: String = reader.read_line()!
+    if line2.len() != 6 {
+        return 2
+    }
+
+    // Read third line (no trailing newline): "Test" is 4 bytes
+    let line3: String = reader.read_line()!
+    if line3.len() != 4 {
+        return 3
+    }
+
+    // Read past EOF should return empty string
+    let line4: String = reader.read_line()!
+    if line4.len() != 0 {
+        return 4
+    }
+
+    return 42
+}
