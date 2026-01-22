@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const version = @import("../version.zig");
 const Allocator = std.mem.Allocator;
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
@@ -282,7 +283,7 @@ pub const Emitter = struct {
         const di_compile_unit = di_builder.createCompileUnit(
             llvm.c.LLVMDWARFSourceLanguageC99,
             di_file,
-            "Klar Compiler 0.3.0",
+            version.producer,
             false, // not optimized
             "", // flags
             0, // runtime version

@@ -1,4 +1,5 @@
 const std = @import("std");
+const version = @import("version.zig");
 const Allocator = std.mem.Allocator;
 const Lexer = @import("lexer.zig").Lexer;
 const parser_mod = @import("parser.zig");
@@ -124,7 +125,7 @@ pub const Repl = struct {
         const stdout = getStdOut();
         const stdin = getStdIn();
 
-        try stdout.writeAll("Klar REPL v0.3.0-dev\n");
+        try stdout.writeAll(version.repl_banner ++ "\n");
         try stdout.writeAll("Type :help for commands, :quit to exit\n\n");
 
         var line_buf: [4096]u8 = undefined;

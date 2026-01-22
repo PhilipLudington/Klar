@@ -1,4 +1,5 @@
 const std = @import("std");
+const version = @import("version.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("token.zig").Token;
 const Parser = @import("parser.zig").Parser;
@@ -1485,7 +1486,7 @@ fn printUsage() !void {
 }
 
 fn printVersion() !void {
-    try getStdOut().writeAll("Klar 0.3.0-dev\n");
+    try getStdOut().writeAll(version.display ++ "\n");
 }
 
 // Re-export tests from all modules
