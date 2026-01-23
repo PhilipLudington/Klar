@@ -644,6 +644,10 @@ pub const Emitter = struct {
                     break :blk try self.typeExprToLLVM(param.type_.reference.inner);
                 } else null;
 
+                // Check if this is an array type parameter (for field access on array elements)
+                const is_array = param.type_ == .array or param.type_ == .slice;
+                const array_info = self.getArrayTypeInfo(param.type_);
+
                 self.named_values.put(param.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -652,6 +656,9 @@ pub const Emitter = struct {
                     .struct_type_name = param_struct_name,
                     .is_reference = is_ref,
                     .reference_inner_type = ref_inner_type,
+                    .is_array = is_array,
+                    .array_size = if (array_info) |ai| ai.size else null,
+                    .array_element_type = if (array_info) |ai| ai.element_type else null,
                 }) catch return EmitError.OutOfMemory;
             }
 
@@ -856,6 +863,10 @@ pub const Emitter = struct {
                 break :blk try self.typeExprToLLVM(param.type_.reference.inner);
             } else null;
 
+            // Check if this is an array type parameter (for field access on array elements)
+            const is_array = param.type_ == .array or param.type_ == .slice;
+            const array_info = self.getArrayTypeInfo(param.type_);
+
             self.named_values.put(param.name, .{
                 .value = alloca,
                 .is_alloca = true,
@@ -864,6 +875,9 @@ pub const Emitter = struct {
                 .struct_type_name = param_struct_name,
                 .is_reference = is_ref,
                 .reference_inner_type = ref_inner_type,
+                .is_array = is_array,
+                .array_size = if (array_info) |ai| ai.size else null,
+                .array_element_type = if (array_info) |ai| ai.element_type else null,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -2414,6 +2428,12 @@ pub const Emitter = struct {
                 return self.builder.buildLoad(local.ty, local.value, name);
             }
             return local.value;
+        }
+        // Check if this is a module-level constant
+        if (self.type_checker) |tc| {
+            if (tc.getConstantValue(id.name)) |cv| {
+                return self.emitComptimeValue(cv) catch return llvm.Const.int32(self.ctx, 0);
+            }
         }
         // Variable not found - return placeholder
         return llvm.Const.int32(self.ctx, 0);
@@ -4341,6 +4361,28 @@ pub const Emitter = struct {
             .identifier => |id| {
                 if (self.named_values.get(id.name)) |local| {
                     return local.ty;
+                }
+                // Check if this is a module-level constant
+                if (self.type_checker) |tc| {
+                    if (tc.getConstantValue(id.name)) |cv| {
+                        return switch (cv) {
+                            .int => |i| if (i.is_i32) llvm.Types.int32(self.ctx) else llvm.Types.int64(self.ctx),
+                            .float => llvm.Types.float64(self.ctx),
+                            .bool_ => llvm.Types.int1(self.ctx),
+                            .string => llvm.Types.pointer(self.ctx),
+                            .void_ => llvm.Types.int32(self.ctx),
+                            .struct_ => |cs| blk: {
+                                if (self.struct_types.get(cs.type_name)) |struct_info| {
+                                    break :blk struct_info.llvm_type;
+                                }
+                                break :blk llvm.Types.int32(self.ctx);
+                            },
+                            .array => |arr| blk: {
+                                const elem_ty = self.typeToLLVM(arr.element_type);
+                                break :blk llvm.Types.array(elem_ty, @intCast(arr.elements.len));
+                            },
+                        };
+                    }
                 }
                 return llvm.Types.int32(self.ctx);
             },
