@@ -1,75 +1,26 @@
-# Bug Report: Klar `readline()` Function Not Implemented
+# Bug Report: Arrays of Structs Cause Codegen Error
 
-## Status: RESOLVED
-
-**Resolved**: 2026-01-22
+**Status: FIXED** (2026-01-22)
 
 ## Summary
 
-The `readline()` function is documented in the Klar Language Reference (v0.4.1) and is now fully implemented across all three backends (interpreter, VM, and native compilation).
+Arrays containing struct types pass type checking but fail at code generation with "UnsupportedFeature" error. This affects both fixed-size (`[T; N]`) and dynamic (`[T]`) array syntax.
 
-## Implementation Details
+## Root Cause
 
-The `readline()` function:
-- Reads a line from stdin
-- Strips trailing newlines
-- Returns empty string on EOF
-- Signature: `fn readline() -> string`
+The `getStructTypeNameFromExpr` function in `src/codegen/emit.zig` didn't handle `.index` expressions. When accessing a field on an array element (e.g., `items[0].id`), the codegen couldn't determine the struct type name of the indexed element, causing it to fall through to `UnsupportedFeature`.
 
-### Files Modified
+## Fix
 
-1. `src/checker.zig` - Type signature registration
-2. `src/values.zig` - Added IOError to RuntimeError enum
-3. `src/vm_value.zig` - Added IOError to RuntimeError enum
-4. `src/interpreter.zig` - Interpreter implementation
-5. `src/vm_builtins.zig` - VM native function
-6. `src/codegen/emit.zig` - LLVM native codegen
+Added handling for `.index` expressions in `getStructTypeNameFromExpr`. The fix:
+1. Extracts the array variable name from the index expression
+2. Looks up the variable's `array_element_type` in local values
+3. Falls back to the type checker's global scope if needed
+4. Returns the struct name if the element type is a struct
 
-## Verification
+## Test Coverage
 
-```klar
-fn main() {
-    println("Enter your name:")
-    let name: string = readline()
-    println("Hello, {name}!")
-}
-```
-
-Run with:
-```bash
-# Native compilation (default)
-echo "World" | klar run test.kl
-# Output: Enter your name:
-#         Hello, World!
-
-# VM backend
-echo "World" | klar run test.kl --vm
-
-# Interpreter backend
-echo "World" | klar run test.kl --interpret
-```
-
-## Original Report
-
-### Environment
-
-- **Klar Version**: 0.4.1 (Phase 4 - Language Completion)
-- **Reference Location**: `Klar-Toolkit/deps/Klar-Reference/REFERENCE.md`, line 882
-- **Platform**: macOS (Darwin 24.6.0)
-
-### Original Issue
-
-The `readline()` function was documented but returned:
-```
-Type error(s):
-  1:57: undefined variable 'readline'
-  1:57: cannot call non-function type
-```
-
-### Date Reported
-
-2026-01-22
-
-### Date Resolved
-
-2026-01-22
+Added `test/native/array_of_structs.kl` covering:
+- Dynamic arrays of structs
+- Fixed-size arrays of structs
+- Field access on array elements

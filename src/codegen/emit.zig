@@ -5468,6 +5468,35 @@ pub const Emitter = struct {
             return self.lookupFieldStructTypeName(parent_struct_name, field.field_name);
         }
 
+        // For index expressions (array[i]), get the element type of the array
+        if (expr == .index) {
+            const idx = expr.index;
+            // Get the array's element type by looking up the variable type
+            if (idx.object == .identifier) {
+                const var_name = idx.object.identifier.name;
+                // Look up in local variables first
+                if (self.named_values.get(var_name)) |local| {
+                    if (local.array_element_type) |elem_type| {
+                        if (elem_type == .struct_) {
+                            return elem_type.struct_.name;
+                        }
+                    }
+                }
+                // Fall back to type checker's scope for the variable type
+                if (self.type_checker) |tc| {
+                    if (tc.global_scope.lookup(var_name)) |sym| {
+                        if (sym.type_ == .array) {
+                            const elem_type = sym.type_.array.element;
+                            if (elem_type == .struct_) {
+                                return elem_type.struct_.name;
+                            }
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
         return null;
     }
 

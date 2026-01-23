@@ -1,0 +1,30 @@
+// Test: Arrays of structs with field access
+// This tests the fix for the bug where arrays of structs passed type checking
+// but failed codegen with UnsupportedFeature.
+
+struct Item {
+    id: i32,
+    value: i32
+}
+
+fn main() -> i32 {
+    // Test 1: Dynamic array of structs
+    let items: [Item] = [Item { id: 1, value: 10 }, Item { id: 2, value: 20 }]
+
+    // Test field access on array element
+    let first_id: i32 = items[0].id
+    let second_value: i32 = items[1].value
+
+    // Test 2: Fixed-size array of structs
+    let fixed: [Item; 3] = [
+        Item { id: 10, value: 100 },
+        Item { id: 20, value: 200 },
+        Item { id: 30, value: 300 }
+    ]
+
+    let third_id: i32 = fixed[2].id
+
+    // Return sum to verify all accesses worked
+    // Expected: 1 + 20 + 30 = 51
+    return first_id + second_value + third_id
+}
