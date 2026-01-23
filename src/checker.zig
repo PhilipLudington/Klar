@@ -867,6 +867,16 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
+        // readline() -> string - reads a line from stdin
+        const readline_type = try self.type_builder.functionType(&.{}, self.type_builder.stringType());
+        try self.current_scope.define(.{
+            .name = "readline",
+            .type_ = readline_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
         const assert_type = try self.type_builder.functionType(&.{self.type_builder.boolType()}, self.type_builder.voidType());
         try self.current_scope.define(.{
             .name = "assert",

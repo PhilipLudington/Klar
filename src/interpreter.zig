@@ -10,9 +10,13 @@ const Environment = values.Environment;
 const RuntimeError = values.RuntimeError;
 const ValueBuilder = values.ValueBuilder;
 
-// Zig 0.15 IO helper
+// Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
     return .{ .handle = std.posix.STDOUT_FILENO };
+}
+
+fn getStdIn() std.fs.File {
+    return .{ .handle = std.posix.STDIN_FILENO };
 }
 
 // ============================================================================
@@ -97,6 +101,9 @@ pub const Interpreter = struct {
         if (self.global_env.get("type_of")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
+        if (self.global_env.get("readline")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
         self.global_env.deinit();
         self.allocator.destroy(self.global_env);
     }
@@ -115,6 +122,10 @@ pub const Interpreter = struct {
         const println_fn = try self.allocator.create(values.BuiltinFunction);
         println_fn.* = .{ .name = "println", .func = &builtinPrintln };
         try self.global_env.define("println", .{ .builtin = println_fn }, false);
+
+        const readline_fn = try self.allocator.create(values.BuiltinFunction);
+        readline_fn.* = .{ .name = "readline", .func = &builtinReadline };
+        try self.global_env.define("readline", .{ .builtin = readline_fn }, false);
 
         const assert_fn = try self.allocator.create(values.BuiltinFunction);
         assert_fn.* = .{ .name = "assert", .func = &builtinAssert };
@@ -1977,6 +1988,39 @@ fn builtinPrintln(allocator: Allocator, args: []const Value) RuntimeError!Value 
     stdout.writeAll("\n") catch {};
 
     return .void_;
+}
+
+fn builtinReadline(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 0) return RuntimeError.InvalidOperation;
+
+    const stdin = getStdIn();
+
+    // Read line byte-by-byte using Zig 0.15 API
+    var result = std.ArrayListUnmanaged(u8){};
+    errdefer result.deinit(allocator);
+
+    const max_line_size: usize = 4096;
+    while (result.items.len < max_line_size) {
+        var buf: [1]u8 = undefined;
+        const bytes_read = stdin.read(&buf) catch {
+            return RuntimeError.IOError;
+        };
+
+        if (bytes_read == 0) {
+            // EOF
+            break;
+        }
+
+        if (buf[0] == '\n') {
+            // End of line (don't include newline)
+            break;
+        }
+
+        result.append(allocator, buf[0]) catch return RuntimeError.OutOfMemory;
+    }
+
+    const line = result.toOwnedSlice(allocator) catch return RuntimeError.OutOfMemory;
+    return .{ .string = line };
 }
 
 fn builtinAssert(allocator: Allocator, args: []const Value) RuntimeError!Value {

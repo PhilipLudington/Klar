@@ -677,6 +677,9 @@ pub const RuntimeError = error{
     AssertionFailed,
     Panic,
 
+    // I/O errors
+    IOError,
+
     // Allocation
     OutOfMemory,
 };

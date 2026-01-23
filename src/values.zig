@@ -434,6 +434,7 @@ pub const RuntimeError = error{
     NotImplemented,
     AssertionFailed,
     Panic,
+    IOError,
 
     // Comptime errors
     ComptimeError,

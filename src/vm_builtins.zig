@@ -32,6 +32,9 @@ pub const builtins = [_]NativeDesc{
     .{ .name = "print", .arity = 1, .function = nativePrint },
     .{ .name = "println", .arity = 1, .function = nativePrintln },
 
+    // Core input functions
+    .{ .name = "readline", .arity = 0, .function = nativeReadline },
+
     // Assertion functions
     .{ .name = "assert", .arity = 1, .function = nativeAssert },
     .{ .name = "assert_eq", .arity = 2, .function = nativeAssertEq },
@@ -74,6 +77,43 @@ fn nativePrintln(allocator: Allocator, args: []const Value) RuntimeError!Value {
     stdout.writeAll("\n") catch {};
 
     return .void_;
+}
+
+// ============================================================================
+// Core Input Functions
+// ============================================================================
+
+fn nativeReadline(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 0) return RuntimeError.WrongArity;
+
+    const stdin = getStdIn();
+
+    // Read line byte-by-byte using Zig 0.15 API
+    var result = std.ArrayListUnmanaged(u8){};
+    defer result.deinit(allocator);
+
+    const max_line_size: usize = 4096;
+    while (result.items.len < max_line_size) {
+        var buf: [1]u8 = undefined;
+        const bytes_read = stdin.read(&buf) catch {
+            return RuntimeError.IOError;
+        };
+
+        if (bytes_read == 0) {
+            // EOF
+            break;
+        }
+
+        if (buf[0] == '\n') {
+            // End of line (don't include newline)
+            break;
+        }
+
+        result.append(allocator, buf[0]) catch return RuntimeError.OutOfMemory;
+    }
+
+    const str = ObjString.create(allocator, result.items) catch return RuntimeError.OutOfMemory;
+    return .{ .string = str };
 }
 
 // ============================================================================
@@ -233,6 +273,10 @@ fn valueToString(allocator: Allocator, value: Value) RuntimeError![]const u8 {
 
 fn getStdOut() std.fs.File {
     return .{ .handle = std.posix.STDOUT_FILENO };
+}
+
+fn getStdIn() std.fs.File {
+    return .{ .handle = std.posix.STDIN_FILENO };
 }
 
 // ============================================================================

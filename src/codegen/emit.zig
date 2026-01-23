@@ -3314,6 +3314,8 @@ pub const Emitter = struct {
                 return self.emitPrint(call.args, false);
             } else if (std.mem.eql(u8, name, "println")) {
                 return self.emitPrint(call.args, true);
+            } else if (std.mem.eql(u8, name, "readline")) {
+                return self.emitReadline();
             } else if (std.mem.eql(u8, name, "panic")) {
                 return self.emitPanic(call.args);
             } else if (std.mem.eql(u8, name, "assert")) {
@@ -4477,8 +4479,13 @@ pub const Emitter = struct {
                     return llvm.Types.int32(self.ctx);
                 }
 
-                // Handle stdout() and stderr() - they return FILE* pointers
-                if (std.mem.eql(u8, func_name, "stdout") or std.mem.eql(u8, func_name, "stderr")) {
+                // Handle stdout(), stderr(), stdin() - they return FILE* pointers
+                if (std.mem.eql(u8, func_name, "stdout") or std.mem.eql(u8, func_name, "stderr") or std.mem.eql(u8, func_name, "stdin")) {
+                    return llvm.Types.pointer(self.ctx);
+                }
+
+                // Handle readline() - returns a string (char* pointer)
+                if (std.mem.eql(u8, func_name, "readline")) {
                     return llvm.Types.pointer(self.ctx);
                 }
 
@@ -9484,6 +9491,80 @@ pub const Emitter = struct {
         }
     }
 
+    /// Emit a readline call that reads a line from stdin
+    fn emitReadline(self: *Emitter) EmitError!llvm.ValueRef {
+        // Allocate buffer on stack for fgets
+        const buffer_size: u32 = 4096;
+        const i8_type = llvm.Types.int8(self.ctx);
+        const buffer_type = llvm.c.LLVMArrayType(i8_type, buffer_size);
+        const buffer = self.builder.buildAlloca(buffer_type, "readline_buf");
+
+        // Get pointer to first element
+        const zero = llvm.Const.int32(self.ctx, 0);
+        var indices = [_]llvm.ValueRef{ zero, zero };
+        const buffer_ptr = self.builder.buildGEP(buffer_type, buffer, &indices, "buf_ptr");
+
+        // Call fgets(buffer, size, stdin)
+        const fgets_fn = self.getOrDeclareFgets();
+        const stdin_fn = self.getOrDeclareStdin();
+        const stdin_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stdin_fn), stdin_fn, &[_]llvm.ValueRef{}, "stdin");
+        const size = llvm.Const.int32(self.ctx, @intCast(buffer_size));
+        var call_args = [_]llvm.ValueRef{ buffer_ptr, size, stdin_ptr };
+        const fn_type = llvm.c.LLVMGlobalGetValueType(fgets_fn);
+        const result = self.builder.buildCall(fn_type, fgets_fn, &call_args, "fgets_result");
+
+        // If fgets returns null (EOF), set buffer to empty string
+        const current_func = self.current_function orelse return EmitError.InvalidAST;
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, result, llvm.Const.null_(llvm.Types.pointer(self.ctx)), "is_null");
+        const eof_bb = llvm.appendBasicBlock(self.ctx, current_func, "readline.eof");
+        const strip_bb = llvm.appendBasicBlock(self.ctx, current_func, "readline.strip");
+        const done_bb = llvm.appendBasicBlock(self.ctx, current_func, "readline.done");
+
+        _ = self.builder.buildCondBr(is_null, eof_bb, strip_bb);
+
+        // EOF block - set buffer to empty string
+        self.builder.positionAtEnd(eof_bb);
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), buffer_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // Strip newline block
+        self.builder.positionAtEnd(strip_bb);
+        // Get string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{buffer_ptr};
+        const strlen_type = llvm.c.LLVMGlobalGetValueType(strlen_fn);
+        const len = self.builder.buildCall(strlen_type, strlen_fn, &strlen_args, "len");
+
+        // Check if len > 0 and last char is newline
+        const zero_i64 = llvm.Const.int64(self.ctx, 0);
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+        const has_chars = self.builder.buildICmp(llvm.c.LLVMIntSGT, len, zero_i64, "has_chars");
+
+        const check_newline_bb = llvm.appendBasicBlock(self.ctx, current_func, "readline.check_nl");
+        _ = self.builder.buildCondBr(has_chars, check_newline_bb, done_bb);
+
+        // Check for newline
+        self.builder.positionAtEnd(check_newline_bb);
+        const last_idx = self.builder.buildSub(len, one_i64, "last_idx");
+        var last_indices = [_]llvm.ValueRef{last_idx};
+        const last_char_ptr = self.builder.buildGEP(i8_type, buffer_ptr, &last_indices, "last_char_ptr");
+        const last_char = self.builder.buildLoad(i8_type, last_char_ptr, "last_char");
+        const newline = llvm.Const.int8(self.ctx, '\n');
+        const is_newline = self.builder.buildICmp(llvm.c.LLVMIntEQ, last_char, newline, "is_newline");
+
+        const strip_nl_bb = llvm.appendBasicBlock(self.ctx, current_func, "readline.strip_nl");
+        _ = self.builder.buildCondBr(is_newline, strip_nl_bb, done_bb);
+
+        // Strip the newline by setting it to null
+        self.builder.positionAtEnd(strip_nl_bb);
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), last_char_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // Done - return buffer pointer (strings in Klar native are char*)
+        self.builder.positionAtEnd(done_bb);
+        return buffer_ptr;
+    }
+
     fn getOrDeclarePuts(self: *Emitter) llvm.ValueRef {
         const fn_name = "puts";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
@@ -9495,6 +9576,20 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
         var param_types = [_]llvm.TypeRef{ptr_type};
         const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareFgets(self: *Emitter) llvm.ValueRef {
+        const fn_name = "fgets";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // char* fgets(char* str, int num, FILE* stream)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, i32_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 3, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
