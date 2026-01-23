@@ -989,14 +989,22 @@ pub const Emitter = struct {
                 self.expected_type = self.resolveExpectedType(decl.type_);
                 defer self.expected_type = prev_expected;
 
-                const value = try self.emitExpr(decl.value);
                 // For let (immutable), we can store directly
                 // But for consistency, use alloca
                 const ty = try self.inferExprType(decl.value);
                 const name = self.allocator.dupeZ(u8, decl.name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(name);
                 const alloca = self.builder.buildAlloca(ty, name);
-                _ = self.builder.buildStore(value, alloca);
+
+                // Check for large @repeat - use direct initialization to avoid stack overflow
+                if (self.tryGetLargeRepeatInfo(decl.value)) |repeat_info| {
+                    // Initialize directly into the alloca without intermediate load/store
+                    try self.emitRepeatInto(repeat_info, alloca);
+                } else {
+                    // Normal path: emit value and store
+                    const value = try self.emitExpr(decl.value);
+                    _ = self.builder.buildStore(value, alloca);
+                }
                 const is_signed = self.isTypeSigned(decl.type_);
                 // Extract struct type name - try expression first, then type annotation
                 const struct_type_name = self.getStructTypeName(decl.value) orelse
@@ -1072,12 +1080,20 @@ pub const Emitter = struct {
                 self.expected_type = self.resolveExpectedType(decl.type_);
                 defer self.expected_type = prev_expected;
 
-                const value = try self.emitExpr(decl.value);
                 const ty = try self.inferExprType(decl.value);
                 const name = self.allocator.dupeZ(u8, decl.name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(name);
                 const alloca = self.builder.buildAlloca(ty, name);
-                _ = self.builder.buildStore(value, alloca);
+
+                // Check for large @repeat - use direct initialization to avoid stack overflow
+                if (self.tryGetLargeRepeatInfo(decl.value)) |repeat_info| {
+                    // Initialize directly into the alloca without intermediate load/store
+                    try self.emitRepeatInto(repeat_info, alloca);
+                } else {
+                    // Normal path: emit value and store
+                    const value = try self.emitExpr(decl.value);
+                    _ = self.builder.buildStore(value, alloca);
+                }
                 const is_signed = self.isTypeSigned(decl.type_);
                 // Extract struct type name - try expression first, then type annotation
                 const struct_type_name = self.getStructTypeName(decl.value) orelse
@@ -9482,18 +9498,106 @@ pub const Emitter = struct {
         // Emit the value once
         const value = try self.emitExpr(repeat_info.value_expr);
 
-        // Store the value at each index
-        for (0..repeat_info.count) |i| {
-            var indices = [_]llvm.ValueRef{
-                llvm.Const.int32(self.ctx, 0),
-                llvm.Const.int32(self.ctx, @intCast(i)),
-            };
-            const elem_ptr = self.builder.buildGEP(array_type, array_alloca, &indices, "repeat_elem");
-            _ = self.builder.buildStore(value, elem_ptr);
+        // For byte types (i8, u8) with large counts, use memset for efficiency
+        // This avoids generating N individual store instructions which can crash LLVM
+        const is_byte_type = if (repeat_info.element_type == .primitive)
+            (repeat_info.element_type.primitive == .i8_ or repeat_info.element_type.primitive == .u8_)
+        else
+            false;
+
+        if (is_byte_type and repeat_info.count > 64) {
+            // Use memset for byte arrays
+            const memset_fn = self.getOrDeclareMemset();
+            const size = llvm.Const.int64(self.ctx, @intCast(repeat_info.count));
+            // Zero-extend i8 value to i32 for memset's int parameter
+            const value_i32 = self.builder.buildZExt(value, llvm.Types.int32(self.ctx), "memset_val");
+            var memset_args = [_]llvm.ValueRef{ array_alloca, value_i32, size };
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &memset_args, "");
+        } else {
+            // Store the value at each index (for small arrays or non-byte types)
+            for (0..repeat_info.count) |i| {
+                var indices = [_]llvm.ValueRef{
+                    llvm.Const.int32(self.ctx, 0),
+                    llvm.Const.int32(self.ctx, @intCast(i)),
+                };
+                const elem_ptr = self.builder.buildGEP(array_type, array_alloca, &indices, "repeat_elem");
+                _ = self.builder.buildStore(value, elem_ptr);
+            }
         }
 
         // Load and return the array
         return self.builder.buildLoad(array_type, array_alloca, "repeat_val");
+    }
+
+    /// Emit @repeat directly into a destination pointer, avoiding intermediate load/store.
+    /// This is used for large arrays to avoid stack overflow from loading entire arrays as values.
+    fn emitRepeatInto(self: *Emitter, repeat_info: TypeChecker.RepeatInfo, dest_ptr: llvm.ValueRef) EmitError!void {
+        const element_llvm_type = self.typeToLLVM(repeat_info.element_type);
+        const array_type = llvm.Types.array(element_llvm_type, repeat_info.count);
+
+        // Emit the value once
+        const value = try self.emitExpr(repeat_info.value_expr);
+
+        // For byte types (i8, u8) with large counts, use memset for efficiency
+        const is_byte_type = if (repeat_info.element_type == .primitive)
+            (repeat_info.element_type.primitive == .i8_ or repeat_info.element_type.primitive == .u8_)
+        else
+            false;
+
+        if (is_byte_type and repeat_info.count > 64) {
+            // Use memset for byte arrays - write directly to destination
+            const memset_fn = self.getOrDeclareMemset();
+            const size = llvm.Const.int64(self.ctx, @intCast(repeat_info.count));
+            // Zero-extend i8 value to i32 for memset's int parameter
+            const value_i32 = self.builder.buildZExt(value, llvm.Types.int32(self.ctx), "memset_val");
+            var memset_args = [_]llvm.ValueRef{ dest_ptr, value_i32, size };
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &memset_args, "");
+        } else {
+            // Store the value at each index
+            for (0..repeat_info.count) |i| {
+                var indices = [_]llvm.ValueRef{
+                    llvm.Const.int32(self.ctx, 0),
+                    llvm.Const.int32(self.ctx, @intCast(i)),
+                };
+                const elem_ptr = self.builder.buildGEP(array_type, dest_ptr, &indices, "repeat_elem");
+                _ = self.builder.buildStore(value, elem_ptr);
+            }
+        }
+        // No load - caller already has the destination pointer
+    }
+
+    /// Check if an expression is a large @repeat that should use direct initialization.
+    /// Returns the RepeatInfo if it's a large array (> 4096 bytes for byte types), null otherwise.
+    fn tryGetLargeRepeatInfo(self: *Emitter, expr: ast.Expr) ?TypeChecker.RepeatInfo {
+        // Check if it's a builtin call
+        if (expr != .builtin_call) return null;
+        const bc = expr.builtin_call;
+
+        // Check if it's @repeat
+        if (!std.mem.eql(u8, bc.name, "repeat")) return null;
+
+        // Get the repeat info from type checker
+        const tc = self.type_checker orelse return null;
+        const repeat_info = tc.comptime_repeats.get(bc) orelse return null;
+
+        // Check if it's a byte type
+        const is_byte_type = if (repeat_info.element_type == .primitive)
+            (repeat_info.element_type.primitive == .i8_ or repeat_info.element_type.primitive == .u8_)
+        else
+            false;
+
+        // Threshold: 4096 bytes for byte arrays
+        // For non-byte types, use element count * 8 (assuming max 8 bytes per element)
+        const size_threshold: usize = 4096;
+        const estimated_size = if (is_byte_type)
+            repeat_info.count
+        else
+            repeat_info.count * 8;
+
+        if (estimated_size > size_threshold) {
+            return repeat_info;
+        }
+        return null;
     }
 
     /// Emit a ComptimeValue as an LLVM constant.
