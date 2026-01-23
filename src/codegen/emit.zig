@@ -2469,6 +2469,11 @@ pub const Emitter = struct {
             llvm.getTypeKind(rhs_ty) == llvm.c.LLVMDoubleTypeKind;
         const is_float = lhs_is_float or rhs_is_float;
 
+        // Check if both operands are pointers (strings)
+        const lhs_is_ptr = llvm.getTypeKind(lhs_ty) == llvm.c.LLVMPointerTypeKind;
+        const rhs_is_ptr = llvm.getTypeKind(rhs_ty) == llvm.c.LLVMPointerTypeKind;
+        const is_string = lhs_is_ptr and rhs_is_ptr;
+
         // If mixed types, promote integer to float
         if (is_float and !lhs_is_float) {
             // lhs is int, rhs is float - convert lhs to float
@@ -2514,10 +2519,14 @@ pub const Emitter = struct {
             // Comparison - use appropriate type
             .eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOEQ, lhs, rhs, "feqtmp")
+            else if (is_string)
+                self.emitStringPtrEq(lhs, rhs)
             else
                 self.builder.buildICmp(llvm.c.LLVMIntEQ, lhs, rhs, "eqtmp"),
             .not_eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealONE, lhs, rhs, "fnetmp")
+            else if (is_string)
+                self.emitStringPtrNeq(lhs, rhs)
             else
                 self.builder.buildICmp(llvm.c.LLVMIntNE, lhs, rhs, "netmp"),
             .lt => if (is_float)
@@ -2597,6 +2606,48 @@ pub const Emitter = struct {
     fn emitSaturatingMul(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef, is_signed: bool) llvm.ValueRef {
         _ = is_signed;
         return self.builder.buildMul(lhs, rhs, "mulsattmp");
+    }
+
+    /// Emit string pointer equality comparison using strcmp.
+    /// For binary == operator on char* strings.
+    /// Returns true (i1) if strings are equal (strcmp returns 0).
+    fn emitStringPtrEq(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef) llvm.ValueRef {
+        const strcmp_fn = self.getOrDeclareStrcmp();
+        var args = [_]llvm.ValueRef{ lhs, rhs };
+        const result = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(strcmp_fn),
+            strcmp_fn,
+            &args,
+            "strcmp.result",
+        );
+        // strcmp returns 0 if equal
+        return self.builder.buildICmp(
+            llvm.c.LLVMIntEQ,
+            result,
+            llvm.Const.int32(self.ctx, 0),
+            "streq",
+        );
+    }
+
+    /// Emit string pointer inequality comparison using strcmp.
+    /// For binary != operator on char* strings.
+    /// Returns true (i1) if strings are not equal (strcmp returns non-zero).
+    fn emitStringPtrNeq(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef) llvm.ValueRef {
+        const strcmp_fn = self.getOrDeclareStrcmp();
+        var args = [_]llvm.ValueRef{ lhs, rhs };
+        const result = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(strcmp_fn),
+            strcmp_fn,
+            &args,
+            "strcmp.result",
+        );
+        // strcmp returns 0 if equal, so not-equal is result != 0
+        return self.builder.buildICmp(
+            llvm.c.LLVMIntNE,
+            result,
+            llvm.Const.int32(self.ctx, 0),
+            "strneq",
+        );
     }
 
     /// Emit assignment (including compound assignment operators).
