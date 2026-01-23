@@ -694,6 +694,15 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
 
+    // Register non-generic enum types BEFORE emitModule
+    // so enum literals can find them
+    emitter.registerNonGenericEnums(&checker) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Codegen error (non-generic enum registration): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
     // Declare monomorphized function signatures BEFORE emitModule
     // so call sites can find them
     emitter.declareMonomorphizedFunctions(&checker) catch |err| {

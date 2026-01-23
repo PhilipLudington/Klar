@@ -3856,9 +3856,21 @@ pub const Emitter = struct {
         }
 
         // Check registered enum types (non-generic)
-        // For non-generic enums, we'd need to look them up differently
-        // For now, if we can't find it, return 0 as default
-        return 0;
+        if (self.type_checker) |tc| {
+            const enum_types = tc.getEnumTypes();
+            for (enum_types) |et| {
+                if (std.mem.eql(u8, et.name, enum_name)) {
+                    for (et.variants, 0..) |v, i| {
+                        if (std.mem.eql(u8, v.name, pat.variant_name)) {
+                            return @intCast(i);
+                        }
+                    }
+                }
+            }
+        }
+
+        // If still not found, return error instead of silent 0
+        return EmitError.InvalidAST;
     }
 
     /// Bind pattern variables to extracted values.
@@ -6473,11 +6485,23 @@ pub const Emitter = struct {
             }
         }
 
-        // Also check non-monomorphized enums (registered directly)
+        // Also check non-monomorphized enums (non-generic enums)
         if (variant_index == null) {
-            // For non-generic enums, look up in the regular enum registry
-            // This is a simplified path - could be enhanced
-            variant_index = 0; // Default for unit variants or simple cases
+            if (self.type_checker) |tc| {
+                const enum_types = tc.getEnumTypes();
+                for (enum_types) |et| {
+                    if (std.mem.eql(u8, et.name, enum_name)) {
+                        for (et.variants, 0..) |v, i| {
+                            if (std.mem.eql(u8, v.name, lit.variant_name)) {
+                                variant_index = @intCast(i);
+                                variant_payload = v.payload;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
         }
 
         const idx = variant_index orelse return EmitError.InvalidAST;
@@ -22671,6 +22695,95 @@ pub const Emitter = struct {
         // Cache the enum type info (reusing struct infrastructure)
         self.struct_types.put(mono.mangled_name, .{
             .llvm_type = enum_type,
+            .field_indices = field_indices,
+            .field_names = field_names,
+        }) catch return EmitError.OutOfMemory;
+    }
+
+    /// Register all non-generic enum types from the type checker.
+    /// Non-generic enums are those with no type parameters.
+    pub fn registerNonGenericEnums(self: *Emitter, type_checker: *const TypeChecker) EmitError!void {
+        const enum_types = type_checker.getEnumTypes();
+
+        for (enum_types) |enum_type| {
+            // Only register non-generic enums (those with no type parameters)
+            if (enum_type.type_params.len == 0) {
+                try self.registerNonGenericEnum(enum_type);
+            }
+        }
+    }
+
+    /// Register a single non-generic enum type.
+    /// Enums are represented as tagged unions: {tag: i8, payload_union}
+    fn registerNonGenericEnum(self: *Emitter, enum_type: *types.EnumType) EmitError!void {
+        // Skip if already registered
+        if (self.struct_types.contains(enum_type.name)) {
+            return;
+        }
+
+        // Calculate the maximum payload size across all variants
+        var max_payload_size: usize = 0;
+        for (enum_type.variants) |variant| {
+            if (variant.payload) |payload| {
+                const payload_size = switch (payload) {
+                    .tuple => |tuple_types| blk: {
+                        var size: usize = 0;
+                        for (tuple_types) |t| {
+                            size += self.getTypeSize(t);
+                        }
+                        break :blk size;
+                    },
+                    .struct_ => |struct_fields| blk: {
+                        var size: usize = 0;
+                        for (struct_fields) |f| {
+                            size += self.getTypeSize(f.type_);
+                        }
+                        break :blk size;
+                    },
+                };
+                if (payload_size > max_payload_size) {
+                    max_payload_size = payload_size;
+                }
+            }
+        }
+
+        // Create LLVM type: {tag: i8, payload: [max_size x i8]}
+        const variant_count = enum_type.variants.len;
+        const tag_type = if (variant_count <= 256) llvm.Types.int8(self.ctx) else llvm.Types.int16(self.ctx);
+
+        var field_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer field_types.deinit(self.allocator);
+
+        // Tag field
+        field_types.append(self.allocator, tag_type) catch return EmitError.OutOfMemory;
+
+        // Payload field (if any variant has payload)
+        if (max_payload_size > 0) {
+            const payload_array = llvm.Types.array(llvm.Types.int8(self.ctx), @intCast(max_payload_size));
+            field_types.append(self.allocator, payload_array) catch return EmitError.OutOfMemory;
+        }
+
+        // Create LLVM struct type for the enum
+        const llvm_enum_type = llvm.Types.struct_(self.ctx, field_types.items, false);
+
+        // Allocate field tracking data
+        const field_count: usize = if (max_payload_size > 0) 2 else 1;
+        const field_indices = self.allocator.alloc(u32, field_count) catch return EmitError.OutOfMemory;
+        errdefer self.allocator.free(field_indices);
+
+        const field_names = self.allocator.alloc([]const u8, field_count) catch return EmitError.OutOfMemory;
+        errdefer self.allocator.free(field_names);
+
+        field_indices[0] = 0;
+        field_names[0] = "tag";
+        if (max_payload_size > 0) {
+            field_indices[1] = 1;
+            field_names[1] = "payload";
+        }
+
+        // Cache the enum type info (reusing struct infrastructure)
+        self.struct_types.put(enum_type.name, .{
+            .llvm_type = llvm_enum_type,
             .field_indices = field_indices,
             .field_names = field_names,
         }) catch return EmitError.OutOfMemory;

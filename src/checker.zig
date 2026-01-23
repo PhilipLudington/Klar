@@ -2063,6 +2063,12 @@ pub const TypeChecker = struct {
         return self.monomorphized_enums.items;
     }
 
+    /// Get all enum types (both generic and non-generic).
+    /// Non-generic enums have type_params.len == 0.
+    pub fn getEnumTypes(self: *const TypeChecker) []*types.EnumType {
+        return self.generic_enum_types.items;
+    }
+
     /// Get a constant value by name.
     /// Returns null if the name doesn't refer to a constant.
     pub fn getConstantValue(self: *const TypeChecker, name: []const u8) ?ComptimeValue {
