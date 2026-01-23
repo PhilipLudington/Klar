@@ -870,8 +870,22 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
 
-    // Link to create executable
-    const exe_path = options.output_path orelse base_name;
+    // Link to create executable (default: build/<base_name>)
+    const exe_path = options.output_path orelse blk: {
+        // Create build directory if it doesn't exist
+        std.fs.cwd().makePath("build") catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to create build directory: {s}\n", .{@errorName(err)}) catch "Failed to create build directory\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+        break :blk std.fmt.allocPrint(allocator, "build/{s}", .{base_name}) catch {
+            try stderr.writeAll("Out of memory\n");
+            return;
+        };
+    };
+    const owns_exe_path = options.output_path == null;
+    defer if (owns_exe_path) allocator.free(exe_path);
 
     // Use cross-compilation linker if target specified
     const link_result = if (target_info) |ti|

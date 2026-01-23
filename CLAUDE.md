@@ -70,19 +70,19 @@ If you find yourself typing `./zig-out/bin/klar` in a Bash command, **STOP** and
 # Run with tree-walking interpreter
 ./zig-out/bin/klar run program.kl --interpret
 
-# Compile to native executable
-./zig-out/bin/klar build program.kl -o program
-./zig-out/bin/klar build program.kl -o program -O2      # Optimized
-./zig-out/bin/klar build program.kl -o program -g       # Debug info
-
-# Test a single file (useful for debugging)
-./zig-out/bin/klar build test/native/hello.kl -o /tmp/test && /tmp/test
+# Compile to native executable (outputs to build/ by default)
+./zig-out/bin/klar build program.kl              # -> build/program
+./zig-out/bin/klar build program.kl -o myapp     # -> myapp (explicit path)
+./zig-out/bin/klar build program.kl -O2          # -> build/program (optimized)
+./zig-out/bin/klar build program.kl -g           # -> build/program (debug info)
 
 # Debug output
 ./zig-out/bin/klar build program.kl --emit-llvm         # Output .ll file
 ./zig-out/bin/klar build program.kl --emit-asm          # Output .s file
 ./zig-out/bin/klar build program.kl --emit-ir           # Output internal IR
 ```
+
+**Build output convention:** When no `-o` flag is specified, executables are placed in the `build/` directory (gitignored). Use `-o` to specify a custom output path.
 
 ## Interactive REPL
 
