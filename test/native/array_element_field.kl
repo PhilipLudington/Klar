@@ -1,0 +1,60 @@
+// Test: Array element field access
+// Bug fix: Accessing fields of struct elements in array parameters
+// Previously failed with UnsupportedFeature in codegen
+
+struct Item { flag: bool, value: i32 }
+
+// Test boolean field access on array element
+fn test_bool(items: [Item; 3]) -> bool {
+    if items[0].flag == false { return true }
+    return false
+}
+
+// Test integer field access on array element
+fn test_int(items: [Item; 3]) -> i32 {
+    return items[0].value + items[1].value + items[2].value
+}
+
+// Test direct boolean use in condition
+fn test_direct_bool(items: [Item; 3]) -> bool {
+    if items[0].flag { return true }
+    return false
+}
+
+// Test not operator on array element field
+fn test_not(items: [Item; 3]) -> bool {
+    if not items[0].flag { return true }
+    return false
+}
+
+// Test multiple array element field accesses in one condition
+fn test_multi(items: [Item; 3]) -> bool {
+    if items[0].value < items[1].value { return true }
+    return false
+}
+
+fn main() -> i32 {
+    let items: [Item; 3] = [
+        Item { flag: false, value: 10 },
+        Item { flag: true, value: 20 },
+        Item { flag: false, value: 30 }
+    ]
+
+    // Test boolean field access
+    assert(test_bool(items) == true)
+
+    // Test integer field access
+    assert(test_int(items) == 60)
+
+    // Test direct boolean use
+    assert(test_direct_bool(items) == false)
+
+    // Test not operator
+    assert(test_not(items) == true)
+
+    // Test comparison of fields
+    assert(test_multi(items) == true)
+
+    // Return 0 to indicate success
+    return 0
+}
