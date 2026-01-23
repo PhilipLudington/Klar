@@ -966,8 +966,26 @@ fn runNativeFile(allocator: std.mem.Allocator, path: []const u8) !void {
     std.fs.cwd().deleteFile(temp_path) catch {};
 
     // Exit with the program's exit code
-    const exit_code: u8 = switch (result.Exited) {
-        0...255 => |code| code,
+    const exit_code: u8 = switch (result) {
+        .Exited => |code| code,
+        .Signal => |sig| blk: {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
+            getStdErr().writeAll(msg) catch {};
+            break :blk 128 +| @as(u8, @intCast(@min(sig, 127)));
+        },
+        .Stopped => |sig| blk: {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Process stopped by signal: {d}\n", .{sig}) catch "Process stopped by signal\n";
+            getStdErr().writeAll(msg) catch {};
+            break :blk 128 +| @as(u8, @intCast(@min(sig, 127)));
+        },
+        .Unknown => |val| blk: {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Process terminated with unknown status: {d}\n", .{val}) catch "Process terminated\n";
+            getStdErr().writeAll(msg) catch {};
+            break :blk 1;
+        },
     };
     if (exit_code != 0) {
         std.process.exit(exit_code);
