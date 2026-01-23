@@ -867,6 +867,9 @@ pub const Emitter = struct {
             const is_array = param.type_ == .array or param.type_ == .slice;
             const array_info = self.getArrayTypeInfo(param.type_);
 
+            // Check if this is a string type parameter
+            const is_string = self.isTypeString(param.type_);
+
             self.named_values.put(param.name, .{
                 .value = alloca,
                 .is_alloca = true,
@@ -878,6 +881,7 @@ pub const Emitter = struct {
                 .is_array = is_array,
                 .array_size = if (array_info) |ai| ai.size else null,
                 .array_element_type = if (array_info) |ai| ai.element_type else null,
+                .is_string = is_string,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -4182,6 +4186,23 @@ pub const Emitter = struct {
             return struct_info.llvm_type;
         }
 
+        // Builtin types that aren't in struct_types
+        if (std.mem.eql(u8, name, "IoError")) {
+            return self.getIoErrorStructType();
+        }
+        if (std.mem.eql(u8, name, "File")) {
+            return llvm.Types.pointer(self.ctx); // FILE*
+        }
+        if (std.mem.eql(u8, name, "Stdin")) {
+            return llvm.Types.pointer(self.ctx); // FILE*
+        }
+        if (std.mem.eql(u8, name, "Stdout")) {
+            return llvm.Types.pointer(self.ctx); // FILE*
+        }
+        if (std.mem.eql(u8, name, "Stderr")) {
+            return llvm.Types.pointer(self.ctx); // FILE*
+        }
+
         // Default to i32
         return llvm.Types.int32(self.ctx);
     }
@@ -4752,6 +4773,14 @@ pub const Emitter = struct {
                     if (std.mem.eql(u8, m.method_name, "flush")) {
                         // Returns Result[void, IoError]
                         return self.getVoidResultType();
+                    }
+                }
+
+                // Stdin instance methods
+                if (self.isStdinExpr(m.object)) {
+                    if (std.mem.eql(u8, m.method_name, "read")) {
+                        // Returns Result[i32, IoError]
+                        return self.getI32ResultType();
                     }
                 }
 
