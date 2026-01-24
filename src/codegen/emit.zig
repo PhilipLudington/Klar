@@ -106,6 +106,9 @@ pub const Emitter = struct {
     /// Used to detect sret at call sites.
     sret_functions: std.StringHashMap(llvm.TypeRef),
 
+    /// True if main() takes [String] args (needs wrapper generation).
+    main_takes_args: bool = false,
+
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
 
     const ReturnTypeInfo = struct {
@@ -271,6 +274,44 @@ pub const Emitter = struct {
         };
     }
 
+    /// Create an alloca in the function's entry block.
+    /// This ensures allocas don't grow the stack when placed in loops.
+    /// LLVM's mem2reg optimization only works on allocas in the entry block.
+    fn buildEntryBlockAlloca(self: *Emitter, ty: llvm.TypeRef, name: [:0]const u8) llvm.ValueRef {
+        const func = self.current_function orelse {
+            // Fallback: create alloca at current position if no function context
+            return self.builder.buildAlloca(ty, name);
+        };
+
+        // Get the entry block of the current function
+        const entry_block = llvm.c.LLVMGetFirstBasicBlock(func);
+        if (entry_block == null) {
+            // Fallback: create alloca at current position if no entry block
+            return self.builder.buildAlloca(ty, name);
+        }
+
+        // Save the current insert point
+        const current_block = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Position at the start of the entry block (before any instructions)
+        const first_instr = llvm.c.LLVMGetFirstInstruction(entry_block);
+        if (first_instr != null) {
+            llvm.c.LLVMPositionBuilderBefore(self.builder.ref, first_instr);
+        } else {
+            self.builder.positionAtEnd(entry_block);
+        }
+
+        // Create the alloca in the entry block
+        const alloca = self.builder.buildAlloca(ty, name);
+
+        // Restore the original insert point
+        if (current_block != null) {
+            self.builder.positionAtEnd(current_block);
+        }
+
+        return alloca;
+    }
+
     /// Initialize debug info for the module.
     pub fn initDebugInfo(self: *Emitter, filename: []const u8, directory: []const u8) void {
         const di_builder = llvm.DIBuilder.create(self.module);
@@ -394,6 +435,363 @@ pub const Emitter = struct {
                 else => {},
             }
         }
+
+        // Fourth pass: generate main wrapper if main takes args
+        if (self.main_takes_args) {
+            try self.emitMainArgsWrapper();
+        }
+    }
+
+    /// Generate a C-style main(argc, argv) wrapper that converts args to [String].
+    fn emitMainArgsWrapper(self: *Emitter) EmitError!void {
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const string_struct_type = self.getStringStructType();
+
+        // Slice struct type: { ptr, i64 len }
+        var slice_fields = [_]llvm.TypeRef{ ptr_type, i64_type };
+        const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
+
+        // Generate the args conversion functions inline
+        const from_argv_fn = try self.emitArgsFromArgvFn(slice_type, string_struct_type);
+        const free_fn = try self.emitArgsFreeeFn(slice_type, string_struct_type);
+
+        // Get reference to _klar_user_main(args: { ptr, i64 }) -> i32
+        const user_main_fn = self.module.getNamedFunction("_klar_user_main") orelse return EmitError.InvalidAST;
+
+        // Create main(argc: i32, argv: ptr) -> i32
+        var main_params = [_]llvm.TypeRef{ i32_type, ptr_type };
+        const main_fn_type = llvm.Types.function(i32_type, &main_params, false);
+        const main_fn = llvm.addFunction(self.module, "main", main_fn_type);
+
+        // Create entry block
+        const entry_block = llvm.appendBasicBlock(self.ctx, main_fn, "entry");
+        self.builder.positionAtEnd(entry_block);
+
+        // Get argc and argv parameters
+        const argc = llvm.c.LLVMGetParam(main_fn, 0);
+        const argv = llvm.c.LLVMGetParam(main_fn, 1);
+
+        // Call _klar_args_from_argv(argc, argv) -> { ptr, i64 }
+        var from_argv_params = [_]llvm.TypeRef{ i32_type, ptr_type };
+        const from_argv_fn_type = llvm.Types.function(slice_type, &from_argv_params, false);
+        var from_argv_args = [_]llvm.ValueRef{ argc, argv };
+        const args_slice = self.builder.buildCall(
+            from_argv_fn_type,
+            from_argv_fn,
+            &from_argv_args,
+            "args",
+        );
+
+        // Call _klar_user_main(args) -> i32
+        var user_main_args = [_]llvm.ValueRef{args_slice};
+        const user_main_fn_type = llvm.Types.function(i32_type, &[_]llvm.TypeRef{slice_type}, false);
+        const result = self.builder.buildCall(
+            user_main_fn_type,
+            user_main_fn,
+            &user_main_args,
+            "result",
+        );
+
+        // Call _klar_args_free(args)
+        var free_params = [_]llvm.TypeRef{slice_type};
+        const free_fn_type = llvm.Types.function(llvm.Types.void_(self.ctx), &free_params, false);
+        var free_args = [_]llvm.ValueRef{args_slice};
+        _ = self.builder.buildCall(
+            free_fn_type,
+            free_fn,
+            &free_args,
+            "",
+        );
+
+        // Return the result
+        _ = self.builder.buildRet(result);
+    }
+
+    /// Generate _klar_args_from_argv function that converts argc/argv to [String].
+    fn emitArgsFromArgvFn(self: *Emitter, slice_type: llvm.TypeRef, string_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Declare external C functions
+        const strlen_fn = self.getOrCreateStrlenFn();
+        const malloc_fn = self.getOrCreateMallocFn();
+        const memcpy_fn = self.getOrCreateMemcpyFn();
+
+        // Create function: { ptr, i64 } _klar_args_from_argv(i32 argc, ptr argv)
+        var params = [_]llvm.TypeRef{ i32_type, ptr_type };
+        const fn_type = llvm.Types.function(slice_type, &params, false);
+        const func = llvm.addFunction(self.module, "_klar_args_from_argv", fn_type);
+
+        // Create blocks
+        const entry_block = llvm.appendBasicBlock(self.ctx, func, "entry");
+        const check_block = llvm.appendBasicBlock(self.ctx, func, "check");
+        const loop_block = llvm.appendBasicBlock(self.ctx, func, "loop");
+        const done_block = llvm.appendBasicBlock(self.ctx, func, "done");
+
+        // Entry: check if argc <= 0
+        self.builder.positionAtEnd(entry_block);
+        const argc = llvm.c.LLVMGetParam(func, 0);
+        const argv = llvm.c.LLVMGetParam(func, 1);
+        const argc_i64 = self.builder.buildSExt(argc, i64_type, "argc64");
+        const is_empty = self.builder.buildICmp(llvm.c.LLVMIntSLE, argc, llvm.Const.int32(self.ctx, 0), "is_empty");
+        _ = self.builder.buildCondBr(is_empty, done_block, check_block);
+
+        // Check block: allocate array of String structs
+        self.builder.positionAtEnd(check_block);
+        const string_size = llvm.Const.int64(self.ctx, 12); // { ptr: 8, len: 4, cap: 4 } = 16 actually... let me check
+        // String struct is { ptr, i32, i32 } = 8 + 4 + 4 = 16 bytes on 64-bit
+        const string_size_actual = llvm.Const.int64(self.ctx, 16);
+        const array_size = self.builder.buildMul(argc_i64, string_size_actual, "array_size");
+        var malloc_args = [_]llvm.ValueRef{array_size};
+        const array_ptr = self.builder.buildCall(
+            llvm.Types.function(ptr_type, &[_]llvm.TypeRef{i64_type}, false),
+            malloc_fn,
+            &malloc_args,
+            "strings",
+        );
+
+        // Initialize loop counter
+        const i_ptr = self.builder.buildAlloca(i64_type, "i");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), i_ptr);
+        _ = self.builder.buildBr(loop_block);
+
+        // Loop block: convert each argv[i] to String
+        self.builder.positionAtEnd(loop_block);
+        const i_val = self.builder.buildLoad(i64_type, i_ptr, "i");
+
+        // Get argv[i]
+        const argv_i_ptr = self.builder.buildGEP(ptr_type, argv, &[_]llvm.ValueRef{i_val}, "argv_i_ptr");
+        const c_str = self.builder.buildLoad(ptr_type, argv_i_ptr, "c_str");
+
+        // strlen(c_str)
+        var strlen_args = [_]llvm.ValueRef{c_str};
+        const str_len = self.builder.buildCall(
+            llvm.Types.function(i64_type, &[_]llvm.TypeRef{ptr_type}, false),
+            strlen_fn,
+            &strlen_args,
+            "str_len",
+        );
+
+        // malloc(str_len) for string data
+        var str_malloc_args = [_]llvm.ValueRef{str_len};
+        const str_ptr = self.builder.buildCall(
+            llvm.Types.function(ptr_type, &[_]llvm.TypeRef{i64_type}, false),
+            malloc_fn,
+            &str_malloc_args,
+            "str_ptr",
+        );
+
+        // memcpy(str_ptr, c_str, str_len)
+        var memcpy_args = [_]llvm.ValueRef{ str_ptr, c_str, str_len };
+        _ = self.builder.buildCall(
+            llvm.Types.function(ptr_type, &[_]llvm.TypeRef{ ptr_type, ptr_type, i64_type }, false),
+            memcpy_fn,
+            &memcpy_args,
+            "",
+        );
+
+        // Get pointer to array[i] (String struct)
+        const string_i_ptr = self.builder.buildGEP(string_type, array_ptr, &[_]llvm.ValueRef{i_val}, "string_i");
+
+        // Store String fields: { ptr, len, capacity }
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_i_ptr, 0, "ptr_field");
+        _ = self.builder.buildStore(str_ptr, ptr_field);
+
+        const len_i32 = self.builder.buildTrunc(str_len, i32_type, "len32");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_i_ptr, 1, "len_field");
+        _ = self.builder.buildStore(len_i32, len_field);
+
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_i_ptr, 2, "cap_field");
+        _ = self.builder.buildStore(len_i32, cap_field);
+
+        // Increment i
+        const i_next = self.builder.buildAdd(i_val, llvm.Const.int64(self.ctx, 1), "i_next");
+        _ = self.builder.buildStore(i_next, i_ptr);
+
+        // Check if i < argc
+        const loop_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, i_next, argc_i64, "loop_cond");
+        _ = self.builder.buildCondBr(loop_cond, loop_block, done_block);
+
+        // Done block: build and return slice struct
+        self.builder.positionAtEnd(done_block);
+        const result_ptr_phi = llvm.c.LLVMBuildPhi(self.builder.ref, ptr_type, "result_ptr");
+        const result_len_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "result_len");
+
+        // Add phi incoming values
+        var entry_values = [_]llvm.ValueRef{ llvm.c.LLVMConstNull(ptr_type), llvm.Const.int64(self.ctx, 0) };
+        var entry_blocks = [_]llvm.BasicBlockRef{entry_block};
+        llvm.c.LLVMAddIncoming(result_ptr_phi, &entry_values[0], &entry_blocks, 1);
+        llvm.c.LLVMAddIncoming(result_len_phi, &entry_values[1], &entry_blocks, 1);
+
+        var loop_values = [_]llvm.ValueRef{ array_ptr, argc_i64 };
+        var loop_blocks = [_]llvm.BasicBlockRef{loop_block};
+        llvm.c.LLVMAddIncoming(result_ptr_phi, &loop_values[0], &loop_blocks, 1);
+        llvm.c.LLVMAddIncoming(result_len_phi, &loop_values[1], &loop_blocks, 1);
+
+        // Build slice struct
+        const result_alloca = self.builder.buildAlloca(slice_type, "result");
+        const slice_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, result_alloca, 0, "slice_ptr");
+        _ = self.builder.buildStore(result_ptr_phi, slice_ptr_field);
+        const slice_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, result_alloca, 1, "slice_len");
+        _ = self.builder.buildStore(result_len_phi, slice_len_field);
+
+        const result = self.builder.buildLoad(slice_type, result_alloca, "slice_result");
+        _ = self.builder.buildRet(result);
+
+        _ = string_size;
+        return func;
+    }
+
+    /// Generate _klar_args_free function that frees a [String] slice.
+    fn emitArgsFreeeFn(self: *Emitter, slice_type: llvm.TypeRef, string_type: llvm.TypeRef) EmitError!llvm.ValueRef {
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        const free_fn = self.getOrCreateFreeFn();
+
+        // Create function: void _klar_args_free({ ptr, i64 } args)
+        var params = [_]llvm.TypeRef{slice_type};
+        const fn_type = llvm.Types.function(llvm.Types.void_(self.ctx), &params, false);
+        const func = llvm.addFunction(self.module, "_klar_args_free", fn_type);
+
+        // Create blocks
+        const entry_block = llvm.appendBasicBlock(self.ctx, func, "entry");
+        const check_block = llvm.appendBasicBlock(self.ctx, func, "check");
+        const loop_block = llvm.appendBasicBlock(self.ctx, func, "loop");
+        const free_array_block = llvm.appendBasicBlock(self.ctx, func, "free_array");
+        const done_block = llvm.appendBasicBlock(self.ctx, func, "done");
+
+        // Entry: extract slice fields
+        self.builder.positionAtEnd(entry_block);
+        const args = llvm.c.LLVMGetParam(func, 0);
+        const array_ptr = llvm.c.LLVMBuildExtractValue(self.builder.ref, args, 0, "array_ptr");
+        const len = llvm.c.LLVMBuildExtractValue(self.builder.ref, args, 1, "len");
+
+        // Check if ptr is null or len <= 0
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, array_ptr, llvm.c.LLVMConstNull(ptr_type), "is_null");
+        const len_zero = self.builder.buildICmp(llvm.c.LLVMIntSLE, len, llvm.Const.int64(self.ctx, 0), "len_zero");
+        const skip_free = self.builder.buildOr(is_null, len_zero, "skip_free");
+        _ = self.builder.buildCondBr(skip_free, done_block, check_block);
+
+        // Check block: initialize loop
+        self.builder.positionAtEnd(check_block);
+        const i_ptr = self.builder.buildAlloca(i64_type, "i");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), i_ptr);
+        _ = self.builder.buildBr(loop_block);
+
+        // Loop block: free each string's data
+        self.builder.positionAtEnd(loop_block);
+        const i_val = self.builder.buildLoad(i64_type, i_ptr, "i");
+
+        // Get array[i].ptr
+        const string_i_ptr = self.builder.buildGEP(string_type, array_ptr, &[_]llvm.ValueRef{i_val}, "string_i");
+        const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_i_ptr, 0, "str_ptr_field");
+        const str_ptr = self.builder.buildLoad(ptr_type, str_ptr_field, "str_ptr");
+
+        // free(str_ptr) if not null
+        const str_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, str_ptr, llvm.c.LLVMConstNull(ptr_type), "str_null");
+        const free_str_block = llvm.appendBasicBlock(self.ctx, func, "free_str");
+        const next_iter_block = llvm.appendBasicBlock(self.ctx, func, "next_iter");
+        _ = self.builder.buildCondBr(str_is_null, next_iter_block, free_str_block);
+
+        self.builder.positionAtEnd(free_str_block);
+        var free_str_args = [_]llvm.ValueRef{str_ptr};
+        _ = self.builder.buildCall(
+            llvm.Types.function(llvm.Types.void_(self.ctx), &[_]llvm.TypeRef{ptr_type}, false),
+            free_fn,
+            &free_str_args,
+            "",
+        );
+        _ = self.builder.buildBr(next_iter_block);
+
+        // Next iteration
+        self.builder.positionAtEnd(next_iter_block);
+        const i_next = self.builder.buildAdd(i_val, llvm.Const.int64(self.ctx, 1), "i_next");
+        _ = self.builder.buildStore(i_next, i_ptr);
+        const loop_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, i_next, len, "loop_cond");
+        _ = self.builder.buildCondBr(loop_cond, loop_block, free_array_block);
+
+        // Free array block
+        self.builder.positionAtEnd(free_array_block);
+        var free_array_args = [_]llvm.ValueRef{array_ptr};
+        _ = self.builder.buildCall(
+            llvm.Types.function(llvm.Types.void_(self.ctx), &[_]llvm.TypeRef{ptr_type}, false),
+            free_fn,
+            &free_array_args,
+            "",
+        );
+        _ = self.builder.buildBr(done_block);
+
+        // Done block
+        self.builder.positionAtEnd(done_block);
+        _ = self.builder.buildRetVoid();
+
+        return func;
+    }
+
+    /// Get or create malloc declaration.
+    fn getOrCreateMallocFn(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "malloc")) |func| {
+            return func;
+        }
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var params = [_]llvm.TypeRef{i64_type};
+        const fn_type = llvm.Types.function(ptr_type, &params, false);
+        return llvm.addFunction(self.module, "malloc", fn_type);
+    }
+
+    /// Get or create strlen declaration.
+    fn getOrCreateStrlenFn(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "strlen")) |func| {
+            return func;
+        }
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var params = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.Types.function(i64_type, &params, false);
+        return llvm.addFunction(self.module, "strlen", fn_type);
+    }
+
+    /// Get or create memcpy declaration.
+    fn getOrCreateMemcpyFn(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "memcpy")) |func| {
+            return func;
+        }
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var params = [_]llvm.TypeRef{ ptr_type, ptr_type, i64_type };
+        const fn_type = llvm.Types.function(ptr_type, &params, false);
+        return llvm.addFunction(self.module, "memcpy", fn_type);
+    }
+
+    /// Get or create free declaration.
+    fn getOrCreateFreeFn(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "free")) |func| {
+            return func;
+        }
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var params = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.Types.function(llvm.Types.void_(self.ctx), &params, false);
+        return llvm.addFunction(self.module, "free", fn_type);
+    }
+
+    /// Get or create snprintf declaration.
+    /// int snprintf(char *str, size_t size, const char *format, ...)
+    fn getOrCreateSnprintfFn(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "snprintf")) |func| {
+            return func;
+        }
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var params = [_]llvm.TypeRef{ ptr_type, i64_type, ptr_type };
+        // variadic = true (1)
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &params, 3, 1);
+        return llvm.c.LLVMAddFunction(self.module.ref, "snprintf", fn_type);
     }
 
     /// Register a struct declaration for later field name resolution.
@@ -425,6 +823,15 @@ pub const Emitter = struct {
             return;
         }
 
+        // Check if this is main(args: [String]) - needs special handling
+        const is_main_with_args = std.mem.eql(u8, func.name, "main") and
+            func.params.len == 1 and
+            self.isStringSliceTypeExpr(func.params[0].type_);
+
+        if (is_main_with_args) {
+            self.main_takes_args = true;
+        }
+
         // Check if return type requires sret calling convention
         const needs_sret = if (func.return_type) |rt| self.requiresSretForTypeExpr(rt) else false;
         const return_llvm_type = if (func.return_type) |rt|
@@ -450,7 +857,10 @@ pub const Emitter = struct {
         const return_type = if (needs_sret) llvm.Types.void_(self.ctx) else return_llvm_type;
 
         const fn_type = llvm.Types.function(return_type, param_types.items, false);
-        const name = self.allocator.dupeZ(u8, func.name) catch return EmitError.OutOfMemory;
+
+        // Use _klar_user_main for main(args: [String]), otherwise use the function name
+        const func_name = if (is_main_with_args) "_klar_user_main" else func.name;
+        const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
         const llvm_func = llvm.addFunction(self.module, name, fn_type);
 
@@ -467,6 +877,18 @@ pub const Emitter = struct {
 
         // Set the calling convention for proper ABI compliance
         llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
+    }
+
+    /// Check if a type expression is [String] (slice of String).
+    fn isStringSliceTypeExpr(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        if (type_expr == .slice) {
+            const element = type_expr.slice.element;
+            if (element == .named) {
+                return std.mem.eql(u8, element.named.name, "String");
+            }
+        }
+        return false;
     }
 
     /// Declare methods from an impl block.
@@ -704,7 +1126,13 @@ pub const Emitter = struct {
             return;
         }
 
-        const name = self.allocator.dupeZ(u8, func.name) catch return EmitError.OutOfMemory;
+        // Check if this is main(args: [String]) - look up _klar_user_main instead
+        const is_main_with_args = std.mem.eql(u8, func.name, "main") and
+            func.params.len == 1 and
+            self.isStringSliceTypeExpr(func.params[0].type_);
+
+        const func_name = if (is_main_with_args) "_klar_user_main" else func.name;
+        const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
 
         // Get or create function
@@ -994,7 +1422,8 @@ pub const Emitter = struct {
                 const ty = try self.inferExprType(decl.value);
                 const name = self.allocator.dupeZ(u8, decl.name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(name);
-                const alloca = self.builder.buildAlloca(ty, name);
+                // Create alloca in entry block to prevent stack growth in loops
+                const alloca = self.buildEntryBlockAlloca(ty, name);
 
                 // Check for large @repeat - use direct initialization to avoid stack overflow
                 if (self.tryGetLargeRepeatInfo(decl.value)) |repeat_info| {
@@ -1083,7 +1512,8 @@ pub const Emitter = struct {
                 const ty = try self.inferExprType(decl.value);
                 const name = self.allocator.dupeZ(u8, decl.name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(name);
-                const alloca = self.builder.buildAlloca(ty, name);
+                // Create alloca in entry block to prevent stack growth in loops
+                const alloca = self.buildEntryBlockAlloca(ty, name);
 
                 // Check for large @repeat - use direct initialization to avoid stack overflow
                 if (self.tryGetLargeRepeatInfo(decl.value)) |repeat_info| {
@@ -6174,17 +6604,82 @@ pub const Emitter = struct {
 
     /// Emit array/slice index access expression (e.g., arr[i]).
     fn emitIndexAccess(self: *Emitter, idx: *ast.Index) EmitError!llvm.ValueRef {
-        // Emit the array/slice object
+        // Emit the index first (before potentially skipping object emission)
+        const index_val = try self.emitExpr(idx.index);
+
+        // Optimization: If the object is an identifier with an alloca, GEP directly
+        // from the alloca instead of loading the entire array value. This prevents
+        // stack overflow with large arrays in loops (e.g., 30KB Brainfuck tape).
+        if (idx.object == .identifier) {
+            const arr_id = idx.object.identifier;
+            if (self.named_values.get(arr_id.name)) |local| {
+                if (local.is_alloca) {
+                    const arr_type = local.ty;
+                    const arr_type_kind = llvm.getTypeKind(arr_type);
+
+                    if (arr_type_kind == llvm.c.LLVMArrayTypeKind) {
+                        // Get array length for bounds checking
+                        const array_len = llvm.Types.getArrayLength(arr_type);
+                        const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
+
+                        // Zero-extend or sign-extend index to i64 for comparison
+                        const index_type = llvm.typeOf(index_val);
+                        const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
+                        const i64_type = llvm.Types.int64(self.ctx);
+
+                        const index_i64 = if (index_bits < 64)
+                            self.builder.buildZExt(index_val, i64_type, "idx.ext")
+                        else if (index_bits > 64)
+                            self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
+                        else
+                            index_val;
+
+                        // Bounds check: index < length (unsigned comparison)
+                        const in_bounds = self.builder.buildICmp(
+                            llvm.c.LLVMIntULT,
+                            index_i64,
+                            len_val,
+                            "bounds.check",
+                        );
+
+                        // Create blocks for bounds check
+                        const func = self.current_function orelse return EmitError.InvalidAST;
+                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
+                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
+
+                        // Branch based on bounds check
+                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+                        // Fail block: trap/unreachable
+                        self.builder.positionAtEnd(fail_block);
+                        _ = self.builder.buildUnreachable();
+
+                        // Continue in OK block
+                        self.builder.positionAtEnd(ok_block);
+
+                        // GEP directly from the alloca (no temp copy needed)
+                        var indices = [_]llvm.ValueRef{
+                            llvm.Const.int32(self.ctx, 0),
+                            index_val,
+                        };
+                        const elem_ptr = self.builder.buildGEP(arr_type, local.value, &indices, "elem.ptr");
+
+                        // Get element type and load
+                        const elem_type = llvm.c.LLVMGetElementType(arr_type);
+                        return self.builder.buildLoad(elem_type, elem_ptr, "elem.val");
+                    }
+                }
+            }
+        }
+
+        // Fallback: emit the object expression (may produce a loaded array value)
         const obj = try self.emitExpr(idx.object);
         const obj_type = llvm.typeOf(obj);
-
-        // Emit the index
-        const index_val = try self.emitExpr(idx.index);
 
         const obj_type_kind = llvm.getTypeKind(obj_type);
 
         if (obj_type_kind == llvm.c.LLVMArrayTypeKind) {
-            // Array access with bounds checking
+            // Array access with bounds checking (for non-identifier expressions)
 
             // Get array length
             const array_len = llvm.Types.getArrayLength(obj_type);
@@ -6225,7 +6720,7 @@ pub const Emitter = struct {
             // Continue in OK block
             self.builder.positionAtEnd(ok_block);
 
-            // Array access - store to temp for GEP
+            // Array access - store to temp for GEP (needed for computed array expressions)
             const alloca = self.builder.buildAlloca(obj_type, "arr.tmp");
             _ = self.builder.buildStore(obj, alloca);
 
@@ -7364,6 +7859,13 @@ pub const Emitter = struct {
                 if (method.args.len != 1) return EmitError.InvalidAST;
                 const other = try self.emitExpr(method.args[0]);
                 return self.emitIntMax(object, other);
+            }
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                // Detect if it's a 64-bit integer by checking the LLVM type
+                const llvm_type = llvm.c.LLVMTypeOf(object);
+                const bit_width = llvm.c.LLVMGetIntTypeWidth(llvm_type);
+                const is_64bit = bit_width == 64;
+                return self.emitIntToString(object, is_64bit);
             }
         }
 
@@ -9752,8 +10254,39 @@ pub const Emitter = struct {
             return llvm.Const.int32(self.ctx, 0);
         }
 
-        // Emit the argument (should be a string)
-        const arg_value = try self.emitExpr(args[0]);
+        // Check if argument is String type - if so, we need to get the struct pointer
+        // and extract field 0 (the data pointer) for puts/printf
+        var arg_value: llvm.ValueRef = undefined;
+        if (self.isStringDataExpr(args[0])) {
+            // For String types, we need the alloca pointer, not the loaded value
+            const str_ptr = if (args[0] == .identifier) blk: {
+                if (self.named_values.get(args[0].identifier.name)) |local| {
+                    break :blk local.value; // This is the alloca pointer
+                }
+                // Identifier not found, emit expression and store to temp
+                const obj_val = try self.emitExpr(args[0]);
+                const string_type = self.getStringStructType();
+                const tmp_alloca = self.builder.buildAlloca(string_type, "print.str.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                // Non-identifier (e.g., method call result like x.to_string())
+                const obj_val = try self.emitExpr(args[0]);
+                const string_type = self.getStringStructType();
+                const tmp_alloca = self.builder.buildAlloca(string_type, "print.str.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
+            // String struct is { ptr, len, capacity }
+            // Extract field 0 (the data pointer) for puts/printf
+            const string_type = self.getStringStructType();
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "print.str_ptr_ptr");
+            arg_value = self.builder.buildLoad(ptr_type, ptr_ptr, "print.str_ptr");
+        } else {
+            // Regular string literal - emit directly
+            arg_value = try self.emitExpr(args[0]);
+        }
 
         if (newline) {
             // Use puts for println (automatically adds newline)
@@ -11063,6 +11596,75 @@ pub const Emitter = struct {
         const cmp = self.builder.buildICmp(llvm.c.LLVMIntSGT, a, b, "max_cmp");
         // Select: a > b ? a : b
         return llvm.c.LLVMBuildSelect(self.builder.ref, cmp, a, b, "max");
+    }
+
+    /// Emit integer.to_string() - converts integer to String.
+    /// Returns a String struct { ptr, len, capacity }.
+    fn emitIntToString(self: *Emitter, value: llvm.ValueRef, is_64bit: bool) EmitError!llvm.ValueRef {
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Allocate a stack buffer for snprintf (32 bytes is enough for any integer)
+        const buf_size: u32 = 32;
+        const buf_type = llvm.c.LLVMArrayType(i8_type, buf_size);
+        const buf = self.builder.buildAlloca(buf_type, "tostr.buf");
+
+        // Get pointer to first element
+        const zero = llvm.Const.int32(self.ctx, 0);
+        var indices = [_]llvm.ValueRef{ zero, zero };
+        const buf_ptr = self.builder.buildGEP(buf_type, buf, &indices, "tostr.buf_ptr");
+
+        // Build format string based on integer size
+        const fmt_str = if (is_64bit)
+            self.builder.buildGlobalStringPtr("%lld", "fmt_i64")
+        else
+            self.builder.buildGlobalStringPtr("%d", "fmt_i32");
+
+        // Call snprintf(buf, size, format, value)
+        const snprintf_fn = self.getOrCreateSnprintfFn();
+        const size = llvm.Const.int64(self.ctx, buf_size);
+        var snprintf_args = [_]llvm.ValueRef{ buf_ptr, size, fmt_str, value };
+        const fn_type = llvm.c.LLVMGlobalGetValueType(snprintf_fn);
+        const len_result = self.builder.buildCall(fn_type, snprintf_fn, &snprintf_args, "tostr.len");
+
+        // Extend len to i64 for malloc, add 1 for null terminator
+        const len_i64 = self.builder.buildSExt(len_result, i64_type, "tostr.len64");
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+        const alloc_size = self.builder.buildAdd(len_i64, one_i64, "tostr.alloc_size");
+
+        // Allocate heap memory for the string
+        const malloc_fn = self.getOrCreateMallocFn();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const malloc_type = llvm.c.LLVMGlobalGetValueType(malloc_fn);
+        const heap_ptr = self.builder.buildCall(malloc_type, malloc_fn, &malloc_args, "tostr.heap");
+
+        // Copy from stack buffer to heap (including null terminator)
+        const memcpy_fn = self.getOrCreateMemcpyFn();
+        var memcpy_args = [_]llvm.ValueRef{ heap_ptr, buf_ptr, alloc_size };
+        const memcpy_type = llvm.c.LLVMGlobalGetValueType(memcpy_fn);
+        _ = self.builder.buildCall(memcpy_type, memcpy_fn, &memcpy_args, "");
+
+        // Build String struct { ptr, len, capacity }
+        const string_type = self.getStringStructType();
+        const result = self.builder.buildAlloca(string_type, "tostr.result");
+
+        // Store ptr (field 0)
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 0, "tostr.ptr_field");
+        _ = self.builder.buildStore(heap_ptr, ptr_field);
+
+        // Store len (field 1) - truncate to i32
+        const len_i32 = self.builder.buildTrunc(len_i64, i32_type, "tostr.len32");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 1, "tostr.len_field");
+        _ = self.builder.buildStore(len_i32, len_field);
+
+        // Store capacity (field 2) - same as len+1 truncated to i32
+        const cap_i32 = self.builder.buildTrunc(alloc_size, i32_type, "tostr.cap32");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 2, "tostr.cap_field");
+        _ = self.builder.buildStore(cap_i32, cap_field);
+
+        // Load and return the struct value
+        return self.builder.buildLoad(string_type, result, "tostr.string");
     }
 
     // ========================================================================
@@ -19094,7 +19696,8 @@ pub const Emitter = struct {
         };
         const slice_type = llvm.Types.struct_(self.ctx, &slice_fields, false);
 
-        const result_ptr = llvm.c.LLVMBuildAlloca(self.builder.ref, opt_type, "get_result");
+        // Create alloca in entry block to prevent stack growth in loops
+        const result_ptr = self.buildEntryBlockAlloca(opt_type, "get_result");
 
         const current_fn = self.current_function orelse return EmitError.InvalidAST;
         const some_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, current_fn, "get_some");
@@ -20216,8 +20819,8 @@ pub const Emitter = struct {
     fn emitResultUnwrap(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        // Store to temp for GEP access
-        const val_alloca = self.builder.buildAlloca(value_type, "unwrap.tmp");
+        // Store to temp for GEP access (in entry block to prevent stack growth in loops)
+        const val_alloca = self.buildEntryBlockAlloca(value_type, "unwrap.tmp");
         _ = self.builder.buildStore(value, val_alloca);
 
         // Get the tag (index 0)
