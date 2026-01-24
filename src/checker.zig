@@ -3525,6 +3525,22 @@ pub const TypeChecker = struct {
             if (std.mem.eql(u8, func_name, "Ok") or std.mem.eql(u8, func_name, "Err")) {
                 return self.checkOkErrCall(call, std.mem.eql(u8, func_name, "Ok"));
             }
+
+            // Special handling for print/println - accept both string and String
+            if (std.mem.eql(u8, func_name, "print") or std.mem.eql(u8, func_name, "println")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "{s} requires exactly 1 argument, got {d}", .{ func_name, call.args.len });
+                    return self.type_builder.voidType();
+                }
+                const arg_type = self.checkExpr(call.args[0]);
+                // Accept string (primitive) or String (string_data)
+                const is_string = arg_type == .primitive and arg_type.primitive == .string_;
+                const is_string_data = arg_type == .string_data;
+                if (!is_string and !is_string_data) {
+                    self.addError(.type_mismatch, call.args[0].span(), "print/println expects string or String", .{});
+                }
+                return self.type_builder.voidType();
+            }
         }
 
         const callee_type = self.checkExpr(call.callee);
@@ -4201,8 +4217,9 @@ pub const TypeChecker = struct {
         }
 
         // Check for built-in methods on all types
+        // to_string() returns String (heap-allocated), not string (primitive literal)
         if (std.mem.eql(u8, method.method_name, "to_string")) {
-            return self.type_builder.stringType();
+            return self.type_builder.stringDataType() catch self.type_builder.unknownType();
         }
 
         // Check for len method on arrays, tuples, strings, lists, maps, sets, and String
@@ -8199,6 +8216,33 @@ pub const TypeChecker = struct {
             return;
         };
 
+        // Validate main() signature
+        if (std.mem.eql(u8, func.name, "main")) {
+            // main() accepts at most one parameter
+            if (func.params.len > 1) {
+                self.addError(.invalid_operation, func.span, "main() accepts at most one parameter (args: [String])", .{});
+            }
+            // If one parameter, must be [String]
+            if (func.params.len == 1) {
+                const param_type = param_types.items[0];
+                // Check for slice of String (string_data type, not primitive string_)
+                const is_string_slice = param_type == .slice and
+                    param_type.slice.element == .string_data;
+                if (!is_string_slice) {
+                    const type_str = types.typeToString(self.allocator, param_type) catch "unknown";
+                    defer self.allocator.free(type_str);
+                    self.addError(.type_mismatch, func.params[0].span, "main() parameter must be [String], found {s}", .{type_str});
+                }
+            }
+            // Return type must be i32 or void
+            const is_i32 = return_type == .primitive and return_type.primitive == .i32_;
+            const is_void = return_type == .void_;
+            if (!is_i32 and !is_void) {
+                const error_span = if (func.return_type) |rt| rt.span() else func.span;
+                self.addError(.type_mismatch, error_span, "main() must return i32 or void", .{});
+            }
+        }
+
         // Register function in current scope
         self.current_scope.define(.{
             .name = func.name,
@@ -9830,6 +9874,33 @@ pub const TypeChecker = struct {
                         self.type_builder.voidType();
 
                     const func_type = self.type_builder.functionTypeWithComptime(param_types.items, return_type, comptime_params) catch continue;
+
+                    // Validate main() signature
+                    if (std.mem.eql(u8, f.name, "main")) {
+                        // main() accepts at most one parameter
+                        if (f.params.len > 1) {
+                            self.addError(.invalid_operation, f.span, "main() accepts at most one parameter (args: [String])", .{});
+                        }
+                        // If one parameter, must be [String]
+                        if (f.params.len == 1) {
+                            const param_type = param_types.items[0];
+                            // Check for slice of String (string_data type, not primitive string_)
+                            const is_string_slice = param_type == .slice and
+                                param_type.slice.element == .string_data;
+                            if (!is_string_slice) {
+                                const type_str = types.typeToString(self.allocator, param_type) catch "unknown";
+                                defer self.allocator.free(type_str);
+                                self.addError(.type_mismatch, f.params[0].span, "main() parameter must be [String], found {s}", .{type_str});
+                            }
+                        }
+                        // Return type must be i32 or void
+                        const is_i32 = return_type == .primitive and return_type.primitive == .i32_;
+                        const is_void = return_type == .void_;
+                        if (!is_i32 and !is_void) {
+                            const error_span = if (f.return_type) |rt| rt.span() else f.span;
+                            self.addError(.type_mismatch, error_span, "main() must return i32 or void", .{});
+                        }
+                    }
 
                     self.current_scope.define(.{
                         .name = f.name,

@@ -13,6 +13,7 @@ pub const alloc = @import("alloc.zig");
 pub const string = @import("string.zig");
 pub const string_heap = @import("string_heap.zig");
 pub const list = @import("list.zig");
+pub const args = @import("args.zig");
 
 // Re-export commonly used functions for C-compatible FFI
 
@@ -75,6 +76,10 @@ pub const klar_list_first = list.klar_list_first;
 pub const klar_list_last = list.klar_list_last;
 pub const klar_list_drop = list.klar_list_drop;
 
+// Command-line arguments
+pub const _klar_args_from_argv = args._klar_args_from_argv;
+pub const _klar_args_free = args._klar_args_free;
+
 test {
     _ = rc;
     _ = arc;
@@ -82,4 +87,5 @@ test {
     _ = string;
     _ = string_heap;
     _ = list;
+    _ = args;
 }
