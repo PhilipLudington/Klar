@@ -1,0 +1,4 @@
+// Test: main without args still works
+fn main() -> i32 {
+    return 42
+}

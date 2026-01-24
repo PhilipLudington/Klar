@@ -1,0 +1,6 @@
+// Test: main with args - print arg count
+fn main(args: [String]) -> i32 {
+    let count: i32 = args.len()
+    println(count.to_string())
+    return count
+}

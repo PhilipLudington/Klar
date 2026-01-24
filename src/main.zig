@@ -81,7 +81,7 @@ pub fn main() !void {
             if (use_interpreter) {
                 try runInterpreterFile(allocator, args[2], program_args);
             } else {
-                try runVmFile(allocator, args[2], debug_mode);
+                try runVmFile(allocator, args[2], debug_mode, program_args);
             }
         } else {
             // Default: compile to native and run
@@ -1321,7 +1321,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
     }
 }
 
-fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool) !void {
+fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, program_args: []const []const u8) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
@@ -1435,7 +1435,21 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool) !
     // Look for main function and call it
     if (vm.globals.get("main")) |main_val| {
         if (main_val == .closure) {
-            _ = vm.callMain(main_val.closure) catch |err| {
+            // Build full args: [path] + program_args (matching native/interpreter behavior)
+            var full_args = std.ArrayListUnmanaged([]const u8){};
+            defer full_args.deinit(allocator);
+            full_args.append(allocator, path) catch {
+                try stderr.writeAll("Failed to allocate args\n");
+                return;
+            };
+            for (program_args) |arg| {
+                full_args.append(allocator, arg) catch {
+                    try stderr.writeAll("Failed to allocate args\n");
+                    return;
+                };
+            }
+
+            _ = vm.callMain(main_val.closure, full_args.items) catch |err| {
                 var buf: [512]u8 = undefined;
                 if (vm.getLastError()) |ctx| {
                     var err_buf: [2048]u8 = undefined;

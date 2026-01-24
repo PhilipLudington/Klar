@@ -1072,12 +1072,35 @@ pub const VM = struct {
 
     /// Call the main() function after module execution.
     /// This is called externally after interpret() completes.
-    pub fn callMain(self: *VM, closure: *ObjClosure) !Value {
+    /// If main takes args (arity == 1), converts program_args to [String] and passes it.
+    pub fn callMain(self: *VM, closure: *ObjClosure, program_args: []const []const u8) !Value {
         // Push the closure as the callee
         try self.push(.{ .closure = closure });
 
-        // Call it with 0 arguments
-        try self.callValue(.{ .closure = closure }, 0);
+        // Check if main takes arguments
+        if (closure.function.arity == 1) {
+            // Convert program_args to ObjArray of ObjString
+            // Build array of Value.string from program_args
+            var string_values = std.ArrayListUnmanaged(Value){};
+            defer string_values.deinit(self.allocator);
+
+            for (program_args) |arg| {
+                const str_obj = try ObjString.createGC(&self.gc, arg);
+                try string_values.append(self.allocator, .{ .string = str_obj });
+            }
+
+            // Create the ObjArray
+            const args_array = try ObjArray.createGC(&self.gc, string_values.items);
+
+            // Push the array as argument
+            try self.push(.{ .array = args_array });
+
+            // Call with 1 argument
+            try self.callValue(.{ .closure = closure }, 1);
+        } else {
+            // Call with 0 arguments
+            try self.callValue(.{ .closure = closure }, 0);
+        }
 
         // Run until completion
         return self.run();

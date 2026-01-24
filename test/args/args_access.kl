@@ -1,0 +1,14 @@
+// Test: access individual args and print them
+fn main(args: [String]) -> i32 {
+    let count: i32 = args.len()
+    if count > 0 {
+        println(args[0])
+    }
+    if count > 1 {
+        println(args[1])
+    }
+    if count > 2 {
+        println(args[2])
+    }
+    return count
+}

@@ -51,6 +51,7 @@ run_suite "Unit Tests" "./scripts/run-unit-tests.sh" || TOTAL_FAILED=$((TOTAL_FA
 run_suite "Native Tests" "./scripts/run-native-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 run_suite "App Tests" "./scripts/run-app-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 run_suite "Module Tests" "./scripts/run-module-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
+run_suite "Args Tests" "./scripts/run-args-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 
 # Summary
 echo ""
@@ -73,14 +74,17 @@ APP_PASSED=$(read_json_field .app-test-results.json passed)
 APP_FAILED=$(read_json_field .app-test-results.json failed)
 MODULE_PASSED=$(read_json_field .module-test-results.json passed)
 MODULE_FAILED=$(read_json_field .module-test-results.json failed)
+ARGS_PASSED=$(read_json_field .args-test-results.json passed)
+ARGS_FAILED=$(read_json_field .args-test-results.json failed)
 
-TOTAL_PASSED=$((UNIT_PASSED + NATIVE_PASSED + APP_PASSED + MODULE_PASSED))
-TOTAL_FAILED=$((UNIT_FAILED + NATIVE_FAILED + APP_FAILED + MODULE_FAILED))
+TOTAL_PASSED=$((UNIT_PASSED + NATIVE_PASSED + APP_PASSED + MODULE_PASSED + ARGS_PASSED))
+TOTAL_FAILED=$((UNIT_FAILED + NATIVE_FAILED + APP_FAILED + MODULE_FAILED + ARGS_FAILED))
 
 printf "  %-15s %3d passed, %d failed\n" "Unit Tests:" "$UNIT_PASSED" "$UNIT_FAILED"
 printf "  %-15s %3d passed, %d failed\n" "Native Tests:" "$NATIVE_PASSED" "$NATIVE_FAILED"
 printf "  %-15s %3d passed, %d failed\n" "App Tests:" "$APP_PASSED" "$APP_FAILED"
 printf "  %-15s %3d passed, %d failed\n" "Module Tests:" "$MODULE_PASSED" "$MODULE_FAILED"
+printf "  %-15s %3d passed, %d failed\n" "Args Tests:" "$ARGS_PASSED" "$ARGS_FAILED"
 echo "───────────────────────────────────────────────────────────"
 printf "  %-15s %3d passed, %d failed\n" "TOTAL:" "$TOTAL_PASSED" "$TOTAL_FAILED"
 echo ""

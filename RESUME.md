@@ -118,23 +118,35 @@ Fixed issues discovered while debugging `args.len()`:
    - Uses arena allocator for args array (no memory leak)
    - Pass args to `callFunction` when calling main
 
-## Current Status
-- All 446 tests pass
+### Phase 5: VM Support ✅
+**Files**: `src/vm.zig`, `src/main.zig`
+
+1. **Modified `callMain`** (`vm.zig:1076`):
+   - Added `program_args: []const []const u8` parameter
+   - Checks if main takes args via `closure.function.arity == 1`
+   - Creates ObjString for each arg via `ObjString.createGC`
+   - Creates ObjArray from string values via `ObjArray.createGC`
+   - Pushes array and calls with 1 argument
+
+2. **Modified `runVmFile`** (`main.zig:1324`):
+   - Added `program_args: []const []const u8` parameter
+   - Builds full args array with path prepended (matching native/interpreter)
+   - Passes full args to `vm.callMain`
+
+3. **Updated call site** (`main.zig:84`):
+   - Pass `program_args` to `runVmFile`
+
+## Current Status - COMPLETE ✅
+- All 459 tests pass (446 original + 13 new args tests)
 - `args.len()` works correctly
 - `println(count.to_string())` works for integers
 - Native binaries receive args correctly when run directly
 - **`klar run` passes args to programs correctly (native)**
 - **`klar run --interpret` passes args to programs correctly (interpreter)**
+- **`klar run --vm` passes args to programs correctly (VM)**
+- **Automated tests added** in `test/args/` with `scripts/run-args-tests.sh`
 
-## Remaining Work
-
-### Phase 5: VM Support
-**File**: `src/vm.zig`
-
-Need to:
-1. Modify `callMain` to optionally accept args
-2. Convert args to ObjArray of ObjString
-3. Push onto stack before calling
+All three execution backends (native, interpreter, VM) now support command-line arguments consistently.
 
 ## Test Commands
 
@@ -152,6 +164,9 @@ Need to:
 # Run with args via CLI - interpreter (Phase 4)
 ./zig-out/bin/klar run scratch/test_args_print.kl --interpret hello world  # Prints "3"
 
+# Run with args via CLI - VM (Phase 5)
+./zig-out/bin/klar run scratch/test_args_print.kl --vm hello world  # Prints "3"
+
 # Build and run directly
 ./zig-out/bin/klar build scratch/test_args_print.kl -o /tmp/test
 /tmp/test file.kl hello world  # Prints "3" (skips argv[0], sees [file.kl, hello, world])
@@ -167,7 +182,18 @@ cat test_args_print.ll
 |------|---------|
 | `src/checker.zig` | Main signature validation, `to_string()` type fix, `print`/`println` type handling (~80 lines) |
 | `src/codegen/emit.zig` | Main wrapper generation, args conversion IR (skips argv[0]), `emitPrint` fix, `emitIntToString` (~450 lines) |
-| `src/main.zig` | Run command arg parsing, `runNativeFile` accepts program_args, `runInterpreterFile` accepts program_args and passes to main (~90 lines) |
+| `src/main.zig` | Run command arg parsing, `runNativeFile` accepts program_args, `runInterpreterFile` accepts program_args, `runVmFile` accepts program_args (~110 lines) |
+| `src/vm.zig` | `callMain` accepts program_args, creates ObjArray of ObjString when main takes args (~30 lines) |
+
+## Test Files Added
+
+| File | Purpose |
+|------|---------|
+| `test/args/args_count.kl` | Tests that `args.len()` returns correct count |
+| `test/args/args_access.kl` | Tests that individual args can be accessed and printed |
+| `test/args/no_args.kl` | Tests backwards compatibility with `main()` (no args) |
+| `scripts/run-args-tests.sh` | Runs 13 tests across all 3 backends |
+| `run-tests.sh` | Updated to include args tests in full suite |
 
 ## Generated LLVM IR Structure
 
