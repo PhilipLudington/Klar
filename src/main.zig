@@ -48,19 +48,35 @@ pub fn main() !void {
             try getStdErr().writeAll("Error: no input file\n");
             return;
         }
-        // Check for flags
+        // Parse flags and collect program arguments
+        // Format: klar run file.kl [--vm] [--debug] [--interpret] [-- program_args...]
+        // Or: klar run file.kl [flags] arg1 arg2 (non-flag args go to program)
         var use_vm = false;
         var debug_mode = false;
         var use_interpreter = false;
-        for (args) |arg| {
-            if (std.mem.eql(u8, arg, "--vm")) {
+        var program_args_start: usize = args.len; // Default: no program args
+
+        var i: usize = 3;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--")) {
+                // Everything after -- goes to the program
+                program_args_start = i + 1;
+                break;
+            } else if (std.mem.eql(u8, arg, "--vm")) {
                 use_vm = true;
             } else if (std.mem.eql(u8, arg, "--debug")) {
                 debug_mode = true;
             } else if (std.mem.eql(u8, arg, "--interpret")) {
                 use_interpreter = true;
+            } else {
+                // Non-flag argument: this and everything after goes to the program
+                program_args_start = i;
+                break;
             }
         }
+        const program_args = if (program_args_start < args.len) args[program_args_start..] else &[_][]const u8{};
+
         if (use_vm or use_interpreter) {
             if (use_interpreter) {
                 try runInterpreterFile(allocator, args[2]);
@@ -69,7 +85,7 @@ pub fn main() !void {
             }
         } else {
             // Default: compile to native and run
-            try runNativeFile(allocator, args[2]);
+            try runNativeFile(allocator, args[2], program_args);
         }
     } else if (std.mem.eql(u8, command, "tokenize")) {
         if (args.len < 3) {
@@ -918,7 +934,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     }
 }
 
-fn runNativeFile(allocator: std.mem.Allocator, path: []const u8) !void {
+fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8) !void {
     // Generate a unique temp path for the executable
     const timestamp = std.time.timestamp();
     var temp_path_buf: [256]u8 = undefined;
@@ -940,9 +956,31 @@ fn runNativeFile(allocator: std.mem.Allocator, path: []const u8) !void {
         return;
     };
 
-    // Execute the compiled binary
-    const argv = [_][]const u8{temp_path};
-    var child = std.process.Child.init(&argv, allocator);
+    // Execute the compiled binary with args
+    // argv = [temp_path, path, arg1, arg2, ...]
+    // The Klar runtime skips argv[0], so program sees [path, arg1, arg2, ...]
+    var argv_list = std.ArrayListUnmanaged([]const u8){};
+    defer argv_list.deinit(allocator);
+    argv_list.append(allocator, temp_path) catch {
+        try getStdErr().writeAll("Failed to allocate argv\n");
+        std.fs.cwd().deleteFile(temp_path) catch {};
+        return;
+    };
+    // Add source path as args[0] for the Klar program
+    argv_list.append(allocator, path) catch {
+        try getStdErr().writeAll("Failed to allocate argv\n");
+        std.fs.cwd().deleteFile(temp_path) catch {};
+        return;
+    };
+    // Add user-provided arguments
+    for (program_args) |arg| {
+        argv_list.append(allocator, arg) catch {
+            try getStdErr().writeAll("Failed to allocate argv\n");
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+    }
+    var child = std.process.Child.init(argv_list.items, allocator);
     child.spawn() catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Failed to execute: {s}\n", .{@errorName(err)}) catch "Failed to execute\n";

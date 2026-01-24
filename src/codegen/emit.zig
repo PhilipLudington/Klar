@@ -531,20 +531,22 @@ pub const Emitter = struct {
         const loop_block = llvm.appendBasicBlock(self.ctx, func, "loop");
         const done_block = llvm.appendBasicBlock(self.ctx, func, "done");
 
-        // Entry: check if argc <= 0
+        // Entry: check if argc <= 1 (only program name, no user args)
+        // We skip argv[0] (program name) and return argv[1..argc] as args
         self.builder.positionAtEnd(entry_block);
         const argc = llvm.c.LLVMGetParam(func, 0);
         const argv = llvm.c.LLVMGetParam(func, 1);
-        const argc_i64 = self.builder.buildSExt(argc, i64_type, "argc64");
-        const is_empty = self.builder.buildICmp(llvm.c.LLVMIntSLE, argc, llvm.Const.int32(self.ctx, 0), "is_empty");
+        // user_argc = argc - 1 (number of args excluding program name)
+        const user_argc = self.builder.buildSub(argc, llvm.Const.int32(self.ctx, 1), "user_argc");
+        const user_argc_i64 = self.builder.buildSExt(user_argc, i64_type, "user_argc64");
+        const is_empty = self.builder.buildICmp(llvm.c.LLVMIntSLE, user_argc, llvm.Const.int32(self.ctx, 0), "is_empty");
         _ = self.builder.buildCondBr(is_empty, done_block, check_block);
 
-        // Check block: allocate array of String structs
+        // Check block: allocate array of String structs for user_argc elements
         self.builder.positionAtEnd(check_block);
-        const string_size = llvm.Const.int64(self.ctx, 12); // { ptr: 8, len: 4, cap: 4 } = 16 actually... let me check
         // String struct is { ptr, i32, i32 } = 8 + 4 + 4 = 16 bytes on 64-bit
         const string_size_actual = llvm.Const.int64(self.ctx, 16);
-        const array_size = self.builder.buildMul(argc_i64, string_size_actual, "array_size");
+        const array_size = self.builder.buildMul(user_argc_i64, string_size_actual, "array_size");
         var malloc_args = [_]llvm.ValueRef{array_size};
         const array_ptr = self.builder.buildCall(
             llvm.Types.function(ptr_type, &[_]llvm.TypeRef{i64_type}, false),
@@ -562,8 +564,9 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(loop_block);
         const i_val = self.builder.buildLoad(i64_type, i_ptr, "i");
 
-        // Get argv[i]
-        const argv_i_ptr = self.builder.buildGEP(ptr_type, argv, &[_]llvm.ValueRef{i_val}, "argv_i_ptr");
+        // Get argv[i + 1] (skip argv[0] which is the program name)
+        const argv_idx = self.builder.buildAdd(i_val, llvm.Const.int64(self.ctx, 1), "argv_idx");
+        const argv_i_ptr = self.builder.buildGEP(ptr_type, argv, &[_]llvm.ValueRef{argv_idx}, "argv_i_ptr");
         const c_str = self.builder.buildLoad(ptr_type, argv_i_ptr, "c_str");
 
         // strlen(c_str)
@@ -611,8 +614,8 @@ pub const Emitter = struct {
         const i_next = self.builder.buildAdd(i_val, llvm.Const.int64(self.ctx, 1), "i_next");
         _ = self.builder.buildStore(i_next, i_ptr);
 
-        // Check if i < argc
-        const loop_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, i_next, argc_i64, "loop_cond");
+        // Check if i < user_argc (loop over user args only)
+        const loop_cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, i_next, user_argc_i64, "loop_cond");
         _ = self.builder.buildCondBr(loop_cond, loop_block, done_block);
 
         // Done block: build and return slice struct
@@ -626,7 +629,7 @@ pub const Emitter = struct {
         llvm.c.LLVMAddIncoming(result_ptr_phi, &entry_values[0], &entry_blocks, 1);
         llvm.c.LLVMAddIncoming(result_len_phi, &entry_values[1], &entry_blocks, 1);
 
-        var loop_values = [_]llvm.ValueRef{ array_ptr, argc_i64 };
+        var loop_values = [_]llvm.ValueRef{ array_ptr, user_argc_i64 };
         var loop_blocks = [_]llvm.BasicBlockRef{loop_block};
         llvm.c.LLVMAddIncoming(result_ptr_phi, &loop_values[0], &loop_blocks, 1);
         llvm.c.LLVMAddIncoming(result_len_phi, &loop_values[1], &loop_blocks, 1);
@@ -641,7 +644,6 @@ pub const Emitter = struct {
         const result = self.builder.buildLoad(slice_type, result_alloca, "slice_result");
         _ = self.builder.buildRet(result);
 
-        _ = string_size;
         return func;
     }
 
