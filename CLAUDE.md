@@ -206,6 +206,14 @@ fn max[T: Ordered](a: T, b: T) -> T {
     return b
 }
 
+// Entry point with command-line arguments
+fn main(args: [String]) -> i32 {
+    println(args.len().to_string())  // Print arg count
+    return 0
+}
+// args[0] is the source file path, args[1..] are user arguments
+// Use `klar run file.kl arg1 arg2` or `klar run file.kl -- --flag`
+
 // Closures (explicit types and return required)
 let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
 
