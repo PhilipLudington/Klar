@@ -29,8 +29,11 @@ pub const Interpreter = struct {
     current_env: *Environment,
     builder: ValueBuilder,
 
-    // Arena for runtime string allocations (freed all at once on deinit)
-    string_arena: std.heap.ArenaAllocator,
+    // Arena for runtime allocations (strings and temporary values, freed all at once on deinit)
+    runtime_arena: std.heap.ArenaAllocator,
+
+    // Flag to track if builder allocator has been set (deferred initialization)
+    builder_initialized: bool,
 
     // Control flow state
     return_value: ?Value,
@@ -52,8 +55,9 @@ pub const Interpreter = struct {
             .allocator = allocator,
             .global_env = global_env,
             .current_env = global_env,
-            .builder = ValueBuilder.init(allocator),
-            .string_arena = std.heap.ArenaAllocator.init(allocator),
+            .builder = ValueBuilder.init(allocator), // Temporary, will be replaced
+            .runtime_arena = std.heap.ArenaAllocator.init(allocator),
+            .builder_initialized = false,
             .return_value = null,
             .break_value = null,
             .is_breaking = false,
@@ -66,9 +70,18 @@ pub const Interpreter = struct {
         return interp;
     }
 
+    /// Initialize the builder's allocator to use the runtime arena.
+    /// Must be called after the Interpreter is in its final memory location.
+    fn ensureBuilderInitialized(self: *Interpreter) void {
+        if (!self.builder_initialized) {
+            self.builder = ValueBuilder.init(self.runtime_arena.allocator());
+            self.builder_initialized = true;
+        }
+    }
+
     pub fn deinit(self: *Interpreter) void {
-        // Free the string arena (frees all runtime-allocated strings at once)
-        self.string_arena.deinit();
+        // Free the runtime arena (frees all temporary values and strings at once)
+        self.runtime_arena.deinit();
 
         self.output.deinit(self.allocator);
 
@@ -108,9 +121,14 @@ pub const Interpreter = struct {
         self.allocator.destroy(self.global_env);
     }
 
-    /// Get the allocator for runtime string allocations (uses arena)
+    /// Get the allocator for runtime allocations (strings and temporary values, uses arena)
+    fn runtimeAllocator(self: *Interpreter) Allocator {
+        return self.runtime_arena.allocator();
+    }
+
+    /// Alias for backwards compatibility
     fn stringAllocator(self: *Interpreter) Allocator {
-        return self.string_arena.allocator();
+        return self.runtimeAllocator();
     }
 
     fn initBuiltins(self: *Interpreter) !void {
@@ -891,17 +909,18 @@ pub const Interpreter = struct {
             }
 
             if (std.mem.eql(u8, method.method_name, "chars")) {
-                // Return array of characters
+                // Return array of characters (use runtime arena for auto-cleanup)
+                const alloc = self.runtimeAllocator();
                 var chars = std.ArrayListUnmanaged(Value){};
                 var i: usize = 0;
                 while (i < str.len) {
                     const cp_len = std.unicode.utf8ByteSequenceLength(str[i]) catch 1;
                     const end = @min(i + cp_len, str.len);
                     if (std.unicode.utf8Decode(str[i..end])) |cp| {
-                        chars.append(self.allocator, self.builder.char(cp)) catch return RuntimeError.OutOfMemory;
+                        chars.append(alloc, self.builder.char(cp)) catch return RuntimeError.OutOfMemory;
                     } else |_| {
                         // Invalid UTF-8, add replacement char
-                        chars.append(self.allocator, self.builder.char(0xFFFD)) catch return RuntimeError.OutOfMemory;
+                        chars.append(alloc, self.builder.char(0xFFFD)) catch return RuntimeError.OutOfMemory;
                     }
                     i = end;
                 }
@@ -909,9 +928,10 @@ pub const Interpreter = struct {
             }
 
             if (std.mem.eql(u8, method.method_name, "bytes")) {
-                // Return array of bytes
+                // Return array of bytes (use runtime arena for auto-cleanup)
+                const alloc = self.runtimeAllocator();
                 var bytes = std.ArrayListUnmanaged(Value){};
-                bytes.ensureTotalCapacity(self.allocator, str.len) catch return RuntimeError.OutOfMemory;
+                bytes.ensureTotalCapacity(alloc, str.len) catch return RuntimeError.OutOfMemory;
                 for (str) |b| {
                     bytes.appendAssumeCapacity(self.builder.int(@intCast(b), .u8_));
                 }
@@ -1738,6 +1758,9 @@ pub const Interpreter = struct {
     // ========================================================================
 
     pub fn executeModule(self: *Interpreter, module: ast.Module) RuntimeError!void {
+        // Initialize builder with arena allocator (deferred until struct is stable)
+        self.ensureBuilderInitialized();
+
         // First pass: register all functions and constants
         for (module.declarations) |decl| {
             try self.executeDecl(decl);
@@ -1937,15 +1960,16 @@ pub const Interpreter = struct {
             else => return RuntimeError.TypeError,
         };
 
-        // Create the array with repeated values
+        // Create the array with repeated values (use runtime arena for auto-cleanup)
+        const alloc = self.runtimeAllocator();
         var elements = std.ArrayListUnmanaged(Value){};
-        elements.ensureTotalCapacity(self.allocator, count) catch return RuntimeError.OutOfMemory;
+        elements.ensureTotalCapacity(alloc, count) catch return RuntimeError.OutOfMemory;
         for (0..count) |_| {
             elements.appendAssumeCapacity(value);
         }
 
         // Create the array value
-        const array_val = self.allocator.create(values.ArrayValue) catch return RuntimeError.OutOfMemory;
+        const array_val = alloc.create(values.ArrayValue) catch return RuntimeError.OutOfMemory;
         array_val.* = .{ .elements = elements.items };
         return .{ .array = array_val };
     }
