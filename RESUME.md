@@ -103,22 +103,30 @@ Fixed issues discovered while debugging `args.len()`:
    - Returns argv[1..argc] as the args slice
    - So `klar run file.kl arg1 arg2` gives args = ["file.kl", "arg1", "arg2"]
 
+### Phase 4: Interpreter Support ✅
+**File**: `src/main.zig`
+
+1. **Modified `runInterpreterFile`** (~line 197):
+   - Added `program_args: []const []const u8` parameter
+
+2. **Updated call site** (~line 82):
+   - Pass `program_args` to `runInterpreterFile`
+
+3. **Added args handling in main call** (~line 267-314):
+   - Check if main takes args (`func.params.len > 0`)
+   - Build `Value.array` of `Value.string` from program_args
+   - Uses arena allocator for args array (no memory leak)
+   - Pass args to `callFunction` when calling main
+
 ## Current Status
 - All 446 tests pass
 - `args.len()` works correctly
 - `println(count.to_string())` works for integers
 - Native binaries receive args correctly when run directly
-- **`klar run` passes args to programs correctly**
+- **`klar run` passes args to programs correctly (native)**
+- **`klar run --interpret` passes args to programs correctly (interpreter)**
 
 ## Remaining Work
-
-### Phase 4: Interpreter Support
-**File**: `src/interpreter.zig`
-
-Need to:
-1. Check if main takes args
-2. Convert program args to interpreter Value.array of Value.string
-3. Pass to callFunction
 
 ### Phase 5: VM Support
 **File**: `src/vm.zig`
@@ -137,9 +145,12 @@ Need to:
 # Check type validation
 ./zig-out/bin/klar check scratch/test_main_invalid_param.kl  # Should show error
 
-# Run with args via CLI (Phase 3)
+# Run with args via CLI - native (Phase 3)
 ./zig-out/bin/klar run scratch/test_args_print.kl hello world  # Prints "3"
 ./zig-out/bin/klar run scratch/test_args_print.kl -- --help    # Passes "--help" to program
+
+# Run with args via CLI - interpreter (Phase 4)
+./zig-out/bin/klar run scratch/test_args_print.kl --interpret hello world  # Prints "3"
 
 # Build and run directly
 ./zig-out/bin/klar build scratch/test_args_print.kl -o /tmp/test
@@ -156,7 +167,7 @@ cat test_args_print.ll
 |------|---------|
 | `src/checker.zig` | Main signature validation, `to_string()` type fix, `print`/`println` type handling (~80 lines) |
 | `src/codegen/emit.zig` | Main wrapper generation, args conversion IR (skips argv[0]), `emitPrint` fix, `emitIntToString` (~450 lines) |
-| `src/main.zig` | Run command arg parsing, `runNativeFile` accepts program_args (~50 lines) |
+| `src/main.zig` | Run command arg parsing, `runNativeFile` accepts program_args, `runInterpreterFile` accepts program_args and passes to main (~90 lines) |
 
 ## Generated LLVM IR Structure
 

@@ -79,7 +79,7 @@ pub fn main() !void {
 
         if (use_vm or use_interpreter) {
             if (use_interpreter) {
-                try runInterpreterFile(allocator, args[2]);
+                try runInterpreterFile(allocator, args[2], program_args);
             } else {
                 try runVmFile(allocator, args[2], debug_mode);
             }
@@ -194,7 +194,7 @@ pub fn main() !void {
     }
 }
 
-fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8) !void {
+fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
@@ -267,11 +267,51 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8) !void {
     // Look for main function and call it
     if (interp.global_env.get("main")) |main_val| {
         if (main_val == .function) {
-            _ = interp.callFunction(main_val.function, &.{}) catch |err| {
-                var buf: [512]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
-                try stderr.writeAll(msg);
-            };
+            const func = main_val.function;
+
+            // Check if main takes args
+            if (func.params.len > 0) {
+                // Build args array: [path, program_args...]
+                // Use arena allocator - will be cleaned up when function exits
+                const arena_alloc = arena.allocator();
+
+                // First, create string Values for each arg
+                var string_values = std.ArrayListUnmanaged(values.Value){};
+                string_values.ensureTotalCapacity(arena_alloc, program_args.len + 1) catch {
+                    try stderr.writeAll("Failed to allocate args array\n");
+                    return;
+                };
+
+                // Add the source file path as first arg (like argv[1] in native)
+                string_values.appendAssumeCapacity(.{ .string = path });
+
+                // Add program args
+                for (program_args) |arg| {
+                    string_values.appendAssumeCapacity(.{ .string = arg });
+                }
+
+                // Create ArrayValue
+                const arr = arena_alloc.create(values.ArrayValue) catch {
+                    try stderr.writeAll("Failed to allocate args array\n");
+                    return;
+                };
+                arr.* = .{ .elements = string_values.items };
+
+                const args_value = values.Value{ .array = arr };
+
+                _ = interp.callFunction(func, &.{args_value}) catch |err| {
+                    var buf: [512]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
+                    try stderr.writeAll(msg);
+                };
+            } else {
+                // main() with no args
+                _ = interp.callFunction(func, &.{}) catch |err| {
+                    var buf: [512]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
+                    try stderr.writeAll(msg);
+                };
+            }
         }
     }
 }
