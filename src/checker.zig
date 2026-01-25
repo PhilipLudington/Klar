@@ -6184,6 +6184,61 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Look up user-defined method on enum types
+        if (object_type == .enum_) {
+            const enum_type = object_type.enum_;
+            if (self.lookupStructMethod(enum_type.name, method.method_name)) |enum_method| {
+                // Check argument count (excluding self if method has it)
+                const expected_args = if (enum_method.has_self)
+                    enum_method.func_type.function.params.len - 1
+                else
+                    enum_method.func_type.function.params.len;
+
+                if (method.args.len != expected_args) {
+                    self.addError(.invalid_call, method.span, "method expects {d} argument(s), got {d}", .{ expected_args, method.args.len });
+                }
+
+                // Type check arguments
+                const param_start: usize = if (enum_method.has_self) 1 else 0;
+                for (method.args, 0..) |arg, i| {
+                    const arg_type = self.checkExpr(arg);
+                    const param_idx = param_start + i;
+                    if (param_idx < enum_method.func_type.function.params.len) {
+                        const expected_type = enum_method.func_type.function.params[param_idx];
+                        // Skip type var parameters for now (generic methods)
+                        if (expected_type != .type_var and !arg_type.eql(expected_type)) {
+                            self.addError(.type_mismatch, method.span, "argument type mismatch", .{});
+                        }
+                    }
+                }
+
+                // If the enum is a monomorphized generic enum, substitute type params in return type
+                if (std.mem.indexOf(u8, enum_type.name, "$")) |_| {
+                    // Note: enum method monomorphization tracking not yet implemented
+                    // The return type substitution below handles the essential case
+
+                    for (self.monomorphized_enums.items) |mono| {
+                        if (std.mem.eql(u8, mono.mangled_name, enum_type.name)) {
+                            var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+                            defer substitutions.deinit(self.allocator);
+
+                            for (enum_method.impl_type_params, 0..) |type_param, i| {
+                                if (i < mono.type_args.len) {
+                                    substitutions.put(self.allocator, type_param.id, mono.type_args[i]) catch {};
+                                }
+                            }
+
+                            const return_type = enum_method.func_type.function.return_type;
+                            const concrete_return = self.substituteTypeParams(return_type, substitutions) catch return_type;
+                            return concrete_return;
+                        }
+                    }
+                }
+
+                return enum_method.func_type.function.return_type;
+            }
+        }
+
         // Handle method calls on type variables with trait bounds
         // When T: SomeTrait, calling item.method() on an item: T should resolve
         // to the trait method from SomeTrait
@@ -8340,6 +8395,28 @@ pub const TypeChecker = struct {
         }
         defer if (has_type_params) self.popTypeParams();
 
+        // Pre-register enum type BEFORE resolving variants to allow recursive types.
+        // This enables patterns like: enum JsonValue { Array(List[JsonValue]) }
+        const enum_type = self.allocator.create(types.EnumType) catch return;
+        enum_type.* = .{
+            .name = enum_decl.name,
+            .type_params = enum_type_params,
+            .variants = &.{}, // Will be filled in below
+        };
+
+        // Track for cleanup in deinit
+        self.generic_enum_types.append(self.allocator, enum_type) catch {};
+
+        // Register in scope FIRST so recursive references resolve
+        self.current_scope.define(.{
+            .name = enum_decl.name,
+            .type_ = .{ .enum_ = enum_type },
+            .kind = .type_,
+            .mutable = false,
+            .span = enum_decl.span,
+        }) catch {};
+
+        // NOW resolve variant types (enum name is in scope for self-references)
         var variants: std.ArrayListUnmanaged(types.EnumVariant) = .{};
         defer variants.deinit(self.allocator);
 
@@ -8375,23 +8452,8 @@ pub const TypeChecker = struct {
             }) catch {};
         }
 
-        const enum_type = self.allocator.create(types.EnumType) catch return;
-        enum_type.* = .{
-            .name = enum_decl.name,
-            .type_params = enum_type_params,
-            .variants = variants.toOwnedSlice(self.allocator) catch &.{},
-        };
-
-        // Track for cleanup in deinit
-        self.generic_enum_types.append(self.allocator, enum_type) catch {};
-
-        self.current_scope.define(.{
-            .name = enum_decl.name,
-            .type_ = .{ .enum_ = enum_type },
-            .kind = .type_,
-            .mutable = false,
-            .span = enum_decl.span,
-        }) catch {};
+        // Update the enum type with resolved variants
+        enum_type.variants = variants.toOwnedSlice(self.allocator) catch &.{};
     }
 
     fn checkTrait(self: *TypeChecker, trait_decl: *ast.TraitDecl) void {

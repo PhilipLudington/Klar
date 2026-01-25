@@ -23249,8 +23249,18 @@ pub const Emitter = struct {
                 // Fallback to pointer if not found
                 return llvm.Types.pointer(self.ctx);
             },
-            .enum_, .trait_, .type_var => {
-                // Complex types default to pointer
+            .enum_ => |e| {
+                // Enums are registered as struct types (tag + payload).
+                // Look up in struct_types cache to get the actual struct layout.
+                if (self.struct_types.get(e.name)) |cached| {
+                    return cached.llvm_type;
+                }
+                // For monomorphized enums, try with mangled name
+                // Fallback to pointer only if not registered yet (during registration)
+                return llvm.Types.pointer(self.ctx);
+            },
+            .trait_, .type_var => {
+                // These truly are opaque/pointer types
                 return llvm.Types.pointer(self.ctx);
             },
             .rc, .arc, .weak_rc, .weak_arc => {
