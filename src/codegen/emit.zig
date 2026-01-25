@@ -4156,6 +4156,14 @@ pub const Emitter = struct {
         // Emit the subject expression
         const subject_val = try self.emitExpr(match_stmt.subject);
 
+        // Get the subject's semantic type for pattern binding
+        const subject_type: ?types.Type = if (self.type_checker) |tc| blk: {
+            const tc_mut = @constCast(tc);
+            const t = tc_mut.checkExpr(match_stmt.subject);
+            if (t == .unknown or t == .error_type) break :blk null;
+            break :blk t;
+        } else null;
+
         // Create the merge block for after all arms
         const merge_bb = llvm.appendBasicBlock(self.ctx, func, "match.merge");
 
@@ -4203,8 +4211,8 @@ pub const Emitter = struct {
             try self.pushScope(false);
             defer self.popScope();
 
-            // Bind pattern variables
-            try self.bindPatternVariables(arm.pattern, subject_val);
+            // Bind pattern variables with semantic type info
+            try self.bindPatternVariables(arm.pattern, subject_val, subject_type);
 
             // Emit the arm body (as a block)
             _ = try self.emitBlock(arm.body);
@@ -4407,7 +4415,8 @@ pub const Emitter = struct {
     }
 
     /// Bind pattern variables to extracted values.
-    fn bindPatternVariables(self: *Emitter, pattern: ast.Pattern, subject: llvm.ValueRef) EmitError!void {
+    /// `expected_type` provides semantic type information for setting collection flags.
+    fn bindPatternVariables(self: *Emitter, pattern: ast.Pattern, subject: llvm.ValueRef, expected_type: ?types.Type) EmitError!void {
         switch (pattern) {
             .wildcard => {},
             .literal => {},
@@ -4421,18 +4430,46 @@ pub const Emitter = struct {
                 const alloca = self.builder.buildAlloca(var_type, name_z);
                 _ = self.builder.buildStore(subject, alloca);
 
-                self.named_values.put(b.name, .{
+                // Build LocalValue with collection type flags based on expected_type
+                var local_value: LocalValue = .{
                     .value = alloca,
                     .is_alloca = true,
                     .ty = var_type,
                     .is_signed = false,
-                }) catch return EmitError.OutOfMemory;
+                };
+
+                // Set collection-specific flags based on semantic type
+                if (expected_type) |et| {
+                    switch (et) {
+                        .map => |m| {
+                            local_value.is_map = true;
+                            local_value.map_key_type = m.key;
+                            local_value.map_value_type = m.value;
+                        },
+                        .list => |l| {
+                            local_value.list_element_type = l.element;
+                        },
+                        .set => |s| {
+                            local_value.is_set = true;
+                            local_value.set_element_type = s.element;
+                        },
+                        .string_data => {
+                            local_value.is_string_data = true;
+                        },
+                        else => {},
+                    }
+                }
+
+                self.named_values.put(b.name, local_value) catch return EmitError.OutOfMemory;
             },
             .variant => |v| {
                 // If variant has a payload pattern, extract and bind it
                 if (v.payload) |payload_pattern| {
                     const payload_val = try self.extractEnumPayload(subject);
-                    try self.bindPatternVariables(payload_pattern, payload_val);
+
+                    // Get the payload type from the enum definition
+                    const payload_type = self.getVariantPayloadType(v, expected_type);
+                    try self.bindPatternVariables(payload_pattern, payload_val, payload_type);
                 }
             },
             .tuple_pattern => |t| {
@@ -4443,20 +4480,81 @@ pub const Emitter = struct {
                     };
                     const subject_type = llvm.typeOf(subject);
                     const elem_val = self.builder.buildGEP(subject_type, subject, &indices, "tuple.elem");
-                    try self.bindPatternVariables(elem, elem_val);
+
+                    // Get element type from tuple
+                    const elem_type = if (expected_type) |et| blk: {
+                        if (et == .tuple) {
+                            const tuple_types = et.tuple.elements;
+                            if (i < tuple_types.len) {
+                                break :blk tuple_types[i];
+                            }
+                        }
+                        break :blk null;
+                    } else null;
+                    try self.bindPatternVariables(elem, elem_val, elem_type);
                 }
             },
             .or_pattern => |o| {
                 // For or-patterns, bind from first alternative (they should have same bindings)
                 if (o.alternatives.len > 0) {
-                    try self.bindPatternVariables(o.alternatives[0], subject);
+                    try self.bindPatternVariables(o.alternatives[0], subject, expected_type);
                 }
             },
             .guarded => |g| {
-                try self.bindPatternVariables(g.pattern, subject);
+                try self.bindPatternVariables(g.pattern, subject, expected_type);
             },
             .struct_pattern => {},
         }
+    }
+
+    /// Get the payload type for a variant pattern from the enum definition.
+    fn getVariantPayloadType(self: *Emitter, v: *ast.VariantPattern, expected_type: ?types.Type) ?types.Type {
+        // Get enum type - either from pattern's type_expr or from expected_type
+        const enum_type: ?types.Type = if (v.type_expr) |type_expr| blk: {
+            // Try to resolve the type expression
+            if (self.type_checker) |tc| {
+                const tc_mut = @constCast(tc);
+                const resolved = tc_mut.resolveTypeExpr(type_expr) catch break :blk expected_type;
+                break :blk resolved;
+            }
+            break :blk expected_type;
+        } else expected_type;
+
+        if (enum_type == null) {
+            return null;
+        }
+        const et = enum_type.?;
+        if (et != .enum_) {
+            return null;
+        }
+
+        const enum_def = et.enum_;
+
+        // Find the variant by name
+        for (enum_def.variants) |variant| {
+            if (std.mem.eql(u8, variant.name, v.variant_name)) {
+                if (variant.payload) |payload| {
+                    switch (payload) {
+                        .tuple => |tuple_types| {
+                            // Single-element tuple: return the element type directly
+                            if (tuple_types.len == 1) {
+                                return tuple_types[0];
+                            }
+                            // Multi-element tuple: would need to construct tuple type
+                            // For now, return null and let it fall through
+                            return null;
+                        },
+                        .struct_ => {
+                            // Struct payload - not handled for now
+                            return null;
+                        },
+                    }
+                } else {
+                }
+                break;
+            }
+        }
+        return null;
     }
 
     /// Extract the payload from an enum value (returns pointer to payload bytes).
@@ -5407,7 +5505,8 @@ pub const Emitter = struct {
                 }
 
                 // Map methods
-                if (self.isMapExpr(m.object)) {
+                const infer_is_map = self.isMapExpr(m.object);
+                if (infer_is_map) {
                     // len() and capacity() return i32
                     if (std.mem.eql(u8, m.method_name, "len") or
                         std.mem.eql(u8, m.method_name, "capacity"))
@@ -5520,8 +5619,27 @@ pub const Emitter = struct {
                     return llvm.Types.struct_(self.ctx, &opt_fields, false);
                 }
                 // Cell methods: get(), replace(), set()
-                // Only applies when not a Map, List, or Array
-                const is_cell_for_infer = !self.isMapExpr(m.object) and
+                // Only applies when object has inner_type (indicating it's a Cell)
+                // First check if this is a user-defined struct/enum method
+                const has_user_method = blk: {
+                    if (self.getStructNameFromExpr(m.object)) |struct_name| {
+                        var fn_name_buf = std.ArrayListUnmanaged(u8){};
+                        defer fn_name_buf.deinit(self.allocator);
+                        fn_name_buf.appendSlice(self.allocator, struct_name) catch break :blk false;
+                        fn_name_buf.append(self.allocator, '_') catch break :blk false;
+                        fn_name_buf.appendSlice(self.allocator, m.method_name) catch break :blk false;
+                        const fn_name = self.allocator.dupeZ(u8, fn_name_buf.items) catch break :blk false;
+                        defer self.allocator.free(fn_name);
+                        if (self.module.getNamedFunction(fn_name) != null) {
+                            break :blk true;
+                        }
+                    }
+                    break :blk false;
+                };
+
+                // Only check Cell methods if not a Map, List, Array, and no user method found
+                const is_cell_for_infer = !has_user_method and
+                    !self.isMapExpr(m.object) and
                     !self.isListExpr(m.object) and
                     !self.isArrayExpr(m.object);
 
@@ -5794,7 +5912,9 @@ pub const Emitter = struct {
                     if (self.module.getNamedFunction(fn_name)) |func| {
                         const fn_type = llvm.getGlobalValueType(func);
                         return llvm.getReturnType(fn_type);
+                    } else {
                     }
+                } else {
                 }
 
                 return llvm.Types.int32(self.ctx);
@@ -7965,7 +8085,8 @@ pub const Emitter = struct {
         }
 
         // Check for Map methods
-        if (self.isMapExpr(method.object)) {
+        const is_map = self.isMapExpr(method.object);
+        if (is_map) {
             // For Map methods, we need the alloca pointer, not the loaded value
             const map_ptr = if (method.object == .identifier) blk: {
                 if (self.named_values.get(method.object.identifier.name)) |local| {
@@ -11009,11 +11130,27 @@ pub const Emitter = struct {
                     if (local.is_map) {
                         return true;
                     }
-                    // Fallback: check via type checker
+                    // Structural check: Map has 4 fields { ptr, i32, i32, i32 }
+                    // This catches pattern-bound Map variables where is_map flag wasn't set
+                    if (local.ty != null and self.isMapType(local.ty.?)) {
+                        // Type checker fallback to distinguish Map from Set (same structure)
+                        if (self.type_checker) |tc| {
+                            const tc_mut = @constCast(tc);
+                            const expr_type = tc_mut.checkExpr(expr);
+                            // If type checker says it's a set, it's not a map
+                            if (expr_type == .set) {
+                                return false;
+                            }
+                            // If type checker says it's a map or is inconclusive, trust structural check
+                            return true;
+                        }
+                        // No type checker - trust structural check
+                        return true;
+                    }
+                    // Final fallback: check via type checker
                     if (self.type_checker) |tc| {
                         const tc_mut = @constCast(tc);
                         const expr_type = tc_mut.checkExpr(expr);
-                        // Make sure it's map and not set
                         return expr_type == .map;
                     }
                 }
