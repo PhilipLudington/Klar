@@ -211,7 +211,8 @@ fn main(args: [String]) -> i32 {
     println(args.len().to_string())  // Print arg count
     return 0
 }
-// args[0] is the source file path, args[1..] are user arguments
+// args[0] is the program path (source file for klar run, binary for standalone)
+// args[1..] are user arguments
 // Use `klar run file.kl arg1 arg2` or `klar run file.kl -- --flag`
 
 // Closures (explicit types and return required)

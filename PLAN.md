@@ -30,6 +30,7 @@
 - [x] Native codegen: array index assignment (`arr[i] = value`) and struct field assignment (`s.field = value`)
 - [x] Interpreter: array index assignment and struct field assignment
 - [x] Native codegen: struct method return type inference - fixed by looking up method function by mangled name instead of defaulting to i32
+- [x] Native codegen: command-line arguments not received by standalone binaries - fixed by including all of argv[0..argc] in codegen and using fork/execve in klar run to pass source path as argv[0]
 
 ---
 

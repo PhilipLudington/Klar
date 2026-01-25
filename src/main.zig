@@ -997,78 +997,113 @@ fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: [
     };
 
     // Execute the compiled binary with args
-    // argv = [temp_path, path, arg1, arg2, ...]
-    // The Klar runtime skips argv[0], so program sees [path, arg1, arg2, ...]
-    var argv_list = std.ArrayListUnmanaged([]const u8){};
+    // We need argv = [source_path, arg1, arg2, ...] but execute temp_path.
+    // The Klar runtime includes all of argv, so program sees [source_path, arg1, arg2, ...].
+    // For standalone binaries, argv = [binary_path, arg1, ...] from the OS.
+    // This keeps args[0] as the "program identifier" (source or binary path).
+    //
+    // Since std.process.Child uses argv[0] as the executable, we need to use
+    // fork/exec directly to have a different executable path and argv[0].
+    var argv_list = std.ArrayListUnmanaged(?[*:0]const u8){};
     defer argv_list.deinit(allocator);
-    argv_list.append(allocator, temp_path) catch {
+
+    // Convert source path to null-terminated
+    const path_z = allocator.dupeZ(u8, path) catch {
         try getStdErr().writeAll("Failed to allocate argv\n");
         std.fs.cwd().deleteFile(temp_path) catch {};
         return;
     };
-    // Add source path as args[0] for the Klar program
-    argv_list.append(allocator, path) catch {
+    defer allocator.free(path_z);
+    argv_list.append(allocator, path_z) catch {
         try getStdErr().writeAll("Failed to allocate argv\n");
         std.fs.cwd().deleteFile(temp_path) catch {};
         return;
     };
-    // Add user-provided arguments
+
+    // Convert user-provided arguments to null-terminated
+    var arg_bufs = std.ArrayListUnmanaged([:0]const u8){};
+    defer {
+        for (arg_bufs.items) |buf| allocator.free(buf);
+        arg_bufs.deinit(allocator);
+    }
     for (program_args) |arg| {
-        argv_list.append(allocator, arg) catch {
+        const arg_z = allocator.dupeZ(u8, arg) catch {
+            try getStdErr().writeAll("Failed to allocate argv\n");
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+        arg_bufs.append(allocator, arg_z) catch {
+            allocator.free(arg_z);
+            try getStdErr().writeAll("Failed to allocate argv\n");
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+        argv_list.append(allocator, arg_z) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
             std.fs.cwd().deleteFile(temp_path) catch {};
             return;
         };
     }
-    var child = std.process.Child.init(argv_list.items, allocator);
-    child.spawn() catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Failed to execute: {s}\n", .{@errorName(err)}) catch "Failed to execute\n";
-        try getStdErr().writeAll(msg);
-        // Clean up temp file
+    // Null terminator for argv array
+    argv_list.append(allocator, null) catch {
+        try getStdErr().writeAll("Failed to allocate argv\n");
         std.fs.cwd().deleteFile(temp_path) catch {};
         return;
     };
 
-    // Wait for completion
-    const result = child.wait() catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Failed to wait: {s}\n", .{@errorName(err)}) catch "Failed to wait\n";
-        try getStdErr().writeAll(msg);
-        // Clean up temp file
+    // Convert temp_path to null-terminated for execve
+    const temp_path_z = allocator.dupeZ(u8, temp_path) catch {
+        try getStdErr().writeAll("Failed to allocate temp path\n");
         std.fs.cwd().deleteFile(temp_path) catch {};
         return;
     };
+    defer allocator.free(temp_path_z);
+
+    // Fork and exec
+    const pid = std.posix.fork() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Failed to fork: {s}\n", .{@errorName(err)}) catch "Failed to fork\n";
+        try getStdErr().writeAll(msg);
+        std.fs.cwd().deleteFile(temp_path) catch {};
+        return;
+    };
+
+    if (pid == 0) {
+        // Child process - exec the binary
+        const argv_ptr: [*:null]const ?[*:0]const u8 = @ptrCast(argv_list.items.ptr);
+        const envp = std.c.environ;
+        // execveZ doesn't return on success - if it does, it's an error
+        std.posix.execveZ(temp_path_z, argv_ptr, envp) catch {};
+        std.posix.exit(127);
+    }
+
+    // Parent process - wait for child
+    const result = std.posix.waitpid(pid, 0);
 
     // Clean up temp file
     std.fs.cwd().deleteFile(temp_path) catch {};
 
-    // Exit with the program's exit code
-    const exit_code: u8 = switch (result) {
-        .Exited => |code| code,
-        .Signal => |sig| blk: {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
-            getStdErr().writeAll(msg) catch {};
-            break :blk 128 +| @as(u8, @intCast(@min(sig, 127)));
-        },
-        .Stopped => |sig| blk: {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Process stopped by signal: {d}\n", .{sig}) catch "Process stopped by signal\n";
-            getStdErr().writeAll(msg) catch {};
-            break :blk 128 +| @as(u8, @intCast(@min(sig, 127)));
-        },
-        .Unknown => |val| blk: {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Process terminated with unknown status: {d}\n", .{val}) catch "Process terminated\n";
-            getStdErr().writeAll(msg) catch {};
-            break :blk 1;
-        },
-    };
-    if (exit_code != 0) {
-        std.process.exit(exit_code);
+    // Decode the wait status using POSIX macros
+    const status = result.status;
+    // WIFEXITED: (status & 0x7F) == 0
+    if ((status & 0x7F) == 0) {
+        // Exited normally - WEXITSTATUS: (status >> 8) & 0xFF
+        const exit_code: u8 = @truncate((status >> 8) & 0xFF);
+        std.posix.exit(exit_code);
     }
+    // WIFSIGNALED: ((status & 0x7F) + 1) >> 1 > 0
+    if (((status & 0x7F) + 1) >> 1 > 0) {
+        // Killed by signal - WTERMSIG: status & 0x7F
+        const sig: u8 = @truncate(status & 0x7F);
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
+        getStdErr().writeAll(msg) catch {};
+        std.posix.exit(128 +| sig);
+    }
+    // Unknown status
+    std.posix.exit(1);
 }
+
 
 fn parseFile(allocator: std.mem.Allocator, path: []const u8) !void {
     const source = readSourceFile(allocator, path) catch |err| {
