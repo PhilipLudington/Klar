@@ -29,6 +29,18 @@ Klar is an **AI-native application programming language** designed for AI code g
 
 Klar targets application-level programming (like C#/Go), not bare-metal systems (like C/Rust/Zig). This is why `.len()` returns `i32` for ergonomic loop counter usage.
 
+## Documentation
+
+Comprehensive language documentation is available in the `docs/` directory:
+
+- **[docs/README.md](docs/README.md)** - Entry point with table of contents
+- **Getting Started** - Installation, hello world, CLI reference, REPL guide
+- **Language Guide** - Variables, functions, control flow, structs, enums, traits, generics, error handling, modules
+- **Type System** - Primitives, arrays, tuples, optional, result, collections, smart pointers, I/O
+- **Memory Model** - Ownership, references, reference counting
+- **Advanced** - Operators, comptime, builtin traits
+- **Appendix** - Built-in functions, keywords
+
 ## Build Commands
 
 ```bash
@@ -180,8 +192,8 @@ Source (.kl) → Lexer → Parser → AST → Type Checker → [Backend]
 | Trait bounds on generics | ✅ Complete |
 | Trait inheritance | ✅ Complete |
 | Builtin traits (Eq, Ordered, Clone, Drop) | ✅ Complete |
-| Associated types | ❌ Not started |
-| Module system (imports) | ❌ Not started |
+| Associated types | ✅ Complete |
+| Module system (imports) | ✅ Complete |
 | Standard library | ❌ Not started |
 
 **Note:** `Option[T]` and `Result[T, E]` are built-in generic enums handled by the compiler, not yet user-definable types.
