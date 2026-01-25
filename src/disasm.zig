@@ -218,7 +218,7 @@ fn formatOperand2(op: OpCode, operand: u16, chunk_param: *const Chunk, buf: []u8
             }
             break :blk std.fmt.bufPrint(buf, "const [{d}] (invalid)", .{operand}) catch "const ?";
         },
-        .op_jump, .op_jump_if_false, .op_jump_if_true, .op_jump_if_false_no_pop => std.fmt.bufPrint(buf, "+{d}", .{operand}) catch "+?",
+        .op_jump, .op_jump_if_false, .op_jump_if_true, .op_jump_if_false_no_pop, .op_jump_if_true_no_pop => std.fmt.bufPrint(buf, "+{d}", .{operand}) catch "+?",
         .op_loop => std.fmt.bufPrint(buf, "-{d}", .{operand}) catch "-?",
         .op_and, .op_or => std.fmt.bufPrint(buf, "skip +{d}", .{operand}) catch "skip ?",
         .op_get_local_long, .op_set_local_long => std.fmt.bufPrint(buf, "slot {d}", .{operand}) catch "slot ?",

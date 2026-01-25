@@ -154,6 +154,10 @@ pub const OpCode = enum(u8) {
     /// Operand: u16 offset
     op_jump_if_true,
 
+    /// Jump if TOS is true, DON'T pop (for short-circuit `or`).
+    /// Operand: u16 offset
+    op_jump_if_true_no_pop,
+
     // ------------------------------------------------------------------------
     // Variable Access (1.7)
     // ------------------------------------------------------------------------
@@ -473,6 +477,7 @@ pub const OpCode = enum(u8) {
             .op_jump_if_false,
             .op_jump_if_false_no_pop,
             .op_jump_if_true,
+            .op_jump_if_true_no_pop,
             .op_get_local_long,
             .op_set_local_long,
             .op_get_global,

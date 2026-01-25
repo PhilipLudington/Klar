@@ -438,6 +438,13 @@ pub const VM = struct {
                         self.currentFrame().ip += offset;
                     }
                 },
+                .op_jump_if_true_no_pop => {
+                    const offset = self.readU16();
+                    const value = try self.peek(0);
+                    if (value.isTruthy()) {
+                        self.currentFrame().ip += offset;
+                    }
+                },
 
                 // -------------------------------------------------------------
                 // Variable access

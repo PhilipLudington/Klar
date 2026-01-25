@@ -894,7 +894,7 @@ pub const Compiler = struct {
             },
             .or_ => {
                 try self.compileExpr(bin.left);
-                const end_jump = try self.emitJump(.op_jump_if_true, line);
+                const end_jump = try self.emitJump(.op_jump_if_true_no_pop, line);
                 try self.emitOp(.op_pop, line);
                 try self.compileExpr(bin.right);
                 try self.patchJump(end_jump);
