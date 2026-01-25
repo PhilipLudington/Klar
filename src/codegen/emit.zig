@@ -1110,6 +1110,16 @@ pub const Emitter = struct {
                         self.emitDropsForReturn();
                         _ = self.builder.buildRet(val);
                     }
+                } else if (self.current_return_type) |rt_info| {
+                    if (rt_info.is_optional) {
+                        // Return None for optional type with no value
+                        self.emitDropsForReturn();
+                        const none_val = self.emitNone(rt_info.llvm_type);
+                        _ = self.builder.buildRet(none_val);
+                    } else {
+                        self.emitDropsForReturn();
+                        _ = self.builder.buildRetVoid();
+                    }
                 } else {
                     self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
@@ -11993,6 +12003,9 @@ pub const Emitter = struct {
         // Check if we need to grow: len >= capacity
         const need_grow = self.builder.buildICmp(llvm.c.LLVMIntSGE, current_len, current_cap, "push.need_grow");
 
+        // Save the current block BEFORE creating new blocks (for PHI node incoming edge)
+        const entry_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
         // Create basic blocks for growth path
         const grow_bb = llvm.appendBasicBlock(self.ctx, func, "push.grow");
         const store_bb = llvm.appendBasicBlock(self.ctx, func, "push.store");
@@ -12028,9 +12041,11 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(store_bb);
 
         // PHI for the data pointer (either current_ptr or new_ptr from grow)
+        // Use saved entry_bb (not LLVMGetPreviousBasicBlock) to correctly handle
+        // cases where emitting the value created intermediate basic blocks
         const phi = llvm.c.LLVMBuildPhi(self.builder.ref, ptr_type, "push.data_ptr");
         var incoming_values = [_]llvm.ValueRef{ current_ptr, new_ptr };
-        var incoming_blocks = [_]llvm.BasicBlockRef{ llvm.c.LLVMGetPreviousBasicBlock(grow_bb), grow_bb };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ entry_bb, grow_bb };
         llvm.c.LLVMAddIncoming(phi, &incoming_values, &incoming_blocks, 2);
 
         // Calculate address: ptr + len * element_size
@@ -16970,6 +16985,9 @@ pub const Emitter = struct {
         // Check if we need to grow: new_len >= capacity (need space for null terminator)
         const need_grow = self.builder.buildICmp(llvm.c.LLVMIntSGE, new_len, current_cap, "push.need_grow");
 
+        // Save the current block BEFORE creating new blocks (for PHI node incoming edge)
+        const entry_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
         // Create basic blocks for growth path
         const grow_bb = llvm.appendBasicBlock(self.ctx, func, "push.grow");
         const store_bb = llvm.appendBasicBlock(self.ctx, func, "push.store");
@@ -17003,9 +17021,11 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(store_bb);
 
         // PHI for the data pointer (either current_ptr or new_ptr from grow)
+        // Use saved entry_bb (not LLVMGetPreviousBasicBlock) to correctly handle
+        // cases where emitting the char value created intermediate basic blocks
         const phi = llvm.c.LLVMBuildPhi(self.builder.ref, ptr_type, "push.data_ptr");
         var incoming_values = [_]llvm.ValueRef{ current_ptr, new_ptr };
-        var incoming_blocks = [_]llvm.BasicBlockRef{ llvm.c.LLVMGetPreviousBasicBlock(grow_bb), grow_bb };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ entry_bb, grow_bb };
         llvm.c.LLVMAddIncoming(phi, &incoming_values, &incoming_blocks, 2);
 
         // Calculate address: ptr + len
