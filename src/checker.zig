@@ -324,6 +324,10 @@ pub const TypeChecker = struct {
     /// Set when checking variable declarations with type annotations.
     expected_type: ?Type,
 
+    /// Maps debug() call AST nodes to the argument type.
+    /// Used by codegen to emit type-specific formatting code.
+    debug_call_types: std.AutoHashMapUnmanaged(*ast.Call, Type),
+
     /// Maximum recursion depth for comptime functions.
     const max_comptime_depth: u32 = 1000;
 
@@ -577,6 +581,7 @@ pub const TypeChecker = struct {
             .checking_comptime_function_body = false,
             .error_conversions = .{},
             .expected_type = null,
+            .debug_call_types = .{},
         };
         checker.initBuiltins() catch {};
         return checker;
@@ -814,6 +819,9 @@ pub const TypeChecker = struct {
             self.allocator.free(conv.from_method_name);
         }
         self.error_conversions.deinit(self.allocator);
+
+        // Clean up debug call types (no values to free, just the map)
+        self.debug_call_types.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -911,6 +919,17 @@ pub const TypeChecker = struct {
         try self.current_scope.define(.{
             .name = "dbg",
             .type_ = dbg_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // debug(value: T) -> string - returns debug string representation of any value
+        // Note: Actual type checking done in checkCall, this is a placeholder signature
+        const debug_type = try self.type_builder.functionType(&.{self.type_builder.i32Type()}, self.type_builder.stringType());
+        try self.current_scope.define(.{
+            .name = "debug",
+            .type_ = debug_type,
             .kind = .function,
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
@@ -3540,6 +3559,18 @@ pub const TypeChecker = struct {
                     self.addError(.type_mismatch, call.args[0].span(), "print/println expects string or String", .{});
                 }
                 return self.type_builder.voidType();
+            }
+
+            // Special handling for debug - accepts any type, returns string
+            if (std.mem.eql(u8, func_name, "debug")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "debug requires exactly 1 argument, got {d}", .{call.args.len});
+                    return self.type_builder.stringType();
+                }
+                const arg_type = self.checkExpr(call.args[0]);
+                // Store the argument type for codegen to use
+                self.debug_call_types.put(self.allocator, call, arg_type) catch {};
+                return self.type_builder.stringType();
             }
         }
 

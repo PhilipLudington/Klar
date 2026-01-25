@@ -1,0 +1,47 @@
+// Test the debug() builtin function
+// debug(value: T) -> string - returns debug string representation of any value
+
+fn str_eq(a: string, b: string) -> bool {
+    // Simple string comparison
+    if len(a) != len(b) {
+        return false
+    }
+    return a == b
+}
+
+fn main() -> i32 {
+    // Test integer debug
+    let x: i32 = 42
+    let x_str: string = debug(x)
+    println(x_str)
+    assert(str_eq(x_str, "42"))
+
+    // Test negative integer
+    let neg: i32 = -123
+    assert(str_eq(debug(neg), "-123"))
+
+    // Test boolean true
+    let t: bool = true
+    assert(str_eq(debug(t), "true"))
+
+    // Test boolean false
+    let f: bool = false
+    assert(str_eq(debug(f), "false"))
+
+    // Test float (exact value)
+    let pi: f64 = 3.14
+    let pi_str: string = debug(pi)
+    println(pi_str)
+    // Note: floating point representation may vary, just check it's not empty
+    assert(len(pi_str) > 0)
+
+    // Test string - should add quotes
+    let s: string = "hello"
+    let s_debug: string = debug(s)
+    println(s_debug)
+    // The debug output for strings should have quotes
+    assert(len(s_debug) > len(s))
+
+    println("All debug builtin tests passed!")
+    return 0
+}

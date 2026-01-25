@@ -117,6 +117,9 @@ pub const Interpreter = struct {
         if (self.global_env.get("readline")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
+        if (self.global_env.get("debug")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
         self.global_env.deinit();
         self.allocator.destroy(self.global_env);
     }
@@ -164,6 +167,10 @@ pub const Interpreter = struct {
         const type_of_fn = try self.allocator.create(values.BuiltinFunction);
         type_of_fn.* = .{ .name = "type_of", .func = &builtinTypeOf };
         try self.global_env.define("type_of", .{ .builtin = type_of_fn }, false);
+
+        const debug_fn = try self.allocator.create(values.BuiltinFunction);
+        debug_fn.* = .{ .name = "debug", .func = &builtinDebug };
+        try self.global_env.define("debug", .{ .builtin = debug_fn }, false);
     }
 
     // ========================================================================
@@ -2144,6 +2151,14 @@ fn builtinTypeOf(allocator: Allocator, args: []const Value) RuntimeError!Value {
     };
 
     return .{ .string = type_name };
+}
+
+fn builtinDebug(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+
+    // Use values.valueToString which already formats values in debug format
+    const debug_str = values.valueToString(allocator, args[0]) catch return RuntimeError.OutOfMemory;
+    return .{ .string = debug_str };
 }
 
 // ============================================================================

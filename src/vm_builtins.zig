@@ -4,6 +4,7 @@ const vm_value = @import("vm_value.zig");
 const Value = vm_value.Value;
 const ObjString = vm_value.ObjString;
 const ObjArray = vm_value.ObjArray;
+const ObjTuple = vm_value.ObjTuple;
 const ObjOptional = vm_value.ObjOptional;
 const ObjNative = vm_value.ObjNative;
 const RuntimeError = vm_value.RuntimeError;
@@ -48,6 +49,9 @@ pub const builtins = [_]NativeDesc{
     .{ .name = "abs", .arity = 1, .function = nativeAbs },
     .{ .name = "min", .arity = 2, .function = nativeMin },
     .{ .name = "max", .arity = 2, .function = nativeMax },
+
+    // Debug functions
+    .{ .name = "debug", .arity = 1, .function = nativeDebug },
 };
 
 // ============================================================================
@@ -241,6 +245,183 @@ fn nativeMax(_: Allocator, args: []const Value) RuntimeError!Value {
 }
 
 // ============================================================================
+// Debug Functions
+// ============================================================================
+
+fn nativeDebug(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+
+    const output = try debugValueToString(allocator, args[0], 0);
+    const str = ObjString.create(allocator, output) catch return RuntimeError.OutOfMemory;
+    // Note: output is owned by the string now, but ObjString.create duplicates it
+    // So we need to free output if it was allocated
+    if (needsFreeDebug(args[0])) {
+        allocator.free(output);
+    }
+
+    return .{ .string = str };
+}
+
+/// Returns true if debugValueToString allocates for this value type
+fn needsFreeDebug(value: Value) bool {
+    return switch (value) {
+        .bool_, .void_ => false,
+        else => true,
+    };
+}
+
+/// Convert a value to its debug string representation.
+/// Recursively formats nested structures with depth limit.
+fn debugValueToString(allocator: Allocator, value: Value, depth: usize) RuntimeError![]const u8 {
+    const max_depth = 10;
+    if (depth > max_depth) {
+        return allocator.dupe(u8, "...") catch return RuntimeError.OutOfMemory;
+    }
+
+    return switch (value) {
+        .int => |i| std.fmt.allocPrint(allocator, "{d}", .{i}) catch return RuntimeError.OutOfMemory,
+        .float => |f| blk: {
+            // Format float, ensuring we show decimal point for whole numbers
+            const formatted = std.fmt.allocPrint(allocator, "{d}", .{f}) catch return RuntimeError.OutOfMemory;
+            // Check if it has a decimal point
+            for (formatted) |c| {
+                if (c == '.' or c == 'e' or c == 'E' or c == 'n' or c == 'i') {
+                    // Already has decimal, exponent, nan, or inf
+                    break :blk formatted;
+                }
+            }
+            // Add .0 for whole number floats
+            const with_decimal = std.fmt.allocPrint(allocator, "{s}.0", .{formatted}) catch {
+                allocator.free(formatted);
+                return RuntimeError.OutOfMemory;
+            };
+            allocator.free(formatted);
+            break :blk with_decimal;
+        },
+        .bool_ => |b| if (b) "true" else "false",
+        .char_ => |c| blk: {
+            // Format as 'c' with proper escaping
+            var buf = std.ArrayListUnmanaged(u8){};
+            errdefer buf.deinit(allocator);
+            buf.append(allocator, '\'') catch return RuntimeError.OutOfMemory;
+
+            // Encode the character
+            var char_buf: [4]u8 = undefined;
+            const len = std.unicode.utf8Encode(c, &char_buf) catch 1;
+            buf.appendSlice(allocator, char_buf[0..len]) catch return RuntimeError.OutOfMemory;
+
+            buf.append(allocator, '\'') catch return RuntimeError.OutOfMemory;
+            break :blk buf.toOwnedSlice(allocator) catch return RuntimeError.OutOfMemory;
+        },
+        .void_ => "void",
+        .string => |s| blk: {
+            // Format as "string" with quotes
+            var buf = std.ArrayListUnmanaged(u8){};
+            errdefer buf.deinit(allocator);
+            buf.append(allocator, '"') catch return RuntimeError.OutOfMemory;
+
+            // Escape special characters
+            for (s.chars) |c| {
+                switch (c) {
+                    '\n' => buf.appendSlice(allocator, "\\n") catch return RuntimeError.OutOfMemory,
+                    '\r' => buf.appendSlice(allocator, "\\r") catch return RuntimeError.OutOfMemory,
+                    '\t' => buf.appendSlice(allocator, "\\t") catch return RuntimeError.OutOfMemory,
+                    '\\' => buf.appendSlice(allocator, "\\\\") catch return RuntimeError.OutOfMemory,
+                    '"' => buf.appendSlice(allocator, "\\\"") catch return RuntimeError.OutOfMemory,
+                    else => buf.append(allocator, c) catch return RuntimeError.OutOfMemory,
+                }
+            }
+
+            buf.append(allocator, '"') catch return RuntimeError.OutOfMemory;
+            break :blk buf.toOwnedSlice(allocator) catch return RuntimeError.OutOfMemory;
+        },
+        .array => |a| blk: {
+            var buf = std.ArrayListUnmanaged(u8){};
+            errdefer buf.deinit(allocator);
+            buf.append(allocator, '[') catch return RuntimeError.OutOfMemory;
+
+            for (a.items, 0..) |item, i| {
+                if (i > 0) {
+                    buf.appendSlice(allocator, ", ") catch return RuntimeError.OutOfMemory;
+                }
+                const item_str = try debugValueToString(allocator, item, depth + 1);
+                defer if (needsFreeDebug(item)) allocator.free(item_str);
+                buf.appendSlice(allocator, item_str) catch return RuntimeError.OutOfMemory;
+            }
+
+            buf.append(allocator, ']') catch return RuntimeError.OutOfMemory;
+            break :blk buf.toOwnedSlice(allocator) catch return RuntimeError.OutOfMemory;
+        },
+        .tuple => |t| blk: {
+            var buf = std.ArrayListUnmanaged(u8){};
+            errdefer buf.deinit(allocator);
+            buf.append(allocator, '(') catch return RuntimeError.OutOfMemory;
+
+            for (t.items, 0..) |item, i| {
+                if (i > 0) {
+                    buf.appendSlice(allocator, ", ") catch return RuntimeError.OutOfMemory;
+                }
+                const item_str = try debugValueToString(allocator, item, depth + 1);
+                defer if (needsFreeDebug(item)) allocator.free(item_str);
+                buf.appendSlice(allocator, item_str) catch return RuntimeError.OutOfMemory;
+            }
+
+            buf.append(allocator, ')') catch return RuntimeError.OutOfMemory;
+            break :blk buf.toOwnedSlice(allocator) catch return RuntimeError.OutOfMemory;
+        },
+        .struct_ => |s| blk: {
+            var buf = std.ArrayListUnmanaged(u8){};
+            errdefer buf.deinit(allocator);
+
+            // Start with type name
+            buf.appendSlice(allocator, s.type_name) catch return RuntimeError.OutOfMemory;
+            buf.appendSlice(allocator, " { ") catch return RuntimeError.OutOfMemory;
+
+            // Iterate over fields
+            var iter = s.fields.iterator();
+            var first = true;
+            while (iter.next()) |entry| {
+                if (!first) {
+                    buf.appendSlice(allocator, ", ") catch return RuntimeError.OutOfMemory;
+                }
+                first = false;
+
+                // field_name: value
+                buf.appendSlice(allocator, entry.key_ptr.*) catch return RuntimeError.OutOfMemory;
+                buf.appendSlice(allocator, ": ") catch return RuntimeError.OutOfMemory;
+
+                const field_str = try debugValueToString(allocator, entry.value_ptr.*, depth + 1);
+                defer if (needsFreeDebug(entry.value_ptr.*)) allocator.free(field_str);
+                buf.appendSlice(allocator, field_str) catch return RuntimeError.OutOfMemory;
+            }
+
+            buf.appendSlice(allocator, " }") catch return RuntimeError.OutOfMemory;
+            break :blk buf.toOwnedSlice(allocator) catch return RuntimeError.OutOfMemory;
+        },
+        .optional => |opt| blk: {
+            if (opt.value) |val| {
+                const inner = try debugValueToString(allocator, val.*, depth + 1);
+                defer if (needsFreeDebug(val.*)) allocator.free(inner);
+                break :blk std.fmt.allocPrint(allocator, "Some({s})", .{inner}) catch return RuntimeError.OutOfMemory;
+            } else {
+                break :blk allocator.dupe(u8, "None") catch return RuntimeError.OutOfMemory;
+            }
+        },
+        .closure, .function => blk: {
+            break :blk allocator.dupe(u8, "<function>") catch return RuntimeError.OutOfMemory;
+        },
+        .native => |n| blk: {
+            break :blk std.fmt.allocPrint(allocator, "<native {s}>", .{n.name}) catch return RuntimeError.OutOfMemory;
+        },
+        .range => |r| blk: {
+            const op = if (r.inclusive) "..=" else "..";
+            break :blk std.fmt.allocPrint(allocator, "{d}{s}{d}", .{ r.start, op, r.end }) catch return RuntimeError.OutOfMemory;
+        },
+        .upvalue => allocator.dupe(u8, "<upvalue>") catch return RuntimeError.OutOfMemory,
+    };
+}
+
+// ============================================================================
 // Value to String Conversion
 // ============================================================================
 
@@ -366,4 +547,108 @@ test "nativeAssertEq compares values" {
 
     // Unequal values should fail
     try testing.expectError(RuntimeError.AssertionFailed, nativeAssertEq(testing.allocator, &.{ Value.fromInt(42), Value.fromInt(43) }));
+}
+
+test "nativeDebug formats primitives" {
+    const testing = std.testing;
+
+    // Integer
+    var result = try nativeDebug(testing.allocator, &.{Value.fromInt(42)});
+    try testing.expectEqualStrings("42", result.string.chars);
+    result.string.destroy(testing.allocator);
+
+    // Negative integer
+    result = try nativeDebug(testing.allocator, &.{Value.fromInt(-123)});
+    try testing.expectEqualStrings("-123", result.string.chars);
+    result.string.destroy(testing.allocator);
+
+    // Float with decimal
+    result = try nativeDebug(testing.allocator, &.{Value.fromFloat(3.14)});
+    try testing.expectEqualStrings("3.14", result.string.chars);
+    result.string.destroy(testing.allocator);
+
+    // Whole number float (should show .0)
+    result = try nativeDebug(testing.allocator, &.{Value.fromFloat(42.0)});
+    try testing.expectEqualStrings("42.0", result.string.chars);
+    result.string.destroy(testing.allocator);
+
+    // Boolean true
+    result = try nativeDebug(testing.allocator, &.{Value.true_val});
+    try testing.expectEqualStrings("true", result.string.chars);
+    result.string.destroy(testing.allocator);
+
+    // Boolean false
+    result = try nativeDebug(testing.allocator, &.{Value.false_val});
+    try testing.expectEqualStrings("false", result.string.chars);
+    result.string.destroy(testing.allocator);
+
+    // Void
+    result = try nativeDebug(testing.allocator, &.{Value.void_val});
+    try testing.expectEqualStrings("void", result.string.chars);
+    result.string.destroy(testing.allocator);
+}
+
+test "nativeDebug formats strings with quotes" {
+    const testing = std.testing;
+
+    const str = try ObjString.create(testing.allocator, "hello");
+    defer str.destroy(testing.allocator);
+
+    const result = try nativeDebug(testing.allocator, &.{.{ .string = str }});
+    defer result.string.destroy(testing.allocator);
+
+    try testing.expectEqualStrings("\"hello\"", result.string.chars);
+}
+
+test "nativeDebug formats arrays" {
+    const testing = std.testing;
+
+    const items = [_]Value{
+        Value.fromInt(1),
+        Value.fromInt(2),
+        Value.fromInt(3),
+    };
+    const arr = try ObjArray.create(testing.allocator, &items);
+    defer arr.destroy(testing.allocator);
+
+    const result = try nativeDebug(testing.allocator, &.{.{ .array = arr }});
+    defer result.string.destroy(testing.allocator);
+
+    try testing.expectEqualStrings("[1, 2, 3]", result.string.chars);
+}
+
+test "nativeDebug formats tuples" {
+    const testing = std.testing;
+
+    const items = [_]Value{
+        Value.fromInt(1),
+        Value.true_val,
+    };
+    const tuple = try ObjTuple.create(testing.allocator, &items);
+    defer tuple.destroy(testing.allocator);
+
+    const result = try nativeDebug(testing.allocator, &.{.{ .tuple = tuple }});
+    defer result.string.destroy(testing.allocator);
+
+    try testing.expectEqualStrings("(1, true)", result.string.chars);
+}
+
+test "nativeDebug formats optionals" {
+    const testing = std.testing;
+
+    // None
+    const none = try ObjOptional.createNone(testing.allocator);
+    defer none.destroy(testing.allocator);
+
+    var result = try nativeDebug(testing.allocator, &.{.{ .optional = none }});
+    try testing.expectEqualStrings("None", result.string.chars);
+    result.string.destroy(testing.allocator);
+
+    // Some
+    const some = try ObjOptional.createSome(testing.allocator, Value.fromInt(42));
+    defer some.destroy(testing.allocator);
+
+    result = try nativeDebug(testing.allocator, &.{.{ .optional = some }});
+    try testing.expectEqualStrings("Some(42)", result.string.chars);
+    result.string.destroy(testing.allocator);
 }

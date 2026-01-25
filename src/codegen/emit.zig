@@ -3857,6 +3857,8 @@ pub const Emitter = struct {
                 return self.emitAssertEq(call.args);
             } else if (std.mem.eql(u8, name, "dbg")) {
                 return self.emitDbg(call.args);
+            } else if (std.mem.eql(u8, name, "debug")) {
+                return self.emitDebug(call);
             } else if (std.mem.eql(u8, name, "type_name")) {
                 return self.emitTypeName(call.args);
             } else if (std.mem.eql(u8, name, "len")) {
@@ -5168,6 +5170,11 @@ pub const Emitter = struct {
 
                 // Handle readline() - returns a string (char* pointer)
                 if (std.mem.eql(u8, func_name, "readline")) {
+                    return llvm.Types.pointer(self.ctx);
+                }
+
+                // Handle debug() - returns a string (char* pointer)
+                if (std.mem.eql(u8, func_name, "debug")) {
                     return llvm.Types.pointer(self.ctx);
                 }
 
@@ -10753,6 +10760,225 @@ pub const Emitter = struct {
 
         // Return the original value (pass-through)
         return value;
+    }
+
+    /// Emit debug(value) - returns string representation of any value
+    /// Uses type info from type checker to generate appropriate formatting
+    fn emitDebug(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return self.builder.buildGlobalStringPtr("<debug: invalid args>", "debug_err");
+        }
+
+        // Emit the argument value
+        const value = try self.emitExpr(call.args[0]);
+
+        // Get the Klar type from type checker
+        if (self.type_checker) |checker| {
+            if (checker.debug_call_types.get(call)) |klar_type| {
+                return self.emitDebugValue(value, klar_type);
+            }
+        }
+
+        // Fallback: format based on LLVM type
+        return self.emitDebugValueFromLLVM(value);
+    }
+
+    /// Emit debug formatting for a value based on Klar type info
+    fn emitDebugValue(self: *Emitter, value: llvm.ValueRef, klar_type: types.Type) EmitError!llvm.ValueRef {
+        return switch (klar_type) {
+            .primitive => |prim| self.emitDebugPrimitive(value, prim),
+            .struct_ => |struct_info| self.emitDebugStruct(value, struct_info),
+            .enum_ => |enum_info| self.emitDebugEnum(value, enum_info),
+            .array => |arr_info| self.emitDebugArray(value, arr_info),
+            .tuple => |tuple_info| self.emitDebugTuple(value, tuple_info),
+            .optional => |opt_info| self.emitDebugOptional(value, opt_info),
+            .function => self.builder.buildGlobalStringPtr("<function>", "debug_fn"),
+            .reference => self.emitDebugPointer(value),
+            else => self.emitDebugValueFromLLVM(value),
+        };
+    }
+
+    /// Emit debug formatting for primitive types
+    fn emitDebugPrimitive(self: *Emitter, value: llvm.ValueRef, prim: types.Primitive) EmitError!llvm.ValueRef {
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const buffer_size: u32 = 64;
+        const buf_type = llvm.c.LLVMArrayType(i8_type, buffer_size);
+        const buf = self.builder.buildAlloca(buf_type, "debug.buf");
+        const indices = [2]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const buf_ptr = self.builder.buildGEP(buf_type, buf, &indices, "debug.buf_ptr");
+
+        const snprintf_fn = self.getOrDeclareSnprintf();
+        const fn_type = llvm.c.LLVMGlobalGetValueType(snprintf_fn);
+        const size_val = llvm.Const.int(i64_type, buffer_size, false);
+
+        switch (prim) {
+            .bool_ => {
+                // Format as "true" or "false"
+                const true_str = self.builder.buildGlobalStringPtr("true", "debug.true");
+                const false_str = self.builder.buildGlobalStringPtr("false", "debug.false");
+                return self.builder.buildSelect(value, true_str, false_str, "debug.bool");
+            },
+            .char_ => {
+                // Format as 'c'
+                const fmt = self.builder.buildGlobalStringPtr("'%c'", "debug.char_fmt");
+                var val32 = value;
+                const value_type = llvm.typeOf(value);
+                const bit_width = llvm.c.LLVMGetIntTypeWidth(value_type);
+                if (bit_width != 32) {
+                    val32 = llvm.c.LLVMBuildTrunc(self.builder.ref, value, i32_type, "debug.char_trunc");
+                }
+                var args = [_]llvm.ValueRef{ buf_ptr, size_val, fmt, val32 };
+                _ = self.builder.buildCall(fn_type, snprintf_fn, &args, "");
+                return buf_ptr;
+            },
+            .string_ => {
+                // Format as "string"
+                const fmt = self.builder.buildGlobalStringPtr("\"%s\"", "debug.str_fmt");
+                var args = [_]llvm.ValueRef{ buf_ptr, size_val, fmt, value };
+                _ = self.builder.buildCall(fn_type, snprintf_fn, &args, "");
+                return buf_ptr;
+            },
+            .f32_, .f64_ => {
+                // Format as floating point
+                const fmt = self.builder.buildGlobalStringPtr("%g", "debug.float_fmt");
+                // Promote f32 to f64 for printf
+                var val64 = value;
+                const value_type = llvm.typeOf(value);
+                if (llvm.c.LLVMGetTypeKind(value_type) == llvm.c.LLVMFloatTypeKind) {
+                    val64 = llvm.c.LLVMBuildFPExt(self.builder.ref, value, llvm.Types.float64(self.ctx), "debug.fpext");
+                }
+                var args = [_]llvm.ValueRef{ buf_ptr, size_val, fmt, val64 };
+                _ = self.builder.buildCall(fn_type, snprintf_fn, &args, "");
+                return buf_ptr;
+            },
+            else => {
+                // Integer types
+                const fmt = self.builder.buildGlobalStringPtr("%lld", "debug.int_fmt");
+                // Extend to i64 for printf
+                const value_type = llvm.typeOf(value);
+                var val64 = value;
+                if (llvm.c.LLVMGetTypeKind(value_type) == llvm.c.LLVMIntegerTypeKind) {
+                    const bit_width = llvm.c.LLVMGetIntTypeWidth(value_type);
+                    if (bit_width < 64) {
+                        val64 = llvm.c.LLVMBuildSExt(self.builder.ref, value, i64_type, "debug.sext");
+                    }
+                }
+                var args = [_]llvm.ValueRef{ buf_ptr, size_val, fmt, val64 };
+                _ = self.builder.buildCall(fn_type, snprintf_fn, &args, "");
+                return buf_ptr;
+            },
+        }
+    }
+
+    /// Emit debug formatting for struct types
+    fn emitDebugStruct(self: *Emitter, value: llvm.ValueRef, struct_info: *types.StructType) EmitError!llvm.ValueRef {
+        _ = value; // Full implementation would iterate fields
+        // For now, return "StructName { ... }"
+        var buf: [256]u8 = undefined;
+        const name = struct_info.name;
+        const result = std.fmt.bufPrintZ(&buf, "{s} {{ ... }}", .{name}) catch "{s} {{ ... }}";
+        return self.builder.buildGlobalStringPtr(result, "debug.struct");
+    }
+
+    /// Emit debug formatting for enum types
+    fn emitDebugEnum(self: *Emitter, value: llvm.ValueRef, enum_info: *types.EnumType) EmitError!llvm.ValueRef {
+        _ = value;
+        // For now, return "EnumName.?"
+        // Full implementation would switch on tag
+        var buf: [256]u8 = undefined;
+        const name = enum_info.name;
+        const result = std.fmt.bufPrintZ(&buf, "{s}.?", .{name}) catch "{s}.?";
+        return self.builder.buildGlobalStringPtr(result, "debug.enum");
+    }
+
+    /// Emit debug formatting for array types
+    fn emitDebugArray(self: *Emitter, value: llvm.ValueRef, arr_info: *types.ArrayType) EmitError!llvm.ValueRef {
+        _ = value;
+        _ = arr_info;
+        // For now, return "[...]"
+        return self.builder.buildGlobalStringPtr("[...]", "debug.array");
+    }
+
+    /// Emit debug formatting for tuple types
+    fn emitDebugTuple(self: *Emitter, value: llvm.ValueRef, tuple_info: *types.TupleType) EmitError!llvm.ValueRef {
+        _ = value;
+        _ = tuple_info;
+        // For now, return "(...)"
+        return self.builder.buildGlobalStringPtr("(...)", "debug.tuple");
+    }
+
+    /// Emit debug formatting for optional types
+    fn emitDebugOptional(self: *Emitter, value: llvm.ValueRef, inner_type: *types.Type) EmitError!llvm.ValueRef {
+        _ = inner_type;
+        // Check if value is Some or None
+        // For now, just return "Some(...)" or "None" based on tag
+        const value_type = llvm.typeOf(value);
+        const type_kind = llvm.c.LLVMGetTypeKind(value_type);
+
+        if (type_kind == llvm.c.LLVMStructTypeKind) {
+            // Extract tag (first field)
+            const tag = self.builder.buildExtractValue(value, 0, "debug.opt_tag");
+            const some_str = self.builder.buildGlobalStringPtr("Some(...)", "debug.some");
+            const none_str = self.builder.buildGlobalStringPtr("None", "debug.none");
+            // Tag 0 = None, 1 = Some
+            const is_some = self.builder.buildICmp(llvm.c.LLVMIntNE, tag, llvm.Const.int8(self.ctx, 0), "debug.is_some");
+            return self.builder.buildSelect(is_some, some_str, none_str, "debug.opt");
+        }
+        return self.builder.buildGlobalStringPtr("?", "debug.opt_unknown");
+    }
+
+    /// Emit debug formatting for pointer/reference types
+    fn emitDebugPointer(self: *Emitter, value: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const buffer_size: u32 = 32;
+        const buf_type = llvm.c.LLVMArrayType(i8_type, buffer_size);
+        const buf = self.builder.buildAlloca(buf_type, "debug.ptr_buf");
+        const indices = [2]llvm.ValueRef{
+            llvm.Const.int32(self.ctx, 0),
+            llvm.Const.int32(self.ctx, 0),
+        };
+        const buf_ptr = self.builder.buildGEP(buf_type, buf, &indices, "debug.ptr_buf_ptr");
+
+        const snprintf_fn = self.getOrDeclareSnprintf();
+        const fn_type = llvm.c.LLVMGlobalGetValueType(snprintf_fn);
+        const size_val = llvm.Const.int(i64_type, buffer_size, false);
+        const fmt = self.builder.buildGlobalStringPtr("%p", "debug.ptr_fmt");
+
+        var args = [_]llvm.ValueRef{ buf_ptr, size_val, fmt, value };
+        _ = self.builder.buildCall(fn_type, snprintf_fn, &args, "");
+        return buf_ptr;
+    }
+
+    /// Fallback: emit debug formatting based on LLVM type alone
+    fn emitDebugValueFromLLVM(self: *Emitter, value: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const value_type = llvm.typeOf(value);
+        const type_kind = llvm.c.LLVMGetTypeKind(value_type);
+
+        return switch (type_kind) {
+            llvm.c.LLVMIntegerTypeKind => blk: {
+                const bit_width = llvm.c.LLVMGetIntTypeWidth(value_type);
+                if (bit_width == 1) {
+                    // Bool
+                    const true_str = self.builder.buildGlobalStringPtr("true", "debug.true");
+                    const false_str = self.builder.buildGlobalStringPtr("false", "debug.false");
+                    break :blk self.builder.buildSelect(value, true_str, false_str, "debug.bool");
+                }
+                // Integer
+                break :blk try self.emitDebugPrimitive(value, .i64_);
+            },
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => try self.emitDebugPrimitive(value, .f64_),
+            llvm.c.LLVMPointerTypeKind => self.builder.buildGlobalStringPtr("<ptr>", "debug.ptr"),
+            llvm.c.LLVMStructTypeKind => self.builder.buildGlobalStringPtr("<struct>", "debug.struct"),
+            llvm.c.LLVMArrayTypeKind => self.builder.buildGlobalStringPtr("<array>", "debug.array"),
+            llvm.c.LLVMVoidTypeKind => self.builder.buildGlobalStringPtr("void", "debug.void"),
+            else => self.builder.buildGlobalStringPtr("<unknown>", "debug.unknown"),
+        };
     }
 
     /// Emit type_name(value) - returns the type name as a string
