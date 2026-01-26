@@ -4622,10 +4622,23 @@ pub const Emitter = struct {
             .variant => |v| {
                 // If variant has a payload pattern, extract and bind it
                 if (v.payload) |payload_pattern| {
-                    const payload_val = try self.extractEnumPayload(subject);
+                    // extractEnumPayload returns i8* (pointer to raw payload bytes)
+                    const payload_bytes_ptr = try self.extractEnumPayload(subject);
 
-                    // Get the payload type from the enum definition
+                    // Get the semantic payload type from the enum definition
                     const payload_type = self.getVariantPayloadType(v, expected_type);
+
+                    // Convert semantic type to LLVM type and load the actual value
+                    var payload_val: llvm.ValueRef = undefined;
+                    if (payload_type) |pt| {
+                        const llvm_payload_type = self.typeToLLVM(pt);
+                        // Load the payload value from the raw bytes (pointer is already correctly typed for GEP)
+                        payload_val = self.builder.buildLoad(llvm_payload_type, payload_bytes_ptr, "enum.payload.val");
+                    } else {
+                        // Fallback: no type info, use the pointer directly (may cause issues)
+                        payload_val = payload_bytes_ptr;
+                    }
+
                     try self.bindPatternVariables(payload_pattern, payload_val, payload_type);
                 }
             },
@@ -23730,7 +23743,13 @@ pub const Emitter = struct {
             .cell => 8, // pointer to value
             .range => 16, // start + end
             .context_error => 8, // pointer
-            .list, .map, .set => 8, // pointer to internal structure
+            // Collection types have fixed struct layouts (NOT pointers)
+            // List: { ptr, len: i32, cap: i32 } = 8 + 4 + 4 = 16 bytes
+            .list => 16,
+            // Map: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
+            .map => 20,
+            // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
+            .set => 20,
             .string_data => 8, // pointer to string data
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => 8, // handles/pointers
             .buf_reader, .buf_writer => 8, // pointers to buffered I/O structures
@@ -24272,6 +24291,13 @@ pub const Emitter = struct {
                 }
                 break :blk if (size == 0) 8 else size;
             },
+            // Collection types have fixed struct layouts:
+            // List: { ptr, len: i32, cap: i32 } = 8 + 4 + 4 = 16 bytes
+            .list => 16,
+            // Map: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
+            .map => 20,
+            // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
+            .set => 20,
             else => 8, // Default pointer size for complex types
         };
     }

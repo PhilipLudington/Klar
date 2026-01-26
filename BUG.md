@@ -2,15 +2,23 @@
 
 Discovered while implementing the JSON parser. Tested with Klar v0.3.1-dev.
 
+**Last verified:** 2026-01-25 — All blocking bugs are now fixed. JSON parser implementation can proceed.
+
 ---
 
 ## Bug: impl Methods Returning Optional Enum When Accessing Map Variant
 
 **Status:** Fixed (verified 2026-01-25)
 
-**Description:** `impl` methods on enums that return `?EnumType` and access a `Map` inside a variant fail LLVM code generation. Note that the equivalent code using `List` works correctly—only `Map` access fails.
+**Description:** ~~`impl` methods on enums that return `?EnumType` and access a `Map` inside a variant would compile but return incorrect values at runtime. The Map's `get` method would return None even when the key existed.~~
 
-**Reproduction:**
+**Root Cause:** Two bugs in `src/codegen/emit.zig`:
+1. `getTypeSize` and `getSizeOfKlarType` returned 8 bytes for Map/List/Set types, but these are actually larger structs (Map: 20 bytes, List: 16 bytes, Set: 20 bytes). This caused enum payloads to be undersized.
+2. `bindPatternVariables` for variant patterns was passing a raw `i8*` pointer to the payload bytes instead of loading the actual payload value.
+
+**Fix:** Updated collection type sizes and added proper payload loading in match pattern binding.
+
+**Original Reproduction:**
 
 ```klar
 pub enum JsonValue {
@@ -32,26 +40,7 @@ fn main() {
     entries.insert("name", JsonValue::Str("Alice"))
     let obj: JsonValue = JsonValue::Object(entries)
 
-    let name_val: ?JsonValue = obj.get("name")  // ERROR
-}
-```
-
-**Error:**
-```
-LLVM Module verification failed: Invalid indices for GEP pointer type!
-  %opt.tag.ptr = getelementptr i32, ptr %opt.is_some.tmp, i32 0, i32 0
-```
-
-**Expected:** impl methods should work uniformly regardless of whether the variant contains a `List` or `Map`.
-
-**Workaround:** Use a free function instead:
-
-```klar
-fn json_get(val: JsonValue, key: string) -> ?JsonValue {
-    match val {
-        JsonValue.Object(obj) => { return obj.get(key) }
-        _ => { }
-    }
+    let name_val: ?JsonValue = obj.get("name")  // Now works correctly!
 }
 ```
 
@@ -61,13 +50,9 @@ fn json_get(val: JsonValue, key: string) -> ?JsonValue {
 
 **Status:** Fixed (verified 2026-01-25)
 
-**Description:** Iterating over a slice (e.g., from `string.chars()`) caused the compiler to segfault during codegen. The issue was that `emitForLoopArray` assumed all array types were fixed-size LLVM arrays, but slices are represented as `{ ptr, len }` structs.
+**Description:** ~~Iterating over an array (e.g., from `string.chars()`) causes the compiler to segfault during codegen. This blocks implementing a lexer since strings cannot be converted to an iterable form.~~ Now works correctly.
 
-**Root Cause:** The `getArrayInfo()` function called `LLVMGetElementType()` on the slice struct type instead of the actual element type. Slices (dynamic arrays without fixed size) needed separate handling from fixed-size arrays.
-
-**Fix:** Added `emitForLoopSlice()` function to handle slice iteration separately, extracting the data pointer and length from the slice struct fields and using them for iteration.
-
-**Reproduction (now works):**
+**Reproduction:**
 
 ```klar
 fn main() -> i32 {
@@ -75,13 +60,31 @@ fn main() -> i32 {
     let arr: [char] = s.chars()
 
     var count: i32 = 0
-    for c: char in arr {
+    for c: char in arr {  // Segfault here
         count = count + 1
     }
 
-    return count  // Returns 5
+    return count
 }
 ```
+
+**Error:**
+```
+Segmentation fault at address 0x8
+...
+in _codegen.emit.Emitter.emitForLoopArray
+```
+
+**Expected:** Should iterate over the array without error.
+
+~~**Impact:** Without this, we cannot implement a JSON lexer because:
+1. Cannot iterate over `string.chars()` directly
+2. Cannot use array indexing (returns `Codegen error: UnsupportedFeature`)
+3. Cannot convert string to `List[char]` (would require iteration)
+
+**Workaround:** None for arbitrary strings. For testing, characters can be manually pushed to a `List[char]`.~~
+
+**Update:** All three blockers are now resolved. JSON lexer implementation can proceed.
 
 ---
 
@@ -89,29 +92,25 @@ fn main() -> i32 {
 
 **Status:** Fixed (verified 2026-01-25)
 
-**Description:** Array indexing (`arr[i]`) on slices returned a codegen error, making it impossible to access individual characters from `string.chars()`.
+**Description:** ~~Array indexing (`arr[i]`) returns a codegen error, making it impossible to access individual characters from `string.chars()`.~~ Now works correctly.
 
-**Root Cause:** The `emitIndexAccess` function only handled fixed-size LLVM arrays (`LLVMArrayTypeKind`), but slices are stored as `{ ptr: *T, len: i64 }` structs (`LLVMStructTypeKind`). The code fell through to an `UnsupportedFeature` error for struct types.
-
-**Fix:** Added slice indexing support in `emitIndexAccess` by checking for struct-typed variables with `is_array = true` and `array_size = null`. The fix extracts the data pointer and length from the slice struct, performs bounds checking, and GEPs into the data pointer to access the element.
-
-**Reproduction (now works):**
+**Reproduction:**
 
 ```klar
 fn main() -> i32 {
     let s: string = "hello"
     let chars: [char] = s.chars()
-    let first: char = chars[0]   // 'h'
-    let second: char = chars[1]  // 'e'
-    let last: char = chars[4]    // 'o'
-
-    // Variable index also works
-    var idx: i32 = 2
-    let third: char = chars[idx]  // 'l'
-
+    let first: char = chars[0]  // ERROR
     return 0
 }
 ```
+
+**Error:**
+```
+Codegen error: UnsupportedFeature
+```
+
+**Expected:** Should return the character at the given index.
 
 ---
 
