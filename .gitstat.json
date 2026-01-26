@@ -19,6 +19,11 @@
       "name": "App Tests",
       "resultsFile": ".app-test-results.json",
       "command": "./run-app-tests.sh"
+    },
+    {
+      "name": "Args Tests",
+      "resultsFile": ".args-test-results.json",
+      "command": "./scripts/run-args-tests.sh"
     }
   ],
   "builds": [
