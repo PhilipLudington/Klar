@@ -14,49 +14,18 @@ Bugs discovered while implementing the JSON parser. Klar version: **0.3.1-dev**
 
 ---
 
-## Bug 2: Pattern Matching on Result/Option - Parse Error
+## ~~Bug 2: Pattern Matching on Result/Option - Parse Error~~ - FIXED
 
-**Severity:** Blocking
+**Status:** Fixed
 
-**Description:** Pattern matching with `Ok(value) =>` or `Some(value) =>` causes a parse error, despite being documented syntax.
+**Description:** Pattern matching with `Ok(value) =>` or `Err(e) =>` now works correctly.
 
-**Reproduction:**
-```klar
-fn main() -> i32 {
-    let r: Result[i32, string] = Ok(42)
-    match r {
-        Ok(v) => { println("Value: {v}") }
-        Err(e) => { println("Error: {e}") }
-    }
-    return 0
-}
-```
+**Fix:**
+1. Parser: Added support for shorthand variant patterns like `Ok(v)` without requiring explicit type prefix
+2. Type Checker: Added handling for Result and Optional types in pattern matching
+3. Codegen: Added proper handling for Result/Optional tag types (i1 instead of i8) and payload extraction
 
-**Error:**
-```
-Parse error: error.UnexpectedToken
-  4:11: expected '=>' after pattern
-```
-
-**Same issue with Option:**
-```klar
-fn main() -> i32 {
-    let opt: ?i32 = Some(42)
-    match opt {
-        Some(v) => { println("Value: {v}") }
-        None => { println("None") }
-    }
-    return 0
-}
-```
-
-**Workaround:** Use `.is_ok()`, `.is_err()`, `.is_some()`, `.is_none()` with force unwrap `!`:
-```klar
-if r.is_ok() {
-    let v: i32 = r!
-    println("Value: {v}")
-}
-```
+**Note:** `Some(v)` patterns work for pattern matching, but the `Some()` constructor (Bug 5) is still not implemented. Use implicit wrapping via function returns or `?` operator instead.
 
 ---
 
@@ -197,7 +166,7 @@ fn get_value() -> ?i32 {
 | Bug | Feature | Severity | Status |
 |-----|---------|----------|--------|
 | 1 | Result in tuple return | Blocking | **FIXED** |
-| 2 | Pattern matching Result/Option | Blocking | Use is_ok()/is_err() + ! |
+| 2 | Pattern matching Result/Option | Blocking | **FIXED** |
 | 3 | String field in struct | Blocking | Store length separately |
 | 4 | Impl methods on mixed structs | Blocking | Use free functions |
 | 5 | Some() constructor | Minor | Use implicit return |
@@ -210,11 +179,11 @@ fn get_value() -> ?i32 {
 These bugs block the following:
 - ~~**Lexer:** Cannot return `(Result[Token, ParseError], LexerState)` (Bug 1)~~ **FIXED**
 - ~~**Parser:** Same issue with parser state~~ **FIXED**
-- **Error handling:** Cannot pattern match on Result (Bug 2)
+- ~~**Error handling:** Cannot pattern match on Result (Bug 2)~~ **FIXED**
 - **String processing:** Cannot use string fields in lexer struct (Bug 3, 4)
 
 Current workaround approach:
 1. Use i32-only `LexerState` struct
 2. Pass `[char]` slice separately
-3. Use `.is_err()` + `!` instead of pattern matching
-4. ~~Core logic works, but full Result integration is blocked~~ Result in tuples now works!
+3. ~~Use `.is_err()` + `!` instead of pattern matching~~ Pattern matching now works!
+4. ~~Core logic works, but full Result integration is blocked~~ Result handling now complete!

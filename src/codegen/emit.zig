@@ -185,6 +185,8 @@ pub const Emitter = struct {
         is_buf_writer: bool = false,
         /// For BufWriter[W], the inner writer type.
         buf_writer_inner_type: ?types.Type = null,
+        /// Full semantic type for pattern matching (Result, Optional, etc.)
+        semantic_type: ?types.Type = null,
     };
 
     const LoopContext = struct {
@@ -1476,6 +1478,8 @@ pub const Emitter = struct {
                 // Check if this is a buffered I/O type
                 const is_buf_reader_let = self.isTypeBufReader(decl.type_);
                 const is_buf_writer_let = self.isTypeBufWriter(decl.type_);
+                // Resolve semantic type for pattern matching (Result, Optional, etc.)
+                const semantic_type = self.resolveTypeExprDirect(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -1503,6 +1507,7 @@ pub const Emitter = struct {
                     .is_stdin = is_stdin_let,
                     .is_buf_reader = is_buf_reader_let,
                     .is_buf_writer = is_buf_writer_let,
+                    .semantic_type = semantic_type,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -1566,6 +1571,8 @@ pub const Emitter = struct {
                 // Check if this is a buffered I/O type
                 const is_buf_reader = self.isTypeBufReader(decl.type_);
                 const is_buf_writer = self.isTypeBufWriter(decl.type_);
+                // Resolve semantic type for pattern matching (Result, Optional, etc.)
+                const semantic_type = self.resolveTypeExprDirect(decl.type_);
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -1593,6 +1600,7 @@ pub const Emitter = struct {
                     .is_stdin = is_stdin,
                     .is_buf_reader = is_buf_reader,
                     .is_buf_writer = is_buf_writer,
+                    .semantic_type = semantic_type,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -4314,12 +4322,24 @@ pub const Emitter = struct {
         const subject_val = try self.emitExpr(match_stmt.subject);
 
         // Get the subject's semantic type for pattern binding
-        const subject_type: ?types.Type = if (self.type_checker) |tc| blk: {
-            const tc_mut = @constCast(tc);
-            const t = tc_mut.checkExpr(match_stmt.subject);
-            if (t == .unknown or t == .error_type) break :blk null;
-            break :blk t;
-        } else null;
+        // First, try to look up from named_values if subject is an identifier
+        const subject_type: ?types.Type = blk: {
+            if (match_stmt.subject == .identifier) {
+                const var_name = match_stmt.subject.identifier.name;
+                if (self.named_values.get(var_name)) |local| {
+                    if (local.semantic_type) |st| {
+                        break :blk st;
+                    }
+                }
+            }
+            // Fall back to type checker (may not work if scope changed)
+            if (self.type_checker) |tc| {
+                const tc_mut = @constCast(tc);
+                const t = tc_mut.checkExpr(match_stmt.subject);
+                if (t != .unknown and t != .error_type) break :blk t;
+            }
+            break :blk null;
+        };
 
         // Create the merge block for after all arms
         const merge_bb = llvm.appendBasicBlock(self.ctx, func, "match.merge");
@@ -4342,7 +4362,7 @@ pub const Emitter = struct {
                 llvm.appendBasicBlock(self.ctx, func, "match.next");
 
             // Emit pattern matching condition
-            const pattern_matches = try self.emitPatternMatch(arm.pattern, subject_val);
+            const pattern_matches = try self.emitPatternMatch(arm.pattern, subject_val, subject_type);
 
             // Check guard if present
             const condition = if (arm.guard) |guard| blk: {
@@ -4403,7 +4423,7 @@ pub const Emitter = struct {
     }
 
     /// Emit code that evaluates to true (i1) if the pattern matches the subject.
-    fn emitPatternMatch(self: *Emitter, pattern: ast.Pattern, subject: llvm.ValueRef) EmitError!llvm.ValueRef {
+    fn emitPatternMatch(self: *Emitter, pattern: ast.Pattern, subject: llvm.ValueRef, subject_type: ?types.Type) EmitError!llvm.ValueRef {
         return switch (pattern) {
             .wildcard => {
                 // Wildcard always matches
@@ -4419,20 +4439,20 @@ pub const Emitter = struct {
             },
             .variant => |v| {
                 // Check enum tag matches
-                return self.emitVariantPatternMatch(v, subject);
+                return self.emitVariantPatternMatch(v, subject, subject_type);
             },
             .or_pattern => |o| {
                 // Any alternative matches
                 var result = llvm.Const.int1(self.ctx, false);
                 for (o.alternatives) |alt| {
-                    const alt_match = try self.emitPatternMatch(alt, subject);
+                    const alt_match = try self.emitPatternMatch(alt, subject, subject_type);
                     result = self.builder.buildOr(result, alt_match, "or.pattern");
                 }
                 return result;
             },
             .guarded => |g| {
                 // Just check the pattern; guard is handled separately
-                return self.emitPatternMatch(g.pattern, subject);
+                return self.emitPatternMatch(g.pattern, subject, subject_type);
             },
             .tuple_pattern => |t| {
                 // Check each element matches
@@ -4443,9 +4463,16 @@ pub const Emitter = struct {
                         llvm.Const.int32(self.ctx, 0),
                         llvm.Const.int32(self.ctx, @intCast(i)),
                     };
-                    const subject_type = llvm.typeOf(subject);
-                    const elem_val = self.builder.buildGEP(subject_type, subject, &indices, "tuple.elem");
-                    const elem_match = try self.emitPatternMatch(elem, elem_val);
+                    const subject_llvm_type = llvm.typeOf(subject);
+                    const elem_val = self.builder.buildGEP(subject_llvm_type, subject, &indices, "tuple.elem");
+                    // Get element type from tuple type if available
+                    const elem_type: ?types.Type = if (subject_type) |st| blk: {
+                        if (st == .tuple and i < st.tuple.elements.len) {
+                            break :blk st.tuple.elements[i];
+                        }
+                        break :blk null;
+                    } else null;
+                    const elem_match = try self.emitPatternMatch(elem, elem_val, elem_type);
                     result = self.builder.buildAnd(result, elem_match, "tuple.match");
                 }
                 return result;
@@ -4492,12 +4519,20 @@ pub const Emitter = struct {
     }
 
     /// Emit code to check if an enum variant matches.
-    fn emitVariantPatternMatch(self: *Emitter, pat: *ast.VariantPattern, subject: llvm.ValueRef) EmitError!llvm.ValueRef {
+    fn emitVariantPatternMatch(self: *Emitter, pat: *ast.VariantPattern, subject: llvm.ValueRef, subject_type: ?types.Type) EmitError!llvm.ValueRef {
         // Get the enum type to find the variant index
-        const variant_index = try self.lookupVariantIndex(pat);
+        const variant_index = try self.lookupVariantIndex(pat, subject_type);
+
+        // Determine tag type: i1 for Result/Optional, i8 for regular enums
+        const tag_type: llvm.TypeRef = if (subject_type) |st| blk: {
+            if (st == .result or st == .optional) {
+                break :blk llvm.Types.int1(self.ctx);
+            }
+            break :blk llvm.Types.int8(self.ctx);
+        } else llvm.Types.int8(self.ctx);
 
         // Extract the tag from subject (field 0)
-        const subject_type = llvm.typeOf(subject);
+        const subject_llvm_type = llvm.typeOf(subject);
         var tag_indices = [_]llvm.ValueRef{
             llvm.Const.int32(self.ctx, 0),
             llvm.Const.int32(self.ctx, 0),
@@ -4505,23 +4540,43 @@ pub const Emitter = struct {
 
         // For value types (not pointers), we need to allocate and then GEP
         // Check if subject is a struct type (value) or pointer
-        const type_kind = llvm.getTypeKind(subject_type);
+        const type_kind = llvm.getTypeKind(subject_llvm_type);
         if (type_kind == llvm.c.LLVMStructTypeKind) {
             // Subject is a value, extract tag directly using extractvalue
             const tag_val = self.builder.buildExtractValue(subject, 0, "enum.tag");
-            const expected_tag = llvm.Const.int(llvm.Types.int8(self.ctx), variant_index, false);
+            const expected_tag = llvm.Const.int(tag_type, variant_index, false);
             return self.builder.buildICmp(llvm.c.LLVMIntEQ, tag_val, expected_tag, "variant.match");
         } else {
             // Subject is a pointer, use GEP
-            const tag_ptr = self.builder.buildGEP(subject_type, subject, &tag_indices, "enum.tag.ptr");
-            const tag_val = self.builder.buildLoad(llvm.Types.int8(self.ctx), tag_ptr, "enum.tag");
-            const expected_tag = llvm.Const.int(llvm.Types.int8(self.ctx), variant_index, false);
+            const tag_ptr = self.builder.buildGEP(subject_llvm_type, subject, &tag_indices, "enum.tag.ptr");
+            const tag_val = self.builder.buildLoad(tag_type, tag_ptr, "enum.tag");
+            const expected_tag = llvm.Const.int(tag_type, variant_index, false);
             return self.builder.buildICmp(llvm.c.LLVMIntEQ, tag_val, expected_tag, "variant.match");
         }
     }
 
     /// Look up the variant index for a pattern.
-    fn lookupVariantIndex(self: *Emitter, pat: *ast.VariantPattern) EmitError!u32 {
+    fn lookupVariantIndex(self: *Emitter, pat: *ast.VariantPattern, subject_type: ?types.Type) EmitError!u32 {
+        // Handle shorthand patterns (no explicit type_expr) for built-in types
+        if (pat.type_expr == null) {
+            if (subject_type) |st| {
+                // Result type: tag 0 = Err, tag 1 = Ok (i1 representation)
+                if (st == .result) {
+                    if (std.mem.eql(u8, pat.variant_name, "Ok")) return 1;
+                    if (std.mem.eql(u8, pat.variant_name, "Err")) return 0;
+                    return EmitError.InvalidAST;
+                }
+                // Optional type: tag 0 = None, tag 1 = Some (i1 representation)
+                if (st == .optional) {
+                    if (std.mem.eql(u8, pat.variant_name, "None")) return 0;
+                    if (std.mem.eql(u8, pat.variant_name, "Some")) return 1;
+                    return EmitError.InvalidAST;
+                }
+            }
+            // No type info and no explicit type - cannot determine variant
+            return EmitError.UnsupportedFeature;
+        }
+
         // Get the enum type name from the pattern
         const enum_name: []const u8 = if (pat.type_expr) |type_expr| blk: {
             break :blk switch (type_expr) {
@@ -4532,11 +4587,7 @@ pub const Emitter = struct {
                 },
                 else => return EmitError.InvalidAST,
             };
-        } else {
-            // No explicit type - need to infer from context
-            // For now, this is a limitation
-            return EmitError.UnsupportedFeature;
-        };
+        } else unreachable; // Already handled above
 
         // Look up in monomorphized enums first
         if (self.type_checker) |tc| {
@@ -4622,11 +4673,63 @@ pub const Emitter = struct {
             .variant => |v| {
                 // If variant has a payload pattern, extract and bind it
                 if (v.payload) |payload_pattern| {
-                    // extractEnumPayload returns i8* (pointer to raw payload bytes)
-                    const payload_bytes_ptr = try self.extractEnumPayload(subject);
-
-                    // Get the semantic payload type from the enum definition
+                    // Get the semantic payload type from the type definition
                     const payload_type = self.getVariantPayloadType(v, expected_type);
+
+                    // Handle Result/Optional specially - they have direct payload fields
+                    if (expected_type) |et| {
+                        if (et == .result) {
+                            // Result struct: { tag: i1, ok_value: T, err_value: E }
+                            // Ok payload is at index 1, Err payload is at index 2
+                            const field_idx: i32 = if (std.mem.eql(u8, v.variant_name, "Ok")) 1 else 2;
+                            const val_type = llvm.typeOf(subject);
+                            const type_kind = llvm.getTypeKind(val_type);
+
+                            var payload_val: llvm.ValueRef = undefined;
+                            if (type_kind == llvm.c.LLVMStructTypeKind) {
+                                // Value type: extract directly
+                                payload_val = self.builder.buildExtractValue(subject, @intCast(field_idx), "result.payload");
+                            } else {
+                                // Pointer type: GEP and load
+                                var indices = [_]llvm.ValueRef{
+                                    llvm.Const.int32(self.ctx, 0),
+                                    llvm.Const.int32(self.ctx, field_idx),
+                                };
+                                const llvm_payload_type = if (payload_type) |pt| self.typeToLLVM(pt) else llvm.Types.int32(self.ctx);
+                                const payload_ptr = self.builder.buildGEP(val_type, subject, &indices, "result.payload.ptr");
+                                payload_val = self.builder.buildLoad(llvm_payload_type, payload_ptr, "result.payload");
+                            }
+                            try self.bindPatternVariables(payload_pattern, payload_val, payload_type);
+                            return;
+                        }
+
+                        if (et == .optional) {
+                            // Optional struct: { tag: i1, value: T }
+                            // Some payload is at index 1
+                            const val_type = llvm.typeOf(subject);
+                            const type_kind = llvm.getTypeKind(val_type);
+
+                            var payload_val: llvm.ValueRef = undefined;
+                            if (type_kind == llvm.c.LLVMStructTypeKind) {
+                                // Value type: extract directly
+                                payload_val = self.builder.buildExtractValue(subject, 1, "optional.payload");
+                            } else {
+                                // Pointer type: GEP and load
+                                var indices = [_]llvm.ValueRef{
+                                    llvm.Const.int32(self.ctx, 0),
+                                    llvm.Const.int32(self.ctx, 1),
+                                };
+                                const llvm_payload_type = if (payload_type) |pt| self.typeToLLVM(pt) else llvm.Types.int32(self.ctx);
+                                const payload_ptr = self.builder.buildGEP(val_type, subject, &indices, "optional.payload.ptr");
+                                payload_val = self.builder.buildLoad(llvm_payload_type, payload_ptr, "optional.payload");
+                            }
+                            try self.bindPatternVariables(payload_pattern, payload_val, payload_type);
+                            return;
+                        }
+                    }
+
+                    // Regular enum: extractEnumPayload returns i8* (pointer to raw payload bytes)
+                    const payload_bytes_ptr = try self.extractEnumPayload(subject);
 
                     // Convert semantic type to LLVM type and load the actual value
                     var payload_val: llvm.ValueRef = undefined;
@@ -4680,7 +4783,7 @@ pub const Emitter = struct {
     /// Get the payload type for a variant pattern from the enum definition.
     fn getVariantPayloadType(self: *Emitter, v: *ast.VariantPattern, expected_type: ?types.Type) ?types.Type {
         // Get enum type - either from pattern's type_expr or from expected_type
-        const enum_type: ?types.Type = if (v.type_expr) |type_expr| blk: {
+        const match_type: ?types.Type = if (v.type_expr) |type_expr| blk: {
             // Try to resolve the type expression
             if (self.type_checker) |tc| {
                 const tc_mut = @constCast(tc);
@@ -4690,15 +4793,37 @@ pub const Emitter = struct {
             break :blk expected_type;
         } else expected_type;
 
-        if (enum_type == null) {
+        if (match_type == null) {
             return null;
         }
-        const et = enum_type.?;
-        if (et != .enum_) {
+        const mt = match_type.?;
+
+        // Handle Result type payloads
+        if (mt == .result) {
+            const result_type = mt.result;
+            if (std.mem.eql(u8, v.variant_name, "Ok")) {
+                return result_type.ok_type;
+            } else if (std.mem.eql(u8, v.variant_name, "Err")) {
+                return result_type.err_type;
+            }
             return null;
         }
 
-        const enum_def = et.enum_;
+        // Handle Optional type payloads
+        if (mt == .optional) {
+            if (std.mem.eql(u8, v.variant_name, "Some")) {
+                return mt.optional.*;
+            }
+            // None has no payload
+            return null;
+        }
+
+        // Handle regular enum types
+        if (mt != .enum_) {
+            return null;
+        }
+
+        const enum_def = mt.enum_;
 
         // Find the variant by name
         for (enum_def.variants) |variant| {
@@ -4954,6 +5079,63 @@ pub const Emitter = struct {
             },
             else => true, // Default to signed
         };
+    }
+
+    /// Resolve a type expression directly from AST (for Result, Optional types).
+    /// This doesn't depend on type checker scope, so it works during codegen.
+    fn resolveTypeExprDirect(self: *Emitter, type_expr: ast.TypeExpr) ?types.Type {
+        switch (type_expr) {
+            .optional => |opt| {
+                // ?T syntax
+                const inner = self.resolveTypeExprDirect(opt.inner) orelse return null;
+                const inner_ptr = self.allocator.create(types.Type) catch return null;
+                inner_ptr.* = inner;
+                return .{ .optional = inner_ptr };
+            },
+            .generic_apply => |g| {
+                // Check for Result[T, E]
+                if (g.base == .named) {
+                    const name = g.base.named.name;
+                    if (std.mem.eql(u8, name, "Result") and g.args.len == 2) {
+                        const ok_type = self.resolveTypeExprDirect(g.args[0]) orelse return null;
+                        const err_type = self.resolveTypeExprDirect(g.args[1]) orelse return null;
+                        const result_ptr = self.allocator.create(types.ResultType) catch return null;
+                        result_ptr.* = .{ .ok_type = ok_type, .err_type = err_type };
+                        return .{ .result = result_ptr };
+                    }
+                }
+                // For other generic types, try type checker (may fail due to scope)
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    return tc_mut.resolveTypeExpr(type_expr) catch return null;
+                }
+                return null;
+            },
+            .named => |n| {
+                // Primitive types
+                if (types.Primitive.fromName(n.name)) |prim| {
+                    return .{ .primitive = prim };
+                }
+                // string is a primitive type
+                if (std.mem.eql(u8, n.name, "string")) {
+                    return .{ .primitive = .string_ };
+                }
+                // For other named types, try type checker
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    return tc_mut.resolveTypeExpr(type_expr) catch return null;
+                }
+                return null;
+            },
+            else => {
+                // For other types, try type checker
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    return tc_mut.resolveTypeExpr(type_expr) catch return null;
+                }
+                return null;
+            },
+        }
     }
 
     /// Check if a type expression is a primitive string type.

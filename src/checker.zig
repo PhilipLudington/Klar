@@ -9399,23 +9399,64 @@ pub const TypeChecker = struct {
                 }) catch {};
             },
             .variant => |v| {
-                // Determine the enum type - either from pattern or from expected type
-                var enum_type = expected_type;
+                // Determine the type to match - either from pattern or from expected type
+                var match_type = expected_type;
 
                 if (v.type_expr) |type_expr| {
                     // Pattern specifies a type - resolve it
-                    enum_type = self.resolveTypeExpr(type_expr) catch {
+                    match_type = self.resolveTypeExpr(type_expr) catch {
                         self.addError(.undefined_type, v.span, "unknown type in pattern", .{});
                         return;
                     };
                 }
 
-                if (enum_type != .enum_) {
+                // Handle Result type patterns: Ok(v), Err(e)
+                if (match_type == .result) {
+                    const result_type = match_type.result;
+                    if (std.mem.eql(u8, v.variant_name, "Ok")) {
+                        if (v.payload) |payload_pattern| {
+                            self.checkPattern(payload_pattern, result_type.ok_type);
+                        } else {
+                            self.addError(.invalid_pattern, v.span, "Ok variant expects payload", .{});
+                        }
+                    } else if (std.mem.eql(u8, v.variant_name, "Err")) {
+                        if (v.payload) |payload_pattern| {
+                            self.checkPattern(payload_pattern, result_type.err_type);
+                        } else {
+                            self.addError(.invalid_pattern, v.span, "Err variant expects payload", .{});
+                        }
+                    } else {
+                        self.addError(.undefined_variant, v.span, "unknown Result variant '{s}'", .{v.variant_name});
+                    }
+                    return;
+                }
+
+                // Handle Optional type patterns: Some(v), None
+                if (match_type == .optional) {
+                    const inner_type = match_type.optional.*;
+                    if (std.mem.eql(u8, v.variant_name, "Some")) {
+                        if (v.payload) |payload_pattern| {
+                            self.checkPattern(payload_pattern, inner_type);
+                        } else {
+                            self.addError(.invalid_pattern, v.span, "Some variant expects payload", .{});
+                        }
+                    } else if (std.mem.eql(u8, v.variant_name, "None")) {
+                        if (v.payload != null) {
+                            self.addError(.invalid_pattern, v.span, "None variant takes no payload", .{});
+                        }
+                    } else {
+                        self.addError(.undefined_variant, v.span, "unknown Optional variant '{s}'", .{v.variant_name});
+                    }
+                    return;
+                }
+
+                // Handle regular enum types
+                if (match_type != .enum_) {
                     self.addError(.invalid_pattern, v.span, "variant pattern requires enum type", .{});
                     return;
                 }
 
-                const enum_def = enum_type.enum_;
+                const enum_def = match_type.enum_;
 
                 // Find the variant
                 var found_variant: ?types.EnumVariant = null;
@@ -9550,14 +9591,42 @@ pub const TypeChecker = struct {
                 }) catch {};
             },
             .variant => |v| {
-                // Determine the enum type
-                var enum_type = t;
+                // Determine the type to match
+                var match_type = t;
                 if (v.type_expr) |type_expr| {
-                    enum_type = self.resolveTypeExpr(type_expr) catch return;
+                    match_type = self.resolveTypeExpr(type_expr) catch return;
                 }
 
-                if (enum_type != .enum_) return;
-                const enum_def = enum_type.enum_;
+                // Handle Result type patterns: Ok(v), Err(e)
+                if (match_type == .result) {
+                    const result_type = match_type.result;
+                    if (std.mem.eql(u8, v.variant_name, "Ok")) {
+                        if (v.payload) |payload_pattern| {
+                            self.bindPattern(payload_pattern, result_type.ok_type);
+                        }
+                    } else if (std.mem.eql(u8, v.variant_name, "Err")) {
+                        if (v.payload) |payload_pattern| {
+                            self.bindPattern(payload_pattern, result_type.err_type);
+                        }
+                    }
+                    return;
+                }
+
+                // Handle Optional type patterns: Some(v), None
+                if (match_type == .optional) {
+                    const inner_type = match_type.optional.*;
+                    if (std.mem.eql(u8, v.variant_name, "Some")) {
+                        if (v.payload) |payload_pattern| {
+                            self.bindPattern(payload_pattern, inner_type);
+                        }
+                    }
+                    // None has no payload to bind
+                    return;
+                }
+
+                // Handle regular enum types
+                if (match_type != .enum_) return;
+                const enum_def = match_type.enum_;
 
                 // Find the variant
                 var found_variant: ?types.EnumVariant = null;

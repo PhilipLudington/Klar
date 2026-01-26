@@ -1660,6 +1660,26 @@ pub const Parser = struct {
             return self.parseVariantPatternWithType(base_type, start_span);
         }
 
+        // Check for shorthand variant pattern: Ok(v), Err(e), Some(v), etc.
+        // Uppercase identifier followed by '(' is a variant pattern without explicit type
+        if (is_type_name and self.check(.l_paren)) {
+            self.advance(); // consume '('
+            var payload: ?ast.Pattern = null;
+            if (!self.check(.r_paren)) {
+                payload = try self.parsePattern();
+            }
+            try self.consume(.r_paren, "expected ')' after variant payload");
+
+            const end_span = self.spanFromToken(self.previous);
+            const variant = try self.create(ast.VariantPattern, .{
+                .type_expr = null, // Infer type from match expression
+                .variant_name = name,
+                .payload = payload,
+                .span = ast.Span.merge(start_span, end_span),
+            });
+            return .{ .variant = variant };
+        }
+
         // Simple binding - check for type annotation
         var type_annotation: ?ast.TypeExpr = null;
         if (self.match(.colon)) {
