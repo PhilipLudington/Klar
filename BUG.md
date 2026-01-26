@@ -35,36 +35,20 @@ Bugs discovered while implementing the JSON parser. Klar version: **0.3.1-dev**
 
 ---
 
-## Bug 9: Pattern Matching on Tuple Elements Directly
+## ~~Bug 9: Pattern Matching on Tuple Elements Directly~~ FIXED
 
-**Severity:** Minor
+**Status:** ✅ Fixed
 
-**Description:** `match result.0` is not supported. Must extract tuple element to a variable first.
+**Description:** `match result.0` was not supported. Had to extract tuple element to a variable first.
 
-**Reproduction:**
-```klar
-fn test() -> (Result[i32, string], i32) {
-    return (Ok(42), 1)
-}
+**Root cause:** In `emitMatchStmt()`, the code to resolve the subject's semantic type only handled direct identifier lookups (like `match x`). For field access expressions like `match tuple.0`, the fallback to the type checker wasn't working correctly.
 
-fn main() -> i32 {
-    let result: (Result[i32, string], i32) = test()
-    match result.0 {  // ERROR
-        Ok(n) => { println("{n}") }
-        Err(e) => { println("{e}") }
-    }
-    return 0
-}
-```
+**Fix:** Added handling for field access expressions in the subject type resolution in `emitMatchStmt()` (line ~4341 in `src/codegen/emit.zig`). When the match subject is a field access like `tuple.0`:
+1. Look up the object's semantic type from `named_values`
+2. If it's a tuple type, parse the field name as an index
+3. Return the tuple element's type for pattern matching
 
-**Workaround:** Extract the tuple element first:
-```klar
-let r: Result[i32, string] = result.0
-match r {
-    Ok(n) => { println("{n}") }
-    Err(e) => { println("{e}") }
-}
-```
+**Test:** Added `test/native/match_tuple_element.kl` to verify pattern matching on tuple elements works with Result, Option, and integer types.
 
 ---
 
@@ -74,13 +58,13 @@ match r {
 |-----|---------|----------|--------|
 | 7 | Associated fn on structs | Blocking | ✅ Fixed |
 | 8 | Arrays in struct fields | Blocking | ✅ Fixed |
-| 9 | Match on tuple element | Minor | Open |
+| 9 | Match on tuple element | Minor | ✅ Fixed |
 
 ---
 
 ## Impact on JSON Parser
 
-These bugs require the following workarounds:
+All blocking bugs have been fixed:
 - ~~Must pass `[char]` as parameter instead of storing in Lexer struct (Bug 8)~~ Fixed!
 - ~~Must use free functions instead of `Lexer.new()` (Bug 7)~~ Fixed!
-- Must extract tuple elements before pattern matching (Bug 9)
+- ~~Must extract tuple elements before pattern matching (Bug 9)~~ Fixed!

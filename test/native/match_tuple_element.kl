@@ -1,0 +1,59 @@
+// Bug 9: Pattern matching on tuple elements directly
+// Test that match works on tuple.0, tuple.1 etc without extracting to a variable first
+
+fn get_result_tuple() -> (Result[i32, string], i32) {
+    return (Ok(42), 1)
+}
+
+fn get_err_tuple() -> (Result[i32, string], i32) {
+    return (Err("error"), 2)
+}
+
+fn main() -> i32 {
+    // Test matching directly on Ok variant from tuple
+    let t1: (Result[i32, string], i32) = get_result_tuple()
+    match t1.0 {
+        Ok(n) => {
+            if n != 42 {
+                return 1
+            }
+        }
+        Err(_) => {
+            return 2
+        }
+    }
+
+    // Test matching directly on Err variant from tuple
+    let t2: (Result[i32, string], i32) = get_err_tuple()
+    match t2.0 {
+        Ok(_) => {
+            return 3
+        }
+        Err(e) => {
+            if e != "error" {
+                return 4
+            }
+        }
+    }
+
+    // Test matching on second tuple element (integer match)
+    match t1.1 {
+        1 => { }
+        _ => { return 5 }
+    }
+
+    // Test with Option type
+    let t3: (?i32, string) = (Some(100), "test")
+    match t3.0 {
+        Some(v) => {
+            if v != 100 {
+                return 6
+            }
+        }
+        None => {
+            return 7
+        }
+    }
+
+    return 0
+}

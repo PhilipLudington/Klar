@@ -4338,6 +4338,27 @@ pub const Emitter = struct {
                     }
                 }
             }
+            // Handle field access on tuples (e.g., tuple.0, tuple.1)
+            if (match_stmt.subject == .field) {
+                const field = match_stmt.subject.field;
+                // Check if the object is an identifier we know about
+                if (field.object == .identifier) {
+                    const obj_name = field.object.identifier.name;
+                    if (self.named_values.get(obj_name)) |local| {
+                        if (local.semantic_type) |obj_type| {
+                            // Check if it's a tuple type
+                            if (obj_type == .tuple) {
+                                // Parse the field name as a tuple index
+                                if (std.fmt.parseInt(usize, field.field_name, 10)) |idx| {
+                                    if (idx < obj_type.tuple.elements.len) {
+                                        break :blk obj_type.tuple.elements[idx];
+                                    }
+                                } else |_| {}
+                            }
+                        }
+                    }
+                }
+            }
             // Fall back to type checker (may not work if scope changed)
             if (self.type_checker) |tc| {
                 const tc_mut = @constCast(tc);
