@@ -224,6 +224,7 @@ pub const Interpreter = struct {
             },
             .comptime_block => |cb| self.evalComptimeBlock(cb),
             .builtin_call => |bc| self.evalBuiltinCall(bc),
+            .unsafe_block => |ub| self.evalBlock(ub.body),
         };
     }
 

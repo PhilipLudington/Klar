@@ -3017,6 +3017,13 @@ pub const Emitter = struct {
             // Comptime expressions
             .builtin_call => |bc| try self.emitBuiltinCall(bc),
             .comptime_block => |cb| try self.emitComptimeBlock(cb),
+            // Unsafe block - safety checked at type-check time, emit like normal block
+            .unsafe_block => |ub| blk: {
+                try self.pushScope(false);
+                const result = try self.emitBlock(ub.body);
+                self.popScope();
+                break :blk result orelse llvm.Const.int32(self.ctx, 0);
+            },
             // Range expression
             .range => |r| try self.emitRangeLiteral(r),
         };
@@ -12000,14 +12007,15 @@ pub const Emitter = struct {
         return false;
     }
 
-    /// Check if an expression is a fixed-size array type.
+    /// Check if an expression is an array or slice type.
+    /// Both fixed-size arrays and dynamic slices are handled by the same method implementations.
     fn isArrayExpr(self: *Emitter, expr: ast.Expr) bool {
         switch (expr) {
             .identifier => |id| {
                 // Check if we have array info for this identifier in named_values
                 if (self.named_values.get(id.name)) |local| {
-                    // Only fixed-size arrays (with known size) - slices are handled separately
-                    if (local.is_array and local.array_size != null) {
+                    // Include both fixed-size arrays (array_size != null) and slices (array_size == null)
+                    if (local.is_array) {
                         return true;
                     }
                 }
@@ -12022,7 +12030,7 @@ pub const Emitter = struct {
         if (self.type_checker) |tc| {
             const tc_mut = @constCast(tc);
             const expr_type = tc_mut.checkExpr(expr);
-            return expr_type == .array;
+            return expr_type == .array or expr_type == .slice;
         }
         return false;
     }

@@ -418,6 +418,8 @@ pub const FunctionType = struct {
     is_async: bool = false,
     /// Bitmask indicating which parameters are comptime (index i is comptime if bit i is set)
     comptime_params: u64 = 0,
+    /// True if this function is unsafe and can only be called from an unsafe context
+    is_unsafe: bool = false,
 };
 
 pub const ReferenceType = struct {
@@ -717,13 +719,17 @@ pub const TypeBuilder = struct {
     }
 
     pub fn functionType(self: *TypeBuilder, params: []const Type, return_type: Type) !Type {
-        return self.functionTypeWithComptime(params, return_type, 0);
+        return self.functionTypeWithFlags(params, return_type, 0, false);
     }
 
     pub fn functionTypeWithComptime(self: *TypeBuilder, params: []const Type, return_type: Type, comptime_params: u64) !Type {
+        return self.functionTypeWithFlags(params, return_type, comptime_params, false);
+    }
+
+    pub fn functionTypeWithFlags(self: *TypeBuilder, params: []const Type, return_type: Type, comptime_params: u64, is_unsafe: bool) !Type {
         const func = try self.arena.allocator().create(FunctionType);
         const params_copy = try self.arena.allocator().dupe(Type, params);
-        func.* = .{ .params = params_copy, .return_type = return_type, .comptime_params = comptime_params };
+        func.* = .{ .params = params_copy, .return_type = return_type, .comptime_params = comptime_params, .is_unsafe = is_unsafe };
         return .{ .function = func };
     }
 

@@ -1,0 +1,39 @@
+// Test: Unsafe function declarations
+// Verifies parsing and type-checking of `unsafe fn`.
+
+// An unsafe function - entire body is in unsafe context
+unsafe fn dangerous_operation(x: i32) -> i32 {
+    // Inside an unsafe fn, no unsafe block is required
+    let result: i32 = x * 2
+    return result
+}
+
+// Another unsafe function
+unsafe fn combine(a: i32, b: i32) -> i32 {
+    // Can call other code normally inside unsafe fn
+    return a + b
+}
+
+// Safe function that calls unsafe functions
+fn safe_wrapper() -> i32 {
+    // Must use unsafe block to call unsafe functions
+    let value: i32 = unsafe {
+        let x: i32 = dangerous_operation(10)
+        let y: i32 = combine(x, 5)
+        y
+    }
+    return value
+}
+
+fn main() -> i32 {
+    let result: i32 = safe_wrapper()
+    // dangerous_operation(10) = 20
+    // combine(20, 5) = 25
+    if result != 25 {
+        println("Expected 25, got different value")
+        return 1
+    }
+
+    println("Unsafe fn test passed!")
+    return 0
+}

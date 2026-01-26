@@ -730,6 +730,11 @@ pub const Compiler = struct {
                 // The bytecode VM should never see them - they are replaced by their evaluated values
                 try self.addError(.internal_error, expr.span(), "comptime blocks not yet supported in bytecode VM");
             },
+            .unsafe_block => |ub| {
+                // Unsafe blocks are safety-checked at compile time
+                // For bytecode, just compile the inner block
+                try self.compileBlockExpr(ub.body);
+            },
             .builtin_call => |bc| {
                 // Handle @repeat builtin specially - compile it as an array literal
                 if (std.mem.eql(u8, bc.name, "repeat") and bc.args.len == 2) {

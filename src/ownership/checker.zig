@@ -297,6 +297,7 @@ pub const OwnershipChecker = struct {
             .enum_literal => |e| try self.analyzeEnumLiteral(e),
             .comptime_block => |cb| try self.analyzeComptimeBlock(cb),
             .builtin_call => |bc| try self.analyzeBuiltinCall(bc),
+            .unsafe_block => |ub| try self.analyzeUnsafeBlock(ub),
         };
     }
 
@@ -310,6 +311,12 @@ pub const OwnershipChecker = struct {
 
     fn analyzeComptimeBlock(self: *OwnershipChecker, block: *ast.ComptimeBlock) !?*VariableState {
         // Analyze the block body for ownership - comptime blocks still need ownership tracking
+        _ = try self.analyzeBlockExpr(block.body);
+        return null;
+    }
+
+    fn analyzeUnsafeBlock(self: *OwnershipChecker, block: *ast.UnsafeBlock) !?*VariableState {
+        // Analyze the block body for ownership - unsafe blocks still need ownership tracking
         _ = try self.analyzeBlockExpr(block.body);
         return null;
     }

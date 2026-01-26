@@ -325,6 +325,9 @@ pub const Parser = struct {
             // @ can be: comptime block @{ ... } or builtin call @name(...)
             .at => self.parseAtExpr(),
 
+            // unsafe { ... } block expression
+            .unsafe_ => self.parseUnsafeBlock(),
+
             else => {
                 try self.reportError("expected expression");
                 return ParseError.ExpectedExpression;
@@ -882,6 +885,28 @@ pub const Parser = struct {
         });
 
         return .{ .builtin_call = builtin_call };
+    }
+
+    /// Parse unsafe { ... } block expression
+    fn parseUnsafeBlock(self: *Parser) ParseError!ast.Expr {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'unsafe'
+
+        // Expect '{'
+        if (!self.check(.l_brace)) {
+            try self.reportError("expected '{' after 'unsafe'");
+            return ParseError.UnexpectedToken;
+        }
+
+        const block = try self.parseBlock();
+        const end_span = block.span;
+
+        const unsafe_block = try self.create(ast.UnsafeBlock, .{
+            .body = block,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+
+        return .{ .unsafe_block = unsafe_block };
     }
 
     /// Parse a builtin argument - could be a type or an expression
@@ -2032,24 +2057,81 @@ pub const Parser = struct {
         // Handle visibility modifier
         const is_pub = self.match(.pub_);
 
+        // Handle unsafe modifier (for unsafe fn)
+        const is_unsafe = self.match(.unsafe_);
+
         return switch (self.current.kind) {
-            .fn_ => self.parseFunctionDecl(is_pub),
-            .struct_ => self.parseStructDecl(is_pub),
-            .enum_ => self.parseEnumDecl(is_pub),
-            .trait => self.parseTraitDecl(is_pub),
-            .impl => self.parseImplDecl(),
-            .type_ => self.parseTypeAlias(is_pub),
-            .const_ => self.parseConstDecl(is_pub),
-            .import => self.parseImportDecl(),
-            .module => self.parseModuleDecl(),
+            .fn_ => self.parseFunctionDecl(is_pub, is_unsafe),
+            .struct_ => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on struct declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseStructDecl(is_pub);
+            },
+            .enum_ => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on enum declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseEnumDecl(is_pub);
+            },
+            .trait => blk: {
+                if (is_unsafe) {
+                    // Note: Future support for unsafe traits can be added here
+                    try self.reportError("'unsafe' modifier is not yet supported on trait declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseTraitDecl(is_pub);
+            },
+            .impl => blk: {
+                if (is_unsafe) {
+                    // Note: Future support for unsafe impl can be added here
+                    try self.reportError("'unsafe' modifier is not yet supported on impl declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseImplDecl();
+            },
+            .type_ => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on type aliases");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseTypeAlias(is_pub);
+            },
+            .const_ => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on const declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseConstDecl(is_pub);
+            },
+            .import => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on import declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseImportDecl();
+            },
+            .module => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on module declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseModuleDecl();
+            },
             else => {
-                try self.reportError("expected declaration");
+                if (is_unsafe) {
+                    try self.reportError("expected 'fn' after 'unsafe'");
+                } else {
+                    try self.reportError("expected declaration");
+                }
                 return ParseError.UnexpectedToken;
             },
         };
     }
 
-    fn parseFunctionDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'fn'
 
@@ -2102,6 +2184,7 @@ pub const Parser = struct {
             .is_pub = is_pub,
             .is_async = false,
             .is_comptime = is_comptime,
+            .is_unsafe = is_unsafe,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .function = func };
@@ -2384,7 +2467,8 @@ pub const Parser = struct {
                 try associated_types.append(self.allocator, assoc_type);
             } else {
                 // Each method in trait is a function signature (potentially without body)
-                const method_decl = try self.parseFunctionDecl(false);
+                // Note: unsafe methods in traits not yet supported
+                const method_decl = try self.parseFunctionDecl(false, false);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -2475,7 +2559,8 @@ pub const Parser = struct {
                 try associated_types.append(self.allocator, assoc_binding);
             } else {
                 const is_pub = self.match(.pub_);
-                const method_decl = try self.parseFunctionDecl(is_pub);
+                const method_is_unsafe = self.match(.unsafe_);
+                const method_decl = try self.parseFunctionDecl(is_pub, method_is_unsafe);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 

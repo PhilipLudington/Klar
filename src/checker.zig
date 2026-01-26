@@ -324,6 +324,10 @@ pub const TypeChecker = struct {
     /// Set when checking variable declarations with type annotations.
     expected_type: ?Type,
 
+    /// Tracks whether we're inside an unsafe context (unsafe block or unsafe fn body).
+    /// When true, unsafe operations like calling extern functions are allowed.
+    in_unsafe_context: bool,
+
     /// Maps debug() call AST nodes to the argument type.
     /// Used by codegen to emit type-specific formatting code.
     debug_call_types: std.AutoHashMapUnmanaged(*ast.Call, Type),
@@ -581,6 +585,7 @@ pub const TypeChecker = struct {
             .checking_comptime_function_body = false,
             .error_conversions = .{},
             .expected_type = null,
+            .in_unsafe_context = false,
             .debug_call_types = .{},
         };
         checker.initBuiltins() catch {};
@@ -3225,6 +3230,7 @@ pub const TypeChecker = struct {
             .enum_literal => |e| self.checkEnumLiteral(e),
             .comptime_block => |cb| self.checkComptimeBlock(cb),
             .builtin_call => |bc| self.checkBuiltinCall(bc),
+            .unsafe_block => |ub| self.checkUnsafeBlock(ub),
         };
     }
 
@@ -3675,6 +3681,11 @@ pub const TypeChecker = struct {
         }
 
         const func = callee_type.function;
+
+        // Check if calling an unsafe function from a safe context
+        if (func.is_unsafe and !self.in_unsafe_context) {
+            self.addError(.invalid_call, call.span, "call to unsafe function requires unsafe block or unsafe fn", .{});
+        }
 
         // Check argument count
         if (call.args.len != func.params.len) {
@@ -7019,6 +7030,24 @@ pub const TypeChecker = struct {
         };
     }
 
+    /// Type check an unsafe block expression.
+    /// Sets the unsafe context flag to allow unsafe operations within the block.
+    fn checkUnsafeBlock(self: *TypeChecker, block: *ast.UnsafeBlock) Type {
+        // Save the previous unsafe context state
+        const was_unsafe = self.in_unsafe_context;
+
+        // Enter unsafe context
+        self.in_unsafe_context = true;
+
+        // Type-check the inner block
+        const block_type = self.checkBlock(block.body);
+
+        // Restore the previous unsafe context state
+        self.in_unsafe_context = was_unsafe;
+
+        return block_type;
+    }
+
     /// Populate interpreter environment with constants from the current scope.
     /// Copies compile-time evaluated constants to the interpreter's global environment.
     fn populateInterpreterEnv(self: *TypeChecker, interp: *Interpreter) void {
@@ -8482,7 +8511,7 @@ pub const TypeChecker = struct {
         else
             self.type_builder.voidType();
 
-        const func_type = self.type_builder.functionTypeWithComptime(param_types.items, return_type, comptime_params) catch {
+        const func_type = self.type_builder.functionTypeWithFlags(param_types.items, return_type, comptime_params, func.is_unsafe) catch {
             return;
         };
 
@@ -8554,6 +8583,13 @@ pub const TypeChecker = struct {
                 self.checking_comptime_function_body = true;
             }
             defer self.checking_comptime_function_body = was_checking_comptime_body;
+
+            // For unsafe functions, the entire body is an unsafe context
+            const was_unsafe = self.in_unsafe_context;
+            if (func.is_unsafe) {
+                self.in_unsafe_context = true;
+            }
+            defer self.in_unsafe_context = was_unsafe;
 
             _ = self.checkBlock(body);
         }
@@ -10219,7 +10255,7 @@ pub const TypeChecker = struct {
                     else
                         self.type_builder.voidType();
 
-                    const func_type = self.type_builder.functionTypeWithComptime(param_types.items, return_type, comptime_params) catch continue;
+                    const func_type = self.type_builder.functionTypeWithFlags(param_types.items, return_type, comptime_params, f.is_unsafe) catch continue;
 
                     // Validate main() signature
                     if (std.mem.eql(u8, f.name, "main")) {

@@ -53,6 +53,7 @@ pub const Expr = union(enum) {
     enum_literal: *EnumLiteral,
     comptime_block: *ComptimeBlock,
     builtin_call: *BuiltinCall,
+    unsafe_block: *UnsafeBlock,
 
     pub fn span(self: Expr) Span {
         return switch (self) {
@@ -77,6 +78,7 @@ pub const Expr = union(enum) {
             .enum_literal => |e| e.span,
             .comptime_block => |c| c.span,
             .builtin_call => |b| b.span,
+            .unsafe_block => |u| u.span,
         };
     }
 };
@@ -349,6 +351,14 @@ pub const ComptimeBlock = struct {
     span: Span,
 };
 
+/// Unsafe block expression: `unsafe { ... }`
+/// Allows unsafe operations like calling extern functions,
+/// dereferencing raw pointers, etc.
+pub const UnsafeBlock = struct {
+    body: *Block,
+    span: Span,
+};
+
 /// Builtin function call: `@typeName(T)`, `@typeInfo(T)`, etc.
 pub const BuiltinCall = struct {
     name: []const u8, // The builtin name without @ (e.g., "typeName")
@@ -600,6 +610,7 @@ pub const FunctionDecl = struct {
     is_pub: bool,
     is_async: bool,
     is_comptime: bool, // true for `comptime fn` (compile-time function)
+    is_unsafe: bool, // true for `unsafe fn` (unsafe function)
     span: Span,
 };
 

@@ -1,0 +1,38 @@
+// Test: Basic unsafe blocks
+// Verifies unsafe block parsing and type-checking.
+
+fn safe_function() -> i32 {
+    // Unsafe block inside a safe function
+    let x: i32 = unsafe {
+        // Code inside unsafe block
+        let a: i32 = 10
+        let b: i32 = 20
+        a + b  // Block evaluates to this expression
+    }
+    return x
+}
+
+// Nested unsafe blocks (outer unsafe propagates)
+fn nested_unsafe() -> i32 {
+    unsafe {
+        let y: i32 = unsafe {
+            42
+        }
+        y
+    }
+}
+
+fn main() -> i32 {
+    let result: i32 = safe_function()
+    if result != 30 {
+        return 1
+    }
+
+    let nested: i32 = nested_unsafe()
+    if nested != 42 {
+        return 2
+    }
+
+    println("Unsafe block test passed!")
+    return 0
+}
