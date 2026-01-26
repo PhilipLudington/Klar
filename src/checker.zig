@@ -3333,6 +3333,19 @@ pub const TypeChecker = struct {
             else => {},
         }
 
+        // String concatenation with +
+        if (bin.op == .add) {
+            const left_is_string = left_type == .primitive and left_type.primitive == .string_;
+            const right_is_string = right_type == .primitive and right_type.primitive == .string_;
+            if (left_is_string and right_is_string) {
+                return self.type_builder.stringType();
+            }
+            if (left_is_string or right_is_string) {
+                self.addError(.type_mismatch, bin.span, "cannot concatenate string with non-string", .{});
+                return self.type_builder.unknownType();
+            }
+        }
+
         // Arithmetic operators
         switch (bin.op) {
             .add, .sub, .mul, .div, .mod, .add_wrap, .sub_wrap, .mul_wrap, .add_sat, .sub_sat, .mul_sat => {

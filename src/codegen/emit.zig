@@ -3158,6 +3158,8 @@ pub const Emitter = struct {
             // Standard arithmetic (with overflow checking for integers)
             .add => if (is_float)
                 self.builder.buildFAdd(lhs, rhs, "faddtmp")
+            else if (is_string)
+                try self.emitStringConcatLiteral(lhs, rhs)
             else
                 self.emitCheckedAdd(lhs, rhs, true),
             .sub => if (is_float)
@@ -3318,6 +3320,20 @@ pub const Emitter = struct {
             result,
             llvm.Const.int32(self.ctx, 0),
             "strneq",
+        );
+    }
+
+    /// Emit string concatenation using the runtime function.
+    /// For binary + operator on char* strings.
+    /// Returns a new null-terminated string pointer.
+    fn emitStringConcatLiteral(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const concat_fn = self.getOrDeclareStringConcatLiteral();
+        var args = [_]llvm.ValueRef{ lhs, rhs };
+        return self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(concat_fn),
+            concat_fn,
+            &args,
+            "strconcat",
         );
     }
 
@@ -23592,6 +23608,109 @@ pub const Emitter = struct {
         var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
         const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 2, 0); // not variadic
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    /// Declare or get the string concatenation function.
+    /// Concatenates two null-terminated strings, returning a new allocated string.
+    fn getOrDeclareStringConcatLiteral(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_concat_literal";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // char* klar_string_concat_literal(const char *a, const char *b)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 2, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Build the function body inline
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+
+        // Entry block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+        const a = llvm.c.LLVMGetParam(func, 0);
+        const b = llvm.c.LLVMGetParam(func, 1);
+
+        // Get lengths of both strings
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args_a = [_]llvm.ValueRef{a};
+        const len_a = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(strlen_fn),
+            strlen_fn,
+            &strlen_args_a,
+            1,
+            "len_a",
+        );
+        var strlen_args_b = [_]llvm.ValueRef{b};
+        const len_b = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(strlen_fn),
+            strlen_fn,
+            &strlen_args_b,
+            1,
+            "len_b",
+        );
+
+        // Total length = len_a + len_b + 1 (for null terminator)
+        const total_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_a, len_b, "total_len");
+        const alloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, total_len, one_i64, "alloc_size");
+
+        // Allocate new buffer
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const result = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &malloc_args,
+            1,
+            "result",
+        );
+
+        // Copy first string using memcpy
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args_a = [_]llvm.ValueRef{ result, a, len_a };
+        _ = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(memcpy_fn),
+            memcpy_fn,
+            &memcpy_args_a,
+            3,
+            "",
+        );
+
+        // Copy second string: dest = result + len_a
+        var gep_indices = [_]llvm.ValueRef{len_a};
+        const dest_b = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_indices, 1, "dest_b");
+        var memcpy_args_b = [_]llvm.ValueRef{ dest_b, b, len_b };
+        _ = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(memcpy_fn),
+            memcpy_fn,
+            &memcpy_args_b,
+            3,
+            "",
+        );
+
+        // Add null terminator at result[total_len]
+        var gep_indices_null = [_]llvm.ValueRef{total_len};
+        const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_indices_null, 1, "null_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int8(self.ctx, 0), null_ptr);
+
+        // Return result
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, result);
+
+        // Restore builder position
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, saved_bb);
+
+        return func;
     }
 
     fn getOrDeclareFprintf(self: *Emitter) llvm.ValueRef {

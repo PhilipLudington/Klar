@@ -70,36 +70,28 @@ fn main() -> i32 {
 
 ---
 
-## Bug 10: String Concatenation with `+` Operator ❌ BLOCKING
+## Bug 10: String Concatenation with `+` Operator ✅ FIXED
 
-**Status:** Blocking
+**Status:** Fixed
 
-**Description:** String concatenation using `+` fails with type error "left operand must be numeric".
+**Description:** String concatenation using `+` now works correctly. The type checker allows `string + string` operations, and all three backends (native LLVM, VM, interpreter) support it.
 
-**Reproduction:**
 ```klar
 fn main() -> i32 {
     let a: string = "hello"
     let b: string = "world"
-    let c: string = a + " " + b  // ERROR: left operand must be numeric
-    println("{c}")
+    let c: string = a + " " + b  // NOW WORKS
+    println("{c}")  // Prints: hello world
+
+    // Building strings in loops also works
+    var result: string = ""
+    for i: i32 in 0..5 {
+        result = result + "x"
+    }
+    println("{result}")  // Prints: xxxxx
+
     return 0
 }
-```
-
-**Error:**
-```
-Type error(s):
-  4:21: left operand must be numeric
-  4:21: left operand must be numeric
-```
-
-**Workaround:** Use string interpolation where possible:
-```klar
-let c: string = "{a} {b}"  // Works for simple cases
-```
-
-**Impact:** Cannot build strings incrementally in loops (e.g., lexer building token strings character by character).
 
 ---
 
@@ -181,7 +173,7 @@ LLVM Module verification failed: Call parameter type does not match function sig
 | 7 | Associated fn on string structs | ✅ Fixed | - |
 | 8 | Arrays in struct fields | ✅ Fixed | - |
 | 9 | Match on tuple element | ✅ Fixed | - |
-| 10 | String `+` concatenation | ❌ Blocking | High |
+| 10 | String `+` concatenation | ✅ Fixed | - |
 | 11 | Result with struct error | ❌ Blocking | High |
 | 12 | Arrays + complex returns | ❌ Blocking | High |
 
@@ -189,10 +181,9 @@ LLVM Module verification failed: Call parameter type does not match function sig
 
 ## Impact on JSON Parser
 
-The JSON lexer cannot be implemented due to bugs 10, 11, and 12:
+The JSON lexer cannot be implemented due to bugs 11 and 12:
 
-1. **Bug 10** prevents building token strings character by character
-2. **Bug 11** prevents using structured error types with Result
-3. **Bug 12** prevents the fundamental lexer pattern of passing char arrays to tokenization functions
+1. **Bug 11** prevents using structured error types with Result
+2. **Bug 12** prevents the fundamental lexer pattern of passing char arrays to tokenization functions
 
 The `value.kl` module (JsonValue types) works correctly. The lexer and parser are blocked until these compiler bugs are fixed.
