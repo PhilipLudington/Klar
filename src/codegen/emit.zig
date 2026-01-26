@@ -6961,6 +6961,65 @@ pub const Emitter = struct {
                         // Get element type and load
                         const elem_type = llvm.c.LLVMGetElementType(arr_type);
                         return self.builder.buildLoad(elem_type, elem_ptr, "elem.val");
+                    } else if (arr_type_kind == llvm.c.LLVMStructTypeKind and local.is_array and local.array_size == null) {
+                        // Slice indexing: slices are stored as { ptr: *T, len: i64 }
+                        const i64_type = llvm.Types.int64(self.ctx);
+                        const slice_type = self.getSliceStructType();
+
+                        // Get element type from stored type info, or default to i32 (char)
+                        const element_llvm_type = if (local.array_element_type) |elem_type|
+                            self.typeToLLVM(elem_type)
+                        else
+                            llvm.Types.int32(self.ctx);
+
+                        // Load length from slice struct (field 1)
+                        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 1, "slice.len_ptr");
+                        const slice_len = self.builder.buildLoad(i64_type, len_ptr, "slice.len");
+
+                        // Zero-extend or sign-extend index to i64 for comparison
+                        const index_type = llvm.typeOf(index_val);
+                        const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
+
+                        const index_i64 = if (index_bits < 64)
+                            self.builder.buildZExt(index_val, i64_type, "idx.ext")
+                        else if (index_bits > 64)
+                            self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
+                        else
+                            index_val;
+
+                        // Bounds check: index < length (unsigned comparison)
+                        const in_bounds = self.builder.buildICmp(
+                            llvm.c.LLVMIntULT,
+                            index_i64,
+                            slice_len,
+                            "bounds.check",
+                        );
+
+                        // Create blocks for bounds check
+                        const func = self.current_function orelse return EmitError.InvalidAST;
+                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
+                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
+
+                        // Branch based on bounds check
+                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+                        // Fail block: trap/unreachable
+                        self.builder.positionAtEnd(fail_block);
+                        _ = self.builder.buildUnreachable();
+
+                        // Continue in OK block
+                        self.builder.positionAtEnd(ok_block);
+
+                        // Load data pointer from slice struct (field 0)
+                        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 0, "slice.ptr_ptr");
+                        const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "slice.data_ptr");
+
+                        // GEP into data pointer with the index
+                        var gep_indices = [_]llvm.ValueRef{index_i64};
+                        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, element_llvm_type, data_ptr, &gep_indices, 1, "slice.elem.ptr");
+
+                        // Load and return the element
+                        return self.builder.buildLoad(element_llvm_type, elem_ptr, "slice.elem.val");
                     }
                 }
             }

@@ -87,27 +87,31 @@ fn main() -> i32 {
 
 ## Bug: Array Indexing Not Supported
 
-**Status:** Broken
+**Status:** Fixed (verified 2026-01-25)
 
-**Description:** Array indexing (`arr[i]`) returns a codegen error, making it impossible to access individual characters from `string.chars()`.
+**Description:** Array indexing (`arr[i]`) on slices returned a codegen error, making it impossible to access individual characters from `string.chars()`.
 
-**Reproduction:**
+**Root Cause:** The `emitIndexAccess` function only handled fixed-size LLVM arrays (`LLVMArrayTypeKind`), but slices are stored as `{ ptr: *T, len: i64 }` structs (`LLVMStructTypeKind`). The code fell through to an `UnsupportedFeature` error for struct types.
+
+**Fix:** Added slice indexing support in `emitIndexAccess` by checking for struct-typed variables with `is_array = true` and `array_size = null`. The fix extracts the data pointer and length from the slice struct, performs bounds checking, and GEPs into the data pointer to access the element.
+
+**Reproduction (now works):**
 
 ```klar
 fn main() -> i32 {
     let s: string = "hello"
     let chars: [char] = s.chars()
-    let first: char = chars[0]  // ERROR
+    let first: char = chars[0]   // 'h'
+    let second: char = chars[1]  // 'e'
+    let last: char = chars[4]    // 'o'
+
+    // Variable index also works
+    var idx: i32 = 2
+    let third: char = chars[idx]  // 'l'
+
     return 0
 }
 ```
-
-**Error:**
-```
-Codegen error: UnsupportedFeature
-```
-
-**Expected:** Should return the character at the given index.
 
 ---
 
