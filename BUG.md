@@ -49,33 +49,35 @@ Bugs discovered while implementing the JSON parser. Klar version: **0.3.1-dev**
 
 ---
 
-## Bug 5: Some() Constructor Not Recognized
+## ~~Bug 5: Some() Constructor Not Recognized~~ - FIXED
 
-**Severity:** Minor
+**Status:** Fixed
 
-**Description:** The `Some(value)` constructor for optional types is not recognized as a function/constructor.
+**Description:** The `Some(value)` and `None()` constructors for optional types are now recognized.
 
-**Reproduction:**
+**Usage:**
 ```klar
 fn main() -> i32 {
-    let opt: ?i32 = Some(42)  // ERROR
+    let opt1: ?i32 = Some(42)    // Works!
+    let opt2: ?i32 = None()      // Works! (requires parentheses)
+    let opt3: ?string = Some("hello")
+
+    // Pattern matching works
+    match opt1 {
+        Some(v) => { println(v.to_string()) }
+        None => { println("none") }
+    }
+
+    // Default operator works
+    let val: i32 = opt1 ?? 0  // Returns 42
     return 0
 }
 ```
 
-**Error:**
-```
-Type error(s):
-  2:21: undefined variable 'Some'
-  2:21: cannot call non-function type
-```
-
-**Workaround:** Return values directly from functions with optional return type (implicit Some):
-```klar
-fn get_value() -> ?i32 {
-    return 42  // Implicitly wrapped as Some(42)
-}
-```
+**Fix:**
+1. Type checker: Added `Some`/`None` as builtin functions in `initBuiltins()` and `checkSomeNoneCall()` for type inference
+2. Codegen: Added `emitSomeCall()`/`emitNoneCall()` dispatchers and `getOptionalType()` helper
+3. Type inference: Added handling for `Some`/`None` in `inferExprType()` to return proper `{ i1, T }` struct type
 
 ---
 
@@ -95,7 +97,7 @@ fn get_value() -> ?i32 {
 | 2 | Pattern matching Result/Option | Blocking | **FIXED** |
 | 3 | String field in struct | Blocking | **FIXED** |
 | 4 | Impl methods on mixed structs | Blocking | **FIXED** |
-| 5 | Some() constructor | Minor | Use implicit return |
+| 5 | Some()/None() constructors | Minor | **FIXED** |
 | 6 | Tuple (Struct, primitive) | High | **FIXED** |
 
 ---

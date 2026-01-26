@@ -4032,6 +4032,12 @@ pub const Emitter = struct {
             } else if (std.mem.eql(u8, name, "Err")) {
                 // Result::Err(error) constructor
                 return self.emitErrCall(call.args);
+            } else if (std.mem.eql(u8, name, "Some")) {
+                // Optional::Some(value) constructor
+                return self.emitSomeCall(call.args);
+            } else if (std.mem.eql(u8, name, "None")) {
+                // Optional::None constructor
+                return self.emitNoneCall();
             } else if (std.mem.eql(u8, name, "stdout")) {
                 // stdout() -> Stdout
                 // Returns the stdout FILE* handle
@@ -5511,6 +5517,27 @@ pub const Emitter = struct {
                         return self.getResultType(ok_type, err_type);
                     }
                     return llvm.Types.int32(self.ctx);
+                }
+
+                // Handle builtin Optional constructors: Some(value) and None
+                if (std.mem.eql(u8, func_name, "Some")) {
+                    // Some(value) returns ?T
+                    if (call.args.len == 1) {
+                        const inner_type = try self.inferExprType(call.args[0]);
+                        return self.getOptionalType(inner_type);
+                    }
+                    return llvm.Types.int32(self.ctx);
+                }
+
+                if (std.mem.eql(u8, func_name, "None")) {
+                    // None returns ?T - use expected type if available
+                    const inner_type = if (self.expected_type) |et| blk: {
+                        if (et == .optional) {
+                            break :blk self.typeToLLVM(et.optional.*);
+                        }
+                        break :blk llvm.Types.int32(self.ctx);
+                    } else llvm.Types.int32(self.ctx);
+                    return self.getOptionalType(inner_type);
                 }
 
                 // Handle stdout(), stderr(), stdin() - they return FILE* pointers
@@ -7623,6 +7650,15 @@ pub const Emitter = struct {
             err_type, // err_value
         };
         return llvm.Types.struct_(self.ctx, &result_fields, false);
+    }
+
+    /// Get the Optional type from inner_type: { i1 tag, T value }
+    fn getOptionalType(self: *Emitter, inner_type: llvm.TypeRef) llvm.TypeRef {
+        var opt_fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag (0 = none, 1 = some)
+            inner_type, // value
+        };
+        return llvm.Types.struct_(self.ctx, &opt_fields, false);
     }
 
     /// Emit an enum literal: EnumType::VariantName(payload)
@@ -21363,6 +21399,43 @@ pub const Emitter = struct {
         const ok_type = llvm.Types.int32(self.ctx);
 
         return self.emitErr(error_val, ok_type, err_type);
+    }
+
+    /// Emit Some(value) - Optional::Some constructor.
+    /// Uses expected_type from context if available (e.g., from type annotation),
+    /// otherwise infers ?T where T is the value type.
+    fn emitSomeCall(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 1) {
+            return EmitError.InvalidAST;
+        }
+
+        // Emit the value
+        const value = try self.emitExpr(args[0]);
+        const inner_type = llvm.typeOf(value);
+
+        return self.emitSome(value, inner_type);
+    }
+
+    /// Emit None - Optional::None constructor.
+    /// Requires expected_type from context to know the optional's inner type.
+    fn emitNoneCall(self: *Emitter) EmitError!llvm.ValueRef {
+        // Get the inner type from expected_type context
+        const inner_type = if (self.expected_type) |et| blk: {
+            if (et == .optional) {
+                break :blk self.typeToLLVM(et.optional.*);
+            }
+            // Default to i32 if no Optional context
+            break :blk llvm.Types.int32(self.ctx);
+        } else llvm.Types.int32(self.ctx);
+
+        // Build the Optional type { i1, T }
+        var opt_fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag
+            inner_type, // value
+        };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+
+        return self.emitNone(opt_type);
     }
 
     /// Emit Result.is_ok() - returns true if tag == 1 (Ok).

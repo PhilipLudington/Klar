@@ -984,6 +984,35 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
+        // Some(value: T) -> ?T - Optional constructor for present values
+        // For now, use i32 -> ?i32 as a simple type
+        // Full generic support infers T from the argument
+        const some_type = try self.type_builder.functionType(
+            &.{self.type_builder.i32Type()},
+            try self.type_builder.optionalType(self.type_builder.i32Type()),
+        );
+        try self.current_scope.define(.{
+            .name = "Some",
+            .type_ = some_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // None - Optional constructor for absent values
+        // Returns ?i32 by default, but actual type is inferred from context
+        const none_type = try self.type_builder.functionType(
+            &.{},
+            try self.type_builder.optionalType(self.type_builder.i32Type()),
+        );
+        try self.current_scope.define(.{
+            .name = "None",
+            .type_ = none_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
         // ====================================================================
         // Register builtin traits
         // ====================================================================
@@ -3537,12 +3566,63 @@ pub const TypeChecker = struct {
         }
     }
 
+    /// Special type checking for Some/None constructors that infers Optional type from context.
+    /// This enables ?T to work with any types, not just i32.
+    fn checkSomeNoneCall(self: *TypeChecker, call: *ast.Call, is_some: bool) Type {
+        if (is_some) {
+            // Some(value) - requires exactly 1 argument
+            if (call.args.len != 1) {
+                self.addError(.invalid_call, call.span, "Some requires exactly 1 argument, got {d}", .{call.args.len});
+                return self.type_builder.unknownType();
+            }
+
+            // Check the argument type
+            const arg_type = self.checkExpr(call.args[0]);
+
+            // If we have expected_type and it's an Optional type, validate it
+            if (self.expected_type) |expected| {
+                if (expected == .optional) {
+                    const inner = expected.optional.*;
+                    if (!self.isTypeCompatible(inner, arg_type)) {
+                        self.addError(.type_mismatch, call.args[0].span(), "argument type mismatch", .{});
+                    }
+                    // Return the expected Optional type (fully specified)
+                    return expected;
+                }
+            }
+
+            // No expected type context - infer ?arg_type
+            return self.type_builder.optionalType(arg_type) catch self.type_builder.unknownType();
+        } else {
+            // None - requires 0 arguments
+            if (call.args.len != 0) {
+                self.addError(.invalid_call, call.span, "None takes no arguments, got {d}", .{call.args.len});
+                return self.type_builder.unknownType();
+            }
+
+            // None requires type context to know the inner type
+            if (self.expected_type) |expected| {
+                if (expected == .optional) {
+                    return expected;
+                }
+            }
+
+            // No type context - default to ?i32 (same pattern as Err)
+            return self.type_builder.optionalType(self.type_builder.i32Type()) catch self.type_builder.unknownType();
+        }
+    }
+
     fn checkCall(self: *TypeChecker, call: *ast.Call) Type {
         // Special handling for Ok/Err constructors to infer Result type from context
         if (call.callee == .identifier) {
             const func_name = call.callee.identifier.name;
             if (std.mem.eql(u8, func_name, "Ok") or std.mem.eql(u8, func_name, "Err")) {
                 return self.checkOkErrCall(call, std.mem.eql(u8, func_name, "Ok"));
+            }
+
+            // Special handling for Some/None constructors to infer Optional type from context
+            if (std.mem.eql(u8, func_name, "Some") or std.mem.eql(u8, func_name, "None")) {
+                return self.checkSomeNoneCall(call, std.mem.eql(u8, func_name, "Some"));
             }
 
             // Special handling for print/println - accept both string and String
