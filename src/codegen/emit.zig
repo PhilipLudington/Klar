@@ -6283,6 +6283,7 @@ pub const Emitter = struct {
 
                 // Try to look up user-defined struct method by function name
                 // Function name format: StructName_method_name
+                // First check for instance methods (object is a variable of struct type)
                 if (self.getStructNameFromExpr(m.object)) |struct_name| {
                     var fn_name_buf = std.ArrayListUnmanaged(u8){};
                     defer fn_name_buf.deinit(self.allocator);
@@ -6296,9 +6297,28 @@ pub const Emitter = struct {
                     if (self.module.getNamedFunction(fn_name)) |func| {
                         const fn_type = llvm.getGlobalValueType(func);
                         return llvm.getReturnType(fn_type);
-                    } else {
                     }
-                } else {
+                }
+
+                // Check for static method calls where object is a type name (e.g., Counter.new())
+                if (m.object == .identifier) {
+                    const type_name = m.object.identifier.name;
+                    // Check if this identifier is a struct type (not a variable)
+                    if (self.struct_types.contains(type_name)) {
+                        var fn_name_buf = std.ArrayListUnmanaged(u8){};
+                        defer fn_name_buf.deinit(self.allocator);
+                        fn_name_buf.appendSlice(self.allocator, type_name) catch return EmitError.OutOfMemory;
+                        fn_name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
+                        fn_name_buf.appendSlice(self.allocator, m.method_name) catch return EmitError.OutOfMemory;
+
+                        const fn_name = self.allocator.dupeZ(u8, fn_name_buf.items) catch return EmitError.OutOfMemory;
+                        defer self.allocator.free(fn_name);
+
+                        if (self.module.getNamedFunction(fn_name)) |func| {
+                            const fn_type = llvm.getGlobalValueType(func);
+                            return llvm.getReturnType(fn_type);
+                        }
+                    }
                 }
 
                 return llvm.Types.int32(self.ctx);
@@ -6666,6 +6686,36 @@ pub const Emitter = struct {
                 for (mono.concrete_type.fields) |field| {
                     if (std.mem.eql(u8, field.name, field_name)) {
                         return self.typeToLLVM(field.type_);
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// Look up the semantic Type for a field in a struct.
+    /// Returns the Klar Type (not LLVM type) for the field.
+    fn getFieldType(self: *Emitter, struct_type_name: []const u8, field_name: []const u8) ?types.Type {
+        const tc = self.type_checker orelse return null;
+
+        // Try global scope for non-generic structs
+        if (tc.global_scope.lookup(struct_type_name)) |sym| {
+            if (sym.type_ == .struct_) {
+                for (sym.type_.struct_.fields) |field| {
+                    if (std.mem.eql(u8, field.name, field_name)) {
+                        return field.type_;
+                    }
+                }
+            }
+        }
+
+        // Try monomorphized structs for generic types
+        for (tc.getMonomorphizedStructs()) |mono| {
+            if (std.mem.eql(u8, mono.mangled_name, struct_type_name)) {
+                for (mono.concrete_type.fields) |field| {
+                    if (std.mem.eql(u8, field.name, field_name)) {
+                        return field.type_;
                     }
                 }
             }
@@ -7963,15 +8013,25 @@ pub const Emitter = struct {
         const object_type = llvm.typeOf(object);
 
         // Check for array/slice methods FIRST (before Cell methods which also have .get())
-        if (self.isArrayExpr(method.object)) {
-            // For arrays, we need the alloca pointer, not the loaded value
-            // Get the alloca pointer for identifier expressions
+        if (self.isArrayExpr(method.object) or self.isSliceExpr(method.object)) {
+            // For arrays/slices, we need a pointer to the array/slice struct, not the loaded value.
+            // - For identifiers: get the alloca pointer directly from named_values
+            // - For other expressions (field access, method calls, etc.): create a temp alloca
             const array_ptr = if (method.object == .identifier) blk: {
                 if (self.named_values.get(method.object.identifier.name)) |local| {
                     break :blk local.value; // This is the alloca pointer
                 }
-                break :blk object;
-            } else object;
+                // Identifier not found in named_values - store to temp alloca
+                const tmp_alloca = self.builder.buildAlloca(object_type, "arr.tmp");
+                _ = self.builder.buildStore(object, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                // Non-identifier object (e.g., field access like `lexer.chars`)
+                // Store the slice/array value to a temporary alloca for GEP access
+                const tmp_alloca = self.builder.buildAlloca(object_type, "arr.tmp");
+                _ = self.builder.buildStore(object, tmp_alloca);
+                break :blk tmp_alloca;
+            };
 
             if (std.mem.eql(u8, method.method_name, "len")) {
                 return self.emitArrayLen(method.object, array_ptr);
@@ -8169,6 +8229,19 @@ pub const Emitter = struct {
             if (struct_name) |name| {
                 if (tc.lookupStructMethod(name, method.method_name)) |struct_method| {
                     return self.emitUserDefinedMethod(method, object, name, struct_method);
+                }
+            }
+
+            // Check for static method calls where object is a type name (e.g., Counter.new())
+            if (method.object == .identifier) {
+                const type_name = method.object.identifier.name;
+                // Check if this identifier is a struct type (not a variable)
+                if (self.struct_types.contains(type_name)) {
+                    if (tc.lookupStructMethod(type_name, method.method_name)) |struct_method| {
+                        // For static methods, we don't pass 'object' as self
+                        // Pass a dummy value since emitUserDefinedMethod handles has_self=false
+                        return self.emitUserDefinedMethod(method, object, type_name, struct_method);
+                    }
                 }
             }
         }
@@ -11653,6 +11726,20 @@ pub const Emitter = struct {
                     }
                 }
             },
+            .field => |f| {
+                // For field access, check the field type in the struct
+                // Get the struct type from the object expression
+                if (f.object == .identifier) {
+                    if (self.named_values.get(f.object.identifier.name)) |local| {
+                        if (local.struct_type_name) |struct_name| {
+                            if (self.getFieldType(struct_name, f.field_name)) |field_type| {
+                                return field_type == .slice;
+                            }
+                        }
+                    }
+                }
+                // Fallthrough to type checker
+            },
             else => {},
         }
         // Fallback: use type checker if available
@@ -11705,6 +11792,19 @@ pub const Emitter = struct {
                 }
                 return false;
             },
+            .field => |f| {
+                // For field access, check the field type in the struct
+                if (f.object == .identifier) {
+                    if (self.named_values.get(f.object.identifier.name)) |local| {
+                        if (local.struct_type_name) |struct_name| {
+                            if (self.getFieldType(struct_name, f.field_name)) |field_type| {
+                                return field_type.isInteger();
+                            }
+                        }
+                    }
+                }
+                // Fall through to type checker at end
+            },
             .binary, .unary => {
                 // Use type checker to determine if result is integer
                 if (self.type_checker) |tc| {
@@ -11722,18 +11822,21 @@ pub const Emitter = struct {
                 {
                     return self.isIntegerExpr(m.object);
                 }
-                return false;
-            },
-            else => {
-                // For other expressions, use type checker if available
-                if (self.type_checker) |tc| {
-                    const tc_mut = @constCast(tc);
-                    const expr_type = tc_mut.checkExpr(expr);
-                    return expr_type.isInteger();
+                // .len() on arrays/slices/lists/strings always returns i32
+                if (std.mem.eql(u8, m.method_name, "len")) {
+                    return true;
                 }
                 return false;
             },
+            else => {},
         }
+        // Fallback: use type checker if available
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type.isInteger();
+        }
+        return false;
     }
 
     /// Check if an expression is a Range type.

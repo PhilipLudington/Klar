@@ -4,88 +4,67 @@ Bugs discovered while implementing the JSON parser. Klar version: **0.3.1-dev**
 
 ---
 
-## ~~Bug 1: Result in Tuple Returns~~ - FIXED
+## ~~Bug 7: Associated Functions on Structs with String Fields - LLVM Error~~ FIXED
 
-**Status:** Fixed
+**Status:** ✅ Fixed
 
-**Description:** Returning a tuple containing a `Result[T, E]` and a struct caused a codegen error.
+**Description:** Calling associated functions (static methods like `Lexer.new()`) on structs caused LLVM verification failures when the struct also had instance methods.
 
-**Fix:** Propagate type context through tuple literals in both type checker (`checkTupleLiteralWithHint`) and codegen (`emitTupleLiteral`). This allows `Ok()`/`Err()` constructors inside tuples to infer the correct Result type.
+**Root cause:** The codegen's `inferExprType` and `emitMethodCall` didn't handle static method calls where the object is a type name (e.g., `Counter.new()`) - they only handled instance method calls where the object is a variable.
+
+**Fix:** Added detection for static method calls in both `inferExprType` (line ~6303) and `emitMethodCall` (line ~8195) in `src/codegen/emit.zig`.
 
 ---
 
-## ~~Bug 2: Pattern Matching on Result/Option - Parse Error~~ - FIXED
+## ~~Bug 8: Arrays Cannot Be Stored in Struct Fields~~ FIXED
 
-**Status:** Fixed
+**Status:** ✅ Fixed
 
-**Description:** Pattern matching with `Ok(value) =>` or `Err(e) =>` now works correctly.
+**Description:** Storing `[char]` (or other slice types) as struct fields worked at parse time, but calling methods on them (like `.len()`) or chaining method calls (like `.len().to_string()`) failed at codegen time.
+
+**Root cause:** Multiple issues in `src/codegen/emit.zig`:
+1. `isSliceExpr()` didn't handle field access expressions - it only checked identifiers
+2. `isIntegerExpr()` didn't handle field access expressions, so chained calls like `lexer.pos.to_string()` failed
+3. The array/slice method handling in `emitMethodCall()` didn't create temporary allocas for non-identifier expressions
 
 **Fix:**
-1. Parser: Added support for shorthand variant patterns like `Ok(v)` without requiring explicit type prefix
-2. Type Checker: Added handling for Result and Optional types in pattern matching
-3. Codegen: Added proper handling for Result/Optional tag types (i1 instead of i8) and payload extraction
-
-**Note:** `Some(v)` patterns work for pattern matching, but the `Some()` constructor (Bug 5) is still not implemented. Use implicit wrapping via function returns or `?` operator instead.
-
----
-
-## ~~Bug 3: Struct with String Field - Method Returns Wrong `string.len()`~~ - FIXED
-
-**Status:** Fixed
-
-**Description:** When a struct contains a `string` field and is passed to a method or function, calling `.len()` on the string field returns 0 instead of the actual length.
-
-**Fix:** The `isStringExpr` function in codegen wasn't recognizing field access expressions as string types. Added explicit handling for `.field` expressions that looks up the struct's field type from the type checker's registered struct types. Also extended to check monomorphized struct instances for generic structs (e.g., `Container[T]` instantiated as `Container$i32`).
+- Added `getFieldType()` helper to look up the semantic type of struct fields
+- Added `.field` case handling in `isSliceExpr()` and `isIntegerExpr()`
+- Added `.len()` to the list of methods recognized as returning integers in `isIntegerExpr()`
+- Fixed `emitMethodCall()` to create temporary allocas for slice values from field accesses
 
 ---
 
-## ~~Bug 4: Impl Methods on Structs - Wrong Parameter Type~~ - FIXED
+## Bug 9: Pattern Matching on Tuple Elements Directly
 
-**Status:** Fixed
+**Severity:** Minor
 
-**Description:** Calling impl methods on structs that contain non-primitive fields caused LLVM verification failure. The compiler was passing only the first field instead of the entire struct.
+**Description:** `match result.0` is not supported. Must extract tuple element to a variable first.
 
-**Fix:** This was fixed as part of earlier codegen improvements. The method call emission now correctly loads and passes the entire struct value to impl methods.
-
----
-
-## ~~Bug 5: Some() Constructor Not Recognized~~ - FIXED
-
-**Status:** Fixed
-
-**Description:** The `Some(value)` and `None()` constructors for optional types are now recognized.
-
-**Usage:**
+**Reproduction:**
 ```klar
+fn test() -> (Result[i32, string], i32) {
+    return (Ok(42), 1)
+}
+
 fn main() -> i32 {
-    let opt1: ?i32 = Some(42)    // Works!
-    let opt2: ?i32 = None()      // Works! (requires parentheses)
-    let opt3: ?string = Some("hello")
-
-    // Pattern matching works
-    match opt1 {
-        Some(v) => { println(v.to_string()) }
-        None => { println("none") }
+    let result: (Result[i32, string], i32) = test()
+    match result.0 {  // ERROR
+        Ok(n) => { println("{n}") }
+        Err(e) => { println("{e}") }
     }
-
-    // Default operator works
-    let val: i32 = opt1 ?? 0  // Returns 42
     return 0
 }
 ```
 
-**Fix:**
-1. Type checker: Added `Some`/`None` as builtin functions in `initBuiltins()` and `checkSomeNoneCall()` for type inference
-2. Codegen: Added `emitSomeCall()`/`emitNoneCall()` dispatchers and `getOptionalType()` helper
-3. Type inference: Added handling for `Some`/`None` in `inferExprType()` to return proper `{ i1, T }` struct type
-
----
-
-## ~~Bug 6: Tuple with Struct and Primitive~~ - FIXED
-
-**Status:** Fixed (same fix as Bug 1)
-
-**Description:** Returning a tuple containing a struct and a primitive type (like i32) caused a codegen error. This was fixed along with Bug 1 by propagating type context through tuple literals.
+**Workaround:** Extract the tuple element first:
+```klar
+let r: Result[i32, string] = result.0
+match r {
+    Ok(n) => { println("{n}") }
+    Err(e) => { println("{e}") }
+}
+```
 
 ---
 
@@ -93,22 +72,15 @@ fn main() -> i32 {
 
 | Bug | Feature | Severity | Status |
 |-----|---------|----------|--------|
-| 1 | Result in tuple return | Blocking | **FIXED** |
-| 2 | Pattern matching Result/Option | Blocking | **FIXED** |
-| 3 | String field in struct | Blocking | **FIXED** |
-| 4 | Impl methods on mixed structs | Blocking | **FIXED** |
-| 5 | Some()/None() constructors | Minor | **FIXED** |
-| 6 | Tuple (Struct, primitive) | High | **FIXED** |
+| 7 | Associated fn on structs | Blocking | ✅ Fixed |
+| 8 | Arrays in struct fields | Blocking | ✅ Fixed |
+| 9 | Match on tuple element | Minor | Open |
 
 ---
 
 ## Impact on JSON Parser
 
-All blocking bugs are now fixed:
-- ~~**Lexer:** Cannot return `(Result[Token, ParseError], LexerState)` (Bug 1)~~ **FIXED**
-- ~~**Parser:** Same issue with parser state~~ **FIXED**
-- ~~**Error handling:** Cannot pattern match on Result (Bug 2)~~ **FIXED**
-- ~~**String processing:** Cannot use string fields in lexer struct (Bug 3)~~ **FIXED**
-- ~~**Impl methods:** Cannot use impl methods on structs with string fields (Bug 4)~~ **FIXED**
-
-The JSON parser implementation can now proceed with full language feature support.
+These bugs require the following workarounds:
+- ~~Must pass `[char]` as parameter instead of storing in Lexer struct (Bug 8)~~ Fixed!
+- ~~Must use free functions instead of `Lexer.new()` (Bug 7)~~ Fixed!
+- Must extract tuple elements before pattern matching (Bug 9)

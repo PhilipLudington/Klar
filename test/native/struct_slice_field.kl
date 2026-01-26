@@ -1,0 +1,38 @@
+// Test: Arrays (slices) stored in struct fields
+// Bug 8: Arrays cannot be stored in struct fields
+// This tests that [T] slice types work as struct fields
+
+struct Lexer {
+    source: string,
+    chars: [char],
+    pos: i32,
+}
+
+fn main() -> i32 {
+    let s: string = "hello"
+    let lexer: Lexer = Lexer {
+        source: s,
+        chars: s.chars(),
+        pos: 0,
+    }
+
+    // Test 1: Access slice field and call .len()
+    let len: i32 = lexer.chars.len()
+    if len != 5 {
+        return 1
+    }
+
+    // Test 2: Access i32 field after slice field
+    if lexer.pos != 0 {
+        return 2
+    }
+
+    // Test 3: Chained method call on slice field: lexer.chars.len().to_string()
+    // Verify by checking the length is still correct after conversion
+    println(lexer.chars.len().to_string())
+
+    // Test 4: Chained method call on i32 field: lexer.pos.to_string()
+    println(lexer.pos.to_string())
+
+    return 0
+}
