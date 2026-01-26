@@ -6780,6 +6780,14 @@ pub const Emitter = struct {
             return llvm.Const.int32(self.ctx, 0);
         }
 
+        // Extract expected element types from expected_type if it's a tuple with matching arity
+        const expected_elem_types: ?[]const types.Type = if (self.expected_type) |et| blk: {
+            if (et == .tuple and et.tuple.elements.len == tup.elements.len) {
+                break :blk et.tuple.elements;
+            }
+            break :blk null;
+        } else null;
+
         // Emit all elements
         var element_values = std.ArrayListUnmanaged(llvm.ValueRef){};
         defer element_values.deinit(self.allocator);
@@ -6787,11 +6795,15 @@ pub const Emitter = struct {
         var element_types = std.ArrayListUnmanaged(llvm.TypeRef){};
         defer element_types.deinit(self.allocator);
 
-        for (tup.elements) |elem| {
+        const prev_expected = self.expected_type;
+        for (tup.elements, 0..) |elem, i| {
+            // Set expected_type for this element (for Ok/Err type inference)
+            self.expected_type = if (expected_elem_types) |eet| eet[i] else null;
             const value = try self.emitExpr(elem);
             element_values.append(self.allocator, value) catch return EmitError.OutOfMemory;
             element_types.append(self.allocator, llvm.typeOf(value)) catch return EmitError.OutOfMemory;
         }
+        self.expected_type = prev_expected;
 
         // Create tuple type (anonymous struct in LLVM)
         const tuple_type = llvm.Types.struct_(self.ctx, element_types.items, false);

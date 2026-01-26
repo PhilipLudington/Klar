@@ -1,181 +1,220 @@
-# Klar Compiler Bugs and Feature Requests
+# Klar Compiler Bugs
 
-Discovered while implementing the JSON parser. Tested with Klar v0.3.1-dev.
-
-**Last verified:** 2026-01-25 — All blocking bugs are now fixed. JSON parser implementation can proceed.
+Bugs discovered while implementing the JSON parser. Klar version: **0.3.1-dev**
 
 ---
 
-## Bug: impl Methods Returning Optional Enum When Accessing Map Variant
+## ~~Bug 1: Result in Tuple Returns~~ - FIXED
 
-**Status:** Fixed (verified 2026-01-25)
+**Status:** Fixed
 
-**Description:** ~~`impl` methods on enums that return `?EnumType` and access a `Map` inside a variant would compile but return incorrect values at runtime. The Map's `get` method would return None even when the key existed.~~
+**Description:** Returning a tuple containing a `Result[T, E]` and a struct caused a codegen error.
 
-**Root Cause:** Two bugs in `src/codegen/emit.zig`:
-1. `getTypeSize` and `getSizeOfKlarType` returned 8 bytes for Map/List/Set types, but these are actually larger structs (Map: 20 bytes, List: 16 bytes, Set: 20 bytes). This caused enum payloads to be undersized.
-2. `bindPatternVariables` for variant patterns was passing a raw `i8*` pointer to the payload bytes instead of loading the actual payload value.
-
-**Fix:** Updated collection type sizes and added proper payload loading in match pattern binding.
-
-**Original Reproduction:**
-
-```klar
-pub enum JsonValue {
-    Null,
-    Object(Map[string, JsonValue]),
-}
-
-impl JsonValue {
-    pub fn get(self: JsonValue, key: string) -> ?JsonValue {
-        match self {
-            JsonValue.Object(obj) => { return obj.get(key) }
-            _ => { }
-        }
-    }
-}
-
-fn main() {
-    var entries: Map[string, JsonValue] = Map.new[string, JsonValue]()
-    entries.insert("name", JsonValue::Str("Alice"))
-    let obj: JsonValue = JsonValue::Object(entries)
-
-    let name_val: ?JsonValue = obj.get("name")  // Now works correctly!
-}
-```
+**Fix:** Propagate type context through tuple literals in both type checker (`checkTupleLiteralWithHint`) and codegen (`emitTupleLiteral`). This allows `Ok()`/`Err()` constructors inside tuples to infer the correct Result type.
 
 ---
 
-## Bug: Array Iteration Causes Compiler Segfault
+## Bug 2: Pattern Matching on Result/Option - Parse Error
 
-**Status:** Fixed (verified 2026-01-25)
+**Severity:** Blocking
 
-**Description:** ~~Iterating over an array (e.g., from `string.chars()`) causes the compiler to segfault during codegen. This blocks implementing a lexer since strings cannot be converted to an iterable form.~~ Now works correctly.
+**Description:** Pattern matching with `Ok(value) =>` or `Some(value) =>` causes a parse error, despite being documented syntax.
 
 **Reproduction:**
-
 ```klar
 fn main() -> i32 {
-    let s: string = "hello"
-    let arr: [char] = s.chars()
-
-    var count: i32 = 0
-    for c: char in arr {  // Segfault here
-        count = count + 1
+    let r: Result[i32, string] = Ok(42)
+    match r {
+        Ok(v) => { println("Value: {v}") }
+        Err(e) => { println("Error: {e}") }
     }
-
-    return count
-}
-```
-
-**Error:**
-```
-Segmentation fault at address 0x8
-...
-in _codegen.emit.Emitter.emitForLoopArray
-```
-
-**Expected:** Should iterate over the array without error.
-
-~~**Impact:** Without this, we cannot implement a JSON lexer because:
-1. Cannot iterate over `string.chars()` directly
-2. Cannot use array indexing (returns `Codegen error: UnsupportedFeature`)
-3. Cannot convert string to `List[char]` (would require iteration)
-
-**Workaround:** None for arbitrary strings. For testing, characters can be manually pushed to a `List[char]`.~~
-
-**Update:** All three blockers are now resolved. JSON lexer implementation can proceed.
-
----
-
-## Bug: Array Indexing Not Supported
-
-**Status:** Fixed (verified 2026-01-25)
-
-**Description:** ~~Array indexing (`arr[i]`) returns a codegen error, making it impossible to access individual characters from `string.chars()`.~~ Now works correctly.
-
-**Reproduction:**
-
-```klar
-fn main() -> i32 {
-    let s: string = "hello"
-    let chars: [char] = s.chars()
-    let first: char = chars[0]  // ERROR
     return 0
 }
 ```
 
 **Error:**
 ```
-Codegen error: UnsupportedFeature
+Parse error: error.UnexpectedToken
+  4:11: expected '=>' after pattern
 ```
 
-**Expected:** Should return the character at the given index.
+**Same issue with Option:**
+```klar
+fn main() -> i32 {
+    let opt: ?i32 = Some(42)
+    match opt {
+        Some(v) => { println("Value: {v}") }
+        None => { println("None") }
+    }
+    return 0
+}
+```
+
+**Workaround:** Use `.is_ok()`, `.is_err()`, `.is_some()`, `.is_none()` with force unwrap `!`:
+```klar
+if r.is_ok() {
+    let v: i32 = r!
+    println("Value: {v}")
+}
+```
 
 ---
 
-## Feature Requests
+## Bug 3: Struct with String Field - Method Returns Wrong `string.len()`
 
-### 1. Method Chaining for Optional Returns
+**Severity:** Blocking
 
-**Description:** Allow calling methods on optional values with automatic propagation, similar to Rust's `?` operator or Swift's optional chaining.
+**Description:** When a struct contains a `string` field and is passed to a method or function, calling `.len()` on the string field returns 0 instead of the actual length.
 
-**Current code:**
+**Reproduction:**
 ```klar
-let arr_opt: ?List[JsonValue] = val.as_array()
-if arr_opt.is_some() {
-    let arr: List[JsonValue] = arr_opt.unwrap()
-    let first: ?JsonValue = arr.get(0)
-    // ...
+struct Lexer {
+    source: string,
+    pos: i32,
+}
+
+fn is_at_end(lex: Lexer) -> bool {
+    println("source: {lex.source}")        // Prints: "hello"
+    println("len: {lex.source.len()}")     // Prints: 0 (WRONG!)
+    return lex.pos >= lex.source.len()
+}
+
+fn main() -> i32 {
+    let lex: Lexer = Lexer { source: "hello", pos: 0 }
+    println("Direct len: {lex.source.len()}")  // Prints: 5 (correct)
+
+    let at_end: bool = is_at_end(lex)  // Returns true (WRONG!)
+    return 0
 }
 ```
 
-**Desired:**
-```klar
-let first: ?JsonValue = val.as_array()?.get(0)
+**Output:**
+```
+Direct len: 5
+source: hello
+len: 0
 ```
 
-### 2. Derive Debug/Display for Enums
-
-**Description:** Automatically generate string representation for enum values for debugging purposes.
-
-**Desired:**
+**Workaround:** Store length separately in an i32 field and don't include strings in structs passed to functions:
 ```klar
-#[derive(Debug)]
-enum JsonValue {
-    Null,
-    Bool(bool),
-    // ...
-}
-
-fn main() {
-    let v: JsonValue = JsonValue::Bool(true)
-    println(v.debug())  // prints "Bool(true)"
+struct LexerState {
+    pos: i32,
+    len: i32,  // Store length separately
 }
 ```
 
-### 3. Match Expression (Not Statement)
+---
 
-**Description:** Allow `match` to be used as an expression that returns a value.
+## Bug 4: Impl Methods on Structs - Wrong Parameter Type
 
-**Current code:**
+**Severity:** Blocking
+
+**Description:** Calling impl methods on structs that contain non-primitive fields causes LLVM verification failure. The compiler passes only the first field instead of the entire struct.
+
+**Reproduction:**
 ```klar
-fn type_name(val: JsonValue) -> string {
-    match val {
-        JsonValue.Null => { return "null" }
-        JsonValue.Bool(_) => { return "boolean" }
-        // ...
+struct MyStruct {
+    name: string,
+    value: i32,
+}
+
+impl MyStruct {
+    fn get_value(self: MyStruct) -> i32 {
+        return self.value
+    }
+}
+
+fn main() -> i32 {
+    let s: MyStruct = MyStruct { name: "test", value: 42 }
+    let v: i32 = s.get_value()  // CRASH
+    return 0
+}
+```
+
+**Error:**
+```
+LLVM Module verification failed: Call parameter type does not match function signature!
+  %s1 = load i32, ptr %s, align 4
+ { ptr, i32 }  %method.result = call i32 @MyStruct_get_value(i32 %s1)
+```
+
+**Workaround:** Use free functions instead of impl methods, or use only i32 fields in structs:
+```klar
+// Works: i32-only struct
+struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    fn get(self: Counter) -> i32 {
+        return self.value  // OK
     }
 }
 ```
 
-**Desired:**
+---
+
+## Bug 5: Some() Constructor Not Recognized
+
+**Severity:** Minor
+
+**Description:** The `Some(value)` constructor for optional types is not recognized as a function/constructor.
+
+**Reproduction:**
 ```klar
-fn type_name(val: JsonValue) -> string {
-    return match val {
-        JsonValue.Null => "null",
-        JsonValue.Bool(_) => "boolean",
-        // ...
-    }
+fn main() -> i32 {
+    let opt: ?i32 = Some(42)  // ERROR
+    return 0
 }
 ```
+
+**Error:**
+```
+Type error(s):
+  2:21: undefined variable 'Some'
+  2:21: cannot call non-function type
+```
+
+**Workaround:** Return values directly from functions with optional return type (implicit Some):
+```klar
+fn get_value() -> ?i32 {
+    return 42  // Implicitly wrapped as Some(42)
+}
+```
+
+---
+
+## ~~Bug 6: Tuple with Struct and Primitive~~ - FIXED
+
+**Status:** Fixed (same fix as Bug 1)
+
+**Description:** Returning a tuple containing a struct and a primitive type (like i32) caused a codegen error. This was fixed along with Bug 1 by propagating type context through tuple literals.
+
+---
+
+## Summary Table
+
+| Bug | Feature | Severity | Status |
+|-----|---------|----------|--------|
+| 1 | Result in tuple return | Blocking | **FIXED** |
+| 2 | Pattern matching Result/Option | Blocking | Use is_ok()/is_err() + ! |
+| 3 | String field in struct | Blocking | Store length separately |
+| 4 | Impl methods on mixed structs | Blocking | Use free functions |
+| 5 | Some() constructor | Minor | Use implicit return |
+| 6 | Tuple (Struct, primitive) | High | **FIXED** |
+
+---
+
+## Impact on JSON Parser
+
+These bugs block the following:
+- ~~**Lexer:** Cannot return `(Result[Token, ParseError], LexerState)` (Bug 1)~~ **FIXED**
+- ~~**Parser:** Same issue with parser state~~ **FIXED**
+- **Error handling:** Cannot pattern match on Result (Bug 2)
+- **String processing:** Cannot use string fields in lexer struct (Bug 3, 4)
+
+Current workaround approach:
+1. Use i32-only `LexerState` struct
+2. Pass `[char]` slice separately
+3. Use `.is_err()` + `!` instead of pattern matching
+4. ~~Core logic works, but full Result integration is blocked~~ Result in tuples now works!

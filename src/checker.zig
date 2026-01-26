@@ -3189,7 +3189,7 @@ pub const TypeChecker = struct {
             .range => |r| self.checkRange(r),
             .struct_literal => |s| self.checkStructLiteral(s),
             .array_literal => |a| self.checkArrayLiteral(a),
-            .tuple_literal => |t| self.checkTupleLiteral(t),
+            .tuple_literal => |t| self.checkTupleLiteralWithHint(t, hint),
             .type_cast => |tc| self.checkTypeCast(tc),
             .grouped => |g| self.checkExprWithHint(g.expr, hint),
             .interpolated_string => |is| self.checkInterpolatedString(is),
@@ -6656,11 +6656,24 @@ pub const TypeChecker = struct {
     }
 
     fn checkTupleLiteral(self: *TypeChecker, tup: *ast.TupleLiteral) Type {
+        return self.checkTupleLiteralWithHint(tup, null);
+    }
+
+    fn checkTupleLiteralWithHint(self: *TypeChecker, tup: *ast.TupleLiteral, hint: ?Type) Type {
         var elem_types: std.ArrayListUnmanaged(Type) = .{};
         defer elem_types.deinit(self.allocator);
 
-        for (tup.elements) |elem| {
-            elem_types.append(self.allocator, self.checkExpr(elem)) catch {};
+        // Extract expected element types from hint if it's a tuple with matching arity
+        const hint_elem_types: ?[]const Type = if (hint) |h| blk: {
+            if (h == .tuple and h.tuple.elements.len == tup.elements.len) {
+                break :blk h.tuple.elements;
+            }
+            break :blk null;
+        } else null;
+
+        for (tup.elements, 0..) |elem, i| {
+            const elem_hint: ?Type = if (hint_elem_types) |het| het[i] else null;
+            elem_types.append(self.allocator, self.checkExprWithHint(elem, elem_hint)) catch {};
         }
 
         return self.type_builder.tupleType(elem_types.items) catch self.type_builder.unknownType();
