@@ -1,0 +1,60 @@
+// Test: Slice fields in structs (Bug 8 fix)
+// Verifies that [T] (slice) fields in structs work correctly
+
+struct Container {
+    items: [i32],
+    name: string,
+}
+
+struct CharHolder {
+    data: [char],
+}
+
+fn main() -> i32 {
+    // Test 1: Create slice from array literal, store in struct
+    let numbers: [i32] = [10, 20, 30, 40]
+    let c: Container = Container { items: numbers, name: "test" }
+
+    // Verify length
+    if c.items.len() != 4 {
+        return 1
+    }
+
+    // Test 2: Extract slice from struct
+    let extracted: [i32] = c.items
+
+    // Verify extracted length
+    if extracted.len() != 4 {
+        return 2
+    }
+
+    // Test 3: Verify element values
+    if extracted[0] != 10 {
+        return 3
+    }
+    if extracted[1] != 20 {
+        return 4
+    }
+    if extracted[2] != 30 {
+        return 5
+    }
+    if extracted[3] != 40 {
+        return 6
+    }
+
+    // Test 4: Char slices in structs
+    let chars: [char] = ['a', 'b', 'c']
+    let ch: CharHolder = CharHolder { data: chars }
+
+    if ch.data.len() != 3 {
+        return 7
+    }
+
+    let extracted_chars: [char] = ch.data
+    if extracted_chars[0] != 'a' {
+        return 8
+    }
+
+    // All tests passed
+    return 42
+}

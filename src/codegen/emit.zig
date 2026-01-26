@@ -1431,9 +1431,18 @@ pub const Emitter = struct {
                 self.expected_type = self.resolveExpectedType(decl.type_);
                 defer self.expected_type = prev_expected;
 
-                // For let (immutable), we can store directly
-                // But for consistency, use alloca
-                const ty = try self.inferExprType(decl.value);
+                // Check if this is a slice type with an array literal value
+                // In this case, we need to convert the array to a slice
+                const is_slice_decl = decl.type_ == .slice;
+                const is_array_literal_value = decl.value == .array_literal;
+
+                // Determine the LLVM type for the alloca
+                // For slice types, use the declared slice type (not the array literal type)
+                const ty = if (is_slice_decl)
+                    try self.typeExprToLLVM(decl.type_)
+                else
+                    try self.inferExprType(decl.value);
+
                 const name = self.allocator.dupeZ(u8, decl.name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(name);
                 // Create alloca in entry block to prevent stack growth in loops
@@ -1443,6 +1452,19 @@ pub const Emitter = struct {
                 if (self.tryGetLargeRepeatInfo(decl.value)) |repeat_info| {
                     // Initialize directly into the alloca without intermediate load/store
                     try self.emitRepeatInto(repeat_info, alloca);
+                } else if (is_slice_decl and is_array_literal_value) {
+                    // Convert array literal to slice: create array alloca, then build slice struct
+                    const arr_lit = decl.value.array_literal;
+                    const array_value = try self.emitExpr(decl.value);
+                    const array_type = llvm.typeOf(array_value);
+
+                    // Store the array in an alloca so we can get a pointer to it
+                    const array_alloca = self.builder.buildAlloca(array_type, "arr.storage");
+                    _ = self.builder.buildStore(array_value, array_alloca);
+
+                    // Convert to slice and store in the slice alloca
+                    const slice_value = self.convertArrayToSlice(array_alloca, arr_lit.elements.len);
+                    _ = self.builder.buildStore(slice_value, alloca);
                 } else {
                     // Normal path: emit value and store
                     const value = try self.emitExpr(decl.value);
@@ -1526,7 +1548,18 @@ pub const Emitter = struct {
                 self.expected_type = self.resolveExpectedType(decl.type_);
                 defer self.expected_type = prev_expected;
 
-                const ty = try self.inferExprType(decl.value);
+                // Check if this is a slice type with an array literal value
+                // In this case, we need to convert the array to a slice
+                const is_slice_decl = decl.type_ == .slice;
+                const is_array_literal_value = decl.value == .array_literal;
+
+                // Determine the LLVM type for the alloca
+                // For slice types, use the declared slice type (not the array literal type)
+                const ty = if (is_slice_decl)
+                    try self.typeExprToLLVM(decl.type_)
+                else
+                    try self.inferExprType(decl.value);
+
                 const name = self.allocator.dupeZ(u8, decl.name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(name);
                 // Create alloca in entry block to prevent stack growth in loops
@@ -1536,6 +1569,19 @@ pub const Emitter = struct {
                 if (self.tryGetLargeRepeatInfo(decl.value)) |repeat_info| {
                     // Initialize directly into the alloca without intermediate load/store
                     try self.emitRepeatInto(repeat_info, alloca);
+                } else if (is_slice_decl and is_array_literal_value) {
+                    // Convert array literal to slice: create array alloca, then build slice struct
+                    const arr_lit = decl.value.array_literal;
+                    const array_value = try self.emitExpr(decl.value);
+                    const array_type = llvm.typeOf(array_value);
+
+                    // Store the array in an alloca so we can get a pointer to it
+                    const array_alloca = self.builder.buildAlloca(array_type, "arr.storage");
+                    _ = self.builder.buildStore(array_value, array_alloca);
+
+                    // Convert to slice and store in the slice alloca
+                    const slice_value = self.convertArrayToSlice(array_alloca, arr_lit.elements.len);
+                    _ = self.builder.buildStore(slice_value, alloca);
                 } else {
                     // Normal path: emit value and store
                     const value = try self.emitExpr(decl.value);
@@ -6943,13 +6989,34 @@ pub const Emitter = struct {
                 const field_idx = self.lookupFieldIndex(type_name, field_init.name) orelse
                     return EmitError.InvalidAST;
 
-                const value = try self.emitExpr(field_init.value);
+                // Check if field is a slice type and value is an array literal
+                const field_klar_type = self.getFieldType(type_name, field_init.name);
+                const is_field_slice = if (field_klar_type) |ft| ft == .slice else false;
+                const is_array_literal_value = field_init.value == .array_literal;
+
                 var indices = [_]llvm.ValueRef{
                     llvm.Const.int32(self.ctx, 0),
                     llvm.Const.int32(self.ctx, @intCast(field_idx)),
                 };
                 const field_ptr = self.builder.buildGEP(struct_type, alloca, &indices, "field.ptr");
-                _ = self.builder.buildStore(value, field_ptr);
+
+                if (is_field_slice and is_array_literal_value) {
+                    // Convert array literal to slice for slice-typed field
+                    const arr_lit = field_init.value.array_literal;
+                    const array_value = try self.emitExpr(field_init.value);
+                    const array_type = llvm.typeOf(array_value);
+
+                    // Store the array in an alloca so we can get a pointer to it
+                    const array_alloca = self.builder.buildAlloca(array_type, "arr.storage");
+                    _ = self.builder.buildStore(array_value, array_alloca);
+
+                    // Convert to slice and store in the field
+                    const slice_value = self.convertArrayToSlice(array_alloca, arr_lit.elements.len);
+                    _ = self.builder.buildStore(slice_value, field_ptr);
+                } else {
+                    const value = try self.emitExpr(field_init.value);
+                    _ = self.builder.buildStore(value, field_ptr);
+                }
             }
 
             // Load and return the complete struct value
@@ -20006,6 +20073,29 @@ pub const Emitter = struct {
             llvm.Types.int32(self.ctx), // capacity
         };
         return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Convert a fixed-size array value to a slice struct { ptr, len }.
+    /// The array_value must be stored in an alloca first, as we need a pointer to it.
+    /// array_alloca is the alloca where the array is stored.
+    /// array_len is the number of elements in the array.
+    fn convertArrayToSlice(self: *Emitter, array_alloca: llvm.ValueRef, array_len: u64) llvm.ValueRef {
+        const slice_type = self.getSliceStructType();
+
+        // Create a slice struct
+        const slice_alloca = self.builder.buildAlloca(slice_type, "arr_to_slice");
+
+        // Store pointer to array data (ptr field at index 0)
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_alloca, 0, "slice.ptr_field");
+        _ = self.builder.buildStore(array_alloca, ptr_field);
+
+        // Store length (len field at index 1)
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_alloca, 1, "slice.len_field");
+        const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
+        _ = self.builder.buildStore(len_val, len_field);
+
+        // Load and return the slice struct value
+        return self.builder.buildLoad(slice_type, slice_alloca, "slice.val");
     }
 
     /// Get type size in bytes from LLVM type.
