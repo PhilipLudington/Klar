@@ -272,8 +272,8 @@ pub const Compiler = struct {
             .enum_decl => |e| try self.compileEnumDecl(e),
             // TODO: Implement remaining declarations
             .trait_decl, .impl_decl, .type_alias, .import_decl, .module_decl => {},
-            // Extern types are compile-time only (no runtime representation in VM)
-            .extern_type_decl => {},
+            // Extern types and blocks are compile-time only (FFI not supported in VM)
+            .extern_type_decl, .extern_block => {},
         }
     }
 

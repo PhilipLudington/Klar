@@ -2072,11 +2072,23 @@ pub const Parser = struct {
             return self.parseExternTypeDecl(is_pub);
         }
 
+        // extern { ... } block for C function declarations
+        if (is_extern and self.current.kind == .l_brace) {
+            if (is_unsafe) {
+                try self.reportError("'unsafe' modifier is not allowed on extern blocks");
+                return ParseError.UnexpectedToken;
+            }
+            if (is_pub) {
+                try self.reportError("'pub' modifier is not allowed on extern blocks (use 'pub' on individual functions inside)");
+                return ParseError.UnexpectedToken;
+            }
+            return self.parseExternBlock();
+        }
+
         return switch (self.current.kind) {
             .fn_ => blk: {
                 if (is_extern) {
-                    // Future: extern fn declarations (Phase 4)
-                    try self.reportError("'extern fn' is not yet supported");
+                    try self.reportError("extern functions must be declared inside 'extern { }' blocks");
                     return ParseError.UnexpectedToken;
                 }
                 break :blk self.parseFunctionDecl(is_pub, is_unsafe);
@@ -2237,6 +2249,8 @@ pub const Parser = struct {
             .is_async = false,
             .is_comptime = is_comptime,
             .is_unsafe = is_unsafe,
+            .is_extern = false,
+            .is_variadic = false,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .function = func };
@@ -2308,6 +2322,7 @@ pub const Parser = struct {
                 .type_ = param_type,
                 .default_value = default_value,
                 .is_comptime = is_comptime,
+                .is_out = false,
                 .span = param_span,
             });
 
@@ -2711,6 +2726,164 @@ pub const Parser = struct {
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .extern_type_decl = extern_type_decl };
+    }
+
+    /// Parse an extern block containing C function declarations
+    /// Syntax: `extern { fn name(...) -> Type; ... }`
+    fn parseExternBlock(self: *Parser) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume '{'
+
+        var functions = std.ArrayListUnmanaged(*ast.FunctionDecl){};
+
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            // Skip newlines
+            while (self.match(.newline)) {}
+
+            if (self.check(.r_brace)) break;
+
+            // Check for optional pub modifier
+            const is_pub = self.match(.pub_);
+
+            // Expect 'fn'
+            if (!self.check(.fn_)) {
+                try self.reportError("expected 'fn' in extern block");
+                return ParseError.UnexpectedToken;
+            }
+
+            const func = try self.parseExternFnDecl(is_pub);
+            try functions.append(self.allocator, func);
+
+            // Skip newlines
+            while (self.match(.newline)) {}
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_brace, "expected '}' to close extern block");
+
+        const extern_block = try self.create(ast.ExternBlock, .{
+            .functions = try self.dupeSlice(*ast.FunctionDecl, functions.items),
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .extern_block = extern_block };
+    }
+
+    /// Parse an extern function declaration (inside extern block)
+    /// Syntax: `fn name(param: Type, ...) -> ReturnType`
+    fn parseExternFnDecl(self: *Parser, is_pub: bool) ParseError!*ast.FunctionDecl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'fn'
+
+        const name = try self.consumeIdentifier();
+
+        // Extern functions cannot have type parameters (generics)
+        if (self.check(.l_bracket)) {
+            try self.reportError("extern functions cannot have type parameters");
+            return ParseError.UnexpectedToken;
+        }
+
+        // Parse parameters
+        try self.consume(.l_paren, "expected '(' after function name");
+        const params_result = try self.parseExternFnParams();
+        const params = params_result.params;
+        const is_variadic = params_result.is_variadic;
+        try self.consume(.r_paren, "expected ')' after parameters");
+
+        // Parse optional return type
+        var return_type: ?ast.TypeExpr = null;
+        if (self.match(.arrow)) {
+            return_type = try self.parseType();
+        }
+
+        const end_span = if (return_type) |rt| rt.span() else self.spanFromToken(self.previous);
+
+        const func = try self.create(ast.FunctionDecl, .{
+            .name = name,
+            .type_params = &[_]ast.TypeParam{},
+            .params = params,
+            .return_type = return_type,
+            .where_clause = null,
+            .body = null, // extern functions have no body
+            .is_pub = is_pub,
+            .is_async = false,
+            .is_comptime = false,
+            .is_unsafe = false, // extern functions are implicitly unsafe to call
+            .is_extern = true,
+            .is_variadic = is_variadic,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return func;
+    }
+
+    /// Parse extern function parameters, handling 'out' modifier and variadic '...'
+    /// Returns params and whether the function is variadic
+    const ExternFnParamsResult = struct {
+        params: []const ast.FunctionParam,
+        is_variadic: bool,
+    };
+
+    fn parseExternFnParams(self: *Parser) ParseError!ExternFnParamsResult {
+        var params = std.ArrayListUnmanaged(ast.FunctionParam){};
+        var is_variadic = false;
+
+        if (self.check(.r_paren)) {
+            return .{ .params = &[_]ast.FunctionParam{}, .is_variadic = false };
+        }
+
+        while (true) {
+            // Check for variadic '...'
+            if (self.match(.ellipsis)) {
+                is_variadic = true;
+                // Variadic marker must be last
+                if (!self.check(.r_paren)) {
+                    try self.reportError("variadic '...' must be the last parameter");
+                    return ParseError.UnexpectedToken;
+                }
+                break;
+            }
+
+            const param_span = self.spanFromToken(self.current);
+
+            // Check for 'out' modifier (contextual keyword - not a reserved keyword)
+            const is_out = self.current.kind == .identifier and
+                std.mem.eql(u8, self.source[self.current.loc.start..self.current.loc.end], "out");
+            if (is_out) {
+                self.advance(); // consume 'out'
+            }
+
+            const param_name = try self.consumeIdentifier();
+
+            try self.consume(.colon, "expected ':' after parameter name");
+            const param_type = try self.parseType();
+
+            // Extern function parameters cannot have default values
+            if (self.check(.eq)) {
+                try self.reportError("extern function parameters cannot have default values");
+                return ParseError.UnexpectedToken;
+            }
+
+            try params.append(self.allocator, .{
+                .name = param_name,
+                .type_ = param_type,
+                .default_value = null,
+                .is_comptime = false,
+                .is_out = is_out,
+                .span = param_span,
+            });
+
+            if (!self.match(.comma)) break;
+        }
+
+        // Validate: variadic functions must have at least one non-variadic parameter
+        if (is_variadic and params.items.len == 0) {
+            try self.reportError("variadic functions must have at least one non-variadic parameter");
+            return ParseError.UnexpectedToken;
+        }
+
+        return .{
+            .params = try self.dupeSlice(ast.FunctionParam, params.items),
+            .is_variadic = is_variadic,
+        };
     }
 
     fn parseConstDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {

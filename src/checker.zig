@@ -8658,6 +8658,7 @@ pub const TypeChecker = struct {
             .import_decl => {}, // Imports handled separately
             .module_decl => {}, // Module declarations don't need type checking
             .extern_type_decl => |e| self.checkExternType(e),
+            .extern_block => |b| self.checkExternBlock(b),
         }
     }
 
@@ -8829,6 +8830,55 @@ pub const TypeChecker = struct {
             .kind = .type_,
             .mutable = false,
             .span = extern_decl.span,
+        }) catch {};
+    }
+
+    fn checkExternBlock(self: *TypeChecker, block: *ast.ExternBlock) void {
+        // Check each extern function in the block
+        for (block.functions) |func| {
+            self.checkExternFunction(func);
+        }
+    }
+
+    fn checkExternFunction(self: *TypeChecker, func: *ast.FunctionDecl) void {
+        // Build function type from parameters
+        var param_types: std.ArrayListUnmanaged(Type) = .{};
+        defer param_types.deinit(self.allocator);
+
+        for (func.params) |param| {
+            const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
+            param_types.append(self.allocator, param_type) catch {};
+
+            // Validate out parameters: must be used with pointer-compatible types
+            if (param.is_out) {
+                // Out parameters get their address taken and passed as a pointer
+                // The actual type should be something that can be written to
+                // (this is validated at use site)
+            }
+        }
+
+        // Resolve return type
+        const return_type = if (func.return_type) |rt|
+            self.resolveTypeExpr(rt) catch self.type_builder.unknownType()
+        else
+            self.type_builder.voidType();
+
+        // Create function type
+        // Extern functions are implicitly unsafe to call
+        const func_type = self.type_builder.functionTypeWithFlags(
+            param_types.items,
+            return_type,
+            0, // no comptime params
+            true, // is_unsafe (extern functions require unsafe to call)
+        ) catch self.type_builder.unknownType();
+
+        // Register in current scope
+        self.current_scope.define(.{
+            .name = func.name,
+            .type_ = func_type,
+            .kind = .function,
+            .mutable = false,
+            .span = func.span,
         }) catch {};
     }
 
@@ -10493,6 +10543,12 @@ pub const TypeChecker = struct {
                     }
                 },
                 .const_decl => self.checkDecl(decl),
+                .extern_block => |b| {
+                    // Register extern functions (they need to be visible for type checking calls)
+                    for (b.functions) |func| {
+                        self.checkExternFunction(func);
+                    }
+                },
                 else => {},
             }
         }

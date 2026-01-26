@@ -106,10 +106,18 @@ pub const Emitter = struct {
     /// Used to detect sret at call sites.
     sret_functions: std.StringHashMap(llvm.TypeRef),
 
+    /// Set of extern function declarations for FFI.
+    extern_functions: std.StringHashMap(ExternFnInfo),
+
     /// True if main() takes [String] args (needs wrapper generation).
     main_takes_args: bool = false,
 
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
+
+    const ExternFnInfo = struct {
+        func: llvm.ValueRef,
+        is_variadic: bool,
+    };
 
     const ReturnTypeInfo = struct {
         llvm_type: llvm.TypeRef,
@@ -273,6 +281,7 @@ pub const Emitter = struct {
             .current_sret_ptr = null,
             .sret_attr_kind = null,
             .sret_functions = std.StringHashMap(llvm.TypeRef).init(allocator),
+            .extern_functions = std.StringHashMap(ExternFnInfo).init(allocator),
         };
     }
 
@@ -400,6 +409,12 @@ pub const Emitter = struct {
             self.allocator.free(key.*);
         }
         self.sret_functions.deinit();
+        // Free extern function name allocations
+        var extern_it = self.extern_functions.keyIterator();
+        while (extern_it.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.extern_functions.deinit();
         self.layout_calc.deinit();
         self.builder.dispose();
         self.module.dispose();
@@ -421,6 +436,11 @@ pub const Emitter = struct {
             switch (decl) {
                 .function => |f| try self.declareFunction(f),
                 .impl_decl => |i| try self.declareImplMethods(i),
+                .extern_block => |b| {
+                    for (b.functions) |f| {
+                        try self.declareExternFunction(f);
+                    }
+                },
                 else => {},
             }
         }
@@ -881,6 +901,53 @@ pub const Emitter = struct {
 
         // Set the calling convention for proper ABI compliance
         llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
+    }
+
+    /// Declare an external C function.
+    /// Extern functions use C calling convention and may be variadic.
+    fn declareExternFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
+        // Extern functions cannot be generic
+        if (func.type_params.len > 0) {
+            return EmitError.InvalidAST;
+        }
+
+        // Build return type
+        const return_llvm_type = if (func.return_type) |rt|
+            try self.typeExprToLLVM(rt)
+        else
+            llvm.Types.void_(self.ctx);
+
+        // Build parameter types
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer param_types.deinit(self.allocator);
+
+        for (func.params) |param| {
+            // For out parameters, we pass a pointer to the type
+            if (param.is_out) {
+                param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
+            } else {
+                const param_ty = try self.typeExprToLLVM(param.type_);
+                param_types.append(self.allocator, param_ty) catch return EmitError.OutOfMemory;
+            }
+        }
+
+        // Create function type (variadic if func.is_variadic)
+        const fn_type = llvm.Types.function(return_llvm_type, param_types.items, func.is_variadic);
+
+        // Add the function declaration to the module
+        const name = self.allocator.dupeZ(u8, func.name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(name);
+        const llvm_func = llvm.addFunction(self.module, name, fn_type);
+
+        // Use C calling convention for extern functions
+        llvm.setFunctionCallConv(llvm_func, 0); // 0 = C calling convention (ccc)
+
+        // Store the function for extern function tracking
+        const name_copy = self.allocator.dupe(u8, func.name) catch return EmitError.OutOfMemory;
+        self.extern_functions.put(name_copy, .{
+            .func = llvm_func,
+            .is_variadic = func.is_variadic,
+        }) catch return EmitError.OutOfMemory;
     }
 
     /// Check if a type expression is [String] (slice of String).

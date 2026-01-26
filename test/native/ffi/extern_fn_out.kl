@@ -1,0 +1,19 @@
+// Test: Out parameters in extern functions
+// This test verifies that out parameters are parsed correctly
+
+extern {
+    // Example with out parameter (like seL4_Recv)
+    // Note: This is just parsing/compilation test - we don't actually call it
+    fn mock_recv(src: i32, out sender: i32) -> i32
+    fn exit(status: i32) -> void
+}
+
+fn main() -> i32 {
+    // Just verify parsing and compilation works
+    unsafe {
+        exit(42)
+    }
+    return 1
+}
+
+// expected: 42

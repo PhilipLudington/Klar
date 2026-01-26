@@ -94,6 +94,7 @@ pub const Token = struct {
         dot,
         dot_dot,
         dot_dot_eq,
+        ellipsis, // ... for variadic functions
         arrow,
         fat_arrow,
         colon,
@@ -196,6 +197,7 @@ pub const Token = struct {
                 .dot => ".",
                 .dot_dot => "..",
                 .dot_dot_eq => "..=",
+                .ellipsis => "...",
                 .arrow => "->",
                 .fat_arrow => "=>",
                 .colon => ":",

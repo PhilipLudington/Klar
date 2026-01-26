@@ -585,6 +585,7 @@ pub const Decl = union(enum) {
     import_decl: *ImportDecl,
     module_decl: *ModuleDecl,
     extern_type_decl: *ExternTypeDecl,
+    extern_block: *ExternBlock,
 
     pub fn span(self: Decl) Span {
         return switch (self) {
@@ -598,6 +599,7 @@ pub const Decl = union(enum) {
             .import_decl => |i| i.span,
             .module_decl => |m| m.span,
             .extern_type_decl => |e| e.span,
+            .extern_block => |b| b.span,
         };
     }
 };
@@ -613,6 +615,8 @@ pub const FunctionDecl = struct {
     is_async: bool,
     is_comptime: bool, // true for `comptime fn` (compile-time function)
     is_unsafe: bool, // true for `unsafe fn` (unsafe function)
+    is_extern: bool, // true for extern fn (C FFI function)
+    is_variadic: bool, // true for variadic fn (has ... in params)
     span: Span,
 };
 
@@ -621,6 +625,7 @@ pub const FunctionParam = struct {
     type_: TypeExpr,
     default_value: ?Expr,
     is_comptime: bool, // true for `comptime` parameter modifier
+    is_out: bool, // true for `out` parameter modifier (FFI)
     span: Span,
 };
 
@@ -659,6 +664,13 @@ pub const ExternTypeDecl = struct {
     name: []const u8,
     size: ?u64, // null for opaque types, Some(N) for sized types
     is_pub: bool,
+    span: Span,
+};
+
+/// External function block for FFI interop
+/// Syntax: `extern { fn name(...) -> Type; ... }`
+pub const ExternBlock = struct {
+    functions: []const *FunctionDecl,
     span: Span,
 };
 
