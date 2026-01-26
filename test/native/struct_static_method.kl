@@ -1,0 +1,70 @@
+// Test: Static method (associated function) on struct
+// Bug 7: Associated functions on structs with string fields - LLVM Error
+// This tests calling both static methods (without self) and instance methods (with self)
+
+struct Lexer {
+    source: string,
+    pos: i32,
+}
+
+impl Lexer {
+    // Static method (no self parameter)
+    fn new(source: string) -> Lexer {
+        return Lexer { source: source, pos: 0 }
+    }
+
+    // Instance method (with self parameter)
+    fn get_source(self: Lexer) -> string {
+        return self.source
+    }
+
+    fn get_pos(self: Lexer) -> i32 {
+        return self.pos
+    }
+}
+
+// Also test struct without string fields
+struct Counter {
+    value: i32,
+    max: i32,
+}
+
+impl Counter {
+    fn new(max: i32) -> Counter {
+        return Counter { value: 0, max: max }
+    }
+
+    fn get_value(self: Counter) -> i32 {
+        return self.value
+    }
+
+    fn get_max(self: Counter) -> i32 {
+        return self.max
+    }
+}
+
+fn main() -> i32 {
+    // Test static constructor + instance method with string field
+    let lex: Lexer = Lexer.new("hello")
+    let s: string = lex.get_source()
+    let p: i32 = lex.get_pos()
+
+    // Test static constructor + instance method without string field
+    let c: Counter = Counter.new(100)
+    let v: i32 = c.get_value()
+    let m: i32 = c.get_max()
+
+    // Verify values: pos should be 0, value should be 0, max should be 100
+    if p != 0 {
+        return 1
+    }
+    if v != 0 {
+        return 2
+    }
+    if m != 100 {
+        return 3
+    }
+
+    // Return 42 on success
+    return 42
+}
