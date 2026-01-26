@@ -1,0 +1,57 @@
+// Test basic CPtr and COptPtr type usage
+// This tests that the FFI pointer types can be:
+// 1. Used in type annotations
+// 2. Resolved correctly by the type checker
+// 3. Used as return types for unsafe functions
+
+fn main() -> i32 {
+    // Type annotations for FFI pointer types - tests type resolution
+    // Note: In real code these would come from extern functions.
+    // For now we just verify the types parse and resolve.
+
+    unsafe {
+        // Test CPtr[T] - non-null raw pointer
+        let ptr: CPtr[i32] = get_ptr()
+
+        // Test COptPtr[T] - nullable raw pointer
+        let opt_ptr: COptPtr[i32] = get_opt_ptr()
+
+        // Test CStr - null-terminated C string
+        let c_string: CStr = get_cstr()
+
+        // Nested pointer types
+        let ptr_to_ptr: CPtr[CPtr[i32]] = get_ptr_to_ptr()
+        let opt_ptr_to_str: COptPtr[CStr] = get_opt_cstr()
+
+        // Explicit types (Klar requires type annotations on let)
+        let another_ptr: CPtr[i32] = get_ptr()
+        let another_cstr: CStr = get_cstr()
+    }
+
+    println("CPtr type resolution test passed")
+    return 0
+}
+
+// Placeholder unsafe functions - real implementation in later phases
+// These just verify the types are recognized in function signatures
+
+unsafe fn get_ptr() -> CPtr[i32] {
+    // Infinite recursion - won't run, just type checks
+    return get_ptr()
+}
+
+unsafe fn get_opt_ptr() -> COptPtr[i32] {
+    return get_opt_ptr()
+}
+
+unsafe fn get_cstr() -> CStr {
+    return get_cstr()
+}
+
+unsafe fn get_ptr_to_ptr() -> CPtr[CPtr[i32]] {
+    return get_ptr_to_ptr()
+}
+
+unsafe fn get_opt_cstr() -> COptPtr[CStr] {
+    return get_opt_cstr()
+}

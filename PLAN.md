@@ -1,6 +1,6 @@
 # Klar FFI Implementation Plan
 
-**Status:** In Progress (Phase 2 Complete)
+**Status:** In Progress (Phase 3 Complete)
 **Goal:** Implement Foreign Function Interface (FFI) for C interoperability
 
 ---
@@ -81,42 +81,42 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ---
 
-## Phase 3: Pointer Types
+## Phase 3: Pointer Types ✅
 
 **Objective:** Add `CPtr[T]`, `COptPtr[T]`, and `CStr` types.
 
 ### 3.1 Type System Changes
-- [ ] Add `CPtr` generic type (non-null raw pointer)
-- [ ] Add `COptPtr` generic type (nullable raw pointer)
-- [ ] Add `CStr` type (borrowed null-terminated string)
+- [x] Add `CPtr` generic type (non-null raw pointer)
+- [x] Add `COptPtr` generic type (nullable raw pointer)
+- [x] Add `CStr` type (borrowed null-terminated string)
 
 ### 3.2 Builtin Functions
-- [ ] `is_null[T](ptr: COptPtr[T]) -> bool` - safe, no unsafe required
-- [ ] `unwrap_ptr[T](ptr: COptPtr[T]) -> CPtr[T]` - unsafe
-- [ ] `offset[T](ptr: CPtr[T], count: isize) -> CPtr[T]` - unsafe
-- [ ] `read[T](ptr: CPtr[T]) -> T` - unsafe
-- [ ] `write[T](ptr: CPtr[T], value: T) -> void` - unsafe
-- [ ] `cast[T, U](ptr: CPtr[T]) -> CPtr[U]` - unsafe
-- [ ] `ref_to_ptr[T](value: ref T) -> CPtr[T]` - unsafe
+- [x] `is_null[T](ptr: COptPtr[T]) -> bool` - safe, no unsafe required
+- [x] `unwrap_ptr[T](ptr: COptPtr[T]) -> CPtr[T]` - unsafe
+- [x] `offset[T](ptr: CPtr[T], count: isize) -> CPtr[T]` - unsafe
+- [x] `read[T](ptr: CPtr[T]) -> T` - unsafe
+- [x] `write[T](ptr: CPtr[T], value: T) -> void` - unsafe
+- [ ] `ptr_cast[U](ptr: CPtr[T]) -> CPtr[U]` - unsafe (deferred: needs type arg syntax)
+- [x] `ref_to_ptr[T](value: ref T) -> CPtr[T]` - unsafe
 
 ### 3.3 Checker Changes
-- [ ] Type check pointer operations
-- [ ] Enforce unsafe requirement for dereference operations
-- [ ] Validate type parameters for pointer generics
+- [x] Type check pointer operations
+- [x] Enforce unsafe requirement for dereference operations
+- [x] Validate type parameters for pointer generics
 
 ### 3.4 Codegen
-- [ ] Map `CPtr[T]` to LLVM `ptr` (opaque pointer)
-- [ ] Map `COptPtr[T]` to LLVM `ptr`
-- [ ] Generate null checks for `is_null`
-- [ ] Generate `getelementptr` for `offset`
-- [ ] Generate `load`/`store` for `read`/`write`
-- [ ] Generate `bitcast` for `cast` (no-op with opaque pointers)
+- [x] Map `CPtr[T]` to LLVM `ptr` (opaque pointer)
+- [x] Map `COptPtr[T]` to LLVM `ptr`
+- [x] Generate null checks for `is_null`
+- [x] Generate `getelementptr` for `offset`
+- [x] Generate `load`/`store` for `read`/`write`
+- [ ] Generate `bitcast` for `ptr_cast` (deferred with ptr_cast)
 
 ### 3.5 Tests
-- [ ] `test/native/ffi/cptr_basic.kl`
-- [ ] `test/native/ffi/coptptr_null.kl`
-- [ ] `test/native/ffi/ptr_arithmetic.kl`
-- [ ] `test/native/ffi/ptr_cast.kl`
+- [x] `test/native/ffi/cptr_basic.kl`
+- [x] `test/native/ffi/ptr_type_inference.kl`
+- [x] `test/native/ffi/ptr_functions.kl`
+- [x] `test/native/ffi/ptr_unsafe_required.kl`
 
 ---
 

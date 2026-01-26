@@ -2561,6 +2561,23 @@ pub const TypeChecker = struct {
                 if (bw.inner.eql(new_inner)) return typ;
                 return self.type_builder.bufWriterType(new_inner);
             },
+
+            // CPtr - substitute inner type
+            .cptr => |cptr| {
+                const new_inner = try self.substituteTypeParams(cptr.inner, substitutions);
+                if (cptr.inner.eql(new_inner)) return typ;
+                return self.type_builder.cptrType(new_inner);
+            },
+
+            // COptPtr - substitute inner type
+            .copt_ptr => |coptptr| {
+                const new_inner = try self.substituteTypeParams(coptptr.inner, substitutions);
+                if (coptptr.inner.eql(new_inner)) return typ;
+                return self.type_builder.coptPtrType(new_inner);
+            },
+
+            // CStr - no type parameters to substitute
+            .cstr => typ,
         };
     }
 
@@ -2568,7 +2585,7 @@ pub const TypeChecker = struct {
     pub fn containsTypeVar(self: *TypeChecker, typ: Type) bool {
         return switch (typ) {
             .type_var => true,
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type => false,
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type, .cstr => false,
             .array => |arr| self.containsTypeVar(arr.element),
             .slice => |sl| self.containsTypeVar(sl.element),
             .tuple => |tup| {
@@ -2608,6 +2625,9 @@ pub const TypeChecker = struct {
             // Buffered I/O types have inner type that may contain type variables
             .buf_reader => |br| self.containsTypeVar(br.inner),
             .buf_writer => |bw| self.containsTypeVar(bw.inner),
+            // FFI pointer types may contain type variables in their inner type
+            .cptr => |cptr| self.containsTypeVar(cptr.inner),
+            .copt_ptr => |coptptr| self.containsTypeVar(coptptr.inner),
             // Associated type ref contains a type variable reference
             .associated_type_ref => true,
             .struct_, .enum_, .trait_ => false,
@@ -2634,7 +2654,7 @@ pub const TypeChecker = struct {
                 return true;
             },
 
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type => {
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type, .cstr => {
                 return pattern.eql(concrete);
             },
 
@@ -2798,6 +2818,16 @@ pub const TypeChecker = struct {
                 return self.unifyTypes(bw.inner, concrete.buf_writer.inner, substitutions);
             },
 
+            .cptr => |cptr| {
+                if (concrete != .cptr) return false;
+                return self.unifyTypes(cptr.inner, concrete.cptr.inner, substitutions);
+            },
+
+            .copt_ptr => |coptptr| {
+                if (concrete != .copt_ptr) return false;
+                return self.unifyTypes(coptptr.inner, concrete.copt_ptr.inner, substitutions);
+            },
+
             .struct_, .enum_, .trait_ => {
                 return pattern.eql(concrete);
             },
@@ -2822,6 +2852,10 @@ pub const TypeChecker = struct {
                 // Check for String (heap-allocated string type)
                 if (std.mem.eql(u8, n.name, "String")) {
                     return try self.type_builder.stringDataType();
+                }
+                // Check for CStr (FFI: null-terminated borrowed C string)
+                if (std.mem.eql(u8, n.name, "CStr")) {
+                    return self.type_builder.cstrType();
                 }
                 // Check for Self
                 if (std.mem.eql(u8, n.name, "Self")) {
@@ -3064,6 +3098,28 @@ pub const TypeChecker = struct {
                             }
                         }
                         return try self.type_builder.bufWriterType(inner_type);
+                    }
+
+                    // FFI Pointer Types
+
+                    // CPtr[T] - non-null raw pointer (FFI)
+                    if (std.mem.eql(u8, base_name, "CPtr")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "CPtr expects exactly 1 type argument", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner = try self.resolveTypeExpr(g.args[0]);
+                        return try self.type_builder.cptrType(inner);
+                    }
+
+                    // COptPtr[T] - nullable raw pointer (FFI)
+                    if (std.mem.eql(u8, base_name, "COptPtr")) {
+                        if (g.args.len != 1) {
+                            self.addError(.type_mismatch, g.span, "COptPtr expects exactly 1 type argument", .{});
+                            return self.type_builder.unknownType();
+                        }
+                        const inner = try self.resolveTypeExpr(g.args[0]);
+                        return try self.type_builder.coptPtrType(inner);
                     }
                 }
 
@@ -3671,6 +3727,122 @@ pub const TypeChecker = struct {
                 self.debug_call_types.put(self.allocator, call, arg_type) catch {};
                 return self.type_builder.stringType();
             }
+
+            // FFI Pointer Functions
+
+            // is_null[T](ptr: COptPtr[T]) -> bool - SAFE, no unsafe required
+            if (std.mem.eql(u8, func_name, "is_null")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "is_null requires exactly 1 argument", .{});
+                    return self.type_builder.boolType();
+                }
+                const arg_type = self.checkExpr(call.args[0]);
+                if (arg_type != .copt_ptr) {
+                    self.addError(.type_mismatch, call.args[0].span(), "is_null expects COptPtr[T], got {s}", .{types.typeToString(self.allocator, arg_type) catch "unknown"});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // unwrap_ptr[T](ptr: COptPtr[T]) -> CPtr[T] - UNSAFE
+            if (std.mem.eql(u8, func_name, "unwrap_ptr")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "unwrap_ptr requires exactly 1 argument", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, call.span, "unwrap_ptr is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+                const arg_type = self.checkExpr(call.args[0]);
+                if (arg_type == .copt_ptr) {
+                    // Return CPtr[T] where T is the inner type of COptPtr[T]
+                    return self.type_builder.cptrType(arg_type.copt_ptr.inner) catch self.type_builder.unknownType();
+                }
+                self.addError(.type_mismatch, call.args[0].span(), "unwrap_ptr expects COptPtr[T]", .{});
+                return self.type_builder.unknownType();
+            }
+
+            // offset[T](ptr: CPtr[T], count: isize) -> CPtr[T] - UNSAFE
+            if (std.mem.eql(u8, func_name, "offset")) {
+                if (call.args.len != 2) {
+                    self.addError(.invalid_call, call.span, "offset requires exactly 2 arguments (ptr, count)", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, call.span, "offset is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+                const ptr_type = self.checkExpr(call.args[0]);
+                const count_type = self.checkExpr(call.args[1]);
+                if (ptr_type != .cptr) {
+                    self.addError(.type_mismatch, call.args[0].span(), "offset expects CPtr[T] as first argument", .{});
+                    return self.type_builder.unknownType();
+                }
+                // count should be isize
+                if (count_type != .primitive or count_type.primitive != .isize_) {
+                    self.addError(.type_mismatch, call.args[1].span(), "offset expects isize as second argument", .{});
+                }
+                return ptr_type; // Returns same CPtr[T]
+            }
+
+            // read[T](ptr: CPtr[T]) -> T - UNSAFE
+            if (std.mem.eql(u8, func_name, "read")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "read requires exactly 1 argument", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, call.span, "read is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+                const ptr_type = self.checkExpr(call.args[0]);
+                if (ptr_type == .cptr) {
+                    // Return T, the inner type of CPtr[T]
+                    return ptr_type.cptr.inner;
+                }
+                self.addError(.type_mismatch, call.args[0].span(), "read expects CPtr[T]", .{});
+                return self.type_builder.unknownType();
+            }
+
+            // write[T](ptr: CPtr[T], value: T) -> void - UNSAFE
+            if (std.mem.eql(u8, func_name, "write")) {
+                if (call.args.len != 2) {
+                    self.addError(.invalid_call, call.span, "write requires exactly 2 arguments (ptr, value)", .{});
+                    return self.type_builder.voidType();
+                }
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, call.span, "write is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+                const ptr_type = self.checkExpr(call.args[0]);
+                const value_type = self.checkExpr(call.args[1]);
+                if (ptr_type == .cptr) {
+                    // Value type must match the inner type of CPtr[T]
+                    if (!ptr_type.cptr.inner.eql(value_type)) {
+                        const expected_str = types.typeToString(self.allocator, ptr_type.cptr.inner) catch "unknown";
+                        const got_str = types.typeToString(self.allocator, value_type) catch "unknown";
+                        self.addError(.type_mismatch, call.args[1].span(), "write: expected {s}, got {s}", .{ expected_str, got_str });
+                    }
+                } else {
+                    self.addError(.type_mismatch, call.args[0].span(), "write expects CPtr[T] as first argument", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // ref_to_ptr[T](value: ref T) -> CPtr[T] - UNSAFE
+            if (std.mem.eql(u8, func_name, "ref_to_ptr")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "ref_to_ptr requires exactly 1 argument", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, call.span, "ref_to_ptr is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+                const arg_type = self.checkExpr(call.args[0]);
+                if (arg_type == .reference) {
+                    // Return CPtr[T] where T is the inner type of ref T
+                    return self.type_builder.cptrType(arg_type.reference.inner) catch self.type_builder.unknownType();
+                }
+                self.addError(.type_mismatch, call.args[0].span(), "ref_to_ptr expects a reference type", .{});
+                return self.type_builder.unknownType();
+            }
+
         }
 
         const callee_type = self.checkExpr(call.callee);
@@ -7836,6 +8008,9 @@ pub const TypeChecker = struct {
             .buf_reader => "buf_reader",
             .buf_writer => "buf_writer",
             .extern_type => "extern",
+            .cptr => "cptr",
+            .copt_ptr => "copt_ptr",
+            .cstr => "cstr",
             .void_ => "void",
             .never => "never",
             .unknown => "unknown",
@@ -10361,6 +10536,13 @@ pub const TypeChecker = struct {
                             self.checking_comptime_function_body = true;
                         }
                         defer self.checking_comptime_function_body = was_checking_comptime_body;
+
+                        // For unsafe functions, the entire body is an unsafe context
+                        const was_unsafe = self.in_unsafe_context;
+                        if (f.is_unsafe) {
+                            self.in_unsafe_context = true;
+                        }
+                        defer self.in_unsafe_context = was_unsafe;
 
                         _ = self.checkBlock(body);
                     }

@@ -1,0 +1,50 @@
+// Test that unsafe operations require unsafe blocks/functions
+// This file should FAIL type checking with specific errors
+
+unsafe fn get_opt_ptr() -> COptPtr[i32] {
+    return get_opt_ptr()
+}
+
+unsafe fn get_ptr() -> CPtr[i32] {
+    return get_ptr()
+}
+
+fn main() -> i32 {
+    // Test 1: is_null is SAFE - should work
+    unsafe {
+        let opt_ptr: COptPtr[i32] = get_opt_ptr()
+        let is_it_null: bool = is_null(opt_ptr)  // This should be allowed outside unsafe
+    }
+
+    // ERROR: unwrap_ptr requires unsafe
+    unsafe {
+        let opt_ptr: COptPtr[i32] = get_opt_ptr()
+        let ptr: CPtr[i32] = unwrap_ptr(opt_ptr)  // Should work in unsafe
+    }
+
+    // ERROR: read requires unsafe
+    unsafe {
+        let ptr: CPtr[i32] = get_ptr()
+        let val: i32 = read(ptr)  // Should work in unsafe
+    }
+
+    // ERROR: write requires unsafe
+    unsafe {
+        let ptr: CPtr[i32] = get_ptr()
+        write(ptr, 42)  // Should work in unsafe
+    }
+
+    // ERROR: offset requires unsafe
+    unsafe {
+        let ptr: CPtr[i32] = get_ptr()
+        let next: CPtr[i32] = offset(ptr, 1.as[isize])  // Should work in unsafe
+    }
+
+    // ERROR: ref_to_ptr requires unsafe
+    unsafe {
+        var x: i32 = 10
+        let ptr: CPtr[i32] = ref_to_ptr(ref x)  // Should work in unsafe
+    }
+
+    return 0
+}

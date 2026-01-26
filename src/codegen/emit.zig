@@ -4128,6 +4128,20 @@ pub const Emitter = struct {
                 const stdin_fn = self.getOrDeclareStdin();
                 return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stdin_fn), stdin_fn, &[_]llvm.ValueRef{}, "stdin.handle");
             }
+            // FFI Pointer Functions
+            else if (std.mem.eql(u8, name, "is_null")) {
+                return self.emitIsNull(call);
+            } else if (std.mem.eql(u8, name, "unwrap_ptr")) {
+                return self.emitUnwrapPtr(call);
+            } else if (std.mem.eql(u8, name, "read")) {
+                return self.emitRead(call);
+            } else if (std.mem.eql(u8, name, "write")) {
+                return self.emitWrite(call);
+            } else if (std.mem.eql(u8, name, "offset")) {
+                return self.emitOffset(call);
+            } else if (std.mem.eql(u8, name, "ref_to_ptr")) {
+                return self.emitRefToPtr(call);
+            }
         }
 
         // Check if this is a monomorphized generic function call
@@ -11833,6 +11847,109 @@ pub const Emitter = struct {
 
         // For other types, return 0
         return llvm.Const.int32(self.ctx, 0);
+    }
+
+    // =========================================================================
+    // FFI Pointer Functions
+    // =========================================================================
+
+    /// Emit is_null(ptr: COptPtr[T]) -> bool
+    /// Compares the pointer to null and returns the result.
+    fn emitIsNull(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return llvm.Const.int1(self.ctx, false);
+        }
+        const ptr = try self.emitExpr(call.args[0]);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        return self.builder.buildICmp(llvm.c.LLVMIntEQ, ptr, null_ptr, "is_null");
+    }
+
+    /// Emit unwrap_ptr(ptr: COptPtr[T]) -> CPtr[T]
+    /// Returns the pointer unchanged (assumes caller validated it's not null).
+    /// In debug builds, we could add a null check assertion.
+    fn emitUnwrapPtr(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+        // Just return the pointer - semantically COptPtr and CPtr have the same representation.
+        // The safety check should have been done by the programmer.
+        return try self.emitExpr(call.args[0]);
+    }
+
+    /// Emit read(ptr: CPtr[T]) -> T
+    /// Loads the value at the pointer location.
+    fn emitRead(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+        const ptr = try self.emitExpr(call.args[0]);
+
+        // Get the type that the pointer points to from the type checker
+        const pointed_to_type = self.getPointedToType(call.args[0]);
+        const llvm_type = self.typeToLLVM(pointed_to_type);
+
+        return self.builder.buildLoad(llvm_type, ptr, "ptr.read");
+    }
+
+    /// Emit write(ptr: CPtr[T], value: T) -> void
+    /// Stores the value at the pointer location.
+    fn emitWrite(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 2) {
+            // Return void (undef)
+            return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+        }
+        const ptr = try self.emitExpr(call.args[0]);
+        const value = try self.emitExpr(call.args[1]);
+
+        _ = self.builder.buildStore(value, ptr);
+        // Return void (represented as undef in LLVM IR)
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// Emit offset(ptr: CPtr[T], count: isize) -> CPtr[T]
+    /// Returns a pointer offset by count elements.
+    fn emitOffset(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 2) {
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+        const ptr = try self.emitExpr(call.args[0]);
+        const count = try self.emitExpr(call.args[1]);
+
+        // Get the type that the pointer points to for proper stride calculation
+        const pointed_to_type = self.getPointedToType(call.args[0]);
+        const llvm_type = self.typeToLLVM(pointed_to_type);
+
+        // Use getelementptr to do pointer arithmetic
+        var indices = [_]llvm.ValueRef{count};
+        return llvm.c.LLVMBuildGEP2(self.builder.ref, llvm_type, ptr, &indices, 1, "ptr.offset");
+    }
+
+    /// Emit ref_to_ptr(value: ref T) -> CPtr[T]
+    /// Converts a Klar reference to a raw pointer.
+    fn emitRefToPtr(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+        // A reference in Klar is already a pointer at the LLVM level
+        // So we just emit the expression and return it
+        return try self.emitExpr(call.args[0]);
+    }
+
+    /// Get the pointed-to type from a CPtr expression.
+    /// Uses the type checker to look up the actual type.
+    fn getPointedToType(self: *Emitter, expr: ast.Expr) types.Type {
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            if (expr_type == .cptr) {
+                return expr_type.cptr.inner;
+            } else if (expr_type == .copt_ptr) {
+                return expr_type.copt_ptr.inner;
+            }
+        }
+        // Fallback to i8 if we can't determine the type
+        return types.Type{ .primitive = .i8_ };
     }
 
     fn getOrDeclareStrlen(self: *Emitter) llvm.ValueRef {
@@ -24787,6 +24904,8 @@ pub const Emitter = struct {
                     return 8; // opaque types are always behind pointers
                 }
             },
+            // FFI pointer types are all just pointers (8 bytes on 64-bit)
+            .cptr, .copt_ptr, .cstr => 8,
         };
     }
 
@@ -25071,6 +25190,8 @@ pub const Emitter = struct {
                     return llvm.Types.pointer(self.ctx);
                 }
             },
+            // FFI pointer types are all LLVM opaque pointers
+            .cptr, .copt_ptr, .cstr => llvm.Types.pointer(self.ctx),
         };
     }
 

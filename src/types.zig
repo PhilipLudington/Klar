@@ -68,6 +68,9 @@ pub const Type = union(enum) {
 
     // FFI types
     extern_type: *ExternType, // External type for C interop
+    cptr: *CptrType, // Non-null raw pointer (CPtr[T])
+    copt_ptr: *CoptPtrType, // Nullable raw pointer (COptPtr[T])
+    cstr: void, // Null-terminated C string (borrowed)
 
     // Special types
     void_,
@@ -143,6 +146,11 @@ pub const Type = union(enum) {
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => true,
             // Extern types are equal if they have the same name
             .extern_type => |e| std.mem.eql(u8, e.name, other.extern_type.name),
+            // FFI pointer types depend on inner type
+            .cptr => |c| c.inner.eql(other.cptr.inner),
+            .copt_ptr => |c| c.inner.eql(other.copt_ptr.inner),
+            // CStr is a singleton type (no type parameters)
+            .cstr => true,
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -218,6 +226,9 @@ pub const Type = union(enum) {
 
             // Range is Copy (contains integers and bool)
             .range => |r| r.element_type.isCopyType(),
+
+            // Raw pointers are Copy (just the address, like in Rust)
+            .cptr, .copt_ptr, .cstr => true,
 
             // These types are NOT Copy:
             // - Slices (contain a pointer + length, may own data)
@@ -499,6 +510,23 @@ pub const ExternType = struct {
     name: []const u8,
     size: ?u64, // null for opaque types, byte size for sized types
 };
+
+/// Non-null raw pointer type (CPtr[T])
+/// Equivalent to T* in C, assumed non-null.
+/// Dereferencing requires `unsafe` block.
+pub const CptrType = struct {
+    inner: Type, // The pointed-to type
+};
+
+/// Nullable raw pointer type (COptPtr[T])
+/// Equivalent to T* in C, may be null.
+/// Must check for null before dereferencing.
+pub const CoptPtrType = struct {
+    inner: Type, // The pointed-to type
+};
+
+// Note: CStr is represented as a void variant in Type union
+// (no type parameters, like File/IoError)
 
 // ============================================================================
 // Generic Types
@@ -914,6 +942,24 @@ pub const TypeBuilder = struct {
         bw.* = .{ .inner = inner };
         return .{ .buf_writer = bw };
     }
+
+    // FFI pointer type constructors
+    pub fn cptrType(self: *TypeBuilder, inner: Type) !Type {
+        const cptr = try self.arena.allocator().create(CptrType);
+        cptr.* = .{ .inner = inner };
+        return .{ .cptr = cptr };
+    }
+
+    pub fn coptPtrType(self: *TypeBuilder, inner: Type) !Type {
+        const copt_ptr = try self.arena.allocator().create(CoptPtrType);
+        copt_ptr.* = .{ .inner = inner };
+        return .{ .copt_ptr = copt_ptr };
+    }
+
+    pub fn cstrType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .cstr = {} };
+    }
 };
 
 // ============================================================================
@@ -1060,6 +1106,17 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .extern_type => |ext| {
             try writer.writeAll(ext.name);
         },
+        .cptr => |c| {
+            try writer.writeAll("CPtr[");
+            try formatType(writer, c.inner);
+            try writer.writeAll("]");
+        },
+        .copt_ptr => |c| {
+            try writer.writeAll("COptPtr[");
+            try formatType(writer, c.inner);
+            try writer.writeAll("]");
+        },
+        .cstr => try writer.writeAll("CStr"),
         .void_ => try writer.writeAll("void"),
         .never => try writer.writeAll("!"),
         .unknown => try writer.writeAll("?unknown"),
@@ -1368,4 +1425,87 @@ test "Arc is not Copy" {
     // WeakArc types are NOT Copy
     const weak_t = try builder.weakArcType(builder.i32Type());
     try testing.expect(!weak_t.isCopyType());
+}
+
+test "CPtr type creation and equality" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // Create CPtr types
+    const cptr_i32 = try builder.cptrType(builder.i32Type());
+    const cptr_i32_2 = try builder.cptrType(builder.i32Type());
+    const cptr_bool = try builder.cptrType(builder.boolType());
+
+    try testing.expect(cptr_i32.eql(cptr_i32_2));
+    try testing.expect(!cptr_i32.eql(cptr_bool));
+
+    // COptPtr types
+    const coptptr_i32 = try builder.coptPtrType(builder.i32Type());
+    const coptptr_i32_2 = try builder.coptPtrType(builder.i32Type());
+    try testing.expect(coptptr_i32.eql(coptptr_i32_2));
+
+    // CPtr and COptPtr are different types
+    try testing.expect(!cptr_i32.eql(coptptr_i32));
+
+    // CStr singleton type
+    const cstr1 = builder.cstrType();
+    const cstr2 = builder.cstrType();
+    try testing.expect(cstr1.eql(cstr2));
+
+    // CStr is different from CPtr[i8]
+    const cptr_i8 = try builder.cptrType(.{ .primitive = .i8_ });
+    try testing.expect(!cstr1.eql(cptr_i8));
+}
+
+test "CPtr type formatting" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // CPtr[i32]
+    const cptr_t = try builder.cptrType(builder.i32Type());
+    const cptr_str = try typeToString(testing.allocator, cptr_t);
+    defer testing.allocator.free(cptr_str);
+    try testing.expectEqualStrings("CPtr[i32]", cptr_str);
+
+    // COptPtr[string]
+    const coptptr_t = try builder.coptPtrType(builder.stringType());
+    const coptptr_str = try typeToString(testing.allocator, coptptr_t);
+    defer testing.allocator.free(coptptr_str);
+    try testing.expectEqualStrings("COptPtr[string]", coptptr_str);
+
+    // CStr
+    const cstr_t = builder.cstrType();
+    const cstr_str = try typeToString(testing.allocator, cstr_t);
+    defer testing.allocator.free(cstr_str);
+    try testing.expectEqualStrings("CStr", cstr_str);
+
+    // Nested: CPtr[COptPtr[i32]]
+    const inner = try builder.coptPtrType(builder.i32Type());
+    const nested = try builder.cptrType(inner);
+    const nested_str = try typeToString(testing.allocator, nested);
+    defer testing.allocator.free(nested_str);
+    try testing.expectEqualStrings("CPtr[COptPtr[i32]]", nested_str);
+}
+
+test "CPtr is Copy" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // CPtr types ARE Copy (just the address)
+    const cptr_t = try builder.cptrType(builder.i32Type());
+    try testing.expect(cptr_t.isCopyType());
+
+    // COptPtr types ARE Copy
+    const coptptr_t = try builder.coptPtrType(builder.i32Type());
+    try testing.expect(coptptr_t.isCopyType());
+
+    // CStr is Copy
+    const cstr_t = builder.cstrType();
+    try testing.expect(cstr_t.isCopyType());
 }

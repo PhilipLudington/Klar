@@ -1,0 +1,40 @@
+// Test type inference for FFI pointer functions
+// Verifies that the type checker correctly infers types for all pointer operations
+
+// Helper to get a COptPtr[i32] - in real code this would come from extern fn
+unsafe fn get_opt_ptr() -> COptPtr[i32] {
+    return get_opt_ptr()  // stub - just type checks
+}
+
+// Helper to get a CPtr[i32]
+unsafe fn get_ptr() -> CPtr[i32] {
+    return get_ptr()
+}
+
+fn main() -> i32 {
+    unsafe {
+        // Test is_null returns bool
+        let opt_ptr: COptPtr[i32] = get_opt_ptr()
+        let is_it_null: bool = is_null(opt_ptr)
+
+        // Test unwrap_ptr: COptPtr[T] -> CPtr[T]
+        let ptr: CPtr[i32] = unwrap_ptr(opt_ptr)
+
+        // Test read: CPtr[T] -> T
+        let value: i32 = read(ptr)
+
+        // Test write: CPtr[T], T -> void
+        write(ptr, 42)
+
+        // Test offset: CPtr[T], isize -> CPtr[T]
+        let offset_count: isize = 1
+        let next_ptr: CPtr[i32] = offset(ptr, offset_count)
+
+        // Test ref_to_ptr: ref T -> CPtr[T]
+        var local_val: i32 = 100
+        let local_ptr: CPtr[i32] = ref_to_ptr(ref local_val)
+    }
+
+    println("Pointer type inference tests passed!")
+    return 0
+}
