@@ -1,0 +1,16 @@
+// Test: Sized extern type declarations
+// Sized types have a known byte size and can be passed by value
+
+// Declare sized external types
+extern type(8) seL4_Word    // 8-byte word (like uint64_t)
+extern type(16) Uuid        // 16-byte UUID
+extern type(1) CBool        // 1-byte C bool
+
+// Public sized extern type
+pub extern type(4) CInt     // 4-byte integer
+
+fn main() -> i32 {
+    // Sized extern types exist in the type system
+    // They can be passed by value in future phases
+    return 0
+}

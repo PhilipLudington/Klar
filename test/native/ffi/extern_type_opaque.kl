@@ -1,0 +1,15 @@
+// Test: Opaque extern type declarations
+// Opaque types have unknown size and can only be used behind pointers
+
+// Declare opaque external types (like C's FILE*)
+extern type FILE
+extern type seL4_CPtr
+
+// Public extern type
+pub extern type OpaqueHandle
+
+fn main() -> i32 {
+    // Extern types exist in the type system
+    // They can't be constructed directly (will be used with pointers in future phases)
+    return 0
+}

@@ -66,6 +66,9 @@ pub const Type = union(enum) {
     buf_reader: *BufReaderType, // BufReader[R: Read] buffered reader wrapper
     buf_writer: *BufWriterType, // BufWriter[W: Write] buffered writer wrapper
 
+    // FFI types
+    extern_type: *ExternType, // External type for C interop
+
     // Special types
     void_,
     never,
@@ -138,6 +141,8 @@ pub const Type = union(enum) {
             .buf_writer => |bw| bw.inner.eql(other.buf_writer.inner),
             // I/O types are singleton types
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => true,
+            // Extern types are equal if they have the same name
+            .extern_type => |e| std.mem.eql(u8, e.name, other.extern_type.name),
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -234,7 +239,8 @@ pub const Type = union(enum) {
             // - BufReader/BufWriter (wrap I/O types, have internal state)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .unknown, .error_type, .associated_type_ref => false,
+            // - Extern types (opaque or sized, treat as non-Copy for safety)
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .unknown, .error_type, .associated_type_ref, .extern_type => false,
         };
     }
 };
@@ -480,6 +486,18 @@ pub const TraitMethod = struct {
     name: []const u8,
     signature: FunctionType,
     has_default: bool,
+};
+
+// ============================================================================
+// FFI Types
+// ============================================================================
+
+/// External type for C interop
+/// Opaque types (size == null) can only be used behind pointers
+/// Sized types (size != null) can be passed by value
+pub const ExternType = struct {
+    name: []const u8,
+    size: ?u64, // null for opaque types, byte size for sized types
 };
 
 // ============================================================================
@@ -1038,6 +1056,9 @@ pub fn formatType(writer: anytype, t: Type) !void {
             try writer.writeAll(a.type_var.name);
             try writer.writeAll(".");
             try writer.writeAll(a.assoc_name);
+        },
+        .extern_type => |ext| {
+            try writer.writeAll(ext.name);
         },
         .void_ => try writer.writeAll("void"),
         .never => try writer.writeAll("!"),

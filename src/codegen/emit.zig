@@ -24779,6 +24779,14 @@ pub const Emitter = struct {
             .string_data => 8, // pointer to string data
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => 8, // handles/pointers
             .buf_reader, .buf_writer => 8, // pointers to buffered I/O structures
+            .extern_type => |ext| {
+                // Extern types: sized types use their declared size, opaque types use pointer size
+                if (ext.size) |size| {
+                    return @intCast(size);
+                } else {
+                    return 8; // opaque types are always behind pointers
+                }
+            },
         };
     }
 
@@ -25050,6 +25058,18 @@ pub const Emitter = struct {
                 // Associated type refs should have been resolved during type checking.
                 // If we get here, it's an unresolved associated type - use pointer as fallback.
                 return llvm.Types.pointer(self.ctx);
+            },
+            .extern_type => |ext| {
+                // External types for FFI:
+                // - Opaque types (size == null): use pointer (can only be used behind pointers)
+                // - Sized types (size != null): use byte array of specified size
+                if (ext.size) |size| {
+                    // Sized extern type: [N x i8]
+                    return llvm.Types.array(llvm.Types.int8(self.ctx), @intCast(size));
+                } else {
+                    // Opaque extern type: use pointer
+                    return llvm.Types.pointer(self.ctx);
+                }
             },
         };
     }

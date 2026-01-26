@@ -1,6 +1,6 @@
 # Klar FFI Implementation Plan
 
-**Status:** In Progress (Phase 1 Complete)
+**Status:** In Progress (Phase 2 Complete)
 **Goal:** Implement Foreign Function Interface (FFI) for C interoperability
 
 ---
@@ -47,37 +47,37 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ---
 
-## Phase 2: External Type Declarations
+## Phase 2: External Type Declarations ✅
 
 **Objective:** Support `extern type` for opaque and sized external types.
 
 ### 2.1 Lexer Changes
-- [ ] Add `extern` keyword token (if not present)
+- [x] Add `extern` keyword token
 
 ### 2.2 Parser Changes
-- [ ] Parse `extern type Name` (opaque, unknown size)
-- [ ] Parse `extern type(N) Name` (sized, N bytes)
+- [x] Parse `extern type Name` (opaque, unknown size)
+- [x] Parse `extern type(N) Name` (sized, N bytes)
 
 ### 2.3 AST Changes
-- [ ] Add `ExternTypeDecl` node with optional size
+- [x] Add `ExternTypeDecl` node with optional size
 
 ### 2.4 Type System Changes
-- [ ] Add `ExternType` variant to type representation
-- [ ] Track whether extern type has known size
-- [ ] Prevent construction/field access of extern types
+- [x] Add `ExternType` variant to type representation
+- [x] Track whether extern type has known size
+- [x] Prevent construction/field access of extern types (inherent - no constructors)
 
 ### 2.5 Checker Changes
-- [ ] Register extern types in scope
-- [ ] Validate extern types can only be used behind pointers (if unsized)
-- [ ] Allow sized extern types to be passed by value
+- [x] Register extern types in scope
+- [ ] Validate extern types can only be used behind pointers (if unsized) - deferred to Phase 3
+- [ ] Allow sized extern types to be passed by value - deferred to Phase 4
 
 ### 2.6 Codegen
-- [ ] Generate LLVM opaque struct type for unsized extern types
-- [ ] Generate LLVM `iN` or `[N x i8]` for sized extern types
+- [x] Generate LLVM pointer type for unsized extern types
+- [x] Generate LLVM `[N x i8]` for sized extern types
 
 ### 2.7 Tests
-- [ ] `test/native/ffi/extern_type_opaque.kl`
-- [ ] `test/native/ffi/extern_type_sized.kl`
+- [x] `test/native/ffi/extern_type_opaque.kl`
+- [x] `test/native/ffi/extern_type_sized.kl`
 
 ---
 

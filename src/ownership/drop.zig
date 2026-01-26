@@ -202,7 +202,7 @@ pub const DropInserter = struct {
             .function => |f| try self.analyzeFunction(f),
             .impl_decl => |impl| try self.analyzeImpl(impl),
             .const_decl => |c| try self.analyzeConst(c),
-            .struct_decl, .enum_decl, .trait_decl, .import_decl, .type_alias, .module_decl => {},
+            .struct_decl, .enum_decl, .trait_decl, .import_decl, .type_alias, .module_decl, .extern_type_decl => {},
         }
     }
 

@@ -2340,8 +2340,8 @@ pub const TypeChecker = struct {
             },
 
             // Primitive types - no substitution needed
-            // I/O types also don't need substitution (they have no type parameters)
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => typ,
+            // I/O types and extern types also don't need substitution (they have no type parameters)
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type => typ,
 
             // Array - substitute element type
             .array => |arr| {
@@ -2568,7 +2568,7 @@ pub const TypeChecker = struct {
     pub fn containsTypeVar(self: *TypeChecker, typ: Type) bool {
         return switch (typ) {
             .type_var => true,
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => false,
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type => false,
             .array => |arr| self.containsTypeVar(arr.element),
             .slice => |sl| self.containsTypeVar(sl.element),
             .tuple => |tup| {
@@ -2634,7 +2634,7 @@ pub const TypeChecker = struct {
                 return true;
             },
 
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => {
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type => {
                 return pattern.eql(concrete);
             },
 
@@ -7835,6 +7835,7 @@ pub const TypeChecker = struct {
             .stdin_handle => "stdin",
             .buf_reader => "buf_reader",
             .buf_writer => "buf_writer",
+            .extern_type => "extern",
             .void_ => "void",
             .never => "never",
             .unknown => "unknown",
@@ -8481,6 +8482,7 @@ pub const TypeChecker = struct {
             .const_decl => |c| self.checkConst(c),
             .import_decl => {}, // Imports handled separately
             .module_decl => {}, // Module declarations don't need type checking
+            .extern_type_decl => |e| self.checkExternType(e),
         }
     }
 
@@ -8634,6 +8636,24 @@ pub const TypeChecker = struct {
             .kind = .type_,
             .mutable = false,
             .span = struct_decl.span,
+        }) catch {};
+    }
+
+    fn checkExternType(self: *TypeChecker, extern_decl: *ast.ExternTypeDecl) void {
+        // Create the extern type
+        const extern_type = self.allocator.create(types.ExternType) catch return;
+        extern_type.* = .{
+            .name = extern_decl.name,
+            .size = extern_decl.size,
+        };
+
+        // Register in current scope
+        self.current_scope.define(.{
+            .name = extern_decl.name,
+            .type_ = .{ .extern_type = extern_type },
+            .kind = .type_,
+            .mutable = false,
+            .span = extern_decl.span,
         }) catch {};
     }
 

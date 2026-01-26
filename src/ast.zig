@@ -584,6 +584,7 @@ pub const Decl = union(enum) {
     const_decl: *ConstDecl,
     import_decl: *ImportDecl,
     module_decl: *ModuleDecl,
+    extern_type_decl: *ExternTypeDecl,
 
     pub fn span(self: Decl) Span {
         return switch (self) {
@@ -596,6 +597,7 @@ pub const Decl = union(enum) {
             .const_decl => |c| c.span,
             .import_decl => |i| i.span,
             .module_decl => |m| m.span,
+            .extern_type_decl => |e| e.span,
         };
     }
 };
@@ -646,6 +648,16 @@ pub const StructDecl = struct {
 pub const StructField = struct {
     name: []const u8,
     type_: TypeExpr,
+    is_pub: bool,
+    span: Span,
+};
+
+/// External type declaration for FFI interop
+/// Syntax: `extern type Name` (opaque, unknown size)
+///         `extern type(N) Name` (sized, N bytes)
+pub const ExternTypeDecl = struct {
+    name: []const u8,
+    size: ?u64, // null for opaque types, Some(N) for sized types
     is_pub: bool,
     span: Span,
 };

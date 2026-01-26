@@ -2060,11 +2060,35 @@ pub const Parser = struct {
         // Handle unsafe modifier (for unsafe fn)
         const is_unsafe = self.match(.unsafe_);
 
+        // Handle extern modifier (for extern type, extern fn, extern struct, extern enum)
+        const is_extern = self.match(.extern_);
+
+        // extern type declarations
+        if (is_extern and self.current.kind == .type_) {
+            if (is_unsafe) {
+                try self.reportError("'unsafe' modifier is not allowed on extern type declarations");
+                return ParseError.UnexpectedToken;
+            }
+            return self.parseExternTypeDecl(is_pub);
+        }
+
         return switch (self.current.kind) {
-            .fn_ => self.parseFunctionDecl(is_pub, is_unsafe),
+            .fn_ => blk: {
+                if (is_extern) {
+                    // Future: extern fn declarations (Phase 4)
+                    try self.reportError("'extern fn' is not yet supported");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseFunctionDecl(is_pub, is_unsafe);
+            },
             .struct_ => blk: {
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on struct declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_extern) {
+                    // Future: extern struct declarations (Phase 5)
+                    try self.reportError("'extern struct' is not yet supported");
                     return ParseError.UnexpectedToken;
                 }
                 break :blk self.parseStructDecl(is_pub);
@@ -2072,6 +2096,11 @@ pub const Parser = struct {
             .enum_ => blk: {
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on enum declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_extern) {
+                    // Future: extern enum declarations (Phase 6)
+                    try self.reportError("'extern enum' is not yet supported");
                     return ParseError.UnexpectedToken;
                 }
                 break :blk self.parseEnumDecl(is_pub);
@@ -2082,12 +2111,20 @@ pub const Parser = struct {
                     try self.reportError("'unsafe' modifier is not yet supported on trait declarations");
                     return ParseError.UnexpectedToken;
                 }
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on trait declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 break :blk self.parseTraitDecl(is_pub);
             },
             .impl => blk: {
                 if (is_unsafe) {
                     // Note: Future support for unsafe impl can be added here
                     try self.reportError("'unsafe' modifier is not yet supported on impl declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on impl declarations");
                     return ParseError.UnexpectedToken;
                 }
                 break :blk self.parseImplDecl();
@@ -2097,11 +2134,16 @@ pub const Parser = struct {
                     try self.reportError("'unsafe' modifier is not allowed on type aliases");
                     return ParseError.UnexpectedToken;
                 }
+                // Note: extern type is handled above before the switch
                 break :blk self.parseTypeAlias(is_pub);
             },
             .const_ => blk: {
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on const declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on const declarations");
                     return ParseError.UnexpectedToken;
                 }
                 break :blk self.parseConstDecl(is_pub);
@@ -2111,6 +2153,10 @@ pub const Parser = struct {
                     try self.reportError("'unsafe' modifier is not allowed on import declarations");
                     return ParseError.UnexpectedToken;
                 }
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on import declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 break :blk self.parseImportDecl();
             },
             .module => blk: {
@@ -2118,10 +2164,16 @@ pub const Parser = struct {
                     try self.reportError("'unsafe' modifier is not allowed on module declarations");
                     return ParseError.UnexpectedToken;
                 }
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on module declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 break :blk self.parseModuleDecl();
             },
             else => {
-                if (is_unsafe) {
+                if (is_extern) {
+                    try self.reportError("expected 'type', 'fn', 'struct', or 'enum' after 'extern'");
+                } else if (is_unsafe) {
                     try self.reportError("expected 'fn' after 'unsafe'");
                 } else {
                     try self.reportError("expected declaration");
@@ -2619,6 +2671,46 @@ pub const Parser = struct {
             .span = ast.Span.merge(start_span, target.span()),
         });
         return .{ .type_alias = type_alias };
+    }
+
+    /// Parse an extern type declaration
+    /// Syntax: `extern type Name` (opaque, unknown size)
+    ///         `extern type(N) Name` (sized, N bytes)
+    fn parseExternTypeDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'type'
+
+        // Check for optional size: extern type(N)
+        var size: ?u64 = null;
+        if (self.match(.l_paren)) {
+            // Parse the size as an integer literal
+            if (self.current.kind != .int_literal) {
+                try self.reportError("expected integer size in extern type declaration");
+                return ParseError.UnexpectedToken;
+            }
+            const size_text = self.source[self.current.loc.start..self.current.loc.end];
+            size = std.fmt.parseInt(u64, size_text, 10) catch {
+                try self.reportError("invalid size in extern type declaration");
+                return ParseError.UnexpectedToken;
+            };
+            if (size.? == 0) {
+                try self.reportError("extern type size must be greater than 0");
+                return ParseError.UnexpectedToken;
+            }
+            self.advance(); // consume the integer literal
+            try self.consume(.r_paren, "expected ')' after extern type size");
+        }
+
+        const name = try self.consumeIdentifier();
+        const end_span = self.spanFromToken(self.previous);
+
+        const extern_type_decl = try self.create(ast.ExternTypeDecl, .{
+            .name = name,
+            .size = size,
+            .is_pub = is_pub,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .extern_type_decl = extern_type_decl };
     }
 
     fn parseConstDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
