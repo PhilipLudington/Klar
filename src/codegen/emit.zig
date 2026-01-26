@@ -11565,10 +11565,22 @@ pub const Emitter = struct {
                         if (local.struct_type_name) |struct_name| {
                             // Look up the struct type in the type checker's registered structs
                             if (self.type_checker) |tc| {
+                                // First check generic struct definitions (non-generic structs)
                                 for (tc.generic_struct_types.items) |struct_type| {
                                     if (std.mem.eql(u8, struct_type.name, struct_name)) {
                                         // Found the struct - look up the field
                                         for (struct_type.fields) |field| {
+                                            if (std.mem.eql(u8, field.name, f.field_name)) {
+                                                return field.type_ == .primitive and field.type_.primitive == .string_;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Then check monomorphized struct instances (for generic structs like Container$i32)
+                                for (tc.monomorphized_structs.items) |mono| {
+                                    if (std.mem.eql(u8, mono.mangled_name, struct_name)) {
+                                        // Found the monomorphized struct - look up the field
+                                        for (mono.concrete_type.fields) |field| {
                                             if (std.mem.eql(u8, field.name, f.field_name)) {
                                                 return field.type_ == .primitive and field.type_.primitive == .string_;
                                             }

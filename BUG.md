@@ -35,56 +35,17 @@ Bugs discovered while implementing the JSON parser. Klar version: **0.3.1-dev**
 
 **Description:** When a struct contains a `string` field and is passed to a method or function, calling `.len()` on the string field returns 0 instead of the actual length.
 
-**Fix:** The `isStringExpr` function in codegen wasn't recognizing field access expressions as string types. Added explicit handling for `.field` expressions that looks up the struct's field type from the type checker's registered struct types, rather than relying on re-running type checking (which failed because scope state differs during codegen).
+**Fix:** The `isStringExpr` function in codegen wasn't recognizing field access expressions as string types. Added explicit handling for `.field` expressions that looks up the struct's field type from the type checker's registered struct types. Also extended to check monomorphized struct instances for generic structs (e.g., `Container[T]` instantiated as `Container$i32`).
 
 ---
 
-## Bug 4: Impl Methods on Structs - Wrong Parameter Type
+## ~~Bug 4: Impl Methods on Structs - Wrong Parameter Type~~ - FIXED
 
-**Severity:** Blocking
+**Status:** Fixed
 
-**Description:** Calling impl methods on structs that contain non-primitive fields causes LLVM verification failure. The compiler passes only the first field instead of the entire struct.
+**Description:** Calling impl methods on structs that contain non-primitive fields caused LLVM verification failure. The compiler was passing only the first field instead of the entire struct.
 
-**Reproduction:**
-```klar
-struct MyStruct {
-    name: string,
-    value: i32,
-}
-
-impl MyStruct {
-    fn get_value(self: MyStruct) -> i32 {
-        return self.value
-    }
-}
-
-fn main() -> i32 {
-    let s: MyStruct = MyStruct { name: "test", value: 42 }
-    let v: i32 = s.get_value()  // CRASH
-    return 0
-}
-```
-
-**Error:**
-```
-LLVM Module verification failed: Call parameter type does not match function signature!
-  %s1 = load i32, ptr %s, align 4
- { ptr, i32 }  %method.result = call i32 @MyStruct_get_value(i32 %s1)
-```
-
-**Workaround:** Use free functions instead of impl methods, or use only i32 fields in structs:
-```klar
-// Works: i32-only struct
-struct Counter {
-    value: i32,
-}
-
-impl Counter {
-    fn get(self: Counter) -> i32 {
-        return self.value  // OK
-    }
-}
-```
+**Fix:** This was fixed as part of earlier codegen improvements. The method call emission now correctly loads and passes the entire struct value to impl methods.
 
 ---
 
@@ -133,7 +94,7 @@ fn get_value() -> ?i32 {
 | 1 | Result in tuple return | Blocking | **FIXED** |
 | 2 | Pattern matching Result/Option | Blocking | **FIXED** |
 | 3 | String field in struct | Blocking | **FIXED** |
-| 4 | Impl methods on mixed structs | Blocking | Use free functions |
+| 4 | Impl methods on mixed structs | Blocking | **FIXED** |
 | 5 | Some() constructor | Minor | Use implicit return |
 | 6 | Tuple (Struct, primitive) | High | **FIXED** |
 
@@ -141,16 +102,11 @@ fn get_value() -> ?i32 {
 
 ## Impact on JSON Parser
 
-These bugs block the following:
+All blocking bugs are now fixed:
 - ~~**Lexer:** Cannot return `(Result[Token, ParseError], LexerState)` (Bug 1)~~ **FIXED**
 - ~~**Parser:** Same issue with parser state~~ **FIXED**
 - ~~**Error handling:** Cannot pattern match on Result (Bug 2)~~ **FIXED**
 - ~~**String processing:** Cannot use string fields in lexer struct (Bug 3)~~ **FIXED**
-- **Impl methods:** Cannot use impl methods on structs with string fields (Bug 4)
+- ~~**Impl methods:** Cannot use impl methods on structs with string fields (Bug 4)~~ **FIXED**
 
-Current workaround approach:
-1. ~~Use i32-only `LexerState` struct~~ String fields now work!
-2. ~~Pass `[char]` slice separately~~ Can now use string fields directly!
-3. ~~Use `.is_err()` + `!` instead of pattern matching~~ Pattern matching now works!
-4. ~~Core logic works, but full Result integration is blocked~~ Result handling now complete!
-5. Use free functions instead of impl methods for structs with non-primitive fields (Bug 4)
+The JSON parser implementation can now proceed with full language feature support.
