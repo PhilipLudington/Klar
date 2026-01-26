@@ -29,48 +29,13 @@ Bugs discovered while implementing the JSON parser. Klar version: **0.3.1-dev**
 
 ---
 
-## Bug 3: Struct with String Field - Method Returns Wrong `string.len()`
+## ~~Bug 3: Struct with String Field - Method Returns Wrong `string.len()`~~ - FIXED
 
-**Severity:** Blocking
+**Status:** Fixed
 
 **Description:** When a struct contains a `string` field and is passed to a method or function, calling `.len()` on the string field returns 0 instead of the actual length.
 
-**Reproduction:**
-```klar
-struct Lexer {
-    source: string,
-    pos: i32,
-}
-
-fn is_at_end(lex: Lexer) -> bool {
-    println("source: {lex.source}")        // Prints: "hello"
-    println("len: {lex.source.len()}")     // Prints: 0 (WRONG!)
-    return lex.pos >= lex.source.len()
-}
-
-fn main() -> i32 {
-    let lex: Lexer = Lexer { source: "hello", pos: 0 }
-    println("Direct len: {lex.source.len()}")  // Prints: 5 (correct)
-
-    let at_end: bool = is_at_end(lex)  // Returns true (WRONG!)
-    return 0
-}
-```
-
-**Output:**
-```
-Direct len: 5
-source: hello
-len: 0
-```
-
-**Workaround:** Store length separately in an i32 field and don't include strings in structs passed to functions:
-```klar
-struct LexerState {
-    pos: i32,
-    len: i32,  // Store length separately
-}
-```
+**Fix:** The `isStringExpr` function in codegen wasn't recognizing field access expressions as string types. Added explicit handling for `.field` expressions that looks up the struct's field type from the type checker's registered struct types, rather than relying on re-running type checking (which failed because scope state differs during codegen).
 
 ---
 
@@ -167,7 +132,7 @@ fn get_value() -> ?i32 {
 |-----|---------|----------|--------|
 | 1 | Result in tuple return | Blocking | **FIXED** |
 | 2 | Pattern matching Result/Option | Blocking | **FIXED** |
-| 3 | String field in struct | Blocking | Store length separately |
+| 3 | String field in struct | Blocking | **FIXED** |
 | 4 | Impl methods on mixed structs | Blocking | Use free functions |
 | 5 | Some() constructor | Minor | Use implicit return |
 | 6 | Tuple (Struct, primitive) | High | **FIXED** |
@@ -180,10 +145,12 @@ These bugs block the following:
 - ~~**Lexer:** Cannot return `(Result[Token, ParseError], LexerState)` (Bug 1)~~ **FIXED**
 - ~~**Parser:** Same issue with parser state~~ **FIXED**
 - ~~**Error handling:** Cannot pattern match on Result (Bug 2)~~ **FIXED**
-- **String processing:** Cannot use string fields in lexer struct (Bug 3, 4)
+- ~~**String processing:** Cannot use string fields in lexer struct (Bug 3)~~ **FIXED**
+- **Impl methods:** Cannot use impl methods on structs with string fields (Bug 4)
 
 Current workaround approach:
-1. Use i32-only `LexerState` struct
-2. Pass `[char]` slice separately
+1. ~~Use i32-only `LexerState` struct~~ String fields now work!
+2. ~~Pass `[char]` slice separately~~ Can now use string fields directly!
 3. ~~Use `.is_err()` + `!` instead of pattern matching~~ Pattern matching now works!
 4. ~~Core logic works, but full Result integration is blocked~~ Result handling now complete!
+5. Use free functions instead of impl methods for structs with non-primitive fields (Bug 4)

@@ -11557,6 +11557,30 @@ pub const Emitter = struct {
                 }
                 return false;
             },
+            .field => |f| {
+                // Field access on a struct - look up the struct's field type
+                if (f.object == .identifier) {
+                    const obj_id = f.object.identifier;
+                    if (self.named_values.get(obj_id.name)) |local| {
+                        if (local.struct_type_name) |struct_name| {
+                            // Look up the struct type in the type checker's registered structs
+                            if (self.type_checker) |tc| {
+                                for (tc.generic_struct_types.items) |struct_type| {
+                                    if (std.mem.eql(u8, struct_type.name, struct_name)) {
+                                        // Found the struct - look up the field
+                                        for (struct_type.fields) |field| {
+                                            if (std.mem.eql(u8, field.name, f.field_name)) {
+                                                return field.type_ == .primitive and field.type_.primitive == .string_;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return false;
+            },
             else => {
                 // For other expressions, use type checker if available
                 if (self.type_checker) |tc| {
