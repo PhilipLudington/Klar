@@ -1773,8 +1773,11 @@ pub const Emitter = struct {
                 // Check if the iterable is a Range[T] type (e.g., a variable of type Range[i32])
                 if (self.isRangeExpr(loop.iterable)) {
                     try self.emitForLoopRangeIterator(func, binding_name, loop.iterable, loop.body);
+                } else if (self.isSliceExpr(loop.iterable)) {
+                    // Slice iteration: for x in slice { body }
+                    try self.emitForLoopSlice(func, binding_name, loop.iterable, loop.body);
                 } else if (self.isArrayExpr(loop.iterable)) {
-                    // Array iteration: for x in arr { body }
+                    // Fixed array iteration: for x in arr { body }
                     try self.emitForLoopArray(func, binding_name, loop.iterable, loop.body);
                 } else if (self.isListExpr(loop.iterable)) {
                     // List iteration: for x in list { body }
@@ -2151,6 +2154,113 @@ pub const Emitter = struct {
         _ = self.named_values.remove(binding_name);
     }
 
+    /// Emit for-loop for slice types (dynamic arrays) using index iteration.
+    /// Slice layout: { ptr: *T, len: i64 }
+    fn emitForLoopSlice(
+        self: *Emitter,
+        func: llvm.ValueRef,
+        binding_name: []const u8,
+        iterable: ast.Expr,
+        body: *ast.Block,
+    ) EmitError!void {
+        // Get the slice alloca and element type
+        const slice_info = try self.getSliceInfo(iterable);
+        const slice_alloca = slice_info.alloca;
+        const element_llvm_type = slice_info.element_type;
+
+        const i64_type = llvm.Types.int64(self.ctx);
+        const slice_type = self.getSliceStructType();
+
+        // Allocate index counter (use i64 to match slice length type)
+        const idx_alloca = self.builder.buildAlloca(i64_type, "forslice.idx");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), idx_alloca);
+
+        // Allocate loop variable (element binding)
+        const var_name = self.allocator.dupeZ(u8, binding_name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(var_name);
+        const elem_alloca = self.builder.buildAlloca(element_llvm_type, var_name);
+
+        // Determine if element type is signed (for integer types)
+        const is_signed = self.isSignedType(element_llvm_type);
+
+        // Add loop variable to scope
+        self.named_values.put(binding_name, .{
+            .value = elem_alloca,
+            .is_alloca = true,
+            .ty = element_llvm_type,
+            .is_signed = is_signed,
+        }) catch return EmitError.OutOfMemory;
+
+        // Create blocks
+        const cond_bb = llvm.appendBasicBlock(self.ctx, func, "forslice.cond");
+        const body_bb = llvm.appendBasicBlock(self.ctx, func, "forslice.body");
+        const incr_bb = llvm.appendBasicBlock(self.ctx, func, "forslice.incr");
+        const end_bb = llvm.appendBasicBlock(self.ctx, func, "forslice.end");
+
+        // Push loop context (continue goes to increment, break goes to end)
+        self.loop_stack.append(self.allocator, .{
+            .continue_block = incr_bb,
+            .break_block = end_bb,
+        }) catch return EmitError.OutOfMemory;
+        defer _ = self.loop_stack.pop();
+
+        // Branch to condition
+        _ = self.builder.buildBr(cond_bb);
+
+        // Emit condition: idx < len
+        self.builder.positionAtEnd(cond_bb);
+        const cur_idx = self.builder.buildLoad(i64_type, idx_alloca, "forslice.idx.cur");
+        // Load length from slice struct (field 1)
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_alloca, 1, "forslice.len_ptr");
+        const slice_len = self.builder.buildLoad(i64_type, len_ptr, "forslice.len");
+        const cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, cur_idx, slice_len, "forslice.cmp");
+        _ = self.builder.buildCondBr(cmp, body_bb, end_bb);
+
+        // Emit body
+        self.builder.positionAtEnd(body_bb);
+        self.has_terminator = false;
+
+        // Load data pointer from slice struct (field 0)
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_alloca, 0, "forslice.ptr_ptr");
+        const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "forslice.data_ptr");
+
+        // Load current element: data_ptr[idx]
+        var gep_indices = [_]llvm.ValueRef{cur_idx};
+        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, element_llvm_type, data_ptr, &gep_indices, 1, "forslice.elem.ptr");
+        const elem_val = self.builder.buildLoad(element_llvm_type, elem_ptr, "forslice.elem.val");
+        _ = self.builder.buildStore(elem_val, elem_alloca);
+
+        // Emit body with loop scope for drop tracking
+        try self.pushScope(true); // is_loop = true
+        _ = try self.emitBlock(body);
+        if (!self.has_terminator) {
+            // Emit drops for variables declared in this iteration before continuing
+            self.popScope();
+            _ = self.builder.buildBr(incr_bb);
+        } else {
+            // Terminator already emitted (break/continue/return)
+            if (self.scope_stack.pop()) |scope| {
+                var s = scope;
+                s.droppables.deinit(self.allocator);
+            }
+        }
+
+        // Emit increment
+        self.builder.positionAtEnd(incr_bb);
+        const cur_idx2 = self.builder.buildLoad(i64_type, idx_alloca, "forslice.idx.cur2");
+        const one = llvm.Const.int64(self.ctx, 1);
+        const next_idx = self.builder.buildAdd(cur_idx2, one, "forslice.idx.next");
+        _ = self.builder.buildStore(next_idx, idx_alloca);
+        _ = self.builder.buildBr(cond_bb);
+
+        // Continue after loop
+        self.builder.positionAtEnd(end_bb);
+        self.has_terminator = false;
+
+        // Remove loop variable from scope
+        _ = self.named_values.remove(binding_name);
+    }
+
     /// Emit for-loop for List[T] types using index iteration.
     /// List layout: { ptr: *T, len: i32, capacity: i32 }
     fn emitForLoopList(
@@ -2257,6 +2367,51 @@ pub const Emitter = struct {
 
         // Remove loop variable from scope
         _ = self.named_values.remove(binding_name);
+    }
+
+    /// Get information about a slice expression: its alloca pointer and element type.
+    const SliceInfo = struct {
+        alloca: llvm.ValueRef,
+        element_type: llvm.TypeRef,
+    };
+
+    fn getSliceInfo(self: *Emitter, expr: ast.Expr) EmitError!SliceInfo {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    // Check if this is a slice (array without fixed size)
+                    if (local.is_array and local.array_size == null) {
+                        // Get element type from stored type info
+                        if (local.array_element_type) |elem_type| {
+                            return SliceInfo{
+                                .alloca = local.value,
+                                .element_type = self.typeToLLVM(elem_type),
+                            };
+                        }
+                        // Fallback: try to infer element type
+                        // For char slices (from string.chars()), element is i32 (char)
+                        return SliceInfo{
+                            .alloca = local.value,
+                            .element_type = llvm.Types.int32(self.ctx),
+                        };
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: use type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            if (expr_type == .slice) {
+                const slice_val = try self.emitExpr(expr);
+                return SliceInfo{
+                    .alloca = slice_val,
+                    .element_type = self.typeToLLVM(expr_type.slice.element),
+                };
+            }
+        }
+        return EmitError.InvalidAST;
     }
 
     /// Get information about a List expression: its alloca pointer and element type.
@@ -11148,19 +11303,43 @@ pub const Emitter = struct {
         }
     }
 
-    /// Check if an expression is an array or slice type.
+    /// Check if an expression is a slice type (dynamic array without fixed size).
+    /// Slices are represented as { ptr, len } structs and require runtime length checks.
+    fn isSliceExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    // A slice is an array type without a fixed size
+                    if (local.is_array and local.array_size == null) {
+                        return true;
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: use type checker if available
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .slice;
+        }
+        return false;
+    }
+
+    /// Check if an expression is a fixed-size array type.
     fn isArrayExpr(self: *Emitter, expr: ast.Expr) bool {
         switch (expr) {
             .identifier => |id| {
                 // Check if we have array info for this identifier in named_values
                 if (self.named_values.get(id.name)) |local| {
-                    if (local.is_array) {
+                    // Only fixed-size arrays (with known size) - slices are handled separately
+                    if (local.is_array and local.array_size != null) {
                         return true;
                     }
                 }
             },
             .array_literal => {
-                // Array literals are always array type
+                // Array literals are always fixed-size array type
                 return true;
             },
             else => {},
@@ -11169,7 +11348,7 @@ pub const Emitter = struct {
         if (self.type_checker) |tc| {
             const tc_mut = @constCast(tc);
             const expr_type = tc_mut.checkExpr(expr);
-            return expr_type == .array or expr_type == .slice;
+            return expr_type == .array;
         }
         return false;
     }

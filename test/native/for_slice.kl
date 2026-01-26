@@ -1,0 +1,71 @@
+// Test for-loop with slices (dynamic arrays)
+// Expected exit code: 42
+
+fn main() -> i32 {
+    // Test 1: Iterate over string.chars() slice
+    let s: string = "hello"
+    let chars: [char] = s.chars()
+    var count: i32 = 0
+    for c: char in chars {
+        count = count + 1
+    }
+    // count should be 5 (length of "hello")
+    if count != 5 {
+        return 1
+    }
+
+    // Test 2: Empty string produces empty slice
+    let empty: string = ""
+    let empty_chars: [char] = empty.chars()
+    var empty_count: i32 = 0
+    for c: char in empty_chars {
+        empty_count = empty_count + 1
+    }
+    if empty_count != 0 {
+        return 2
+    }
+
+    // Test 3: Sum character codes
+    let hi: string = "AB"
+    let hi_chars: [char] = hi.chars()
+    var code_sum: i32 = 0
+    for c: char in hi_chars {
+        // char is represented as i32 codepoint
+        code_sum = code_sum + c.as[i32]
+    }
+    // 'A' = 65, 'B' = 66, sum = 131
+    if code_sum != 131 {
+        return 3
+    }
+
+    // Test 4: Break in slice loop
+    let longer: string = "abcdefgh"
+    let longer_chars: [char] = longer.chars()
+    var partial: i32 = 0
+    for c: char in longer_chars {
+        if partial >= 3 {
+            break
+        }
+        partial = partial + 1
+    }
+    if partial != 3 {
+        return 4
+    }
+
+    // Test 5: Continue in slice loop (skip 'a' = 97)
+    let abc: string = "abc"
+    let abc_chars: [char] = abc.chars()
+    var skip_a_sum: i32 = 0
+    for c: char in abc_chars {
+        if c.as[i32] == 97 {
+            continue
+        }
+        skip_a_sum = skip_a_sum + c.as[i32]
+    }
+    // 'b' = 98, 'c' = 99, sum = 197
+    if skip_a_sum != 197 {
+        return 5
+    }
+
+    return 42
+}

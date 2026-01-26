@@ -6,11 +6,9 @@ Discovered while implementing the JSON parser. Tested with Klar v0.3.1-dev.
 
 ## Bug: impl Methods Returning Optional Enum When Accessing Map Variant
 
-**Status:** Fixed
+**Status:** Fixed (verified 2026-01-25)
 
 **Description:** `impl` methods on enums that return `?EnumType` and access a `Map` inside a variant fail LLVM code generation. Note that the equivalent code using `List` works correctly—only `Map` access fails.
-
-**Fix:** The issue was in `inferExprType` where Cell method inference (`get()`, `replace()`, `set()`) happened before user-defined struct/enum method lookup. When processing `obj.get("name")` where `obj: JsonValue`, the code incorrectly treated it as a Cell method call. Fixed by checking for user-defined methods first before falling back to Cell method inference.
 
 **Reproduction:**
 
@@ -56,6 +54,60 @@ fn json_get(val: JsonValue, key: string) -> ?JsonValue {
     }
 }
 ```
+
+---
+
+## Bug: Array Iteration Causes Compiler Segfault
+
+**Status:** Fixed (verified 2026-01-25)
+
+**Description:** Iterating over a slice (e.g., from `string.chars()`) caused the compiler to segfault during codegen. The issue was that `emitForLoopArray` assumed all array types were fixed-size LLVM arrays, but slices are represented as `{ ptr, len }` structs.
+
+**Root Cause:** The `getArrayInfo()` function called `LLVMGetElementType()` on the slice struct type instead of the actual element type. Slices (dynamic arrays without fixed size) needed separate handling from fixed-size arrays.
+
+**Fix:** Added `emitForLoopSlice()` function to handle slice iteration separately, extracting the data pointer and length from the slice struct fields and using them for iteration.
+
+**Reproduction (now works):**
+
+```klar
+fn main() -> i32 {
+    let s: string = "hello"
+    let arr: [char] = s.chars()
+
+    var count: i32 = 0
+    for c: char in arr {
+        count = count + 1
+    }
+
+    return count  // Returns 5
+}
+```
+
+---
+
+## Bug: Array Indexing Not Supported
+
+**Status:** Broken
+
+**Description:** Array indexing (`arr[i]`) returns a codegen error, making it impossible to access individual characters from `string.chars()`.
+
+**Reproduction:**
+
+```klar
+fn main() -> i32 {
+    let s: string = "hello"
+    let chars: [char] = s.chars()
+    let first: char = chars[0]  // ERROR
+    return 0
+}
+```
+
+**Error:**
+```
+Codegen error: UnsupportedFeature
+```
+
+**Expected:** Should return the character at the given index.
 
 ---
 
