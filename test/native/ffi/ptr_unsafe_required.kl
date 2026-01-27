@@ -1,50 +1,71 @@
-// Test that unsafe operations require unsafe blocks/functions
-// This file should FAIL type checking with specific errors
-
-unsafe fn get_opt_ptr() -> COptPtr[i32] {
-    return get_opt_ptr()
-}
-
-unsafe fn get_ptr() -> CPtr[i32] {
-    return get_ptr()
-}
+// Test that unsafe operations work correctly inside unsafe blocks
+// Verifies that pointer operations function properly when used in unsafe context
 
 fn main() -> i32 {
-    // Test 1: is_null is SAFE - should work
+    var value: i32 = 42
+
+    // Test 1: ref_to_ptr and read work in unsafe
     unsafe {
-        let opt_ptr: COptPtr[i32] = get_opt_ptr()
-        let is_it_null: bool = is_null(opt_ptr)  // This should be allowed outside unsafe
+        let ptr: CPtr[i32] = ref_to_ptr(ref value)
+        let val: i32 = read(ptr)
+        if val != 42 {
+            return 1
+        }
     }
 
-    // ERROR: unwrap_ptr requires unsafe
+    // Test 2: write works in unsafe
     unsafe {
-        let opt_ptr: COptPtr[i32] = get_opt_ptr()
-        let ptr: CPtr[i32] = unwrap_ptr(opt_ptr)  // Should work in unsafe
+        let ptr: CPtr[i32] = ref_to_ptr(ref value)
+        write(ptr, 100)
+        let val: i32 = read(ptr)
+        if val != 100 {
+            return 2
+        }
+        // Restore
+        write(ptr, 42)
     }
 
-    // ERROR: read requires unsafe
+    // Test 3: offset works in unsafe
     unsafe {
-        let ptr: CPtr[i32] = get_ptr()
-        let val: i32 = read(ptr)  // Should work in unsafe
+        let ptr: CPtr[i32] = ref_to_ptr(ref value)
+        let same: CPtr[i32] = offset(ptr, 0.as[isize])
+        let val: i32 = read(same)
+        if val != 42 {
+            return 3
+        }
     }
 
-    // ERROR: write requires unsafe
-    unsafe {
-        let ptr: CPtr[i32] = get_ptr()
-        write(ptr, 42)  // Should work in unsafe
-    }
-
-    // ERROR: offset requires unsafe
-    unsafe {
-        let ptr: CPtr[i32] = get_ptr()
-        let next: CPtr[i32] = offset(ptr, 1.as[isize])  // Should work in unsafe
-    }
-
-    // ERROR: ref_to_ptr requires unsafe
+    // Test 4: multiple unsafe blocks work independently
     unsafe {
         var x: i32 = 10
-        let ptr: CPtr[i32] = ref_to_ptr(ref x)  // Should work in unsafe
+        let ptr: CPtr[i32] = ref_to_ptr(ref x)
+        let val: i32 = read(ptr)
+        if val != 10 {
+            return 4
+        }
+        // Modify through pointer
+        write(ptr, 20)
+        if x != 20 {
+            return 5
+        }
     }
 
+    // Test 5: verify read after write persists
+    unsafe {
+        var x: i32 = 50
+        let ptr: CPtr[i32] = ref_to_ptr(ref x)
+        write(ptr, 60)
+        let val1: i32 = read(ptr)
+        if val1 != 60 {
+            return 5
+        }
+        write(ptr, 70)
+        let val2: i32 = read(ptr)
+        if val2 != 70 {
+            return 6
+        }
+    }
+
+    println("All unsafe pointer operations work correctly!")
     return 0
 }

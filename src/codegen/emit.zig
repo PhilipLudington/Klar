@@ -5448,6 +5448,20 @@ pub const Emitter = struct {
                         result_ptr.* = .{ .ok_type = ok_type, .err_type = err_type };
                         return .{ .result = result_ptr };
                     }
+                    // Check for CPtr[T]
+                    if (std.mem.eql(u8, name, "CPtr") and g.args.len == 1) {
+                        const inner = self.resolveTypeExprDirect(g.args[0]) orelse return null;
+                        const cptr_type = self.allocator.create(types.CptrType) catch return null;
+                        cptr_type.* = .{ .inner = inner };
+                        return .{ .cptr = cptr_type };
+                    }
+                    // Check for COptPtr[T]
+                    if (std.mem.eql(u8, name, "COptPtr") and g.args.len == 1) {
+                        const inner = self.resolveTypeExprDirect(g.args[0]) orelse return null;
+                        const copt_ptr_type = self.allocator.create(types.CoptPtrType) catch return null;
+                        copt_ptr_type.* = .{ .inner = inner };
+                        return .{ .copt_ptr = copt_ptr_type };
+                    }
                 }
                 // For other generic types, try type checker (may fail due to scope)
                 if (self.type_checker) |tc| {
@@ -12276,8 +12290,23 @@ pub const Emitter = struct {
     }
 
     /// Get the pointed-to type from a CPtr expression.
-    /// Uses the type checker to look up the actual type.
+    /// Uses stored semantic type or type checker to look up the actual type.
     fn getPointedToType(self: *Emitter, expr: ast.Expr) types.Type {
+        // First, try to get the type from named_values if this is an identifier
+        if (expr == .identifier) {
+            const id = expr.identifier;
+            if (self.named_values.get(id.name)) |local| {
+                if (local.semantic_type) |sem_type| {
+                    if (sem_type == .cptr) {
+                        return sem_type.cptr.inner;
+                    } else if (sem_type == .copt_ptr) {
+                        return sem_type.copt_ptr.inner;
+                    }
+                }
+            }
+        }
+
+        // Fallback: try the type checker
         if (self.type_checker) |tc| {
             const tc_mut = @constCast(tc);
             const expr_type = tc_mut.checkExpr(expr);

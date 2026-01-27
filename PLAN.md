@@ -262,7 +262,7 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 ### 8.2 ABI Compliance
 - [x] Verify struct passing matches C ABI (by value vs by pointer)
 - [x] Verify return value handling (small structs returned in registers)
-- [ ] Test on multiple platforms (macOS, Linux)
+- [x] Test on multiple platforms (macOS, Linux via Docker)
 
 ### 8.3 Integration Tests
 - [x] FFI tests already link with libc successfully
