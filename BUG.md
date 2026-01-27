@@ -55,9 +55,9 @@ When running `klar run tests/lexer_test.kl` from the project root:
 
 ---
 
-## [ ] Bug 2: String interpolation triggers on brace literals
+## [x] Bug 2: String interpolation triggers on brace literals
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** Medium
 **Discovered:** 2026-01-27
 
@@ -86,25 +86,23 @@ Parse error: error.UnterminatedString
   X:Y: unmatched '{' in string interpolation
 ```
 
-### Workaround
+### Solution
 
-Use character-to-string conversion:
+Added `hasValidInterpolation()` function in `src/parser.zig` that validates every unescaped `{` has a matching `}` before committing to interpolation parsing. If any unescaped `{` lacks a matching `}`, the string is treated as a regular literal (not interpolation).
 
-```klar
-fn lbrace() -> string { return '{'.to_string() }
+**Fix applied in:** `src/parser.zig` - Added validation before calling `parseInterpolatedString()`.
 
-fn main() -> i32 {
-    let json: string = lbrace()  // Works
-    println(json)
-    return 0
-}
-```
+Now these all work correctly:
+- `"{"` → literal `{`
+- `"}"` → literal `}`
+- `"hello { world"` → literal with unmatched brace
+- `"{x}"` → interpolation (when x is in scope)
 
 ---
 
-## [ ] Bug 3: LLVM codegen error with string variable comparisons
+## [x] Bug 3: LLVM codegen error with string variable comparisons
 
-**Status:** Open
+**Status:** Fixed
 **Severity:** High
 **Discovered:** 2026-01-27
 
@@ -138,7 +136,7 @@ fn main() -> i32 {
 
 The code compiles and runs, printing "matched".
 
-### Actual Behavior
+### Actual Behavior (before fix)
 
 ```
 LLVM Module verification failed: Both operands to a binary operator are not of the same type!
@@ -149,16 +147,17 @@ Both operands to ICmp instruction are not of the same type!
 LLVM verification failed: ModuleVerificationFailed
 ```
 
-### Analysis
+### Solution
 
-The LLVM IR shows:
-- String variables are represented as `{ ptr, i32, i32 }` (pointer + length + capacity)
-- String literals are represented as `ptr`
-- Comparison and concatenation operations don't properly handle the type difference
+Multiple fixes in `src/codegen/emit.zig`:
 
-### Workaround
+1. **Binary operators**: Added `isStringValue()` and `extractStringPtr()` helper functions to detect and handle both `string` (ptr) and `string_data` (struct) types in comparisons and concatenation.
 
-None found. Avoid string equality comparisons with dynamically built strings. Use character-by-character comparison or restructure code to avoid this pattern.
+2. **Variable declarations**: When declaring a `string` variable with a `string_data` value (e.g., from `char.to_string()`), the pointer is now extracted from the struct during assignment.
+
+3. **Function parameters**: Added `semantic_type` to parameter registration so `char.to_string()` works correctly for char parameters (not just char literals).
+
+**Files modified:** `src/codegen/emit.zig`
 
 ---
 
