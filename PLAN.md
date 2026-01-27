@@ -187,7 +187,7 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ---
 
-## Phase 6: C-Compatible Enum Layout
+## Phase 6: C-Compatible Enum Layout ✅
 
 **Objective:** Support `extern enum Name: IntType { ... }` with explicit repr.
 
@@ -254,8 +254,9 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 **Objective:** Ensure Klar object files link with C object files.
 
 ### 8.1 Build System
+- [x] Basic libc linking works (puts, strlen, malloc, free, etc.)
 - [ ] Document linking with C libraries
-- [ ] Add `-l` flag for linking system libraries
+- [ ] Add `-l` flag for linking additional system libraries
 - [ ] Add `-L` flag for library search paths
 
 ### 8.2 ABI Compliance
@@ -264,8 +265,8 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 - [ ] Test on multiple platforms (macOS, Linux)
 
 ### 8.3 Integration Tests
-- [ ] `test/native/ffi/link_libc.kl` - link with libc
-- [ ] `test/native/ffi/call_c_function.kl` - call actual C code
+- [x] FFI tests already link with libc successfully
+- [ ] `test/native/ffi/call_c_function.kl` - call custom C code
 
 ---
 
@@ -318,7 +319,7 @@ Phase 5,6 ──> Phase 8 (integration)
 
 ## Open Questions
 
-1. **Null terminator handling**: Should `string.as_cstr()` add a null terminator on-the-fly, or require strings to always be null-terminated internally?
+1. ~~**Null terminator handling**: Should `string.as_cstr()` add a null terminator on-the-fly, or require strings to always be null-terminated internally?~~ **Resolved:** Klar strings (both primitive `string` and `String`) are already null-terminated internally, so `as_cstr()` just returns the pointer.
 
 2. **Out parameter initialization**: Should the compiler track that `out` parameters are uninitialized before the call and initialized after?
 
@@ -330,10 +331,10 @@ Phase 5,6 ──> Phase 8 (integration)
 
 ## Success Criteria
 
-- [ ] Can call libc functions (puts, printf, malloc, free)
-- [ ] Can define C-compatible structs and pass to C functions
+- [x] Can call libc functions (puts, printf, malloc, free)
+- [x] Can define C-compatible structs and pass to C functions
 - [ ] Can receive C structs from C functions
-- [ ] Can work with C strings safely
-- [ ] All unsafe operations require explicit unsafe blocks
-- [ ] Klar binaries link cleanly with C libraries
+- [x] Can work with C strings safely
+- [x] All unsafe operations require explicit unsafe blocks
+- [x] Klar binaries link cleanly with C libraries
 - [ ] seL4 example from spec compiles and type-checks
