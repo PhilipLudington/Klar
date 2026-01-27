@@ -159,6 +159,33 @@ else
     echo "⊘ alias (test not found, skipping)"
 fi
 
+# Test 7: Sibling directory imports (test file imports from sibling lib/)
+# This tests that imports resolve relative to cwd, not just relative to entry file
+echo "--- sibling: Import from sibling directory ---"
+temp_bin="/tmp/klar_module_sibling"
+if [ -d "$TEST_DIR/sibling" ]; then
+    # Run from the sibling test directory (simulating running tests from project root)
+    pushd "$TEST_DIR/sibling" > /dev/null
+    if $KLAR build tests/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "42" ]; then
+            echo "✓ sibling (exit: $result)"
+            record_success "sibling"
+        else
+            echo "✗ sibling (expected: 42, got: $result)"
+            record_failure "sibling" "expected 42, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ sibling (build failed)"
+        record_failure "sibling" "build failed"
+    fi
+    popd > /dev/null
+else
+    echo "⊘ sibling (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON
