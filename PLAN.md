@@ -274,7 +274,7 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ## Phase 9: Deferred FFI Features
 
-**Status:** In Progress (Batch C Complete)
+**Status:** In Progress (Batch D Complete)
 **Objective:** Complete remaining FFI features organized by implementation priority.
 
 ### Batch A: Quick Wins (Validation & Testing) ✅
@@ -299,10 +299,12 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 - [x] Automatic memory deallocation (Drop) for `CStrOwned` at scope exit
 - [x] Test: `test/native/ffi/cstr_owned.kl` - end-to-end CStrOwned test
 
-### Batch D: Pointer Cast (Requires Parser Changes)
+### Batch D: Pointer Cast ✅
 
-- [ ] Add `ptr_cast[U](ptr: CPtr[T]) -> CPtr[U]` builtin (needs type arg syntax at call site)
-- [ ] Codegen: Generate appropriate LLVM for `ptr_cast`
+- [x] Add `ptr_cast[U](ptr: CPtr[T]) -> CPtr[U]` builtin (needs type arg syntax at call site)
+- [x] Parser: Support `func[Type](args)` syntax for function calls with explicit type arguments
+- [x] Codegen: Generate appropriate LLVM for `ptr_cast`
+- [x] Test: `test/native/ffi/ptr_cast.kl` - end-to-end ptr_cast test
 
 ### Batch E: Future (Low Priority)
 

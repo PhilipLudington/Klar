@@ -229,6 +229,7 @@ pub const PostfixOp = enum {
 pub const Call = struct {
     callee: Expr,
     args: []const Expr,
+    type_args: ?[]const TypeExpr = null, // explicit type arguments for generics: func[T](args)
     span: Span,
 };
 

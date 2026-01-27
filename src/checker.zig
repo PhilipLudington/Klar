@@ -3857,6 +3857,42 @@ pub const TypeChecker = struct {
                 return self.type_builder.unknownType();
             }
 
+            // ptr_cast[U](ptr: CPtr[T]) -> CPtr[U] - UNSAFE
+            // Cast between pointer types. Requires explicit type argument.
+            if (std.mem.eql(u8, func_name, "ptr_cast")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "ptr_cast requires exactly 1 argument", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, call.span, "ptr_cast is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+
+                // Require explicit type argument: ptr_cast[TargetType](ptr)
+                if (call.type_args == null or call.type_args.?.len != 1) {
+                    self.addError(.invalid_call, call.span, "ptr_cast requires exactly 1 type argument: ptr_cast[TargetType](ptr)", .{});
+                    return self.type_builder.unknownType();
+                }
+
+                const arg_type = self.checkExpr(call.args[0]);
+
+                // Argument must be CPtr[T] or COptPtr[T]
+                if (arg_type != .cptr and arg_type != .copt_ptr) {
+                    self.addError(.type_mismatch, call.args[0].span(), "ptr_cast expects CPtr[T] or COptPtr[T]", .{});
+                    return self.type_builder.unknownType();
+                }
+
+                // Resolve the target type from the type argument
+                const target_type = self.resolveType(call.type_args.?[0]);
+
+                // Return the appropriate pointer type with the new inner type
+                if (arg_type == .cptr) {
+                    return self.type_builder.cptrType(target_type) catch self.type_builder.unknownType();
+                } else {
+                    return self.type_builder.coptPtrType(target_type) catch self.type_builder.unknownType();
+                }
+            }
+
         }
 
         const callee_type = self.checkExpr(call.callee);

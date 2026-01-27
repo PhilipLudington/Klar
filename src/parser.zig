@@ -380,8 +380,8 @@ pub const Parser = struct {
             .bang => self.parsePostfix(left, .force_unwrap),
 
             // Call/index/field
-            .l_paren => self.parseCall(left),
-            .l_bracket => self.parseIndex(left),
+            .l_paren => self.parseCall(left, null),
+            .l_bracket => self.parseIndexOrTypeArgs(left),
             .dot => self.parseFieldOrMethod(left),
 
             else => left,
@@ -1263,7 +1263,7 @@ pub const Parser = struct {
         return .{ .postfix = postfix };
     }
 
-    fn parseCall(self: *Parser, callee: ast.Expr) ParseError!ast.Expr {
+    fn parseCall(self: *Parser, callee: ast.Expr, type_args: ?[]const ast.TypeExpr) ParseError!ast.Expr {
         self.advance(); // consume '('
 
         var args = std.ArrayListUnmanaged(ast.Expr){};
@@ -1304,9 +1304,79 @@ pub const Parser = struct {
         const call = try self.create(ast.Call, .{
             .callee = callee,
             .args = try self.dupeSlice(ast.Expr, args.items),
+            .type_args = type_args,
             .span = ast.Span.merge(callee.span(), end_span),
         });
         return .{ .call = call };
+    }
+
+    /// Parse either an index expression (arr[0]) or type arguments for a function call (func[T](...)).
+    /// Distinguishes by looking ahead: if the pattern is [...](, it's type args + call.
+    fn parseIndexOrTypeArgs(self: *Parser, left: ast.Expr) ParseError!ast.Expr {
+        // Only consider type arguments for identifier expressions (function names)
+        // Use lookahead to check if this is the pattern: identifier[...](
+        // This is unambiguous - arr[i] won't have ( after ], but func[T]() will.
+        if (left == .identifier and self.isTypeArgsFollowedByCall()) {
+            // This is type arguments followed by a call.
+            self.advance(); // consume '['
+
+            var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
+            if (!self.check(.r_bracket)) {
+                while (true) {
+                    try type_args.append(self.allocator, try self.parseType());
+                    if (!self.match(.comma)) break;
+                }
+            }
+            try self.consume(.r_bracket, "expected ']' after type arguments");
+
+            // We already verified ( follows, so this should succeed
+            return self.parseCall(left, try self.dupeSlice(ast.TypeExpr, type_args.items));
+        }
+
+        // Otherwise it's a regular index expression
+        return self.parseIndex(left);
+    }
+
+    /// Look ahead to check if the current '[' starts type arguments followed by '('.
+    /// Scans forward counting bracket depth until finding the matching ']',
+    /// then checks if '(' immediately follows.
+    fn isTypeArgsFollowedByCall(self: *Parser) bool {
+        // Save lexer state for lookahead
+        const saved_pos = self.lexer.pos;
+        const saved_line = self.lexer.line;
+        const saved_column = self.lexer.column;
+
+        // We're currently at '[', skip it
+        var tok = self.lexer.next();
+        var depth: i32 = 1;
+
+        // Scan until we find the matching ']'
+        while (depth > 0 and tok.kind != .eof) {
+            if (tok.kind == .l_bracket) {
+                depth += 1;
+            } else if (tok.kind == .r_bracket) {
+                depth -= 1;
+            }
+            if (depth > 0) {
+                tok = self.lexer.next();
+            }
+        }
+
+        // Skip any newlines after ']'
+        var next = self.lexer.next();
+        while (next.kind == .newline) {
+            next = self.lexer.next();
+        }
+
+        // Check if '(' follows
+        const result = (depth == 0 and next.kind == .l_paren);
+
+        // Restore lexer state
+        self.lexer.pos = saved_pos;
+        self.lexer.line = saved_line;
+        self.lexer.column = saved_column;
+
+        return result;
     }
 
     fn parseIndex(self: *Parser, object: ast.Expr) ParseError!ast.Expr {

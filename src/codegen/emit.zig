@@ -4412,6 +4412,8 @@ pub const Emitter = struct {
                 return self.emitOffset(call);
             } else if (std.mem.eql(u8, name, "ref_to_ptr")) {
                 return self.emitRefToPtr(call);
+            } else if (std.mem.eql(u8, name, "ptr_cast")) {
+                return self.emitPtrCast(call);
             }
         }
 
@@ -12538,6 +12540,16 @@ pub const Emitter = struct {
         }
         // A reference in Klar is already a pointer at the LLVM level
         // So we just emit the expression and return it
+        return try self.emitExpr(call.args[0]);
+    }
+
+    fn emitPtrCast(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+        // With LLVM opaque pointers, ptr_cast is a no-op at the IR level.
+        // The pointer value stays the same, only the semantic type changes.
+        // The type checker has already validated the cast and determined the result type.
         return try self.emitExpr(call.args[0]);
     }
 
