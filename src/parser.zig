@@ -2098,12 +2098,7 @@ pub const Parser = struct {
                     try self.reportError("'unsafe' modifier is not allowed on struct declarations");
                     return ParseError.UnexpectedToken;
                 }
-                if (is_extern) {
-                    // Future: extern struct declarations (Phase 5)
-                    try self.reportError("'extern struct' is not yet supported");
-                    return ParseError.UnexpectedToken;
-                }
-                break :blk self.parseStructDecl(is_pub);
+                break :blk self.parseStructDecl(is_pub, is_extern);
             },
             .enum_ => blk: {
                 if (is_unsafe) {
@@ -2363,16 +2358,33 @@ pub const Parser = struct {
         return try self.dupeSlice(ast.WhereConstraint, constraints.items);
     }
 
-    fn parseStructDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseStructDecl(self: *Parser, is_pub: bool, is_extern: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'struct'
+
+        // Parse optional 'packed' modifier (only valid for extern structs)
+        const is_packed = self.match(.packed_);
+        if (is_packed and !is_extern) {
+            try self.reportError("'packed' modifier is only valid for extern structs");
+            return ParseError.UnexpectedToken;
+        }
 
         const name = try self.consumeIdentifier();
         const type_params = try self.parseTypeParams();
 
+        // Extern structs cannot have type parameters
+        if (is_extern and type_params.len > 0) {
+            try self.reportError("extern structs cannot have generic type parameters");
+            return ParseError.UnexpectedToken;
+        }
+
         // Parse optional trait implementations: struct Foo: Trait1 + Trait2
         var traits = std.ArrayListUnmanaged(ast.TypeExpr){};
         if (self.match(.colon)) {
+            if (is_extern) {
+                try self.reportError("extern structs cannot implement traits");
+                return ParseError.UnexpectedToken;
+            }
             while (true) {
                 try traits.append(self.allocator, try self.parseType());
                 if (!self.match(.plus)) break;
@@ -2414,6 +2426,8 @@ pub const Parser = struct {
             .fields = try self.dupeSlice(ast.StructField, fields.items),
             .traits = try self.dupeSlice(ast.TypeExpr, traits.items),
             .is_pub = is_pub,
+            .is_extern = is_extern,
+            .is_packed = is_packed,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .struct_decl = struct_decl };

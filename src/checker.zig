@@ -8787,6 +8787,12 @@ pub const TypeChecker = struct {
 
         for (struct_decl.fields) |field| {
             const field_type = self.resolveTypeExpr(field.type_) catch self.type_builder.unknownType();
+
+            // Validate FFI-compatible types for extern structs
+            if (struct_decl.is_extern and !self.isFfiCompatibleType(field_type)) {
+                self.addError(.type_mismatch, field.span, "extern struct fields must be FFI-compatible types (primitives, CPtr, COptPtr, CStr, or other extern types)", .{});
+            }
+
             fields.append(self.allocator, .{
                 .name = field.name,
                 .type_ = field_type,
@@ -8801,6 +8807,8 @@ pub const TypeChecker = struct {
             .type_params = struct_type_params,
             .fields = fields.toOwnedSlice(self.allocator) catch &.{},
             .traits = &.{},
+            .is_extern = struct_decl.is_extern,
+            .is_packed = struct_decl.is_packed,
         };
 
         // Track for cleanup in deinit
@@ -10146,6 +10154,26 @@ pub const TypeChecker = struct {
     fn isBoolType(self: *TypeChecker, t: Type) bool {
         _ = self;
         return t == .primitive and t.primitive == .bool_;
+    }
+
+    /// Check if a type is FFI-compatible (can be used in extern structs and extern functions).
+    /// FFI-compatible types are:
+    /// - Primitive types (i8, i16, i32, i64, u8, u16, u32, u64, isize, usize, f32, f64, bool)
+    /// - CPtr[T] and COptPtr[T] (raw pointers)
+    /// - CStr (null-terminated C strings)
+    /// - Extern types (sized or opaque)
+    /// - Other extern structs
+    fn isFfiCompatibleType(self: *TypeChecker, t: Type) bool {
+        _ = self;
+        return switch (t) {
+            .primitive => true,
+            .cptr => true,
+            .copt_ptr => true,
+            .cstr => true,
+            .extern_type => true,
+            .struct_ => |s| s.is_extern,
+            else => false,
+        };
     }
 
     fn isAssignable(self: *TypeChecker, expr: ast.Expr) bool {

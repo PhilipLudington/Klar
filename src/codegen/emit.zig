@@ -826,7 +826,8 @@ pub const Emitter = struct {
         }
 
         // Use getOrCreateStructType to register the struct with field names
-        _ = try self.getOrCreateStructType(struct_decl.name, struct_decl.fields);
+        // For packed extern structs, LLVM struct should be packed (no padding)
+        _ = try self.getOrCreateStructType(struct_decl.name, struct_decl.fields, struct_decl.is_packed);
     }
 
     /// Register all struct declarations from a module.
@@ -7080,7 +7081,9 @@ pub const Emitter = struct {
     // =========================================================================
 
     /// Get or create an LLVM struct type for a named struct.
-    fn getOrCreateStructType(self: *Emitter, name: []const u8, fields: []const ast.StructField) EmitError!llvm.TypeRef {
+    /// For packed structs (extern struct packed), LLVM will use packed struct layout (no padding).
+    /// For regular and extern structs, LLVM uses standard C ABI alignment.
+    fn getOrCreateStructType(self: *Emitter, name: []const u8, fields: []const ast.StructField, is_packed: bool) EmitError!llvm.TypeRef {
         // Check cache first
         if (self.struct_types.get(name)) |info| {
             return info.llvm_type;
@@ -7103,8 +7106,10 @@ pub const Emitter = struct {
             field_names[i] = field.name;
         }
 
-        // Create LLVM struct type (not packed - follows C ABI alignment)
-        const struct_type = llvm.Types.struct_(self.ctx, field_types.items, false);
+        // Create LLVM struct type
+        // - packed=true for extern struct packed (no padding between fields)
+        // - packed=false for regular and extern structs (C ABI alignment with padding)
+        const struct_type = llvm.Types.struct_(self.ctx, field_types.items, is_packed);
 
         // Cache the struct type info
         self.struct_types.put(name, .{

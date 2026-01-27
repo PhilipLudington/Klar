@@ -461,6 +461,7 @@ pub const Lexer = struct {
         .{ "await", .await_ },
         .{ "unsafe", .unsafe_ },
         .{ "extern", .extern_ },
+        .{ "packed", .packed_ },
         .{ "import", .import },
         .{ "module", .module },
         .{ "as", .as },

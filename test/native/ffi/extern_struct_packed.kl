@@ -1,0 +1,40 @@
+// Test: Packed extern struct declarations
+// Packed structs have no padding between fields
+
+// Basic packed struct - fields are consecutive with no padding
+extern struct packed PackedData {
+    a: u8,
+    b: u32,
+    c: u8,
+}
+
+// Public packed struct
+pub extern struct packed PackedPair {
+    first: u8,
+    second: u8,
+}
+
+fn main() -> i32 {
+    // Create packed struct instances with explicit conversions
+    let a: u8 = 1.as[u8]
+    let b: u32 = 2.as[u32]
+    let c: u8 = 3.as[u8]
+    let pd: PackedData = PackedData { a: a, b: b, c: c }
+
+    let f: u8 = 10.as[u8]
+    let s: u8 = 20.as[u8]
+    let pp: PackedPair = PackedPair { first: f, second: s }
+
+    // Access fields
+    let pda: u8 = pd.a
+    let pdb: u32 = pd.b
+    let pdc: u8 = pd.c
+
+    // Verify values
+    if pda == 1.as[u8] and pdb == 2.as[u32] and pdc == 3.as[u8] {
+        if pp.first == 10.as[u8] and pp.second == 20.as[u8] {
+            return 0
+        }
+    }
+    return 1
+}

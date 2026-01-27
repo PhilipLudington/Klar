@@ -454,6 +454,8 @@ pub const StructType = struct {
     fields: []const StructField,
     traits: []const *TraitType,
     is_copy: bool = false,
+    is_extern: bool = false,
+    is_packed: bool = false,
 };
 
 pub const StructField = struct {

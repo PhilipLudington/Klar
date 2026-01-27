@@ -647,6 +647,8 @@ pub const StructDecl = struct {
     fields: []const StructField,
     traits: []const TypeExpr,
     is_pub: bool,
+    is_extern: bool = false,
+    is_packed: bool = false,
     span: Span,
 };
 

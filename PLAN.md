@@ -1,6 +1,6 @@
 # Klar FFI Implementation Plan
 
-**Status:** In Progress (Phase 4 Complete)
+**Status:** In Progress (Phase 5 Complete)
 **Goal:** Implement Foreign Function Interface (FFI) for C interoperability
 
 ---
@@ -155,35 +155,35 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ---
 
-## Phase 5: C-Compatible Struct Layout
+## Phase 5: C-Compatible Struct Layout ✅
 
 **Objective:** Support `extern struct` with C ABI-compatible layout.
 
 ### 5.1 Parser Changes
-- [ ] Parse `extern struct Name { ... }`
-- [ ] Parse `extern struct packed Name { ... }`
-- [ ] Parse `pub extern struct` for visibility
+- [x] Parse `extern struct Name { ... }`
+- [x] Parse `extern struct packed Name { ... }`
+- [x] Parse `pub extern struct` for visibility
 
 ### 5.2 AST Changes
-- [ ] Add `is_extern` flag to `StructDecl`
-- [ ] Add `is_packed` flag to `StructDecl`
+- [x] Add `is_extern` flag to `StructDecl`
+- [x] Add `is_packed` flag to `StructDecl`
 
 ### 5.3 Type System Changes
-- [ ] Track struct layout kind (Klar default vs C-compatible vs packed)
+- [x] Track struct layout kind (Klar default vs C-compatible vs packed)
 
 ### 5.4 Checker Changes
-- [ ] Validate extern struct fields are FFI-compatible types
-- [ ] Prevent generic type parameters in extern structs
+- [x] Validate extern struct fields are FFI-compatible types
+- [x] Prevent generic type parameters in extern structs
 
 ### 5.5 Codegen
-- [ ] For extern structs: use LLVM struct type with no packing (C layout)
-- [ ] For packed structs: use LLVM packed struct
-- [ ] Ensure field order matches declaration order
-- [ ] Use target DataLayout for alignment
+- [x] For extern structs: use LLVM struct type with no packing (C layout)
+- [x] For packed structs: use LLVM packed struct
+- [x] Ensure field order matches declaration order
+- [x] Use target DataLayout for alignment
 
 ### 5.6 Tests
-- [ ] `test/native/ffi/extern_struct.kl`
-- [ ] `test/native/ffi/extern_struct_packed.kl`
+- [x] `test/native/ffi/extern_struct.kl`
+- [x] `test/native/ffi/extern_struct_packed.kl`
 
 ---
 
