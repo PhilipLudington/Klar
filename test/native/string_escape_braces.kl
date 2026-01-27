@@ -1,0 +1,27 @@
+// Test escaped braces in strings (Bug 1 fix)
+
+fn main() -> i32 {
+    // Test 1: Empty escaped braces
+    print("\{\}")
+
+    // Test 2: Single escaped opening brace
+    print("\{")
+
+    // Test 3: Single escaped closing brace
+    print("\}")
+
+    // Test 4: Escaped braces with content
+    print("\{key\}")
+
+    // Test 5: Mix of interpolation and escaped braces
+    let x: i32 = 42
+    print("\{value: {x}\}")
+
+    // Test 6: JSON-like string
+    print("\{\"name\": \"test\"\}")
+
+    // Test 7: Multiple escaped braces
+    print("\{\{\}\}")
+
+    return 0
+}

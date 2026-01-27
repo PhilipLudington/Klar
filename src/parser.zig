@@ -23,6 +23,58 @@ pub const ParseError = error{
     OutOfMemory,
 };
 
+/// Find the next unescaped '{' starting from pos.
+/// Returns null if no unescaped '{' is found.
+fn findUnescapedBrace(content: []const u8, start: usize) ?usize {
+    var pos = start;
+    while (pos < content.len) {
+        if (content[pos] == '\\' and pos + 1 < content.len) {
+            // Skip escaped character (including \{ and \})
+            pos += 2;
+            continue;
+        }
+        if (content[pos] == '{') {
+            return pos;
+        }
+        pos += 1;
+    }
+    return null;
+}
+
+/// Process escape sequences in a string segment.
+/// Converts \{ to {, \} to }, and other standard escapes.
+fn processEscapes(allocator: Allocator, content: []const u8) ![]const u8 {
+    // Quick check: if no backslashes, return as-is
+    if (std.mem.indexOfScalar(u8, content, '\\') == null) {
+        return content;
+    }
+
+    var result = std.ArrayListUnmanaged(u8){};
+    var i: usize = 0;
+    while (i < content.len) {
+        if (content[i] == '\\' and i + 1 < content.len) {
+            const next = content[i + 1];
+            const escaped: u8 = switch (next) {
+                '{' => '{',
+                '}' => '}',
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '\\' => '\\',
+                '"' => '"',
+                '0' => 0,
+                else => next, // Unknown escape, keep as-is
+            };
+            try result.append(allocator, escaped);
+            i += 2;
+        } else {
+            try result.append(allocator, content[i]);
+            i += 1;
+        }
+    }
+    return result.items;
+}
+
 pub const Parser = struct {
     allocator: Allocator,
     lexer: *Lexer,
@@ -409,12 +461,14 @@ pub const Parser = struct {
         const content = if (text.len >= 2) text[1 .. text.len - 1] else text;
 
         // Check for interpolation (contains unescaped {)
-        if (std.mem.indexOfScalar(u8, content, '{')) |_| {
+        if (findUnescapedBrace(content, 0)) |_| {
             return self.parseInterpolatedString(content, span);
         }
 
+        // Process escape sequences for non-interpolated strings
+        const processed = processEscapes(self.allocator, content) catch content;
         return .{ .literal = .{
-            .kind = .{ .string = content },
+            .kind = .{ .string = processed },
             .span = span,
         } };
     }
@@ -424,17 +478,24 @@ pub const Parser = struct {
         var pos: usize = 0;
 
         while (pos < content.len) {
-            // Find next '{'
-            if (std.mem.indexOfScalarPos(u8, content, pos, '{')) |brace_start| {
+            // Find next unescaped '{'
+            if (findUnescapedBrace(content, pos)) |brace_start| {
                 // Add string segment before the brace (if any)
                 if (brace_start > pos) {
-                    try parts.append(self.allocator, .{ .string = content[pos..brace_start] });
+                    const segment = content[pos..brace_start];
+                    const processed = processEscapes(self.allocator, segment) catch segment;
+                    try parts.append(self.allocator, .{ .string = processed });
                 }
 
-                // Find matching '}'
+                // Find matching '}' (skipping escaped braces and tracking depth)
                 var brace_depth: usize = 1;
                 var expr_end: usize = brace_start + 1;
                 while (expr_end < content.len and brace_depth > 0) {
+                    if (content[expr_end] == '\\' and expr_end + 1 < content.len) {
+                        // Skip escaped characters inside expressions
+                        expr_end += 2;
+                        continue;
+                    }
                     if (content[expr_end] == '{') {
                         brace_depth += 1;
                     } else if (content[expr_end] == '}') {
@@ -455,9 +516,11 @@ pub const Parser = struct {
 
                 pos = expr_end + 1;
             } else {
-                // No more braces, add remaining string
+                // No more unescaped braces, add remaining string
                 if (pos < content.len) {
-                    try parts.append(self.allocator, .{ .string = content[pos..] });
+                    const segment = content[pos..];
+                    const processed = processEscapes(self.allocator, segment) catch segment;
+                    try parts.append(self.allocator, .{ .string = processed });
                 }
                 break;
             }

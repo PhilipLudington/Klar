@@ -1,180 +1,133 @@
-# Klar Compiler Bugs
+# Klar Language Bugs
 
-Bugs discovered while implementing the JSON parser. Klar version: **0.3.1-dev**
-
----
-
-## [x] Bug 7: Associated Functions on Structs with String Fields
-
-**Description:** Previously, calling associated functions on structs with string fields caused LLVM verification failures. This is now working.
-
-```klar
-struct Lexer {
-    source: string,
-    pos: i32,
-}
-
-impl Lexer {
-    fn new(source: string) -> Lexer {
-        return Lexer { source: source, pos: 0 }  // NOW WORKS
-    }
-}
-```
+Bugs discovered while implementing the JSON parser.
 
 ---
 
-## [x] Bug 8: Arrays in Struct Fields
+## [x] Bug 1: Cannot use `{` or `}` in string literals
 
-**Description:** Storing `[char]` (slice types) in struct fields now works correctly. The fix ensures that when an array literal is assigned to a slice-typed variable or struct field, it is properly converted to a slice struct `{ ptr, len }`.
+**Severity:** Blocking → **FIXED**
 
+**Solution:** Use `\{` and `\}` to escape braces in strings:
 ```klar
-struct Foo {
-    chars: [char],
-}
-
 fn main() -> i32 {
-    let chars: [char] = ['a', 'b', 'c']
-    let foo: Foo = Foo { chars: chars }
-    let arr: [char] = foo.chars  // NOW WORKS
-    println("{arr.len()}")  // Prints: 3
+    print("\{\}")           // Prints: {}
+    print("\{key\}")        // Prints: {key}
+    let x: i32 = 42
+    print("\{value: {x}\}") // Prints: {value: 42}
     return 0
 }
 ```
 
+**Original issue:** Any string containing `{` or `}` caused a parse error because the parser interpreted these as string interpolation delimiters.
+
 ---
 
-## [x] Bug 9: Pattern Matching on Tuple Elements
+## [x] Bug 2: No escape sequence for braces in strings
 
-**Description:** `match result.0` now works correctly without extracting to a variable first.
+**Severity:** Blocking → **FIXED**
 
+**Solution:** Use `\{` to produce `{` and `\}` to produce `}`. See Bug 1 for examples.
+
+**Original issue:** There was no documented or working way to escape `{` or `}` characters in string literals.
+
+---
+
+## [ ] Bug 3: `char.to_string()` returns wrong type
+
+**Severity:** High
+
+**Description:** According to the documentation, `char.to_string()` should return `string`, but it appears to return a different type causing type mismatch errors.
+
+**Reproduction:**
 ```klar
-fn test() -> (Result[i32, string], i32) {
-    return (Ok(42), 1)
-}
-
 fn main() -> i32 {
-    let result: (Result[i32, string], i32) = test()
-    match result.0 {  // NOW WORKS
-        Ok(n) => { println("{n}") }
-        Err(e) => { println("{e}") }
-    }
+    let c: char = 'a'
+    let s: string = c.to_string()  // Type error
+    println(s)
     return 0
 }
 ```
 
----
+**Error:**
+```
+Type error(s):
+  3:5: initializer type doesn't match declared type
+```
 
-## [x] Bug 10: String Concatenation with `+` Operator
-
-**Description:** String concatenation using `+` now works correctly. The type checker allows `string + string` operations, and all three backends (native LLVM, VM, interpreter) support it.
-
+**Documentation claim (from docs/types/primitives.md:157):**
 ```klar
-fn main() -> i32 {
-    let a: string = "hello"
-    let b: string = "world"
-    let c: string = a + " " + b  // NOW WORKS
-    println("{c}")  // Prints: hello world
+let as_str: string = c.to_string()   // "A"
+```
 
-    // Building strings in loops also works
-    var result: string = ""
-    for i: i32 in 0..5 {
-        result = result + "x"
-    }
-    println("{result}")  // Prints: xxxxx
-
-    return 0
-}
+**Impact:** Cannot build strings from individual characters, which is needed for the lexer to construct tokens.
 
 ---
 
-## [x] Bug 11: Result with Struct Error Type
+## [ ] Bug 4: Char interpolation prints code point, not character
 
-**Description:** Using `Result[T, E]` where `E` is a struct now works correctly. The fix ensures that when binding variables from pattern matching (e.g., `Err(e)`), the struct type name is properly recorded so that field access (e.g., `e.message`) works correctly.
+**Severity:** Medium
 
+**Description:** When interpolating a `char` value in a string, it prints the numeric Unicode code point rather than the character itself.
+
+**Reproduction:**
 ```klar
-pub struct ParseError {
-    message: string,
-}
-
-fn make_result() -> Result[i32, ParseError] {
-    return Ok(42)
-}
-
 fn main() -> i32 {
-    let r: Result[i32, ParseError] = make_result()
-    match r {
-        Ok(n) => { println("Got: {n}") }
-        Err(e) => { println("Error: {e.message}") }  // NOW WORKS
-    }
-    return 0
-}
-
----
-
-## [x] Bug 12: Arrays as Function Parameters with Complex Return Types
-
-**Description:** Passing `[char]` as a function parameter when the function also returns complex types (tuples with Result) now works correctly. The fix ensures that when passing arrays to functions, they are automatically converted to slice structs `{ ptr, len }` to match the expected parameter type.
-
-```klar
-pub enum Token { LBrace, Eof }
-pub struct LexerState { pos: i32 }
-
-fn next_token(chars: [char], state: LexerState) -> (Result[Token, string], LexerState) {
-    let new_state: LexerState = LexerState { pos: state.pos + 1 }
-    return (Ok(Token::LBrace), new_state)
-}
-
-fn main() -> i32 {
-    let chars: [char] = ['a', 'b']
-    let state: LexerState = LexerState { pos: 0 }
-    let result: (Result[Token, string], LexerState) = next_token(chars, state)  // NOW WORKS
-
-    // Extract tuple elements first (direct field access on tuple elements is a separate issue)
-    let token_result: Result[Token, string] = result.0
-    let new_state: LexerState = result.1
-
-    match token_result {
-        Ok(token) => {
-            match token {
-                Token::LBrace => { println("Got LBrace!") }
-                Token::Eof => { println("Got Eof") }
-            }
-        }
-        Err(e) => { println("Error: {e}") }
-    }
-
-    println("New pos: {new_state.pos}")
+    let c: char = 'a'
+    println("{c}")  // Prints "97" instead of "a"
     return 0
 }
 ```
+
+**Output:** `97`
+
+**Expected:** `a`
+
+**Impact:** Cannot easily print char values for debugging. Must convert to string first, but that's blocked by bug #3.
+
+---
+
+## [ ] Bug 5: No string slicing method
+
+**Severity:** High
+
+**Description:** The `slice(start, end)` method referenced in design documents does not exist on the `string` type.
+
+**Reproduction:**
+```klar
+fn main() -> i32 {
+    let s: string = "hello world"
+    let sub: string = s.slice(0, 5)  // Method not found
+    println(sub)
+    return 0
+}
+```
+
+**Error:**
+```
+Type error(s):
+  4:23: method 'slice' not found
+```
+
+**Also tried:**
+- `s.substring(0, 5)` - method not found
+- `s[0..5]` - cannot index this type
+
+**Impact:** Cannot extract substrings, which is essential for lexer token extraction.
 
 ---
 
 ## Summary
 
-**Bug Status: 6/6 fixed**
+| Bug | Severity | Status |
+|-----|----------|--------|
+| Braces in strings | Blocking | ✅ FIXED - use `\{` and `\}` |
+| No brace escape | Blocking | ✅ FIXED - use `\{` and `\}` |
+| char.to_string() type | High | ❌ Open |
+| Char interpolation | Medium | ❌ Open |
+| No string slicing | High | ❌ Open |
 
-| Bug | Feature | Status |
-|-----|---------|--------|
-| 7 | Associated fn on string structs | Fixed |
-| 8 | Arrays in struct fields | Fixed |
-| 9 | Match on tuple element | Fixed |
-| 10 | String `+` concatenation | Fixed |
-| 11 | Result with struct error | Fixed |
-| 12 | Arrays + complex returns | Fixed |
-
----
-
-## Impact on JSON Parser
-
-All blocking bugs have been fixed! The JSON lexer and parser can now be implemented using the fundamental patterns needed:
-
-1. ✅ **Bug 12** - Array parameters with complex return types now work
-2. ✅ All other bugs are fixed
-
-**Note:** Direct field access through tuple indices (e.g., `result.1.pos`) is not yet supported. Use the workaround of extracting to a variable first:
-```klar
-let state: LexerState = result.1
-println("{state.pos}")  // Works
-// println("{result.1.pos}")  // Not yet supported
-```
+Remaining blockers for JSON parser:
+1. ~~Cannot write test strings containing `{` or `}`~~ ✅ Fixed
+2. Cannot build strings from characters (needed for token construction)
+3. Cannot extract substrings (needed for keyword/string token extraction)
