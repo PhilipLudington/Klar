@@ -1,0 +1,54 @@
+// Test ptr_cast builtin - casts between pointer types
+// ptr_cast[U](ptr: CPtr[T]) -> CPtr[U]
+
+extern {
+    fn malloc(size: usize) -> COptPtr[void]
+    fn free(ptr: CPtr[void]) -> void
+}
+
+fn main() -> i32 {
+    // Test 1: Cast CPtr[void] to CPtr[i32]
+    unsafe {
+        let raw_ptr: COptPtr[void] = malloc(16.as[usize])
+        if is_null(raw_ptr) {
+            return 1
+        }
+
+        let void_ptr: CPtr[void] = unwrap_ptr(raw_ptr)
+
+        // Cast void pointer to i32 pointer
+        let int_ptr: CPtr[i32] = ptr_cast[i32](void_ptr)
+
+        // Write a value through the i32 pointer
+        write(int_ptr, 42)
+
+        // Read it back
+        let value: i32 = read(int_ptr)
+        if value != 42 {
+            free(void_ptr)
+            return 2
+        }
+
+        // Test 2: Cast CPtr[i32] to CPtr[i8] (byte-level access)
+        let byte_ptr: CPtr[i8] = ptr_cast[i8](int_ptr)
+
+        // On little-endian, first byte of 42 (0x0000002A) is 0x2A = 42
+        let first_byte: i8 = read(byte_ptr)
+        if first_byte != 42.as[i8] {
+            free(void_ptr)
+            return 3
+        }
+
+        // Test 3: Cast back to original type
+        let back_to_int: CPtr[i32] = ptr_cast[i32](byte_ptr)
+        let value2: i32 = read(back_to_int)
+        if value2 != 42 {
+            free(void_ptr)
+            return 4
+        }
+
+        free(void_ptr)
+    }
+
+    return 0
+}

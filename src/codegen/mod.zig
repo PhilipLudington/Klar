@@ -46,6 +46,10 @@ pub const CompileOptions = struct {
     target_triple: ?[]const u8 = null,
     /// Suppress "Built" message (for klar run).
     quiet: bool = false,
+    /// Libraries to link (e.g., "m" for -lm, "curl" for -lcurl).
+    link_libs: []const []const u8 = &.{},
+    /// Library search paths (e.g., "/usr/local/lib").
+    link_paths: []const []const u8 = &.{},
 };
 
 /// Convenience re-exports

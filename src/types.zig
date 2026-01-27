@@ -66,6 +66,13 @@ pub const Type = union(enum) {
     buf_reader: *BufReaderType, // BufReader[R: Read] buffered reader wrapper
     buf_writer: *BufWriterType, // BufWriter[W: Write] buffered writer wrapper
 
+    // FFI types
+    extern_type: *ExternType, // External type for C interop
+    cptr: *CptrType, // Non-null raw pointer (CPtr[T])
+    copt_ptr: *CoptPtrType, // Nullable raw pointer (COptPtr[T])
+    cstr: void, // Null-terminated C string (borrowed)
+    cstr_owned: void, // Null-terminated C string (owned, must be freed)
+
     // Special types
     void_,
     never,
@@ -138,6 +145,13 @@ pub const Type = union(enum) {
             .buf_writer => |bw| bw.inner.eql(other.buf_writer.inner),
             // I/O types are singleton types
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => true,
+            // Extern types are equal if they have the same name
+            .extern_type => |e| std.mem.eql(u8, e.name, other.extern_type.name),
+            // FFI pointer types depend on inner type
+            .cptr => |c| c.inner.eql(other.cptr.inner),
+            .copt_ptr => |c| c.inner.eql(other.copt_ptr.inner),
+            // CStr and CStrOwned are singleton types (no type parameters)
+            .cstr, .cstr_owned => true,
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -214,6 +228,10 @@ pub const Type = union(enum) {
             // Range is Copy (contains integers and bool)
             .range => |r| r.element_type.isCopyType(),
 
+            // Raw pointers are Copy (just the address, like in Rust)
+            // CStr is borrowed so it's Copy; CStrOwned is NOT Copy (owns memory)
+            .cptr, .copt_ptr, .cstr => true,
+
             // These types are NOT Copy:
             // - Slices (contain a pointer + length, may own data)
             // - Enums (may contain non-Copy payloads)
@@ -227,6 +245,7 @@ pub const Type = union(enum) {
             // - Map (owns heap memory, must be moved or cloned)
             // - Set (owns heap memory, must be moved or cloned)
             // - String (heap-allocated string, must be moved or cloned)
+            // - CStrOwned (owns null-terminated C string memory, must be moved)
             // - ContextError (contains a string message)
             // - File (owns file handle resource)
             // - IoError (may contain string payload)
@@ -234,7 +253,9 @@ pub const Type = union(enum) {
             // - BufReader/BufWriter (wrap I/O types, have internal state)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .unknown, .error_type, .associated_type_ref => false,
+            // - Extern types (opaque or sized, treat as non-Copy for safety)
+            // - CStrOwned (owns null-terminated C string memory)
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .unknown, .error_type, .associated_type_ref, .extern_type, .cstr_owned => false,
         };
     }
 };
@@ -418,6 +439,11 @@ pub const FunctionType = struct {
     is_async: bool = false,
     /// Bitmask indicating which parameters are comptime (index i is comptime if bit i is set)
     comptime_params: u64 = 0,
+    /// True if this function is unsafe and can only be called from an unsafe context
+    is_unsafe: bool = false,
+    /// Bitmask indicating which parameters are out parameters (index i is out if bit i is set)
+    /// Out parameters are for FFI - the caller passes a pointer to uninitialized memory
+    out_params: u64 = 0,
 };
 
 pub const ReferenceType = struct {
@@ -435,6 +461,8 @@ pub const StructType = struct {
     fields: []const StructField,
     traits: []const *TraitType,
     is_copy: bool = false,
+    is_extern: bool = false,
+    is_packed: bool = false,
 };
 
 pub const StructField = struct {
@@ -447,11 +475,14 @@ pub const EnumType = struct {
     name: []const u8,
     type_params: []const TypeVar,
     variants: []const EnumVariant,
+    is_extern: bool = false, // extern enum for C-compatible layout
+    repr_type: ?Type = null, // Resolved repr type for extern enums
 };
 
 pub const EnumVariant = struct {
     name: []const u8,
     payload: ?VariantPayload,
+    value: ?i128 = null, // Explicit discriminant value for extern enums
 };
 
 pub const VariantPayload = union(enum) {
@@ -472,6 +503,7 @@ pub const TraitType = struct {
     associated_types: []const AssociatedType, // Associated type declarations
     methods: []const TraitMethod,
     super_traits: []const *TraitType,
+    is_unsafe: bool = false, // Unsafe trait - implementing requires unsafe impl
 };
 
 pub const TraitMethod = struct {
@@ -479,6 +511,35 @@ pub const TraitMethod = struct {
     signature: FunctionType,
     has_default: bool,
 };
+
+// ============================================================================
+// FFI Types
+// ============================================================================
+
+/// External type for C interop
+/// Opaque types (size == null) can only be used behind pointers
+/// Sized types (size != null) can be passed by value
+pub const ExternType = struct {
+    name: []const u8,
+    size: ?u64, // null for opaque types, byte size for sized types
+};
+
+/// Non-null raw pointer type (CPtr[T])
+/// Equivalent to T* in C, assumed non-null.
+/// Dereferencing requires `unsafe` block.
+pub const CptrType = struct {
+    inner: Type, // The pointed-to type
+};
+
+/// Nullable raw pointer type (COptPtr[T])
+/// Equivalent to T* in C, may be null.
+/// Must check for null before dereferencing.
+pub const CoptPtrType = struct {
+    inner: Type, // The pointed-to type
+};
+
+// Note: CStr is represented as a void variant in Type union
+// (no type parameters, like File/IoError)
 
 // ============================================================================
 // Generic Types
@@ -717,13 +778,21 @@ pub const TypeBuilder = struct {
     }
 
     pub fn functionType(self: *TypeBuilder, params: []const Type, return_type: Type) !Type {
-        return self.functionTypeWithComptime(params, return_type, 0);
+        return self.functionTypeWithFlags(params, return_type, 0, false);
     }
 
     pub fn functionTypeWithComptime(self: *TypeBuilder, params: []const Type, return_type: Type, comptime_params: u64) !Type {
+        return self.functionTypeWithFlags(params, return_type, comptime_params, false);
+    }
+
+    pub fn functionTypeWithFlags(self: *TypeBuilder, params: []const Type, return_type: Type, comptime_params: u64, is_unsafe: bool) !Type {
+        return self.functionTypeWithAllFlags(params, return_type, comptime_params, is_unsafe, 0);
+    }
+
+    pub fn functionTypeWithAllFlags(self: *TypeBuilder, params: []const Type, return_type: Type, comptime_params: u64, is_unsafe: bool, out_params: u64) !Type {
         const func = try self.arena.allocator().create(FunctionType);
         const params_copy = try self.arena.allocator().dupe(Type, params);
-        func.* = .{ .params = params_copy, .return_type = return_type, .comptime_params = comptime_params };
+        func.* = .{ .params = params_copy, .return_type = return_type, .comptime_params = comptime_params, .is_unsafe = is_unsafe, .out_params = out_params };
         return .{ .function = func };
     }
 
@@ -890,6 +959,29 @@ pub const TypeBuilder = struct {
         bw.* = .{ .inner = inner };
         return .{ .buf_writer = bw };
     }
+
+    // FFI pointer type constructors
+    pub fn cptrType(self: *TypeBuilder, inner: Type) !Type {
+        const cptr = try self.arena.allocator().create(CptrType);
+        cptr.* = .{ .inner = inner };
+        return .{ .cptr = cptr };
+    }
+
+    pub fn coptPtrType(self: *TypeBuilder, inner: Type) !Type {
+        const copt_ptr = try self.arena.allocator().create(CoptPtrType);
+        copt_ptr.* = .{ .inner = inner };
+        return .{ .copt_ptr = copt_ptr };
+    }
+
+    pub fn cstrType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .cstr = {} };
+    }
+
+    pub fn cstrOwnedType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .cstr_owned = {} };
+    }
 };
 
 // ============================================================================
@@ -1033,6 +1125,21 @@ pub fn formatType(writer: anytype, t: Type) !void {
             try writer.writeAll(".");
             try writer.writeAll(a.assoc_name);
         },
+        .extern_type => |ext| {
+            try writer.writeAll(ext.name);
+        },
+        .cptr => |c| {
+            try writer.writeAll("CPtr[");
+            try formatType(writer, c.inner);
+            try writer.writeAll("]");
+        },
+        .copt_ptr => |c| {
+            try writer.writeAll("COptPtr[");
+            try formatType(writer, c.inner);
+            try writer.writeAll("]");
+        },
+        .cstr => try writer.writeAll("CStr"),
+        .cstr_owned => try writer.writeAll("CStrOwned"),
         .void_ => try writer.writeAll("void"),
         .never => try writer.writeAll("!"),
         .unknown => try writer.writeAll("?unknown"),
@@ -1341,4 +1448,87 @@ test "Arc is not Copy" {
     // WeakArc types are NOT Copy
     const weak_t = try builder.weakArcType(builder.i32Type());
     try testing.expect(!weak_t.isCopyType());
+}
+
+test "CPtr type creation and equality" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // Create CPtr types
+    const cptr_i32 = try builder.cptrType(builder.i32Type());
+    const cptr_i32_2 = try builder.cptrType(builder.i32Type());
+    const cptr_bool = try builder.cptrType(builder.boolType());
+
+    try testing.expect(cptr_i32.eql(cptr_i32_2));
+    try testing.expect(!cptr_i32.eql(cptr_bool));
+
+    // COptPtr types
+    const coptptr_i32 = try builder.coptPtrType(builder.i32Type());
+    const coptptr_i32_2 = try builder.coptPtrType(builder.i32Type());
+    try testing.expect(coptptr_i32.eql(coptptr_i32_2));
+
+    // CPtr and COptPtr are different types
+    try testing.expect(!cptr_i32.eql(coptptr_i32));
+
+    // CStr singleton type
+    const cstr1 = builder.cstrType();
+    const cstr2 = builder.cstrType();
+    try testing.expect(cstr1.eql(cstr2));
+
+    // CStr is different from CPtr[i8]
+    const cptr_i8 = try builder.cptrType(.{ .primitive = .i8_ });
+    try testing.expect(!cstr1.eql(cptr_i8));
+}
+
+test "CPtr type formatting" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // CPtr[i32]
+    const cptr_t = try builder.cptrType(builder.i32Type());
+    const cptr_str = try typeToString(testing.allocator, cptr_t);
+    defer testing.allocator.free(cptr_str);
+    try testing.expectEqualStrings("CPtr[i32]", cptr_str);
+
+    // COptPtr[string]
+    const coptptr_t = try builder.coptPtrType(builder.stringType());
+    const coptptr_str = try typeToString(testing.allocator, coptptr_t);
+    defer testing.allocator.free(coptptr_str);
+    try testing.expectEqualStrings("COptPtr[string]", coptptr_str);
+
+    // CStr
+    const cstr_t = builder.cstrType();
+    const cstr_str = try typeToString(testing.allocator, cstr_t);
+    defer testing.allocator.free(cstr_str);
+    try testing.expectEqualStrings("CStr", cstr_str);
+
+    // Nested: CPtr[COptPtr[i32]]
+    const inner = try builder.coptPtrType(builder.i32Type());
+    const nested = try builder.cptrType(inner);
+    const nested_str = try typeToString(testing.allocator, nested);
+    defer testing.allocator.free(nested_str);
+    try testing.expectEqualStrings("CPtr[COptPtr[i32]]", nested_str);
+}
+
+test "CPtr is Copy" {
+    const testing = std.testing;
+
+    var builder = TypeBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    // CPtr types ARE Copy (just the address)
+    const cptr_t = try builder.cptrType(builder.i32Type());
+    try testing.expect(cptr_t.isCopyType());
+
+    // COptPtr types ARE Copy
+    const coptptr_t = try builder.coptPtrType(builder.i32Type());
+    try testing.expect(coptptr_t.isCopyType());
+
+    // CStr is Copy
+    const cstr_t = builder.cstrType();
+    try testing.expect(cstr_t.isCopyType());
 }

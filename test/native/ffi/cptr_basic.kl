@@ -1,0 +1,54 @@
+// Test basic CPtr type usage
+// This tests that the FFI pointer types can be:
+// 1. Used in type annotations
+// 2. Resolved correctly by the type checker
+// 3. Used with read/write/offset operations
+
+fn main() -> i32 {
+    // Local variables for pointer tests
+    var value: i32 = 42
+    let str_val: string = "hello"
+
+    unsafe {
+        // Test CPtr[T] - non-null raw pointer via ref_to_ptr
+        let ptr: CPtr[i32] = ref_to_ptr(ref value)
+
+        // Test CStr - null-terminated C string
+        let c_string: CStr = str_val.as_cstr()
+
+        // Verify we can read through the pointer
+        let val: i32 = read(ptr)
+        if val != 42 {
+            return 1
+        }
+
+        // Test write
+        write(ptr, 100)
+        let new_val: i32 = read(ptr)
+        if new_val != 100 {
+            return 2
+        }
+
+        // Restore value
+        write(ptr, 42)
+
+        // Test offset (offset by 0 stays at same location)
+        let same_ptr: CPtr[i32] = offset(ptr, 0.as[isize])
+        let same_val: i32 = read(same_ptr)
+        if same_val != 42 {
+            return 3
+        }
+
+        // Test multiple read/write cycles
+        write(ptr, 200)
+        let val3: i32 = read(ptr)
+        if val3 != 200 {
+            return 4
+        }
+        // Restore
+        write(ptr, 42)
+    }
+
+    println("CPtr type resolution test passed")
+    return 0
+}

@@ -1,0 +1,69 @@
+// Test: seL4 FFI Bindings
+// This tests the complete FFI feature set as specified in klar-ffi-spec.md
+// This code type-checks and compiles but cannot run without seL4
+
+// Message info - passed by value
+pub extern struct SeL4MessageInfo {
+    words: u64,
+}
+
+// Error codes
+pub extern enum SeL4Error: u32 {
+    NoError = 0,
+    InvalidArgument = 1,
+    InvalidCapability = 2,
+    IllegalOperation = 3,
+    RangeError = 4,
+    AlignmentError = 5,
+    FailedLookup = 6,
+    TruncatedMessage = 7,
+    DeleteFirst = 8,
+    RevokeFirst = 9,
+    NotEnoughMemory = 10,
+}
+
+extern {
+    // Message registers
+    fn seL4_GetMR(i: i32) -> u64
+    fn seL4_SetMR(i: i32, value: u64) -> void
+
+    // Debug (if configured)
+    fn seL4_DebugPutChar(c: u8) -> void
+}
+
+// Helper to build message info
+pub fn make_message_info(label: u64, num_mrs: u64) -> SeL4MessageInfo {
+    let mask: u64 = 127.as[u64]
+    let shifted: u64 = label << 12
+    let masked: u64 = num_mrs & mask
+    let combined: u64 = shifted | masked
+    return SeL4MessageInfo { words: combined }
+}
+
+pub fn get_label(info: SeL4MessageInfo) -> u64 {
+    return info.words >> 12
+}
+
+pub fn get_length(info: SeL4MessageInfo) -> u64 {
+    let mask: u64 = 127.as[u64]
+    return info.words & mask
+}
+
+// Test that everything type-checks
+fn main() -> i32 {
+    // Test enum usage
+    let err: SeL4Error = SeL4Error::NoError
+    if err == SeL4Error::InvalidCapability {
+        return 1
+    }
+
+    // Test message info creation
+    let info: SeL4MessageInfo = make_message_info(42.as[u64], 2.as[u64])
+    let label: u64 = get_label(info)
+
+    // Verify types compiled correctly
+    if label == 42.as[u64] {
+        return 0
+    }
+    return 1
+}

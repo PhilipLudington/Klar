@@ -1,0 +1,71 @@
+// Test that unsafe operations work correctly inside unsafe blocks
+// Verifies that pointer operations function properly when used in unsafe context
+
+fn main() -> i32 {
+    var value: i32 = 42
+
+    // Test 1: ref_to_ptr and read work in unsafe
+    unsafe {
+        let ptr: CPtr[i32] = ref_to_ptr(ref value)
+        let val: i32 = read(ptr)
+        if val != 42 {
+            return 1
+        }
+    }
+
+    // Test 2: write works in unsafe
+    unsafe {
+        let ptr: CPtr[i32] = ref_to_ptr(ref value)
+        write(ptr, 100)
+        let val: i32 = read(ptr)
+        if val != 100 {
+            return 2
+        }
+        // Restore
+        write(ptr, 42)
+    }
+
+    // Test 3: offset works in unsafe
+    unsafe {
+        let ptr: CPtr[i32] = ref_to_ptr(ref value)
+        let same: CPtr[i32] = offset(ptr, 0.as[isize])
+        let val: i32 = read(same)
+        if val != 42 {
+            return 3
+        }
+    }
+
+    // Test 4: multiple unsafe blocks work independently
+    unsafe {
+        var x: i32 = 10
+        let ptr: CPtr[i32] = ref_to_ptr(ref x)
+        let val: i32 = read(ptr)
+        if val != 10 {
+            return 4
+        }
+        // Modify through pointer
+        write(ptr, 20)
+        if x != 20 {
+            return 5
+        }
+    }
+
+    // Test 5: verify read after write persists
+    unsafe {
+        var x: i32 = 50
+        let ptr: CPtr[i32] = ref_to_ptr(ref x)
+        write(ptr, 60)
+        let val1: i32 = read(ptr)
+        if val1 != 60 {
+            return 5
+        }
+        write(ptr, 70)
+        let val2: i32 = read(ptr)
+        if val2 != 70 {
+            return 6
+        }
+    }
+
+    println("All unsafe pointer operations work correctly!")
+    return 0
+}

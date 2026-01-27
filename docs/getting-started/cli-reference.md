@@ -63,6 +63,8 @@ klar build <file.kl> [options]
 | `-O2` | Standard optimizations |
 | `-O3` | Aggressive optimizations |
 | `-g` | Generate debug information (DWARF) |
+| `-l <lib>` | Link with library (e.g., `-lm`, `-lcurl`) |
+| `-L <path>` | Add library search path |
 | `--emit-llvm` | Output LLVM IR (.ll file) |
 | `--emit-asm` | Output assembly (.s file) |
 | `--emit-ir` | Output Klar IR (.ir file) |
@@ -83,6 +85,12 @@ klar build hello.kl -O2          # Standard optimizations
 
 # Debug build
 klar build hello.kl -g           # With debug symbols
+
+# Link with external library
+klar build math.kl -lm           # Link with libm
+
+# Multiple libraries with search path
+klar build app.kl -L/opt/lib -lmylib -lcurl
 
 # Inspect generated code
 klar build hello.kl --emit-llvm  # Creates hello.ll

@@ -108,7 +108,7 @@ pub const OwnershipChecker = struct {
             .function => |f| try self.analyzeFunction(f),
             .impl_decl => |impl| try self.analyzeImpl(impl),
             .const_decl => |c| try self.analyzeConst(c),
-            .struct_decl, .enum_decl, .trait_decl, .import_decl, .type_alias, .module_decl => {},
+            .struct_decl, .enum_decl, .trait_decl, .import_decl, .type_alias, .module_decl, .extern_type_decl, .extern_block => {},
         }
     }
 
@@ -297,6 +297,8 @@ pub const OwnershipChecker = struct {
             .enum_literal => |e| try self.analyzeEnumLiteral(e),
             .comptime_block => |cb| try self.analyzeComptimeBlock(cb),
             .builtin_call => |bc| try self.analyzeBuiltinCall(bc),
+            .unsafe_block => |ub| try self.analyzeUnsafeBlock(ub),
+            .out_arg => |oa| try self.analyzeOutArg(oa),
         };
     }
 
@@ -311,6 +313,21 @@ pub const OwnershipChecker = struct {
     fn analyzeComptimeBlock(self: *OwnershipChecker, block: *ast.ComptimeBlock) !?*VariableState {
         // Analyze the block body for ownership - comptime blocks still need ownership tracking
         _ = try self.analyzeBlockExpr(block.body);
+        return null;
+    }
+
+    fn analyzeUnsafeBlock(self: *OwnershipChecker, block: *ast.UnsafeBlock) !?*VariableState {
+        // Analyze the block body for ownership - unsafe blocks still need ownership tracking
+        _ = try self.analyzeBlockExpr(block.body);
+        return null;
+    }
+
+    fn analyzeOutArg(self: *OwnershipChecker, out_arg: *ast.OutArg) !?*VariableState {
+        // Out arguments pass a pointer to a variable, which will be written to by the callee.
+        // The variable's state after the call should be considered initialized.
+        // For now, just look up the variable state.
+        _ = self;
+        _ = out_arg;
         return null;
     }
 

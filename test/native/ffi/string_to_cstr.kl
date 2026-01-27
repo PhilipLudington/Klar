@@ -1,0 +1,33 @@
+// Test string to CStr conversions
+// FFI Phase 7: String Conversions
+
+extern {
+    fn puts(s: CStr) -> i32
+}
+
+fn main() -> i32 {
+    // Test 1: Primitive string literal as_cstr
+    let greeting: string = "Hello from Klar!"
+    let cstr: CStr = greeting.as_cstr()
+
+    // Call puts with the CStr (requires unsafe since puts is extern)
+    unsafe {
+        let result: i32 = puts(cstr)
+        if result < 0 {
+            return 1
+        }
+    }
+
+    // Test 2: Heap-allocated String as_cstr
+    let heap_str: String = String.from("Heap string test")
+    let heap_cstr: CStr = heap_str.as_cstr()
+
+    unsafe {
+        let result: i32 = puts(heap_cstr)
+        if result < 0 {
+            return 2
+        }
+    }
+
+    return 0
+}

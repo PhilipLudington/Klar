@@ -1,0 +1,53 @@
+// Test: Unsafe trait declarations
+// Verifies parsing and type-checking of `unsafe trait` and `unsafe impl`.
+
+// An unsafe trait - has safety invariants the compiler can't verify
+unsafe trait RawHandle {
+    fn as_raw(self: Self) -> i32
+}
+
+// A regular safe trait for comparison
+trait Display {
+    fn show(self: Self) -> i32
+}
+
+// A type that implements the unsafe trait
+struct FileDescriptor {
+    fd: i32,
+}
+
+// Implementing an unsafe trait requires unsafe impl
+unsafe impl FileDescriptor: RawHandle {
+    fn as_raw(self: FileDescriptor) -> i32 {
+        return self.fd
+    }
+}
+
+// Can also implement safe traits normally
+impl FileDescriptor: Display {
+    fn show(self: FileDescriptor) -> i32 {
+        return self.fd
+    }
+}
+
+fn main() -> i32 {
+    // Create a file descriptor
+    let fd: FileDescriptor = FileDescriptor { fd: 42 }
+
+    // Call the method from the unsafe trait (method call itself is safe)
+    let raw: i32 = fd.as_raw()
+    if raw != 42 {
+        println("Expected 42, got different value")
+        return 1
+    }
+
+    // Test safe trait implementation
+    let s: i32 = fd.show()
+    if s != 42 {
+        println("Expected 42 from show, got different value")
+        return 1
+    }
+
+    println("Unsafe trait test passed!")
+    return 0
+}

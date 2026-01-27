@@ -63,6 +63,7 @@ klar run hello.kl
 - [Operators](advanced/operators.md) - Complete operator reference
 - [Comptime](advanced/comptime.md) - Compile-time programming
 - [Builtin Traits](advanced/builtin-traits.md) - Eq, Ordered, Clone, Drop, etc.
+- [FFI](advanced/ffi.md) - Foreign Function Interface for C interop
 
 ### Appendix
 

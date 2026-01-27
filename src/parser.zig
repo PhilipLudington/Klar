@@ -413,6 +413,9 @@ pub const Parser = struct {
             // @ can be: comptime block @{ ... } or builtin call @name(...)
             .at => self.parseAtExpr(),
 
+            // unsafe { ... } block expression
+            .unsafe_ => self.parseUnsafeBlock(),
+
             else => {
                 try self.reportError("expected expression");
                 return ParseError.ExpectedExpression;
@@ -465,8 +468,8 @@ pub const Parser = struct {
             .bang => self.parsePostfix(left, .force_unwrap),
 
             // Call/index/field
-            .l_paren => self.parseCall(left),
-            .l_bracket => self.parseIndex(left),
+            .l_paren => self.parseCall(left, null),
+            .l_bracket => self.parseIndexOrTypeArgs(left),
             .dot => self.parseFieldOrMethod(left),
 
             else => left,
@@ -982,6 +985,28 @@ pub const Parser = struct {
         return .{ .builtin_call = builtin_call };
     }
 
+    /// Parse unsafe { ... } block expression
+    fn parseUnsafeBlock(self: *Parser) ParseError!ast.Expr {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'unsafe'
+
+        // Expect '{'
+        if (!self.check(.l_brace)) {
+            try self.reportError("expected '{' after 'unsafe'");
+            return ParseError.UnexpectedToken;
+        }
+
+        const block = try self.parseBlock();
+        const end_span = block.span;
+
+        const unsafe_block = try self.create(ast.UnsafeBlock, .{
+            .body = block,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+
+        return .{ .unsafe_block = unsafe_block };
+    }
+
     /// Parse a builtin argument - could be a type or an expression
     fn parseBuiltinArg(self: *Parser) ParseError!ast.BuiltinArg {
         // Try to detect if this looks like a type
@@ -1336,14 +1361,37 @@ pub const Parser = struct {
         return .{ .postfix = postfix };
     }
 
-    fn parseCall(self: *Parser, callee: ast.Expr) ParseError!ast.Expr {
+    fn parseCall(self: *Parser, callee: ast.Expr, type_args: ?[]const ast.TypeExpr) ParseError!ast.Expr {
         self.advance(); // consume '('
 
         var args = std.ArrayListUnmanaged(ast.Expr){};
 
         if (!self.check(.r_paren)) {
             while (true) {
-                try args.append(self.allocator, try self.parseExpression());
+                // Check for 'out' modifier (contextual keyword for FFI out parameters)
+                if (self.current.kind == .identifier and
+                    std.mem.eql(u8, self.source[self.current.loc.start..self.current.loc.end], "out"))
+                {
+                    const out_span_start = self.spanFromToken(self.current);
+                    self.advance(); // consume 'out'
+
+                    // Must be followed by an identifier
+                    if (self.current.kind != .identifier) {
+                        try self.reportError("expected identifier after 'out'");
+                        return ParseError.UnexpectedToken;
+                    }
+                    const id_name = self.source[self.current.loc.start..self.current.loc.end];
+                    const id_span = self.spanFromToken(self.current);
+                    self.advance(); // consume identifier
+
+                    const out_arg = try self.create(ast.OutArg, .{
+                        .name = id_name,
+                        .span = ast.Span.merge(out_span_start, id_span),
+                    });
+                    try args.append(self.allocator, .{ .out_arg = out_arg });
+                } else {
+                    try args.append(self.allocator, try self.parseExpression());
+                }
                 if (!self.match(.comma)) break;
             }
         }
@@ -1354,9 +1402,79 @@ pub const Parser = struct {
         const call = try self.create(ast.Call, .{
             .callee = callee,
             .args = try self.dupeSlice(ast.Expr, args.items),
+            .type_args = type_args,
             .span = ast.Span.merge(callee.span(), end_span),
         });
         return .{ .call = call };
+    }
+
+    /// Parse either an index expression (arr[0]) or type arguments for a function call (func[T](...)).
+    /// Distinguishes by looking ahead: if the pattern is [...](, it's type args + call.
+    fn parseIndexOrTypeArgs(self: *Parser, left: ast.Expr) ParseError!ast.Expr {
+        // Only consider type arguments for identifier expressions (function names)
+        // Use lookahead to check if this is the pattern: identifier[...](
+        // This is unambiguous - arr[i] won't have ( after ], but func[T]() will.
+        if (left == .identifier and self.isTypeArgsFollowedByCall()) {
+            // This is type arguments followed by a call.
+            self.advance(); // consume '['
+
+            var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
+            if (!self.check(.r_bracket)) {
+                while (true) {
+                    try type_args.append(self.allocator, try self.parseType());
+                    if (!self.match(.comma)) break;
+                }
+            }
+            try self.consume(.r_bracket, "expected ']' after type arguments");
+
+            // We already verified ( follows, so this should succeed
+            return self.parseCall(left, try self.dupeSlice(ast.TypeExpr, type_args.items));
+        }
+
+        // Otherwise it's a regular index expression
+        return self.parseIndex(left);
+    }
+
+    /// Look ahead to check if the current '[' starts type arguments followed by '('.
+    /// Scans forward counting bracket depth until finding the matching ']',
+    /// then checks if '(' immediately follows.
+    fn isTypeArgsFollowedByCall(self: *Parser) bool {
+        // Save lexer state for lookahead
+        const saved_pos = self.lexer.pos;
+        const saved_line = self.lexer.line;
+        const saved_column = self.lexer.column;
+
+        // We're currently at '[', skip it
+        var tok = self.lexer.next();
+        var depth: i32 = 1;
+
+        // Scan until we find the matching ']'
+        while (depth > 0 and tok.kind != .eof) {
+            if (tok.kind == .l_bracket) {
+                depth += 1;
+            } else if (tok.kind == .r_bracket) {
+                depth -= 1;
+            }
+            if (depth > 0) {
+                tok = self.lexer.next();
+            }
+        }
+
+        // Skip any newlines after ']'
+        var next = self.lexer.next();
+        while (next.kind == .newline) {
+            next = self.lexer.next();
+        }
+
+        // Check if '(' follows
+        const result = (depth == 0 and next.kind == .l_paren);
+
+        // Restore lexer state
+        self.lexer.pos = saved_pos;
+        self.lexer.line = saved_line;
+        self.lexer.column = saved_column;
+
+        return result;
     }
 
     fn parseIndex(self: *Parser, object: ast.Expr) ParseError!ast.Expr {
@@ -2156,24 +2274,125 @@ pub const Parser = struct {
         // Handle visibility modifier
         const is_pub = self.match(.pub_);
 
+        // Handle unsafe modifier (for unsafe fn)
+        const is_unsafe = self.match(.unsafe_);
+
+        // Handle extern modifier (for extern type, extern fn, extern struct, extern enum)
+        const is_extern = self.match(.extern_);
+
+        // extern type declarations
+        if (is_extern and self.current.kind == .type_) {
+            if (is_unsafe) {
+                try self.reportError("'unsafe' modifier is not allowed on extern type declarations");
+                return ParseError.UnexpectedToken;
+            }
+            return self.parseExternTypeDecl(is_pub);
+        }
+
+        // extern { ... } block for C function declarations
+        if (is_extern and self.current.kind == .l_brace) {
+            if (is_unsafe) {
+                try self.reportError("'unsafe' modifier is not allowed on extern blocks");
+                return ParseError.UnexpectedToken;
+            }
+            if (is_pub) {
+                try self.reportError("'pub' modifier is not allowed on extern blocks (use 'pub' on individual functions inside)");
+                return ParseError.UnexpectedToken;
+            }
+            return self.parseExternBlock();
+        }
+
         return switch (self.current.kind) {
-            .fn_ => self.parseFunctionDecl(is_pub),
-            .struct_ => self.parseStructDecl(is_pub),
-            .enum_ => self.parseEnumDecl(is_pub),
-            .trait => self.parseTraitDecl(is_pub),
-            .impl => self.parseImplDecl(),
-            .type_ => self.parseTypeAlias(is_pub),
-            .const_ => self.parseConstDecl(is_pub),
-            .import => self.parseImportDecl(),
-            .module => self.parseModuleDecl(),
+            .fn_ => blk: {
+                if (is_extern) {
+                    try self.reportError("extern functions must be declared inside 'extern { }' blocks");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseFunctionDecl(is_pub, is_unsafe);
+            },
+            .struct_ => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on struct declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseStructDecl(is_pub, is_extern);
+            },
+            .enum_ => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on enum declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseEnumDecl(is_pub, is_extern);
+            },
+            .trait => blk: {
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on trait declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseTraitDecl(is_pub, is_unsafe);
+            },
+            .impl => blk: {
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on impl declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseImplDecl(is_unsafe);
+            },
+            .type_ => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on type aliases");
+                    return ParseError.UnexpectedToken;
+                }
+                // Note: extern type is handled above before the switch
+                break :blk self.parseTypeAlias(is_pub);
+            },
+            .const_ => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on const declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on const declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseConstDecl(is_pub);
+            },
+            .import => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on import declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on import declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseImportDecl();
+            },
+            .module => blk: {
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on module declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on module declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseModuleDecl();
+            },
             else => {
-                try self.reportError("expected declaration");
+                if (is_extern) {
+                    try self.reportError("expected 'type', 'fn', 'struct', or 'enum' after 'extern'");
+                } else if (is_unsafe) {
+                    try self.reportError("expected 'fn', 'trait', or 'impl' after 'unsafe'");
+                } else {
+                    try self.reportError("expected declaration");
+                }
                 return ParseError.UnexpectedToken;
             },
         };
     }
 
-    fn parseFunctionDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'fn'
 
@@ -2226,6 +2445,9 @@ pub const Parser = struct {
             .is_pub = is_pub,
             .is_async = false,
             .is_comptime = is_comptime,
+            .is_unsafe = is_unsafe,
+            .is_extern = false,
+            .is_variadic = false,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .function = func };
@@ -2297,6 +2519,7 @@ pub const Parser = struct {
                 .type_ = param_type,
                 .default_value = default_value,
                 .is_comptime = is_comptime,
+                .is_out = false,
                 .span = param_span,
             });
 
@@ -2337,16 +2560,33 @@ pub const Parser = struct {
         return try self.dupeSlice(ast.WhereConstraint, constraints.items);
     }
 
-    fn parseStructDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseStructDecl(self: *Parser, is_pub: bool, is_extern: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'struct'
+
+        // Parse optional 'packed' modifier (only valid for extern structs)
+        const is_packed = self.match(.packed_);
+        if (is_packed and !is_extern) {
+            try self.reportError("'packed' modifier is only valid for extern structs");
+            return ParseError.UnexpectedToken;
+        }
 
         const name = try self.consumeIdentifier();
         const type_params = try self.parseTypeParams();
 
+        // Extern structs cannot have type parameters
+        if (is_extern and type_params.len > 0) {
+            try self.reportError("extern structs cannot have generic type parameters");
+            return ParseError.UnexpectedToken;
+        }
+
         // Parse optional trait implementations: struct Foo: Trait1 + Trait2
         var traits = std.ArrayListUnmanaged(ast.TypeExpr){};
         if (self.match(.colon)) {
+            if (is_extern) {
+                try self.reportError("extern structs cannot implement traits");
+                return ParseError.UnexpectedToken;
+            }
             while (true) {
                 try traits.append(self.allocator, try self.parseType());
                 if (!self.match(.plus)) break;
@@ -2388,17 +2628,38 @@ pub const Parser = struct {
             .fields = try self.dupeSlice(ast.StructField, fields.items),
             .traits = try self.dupeSlice(ast.TypeExpr, traits.items),
             .is_pub = is_pub,
+            .is_extern = is_extern,
+            .is_packed = is_packed,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .struct_decl = struct_decl };
     }
 
-    fn parseEnumDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseEnumDecl(self: *Parser, is_pub: bool, is_extern: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'enum'
 
         const name = try self.consumeIdentifier();
-        const type_params = try self.parseTypeParams();
+
+        // For extern enums, parse repr type before type params (extern enums can't have type params)
+        var repr_type: ?ast.TypeExpr = null;
+        if (is_extern) {
+            if (self.match(.colon)) {
+                repr_type = try self.parseType();
+            } else {
+                try self.reportError("extern enum requires a repr type (e.g., 'extern enum Name: i32')");
+                return ParseError.UnexpectedToken;
+            }
+        }
+
+        // Parse type params (only for non-extern enums)
+        var type_params: []const ast.TypeParam = &.{};
+        if (!is_extern) {
+            type_params = try self.parseTypeParams();
+        } else if (self.check(.l_bracket)) {
+            try self.reportError("extern enums cannot have type parameters");
+            return ParseError.UnexpectedToken;
+        }
 
         try self.consume(.l_brace, "expected '{' after enum name");
 
@@ -2411,10 +2672,15 @@ pub const Parser = struct {
             const variant_span = self.spanFromToken(self.current);
             const variant_name = try self.consumeIdentifier();
 
-            // Parse optional payload
+            // Parse optional payload (not allowed for extern enums)
             var payload: ?ast.VariantPayload = null;
+            var value: ?i128 = null;
 
             if (self.match(.l_paren)) {
+                if (is_extern) {
+                    try self.reportError("extern enum variants cannot have payloads");
+                    return ParseError.UnexpectedToken;
+                }
                 // Tuple payload: Variant(T1, T2)
                 var tuple_types = std.ArrayListUnmanaged(ast.TypeExpr){};
                 if (!self.check(.r_paren)) {
@@ -2426,6 +2692,10 @@ pub const Parser = struct {
                 try self.consume(.r_paren, "expected ')' after tuple payload");
                 payload = .{ .tuple = try self.dupeSlice(ast.TypeExpr, tuple_types.items) };
             } else if (self.match(.l_brace)) {
+                if (is_extern) {
+                    try self.reportError("extern enum variants cannot have payloads");
+                    return ParseError.UnexpectedToken;
+                }
                 // Struct payload: Variant { field: T }
                 var struct_fields = std.ArrayListUnmanaged(ast.StructField){};
                 while (!self.check(.r_brace) and !self.check(.eof)) {
@@ -2450,9 +2720,44 @@ pub const Parser = struct {
                 payload = .{ .struct_ = try self.dupeSlice(ast.StructField, struct_fields.items) };
             }
 
+            // Parse explicit value: Variant = 123
+            if (self.match(.eq)) {
+                // Parse integer literal for discriminant value
+                if (self.check(.int_literal)) {
+                    const lit_str = self.source[self.current.loc.start..self.current.loc.end];
+                    value = std.fmt.parseInt(i128, lit_str, 10) catch {
+                        try self.reportError("invalid integer literal for enum variant value");
+                        return ParseError.UnexpectedToken;
+                    };
+                    self.advance();
+                } else if (self.check(.minus)) {
+                    // Handle negative values
+                    self.advance(); // consume '-'
+                    if (self.check(.int_literal)) {
+                        const lit_str = self.source[self.current.loc.start..self.current.loc.end];
+                        const abs_value = std.fmt.parseInt(i128, lit_str, 10) catch {
+                            try self.reportError("invalid integer literal for enum variant value");
+                            return ParseError.UnexpectedToken;
+                        };
+                        value = -abs_value;
+                        self.advance();
+                    } else {
+                        try self.reportError("expected integer literal after '-' for enum variant value");
+                        return ParseError.UnexpectedToken;
+                    }
+                } else {
+                    try self.reportError("expected integer literal for enum variant value");
+                    return ParseError.UnexpectedToken;
+                }
+            } else if (is_extern) {
+                try self.reportError("extern enum variants must have explicit values (e.g., 'Variant = 0')");
+                return ParseError.UnexpectedToken;
+            }
+
             try variants.append(self.allocator, .{
                 .name = variant_name,
                 .payload = payload,
+                .value = value,
                 .span = variant_span,
             });
 
@@ -2467,12 +2772,14 @@ pub const Parser = struct {
             .type_params = type_params,
             .variants = try self.dupeSlice(ast.EnumVariant, variants.items),
             .is_pub = is_pub,
+            .is_extern = is_extern,
+            .repr_type = repr_type,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .enum_decl = enum_decl };
     }
 
-    fn parseTraitDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseTraitDecl(self: *Parser, is_pub: bool, is_unsafe: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'trait'
 
@@ -2508,7 +2815,8 @@ pub const Parser = struct {
                 try associated_types.append(self.allocator, assoc_type);
             } else {
                 // Each method in trait is a function signature (potentially without body)
-                const method_decl = try self.parseFunctionDecl(false);
+                // Note: unsafe methods in traits not yet supported
+                const method_decl = try self.parseFunctionDecl(false, false);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -2525,6 +2833,7 @@ pub const Parser = struct {
             .associated_types = try self.dupeSlice(ast.AssociatedTypeDecl, associated_types.items),
             .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
             .is_pub = is_pub,
+            .is_unsafe = is_unsafe,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .trait_decl = trait_decl };
@@ -2565,7 +2874,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseImplDecl(self: *Parser) ParseError!ast.Decl {
+    fn parseImplDecl(self: *Parser, is_unsafe: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'impl'
 
@@ -2599,7 +2908,8 @@ pub const Parser = struct {
                 try associated_types.append(self.allocator, assoc_binding);
             } else {
                 const is_pub = self.match(.pub_);
-                const method_decl = try self.parseFunctionDecl(is_pub);
+                const method_is_unsafe = self.match(.unsafe_);
+                const method_decl = try self.parseFunctionDecl(is_pub, method_is_unsafe);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -2616,6 +2926,7 @@ pub const Parser = struct {
             .associated_types = try self.dupeSlice(ast.AssociatedTypeBinding, associated_types.items),
             .where_clause = where_clause,
             .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
+            .is_unsafe = is_unsafe,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .impl_decl = impl_decl };
@@ -2658,6 +2969,204 @@ pub const Parser = struct {
             .span = ast.Span.merge(start_span, target.span()),
         });
         return .{ .type_alias = type_alias };
+    }
+
+    /// Parse an extern type declaration
+    /// Syntax: `extern type Name` (opaque, unknown size)
+    ///         `extern type(N) Name` (sized, N bytes)
+    fn parseExternTypeDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'type'
+
+        // Check for optional size: extern type(N)
+        var size: ?u64 = null;
+        if (self.match(.l_paren)) {
+            // Parse the size as an integer literal
+            if (self.current.kind != .int_literal) {
+                try self.reportError("expected integer size in extern type declaration");
+                return ParseError.UnexpectedToken;
+            }
+            const size_text = self.source[self.current.loc.start..self.current.loc.end];
+            size = std.fmt.parseInt(u64, size_text, 10) catch {
+                try self.reportError("invalid size in extern type declaration");
+                return ParseError.UnexpectedToken;
+            };
+            if (size.? == 0) {
+                try self.reportError("extern type size must be greater than 0");
+                return ParseError.UnexpectedToken;
+            }
+            self.advance(); // consume the integer literal
+            try self.consume(.r_paren, "expected ')' after extern type size");
+        }
+
+        const name = try self.consumeIdentifier();
+        const end_span = self.spanFromToken(self.previous);
+
+        const extern_type_decl = try self.create(ast.ExternTypeDecl, .{
+            .name = name,
+            .size = size,
+            .is_pub = is_pub,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .extern_type_decl = extern_type_decl };
+    }
+
+    /// Parse an extern block containing C function declarations
+    /// Syntax: `extern { fn name(...) -> Type; ... }`
+    fn parseExternBlock(self: *Parser) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume '{'
+
+        var functions = std.ArrayListUnmanaged(*ast.FunctionDecl){};
+
+        while (!self.check(.r_brace) and !self.check(.eof)) {
+            // Skip newlines
+            while (self.match(.newline)) {}
+
+            if (self.check(.r_brace)) break;
+
+            // Check for optional pub modifier
+            const is_pub = self.match(.pub_);
+
+            // Expect 'fn'
+            if (!self.check(.fn_)) {
+                try self.reportError("expected 'fn' in extern block");
+                return ParseError.UnexpectedToken;
+            }
+
+            const func = try self.parseExternFnDecl(is_pub);
+            try functions.append(self.allocator, func);
+
+            // Skip newlines
+            while (self.match(.newline)) {}
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_brace, "expected '}' to close extern block");
+
+        const extern_block = try self.create(ast.ExternBlock, .{
+            .functions = try self.dupeSlice(*ast.FunctionDecl, functions.items),
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return .{ .extern_block = extern_block };
+    }
+
+    /// Parse an extern function declaration (inside extern block)
+    /// Syntax: `fn name(param: Type, ...) -> ReturnType`
+    fn parseExternFnDecl(self: *Parser, is_pub: bool) ParseError!*ast.FunctionDecl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'fn'
+
+        const name = try self.consumeIdentifier();
+
+        // Extern functions cannot have type parameters (generics)
+        if (self.check(.l_bracket)) {
+            try self.reportError("extern functions cannot have type parameters");
+            return ParseError.UnexpectedToken;
+        }
+
+        // Parse parameters
+        try self.consume(.l_paren, "expected '(' after function name");
+        const params_result = try self.parseExternFnParams();
+        const params = params_result.params;
+        const is_variadic = params_result.is_variadic;
+        try self.consume(.r_paren, "expected ')' after parameters");
+
+        // Parse optional return type
+        var return_type: ?ast.TypeExpr = null;
+        if (self.match(.arrow)) {
+            return_type = try self.parseType();
+        }
+
+        const end_span = if (return_type) |rt| rt.span() else self.spanFromToken(self.previous);
+
+        const func = try self.create(ast.FunctionDecl, .{
+            .name = name,
+            .type_params = &[_]ast.TypeParam{},
+            .params = params,
+            .return_type = return_type,
+            .where_clause = null,
+            .body = null, // extern functions have no body
+            .is_pub = is_pub,
+            .is_async = false,
+            .is_comptime = false,
+            .is_unsafe = false, // extern functions are implicitly unsafe to call
+            .is_extern = true,
+            .is_variadic = is_variadic,
+            .span = ast.Span.merge(start_span, end_span),
+        });
+        return func;
+    }
+
+    /// Parse extern function parameters, handling 'out' modifier and variadic '...'
+    /// Returns params and whether the function is variadic
+    const ExternFnParamsResult = struct {
+        params: []const ast.FunctionParam,
+        is_variadic: bool,
+    };
+
+    fn parseExternFnParams(self: *Parser) ParseError!ExternFnParamsResult {
+        var params = std.ArrayListUnmanaged(ast.FunctionParam){};
+        var is_variadic = false;
+
+        if (self.check(.r_paren)) {
+            return .{ .params = &[_]ast.FunctionParam{}, .is_variadic = false };
+        }
+
+        while (true) {
+            // Check for variadic '...'
+            if (self.match(.ellipsis)) {
+                is_variadic = true;
+                // Variadic marker must be last
+                if (!self.check(.r_paren)) {
+                    try self.reportError("variadic '...' must be the last parameter");
+                    return ParseError.UnexpectedToken;
+                }
+                break;
+            }
+
+            const param_span = self.spanFromToken(self.current);
+
+            // Check for 'out' modifier (contextual keyword - not a reserved keyword)
+            const is_out = self.current.kind == .identifier and
+                std.mem.eql(u8, self.source[self.current.loc.start..self.current.loc.end], "out");
+            if (is_out) {
+                self.advance(); // consume 'out'
+            }
+
+            const param_name = try self.consumeIdentifier();
+
+            try self.consume(.colon, "expected ':' after parameter name");
+            const param_type = try self.parseType();
+
+            // Extern function parameters cannot have default values
+            if (self.check(.eq)) {
+                try self.reportError("extern function parameters cannot have default values");
+                return ParseError.UnexpectedToken;
+            }
+
+            try params.append(self.allocator, .{
+                .name = param_name,
+                .type_ = param_type,
+                .default_value = null,
+                .is_comptime = false,
+                .is_out = is_out,
+                .span = param_span,
+            });
+
+            if (!self.match(.comma)) break;
+        }
+
+        // Validate: variadic functions must have at least one non-variadic parameter
+        if (is_variadic and params.items.len == 0) {
+            try self.reportError("variadic functions must have at least one non-variadic parameter");
+            return ParseError.UnexpectedToken;
+        }
+
+        return .{
+            .params = try self.dupeSlice(ast.FunctionParam, params.items),
+            .is_variadic = is_variadic,
+        };
     }
 
     fn parseConstDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {

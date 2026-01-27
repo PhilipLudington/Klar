@@ -272,6 +272,8 @@ pub const Compiler = struct {
             .enum_decl => |e| try self.compileEnumDecl(e),
             // TODO: Implement remaining declarations
             .trait_decl, .impl_decl, .type_alias, .import_decl, .module_decl => {},
+            // Extern types and blocks are compile-time only (FFI not supported in VM)
+            .extern_type_decl, .extern_block => {},
         }
     }
 
@@ -730,6 +732,11 @@ pub const Compiler = struct {
                 // The bytecode VM should never see them - they are replaced by their evaluated values
                 try self.addError(.internal_error, expr.span(), "comptime blocks not yet supported in bytecode VM");
             },
+            .unsafe_block => |ub| {
+                // Unsafe blocks are safety-checked at compile time
+                // For bytecode, just compile the inner block
+                try self.compileBlockExpr(ub.body);
+            },
             .builtin_call => |bc| {
                 // Handle @repeat builtin specially - compile it as an array literal
                 if (std.mem.eql(u8, bc.name, "repeat") and bc.args.len == 2) {
@@ -792,6 +799,11 @@ pub const Compiler = struct {
                     // Other builtin calls are evaluated at compile time
                     try self.addError(.internal_error, expr.span(), "builtin calls not yet supported in bytecode VM");
                 }
+            },
+            .out_arg => {
+                // Out arguments are only valid in extern function calls
+                // The bytecode VM doesn't support FFI, so this is an error
+                try self.addError(.internal_error, expr.span(), "out arguments not supported in bytecode VM (FFI not available)");
             },
         }
     }

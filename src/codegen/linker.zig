@@ -15,6 +15,14 @@ pub const LinkerError = error{
     CrossCompilationNotSupported,
 };
 
+/// Linker options for additional libraries and search paths.
+pub const LinkerOptions = struct {
+    /// Libraries to link (e.g., "m" for libm, "curl" for libcurl).
+    link_libs: []const []const u8 = &.{},
+    /// Library search paths.
+    link_paths: []const []const u8 = &.{},
+};
+
 /// Invoke the system linker to create an executable for the host platform.
 pub fn link(
     allocator: std.mem.Allocator,
@@ -22,7 +30,18 @@ pub fn link(
     output_file: []const u8,
 ) LinkerError!void {
     const platform = target.Platform.current();
-    return linkForPlatform(allocator, object_file, output_file, platform, null);
+    return linkForPlatform(allocator, object_file, output_file, platform, null, .{});
+}
+
+/// Invoke the system linker with additional library options.
+pub fn linkWithOptions(
+    allocator: std.mem.Allocator,
+    object_file: []const u8,
+    output_file: []const u8,
+    options: LinkerOptions,
+) LinkerError!void {
+    const platform = target.Platform.current();
+    return linkForPlatform(allocator, object_file, output_file, platform, null, options);
 }
 
 /// Invoke the system linker to create an executable for a specific target.
@@ -33,7 +52,19 @@ pub fn linkForTarget(
     target_info: target.TargetInfo,
 ) LinkerError!void {
     const platform = target_info.toPlatform();
-    return linkForPlatform(allocator, object_file, output_file, platform, target_info);
+    return linkForPlatform(allocator, object_file, output_file, platform, target_info, .{});
+}
+
+/// Invoke the system linker for a specific target with additional library options.
+pub fn linkForTargetWithOptions(
+    allocator: std.mem.Allocator,
+    object_file: []const u8,
+    output_file: []const u8,
+    target_info: target.TargetInfo,
+    options: LinkerOptions,
+) LinkerError!void {
+    const platform = target_info.toPlatform();
+    return linkForPlatform(allocator, object_file, output_file, platform, target_info, options);
 }
 
 /// Core linking implementation.
@@ -43,6 +74,7 @@ fn linkForPlatform(
     output_file: []const u8,
     platform: target.Platform,
     target_info_opt: ?target.TargetInfo,
+    options: LinkerOptions,
 ) LinkerError!void {
     // Check for cross-compilation scenarios
     const is_cross = if (target_info_opt) |ti| ti.isCrossCompile() else false;
@@ -141,6 +173,66 @@ fn linkForPlatform(
             }
         },
         else => return LinkerError.LinkerNotFound,
+    }
+
+    // Track allocated strings so we can free them after linking
+    var allocated_strings = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (allocated_strings.items) |s| {
+            allocator.free(s);
+        }
+        allocated_strings.deinit(allocator);
+    }
+
+    // Add library search paths (-L flags)
+    // These must come before -l flags so the linker can find the libraries
+    for (options.link_paths) |path| {
+        switch (platform.os) {
+            .windows => {
+                if (is_cross or builtin.os.tag != .windows) {
+                    // MinGW uses -L
+                    const formatted = std.fmt.allocPrint(allocator, "-L{s}", .{path}) catch return LinkerError.OutOfMemory;
+                    allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+                    args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+                } else {
+                    // MSVC uses /LIBPATH:
+                    const formatted = std.fmt.allocPrint(allocator, "/LIBPATH:{s}", .{path}) catch return LinkerError.OutOfMemory;
+                    allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+                    args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+                }
+            },
+            else => {
+                // macOS and Linux both use -L
+                const formatted = std.fmt.allocPrint(allocator, "-L{s}", .{path}) catch return LinkerError.OutOfMemory;
+                allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+                args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+            },
+        }
+    }
+
+    // Add libraries to link (-l flags)
+    for (options.link_libs) |lib| {
+        switch (platform.os) {
+            .windows => {
+                if (is_cross or builtin.os.tag != .windows) {
+                    // MinGW uses -l
+                    const formatted = std.fmt.allocPrint(allocator, "-l{s}", .{lib}) catch return LinkerError.OutOfMemory;
+                    allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+                    args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+                } else {
+                    // MSVC: just add the library name with .lib extension
+                    const formatted = std.fmt.allocPrint(allocator, "{s}.lib", .{lib}) catch return LinkerError.OutOfMemory;
+                    allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+                    args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+                }
+            },
+            else => {
+                // macOS and Linux both use -l
+                const formatted = std.fmt.allocPrint(allocator, "-l{s}", .{lib}) catch return LinkerError.OutOfMemory;
+                allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+                args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+            },
+        }
     }
 
     var child = std.process.Child.init(args.items, allocator);

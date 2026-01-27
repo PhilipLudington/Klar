@@ -1,0 +1,52 @@
+// Test type inference for FFI pointer functions
+// Verifies that the type checker correctly infers types for CPtr operations
+
+fn main() -> i32 {
+    var value: i32 = 42
+
+    unsafe {
+        // Test ref_to_ptr: ref T -> CPtr[T]
+        let ptr: CPtr[i32] = ref_to_ptr(ref value)
+
+        // Test read: CPtr[T] -> T
+        let read_value: i32 = read(ptr)
+        if read_value != 42 {
+            return 1
+        }
+
+        // Test write: CPtr[T], T -> void
+        write(ptr, 100)
+        let new_value: i32 = read(ptr)
+        if new_value != 100 {
+            return 2
+        }
+
+        // Restore original value
+        write(ptr, 42)
+
+        // Test offset: CPtr[T], isize -> CPtr[T]
+        let offset_count: isize = 0  // Stay at same location
+        let same_ptr: CPtr[i32] = offset(ptr, offset_count)
+        let same_value: i32 = read(same_ptr)
+        if same_value != 42 {
+            return 3
+        }
+
+        // Test ref_to_ptr with another local
+        var local_val: i32 = 200
+        let local_ptr: CPtr[i32] = ref_to_ptr(ref local_val)
+        let local_read: i32 = read(local_ptr)
+        if local_read != 200 {
+            return 4
+        }
+
+        // Test write through local pointer
+        write(local_ptr, 300)
+        if local_val != 300 {
+            return 5
+        }
+    }
+
+    println("Pointer type inference tests passed!")
+    return 0
+}

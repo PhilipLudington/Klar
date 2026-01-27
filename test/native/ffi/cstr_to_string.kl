@@ -1,0 +1,44 @@
+// Test CStr to string conversions
+// FFI Phase 7: String Conversions
+
+extern {
+    fn puts(s: CStr) -> i32
+}
+
+fn main() -> i32 {
+    // Test 1: Convert string literal to CStr, then to String
+    let original: string = "Test conversion"
+    let cstr: CStr = original.as_cstr()
+
+    // Convert CStr to String (requires unsafe because it reads from raw pointer)
+    let converted: String = unsafe { cstr.to_string() }
+
+    // Print the converted string to verify
+    let cstr_check: CStr = converted.as_cstr()
+    unsafe {
+        let _: i32 = puts(cstr_check)
+    }
+
+    // Verify the length
+    if converted.len() != 15 {
+        return 1
+    }
+
+    // Test 2: Get length of CStr directly (requires unsafe)
+    let len: usize = unsafe { cstr.len() }
+    let expected_len: usize = 15
+    if len != expected_len {  // "Test conversion" is 15 characters
+        return 2
+    }
+
+    // Test 3: Use the converted String
+    let cstr2: CStr = converted.as_cstr()
+    unsafe {
+        let result: i32 = puts(cstr2)
+        if result < 0 {
+            return 3
+        }
+    }
+
+    return 0
+}

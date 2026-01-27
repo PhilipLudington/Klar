@@ -358,6 +358,10 @@ pub const Lexer = struct {
     fn handleDot(self: *Lexer) Token {
         if (!self.isAtEnd() and self.peek() == '.') {
             _ = self.advance();
+            if (!self.isAtEnd() and self.peek() == '.') {
+                _ = self.advance();
+                return self.makeToken(.ellipsis);
+            }
             if (!self.isAtEnd() and self.peek() == '=') {
                 _ = self.advance();
                 return self.makeToken(.dot_dot_eq);
@@ -456,6 +460,8 @@ pub const Lexer = struct {
         .{ "async", .async_ },
         .{ "await", .await_ },
         .{ "unsafe", .unsafe_ },
+        .{ "extern", .extern_ },
+        .{ "packed", .packed_ },
         .{ "import", .import },
         .{ "module", .module },
         .{ "as", .as },

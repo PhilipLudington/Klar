@@ -113,6 +113,10 @@ pub fn main() !void {
         var verbose_opt = false;
         var debug_info = false;
         var target_triple: ?[]const u8 = null;
+        var link_libs = std.ArrayListUnmanaged([]const u8){};
+        defer link_libs.deinit(allocator);
+        var link_paths = std.ArrayListUnmanaged([]const u8){};
+        defer link_paths.deinit(allocator);
 
         var i: usize = 3;
         while (i < args.len) : (i += 1) {
@@ -143,6 +147,20 @@ pub fn main() !void {
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "--target=")) {
                 target_triple = arg["--target=".len..];
+            } else if (std.mem.eql(u8, arg, "-l") and i + 1 < args.len) {
+                // -l libname (separate argument)
+                try link_libs.append(allocator, args[i + 1]);
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "-l")) {
+                // -llibname (combined)
+                try link_libs.append(allocator, arg[2..]);
+            } else if (std.mem.eql(u8, arg, "-L") and i + 1 < args.len) {
+                // -L path (separate argument)
+                try link_paths.append(allocator, args[i + 1]);
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "-L")) {
+                // -Lpath (combined)
+                try link_paths.append(allocator, arg[2..]);
             }
         }
 
@@ -156,6 +174,8 @@ pub fn main() !void {
             .debug_info = debug_info,
             .source_path = args[2],
             .target_triple = target_triple,
+            .link_libs = link_libs.items,
+            .link_paths = link_paths.items,
         });
     } else if (std.mem.eql(u8, command, "check")) {
         if (args.len < 3) {
@@ -952,10 +972,14 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     defer if (owns_exe_path) allocator.free(exe_path);
 
     // Use cross-compilation linker if target specified
+    const linker_options = codegen.linker.LinkerOptions{
+        .link_libs = options.link_libs,
+        .link_paths = options.link_paths,
+    };
     const link_result = if (target_info) |ti|
-        codegen.linker.linkForTarget(allocator, obj_path, exe_path, ti)
+        codegen.linker.linkForTargetWithOptions(allocator, obj_path, exe_path, ti, linker_options)
     else
-        codegen.linker.link(allocator, obj_path, exe_path);
+        codegen.linker.linkWithOptions(allocator, obj_path, exe_path, linker_options);
 
     link_result catch |err| {
         var buf: [512]u8 = undefined;
@@ -1630,6 +1654,8 @@ fn printUsage() !void {
         \\  -O2                  Standard optimizations (O1 + simplification)
         \\  -O3                  Aggressive optimizations (O2 + LLVM aggressive)
         \\  -g                   Generate debug information (DWARF)
+        \\  -l <lib>             Link with library (e.g., -lm, -lcurl)
+        \\  -L <path>            Add library search path
         \\  --emit-llvm          Output LLVM IR (.ll file)
         \\  --emit-asm           Output assembly (.s file)
         \\  --emit-ir            Output Klar IR (.ir file)
@@ -1656,6 +1682,7 @@ fn printUsage() !void {
         \\  klar build hello.kl --target x86_64-linux-gnu
         \\  klar build hello.kl --emit-llvm
         \\  klar build hello.kl --emit-ir
+        \\  klar build hello.kl -lm -L/usr/local/lib
         \\  klar check example.kl
         \\
     );

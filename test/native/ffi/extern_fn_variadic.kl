@@ -1,0 +1,20 @@
+// Test: Variadic extern functions
+// This test verifies that variadic functions like printf can be declared and called
+
+extern {
+    // printf is variadic - note the ... at the end
+    fn printf(fmt: CStr, ...) -> i32
+    fn exit(status: i32) -> void
+}
+
+fn main() -> i32 {
+    unsafe {
+        // For now, just verify parsing works
+        // Calling printf with CStr requires string conversion (Phase 7)
+        // So we just return a success code
+        exit(42)
+    }
+    return 1
+}
+
+// expected: 42

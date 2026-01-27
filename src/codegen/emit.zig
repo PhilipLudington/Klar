@@ -106,10 +106,34 @@ pub const Emitter = struct {
     /// Used to detect sret at call sites.
     sret_functions: std.StringHashMap(llvm.TypeRef),
 
+    /// Set of extern function declarations for FFI.
+    extern_functions: std.StringHashMap(ExternFnInfo),
+
     /// True if main() takes [String] args (needs wrapper generation).
     main_takes_args: bool = false,
 
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
+
+    /// Info for ABI-lowered parameter (struct -> integer conversion)
+    const AbiLoweredParam = struct {
+        struct_type: llvm.TypeRef,
+        int_type: llvm.TypeRef,
+    };
+
+    const ExternFnInfo = struct {
+        func: llvm.ValueRef,
+        is_variadic: bool,
+        /// For ABI lowering: if the function returns a struct that's lowered to an integer,
+        /// this holds the original struct type so we can convert the return value.
+        abi_lowered_return_type: ?llvm.TypeRef = null,
+        /// For ABI lowering: tracks which parameters are structs lowered to integers.
+        /// Index i contains both struct and int types if parameter i was lowered.
+        abi_lowered_param_types: ?[]const ?AbiLoweredParam = null,
+        /// Bitmask of out parameters (index i is out if bit i is set).
+        out_params: u64 = 0,
+        /// Types for out parameters (index i contains LLVM type if param i is out).
+        out_param_types: ?[]const ?llvm.TypeRef = null,
+    };
 
     const ReturnTypeInfo = struct {
         llvm_type: llvm.TypeRef,
@@ -205,6 +229,8 @@ pub const Emitter = struct {
         is_arc: bool = false,
         /// True if this is a BufWriter type (needs flush on drop).
         is_buf_writer: bool = false,
+        /// True if this is a CStrOwned type (needs free on drop).
+        is_cstr_owned: bool = false,
     };
 
     /// Info about a scope for drop tracking.
@@ -273,6 +299,7 @@ pub const Emitter = struct {
             .current_sret_ptr = null,
             .sret_attr_kind = null,
             .sret_functions = std.StringHashMap(llvm.TypeRef).init(allocator),
+            .extern_functions = std.StringHashMap(ExternFnInfo).init(allocator),
         };
     }
 
@@ -400,6 +427,19 @@ pub const Emitter = struct {
             self.allocator.free(key.*);
         }
         self.sret_functions.deinit();
+        // Free extern function allocations
+        var extern_it = self.extern_functions.iterator();
+        while (extern_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            // Free allocated slices in the value
+            if (entry.value_ptr.abi_lowered_param_types) |slice| {
+                self.allocator.free(slice);
+            }
+            if (entry.value_ptr.out_param_types) |slice| {
+                self.allocator.free(slice);
+            }
+        }
+        self.extern_functions.deinit();
         self.layout_calc.deinit();
         self.builder.dispose();
         self.module.dispose();
@@ -421,6 +461,11 @@ pub const Emitter = struct {
             switch (decl) {
                 .function => |f| try self.declareFunction(f),
                 .impl_decl => |i| try self.declareImplMethods(i),
+                .extern_block => |b| {
+                    for (b.functions) |f| {
+                        try self.declareExternFunction(f);
+                    }
+                },
                 else => {},
             }
         }
@@ -806,7 +851,8 @@ pub const Emitter = struct {
         }
 
         // Use getOrCreateStructType to register the struct with field names
-        _ = try self.getOrCreateStructType(struct_decl.name, struct_decl.fields);
+        // For packed extern structs, LLVM struct should be packed (no padding)
+        _ = try self.getOrCreateStructType(struct_decl.name, struct_decl.fields, struct_decl.is_packed);
     }
 
     /// Register all struct declarations from a module.
@@ -881,6 +927,186 @@ pub const Emitter = struct {
 
         // Set the calling convention for proper ABI compliance
         llvm.setFunctionCallConv(llvm_func, self.calling_convention.toLLVM());
+    }
+
+    /// Declare an external C function.
+    /// Extern functions use C calling convention and may be variadic.
+    /// Applies ABI lowering for struct returns - small structs are returned in registers.
+    fn declareExternFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
+        // Extern functions cannot be generic
+        if (func.type_params.len > 0) {
+            return EmitError.InvalidAST;
+        }
+
+        // Build return type, with ABI lowering for structs
+        var abi_lowered_return_type: ?llvm.TypeRef = null;
+        const return_llvm_type = if (func.return_type) |rt| blk: {
+            const original_type = try self.typeExprToLLVM(rt);
+
+            // Check if this is a struct type that needs ABI lowering
+            // Look up the struct by name and calculate size
+            if (llvm.getTypeKind(original_type) == llvm.c.LLVMStructTypeKind) {
+                // Calculate struct size using the layout calculator
+                // Get the struct name from the type expression
+                const struct_size: usize = if (self.type_checker) |tc| size_blk: {
+                    const type_name: ?[]const u8 = switch (rt) {
+                        .named => |n| n.name,
+                        else => null,
+                    };
+                    if (type_name) |name| {
+                        if (tc.lookupSymbol(name)) |sym| {
+                            if (sym.type_ == .struct_) {
+                                const type_layout = self.layout_calc.getTypeLayout(sym.type_);
+                                break :size_blk type_layout.size;
+                            }
+                        }
+                    }
+                    break :size_blk 0;
+                } else 0;
+
+                // On most platforms, small structs (≤ 8 bytes) are returned as integers
+                // For arm64-apple and System V x86_64, structs up to 16 bytes can use registers,
+                // but for simplicity we treat ≤8 bytes as i64 (single register)
+                if (struct_size <= 8 and struct_size > 0) {
+                    // Save the original struct type for conversion at call sites
+                    abi_lowered_return_type = original_type;
+
+                    // Return as integer type matching the struct size
+                    break :blk if (struct_size <= 1)
+                        llvm.Types.int8(self.ctx)
+                    else if (struct_size <= 2)
+                        llvm.Types.int16(self.ctx)
+                    else if (struct_size <= 4)
+                        llvm.Types.int32(self.ctx)
+                    else
+                        llvm.Types.int64(self.ctx);
+                }
+            }
+            break :blk original_type;
+        } else llvm.Types.void_(self.ctx);
+
+        // Build parameter types with ABI lowering for small structs
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer param_types.deinit(self.allocator);
+
+        // Track which parameters need ABI lowering (struct -> integer)
+        var abi_lowered_params = std.ArrayListUnmanaged(?AbiLoweredParam){};
+        defer abi_lowered_params.deinit(self.allocator);
+
+        // Track out parameters
+        var out_params: u64 = 0;
+        var out_param_types = std.ArrayListUnmanaged(?llvm.TypeRef){};
+        defer out_param_types.deinit(self.allocator);
+
+        for (func.params, 0..) |param, i| {
+            // For out parameters, we pass a pointer to the type
+            if (param.is_out) {
+                const out_type = try self.typeExprToLLVM(param.type_);
+                param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
+                abi_lowered_params.append(self.allocator, null) catch return EmitError.OutOfMemory;
+                out_param_types.append(self.allocator, out_type) catch return EmitError.OutOfMemory;
+                if (i < 64) {
+                    out_params |= (@as(u64, 1) << @intCast(i));
+                }
+            } else {
+                out_param_types.append(self.allocator, null) catch return EmitError.OutOfMemory;
+                const original_type = try self.typeExprToLLVM(param.type_);
+
+                // Check if this is a struct type that needs ABI lowering
+                if (llvm.getTypeKind(original_type) == llvm.c.LLVMStructTypeKind) {
+                    // Calculate struct size
+                    const struct_size: usize = if (self.type_checker) |tc| size_blk: {
+                        const type_name: ?[]const u8 = switch (param.type_) {
+                            .named => |n| n.name,
+                            else => null,
+                        };
+                        if (type_name) |pname| {
+                            if (tc.lookupSymbol(pname)) |sym| {
+                                if (sym.type_ == .struct_) {
+                                    const type_layout = self.layout_calc.getTypeLayout(sym.type_);
+                                    break :size_blk type_layout.size;
+                                }
+                            }
+                        }
+                        break :size_blk 0;
+                    } else 0;
+
+                    // On most platforms, small structs (≤ 8 bytes) are passed as integers
+                    if (struct_size <= 8 and struct_size > 0) {
+                        // Use integer type matching the struct size
+                        const lowered_type = if (struct_size <= 1)
+                            llvm.Types.int8(self.ctx)
+                        else if (struct_size <= 2)
+                            llvm.Types.int16(self.ctx)
+                        else if (struct_size <= 4)
+                            llvm.Types.int32(self.ctx)
+                        else
+                            llvm.Types.int64(self.ctx);
+
+                        // Save both types for conversion at call sites
+                        abi_lowered_params.append(self.allocator, .{
+                            .struct_type = original_type,
+                            .int_type = lowered_type,
+                        }) catch return EmitError.OutOfMemory;
+
+                        param_types.append(self.allocator, lowered_type) catch return EmitError.OutOfMemory;
+                    } else {
+                        // Large structs are passed as-is (or by pointer depending on ABI)
+                        param_types.append(self.allocator, original_type) catch return EmitError.OutOfMemory;
+                        abi_lowered_params.append(self.allocator, null) catch return EmitError.OutOfMemory;
+                    }
+                } else {
+                    param_types.append(self.allocator, original_type) catch return EmitError.OutOfMemory;
+                    abi_lowered_params.append(self.allocator, null) catch return EmitError.OutOfMemory;
+                }
+            }
+        }
+
+        // Create function type (variadic if func.is_variadic)
+        const fn_type = llvm.Types.function(return_llvm_type, param_types.items, func.is_variadic);
+
+        // Add the function declaration to the module
+        const name = self.allocator.dupeZ(u8, func.name) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(name);
+        const llvm_func = llvm.addFunction(self.module, name, fn_type);
+
+        // Use C calling convention for extern functions
+        llvm.setFunctionCallConv(llvm_func, 0); // 0 = C calling convention (ccc)
+
+        // Store ABI lowered param info if any params were lowered
+        var has_lowered_params = false;
+        for (abi_lowered_params.items) |item| {
+            if (item != null) {
+                has_lowered_params = true;
+                break;
+            }
+        }
+
+        // Check if any out parameters
+        var has_out_params = false;
+        for (out_param_types.items) |item| {
+            if (item != null) {
+                has_out_params = true;
+                break;
+            }
+        }
+
+        // Store the function for extern function tracking
+        const name_copy = self.allocator.dupe(u8, func.name) catch return EmitError.OutOfMemory;
+        self.extern_functions.put(name_copy, .{
+            .func = llvm_func,
+            .is_variadic = func.is_variadic,
+            .abi_lowered_return_type = abi_lowered_return_type,
+            .abi_lowered_param_types = if (has_lowered_params)
+                (self.allocator.dupe(?AbiLoweredParam, abi_lowered_params.items) catch null)
+            else
+                null,
+            .out_params = out_params,
+            .out_param_types = if (has_out_params)
+                (self.allocator.dupe(?llvm.TypeRef, out_param_types.items) catch null)
+            else
+                null,
+        }) catch return EmitError.OutOfMemory;
     }
 
     /// Check if a type expression is [String] (slice of String).
@@ -1067,6 +1293,13 @@ pub const Emitter = struct {
                 // Check if this is a reference parameter
                 const is_ref = param.type_ == .reference;
                 const ref_inner_type: ?llvm.TypeRef = if (is_ref) blk: {
+                    // For self parameter, use the struct type from struct_name directly
+                    // This handles the case where the type is "Self" which isn't a registered type
+                    if (std.mem.eql(u8, param.name, "self")) {
+                        if (self.struct_types.get(struct_name)) |struct_info| {
+                            break :blk struct_info.llvm_type;
+                        }
+                    }
                     break :blk try self.typeExprToLLVM(param.type_.reference.inner);
                 } else null;
 
@@ -1519,6 +1752,8 @@ pub const Emitter = struct {
                 // Check if this is a buffered I/O type
                 const is_buf_reader_let = self.isTypeBufReader(decl.type_);
                 const is_buf_writer_let = self.isTypeBufWriter(decl.type_);
+                // Check if this is a CStrOwned type (needs free on drop)
+                const is_cstr_owned_let = self.isTypeCstrOwned(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
                 const semantic_type = self.resolveTypeExprDirect(decl.type_);
                 self.named_values.put(decl.name, .{
@@ -1559,6 +1794,11 @@ pub const Emitter = struct {
                 // Register BufWriter variables for automatic flushing on drop
                 if (is_buf_writer_let) {
                     try self.registerBufWriterDroppable(decl.name, alloca);
+                }
+
+                // Register CStrOwned variables for automatic free on drop
+                if (is_cstr_owned_let) {
+                    try self.registerCstrOwnedDroppable(decl.name, alloca);
                 }
             },
             .var_decl => |decl| {
@@ -1654,6 +1894,8 @@ pub const Emitter = struct {
                 // Check if this is a buffered I/O type
                 const is_buf_reader = self.isTypeBufReader(decl.type_);
                 const is_buf_writer = self.isTypeBufWriter(decl.type_);
+                // Check if this is a CStrOwned type (needs free on drop)
+                const is_cstr_owned = self.isTypeCstrOwned(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
                 const semantic_type = self.resolveTypeExprDirect(decl.type_);
                 self.named_values.put(decl.name, .{
@@ -1694,6 +1936,11 @@ pub const Emitter = struct {
                 // Register BufWriter variables for automatic flushing on drop
                 if (is_buf_writer) {
                     try self.registerBufWriterDroppable(decl.name, alloca);
+                }
+
+                // Register CStrOwned variables for automatic free on drop
+                if (is_cstr_owned) {
+                    try self.registerCstrOwnedDroppable(decl.name, alloca);
                 }
             },
             .return_stmt => |ret| {
@@ -3049,15 +3296,46 @@ pub const Emitter = struct {
             // Comptime expressions
             .builtin_call => |bc| try self.emitBuiltinCall(bc),
             .comptime_block => |cb| try self.emitComptimeBlock(cb),
+            // Unsafe block - safety checked at type-check time, emit like normal block
+            .unsafe_block => |ub| blk: {
+                try self.pushScope(false);
+                const result = try self.emitBlock(ub.body);
+                self.popScope();
+                break :blk result orelse llvm.Const.int32(self.ctx, 0);
+            },
             // Range expression
             .range => |r| try self.emitRangeLiteral(r),
+            // Out argument - handled specially in emitCall, should not be encountered here
+            .out_arg => return EmitError.InvalidAST,
         };
     }
 
     fn emitLiteral(self: *Emitter, lit: ast.Literal) llvm.ValueRef {
         return switch (lit.kind) {
             .int => |v| blk: {
-                // Determine appropriate type based on value
+                // Check if we have an expected type that requires a specific width
+                if (self.expected_type) |expected| {
+                    if (expected == .primitive) {
+                        const prim = expected.primitive;
+                        // Use the expected type's width for the literal
+                        switch (prim) {
+                            .i8_ => break :blk llvm.Const.int(llvm.Types.int8(self.ctx), @intCast(v), true),
+                            .i16_ => break :blk llvm.Const.int(llvm.Types.int16(self.ctx), @intCast(v), true),
+                            .i32_ => break :blk llvm.Const.int32(self.ctx, @intCast(v)),
+                            .i64_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
+                            .i128_ => break :blk llvm.Const.int(llvm.Types.int128(self.ctx), @intCast(v), true),
+                            .isize_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
+                            .u8_ => break :blk llvm.Const.int(llvm.Types.int8(self.ctx), @intCast(v), false),
+                            .u16_ => break :blk llvm.Const.int(llvm.Types.int16(self.ctx), @intCast(v), false),
+                            .u32_ => break :blk llvm.Const.int(llvm.Types.int32(self.ctx), @intCast(v), false),
+                            .u64_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
+                            .u128_ => break :blk llvm.Const.int(llvm.Types.int128(self.ctx), @intCast(v), false),
+                            .usize_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
+                            else => {},
+                        }
+                    }
+                }
+                // Default: determine appropriate type based on value
                 if (v >= std.math.minInt(i32) and v <= std.math.maxInt(i32)) {
                     break :blk llvm.Const.int32(self.ctx, @intCast(v));
                 } else {
@@ -4206,6 +4484,22 @@ pub const Emitter = struct {
                 const stdin_fn = self.getOrDeclareStdin();
                 return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stdin_fn), stdin_fn, &[_]llvm.ValueRef{}, "stdin.handle");
             }
+            // FFI Pointer Functions
+            else if (std.mem.eql(u8, name, "is_null")) {
+                return self.emitIsNull(call);
+            } else if (std.mem.eql(u8, name, "unwrap_ptr")) {
+                return self.emitUnwrapPtr(call);
+            } else if (std.mem.eql(u8, name, "read")) {
+                return self.emitRead(call);
+            } else if (std.mem.eql(u8, name, "write")) {
+                return self.emitWrite(call);
+            } else if (std.mem.eql(u8, name, "offset")) {
+                return self.emitOffset(call);
+            } else if (std.mem.eql(u8, name, "ref_to_ptr")) {
+                return self.emitRefToPtr(call);
+            } else if (std.mem.eql(u8, name, "ptr_cast")) {
+                return self.emitPtrCast(call);
+            }
         }
 
         // Check if this is a monomorphized generic function call
@@ -4331,6 +4625,71 @@ pub const Emitter = struct {
 
                     // Load and return the result
                     return self.builder.buildLoad(sret_return_type, sret_alloca, "sret.load");
+                }
+
+                // Check if this is an extern function with ABI-lowered types, out params, or struct return
+                if (self.extern_functions.get(lookup_name)) |extern_info| {
+                    const has_abi_lowered_params = extern_info.abi_lowered_param_types != null;
+                    const has_abi_lowered_return = extern_info.abi_lowered_return_type != null;
+                    const has_out_params = extern_info.out_params != 0;
+
+                    if (has_abi_lowered_return or has_abi_lowered_params or has_out_params) {
+                        // Build args with ABI lowering for struct parameters and out parameter handling
+                        var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                        defer args.deinit(self.allocator);
+
+                        for (call.args, 0..) |arg, i| {
+                            // Check if this is an out parameter
+                            const is_out_param = (i < 64) and ((extern_info.out_params & (@as(u64, 1) << @intCast(i))) != 0);
+
+                            if (is_out_param) {
+                                // For out parameters, we need to pass a pointer to the variable
+                                if (arg == .out_arg) {
+                                    const out_arg = arg.out_arg;
+                                    // Look up the variable's alloca
+                                    if (self.named_values.get(out_arg.name)) |local| {
+                                        // Pass the address of the variable
+                                        args.append(self.allocator, local.value) catch return EmitError.OutOfMemory;
+                                    } else {
+                                        // Variable not found - this should have been caught by the checker
+                                        return EmitError.InvalidAST;
+                                    }
+                                } else {
+                                    // Non-out_arg for out parameter - should be caught by checker
+                                    return EmitError.InvalidAST;
+                                }
+                            } else {
+                                // Regular parameter
+                                const arg_value = try self.emitExpr(arg);
+
+                                // Check if this parameter needs ABI lowering (struct -> int)
+                                if (extern_info.abi_lowered_param_types) |lowered_params| {
+                                    if (i < lowered_params.len) {
+                                        if (lowered_params[i]) |lowered| {
+                                            // Convert struct to integer by storing and loading as int
+                                            const tmp = self.builder.buildAlloca(lowered.struct_type, "abi.param.tmp");
+                                            _ = self.builder.buildStore(arg_value, tmp);
+                                            const int_val = self.builder.buildLoad(lowered.int_type, tmp, "abi.param.int");
+                                            args.append(self.allocator, int_val) catch return EmitError.OutOfMemory;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                args.append(self.allocator, arg_value) catch return EmitError.OutOfMemory;
+                            }
+                        }
+
+                        // fn_type already declared in outer scope
+                        const call_result = self.builder.buildCall(fn_type, func, args.items, if (has_abi_lowered_return) "abi.int" else "calltmp");
+
+                        // If return was ABI-lowered, convert integer back to struct
+                        if (extern_info.abi_lowered_return_type) |struct_type| {
+                            const tmp_alloca = self.builder.buildAlloca(struct_type, "abi.struct.tmp");
+                            _ = self.builder.buildStore(call_result, tmp_alloca);
+                            return self.builder.buildLoad(struct_type, tmp_alloca, "abi.struct");
+                        }
+                        return call_result;
+                    }
                 }
 
                 // Normal direct function call (non-sret)
@@ -5284,6 +5643,24 @@ pub const Emitter = struct {
             return llvm.Types.pointer(self.ctx); // FILE*
         }
 
+        // FFI types
+        if (std.mem.eql(u8, name, "CStr")) {
+            return llvm.Types.pointer(self.ctx); // Null-terminated C string (borrowed)
+        }
+        if (std.mem.eql(u8, name, "CStrOwned")) {
+            return llvm.Types.pointer(self.ctx); // Null-terminated C string (owned)
+        }
+
+        // Check if it's an extern type registered in the type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            if (tc_mut.lookupType(name)) |ty| {
+                if (ty == .extern_type) {
+                    return self.typeToLLVM(ty);
+                }
+            }
+        }
+
         // Default to i32
         return llvm.Types.int32(self.ctx);
     }
@@ -5333,6 +5710,20 @@ pub const Emitter = struct {
                         result_ptr.* = .{ .ok_type = ok_type, .err_type = err_type };
                         return .{ .result = result_ptr };
                     }
+                    // Check for CPtr[T]
+                    if (std.mem.eql(u8, name, "CPtr") and g.args.len == 1) {
+                        const inner = self.resolveTypeExprDirect(g.args[0]) orelse return null;
+                        const cptr_type = self.allocator.create(types.CptrType) catch return null;
+                        cptr_type.* = .{ .inner = inner };
+                        return .{ .cptr = cptr_type };
+                    }
+                    // Check for COptPtr[T]
+                    if (std.mem.eql(u8, name, "COptPtr") and g.args.len == 1) {
+                        const inner = self.resolveTypeExprDirect(g.args[0]) orelse return null;
+                        const copt_ptr_type = self.allocator.create(types.CoptPtrType) catch return null;
+                        copt_ptr_type.* = .{ .inner = inner };
+                        return .{ .copt_ptr = copt_ptr_type };
+                    }
                 }
                 // For other generic types, try type checker (may fail due to scope)
                 if (self.type_checker) |tc| {
@@ -5349,6 +5740,13 @@ pub const Emitter = struct {
                 // string is a primitive type
                 if (std.mem.eql(u8, n.name, "string")) {
                     return .{ .primitive = .string_ };
+                }
+                // FFI types
+                if (std.mem.eql(u8, n.name, "CStr")) {
+                    return .cstr;
+                }
+                if (std.mem.eql(u8, n.name, "CStrOwned")) {
+                    return .cstr_owned;
                 }
                 // For other named types, try type checker
                 if (self.type_checker) |tc| {
@@ -5436,6 +5834,15 @@ pub const Emitter = struct {
         _ = self;
         return switch (type_expr) {
             .generic_apply => |g| if (g.base == .named) std.mem.eql(u8, g.base.named.name, "BufWriter") else false,
+            else => false,
+        };
+    }
+
+    /// Check if a type expression is a CStrOwned type.
+    fn isTypeCstrOwned(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .named => |n| std.mem.eql(u8, n.name, "CStrOwned"),
             else => false,
         };
     }
@@ -5562,7 +5969,30 @@ pub const Emitter = struct {
     fn inferExprType(self: *Emitter, expr: ast.Expr) EmitError!llvm.TypeRef {
         return switch (expr) {
             .literal => |lit| switch (lit.kind) {
-                .int => llvm.Types.int32(self.ctx),
+                .int => blk: {
+                    // Check if we have an expected type that requires a specific width
+                    if (self.expected_type) |expected| {
+                        if (expected == .primitive) {
+                            const prim = expected.primitive;
+                            break :blk switch (prim) {
+                                .i8_ => llvm.Types.int8(self.ctx),
+                                .i16_ => llvm.Types.int16(self.ctx),
+                                .i32_ => llvm.Types.int32(self.ctx),
+                                .i64_ => llvm.Types.int64(self.ctx),
+                                .i128_ => llvm.Types.int128(self.ctx),
+                                .isize_ => llvm.Types.int64(self.ctx),
+                                .u8_ => llvm.Types.int8(self.ctx),
+                                .u16_ => llvm.Types.int16(self.ctx),
+                                .u32_ => llvm.Types.int32(self.ctx),
+                                .u64_ => llvm.Types.int64(self.ctx),
+                                .u128_ => llvm.Types.int128(self.ctx),
+                                .usize_ => llvm.Types.int64(self.ctx),
+                                else => llvm.Types.int32(self.ctx),
+                            };
+                        }
+                    }
+                    break :blk llvm.Types.int32(self.ctx);
+                },
                 .float => llvm.Types.float64(self.ctx),
                 .bool_ => llvm.Types.int1(self.ctx),
                 .char => llvm.Types.int32(self.ctx),
@@ -5807,6 +6237,13 @@ pub const Emitter = struct {
                 // Check if this function uses sret (return type is in sret_functions)
                 if (self.sret_functions.get(func_name)) |sret_type| {
                     return sret_type;
+                }
+
+                // Check if this is an extern function with ABI-lowered struct return
+                if (self.extern_functions.get(func_name)) |extern_info| {
+                    if (extern_info.abi_lowered_return_type) |struct_type| {
+                        return struct_type;
+                    }
                 }
 
                 const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
@@ -6108,6 +6545,54 @@ pub const Emitter = struct {
                     }
                     // as_str() returns string pointer
                     if (std.mem.eql(u8, m.method_name, "as_str")) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                    // as_cstr() returns CStr (pointer)
+                    if (std.mem.eql(u8, m.method_name, "as_cstr")) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                    // to_cstr() returns CStrOwned (pointer)
+                    if (std.mem.eql(u8, m.method_name, "to_cstr")) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                }
+
+                // CStr methods
+                if (self.isCstrExpr(m.object)) {
+                    // len() returns usize (i64)
+                    if (std.mem.eql(u8, m.method_name, "len")) {
+                        return llvm.Types.int64(self.ctx);
+                    }
+                    // to_string() returns String
+                    if (std.mem.eql(u8, m.method_name, "to_string")) {
+                        return self.getStringStructType();
+                    }
+                }
+
+                // CStrOwned methods
+                if (self.isCstrOwnedExpr(m.object)) {
+                    // as_cstr() returns CStr (pointer)
+                    if (std.mem.eql(u8, m.method_name, "as_cstr")) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                    // len() returns usize (i64)
+                    if (std.mem.eql(u8, m.method_name, "len")) {
+                        return llvm.Types.int64(self.ctx);
+                    }
+                    // to_string() returns String
+                    if (std.mem.eql(u8, m.method_name, "to_string")) {
+                        return self.getStringStructType();
+                    }
+                }
+
+                // Primitive string methods (as_cstr, to_cstr)
+                if (self.isPrimitiveStringExpr(m.object)) {
+                    // as_cstr() returns CStr (pointer) - string literals are already null-terminated
+                    if (std.mem.eql(u8, m.method_name, "as_cstr")) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                    // to_cstr() returns CStrOwned (pointer) - allocates null-terminated copy
+                    if (std.mem.eql(u8, m.method_name, "to_cstr")) {
                         return llvm.Types.pointer(self.ctx);
                     }
                 }
@@ -6588,6 +7073,13 @@ pub const Emitter = struct {
             .block => |blk| {
                 // Block type is the type of its final expression, or void if none
                 if (blk.final_expr) |final| {
+                    return try self.inferExprType(final);
+                }
+                return llvm.Types.void_(self.ctx);
+            },
+            .unsafe_block => |ub| {
+                // Unsafe block type is the type of its body block's final expression
+                if (ub.body.final_expr) |final| {
                     return try self.inferExprType(final);
                 }
                 return llvm.Types.void_(self.ctx);
@@ -7077,7 +7569,9 @@ pub const Emitter = struct {
     // =========================================================================
 
     /// Get or create an LLVM struct type for a named struct.
-    fn getOrCreateStructType(self: *Emitter, name: []const u8, fields: []const ast.StructField) EmitError!llvm.TypeRef {
+    /// For packed structs (extern struct packed), LLVM will use packed struct layout (no padding).
+    /// For regular and extern structs, LLVM uses standard C ABI alignment.
+    fn getOrCreateStructType(self: *Emitter, name: []const u8, fields: []const ast.StructField, is_packed: bool) EmitError!llvm.TypeRef {
         // Check cache first
         if (self.struct_types.get(name)) |info| {
             return info.llvm_type;
@@ -7100,8 +7594,10 @@ pub const Emitter = struct {
             field_names[i] = field.name;
         }
 
-        // Create LLVM struct type (not packed - follows C ABI alignment)
-        const struct_type = llvm.Types.struct_(self.ctx, field_types.items, false);
+        // Create LLVM struct type
+        // - packed=true for extern struct packed (no padding between fields)
+        // - packed=false for regular and extern structs (C ABI alignment with padding)
+        const struct_type = llvm.Types.struct_(self.ctx, field_types.items, is_packed);
 
         // Cache the struct type info
         self.struct_types.put(name, .{
@@ -7969,6 +8465,7 @@ pub const Emitter = struct {
     /// Emit an enum literal: EnumType::VariantName(payload)
     /// Also handles struct static method calls: StructType::method(args)
     /// Generates code to construct a tagged union value or call a static method.
+    /// For extern enums, returns the integer constant value directly.
     fn emitEnumLiteral(self: *Emitter, lit: *ast.EnumLiteral) EmitError!llvm.ValueRef {
         // Get the base type name
         const base_name = switch (lit.enum_type) {
@@ -8053,11 +8550,44 @@ pub const Emitter = struct {
         );
     }
 
+    /// Emit an extern enum literal as an integer constant.
+    /// Returns the variant's explicit value as the repr type.
+    fn emitExternEnumLiteral(self: *Emitter, enum_type: *types.EnumType, variant_name: []const u8) EmitError!llvm.ValueRef {
+        // Find the variant and get its value
+        for (enum_type.variants) |variant| {
+            if (std.mem.eql(u8, variant.name, variant_name)) {
+                const value = variant.value orelse return EmitError.InvalidAST;
+                const repr = enum_type.repr_type orelse return EmitError.UnsupportedFeature;
+                const llvm_type = self.typeToLLVM(repr);
+
+                // Check if it's a signed or unsigned type
+                const is_signed = switch (repr) {
+                    .primitive => |p| switch (p) {
+                        .i8_, .i16_, .i32_, .i64_, .isize_ => true,
+                        else => false,
+                    },
+                    else => false,
+                };
+
+                // For signed negative values, we need to handle the cast carefully
+                if (is_signed and value < 0) {
+                    // Cast to u64 with sign extension
+                    const unsigned_value: u64 = @bitCast(@as(i64, @intCast(value)));
+                    return llvm.Const.int(llvm_type, unsigned_value, true);
+                } else {
+                    return llvm.Const.int(llvm_type, @intCast(value), is_signed);
+                }
+            }
+        }
+        return EmitError.InvalidAST;
+    }
+
     /// Helper to emit enum literal with resolved type info
     fn emitEnumLiteralWithInfo(self: *Emitter, lit: *ast.EnumLiteral, enum_info: StructTypeInfo, enum_name: []const u8) EmitError!llvm.ValueRef {
         // Find the variant index
         var variant_index: ?u32 = null;
         var variant_payload: ?types.VariantPayload = null;
+        var found_enum_type: ?*types.EnumType = null;
 
         // We need to look up the enum definition to find variant info
         // For now, try to find it through the type checker's monomorphized enums
@@ -8069,6 +8599,7 @@ pub const Emitter = struct {
                         if (std.mem.eql(u8, v.name, lit.variant_name)) {
                             variant_index = @intCast(i);
                             variant_payload = v.payload;
+                            found_enum_type = mono.concrete_type;
                             break;
                         }
                     }
@@ -8083,16 +8614,28 @@ pub const Emitter = struct {
                 const enum_types = tc.getEnumTypes();
                 for (enum_types) |et| {
                     if (std.mem.eql(u8, et.name, enum_name)) {
+                        // Check if this is an extern enum
+                        if (et.is_extern) {
+                            return self.emitExternEnumLiteral(et, lit.variant_name);
+                        }
                         for (et.variants, 0..) |v, i| {
                             if (std.mem.eql(u8, v.name, lit.variant_name)) {
                                 variant_index = @intCast(i);
                                 variant_payload = v.payload;
+                                found_enum_type = et;
                                 break;
                             }
                         }
                         break;
                     }
                 }
+            }
+        }
+
+        // Check if the found enum is extern (from monomorphized enums)
+        if (found_enum_type) |et| {
+            if (et.is_extern) {
+                return self.emitExternEnumLiteral(et, lit.variant_name);
             }
         }
 
@@ -8319,6 +8862,13 @@ pub const Emitter = struct {
             if (std.mem.eql(u8, obj_name, "BufWriter") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitBufWriterNew(method);
             }
+
+            // CStr.from_ptr(ptr: CPtr[i8]) -> CStr
+            // Just returns the pointer unchanged (CStr is represented as a pointer)
+            if (std.mem.eql(u8, obj_name, "CStr") and std.mem.eql(u8, method.method_name, "from_ptr")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                return try self.emitExpr(method.args[0]);
+            }
         }
 
         // Emit the object
@@ -8532,6 +9082,84 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, method.method_name, "hash")) {
                     return self.emitStringDataHash(ptr);
                 }
+                // String.as_cstr() -> CStr (returns pointer to null-terminated data)
+                if (std.mem.eql(u8, method.method_name, "as_cstr")) {
+                    return self.emitStringDataAsCstr(ptr);
+                }
+                // String.to_cstr() -> CStrOwned (allocates owned null-terminated copy)
+                if (std.mem.eql(u8, method.method_name, "to_cstr")) {
+                    return self.emitStringDataToCstrOwned(ptr);
+                }
+            }
+        }
+
+        // Check for CStr methods (FFI: null-terminated C string)
+        if (self.isCstrExpr(method.object)) {
+            // CStr.to_string() -> String (copies C string to Klar String)
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                return self.emitCstrToString(object);
+            }
+            // CStr.len() -> usize (returns length without null terminator)
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                return self.emitCstrLen(object);
+            }
+        }
+
+        // Check for CStrOwned methods (FFI: owned null-terminated C string)
+        if (self.isCstrOwnedExpr(method.object)) {
+            // CStrOwned.as_cstr() -> CStr (just returns the same pointer)
+            if (std.mem.eql(u8, method.method_name, "as_cstr")) {
+                return object;
+            }
+            // CStrOwned.to_string() -> String (copies to Klar String)
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                return self.emitCstrToString(object);
+            }
+            // CStrOwned.len() -> usize (returns length without null terminator)
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                return self.emitCstrLen(object);
+            }
+        }
+
+        // Check for primitive string.as_cstr() (string literal or string variable)
+        // String literals are already null-terminated pointers, so just return the pointer
+        if (std.mem.eql(u8, method.method_name, "as_cstr")) {
+            // Check for string literal directly
+            if (method.object == .literal and method.object.literal.kind == .string) {
+                return object; // String literals are already null-terminated pointers
+            }
+            // Check for identifier that refers to a string variable
+            if (method.object == .identifier) {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    if (local.is_string) {
+                        return object; // Primitive string variable is already a null-terminated pointer
+                    }
+                }
+            }
+            // Fallback: Check via type checker
+            if (self.isPrimitiveStringExpr(method.object)) {
+                return object; // Primitive string, already null-terminated
+            }
+        }
+
+        // Check for primitive string.to_cstr() (string literal or string variable)
+        // Creates an owned copy of the string data
+        if (std.mem.eql(u8, method.method_name, "to_cstr")) {
+            // Check for string literal directly
+            if (method.object == .literal and method.object.literal.kind == .string) {
+                return try self.emitPrimitiveStringToCstrOwned(object, method.object.literal);
+            }
+            // Check for identifier that refers to a string variable
+            if (method.object == .identifier) {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    if (local.is_string) {
+                        return try self.emitPrimitiveStringToCstrOwned(object, null);
+                    }
+                }
+            }
+            // Fallback: Check via type checker
+            if (self.isPrimitiveStringExpr(method.object)) {
+                return try self.emitPrimitiveStringToCstrOwned(object, null);
             }
         }
 
@@ -11922,6 +12550,134 @@ pub const Emitter = struct {
         return llvm.Const.int32(self.ctx, 0);
     }
 
+    // =========================================================================
+    // FFI Pointer Functions
+    // =========================================================================
+
+    /// Emit is_null(ptr: COptPtr[T]) -> bool
+    /// Compares the pointer to null and returns the result.
+    fn emitIsNull(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return llvm.Const.int1(self.ctx, false);
+        }
+        const ptr = try self.emitExpr(call.args[0]);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        return self.builder.buildICmp(llvm.c.LLVMIntEQ, ptr, null_ptr, "is_null");
+    }
+
+    /// Emit unwrap_ptr(ptr: COptPtr[T]) -> CPtr[T]
+    /// Returns the pointer unchanged (assumes caller validated it's not null).
+    /// In debug builds, we could add a null check assertion.
+    fn emitUnwrapPtr(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+        // Just return the pointer - semantically COptPtr and CPtr have the same representation.
+        // The safety check should have been done by the programmer.
+        return try self.emitExpr(call.args[0]);
+    }
+
+    /// Emit read(ptr: CPtr[T]) -> T
+    /// Loads the value at the pointer location.
+    fn emitRead(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+        const ptr = try self.emitExpr(call.args[0]);
+
+        // Get the type that the pointer points to from the type checker
+        const pointed_to_type = self.getPointedToType(call.args[0]);
+        const llvm_type = self.typeToLLVM(pointed_to_type);
+
+        return self.builder.buildLoad(llvm_type, ptr, "ptr.read");
+    }
+
+    /// Emit write(ptr: CPtr[T], value: T) -> void
+    /// Stores the value at the pointer location.
+    fn emitWrite(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 2) {
+            // Return void (undef)
+            return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+        }
+        const ptr = try self.emitExpr(call.args[0]);
+        const value = try self.emitExpr(call.args[1]);
+
+        _ = self.builder.buildStore(value, ptr);
+        // Return void (represented as undef in LLVM IR)
+        return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
+    }
+
+    /// Emit offset(ptr: CPtr[T], count: isize) -> CPtr[T]
+    /// Returns a pointer offset by count elements.
+    fn emitOffset(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 2) {
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+        const ptr = try self.emitExpr(call.args[0]);
+        const count = try self.emitExpr(call.args[1]);
+
+        // Get the type that the pointer points to for proper stride calculation
+        const pointed_to_type = self.getPointedToType(call.args[0]);
+        const llvm_type = self.typeToLLVM(pointed_to_type);
+
+        // Use getelementptr to do pointer arithmetic
+        var indices = [_]llvm.ValueRef{count};
+        return llvm.c.LLVMBuildGEP2(self.builder.ref, llvm_type, ptr, &indices, 1, "ptr.offset");
+    }
+
+    /// Emit ref_to_ptr(value: ref T) -> CPtr[T]
+    /// Converts a Klar reference to a raw pointer.
+    fn emitRefToPtr(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+        // A reference in Klar is already a pointer at the LLVM level
+        // So we just emit the expression and return it
+        return try self.emitExpr(call.args[0]);
+    }
+
+    fn emitPtrCast(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) {
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+        // With LLVM opaque pointers, ptr_cast is a no-op at the IR level.
+        // The pointer value stays the same, only the semantic type changes.
+        // The type checker has already validated the cast and determined the result type.
+        return try self.emitExpr(call.args[0]);
+    }
+
+    /// Get the pointed-to type from a CPtr expression.
+    /// Uses stored semantic type or type checker to look up the actual type.
+    fn getPointedToType(self: *Emitter, expr: ast.Expr) types.Type {
+        // First, try to get the type from named_values if this is an identifier
+        if (expr == .identifier) {
+            const id = expr.identifier;
+            if (self.named_values.get(id.name)) |local| {
+                if (local.semantic_type) |sem_type| {
+                    if (sem_type == .cptr) {
+                        return sem_type.cptr.inner;
+                    } else if (sem_type == .copt_ptr) {
+                        return sem_type.copt_ptr.inner;
+                    }
+                }
+            }
+        }
+
+        // Fallback: try the type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            if (expr_type == .cptr) {
+                return expr_type.cptr.inner;
+            } else if (expr_type == .copt_ptr) {
+                return expr_type.copt_ptr.inner;
+            }
+        }
+        // Fallback to i8 if we can't determine the type
+        return types.Type{ .primitive = .i8_ };
+    }
+
     fn getOrDeclareStrlen(self: *Emitter) llvm.ValueRef {
         const fn_name = "strlen";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
@@ -12094,14 +12850,15 @@ pub const Emitter = struct {
         return false;
     }
 
-    /// Check if an expression is a fixed-size array type.
+    /// Check if an expression is an array or slice type.
+    /// Both fixed-size arrays and dynamic slices are handled by the same method implementations.
     fn isArrayExpr(self: *Emitter, expr: ast.Expr) bool {
         switch (expr) {
             .identifier => |id| {
                 // Check if we have array info for this identifier in named_values
                 if (self.named_values.get(id.name)) |local| {
-                    // Only fixed-size arrays (with known size) - slices are handled separately
-                    if (local.is_array and local.array_size != null) {
+                    // Include both fixed-size arrays (array_size != null) and slices (array_size == null)
+                    if (local.is_array) {
                         return true;
                     }
                 }
@@ -12116,7 +12873,7 @@ pub const Emitter = struct {
         if (self.type_checker) |tc| {
             const tc_mut = @constCast(tc);
             const expr_type = tc_mut.checkExpr(expr);
-            return expr_type == .array;
+            return expr_type == .array or expr_type == .slice;
         }
         return false;
     }
@@ -12628,6 +13385,84 @@ pub const Emitter = struct {
             const tc_mut = @constCast(tc);
             const expr_type = tc_mut.checkExpr(expr);
             return expr_type == .string_data;
+        }
+        return false;
+    }
+
+    /// Check if an expression is a CStr (FFI: null-terminated C string) type.
+    fn isCstrExpr(self: *Emitter, expr: ast.Expr) bool {
+        // Check for method call that returns CStr (like as_cstr)
+        if (expr == .method_call) {
+            const m = expr.method_call;
+            if (std.mem.eql(u8, m.method_name, "as_cstr")) {
+                return false; // This returns CStr but the object is not CStr
+            }
+            if (std.mem.eql(u8, m.method_name, "from_ptr")) {
+                return false; // This returns CStr but the object is CStr type identifier
+            }
+        }
+        // Check for identifier with CStr semantic type
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.semantic_type) |sem| {
+                    return sem == .cstr;
+                }
+            }
+        }
+        // Fallback: check via type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .cstr;
+        }
+        return false;
+    }
+
+    /// Check if an expression is a CStrOwned (FFI: owned null-terminated C string) type.
+    fn isCstrOwnedExpr(self: *Emitter, expr: ast.Expr) bool {
+        // Check for method call that returns CStrOwned (like to_cstr)
+        if (expr == .method_call) {
+            const m = expr.method_call;
+            if (std.mem.eql(u8, m.method_name, "to_cstr")) {
+                return true; // to_cstr() returns CStrOwned
+            }
+        }
+        // Check for identifier with CStrOwned semantic type
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.semantic_type) |sem| {
+                    return sem == .cstr_owned;
+                }
+            }
+        }
+        // Fallback: check via type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .cstr_owned;
+        }
+        return false;
+    }
+
+    /// Check if an expression is a primitive string (string literal) type.
+    fn isPrimitiveStringExpr(self: *Emitter, expr: ast.Expr) bool {
+        // Check for string literal directly
+        if (expr == .literal and expr.literal.kind == .string) {
+            return true;
+        }
+        // Check for identifier with is_string flag
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.is_string) {
+                    return true;
+                }
+            }
+        }
+        // Fallback: check via type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .primitive and expr_type.primitive == .string_;
         }
         return false;
     }
@@ -19090,6 +19925,159 @@ pub const Emitter = struct {
         return self.builder.buildLoad(i64_type, hash_alloca, "hash.result");
     }
 
+    /// Emit String.as_cstr() -> CStr
+    /// Returns a pointer to the null-terminated string data.
+    fn emitStringDataAsCstr(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Get pointer to the ptr field of the String struct
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "as_cstr.ptr_ptr");
+
+        // Load the data pointer - this is already null-terminated
+        return self.builder.buildLoad(ptr_type, ptr_ptr, "as_cstr.ptr");
+    }
+
+    /// Emit CStr.to_string() -> String
+    /// Copies the C string to a new Klar String.
+    /// Implements inline: strlen, malloc, memcpy (like emitStringFrom).
+    fn emitCstrToString(self: *Emitter, cstr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Call strlen to get the length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{cstr};
+        const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "cstr.len");
+
+        // Convert to i32 (String uses i32 for len)
+        const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "cstr.len_i32");
+
+        // Allocate memory: len + 1 for null terminator
+        const one_i32 = llvm.Const.int32(self.ctx, 1);
+        const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, one_i32, "cstr.alloc_len");
+        const alloc_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_len, i64_type, "cstr.alloc_len_i64");
+
+        // Call malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_len_i64};
+        const str_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "cstr.ptr");
+
+        // Call memcpy to copy the string (including null terminator)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ str_ptr, cstr, alloc_len_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "cstr.memcpy");
+
+        // Build the String result struct
+        const result = self.builder.buildAlloca(string_type, "cstr.result");
+
+        // Set ptr field
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 0, "cstr.ptr_ptr");
+        _ = self.builder.buildStore(str_ptr, ptr_ptr);
+
+        // Set len field
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 1, "cstr.len_ptr");
+        _ = self.builder.buildStore(len_i32, len_ptr);
+
+        // Set capacity field (capacity = len + 1)
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 2, "cstr.cap_ptr");
+        _ = self.builder.buildStore(alloc_len, cap_ptr);
+
+        // Load and return the struct
+        return self.builder.buildLoad(string_type, result, "cstr.to_string");
+    }
+
+    /// Emit CStr.len() -> usize
+    /// Returns the length of the C string by calling strlen.
+    fn emitCstrLen(self: *Emitter, cstr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Declare or get strlen
+        const strlen_fn = self.getOrDeclareStrlen();
+        const strlen_fn_type = llvm.c.LLVMGlobalGetValueType(strlen_fn);
+
+        // Call strlen(cstr)
+        var args = [_]llvm.ValueRef{cstr};
+        return self.builder.buildCall(strlen_fn_type, strlen_fn, &args, "cstr.len");
+    }
+
+    /// Emit String.to_cstr() -> CStrOwned
+    /// Allocates a new null-terminated copy of the String data.
+    fn emitStringDataToCstrOwned(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Get the ptr field (source data)
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "to_cstr.src_ptr_ptr");
+        const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "to_cstr.src_ptr");
+
+        // Get the len field
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "to_cstr.len_ptr");
+        const len_i32 = self.builder.buildLoad(i32_type, len_ptr, "to_cstr.len");
+
+        // Allocate memory: len + 1 for null terminator
+        const one_i32 = llvm.Const.int32(self.ctx, 1);
+        const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, one_i32, "to_cstr.alloc_len");
+        const alloc_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_len, i64_type, "to_cstr.alloc_len_i64");
+
+        // Call malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_len_i64};
+        const dest_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "to_cstr.ptr");
+
+        // Call memcpy to copy the string data (without null terminator from String)
+        const len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, len_i32, i64_type, "to_cstr.len_i64");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ dest_ptr, src_ptr, len_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "to_cstr.memcpy");
+
+        // Add null terminator at the end
+        const i8_type = llvm.Types.int8(self.ctx);
+        var gep_indices = [_]llvm.ValueRef{len_i32};
+        const null_offset = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, dest_ptr, &gep_indices, 1, "to_cstr.null_pos");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), null_offset);
+
+        return dest_ptr;
+    }
+
+    /// Emit primitive string.to_cstr() -> CStrOwned
+    /// Allocates a new null-terminated copy of the primitive string data.
+    fn emitPrimitiveStringToCstrOwned(self: *Emitter, str_ptr: llvm.ValueRef, literal: ?ast.Literal) EmitError!llvm.ValueRef {
+        // Get the string length
+        const len: llvm.ValueRef = if (literal) |lit| blk: {
+            // For string literals, we know the length at compile time
+            const str_val = switch (lit.kind) {
+                .string => |s| s,
+                else => return EmitError.InvalidAST,
+            };
+            break :blk llvm.Const.int64(self.ctx, @intCast(str_val.len));
+        } else blk: {
+            // For string variables, call strlen
+            const strlen_fn = self.getOrDeclareStrlen();
+            var strlen_args = [_]llvm.ValueRef{str_ptr};
+            break :blk self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "to_cstr.strlen");
+        };
+
+        // Allocate memory: len + 1 for null terminator
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+        const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len, one_i64, "to_cstr.alloc_len");
+
+        // Call malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_len};
+        const dest_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "to_cstr.ptr");
+
+        // Call memcpy to copy the string data (including null terminator)
+        // Note: We copy len+1 bytes which includes the null terminator from the source
+        // (primitive strings are already null-terminated)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ dest_ptr, str_ptr, alloc_len };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "to_cstr.memcpy");
+
+        return dest_ptr;
+    }
+
     /// Get the LLVM struct type for String: { ptr, i32, i32 }
     fn getStringStructType(self: *Emitter) llvm.TypeRef {
         var fields = [_]llvm.TypeRef{
@@ -24887,6 +25875,22 @@ pub const Emitter = struct {
             // Flush BufWriter buffer on drop - call emitBufWriterFlush
             // This ensures any buffered data is written before the variable goes out of scope
             _ = self.emitBufWriterFlush(v.alloca) catch {};
+        } else if (v.is_cstr_owned) {
+            // Free CStrOwned memory on drop
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const cstr_ptr = self.builder.buildLoad(ptr_type, v.alloca, "cstr_owned_drop");
+
+            // Call free to release the memory
+            const free_fn = self.getOrDeclareFree();
+            var args = [_]llvm.ValueRef{cstr_ptr};
+            _ = llvm.c.LLVMBuildCall2(
+                self.builder.ref,
+                llvm.c.LLVMGlobalGetValueType(free_fn),
+                free_fn,
+                &args,
+                1,
+                "",
+            );
         }
         // For non-Rc types that need dropping (future: closures, custom destructors),
         // we would add additional cases here.
@@ -24945,6 +25949,20 @@ pub const Emitter = struct {
             .inner_type = llvm.Types.int32(self.ctx), // Placeholder, not used for BufWriter
             .is_rc = false,
             .is_buf_writer = true,
+        }) catch return EmitError.OutOfMemory;
+    }
+
+    /// Register a CStrOwned variable in the current scope for automatic free on drop.
+    fn registerCstrOwnedDroppable(self: *Emitter, name: []const u8, alloca: llvm.ValueRef) EmitError!void {
+        if (self.scope_stack.items.len == 0) return;
+
+        const scope = &self.scope_stack.items[self.scope_stack.items.len - 1];
+        scope.droppables.append(self.allocator, .{
+            .name = name,
+            .alloca = alloca,
+            .inner_type = llvm.Types.pointer(self.ctx), // CStrOwned is just a pointer
+            .is_rc = false,
+            .is_cstr_owned = true,
         }) catch return EmitError.OutOfMemory;
     }
 
@@ -25057,6 +26075,16 @@ pub const Emitter = struct {
             .string_data => 8, // pointer to string data
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => 8, // handles/pointers
             .buf_reader, .buf_writer => 8, // pointers to buffered I/O structures
+            .extern_type => |ext| {
+                // Extern types: sized types use their declared size, opaque types use pointer size
+                if (ext.size) |size| {
+                    return @intCast(size);
+                } else {
+                    return 8; // opaque types are always behind pointers
+                }
+            },
+            // FFI pointer types are all just pointers (8 bytes on 64-bit)
+            .cptr, .copt_ptr, .cstr, .cstr_owned => 8,
         };
     }
 
@@ -25329,6 +26357,20 @@ pub const Emitter = struct {
                 // If we get here, it's an unresolved associated type - use pointer as fallback.
                 return llvm.Types.pointer(self.ctx);
             },
+            .extern_type => |ext| {
+                // External types for FFI:
+                // - Opaque types (size == null): use pointer (can only be used behind pointers)
+                // - Sized types (size != null): use byte array of specified size
+                if (ext.size) |size| {
+                    // Sized extern type: [N x i8]
+                    return llvm.Types.array(llvm.Types.int8(self.ctx), @intCast(size));
+                } else {
+                    // Opaque extern type: use pointer
+                    return llvm.Types.pointer(self.ctx);
+                }
+            },
+            // FFI pointer types are all LLVM opaque pointers
+            .cptr, .copt_ptr, .cstr, .cstr_owned => llvm.Types.pointer(self.ctx),
         };
     }
 
@@ -25499,11 +26541,31 @@ pub const Emitter = struct {
     }
 
     /// Register a single non-generic enum type.
-    /// Enums are represented as tagged unions: {tag: i8, payload_union}
+    /// Regular enums are represented as tagged unions: {tag: i8, payload_union}
+    /// Extern enums are represented as their repr integer type directly.
     fn registerNonGenericEnum(self: *Emitter, enum_type: *types.EnumType) EmitError!void {
         // Skip if already registered
         if (self.struct_types.contains(enum_type.name)) {
             return;
+        }
+
+        // For extern enums, the LLVM type is just the repr integer type
+        if (enum_type.is_extern) {
+            if (enum_type.repr_type) |repr| {
+                const llvm_repr_type = self.typeToLLVM(repr);
+
+                // For extern enums, we use the repr type directly (no struct wrapper)
+                // Store with empty field info since it's not a struct
+                const field_indices = self.allocator.alloc(u32, 0) catch return EmitError.OutOfMemory;
+                const field_names = self.allocator.alloc([]const u8, 0) catch return EmitError.OutOfMemory;
+
+                self.struct_types.put(enum_type.name, .{
+                    .llvm_type = llvm_repr_type,
+                    .field_indices = field_indices,
+                    .field_names = field_names,
+                }) catch return EmitError.OutOfMemory;
+                return;
+            }
         }
 
         // Calculate the maximum payload size across all variants

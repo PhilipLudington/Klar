@@ -1,0 +1,17 @@
+// Test: Basic extern function declarations
+// This test verifies:
+// 1. extern { } block syntax parses correctly
+// 2. Extern functions are declared
+// 3. Type checking recognizes extern functions
+
+extern {
+    fn puts(s: CStr) -> i32
+}
+
+fn main() -> i32 {
+    // For now, just verify parsing and compilation works
+    // Calling puts requires CStr which needs string conversion (Phase 7)
+    return 42
+}
+
+// expected: 42

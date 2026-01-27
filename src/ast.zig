@@ -53,6 +53,8 @@ pub const Expr = union(enum) {
     enum_literal: *EnumLiteral,
     comptime_block: *ComptimeBlock,
     builtin_call: *BuiltinCall,
+    unsafe_block: *UnsafeBlock,
+    out_arg: *OutArg,
 
     pub fn span(self: Expr) Span {
         return switch (self) {
@@ -77,6 +79,8 @@ pub const Expr = union(enum) {
             .enum_literal => |e| e.span,
             .comptime_block => |c| c.span,
             .builtin_call => |b| b.span,
+            .unsafe_block => |u| u.span,
+            .out_arg => |o| o.span,
         };
     }
 };
@@ -225,6 +229,7 @@ pub const PostfixOp = enum {
 pub const Call = struct {
     callee: Expr,
     args: []const Expr,
+    type_args: ?[]const TypeExpr = null, // explicit type arguments for generics: func[T](args)
     span: Span,
 };
 
@@ -346,6 +351,22 @@ pub const InterpolatedPart = union(enum) {
 /// Evaluated at compile time during type checking.
 pub const ComptimeBlock = struct {
     body: *Block,
+    span: Span,
+};
+
+/// Unsafe block expression: `unsafe { ... }`
+/// Allows unsafe operations like calling extern functions,
+/// dereferencing raw pointers, etc.
+pub const UnsafeBlock = struct {
+    body: *Block,
+    span: Span,
+};
+
+/// Out argument expression: `out identifier`
+/// Used at call sites to pass a pointer to a local variable that
+/// will be written to by the callee (extern function with out parameter).
+pub const OutArg = struct {
+    name: []const u8, // The identifier name
     span: Span,
 };
 
@@ -574,6 +595,8 @@ pub const Decl = union(enum) {
     const_decl: *ConstDecl,
     import_decl: *ImportDecl,
     module_decl: *ModuleDecl,
+    extern_type_decl: *ExternTypeDecl,
+    extern_block: *ExternBlock,
 
     pub fn span(self: Decl) Span {
         return switch (self) {
@@ -586,6 +609,8 @@ pub const Decl = union(enum) {
             .const_decl => |c| c.span,
             .import_decl => |i| i.span,
             .module_decl => |m| m.span,
+            .extern_type_decl => |e| e.span,
+            .extern_block => |b| b.span,
         };
     }
 };
@@ -600,6 +625,9 @@ pub const FunctionDecl = struct {
     is_pub: bool,
     is_async: bool,
     is_comptime: bool, // true for `comptime fn` (compile-time function)
+    is_unsafe: bool, // true for `unsafe fn` (unsafe function)
+    is_extern: bool, // true for extern fn (C FFI function)
+    is_variadic: bool, // true for variadic fn (has ... in params)
     span: Span,
 };
 
@@ -608,6 +636,7 @@ pub const FunctionParam = struct {
     type_: TypeExpr,
     default_value: ?Expr,
     is_comptime: bool, // true for `comptime` parameter modifier
+    is_out: bool, // true for `out` parameter modifier (FFI)
     span: Span,
 };
 
@@ -629,6 +658,8 @@ pub const StructDecl = struct {
     fields: []const StructField,
     traits: []const TypeExpr,
     is_pub: bool,
+    is_extern: bool = false,
+    is_packed: bool = false,
     span: Span,
 };
 
@@ -639,17 +670,37 @@ pub const StructField = struct {
     span: Span,
 };
 
+/// External type declaration for FFI interop
+/// Syntax: `extern type Name` (opaque, unknown size)
+///         `extern type(N) Name` (sized, N bytes)
+pub const ExternTypeDecl = struct {
+    name: []const u8,
+    size: ?u64, // null for opaque types, Some(N) for sized types
+    is_pub: bool,
+    span: Span,
+};
+
+/// External function block for FFI interop
+/// Syntax: `extern { fn name(...) -> Type; ... }`
+pub const ExternBlock = struct {
+    functions: []const *FunctionDecl,
+    span: Span,
+};
+
 pub const EnumDecl = struct {
     name: []const u8,
     type_params: []const TypeParam,
     variants: []const EnumVariant,
     is_pub: bool,
+    is_extern: bool = false, // extern enum for C-compatible layout
+    repr_type: ?TypeExpr = null, // Required for extern enums (e.g., i32)
     span: Span,
 };
 
 pub const EnumVariant = struct {
     name: []const u8,
     payload: ?VariantPayload,
+    value: ?i128 = null, // Explicit discriminant value for extern enums
     span: Span,
 };
 
@@ -680,6 +731,7 @@ pub const TraitDecl = struct {
     associated_types: []const AssociatedTypeDecl, // Associated type declarations
     methods: []const FunctionDecl,
     is_pub: bool,
+    is_unsafe: bool, // unsafe trait - implementing requires unsafe impl
     span: Span,
 };
 
@@ -690,6 +742,7 @@ pub const ImplDecl = struct {
     associated_types: []const AssociatedTypeBinding, // Associated type bindings
     where_clause: ?[]const WhereConstraint,
     methods: []const FunctionDecl,
+    is_unsafe: bool, // unsafe impl - required when implementing an unsafe trait
     span: Span,
 };
 

@@ -1,0 +1,52 @@
+// Test: Calling custom C functions
+// This test demonstrates linking Klar with user-provided C code.
+//
+// Build instructions:
+//   1. Compile the C helper library:
+//      cc -c test/native/ffi/helper.c -o /tmp/helper.o
+//      ar rcs /tmp/libhelper.a /tmp/helper.o
+//
+//   2. Build and run the Klar program:
+//      klar build test/native/ffi/call_c_function.kl -L/tmp -lhelper -o /tmp/call_c_test
+//      /tmp/call_c_test
+//
+// Or as a one-liner:
+//   cc -c test/native/ffi/helper.c -o /tmp/helper.o && \
+//   ar rcs /tmp/libhelper.a /tmp/helper.o && \
+//   klar build test/native/ffi/call_c_function.kl -L/tmp -lhelper -o /tmp/call_c_test && \
+//   /tmp/call_c_test
+
+// Declare the C functions from helper.c
+extern {
+    fn add_numbers(a: i32, b: i32) -> i32
+    fn get_magic_number() -> i32
+    fn double_value(value: CPtr[i32]) -> void
+}
+
+fn main() -> i32 {
+    // Test 1: Call add_numbers
+    let sum: i32 = unsafe { add_numbers(10, 32) }
+    if sum != 42 {
+        return 1  // Failed: add_numbers
+    }
+
+    // Test 2: Call get_magic_number
+    let magic: i32 = unsafe { get_magic_number() }
+    if magic != 42 {
+        return 2  // Failed: get_magic_number
+    }
+
+    // Test 3: Call double_value (pointer parameter)
+    var value: i32 = 21
+    unsafe {
+        double_value(ref_to_ptr(ref value))
+    }
+    if value != 42 {
+        return 3  // Failed: double_value
+    }
+
+    // All tests passed
+    return 0
+}
+
+// expected: 0

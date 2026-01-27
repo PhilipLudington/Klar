@@ -224,6 +224,12 @@ pub const Interpreter = struct {
             },
             .comptime_block => |cb| self.evalComptimeBlock(cb),
             .builtin_call => |bc| self.evalBuiltinCall(bc),
+            .unsafe_block => |ub| self.evalBlock(ub.body),
+            .out_arg => {
+                // Out arguments are only valid in extern function calls
+                // The interpreter doesn't support FFI
+                return error.NotImplemented;
+            },
         };
     }
 

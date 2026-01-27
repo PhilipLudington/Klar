@@ -49,6 +49,12 @@ pub const TupleLayout = struct {
     alignment: usize,
 };
 
+/// Simple layout info with size and alignment.
+pub const TypeLayout = struct {
+    size: usize,
+    alignment: usize,
+};
+
 /// Layout calculator for composite types.
 pub const LayoutCalculator = struct {
     allocator: Allocator,
@@ -73,7 +79,7 @@ pub const LayoutCalculator = struct {
     }
 
     /// Get the size and alignment of a primitive type.
-    pub fn getPrimitiveLayout(self: *LayoutCalculator, prim: types.Primitive) struct { size: usize, alignment: usize } {
+    pub fn getPrimitiveLayout(self: *LayoutCalculator, prim: types.Primitive) TypeLayout {
         const pointer_size = self.platform.getPointerSize();
 
         return switch (prim) {
@@ -90,7 +96,7 @@ pub const LayoutCalculator = struct {
     }
 
     /// Get the size and alignment of a type.
-    pub fn getTypeLayout(self: *LayoutCalculator, t: types.Type) struct { size: usize, alignment: usize } {
+    pub fn getTypeLayout(self: *LayoutCalculator, t: types.Type) TypeLayout {
         const pointer_size = self.platform.getPointerSize();
 
         return switch (t) {

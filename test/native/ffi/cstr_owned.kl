@@ -1,0 +1,50 @@
+// Test CStrOwned type - owned null-terminated C string
+
+extern {
+    fn puts(s: CStr) -> i32
+    fn strlen(s: CStr) -> usize
+}
+
+// Test primitive string.to_cstr() -> CStrOwned
+fn test_primitive_string_to_cstr() {
+    let s: string = "hello from Klar"
+    let owned: CStrOwned = s.to_cstr()
+
+    // Use the owned CStr (pass to C function)
+    unsafe {
+        let result: i32 = puts(owned.as_cstr())
+    }
+
+    // owned is automatically freed when it goes out of scope
+}
+
+// Test String.to_cstr() -> CStrOwned
+fn test_string_data_to_cstr() {
+    let s: String = String.from("heap allocated string")
+    let owned: CStrOwned = s.to_cstr()
+
+    unsafe {
+        let result: i32 = puts(owned.as_cstr())
+    }
+}
+
+// Test CStrOwned lifetime (should be freed at end of scope)
+fn test_cstr_owned_drop() {
+    {
+        let owned: CStrOwned = "scoped string".to_cstr()
+        unsafe {
+            let result: i32 = puts(owned.as_cstr())
+        }
+    } // owned should be freed here
+
+    // After this, the memory should be freed
+    println("CStrOwned dropped successfully")
+}
+
+fn main() -> i32 {
+    test_primitive_string_to_cstr()
+    test_string_data_to_cstr()
+    test_cstr_owned_drop()
+
+    return 0
+}

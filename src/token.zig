@@ -43,6 +43,8 @@ pub const Token = struct {
         async_,
         await_,
         unsafe_,
+        extern_,
+        packed_,
         import,
         module,
         as,
@@ -93,6 +95,7 @@ pub const Token = struct {
         dot,
         dot_dot,
         dot_dot_eq,
+        ellipsis, // ... for variadic functions
         arrow,
         fat_arrow,
         colon,
@@ -144,6 +147,7 @@ pub const Token = struct {
                 .async_ => "async",
                 .await_ => "await",
                 .unsafe_ => "unsafe",
+                .extern_ => "extern",
                 .import => "import",
                 .module => "module",
                 .as => "as",
@@ -194,6 +198,7 @@ pub const Token = struct {
                 .dot => ".",
                 .dot_dot => "..",
                 .dot_dot_eq => "..=",
+                .ellipsis => "...",
                 .arrow => "->",
                 .fat_arrow => "=>",
                 .colon => ":",
@@ -221,7 +226,7 @@ pub const Token = struct {
 
         pub fn isKeyword(self: Kind) bool {
             return switch (self) {
-                .fn_, .let, .var_, .struct_, .enum_, .trait, .impl, .if_, .else_, .match, .for_, .while_, .loop, .return_, .break_, .continue_, .pub_, .mut, .async_, .await_, .unsafe_, .import, .module, .as, .in, .is, .and_, .or_, .not, .true_, .false_, .comptime_, .where, .dyn, .type_, .const_, .static, .self, .self_type, .ref, .inout => true,
+                .fn_, .let, .var_, .struct_, .enum_, .trait, .impl, .if_, .else_, .match, .for_, .while_, .loop, .return_, .break_, .continue_, .pub_, .mut, .async_, .await_, .unsafe_, .extern_, .packed_, .import, .module, .as, .in, .is, .and_, .or_, .not, .true_, .false_, .comptime_, .where, .dyn, .type_, .const_, .static, .self, .self_type, .ref, .inout => true,
                 else => false,
             };
         }

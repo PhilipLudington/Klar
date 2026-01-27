@@ -1,0 +1,35 @@
+// Test: Extern type validation
+// This test verifies that extern types are validated correctly:
+// - Unsized (opaque) extern types can only be used behind pointers
+// - Sized extern types can be used directly
+
+// Opaque type (unsized) - for use behind pointers
+extern type OpaqueHandle
+
+// Sized extern type - can be used directly
+extern type(8) SizedHandle
+
+extern {
+    // VALID: pointer to opaque type
+    fn get_opaque() -> CPtr[OpaqueHandle]
+    fn use_opaque(handle: CPtr[OpaqueHandle]) -> void
+    fn optional_opaque(handle: COptPtr[OpaqueHandle]) -> void
+
+    // VALID: sized type by value
+    fn get_sized() -> SizedHandle
+    fn use_sized(handle: SizedHandle) -> void
+}
+
+// VALID: extern struct with pointer to opaque
+extern struct ValidStruct {
+    opaque_ptr: CPtr[OpaqueHandle],
+    sized_val: SizedHandle
+}
+
+fn main() -> i32 {
+    // This test just verifies the declarations compile
+    // The actual validation errors are tested in error test files
+    return 0
+}
+
+// expected: 0

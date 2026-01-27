@@ -1,0 +1,21 @@
+// Test linking with external library (-l flag)
+// This test requires linking with -lm (math library)
+//
+// Build: klar build test/native/ffi/link_libm.kl -lm
+// Expected output: 2
+
+extern {
+    fn sqrt(x: f64) -> f64
+    fn floor(x: f64) -> f64
+}
+
+fn main() -> i32 {
+    // Use sqrt from libm
+    let x: f64 = 4.0
+    let result: f64 = unsafe { sqrt(x) }
+
+    // sqrt(4.0) = 2.0, floor it to integer
+    let int_result: i32 = unsafe { floor(result) }.as[i32]
+
+    return int_result
+}

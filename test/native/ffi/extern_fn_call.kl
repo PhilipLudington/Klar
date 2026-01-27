@@ -1,0 +1,18 @@
+// Test: Calling extern functions
+// This test verifies that we can actually call C library functions
+
+extern {
+    // exit(status) - terminates the program
+    fn exit(status: i32) -> void
+}
+
+fn main() -> i32 {
+    // Call exit(42) - this will terminate the program with exit code 42
+    unsafe {
+        exit(42)
+    }
+    // This should never be reached
+    return 1
+}
+
+// expected: 42
