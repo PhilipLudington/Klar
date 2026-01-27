@@ -9459,6 +9459,15 @@ pub const Emitter = struct {
                 const end = try self.emitExpr(method.args[1]);
                 return self.emitStringSlice(object, start, end);
             }
+            // Handle string.to[T] - fallible conversion to numeric types
+            if (std.mem.eql(u8, method.method_name, "to")) {
+                if (method.type_args) |type_args| {
+                    if (type_args.len == 1) {
+                        return self.emitStringToNumeric(object, type_args[0]);
+                    }
+                }
+                return EmitError.InvalidAST;
+            }
         }
 
         // Check for char methods BEFORE integer methods (char is i32 in LLVM)
@@ -13774,6 +13783,198 @@ pub const Emitter = struct {
             3,
             "sliced",
         );
+    }
+
+    /// Emit string.to[T] - fallible conversion from string to numeric type.
+    /// Returns ?T (Some(value) on success, None on failure).
+    fn emitStringToNumeric(self: *Emitter, str: llvm.ValueRef, target_type_expr: ast.TypeExpr) EmitError!llvm.ValueRef {
+        const target_type = try self.typeExprToLLVM(target_type_expr);
+        const type_kind = llvm.getTypeKind(target_type);
+
+        // Get the function and current basic block for creating branches
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Create basic blocks for success and failure paths
+        const success_bb = llvm.appendBasicBlock(self.ctx, current_fn, "to.success");
+        const fail_bb = llvm.appendBasicBlock(self.ctx, current_fn, "to.fail");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, current_fn, "to.merge");
+
+        // Allocate storage for endptr (used by strtol/strtod)
+        const endptr_alloca = self.builder.buildAlloca(ptr_type, "endptr");
+
+        if (type_kind == llvm.c.LLVMIntegerTypeKind) {
+            // Integer conversion using strtol
+            const strtol_fn = self.getOrDeclareStrtol();
+            var strtol_args = [_]llvm.ValueRef{
+                str,
+                endptr_alloca,
+                llvm.Const.int32(self.ctx, 10), // base 10
+            };
+            const parsed_i64 = self.builder.buildCall(
+                llvm.c.LLVMGlobalGetValueType(strtol_fn),
+                strtol_fn,
+                &strtol_args,
+                "parsed",
+            );
+
+            // Get string length and check if entire string was consumed
+            const strlen_fn = self.getOrDeclareStrlen();
+            var strlen_args = [_]llvm.ValueRef{str};
+            const str_len = self.builder.buildCall(
+                llvm.c.LLVMGlobalGetValueType(strlen_fn),
+                strlen_fn,
+                &strlen_args,
+                "str_len",
+            );
+
+            // Load endptr
+            const endptr = self.builder.buildLoad(ptr_type, endptr_alloca, "endptr_val");
+
+            // Calculate expected end position: str + len
+            const str_end = self.builder.buildGEP(llvm.Types.int8(self.ctx), str, &[_]llvm.ValueRef{str_len}, "str_end");
+
+            // Check if endptr == str_end (entire string consumed) and str_len > 0
+            const consumed_all = self.builder.buildICmp(llvm.c.LLVMIntEQ, endptr, str_end, "consumed_all");
+            const len_gt_zero = self.builder.buildICmp(llvm.c.LLVMIntUGT, str_len, llvm.Const.int64(self.ctx, 0), "len_gt_zero");
+            const is_valid = llvm.c.LLVMBuildAnd(self.builder.ref, consumed_all, len_gt_zero, "is_valid");
+
+            // Branch based on validity
+            _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_valid, success_bb, fail_bb);
+
+            // Success block - create Some(value)
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, success_bb);
+
+            // Convert i64 to target type if needed
+            const target_bits = llvm.c.LLVMGetIntTypeWidth(target_type);
+            const converted = if (target_bits < 64)
+                llvm.c.LLVMBuildTrunc(self.builder.ref, parsed_i64, target_type, "trunc")
+            else if (target_bits > 64)
+                llvm.c.LLVMBuildSExt(self.builder.ref, parsed_i64, target_type, "sext")
+            else
+                parsed_i64;
+
+            const some_val = self.emitSome(converted, target_type);
+            _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+            const success_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+            // Failure block - create None
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, fail_bb);
+            var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), target_type };
+            const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+            const none_val = self.emitNone(opt_type);
+            _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+            const fail_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+            // Merge block - phi to select result
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, merge_bb);
+            const phi = llvm.c.LLVMBuildPhi(self.builder.ref, opt_type, "to.result");
+            var incoming_vals = [_]llvm.ValueRef{ some_val, none_val };
+            var incoming_blocks = [_]llvm.BasicBlockRef{ success_exit, fail_exit };
+            llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 2);
+
+            return phi;
+        } else if (type_kind == llvm.c.LLVMFloatTypeKind or type_kind == llvm.c.LLVMDoubleTypeKind) {
+            // Float conversion using strtod
+            const strtod_fn = self.getOrDeclareStrtod();
+            var strtod_args = [_]llvm.ValueRef{ str, endptr_alloca };
+            const parsed_f64 = self.builder.buildCall(
+                llvm.c.LLVMGlobalGetValueType(strtod_fn),
+                strtod_fn,
+                &strtod_args,
+                "parsed",
+            );
+
+            // Get string length and check if entire string was consumed
+            const strlen_fn = self.getOrDeclareStrlen();
+            var strlen_args = [_]llvm.ValueRef{str};
+            const str_len = self.builder.buildCall(
+                llvm.c.LLVMGlobalGetValueType(strlen_fn),
+                strlen_fn,
+                &strlen_args,
+                "str_len",
+            );
+
+            // Load endptr
+            const endptr = self.builder.buildLoad(ptr_type, endptr_alloca, "endptr_val");
+
+            // Calculate expected end position: str + len
+            const str_end = self.builder.buildGEP(llvm.Types.int8(self.ctx), str, &[_]llvm.ValueRef{str_len}, "str_end");
+
+            // Check if endptr == str_end (entire string consumed) and str_len > 0
+            const consumed_all = self.builder.buildICmp(llvm.c.LLVMIntEQ, endptr, str_end, "consumed_all");
+            const len_gt_zero = self.builder.buildICmp(llvm.c.LLVMIntUGT, str_len, llvm.Const.int64(self.ctx, 0), "len_gt_zero");
+            const is_valid = llvm.c.LLVMBuildAnd(self.builder.ref, consumed_all, len_gt_zero, "is_valid");
+
+            // Branch based on validity
+            _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_valid, success_bb, fail_bb);
+
+            // Success block - create Some(value)
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, success_bb);
+
+            // Convert f64 to f32 if target is float
+            const converted = if (type_kind == llvm.c.LLVMFloatTypeKind)
+                llvm.c.LLVMBuildFPTrunc(self.builder.ref, parsed_f64, target_type, "fptrunc")
+            else
+                parsed_f64;
+
+            const some_val = self.emitSome(converted, target_type);
+            _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+            const success_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+            // Failure block - create None
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, fail_bb);
+            var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), target_type };
+            const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+            const none_val = self.emitNone(opt_type);
+            _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+            const fail_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+            // Merge block - phi to select result
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, merge_bb);
+            const phi = llvm.c.LLVMBuildPhi(self.builder.ref, opt_type, "to.result");
+            var incoming_vals = [_]llvm.ValueRef{ some_val, none_val };
+            var incoming_blocks = [_]llvm.BasicBlockRef{ success_exit, fail_exit };
+            llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 2);
+
+            return phi;
+        }
+
+        _ = i64_type;
+        // Unsupported conversion target
+        return EmitError.InvalidAST;
+    }
+
+    /// Get or declare libc strtol function.
+    fn getOrDeclareStrtol(self: *Emitter) llvm.ValueRef {
+        const name = "strtol";
+        if (self.module.getNamedFunction(name)) |func| {
+            return func;
+        }
+        // long strtol(const char *str, char **endptr, int base)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // str
+            llvm.Types.pointer(self.ctx), // endptr
+            llvm.Types.int32(self.ctx), // base
+        };
+        const fn_type = llvm.Types.function(llvm.Types.int64(self.ctx), &param_types, false);
+        return llvm.addFunction(self.module, name, fn_type);
+    }
+
+    /// Get or declare libc strtod function.
+    fn getOrDeclareStrtod(self: *Emitter) llvm.ValueRef {
+        const name = "strtod";
+        if (self.module.getNamedFunction(name)) |func| {
+            return func;
+        }
+        // double strtod(const char *str, char **endptr)
+        var param_types = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // str
+            llvm.Types.pointer(self.ctx), // endptr
+        };
+        const fn_type = llvm.Types.function(llvm.Types.float64(self.ctx), &param_types, false);
+        return llvm.addFunction(self.module, name, fn_type);
     }
 
     // ========================================================================

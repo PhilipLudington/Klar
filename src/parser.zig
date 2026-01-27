@@ -1496,7 +1496,7 @@ pub const Parser = struct {
     fn parseFieldOrMethod(self: *Parser, object: ast.Expr) ParseError!ast.Expr {
         self.advance(); // consume '.'
 
-        // Check for type cast: .as[T] or .trunc[T]
+        // Check for type cast: .as[T] or .trunc[T] or .to[T]
         if (self.check(.as) or self.tokenText(self.current).len > 0) {
             const method_name = self.tokenText(self.current);
             if (std.mem.eql(u8, method_name, "as")) {
@@ -1504,6 +1504,9 @@ pub const Parser = struct {
             }
             if (std.mem.eql(u8, method_name, "trunc")) {
                 return self.parseTypeCast(object, true);
+            }
+            if (std.mem.eql(u8, method_name, "to")) {
+                return self.parseFallibleConversion(object);
             }
         }
 
@@ -1577,6 +1580,29 @@ pub const Parser = struct {
             .span = ast.Span.merge(object.span(), end_span),
         });
         return .{ .type_cast = type_cast };
+    }
+
+    /// Parse fallible conversion: value.to[T]
+    /// Creates a MethodCall with method_name="to", type_args=[T], and empty args
+    fn parseFallibleConversion(self: *Parser, object: ast.Expr) ParseError!ast.Expr {
+        self.advance(); // consume 'to'
+
+        try self.consume(.l_bracket, "expected '[' after 'to'");
+        const target_type = try self.parseType();
+        try self.consume(.r_bracket, "expected ']' after type");
+
+        const end_span = self.spanFromToken(self.previous);
+
+        var type_args = [_]ast.TypeExpr{target_type};
+
+        const method_call = try self.create(ast.MethodCall, .{
+            .object = object,
+            .method_name = "to",
+            .type_args = try self.dupeSlice(ast.TypeExpr, &type_args),
+            .args = &.{},
+            .span = ast.Span.merge(object.span(), end_span),
+        });
+        return .{ .method_call = method_call };
     }
 
     fn parseMethodCall(self: *Parser, object: ast.Expr, method_name: []const u8, type_args: ?[]const ast.TypeExpr) ParseError!ast.Expr {

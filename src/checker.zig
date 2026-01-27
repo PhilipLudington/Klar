@@ -4609,7 +4609,12 @@ pub const TypeChecker = struct {
             // Type conversion methods
             if (method.type_args) |type_args| {
                 if (type_args.len == 1) {
-                    return self.resolveTypeExpr(type_args[0]) catch self.type_builder.unknownType();
+                    const target_type = self.resolveTypeExpr(type_args[0]) catch return self.type_builder.unknownType();
+                    // .to[T] returns ?T (optional), .as[T] and .trunc[T] return T
+                    if (std.mem.eql(u8, method.method_name, "to")) {
+                        return self.type_builder.optionalType(target_type) catch self.type_builder.unknownType();
+                    }
+                    return target_type;
                 }
             }
             self.addError(.invalid_call, method.span, "conversion requires type argument", .{});
