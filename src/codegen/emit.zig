@@ -4753,6 +4753,10 @@ pub const Emitter = struct {
                         .string_data => {
                             local_value.is_string_data = true;
                         },
+                        .struct_ => |s| {
+                            // Set struct type name for field access
+                            local_value.struct_type_name = s.name;
+                        },
                         else => {},
                     }
                 }

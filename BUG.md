@@ -87,11 +87,10 @@ fn main() -> i32 {
 
 ---
 
-## [ ] Bug 11: Result with Struct Error Type (BLOCKING)
+## [x] Bug 11: Result with Struct Error Type
 
-**Description:** Using `Result[T, E]` where `E` is a struct causes codegen error "UnsupportedFeature".
+**Description:** Using `Result[T, E]` where `E` is a struct now works correctly. The fix ensures that when binding variables from pattern matching (e.g., `Err(e)`), the struct type name is properly recorded so that field access (e.g., `e.message`) works correctly.
 
-**Reproduction:**
 ```klar
 pub struct ParseError {
     message: string,
@@ -105,18 +104,10 @@ fn main() -> i32 {
     let r: Result[i32, ParseError] = make_result()
     match r {
         Ok(n) => { println("Got: {n}") }
-        Err(e) => { println("Error: {e.message}") }
+        Err(e) => { println("Error: {e.message}") }  // NOW WORKS
     }
     return 0
 }
-```
-
-**Error:**
-```
-Codegen error: UnsupportedFeature
-```
-
-**Workaround:** Use `Result[T, string]` instead of `Result[T, CustomStruct]`.
 
 ---
 
@@ -156,7 +147,7 @@ LLVM Module verification failed: Call parameter type does not match function sig
 
 ## Summary
 
-**Bug Status: 4/6 fixed**
+**Bug Status: 5/6 fixed**
 
 | Bug | Feature | Status |
 |-----|---------|--------|
@@ -164,16 +155,15 @@ LLVM Module verification failed: Call parameter type does not match function sig
 | 8 | Arrays in struct fields | Fixed |
 | 9 | Match on tuple element | Fixed |
 | 10 | String `+` concatenation | Fixed |
-| 11 | Result with struct error | Blocking |
+| 11 | Result with struct error | Fixed |
 | 12 | Arrays + complex returns | Blocking |
 
 ---
 
 ## Impact on JSON Parser
 
-The JSON lexer cannot be implemented due to bugs 11 and 12:
+The JSON lexer cannot be implemented due to bug 12:
 
-1. **Bug 11** prevents using structured error types with Result
-2. **Bug 12** prevents the fundamental lexer pattern of passing char arrays to tokenization functions
+1. **Bug 12** prevents the fundamental lexer pattern of passing char arrays to tokenization functions
 
-The `value.kl` module (JsonValue types) works correctly. The lexer and parser are blocked until these compiler bugs are fixed.
+The `value.kl` module (JsonValue types) works correctly. The lexer and parser are blocked until this compiler bug is fixed.
