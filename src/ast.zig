@@ -731,6 +731,7 @@ pub const TraitDecl = struct {
     associated_types: []const AssociatedTypeDecl, // Associated type declarations
     methods: []const FunctionDecl,
     is_pub: bool,
+    is_unsafe: bool, // unsafe trait - implementing requires unsafe impl
     span: Span,
 };
 
@@ -741,6 +742,7 @@ pub const ImplDecl = struct {
     associated_types: []const AssociatedTypeBinding, // Associated type bindings
     where_clause: ?[]const WhereConstraint,
     methods: []const FunctionDecl,
+    is_unsafe: bool, // unsafe impl - required when implementing an unsafe trait
     span: Span,
 };
 

@@ -2201,28 +2201,18 @@ pub const Parser = struct {
                 break :blk self.parseEnumDecl(is_pub, is_extern);
             },
             .trait => blk: {
-                if (is_unsafe) {
-                    // Note: Future support for unsafe traits can be added here
-                    try self.reportError("'unsafe' modifier is not yet supported on trait declarations");
-                    return ParseError.UnexpectedToken;
-                }
                 if (is_extern) {
                     try self.reportError("'extern' modifier is not allowed on trait declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseTraitDecl(is_pub);
+                break :blk self.parseTraitDecl(is_pub, is_unsafe);
             },
             .impl => blk: {
-                if (is_unsafe) {
-                    // Note: Future support for unsafe impl can be added here
-                    try self.reportError("'unsafe' modifier is not yet supported on impl declarations");
-                    return ParseError.UnexpectedToken;
-                }
                 if (is_extern) {
                     try self.reportError("'extern' modifier is not allowed on impl declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseImplDecl();
+                break :blk self.parseImplDecl(is_unsafe);
             },
             .type_ => blk: {
                 if (is_unsafe) {
@@ -2269,7 +2259,7 @@ pub const Parser = struct {
                 if (is_extern) {
                     try self.reportError("expected 'type', 'fn', 'struct', or 'enum' after 'extern'");
                 } else if (is_unsafe) {
-                    try self.reportError("expected 'fn' after 'unsafe'");
+                    try self.reportError("expected 'fn', 'trait', or 'impl' after 'unsafe'");
                 } else {
                     try self.reportError("expected declaration");
                 }
@@ -2665,7 +2655,7 @@ pub const Parser = struct {
         return .{ .enum_decl = enum_decl };
     }
 
-    fn parseTraitDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseTraitDecl(self: *Parser, is_pub: bool, is_unsafe: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'trait'
 
@@ -2719,6 +2709,7 @@ pub const Parser = struct {
             .associated_types = try self.dupeSlice(ast.AssociatedTypeDecl, associated_types.items),
             .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
             .is_pub = is_pub,
+            .is_unsafe = is_unsafe,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .trait_decl = trait_decl };
@@ -2759,7 +2750,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseImplDecl(self: *Parser) ParseError!ast.Decl {
+    fn parseImplDecl(self: *Parser, is_unsafe: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'impl'
 
@@ -2811,6 +2802,7 @@ pub const Parser = struct {
             .associated_types = try self.dupeSlice(ast.AssociatedTypeBinding, associated_types.items),
             .where_clause = where_clause,
             .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
+            .is_unsafe = is_unsafe,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .impl_decl = impl_decl };

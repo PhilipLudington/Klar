@@ -58,6 +58,33 @@ unsafe {
 }
 ```
 
+### Unsafe Traits
+
+For traits that have safety invariants the compiler can't verify, use `unsafe trait`:
+
+```klar
+// An unsafe trait - implementors must uphold certain invariants
+unsafe trait RawHandle {
+    fn as_raw(self: Self) -> i32
+}
+
+struct FileDescriptor {
+    fd: i32,
+}
+
+// Implementing an unsafe trait requires unsafe impl
+unsafe impl FileDescriptor: RawHandle {
+    fn as_raw(self: FileDescriptor) -> i32 {
+        return self.fd
+    }
+}
+```
+
+Unsafe traits:
+- Have safety invariants that the compiler cannot verify
+- Require `unsafe impl` when implementing
+- Methods on unsafe traits can be called safely (unsafety is in the implementation contract)
+
 ## External Functions
 
 Declare C functions using `extern` blocks:

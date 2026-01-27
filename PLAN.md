@@ -1,6 +1,6 @@
 # Klar FFI Implementation Plan
 
-**Status:** Phase 9 In Progress
+**Status:** Complete (All Phases Done)
 **Goal:** Implement Foreign Function Interface (FFI) for C interoperability
 
 ---
@@ -272,9 +272,9 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ---
 
-## Phase 9: Deferred FFI Features
+## Phase 9: Deferred FFI Features ✅
 
-**Status:** In Progress (Batch D Complete)
+**Status:** Complete
 **Objective:** Complete remaining FFI features organized by implementation priority.
 
 ### Batch A: Quick Wins (Validation & Testing) ✅
@@ -306,9 +306,17 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 - [x] Codegen: Generate appropriate LLVM for `ptr_cast`
 - [x] Test: `test/native/ffi/ptr_cast.kl` - end-to-end ptr_cast test
 
-### Batch E: Future (Low Priority)
+### Batch E: Unsafe Traits ✅
 
-- [ ] Parse `unsafe trait` and `unsafe impl` declarations
+- [x] Parse `unsafe trait` declarations
+- [x] Parse `unsafe impl` declarations
+- [x] Add `is_unsafe` field to TraitDecl and ImplDecl AST nodes
+- [x] Add `is_unsafe` field to TraitType in type system
+- [x] Validate that unsafe traits require unsafe impl
+- [x] Validate that unsafe impl can only be used with unsafe traits
+- [x] Test: `test/native/ffi/unsafe_trait.kl` - end-to-end unsafe trait test
+- [x] Test: `test/native/ffi/unsafe_trait_error.kl` - error when missing unsafe impl
+- [x] Test: `test/native/ffi/unsafe_impl_error.kl` - error when unsafe impl on safe trait
 
 ---
 

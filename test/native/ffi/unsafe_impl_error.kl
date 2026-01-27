@@ -1,0 +1,21 @@
+// Test: Unsafe impl error - used on safe trait
+// Expected error: 'unsafe impl' can only be used when implementing an unsafe trait
+
+trait Display {
+    fn show(self: Self) -> i32
+}
+
+struct Point {
+    x: i32,
+}
+
+// ERROR: unsafe impl used on a safe trait
+unsafe impl Point: Display {
+    fn show(self: Point) -> i32 {
+        return self.x
+    }
+}
+
+fn main() -> i32 {
+    return 0
+}

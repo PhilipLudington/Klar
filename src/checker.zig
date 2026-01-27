@@ -54,6 +54,8 @@ pub const CheckError = struct {
         import_conflict,
         // Comptime errors
         comptime_error,
+        // Unsafe errors
+        unsafe_trait_requires_unsafe_impl,
     };
 
     pub fn format(self: CheckError, allocator: Allocator) ![]u8 {
@@ -9331,6 +9333,7 @@ pub const TypeChecker = struct {
             .associated_types = associated_types.toOwnedSlice(self.allocator) catch &.{},
             .methods = &.{}, // Will be filled in after method processing
             .super_traits = super_trait_list.toOwnedSlice(self.allocator) catch &.{},
+            .is_unsafe = trait_decl.is_unsafe,
         };
 
         // Set current trait type for Self.Item resolution in method signatures
@@ -9522,6 +9525,18 @@ pub const TypeChecker = struct {
             trait_info = self.trait_registry.get(trait_name);
             if (trait_info == null) {
                 self.addError(.undefined_type, impl_decl.span, "trait '{s}' not found", .{trait_name});
+                return;
+            }
+
+            // Check that unsafe traits require unsafe impl
+            if (trait_info.?.trait_type.is_unsafe and !impl_decl.is_unsafe) {
+                self.addError(.unsafe_trait_requires_unsafe_impl, impl_decl.span, "implementing unsafe trait '{s}' requires 'unsafe impl'", .{trait_name});
+                return;
+            }
+
+            // Check that unsafe impl is only used for unsafe traits
+            if (impl_decl.is_unsafe and !trait_info.?.trait_type.is_unsafe) {
+                self.addError(.invalid_operation, impl_decl.span, "'unsafe impl' can only be used when implementing an unsafe trait", .{});
                 return;
             }
         }

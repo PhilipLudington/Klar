@@ -503,6 +503,7 @@ pub const TraitType = struct {
     associated_types: []const AssociatedType, // Associated type declarations
     methods: []const TraitMethod,
     super_traits: []const *TraitType,
+    is_unsafe: bool = false, // Unsafe trait - implementing requires unsafe impl
 };
 
 pub const TraitMethod = struct {
