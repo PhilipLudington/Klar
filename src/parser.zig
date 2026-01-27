@@ -41,6 +41,39 @@ fn findUnescapedBrace(content: []const u8, start: usize) ?usize {
     return null;
 }
 
+/// Check if the string contains valid interpolation patterns.
+/// Returns true only if every unescaped '{' has a matching '}'.
+/// A string like "{" has an unescaped brace but no match, so returns false.
+fn hasValidInterpolation(content: []const u8) bool {
+    var pos: usize = 0;
+    while (findUnescapedBrace(content, pos)) |brace_start| {
+        // Try to find matching '}'
+        var brace_depth: usize = 1;
+        var search_pos: usize = brace_start + 1;
+        while (search_pos < content.len and brace_depth > 0) {
+            if (content[search_pos] == '\\' and search_pos + 1 < content.len) {
+                search_pos += 2;
+                continue;
+            }
+            if (content[search_pos] == '{') {
+                brace_depth += 1;
+            } else if (content[search_pos] == '}') {
+                brace_depth -= 1;
+            }
+            if (brace_depth > 0) search_pos += 1;
+        }
+        if (brace_depth != 0) {
+            // Unmatched '{' found - not valid interpolation
+            return false;
+        }
+        // Move past this interpolation and check for more
+        pos = search_pos + 1;
+    }
+    // If we found at least one valid interpolation, return true
+    // If no unescaped braces at all, return false (not interpolated)
+    return findUnescapedBrace(content, 0) != null;
+}
+
 /// Process escape sequences in a string segment.
 /// Converts \{ to {, \} to }, and other standard escapes.
 fn processEscapes(allocator: Allocator, content: []const u8) ![]const u8 {
@@ -478,8 +511,8 @@ pub const Parser = struct {
         // Strip quotes (simple approach - full impl would process escapes)
         const content = if (text.len >= 2) text[1 .. text.len - 1] else text;
 
-        // Check for interpolation (contains unescaped {)
-        if (findUnescapedBrace(content, 0)) |_| {
+        // Check for valid interpolation (every unescaped { has matching })
+        if (hasValidInterpolation(content)) {
             return self.parseInterpolatedString(content, span);
         }
 
