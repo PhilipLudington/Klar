@@ -33,34 +33,25 @@ fn main() -> i32 {
 
 ---
 
-## [ ] Bug 3: `char.to_string()` returns wrong type
+## [x] Bug 3: `char.to_string()` returns wrong type
 
-**Severity:** High
+**Severity:** High → **FIXED**
 
-**Description:** According to the documentation, `char.to_string()` should return `string`, but it appears to return a different type causing type mismatch errors.
+**Solution:** The type checker and code generator now correctly handle `char.to_string()`:
+- Type checker returns primitive `string` type for `char.to_string()` (not heap-allocated `String`)
+- Code generator emits a single-character null-terminated string
+- Variable declarations use type annotations to determine the correct LLVM type
 
-**Reproduction:**
 ```klar
 fn main() -> i32 {
     let c: char = 'a'
-    let s: string = c.to_string()  // Type error
-    println(s)
+    let s: string = c.to_string()  // Now works correctly
+    println(s)                      // Prints: a
     return 0
 }
 ```
 
-**Error:**
-```
-Type error(s):
-  3:5: initializer type doesn't match declared type
-```
-
-**Documentation claim (from docs/types/primitives.md:157):**
-```klar
-let as_str: string = c.to_string()   // "A"
-```
-
-**Impact:** Cannot build strings from individual characters, which is needed for the lexer to construct tokens.
+**Original issue:** The type checker was returning `String` (heap-allocated) instead of `string` (primitive) for `char.to_string()`, and the code generator was treating chars like integers for the `to_string` method.
 
 ---
 
@@ -123,11 +114,11 @@ Type error(s):
 |-----|----------|--------|
 | Braces in strings | Blocking | ✅ FIXED - use `\{` and `\}` |
 | No brace escape | Blocking | ✅ FIXED - use `\{` and `\}` |
-| char.to_string() type | High | ❌ Open |
+| char.to_string() type | High | ✅ FIXED - returns `string` now |
 | Char interpolation | Medium | ❌ Open |
 | No string slicing | High | ❌ Open |
 
 Remaining blockers for JSON parser:
 1. ~~Cannot write test strings containing `{` or `}`~~ ✅ Fixed
-2. Cannot build strings from characters (needed for token construction)
+2. ~~Cannot build strings from characters (needed for token construction)~~ ✅ Fixed
 3. Cannot extract substrings (needed for keyword/string token extraction)

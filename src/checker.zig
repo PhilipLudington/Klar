@@ -4341,8 +4341,12 @@ pub const TypeChecker = struct {
         }
 
         // Check for built-in methods on all types
-        // to_string() returns String (heap-allocated), not string (primitive literal)
+        // to_string() returns string (primitive) for char, String (heap-allocated) for other types
         if (std.mem.eql(u8, method.method_name, "to_string")) {
+            // char.to_string() returns primitive string (single char doesn't need heap allocation)
+            if (object_type == .primitive and object_type.primitive == .char_) {
+                return self.type_builder.stringType();
+            }
             return self.type_builder.stringDataType() catch self.type_builder.unknownType();
         }
 

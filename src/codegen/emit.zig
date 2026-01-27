@@ -1437,11 +1437,16 @@ pub const Emitter = struct {
                 const is_array_literal_value = decl.value == .array_literal;
 
                 // Determine the LLVM type for the alloca
-                // For slice types, use the declared slice type (not the array literal type)
-                const ty = if (is_slice_decl)
-                    try self.typeExprToLLVM(decl.type_)
-                else
-                    try self.inferExprType(decl.value);
+                // Prefer using the declared type annotation for accurate types
+                // This is important for method calls like char.to_string() which return different
+                // types than might be inferred from the LLVM representation alone
+                const ty = blk: {
+                    // Try to use type annotation first
+                    const llvm_ty = self.typeExprToLLVM(decl.type_) catch null;
+                    if (llvm_ty) |t| break :blk t;
+                    // Fall back to inference from expression
+                    break :blk try self.inferExprType(decl.value);
+                };
 
                 const name = self.allocator.dupeZ(u8, decl.name) catch return EmitError.OutOfMemory;
                 defer self.allocator.free(name);
@@ -6419,6 +6424,16 @@ pub const Emitter = struct {
                     }
                 }
 
+                // to_string() method - char returns primitive string, other types return String struct
+                if (std.mem.eql(u8, m.method_name, "to_string")) {
+                    if (self.isCharExpr(m.object)) {
+                        // char.to_string() returns primitive string (pointer)
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                    // Other types (integers, etc.) return String struct
+                    return self.getStringStructType();
+                }
+
                 // Check for static method calls where object is a type name (e.g., Counter.new())
                 if (m.object == .identifier) {
                     const type_name = m.object.identifier.name;
@@ -8651,6 +8666,13 @@ pub const Emitter = struct {
             }
             if (std.mem.eql(u8, method.method_name, "chars")) {
                 return self.emitStringChars(object);
+            }
+        }
+
+        // Check for char methods BEFORE integer methods (char is i32 in LLVM)
+        if (self.isCharExpr(method.object)) {
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                return self.emitCharToString(object);
             }
         }
 
@@ -11979,6 +12001,47 @@ pub const Emitter = struct {
         return false;
     }
 
+    /// Check if an expression is a char type.
+    fn isCharExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .literal => |lit| {
+                return lit.kind == .char;
+            },
+            .identifier => |id| {
+                // Check stored semantic type in named_values
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.semantic_type) |st| {
+                        return st == .primitive and st.primitive == .char_;
+                    }
+                }
+                // Fallback: use type checker
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const expr_type = tc_mut.checkExpr(expr);
+                    return expr_type == .primitive and expr_type.primitive == .char_;
+                }
+                return false;
+            },
+            .method_call => |m| {
+                // Methods like to_lowercase, to_uppercase on chars return chars
+                if (std.mem.eql(u8, m.method_name, "to_lowercase") or
+                    std.mem.eql(u8, m.method_name, "to_uppercase"))
+                {
+                    return self.isCharExpr(m.object);
+                }
+                return false;
+            },
+            else => {},
+        }
+        // Fallback: use type checker if available
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .primitive and expr_type.primitive == .char_;
+        }
+        return false;
+    }
+
     /// Check if an expression is a Range type.
     fn isRangeExpr(self: *Emitter, expr: ast.Expr) bool {
         switch (expr) {
@@ -12800,6 +12863,34 @@ pub const Emitter = struct {
 
         // Load and return the struct value
         return self.builder.buildLoad(string_type, result, "tostr.string");
+    }
+
+    /// Emit char.to_string() - converts char to primitive string.
+    /// Returns a pointer to a null-terminated string containing the single character.
+    fn emitCharToString(self: *Emitter, char_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // Allocate 2 bytes on heap for char + null terminator
+        const malloc_fn = self.getOrCreateMallocFn();
+        const alloc_size = llvm.Const.int64(self.ctx, 2);
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const malloc_type = llvm.c.LLVMGlobalGetValueType(malloc_fn);
+        const heap_ptr = self.builder.buildCall(malloc_type, malloc_fn, &malloc_args, "chartostr.heap");
+
+        // Truncate char (i32 codepoint) to i8
+        const char_i8 = llvm.c.LLVMBuildTrunc(self.builder.ref, char_val, i8_type, "chartostr.char_i8");
+
+        // Store the character at index 0
+        _ = self.builder.buildStore(char_i8, heap_ptr);
+
+        // Store null terminator at index 1
+        const one = llvm.Const.int64(self.ctx, 1);
+        var null_indices = [_]llvm.ValueRef{one};
+        const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, heap_ptr, &null_indices, 1, "chartostr.null_ptr");
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_ptr);
+
+        // Return the pointer (primitive string type)
+        return heap_ptr;
     }
 
     // ========================================================================
