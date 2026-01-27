@@ -274,7 +274,7 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ## Phase 9: Deferred FFI Features
 
-**Status:** In Progress (Batch A Complete)
+**Status:** In Progress (Batch B Complete)
 **Objective:** Complete remaining FFI features organized by implementation priority.
 
 ### Batch A: Quick Wins (Validation & Testing) ✅
@@ -283,10 +283,13 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 - [x] Validate unsized extern types can only be used behind pointers (`CPtr[T]`, `COptPtr[T]`)
 - [x] Allow sized extern types to be passed by value to C functions
 
-### Batch B: Out Parameters
+### Batch B: Out Parameters ✅
 
-- [ ] Checker: Handle `out` parameters (allocate stack space, pass pointer)
-- [ ] Codegen: For `out` params - alloca + pass pointer + mark initialized after call
+- [x] Parser: Parse `out identifier` syntax at call sites
+- [x] Checker: Validate `out` arguments match extern function's out parameters
+- [x] Checker: Track out_params bitmask in FunctionType
+- [x] Codegen: For `out` params - pass pointer to variable's alloca
+- [x] Test: `test/native/ffi/extern_fn_out_call.kl` - end-to-end out parameter test
 
 ### Batch C: String Ownership
 

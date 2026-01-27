@@ -298,6 +298,7 @@ pub const OwnershipChecker = struct {
             .comptime_block => |cb| try self.analyzeComptimeBlock(cb),
             .builtin_call => |bc| try self.analyzeBuiltinCall(bc),
             .unsafe_block => |ub| try self.analyzeUnsafeBlock(ub),
+            .out_arg => |oa| try self.analyzeOutArg(oa),
         };
     }
 
@@ -318,6 +319,15 @@ pub const OwnershipChecker = struct {
     fn analyzeUnsafeBlock(self: *OwnershipChecker, block: *ast.UnsafeBlock) !?*VariableState {
         // Analyze the block body for ownership - unsafe blocks still need ownership tracking
         _ = try self.analyzeBlockExpr(block.body);
+        return null;
+    }
+
+    fn analyzeOutArg(self: *OwnershipChecker, out_arg: *ast.OutArg) !?*VariableState {
+        // Out arguments pass a pointer to a variable, which will be written to by the callee.
+        // The variable's state after the call should be considered initialized.
+        // For now, just look up the variable state.
+        _ = self;
+        _ = out_arg;
         return null;
     }
 

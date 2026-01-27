@@ -3296,6 +3296,7 @@ pub const TypeChecker = struct {
             .comptime_block => |cb| self.checkComptimeBlock(cb),
             .builtin_call => |bc| self.checkBuiltinCall(bc),
             .unsafe_block => |ub| self.checkUnsafeBlock(ub),
+            .out_arg => |oa| self.checkOutArg(oa),
         };
     }
 
@@ -3911,7 +3912,16 @@ pub const TypeChecker = struct {
 
             // First pass: check all argument types and try to infer type variables
             var all_unified = true;
-            for (call.args, func.params) |arg, param_type| {
+            for (call.args, func.params, 0..) |arg, param_type, i| {
+                // Validate out parameter/argument matching (generic functions don't typically have out params, but check anyway)
+                const is_out_param = (i < 64) and ((func.out_params & (@as(u64, 1) << @intCast(i))) != 0);
+                const is_out_arg = (arg == .out_arg);
+                if (is_out_param and !is_out_arg) {
+                    self.addError(.type_mismatch, arg.span(), "out parameter requires 'out' keyword at call site", .{});
+                } else if (!is_out_param and is_out_arg) {
+                    self.addError(.type_mismatch, arg.span(), "'out' keyword used for non-out parameter", .{});
+                }
+
                 const arg_type = self.checkExpr(arg);
                 // Try to unify the parameter type (which may contain type vars)
                 // with the concrete argument type
@@ -3987,7 +3997,17 @@ pub const TypeChecker = struct {
             }
         } else {
             // Non-generic call: check argument types directly
-            for (call.args, func.params) |arg, param_type| {
+            for (call.args, func.params, 0..) |arg, param_type, i| {
+                const is_out_param = (i < 64) and ((func.out_params & (@as(u64, 1) << @intCast(i))) != 0);
+                const is_out_arg = (arg == .out_arg);
+
+                // Validate out parameter/argument matching
+                if (is_out_param and !is_out_arg) {
+                    self.addError(.type_mismatch, arg.span(), "out parameter requires 'out' keyword at call site", .{});
+                } else if (!is_out_param and is_out_arg) {
+                    self.addError(.type_mismatch, arg.span(), "'out' keyword used for non-out parameter", .{});
+                }
+
                 const arg_type = self.checkExpr(arg);
                 if (!arg_type.eql(param_type)) {
                     self.addError(.type_mismatch, arg.span(), "argument type mismatch", .{});
@@ -7297,6 +7317,20 @@ pub const TypeChecker = struct {
         return block_type;
     }
 
+    /// Type check an out argument expression.
+    /// Out arguments can only appear within calls to extern functions with out parameters.
+    /// The validation is done in checkCall when we have the context of the function being called.
+    fn checkOutArg(self: *TypeChecker, out_arg: *ast.OutArg) Type {
+        // Look up the variable to get its type
+        if (self.lookupSymbol(out_arg.name)) |sym| {
+            if (sym.kind == .variable or sym.kind == .parameter) {
+                return sym.type_;
+            }
+        }
+        self.addError(.undefined_variable, out_arg.span, "undefined variable '{s}'", .{out_arg.name});
+        return self.type_builder.unknownType();
+    }
+
     /// Populate interpreter environment with constants from the current scope.
     /// Copies compile-time evaluated constants to the interpreter's global environment.
     fn populateInterpreterEnv(self: *TypeChecker, interp: *Interpreter) void {
@@ -8937,7 +8971,10 @@ pub const TypeChecker = struct {
         var param_types: std.ArrayListUnmanaged(Type) = .{};
         defer param_types.deinit(self.allocator);
 
-        for (func.params) |param| {
+        // Build out_params bitmask
+        var out_params: u64 = 0;
+
+        for (func.params, 0..) |param, i| {
             const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
             param_types.append(self.allocator, param_type) catch {};
 
@@ -8950,11 +8987,9 @@ pub const TypeChecker = struct {
                 }
             }
 
-            // Validate out parameters: must be used with pointer-compatible types
-            if (param.is_out) {
-                // Out parameters get their address taken and passed as a pointer
-                // The actual type should be something that can be written to
-                // (this is validated at use site)
+            // Track out parameters
+            if (param.is_out and i < 64) {
+                out_params |= (@as(u64, 1) << @intCast(i));
             }
         }
 
@@ -8977,11 +9012,12 @@ pub const TypeChecker = struct {
 
         // Create function type
         // Extern functions are implicitly unsafe to call
-        const func_type = self.type_builder.functionTypeWithFlags(
+        const func_type = self.type_builder.functionTypeWithAllFlags(
             param_types.items,
             return_type,
             0, // no comptime params
             true, // is_unsafe (extern functions require unsafe to call)
+            out_params, // out parameter bitmask
         ) catch self.type_builder.unknownType();
 
         // Register in current scope

@@ -1270,7 +1270,30 @@ pub const Parser = struct {
 
         if (!self.check(.r_paren)) {
             while (true) {
-                try args.append(self.allocator, try self.parseExpression());
+                // Check for 'out' modifier (contextual keyword for FFI out parameters)
+                if (self.current.kind == .identifier and
+                    std.mem.eql(u8, self.source[self.current.loc.start..self.current.loc.end], "out"))
+                {
+                    const out_span_start = self.spanFromToken(self.current);
+                    self.advance(); // consume 'out'
+
+                    // Must be followed by an identifier
+                    if (self.current.kind != .identifier) {
+                        try self.reportError("expected identifier after 'out'");
+                        return ParseError.UnexpectedToken;
+                    }
+                    const id_name = self.source[self.current.loc.start..self.current.loc.end];
+                    const id_span = self.spanFromToken(self.current);
+                    self.advance(); // consume identifier
+
+                    const out_arg = try self.create(ast.OutArg, .{
+                        .name = id_name,
+                        .span = ast.Span.merge(out_span_start, id_span),
+                    });
+                    try args.append(self.allocator, .{ .out_arg = out_arg });
+                } else {
+                    try args.append(self.allocator, try self.parseExpression());
+                }
                 if (!self.match(.comma)) break;
             }
         }

@@ -34,3 +34,25 @@ Point make_point(int32_t x, int32_t y) {
     Point p = {x, y};
     return p;
 }
+
+// Function that writes to an out parameter and returns a status
+int32_t get_value(int32_t key, int32_t *out_value) {
+    // Simulate looking up a value by key
+    if (key == 42) {
+        *out_value = 100;
+        return 1;  // Success
+    } else {
+        *out_value = 0;
+        return 0;  // Not found
+    }
+}
+
+// Function with multiple out parameters
+int32_t divide_with_remainder(int32_t dividend, int32_t divisor, int32_t *out_quotient, int32_t *out_remainder) {
+    if (divisor == 0) {
+        return 0;  // Error
+    }
+    *out_quotient = dividend / divisor;
+    *out_remainder = dividend % divisor;
+    return 1;  // Success
+}

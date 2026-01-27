@@ -1,0 +1,58 @@
+// Test: Out parameters in extern function calls
+// This test verifies that out parameters work correctly at call sites.
+//
+// Build instructions:
+//   1. Compile the C helper library:
+//      cc -c test/native/ffi/helper.c -o /tmp/helper.o
+//      ar rcs /tmp/libhelper.a /tmp/helper.o
+//
+//   2. Build and run the Klar program:
+//      klar build test/native/ffi/extern_fn_out_call.kl -L/tmp -lhelper -o /tmp/out_test
+//      /tmp/out_test
+
+// Declare the C functions with out parameters
+extern {
+    fn get_value(key: i32, out value: i32) -> i32
+    fn divide_with_remainder(dividend: i32, divisor: i32, out quotient: i32, out remainder: i32) -> i32
+}
+
+fn main() -> i32 {
+    // Test 1: Single out parameter - success case
+    var result: i32 = 0
+    let status1: i32 = unsafe { get_value(42, out result) }
+    if status1 != 1 {
+        return 1  // Failed: get_value didn't return success
+    }
+    if result != 100 {
+        return 2  // Failed: out parameter has wrong value
+    }
+
+    // Test 2: Single out parameter - not found case
+    var result2: i32 = 999
+    let status2: i32 = unsafe { get_value(0, out result2) }
+    if status2 != 0 {
+        return 3  // Failed: get_value should return failure
+    }
+    if result2 != 0 {
+        return 4  // Failed: out parameter should be 0
+    }
+
+    // Test 3: Multiple out parameters
+    var quotient: i32 = 0
+    var remainder: i32 = 0
+    let status3: i32 = unsafe { divide_with_remainder(17, 5, out quotient, out remainder) }
+    if status3 != 1 {
+        return 5  // Failed: divide_with_remainder didn't return success
+    }
+    if quotient != 3 {
+        return 6  // Failed: quotient is wrong (17 / 5 = 3)
+    }
+    if remainder != 2 {
+        return 7  // Failed: remainder is wrong (17 % 5 = 2)
+    }
+
+    // All tests passed
+    return 0
+}
+
+// expected: 0

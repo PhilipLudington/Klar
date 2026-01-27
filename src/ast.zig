@@ -54,6 +54,7 @@ pub const Expr = union(enum) {
     comptime_block: *ComptimeBlock,
     builtin_call: *BuiltinCall,
     unsafe_block: *UnsafeBlock,
+    out_arg: *OutArg,
 
     pub fn span(self: Expr) Span {
         return switch (self) {
@@ -79,6 +80,7 @@ pub const Expr = union(enum) {
             .comptime_block => |c| c.span,
             .builtin_call => |b| b.span,
             .unsafe_block => |u| u.span,
+            .out_arg => |o| o.span,
         };
     }
 };
@@ -356,6 +358,14 @@ pub const ComptimeBlock = struct {
 /// dereferencing raw pointers, etc.
 pub const UnsafeBlock = struct {
     body: *Block,
+    span: Span,
+};
+
+/// Out argument expression: `out identifier`
+/// Used at call sites to pass a pointer to a local variable that
+/// will be written to by the callee (extern function with out parameter).
+pub const OutArg = struct {
+    name: []const u8, // The identifier name
     span: Span,
 };
 

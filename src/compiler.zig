@@ -800,6 +800,11 @@ pub const Compiler = struct {
                     try self.addError(.internal_error, expr.span(), "builtin calls not yet supported in bytecode VM");
                 }
             },
+            .out_arg => {
+                // Out arguments are only valid in extern function calls
+                // The bytecode VM doesn't support FFI, so this is an error
+                try self.addError(.internal_error, expr.span(), "out arguments not supported in bytecode VM (FFI not available)");
+            },
         }
     }
 

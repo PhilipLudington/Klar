@@ -437,6 +437,9 @@ pub const FunctionType = struct {
     comptime_params: u64 = 0,
     /// True if this function is unsafe and can only be called from an unsafe context
     is_unsafe: bool = false,
+    /// Bitmask indicating which parameters are out parameters (index i is out if bit i is set)
+    /// Out parameters are for FFI - the caller passes a pointer to uninitialized memory
+    out_params: u64 = 0,
 };
 
 pub const ReferenceType = struct {
@@ -778,9 +781,13 @@ pub const TypeBuilder = struct {
     }
 
     pub fn functionTypeWithFlags(self: *TypeBuilder, params: []const Type, return_type: Type, comptime_params: u64, is_unsafe: bool) !Type {
+        return self.functionTypeWithAllFlags(params, return_type, comptime_params, is_unsafe, 0);
+    }
+
+    pub fn functionTypeWithAllFlags(self: *TypeBuilder, params: []const Type, return_type: Type, comptime_params: u64, is_unsafe: bool, out_params: u64) !Type {
         const func = try self.arena.allocator().create(FunctionType);
         const params_copy = try self.arena.allocator().dupe(Type, params);
-        func.* = .{ .params = params_copy, .return_type = return_type, .comptime_params = comptime_params, .is_unsafe = is_unsafe };
+        func.* = .{ .params = params_copy, .return_type = return_type, .comptime_params = comptime_params, .is_unsafe = is_unsafe, .out_params = out_params };
         return .{ .function = func };
     }
 
