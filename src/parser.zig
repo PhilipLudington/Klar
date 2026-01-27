@@ -41,11 +41,37 @@ fn findUnescapedBrace(content: []const u8, start: usize) ?usize {
     return null;
 }
 
+/// Check if the content between braces is a valid expression (for interpolation).
+/// Returns true if it starts with a valid identifier/expression character.
+fn isValidExpressionContent(content: []const u8) bool {
+    // Skip leading whitespace
+    var pos: usize = 0;
+    while (pos < content.len and
+        (content[pos] == ' ' or content[pos] == '\t' or
+        content[pos] == '\n' or content[pos] == '\r'))
+    {
+        pos += 1;
+    }
+    if (pos >= content.len) {
+        return false; // Empty or whitespace-only
+    }
+    const first_char = content[pos];
+    // Valid expression starters: letters, underscore, digits, parentheses, string/char literals
+    return (first_char >= 'a' and first_char <= 'z') or
+        (first_char >= 'A' and first_char <= 'Z') or
+        first_char == '_' or
+        (first_char >= '0' and first_char <= '9') or
+        first_char == '(' or
+        first_char == '"' or
+        first_char == '\'';
+}
+
 /// Check if the string contains valid interpolation patterns.
 /// Returns true only if every unescaped '{' has a matching '}'.
 /// A string like "{" has an unescaped brace but no match, so returns false.
 fn hasValidInterpolation(content: []const u8) bool {
     var pos: usize = 0;
+    var found_valid: bool = false;
     while (findUnescapedBrace(content, pos)) |brace_start| {
         // Try to find matching '}'
         var brace_depth: usize = 1;
@@ -66,12 +92,41 @@ fn hasValidInterpolation(content: []const u8) bool {
             // Unmatched '{' found - not valid interpolation
             return false;
         }
+        // Check if the content starts with a valid expression character
+        // Valid interpolation must start with: letter, underscore, digit, or '('
+        // This filters out empty braces {}, whitespace-only {  }, and nested braces {{}}
+        const content_start = brace_start + 1;
+        const content_end = search_pos;
+        if (content_end > content_start) {
+            const inner = content[content_start..content_end];
+            // Skip leading whitespace
+            var first_char_pos: usize = 0;
+            while (first_char_pos < inner.len and
+                (inner[first_char_pos] == ' ' or inner[first_char_pos] == '\t' or
+                inner[first_char_pos] == '\n' or inner[first_char_pos] == '\r'))
+            {
+                first_char_pos += 1;
+            }
+            if (first_char_pos < inner.len) {
+                const first_char = inner[first_char_pos];
+                // Valid expression starters: letters, underscore, digits, parentheses
+                const is_valid_start = (first_char >= 'a' and first_char <= 'z') or
+                    (first_char >= 'A' and first_char <= 'Z') or
+                    first_char == '_' or
+                    (first_char >= '0' and first_char <= '9') or
+                    first_char == '(' or
+                    first_char == '"' or // string literal
+                    first_char == '\''; // char literal
+                if (is_valid_start) {
+                    found_valid = true;
+                }
+            }
+        }
         // Move past this interpolation and check for more
         pos = search_pos + 1;
     }
-    // If we found at least one valid interpolation, return true
-    // If no unescaped braces at all, return false (not interpolated)
-    return findUnescapedBrace(content, 0) != null;
+    // Return true only if we found at least one valid interpolation
+    return found_valid;
 }
 
 /// Process escape sequences in a string segment.
@@ -560,10 +615,20 @@ pub const Parser = struct {
                     return ParseError.UnterminatedString;
                 }
 
-                // Parse the expression inside { }
+                // Get the expression text inside { }
                 const expr_text = content[brace_start + 1 .. expr_end];
-                const expr = try self.parseExpressionFromString(expr_text);
-                try parts.append(self.allocator, .{ .expr = expr });
+
+                // Check if this is a valid expression or should be treated as literal
+                if (isValidExpressionContent(expr_text)) {
+                    // Parse the expression inside { }
+                    const expr = try self.parseExpressionFromString(expr_text);
+                    try parts.append(self.allocator, .{ .expr = expr });
+                } else {
+                    // Treat the braces and content as a literal string
+                    const literal = content[brace_start .. expr_end + 1];
+                    const processed = processEscapes(self.allocator, literal) catch literal;
+                    try parts.append(self.allocator, .{ .string = processed });
+                }
 
                 pos = expr_end + 1;
             } else {
