@@ -78,33 +78,30 @@ fn main() -> i32 {
 
 ---
 
-## [ ] Bug 5: No string slicing method
+## [x] Bug 5: No string slicing method
 
-**Severity:** High
+**Severity:** High → **FIXED**
 
-**Description:** The `slice(start, end)` method referenced in design documents does not exist on the `string` type.
-
-**Reproduction:**
+**Solution:** The `slice(start, end)` method is now implemented with clamping semantics:
 ```klar
 fn main() -> i32 {
     let s: string = "hello world"
-    let sub: string = s.slice(0, 5)  // Method not found
-    println(sub)
+    let sub: string = s.slice(0, 5)   // "hello"
+    let end: string = s.slice(6, 11)  // "world"
+    println(sub)  // Prints: hello
+    println(end)  // Prints: world
     return 0
 }
 ```
 
-**Error:**
-```
-Type error(s):
-  4:23: method 'slice' not found
-```
+**Behavior:**
+- Indices outside valid range are clamped (like Python/Go)
+- `s.slice(0, 100)` on "hello" → "hello" (clamps end to 5)
+- `s.slice(10, 20)` on "hello" → "" (start >= len)
+- `s.slice(3, 1)` → "" (start > end)
+- Negative indices are clamped to 0
 
-**Also tried:**
-- `s.substring(0, 5)` - method not found
-- `s[0..5]` - cannot index this type
-
-**Impact:** Cannot extract substrings, which is essential for lexer token extraction.
+**Original issue:** The `slice(start, end)` method did not exist on the `string` type.
 
 ---
 
@@ -116,9 +113,11 @@ Type error(s):
 | No brace escape | Blocking | ✅ FIXED - use `\{` and `\}` |
 | char.to_string() type | High | ✅ FIXED - returns `string` now |
 | Char interpolation | Medium | ❌ Open |
-| No string slicing | High | ❌ Open |
+| No string slicing | High | ✅ FIXED - use `s.slice(start, end)` |
 
 Remaining blockers for JSON parser:
 1. ~~Cannot write test strings containing `{` or `}`~~ ✅ Fixed
 2. ~~Cannot build strings from characters (needed for token construction)~~ ✅ Fixed
-3. Cannot extract substrings (needed for keyword/string token extraction)
+3. ~~Cannot extract substrings (needed for keyword/string token extraction)~~ ✅ Fixed
+
+**All blocking issues resolved!** The JSON parser implementation can proceed.
