@@ -10632,7 +10632,7 @@ pub const TypeChecker = struct {
         // First pass: register all type declarations
         for (module.declarations) |decl| {
             switch (decl) {
-                .struct_decl, .enum_decl, .trait_decl, .type_alias => self.checkDecl(decl),
+                .struct_decl, .enum_decl, .trait_decl, .type_alias, .extern_type_decl => self.checkDecl(decl),
                 else => {},
             }
         }

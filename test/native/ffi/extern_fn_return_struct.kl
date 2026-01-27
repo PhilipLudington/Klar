@@ -1,0 +1,30 @@
+// Test: Extern function returning a struct
+// Verifies C ABI compliance for struct return values
+// Uses libc div() which returns div_t {quot, rem}
+
+// C's div_t struct
+extern struct DivResult {
+    quot: i32,
+    rem: i32,
+}
+
+extern {
+    // int div(int numer, int denom) -> div_t
+    fn div(numer: i32, denom: i32) -> DivResult
+}
+
+fn main() -> i32 {
+    unsafe {
+        // 17 / 5 = 3 remainder 2
+        let result: DivResult = div(17, 5)
+
+        if result.quot == 3 and result.rem == 2 {
+            // 100 / 7 = 14 remainder 2
+            let result2: DivResult = div(100, 7)
+            if result2.quot == 14 and result2.rem == 2 {
+                return 0
+            }
+        }
+    }
+    return 1
+}

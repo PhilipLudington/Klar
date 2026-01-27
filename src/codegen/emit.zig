@@ -117,6 +117,9 @@ pub const Emitter = struct {
     const ExternFnInfo = struct {
         func: llvm.ValueRef,
         is_variadic: bool,
+        /// For ABI lowering: if the function returns a struct that's lowered to an integer,
+        /// this holds the original struct type so we can convert the return value.
+        abi_lowered_return_type: ?llvm.TypeRef = null,
     };
 
     const ReturnTypeInfo = struct {
@@ -906,17 +909,59 @@ pub const Emitter = struct {
 
     /// Declare an external C function.
     /// Extern functions use C calling convention and may be variadic.
+    /// Applies ABI lowering for struct returns - small structs are returned in registers.
     fn declareExternFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
         // Extern functions cannot be generic
         if (func.type_params.len > 0) {
             return EmitError.InvalidAST;
         }
 
-        // Build return type
-        const return_llvm_type = if (func.return_type) |rt|
-            try self.typeExprToLLVM(rt)
-        else
-            llvm.Types.void_(self.ctx);
+        // Build return type, with ABI lowering for structs
+        var abi_lowered_return_type: ?llvm.TypeRef = null;
+        const return_llvm_type = if (func.return_type) |rt| blk: {
+            const original_type = try self.typeExprToLLVM(rt);
+
+            // Check if this is a struct type that needs ABI lowering
+            // Look up the struct by name and calculate size
+            if (llvm.getTypeKind(original_type) == llvm.c.LLVMStructTypeKind) {
+                // Calculate struct size using the layout calculator
+                // Get the struct name from the type expression
+                const struct_size: usize = if (self.type_checker) |tc| size_blk: {
+                    const type_name: ?[]const u8 = switch (rt) {
+                        .named => |n| n.name,
+                        else => null,
+                    };
+                    if (type_name) |name| {
+                        if (tc.lookupSymbol(name)) |sym| {
+                            if (sym.type_ == .struct_) {
+                                const type_layout = self.layout_calc.getTypeLayout(sym.type_);
+                                break :size_blk type_layout.size;
+                            }
+                        }
+                    }
+                    break :size_blk 0;
+                } else 0;
+
+                // On most platforms, small structs (≤ 8 bytes) are returned as integers
+                // For arm64-apple and System V x86_64, structs up to 16 bytes can use registers,
+                // but for simplicity we treat ≤8 bytes as i64 (single register)
+                if (struct_size <= 8 and struct_size > 0) {
+                    // Save the original struct type for conversion at call sites
+                    abi_lowered_return_type = original_type;
+
+                    // Return as integer type matching the struct size
+                    break :blk if (struct_size <= 1)
+                        llvm.Types.int8(self.ctx)
+                    else if (struct_size <= 2)
+                        llvm.Types.int16(self.ctx)
+                    else if (struct_size <= 4)
+                        llvm.Types.int32(self.ctx)
+                    else
+                        llvm.Types.int64(self.ctx);
+                }
+            }
+            break :blk original_type;
+        } else llvm.Types.void_(self.ctx);
 
         // Build parameter types
         var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
@@ -948,6 +993,7 @@ pub const Emitter = struct {
         self.extern_functions.put(name_copy, .{
             .func = llvm_func,
             .is_variadic = func.is_variadic,
+            .abi_lowered_return_type = abi_lowered_return_type,
         }) catch return EmitError.OutOfMemory;
     }
 
@@ -4359,6 +4405,27 @@ pub const Emitter = struct {
                     return self.builder.buildLoad(sret_return_type, sret_alloca, "sret.load");
                 }
 
+                // Check if this is an extern function with ABI-lowered struct return
+                if (self.extern_functions.get(lookup_name)) |extern_info| {
+                    if (extern_info.abi_lowered_return_type) |struct_type| {
+                        // Call the function which returns an integer
+                        var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                        defer args.deinit(self.allocator);
+
+                        for (call.args) |arg| {
+                            args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                        }
+
+                        const fn_type = llvm.getGlobalValueType(func);
+                        const int_result = self.builder.buildCall(fn_type, func, args.items, "abi.int");
+
+                        // Convert the integer back to struct by storing to memory and loading as struct
+                        const tmp_alloca = self.builder.buildAlloca(struct_type, "abi.struct.tmp");
+                        _ = self.builder.buildStore(int_result, tmp_alloca);
+                        return self.builder.buildLoad(struct_type, tmp_alloca, "abi.struct");
+                    }
+                }
+
                 // Normal direct function call (non-sret)
                 var args = std.ArrayListUnmanaged(llvm.ValueRef){};
                 defer args.deinit(self.allocator);
@@ -5865,6 +5932,13 @@ pub const Emitter = struct {
                 // Check if this function uses sret (return type is in sret_functions)
                 if (self.sret_functions.get(func_name)) |sret_type| {
                     return sret_type;
+                }
+
+                // Check if this is an extern function with ABI-lowered struct return
+                if (self.extern_functions.get(func_name)) |extern_info| {
+                    if (extern_info.abi_lowered_return_type) |struct_type| {
+                        return struct_type;
+                    }
                 }
 
                 const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;

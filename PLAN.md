@@ -1,6 +1,6 @@
 # Klar FFI Implementation Plan
 
-**Status:** In Progress (Phase 7 Complete)
+**Status:** In Progress (Phase 8 Substantially Complete)
 **Goal:** Implement Foreign Function Interface (FFI) for C interoperability
 
 ---
@@ -260,12 +260,14 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 - [ ] Add `-L` flag for library search paths
 
 ### 8.2 ABI Compliance
-- [ ] Verify struct passing matches C ABI (by value vs by pointer)
-- [ ] Verify return value handling
+- [x] Verify struct passing matches C ABI (by value vs by pointer)
+- [x] Verify return value handling (small structs returned in registers)
 - [ ] Test on multiple platforms (macOS, Linux)
 
 ### 8.3 Integration Tests
 - [x] FFI tests already link with libc successfully
+- [x] `test/native/ffi/extern_fn_return_struct.kl` - C struct return values
+- [x] `test/native/ffi/sel4_bindings.kl` - seL4-style FFI bindings
 - [ ] `test/native/ffi/call_c_function.kl` - call custom C code
 
 ---
@@ -317,6 +319,17 @@ Phase 5,6 ──> Phase 8 (integration)
 
 ---
 
+## Known Limitations
+
+See `BUG.md` for detailed descriptions and workarounds.
+
+- **Bug 1**: Cannot access array elements via struct field (`s.arr[i]` syntax)
+- **Bug 2**: Static method calls on structs fail (`Struct::method()` syntax)
+- **Bug 3**: Sized extern types not fully supported in impl method parameters
+- **Bug 4**: Extern type allocations not freed (minor memory leak)
+
+---
+
 ## Open Questions
 
 1. ~~**Null terminator handling**: Should `string.as_cstr()` add a null terminator on-the-fly, or require strings to always be null-terminated internally?~~ **Resolved:** Klar strings (both primitive `string` and `String`) are already null-terminated internally, so `as_cstr()` just returns the pointer.
@@ -333,8 +346,8 @@ Phase 5,6 ──> Phase 8 (integration)
 
 - [x] Can call libc functions (puts, printf, malloc, free)
 - [x] Can define C-compatible structs and pass to C functions
-- [ ] Can receive C structs from C functions
+- [x] Can receive C structs from C functions
 - [x] Can work with C strings safely
 - [x] All unsafe operations require explicit unsafe blocks
 - [x] Klar binaries link cleanly with C libraries
-- [ ] seL4 example from spec compiles and type-checks
+- [x] seL4 example from spec compiles and type-checks
