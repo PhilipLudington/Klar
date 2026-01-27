@@ -287,8 +287,39 @@ impl RangeIter: Iterator {
 }
 ```
 
+## Unsafe Traits
+
+For traits that have safety invariants the compiler cannot verify, use `unsafe trait`. Implementing such traits requires `unsafe impl`:
+
+```klar
+// An unsafe trait with invariants the compiler can't check
+unsafe trait RawHandle {
+    fn as_raw(self: Self) -> i32
+}
+
+struct FileDescriptor {
+    fd: i32,
+}
+
+// Must use unsafe impl for unsafe traits
+unsafe impl FileDescriptor: RawHandle {
+    fn as_raw(self: FileDescriptor) -> i32 {
+        return self.fd
+    }
+}
+```
+
+Key points:
+- `unsafe trait` indicates the trait has safety invariants the compiler cannot verify
+- Implementing an unsafe trait requires `unsafe impl`
+- Using `unsafe impl` on a safe trait is an error
+- Methods on unsafe traits can be called safely (the unsafety is in the implementation contract, not in calling)
+
+See [FFI](../advanced/ffi.md) for more examples of unsafe traits in practice.
+
 ## Next Steps
 
 - [Generics](generics.md) - Generic programming with trait bounds
 - [Builtin Traits](../advanced/builtin-traits.md) - Standard trait implementations
 - [Structs](structs.md) - Implementing traits on structs
+- [FFI](../advanced/ffi.md) - Foreign Function Interface with unsafe traits

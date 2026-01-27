@@ -207,14 +207,14 @@ let d: i32 = a +| a          // saturating arithmetic
 
 ## Current Status
 
-**Phase 4: Language Completion** — In Progress
+**Phase 4: Language Completion** — Nearing Completion
 
 | Phase | Status | Description |
 |-------|--------|-------------|
 | Phase 1: Tree-Walking Interpreter | ✅ Complete | Lexer, parser, type checker, interpreter |
 | Phase 2: Bytecode VM | ✅ Complete | Bytecode compiler and virtual machine |
 | Phase 3: Native Compiler | ✅ Complete | LLVM-based native code generation |
-| Phase 4: Language Completion | 🚧 In Progress | Generics, traits, modules, standard library |
+| Phase 4: Language Completion | 🟡 Nearing Completion | Generics, traits, modules, stdlib, FFI |
 
 ### Completed Features
 
@@ -222,19 +222,26 @@ let d: i32 = a +| a          // saturating arithmetic
 - ✅ Ownership-based memory management (no GC)
 - ✅ Rc/Arc reference counting with automatic drop
 - ✅ Closures with capture analysis
-- ✅ Optional and Result types
+- ✅ Optional and Result types with `?` operator
 - ✅ Debug info generation (-g flag)
 - ✅ Cross-compilation support (--target flag)
 - ✅ 252x speedup over VM for compute-bound code
 - ✅ Generic functions, structs, and enums with monomorphization
-- ✅ Trait definitions, implementations, and bounds
-- ✅ Builtin traits: Eq, Ordered, Clone, Drop
+- ✅ Trait definitions, implementations, bounds, and inheritance
+- ✅ Builtin traits: Eq, Ordered, Clone, Drop, Hash, Default
+- ✅ Associated types in traits
+- ✅ Module system with imports and visibility
+- ✅ Standard library core: List, Map, Set, String, Range
+- ✅ Iterator protocol with for-loops and adapters
+- ✅ Comptime (compile-time evaluation and reflection)
+- ✅ Interactive REPL
+- ✅ **FFI (Foreign Function Interface)** — Call C functions, use C types, link C libraries
 
 ### In Progress
 
-- 🚧 Associated types in traits
-- 🚧 Module system and imports
-- 🚧 Standard library
+- 🚧 Filesystem operations (Path, directory operations)
+- 🚧 Package manager
+- 🚧 Developer tooling (formatter, LSP)
 
 See [PLAN.md](PLAN.md) for implementation details and roadmap.
 

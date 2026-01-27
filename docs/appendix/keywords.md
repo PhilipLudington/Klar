@@ -79,6 +79,14 @@ Reserved keywords in Klar that cannot be used as identifiers.
 | `pub` | Public visibility | `pub fn api() { }` |
 | `as` | Alias | `import math.{ add as sum }` |
 
+## FFI Keywords
+
+| Keyword | Description | Example |
+|---------|-------------|---------|
+| `extern` | External C declaration | `extern { fn puts(s: CStr) -> i32 }` |
+| `unsafe` | Unsafe code block | `unsafe { c_function() }` |
+| `out` | Out parameter modifier | `fn get_result(out ptr: CPtr[i32])` |
+
 ## Comptime Keywords
 
 | Keyword | Description | Example |
@@ -92,6 +100,15 @@ Reserved keywords in Klar that cannot be used as identifiers.
 | `Rc` | Reference counted | `Rc.new(value)` |
 | `Arc` | Atomic ref counted | `Arc.new(value)` |
 | `Cell` | Interior mutability | `Cell.new(value)` |
+
+## FFI Types
+
+| Keyword | Description | Example |
+|---------|-------------|---------|
+| `CPtr` | Non-null C pointer | `CPtr[i32]` |
+| `COptPtr` | Nullable C pointer | `COptPtr[i32]` |
+| `CStr` | Borrowed C string | `msg.as_cstr()` |
+| `CStrOwned` | Owned C string | `msg.to_cstr()` |
 
 ## Collection Types
 
@@ -124,8 +141,6 @@ The following keywords are reserved and may be used in future versions:
 | `move` | Move semantics |
 | `mut` | Mutability (alternative to `var`) |
 | `static` | Static variables |
-| `extern` | External functions |
-| `unsafe` | Unsafe code blocks |
 | `union` | Union types |
 
 ## Contextual Keywords

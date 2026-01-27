@@ -1,398 +1,331 @@
-# Klar FFI Implementation Plan
+# Klar Phase 4: Language Completion
 
-**Status:** Complete (All Phases Done)
-**Goal:** Implement Foreign Function Interface (FFI) for C interoperability
+> **Goal:** Complete the Klar language with generics, traits, modules, standard library, and FFI.
 
-> **Previous plans:** [Phase 4: Language Completion](docs/history/phase4-language-completion.md) (generics, traits, modules, stdlib)
+## Current State
+
+**Completed (Phases 1-3):**
+- Full compilation pipeline (lexer → parser → checker → LLVM → native)
+- Ownership-based memory management (Rc/Arc, automatic drop)
+- Basic types, structs, enums, closures, optionals, results
+- Parser supports generics/traits/modules syntax
+- Three execution backends: interpreter, bytecode VM, native compilation
+- 252x speedup for native vs VM
+
+**Completed in Phase 4:**
+- [x] **Milestone 1: Generics** - Full generic type checking with monomorphization
+- [x] **Milestone 2: Traits** - Trait definitions, implementations, bounds, inheritance, associated types
+- [x] **Milestone 3: Modules** - Multi-file compilation with imports and visibility
+- [x] **Milestone 4: Stdlib Core** - Option, Result, List, String, Map, Set as builtins
+- [x] **Milestone 6: Iterators** - For-loops, Range, collection adapters
+- [x] **Milestone 7: Error Handling** - `?` operator, From/Into traits, error context
+- [x] **Milestone 10: REPL** - Interactive exploration with interpreter backend
+- [x] **Milestone 11: Comptime** - Compile-time evaluation, reflection, assertions
+- [x] **Milestone 12: FFI** - Foreign Function Interface for C interoperability
+
+**In Progress:**
+- **Milestone 5: Stdlib I/O** - Core I/O complete, filesystem operations pending
+- **Milestone 8: Package Manager** - Not started
+- **Milestone 9: Tooling** - Not started
+
+> **Previous plans archived:** [Phase 4 History](docs/history/phase4-language-completion.md)
 
 ---
 
-## Overview
+## Milestone 1: Generic Type Checking ✅
 
-This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar programs to:
-1. Call C functions
-2. Use C-compatible type layouts
-3. Work with raw pointers safely
-4. Clearly mark unsafe operations
+**Status:** Complete. Generic functions, structs, enums, and struct methods all working.
+
+See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-1-generic-type-checking) for full details.
 
 ---
 
-## Phase 1: Unsafe Blocks ✅
+## Milestone 2: Trait System ✅
 
-**Objective:** Add `unsafe` keyword and block syntax as the foundation for all FFI features.
+**Status:** Complete. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance, associated types).
 
-### 1.1 Lexer Changes
-- [x] Add `unsafe` keyword token (already existed)
+See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-2-trait-system) for full details.
 
-### 1.2 Parser Changes
-- [x] Parse `unsafe { ... }` blocks as expressions/statements
-- [x] Parse `unsafe fn` declarations
-- ~~Parse `unsafe trait` and `unsafe impl`~~ → moved to Phase 9
+---
 
-### 1.3 AST Changes
-- [x] Add `UnsafeBlock` node wrapping inner statements
-- [x] Add `is_unsafe` flag to `FunctionDecl`
+## Milestone 3: Module System ✅
 
-### 1.4 Checker Changes
-- [x] Track "unsafe context" during type checking (`in_unsafe_context` field)
+**Status:** Complete. Multi-file compilation works with selective imports, visibility enforcement, and topological ordering.
+
+See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-3-module-system) for full details.
+
+---
+
+## Milestone 4: Standard Library - Core ✅
+
+**Status:** Complete. Optional, Result, builtin type methods, List[T], String, Map[K,V], and Set[T] all implemented as builtin types.
+
+See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-4-standard-library---core) for full details.
+
+---
+
+## Milestone 5: Standard Library - I/O
+
+**Objective:** Implement file and console I/O.
+
+**Status:** 🟡 Read/Write Traits Complete. Mutable buffer I/O with arrays working. Basic file I/O types and stdout/stderr implemented as builtins. Buffered I/O complete. Filesystem operations not yet started.
+
+### Completed
+- [x] Mutable buffer allocation (`@repeat`, `ref T`, `inout T`, deref assignment)
+- [x] Read trait with File:Read implementation
+- [x] Write trait with File:Write, Stdout:Write, Stderr:Write implementations
+- [x] IoError enum as builtin type
+- [x] File type with open, read, write, close, flush, read_all, read_to_string
+- [x] Standard I/O (stdin, stdout, stderr)
+- [x] Platform-specific stdio access (macOS, Linux)
+- [x] Buffered I/O (BufReader, BufWriter with automatic flush on drop)
+
+### Remaining
+- [ ] Path type with path manipulation
+- [ ] Directory operations (fs.exists, fs.create_dir, fs.remove, fs.read_dir)
+- [ ] Convenience functions (fs.read, fs.read_string, fs.write, fs.write_string)
+- [ ] errno mapping for IoError conversion
+
+---
+
+## Milestone 6: Iterator Protocol ✅
+
+**Status:** Complete. For-loops work with Range[T], arrays, List[T], Set[T], and Map[K,V]. Iterator adapter methods implemented on collection types.
+
+See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-6-iterator-protocol) for full details.
+
+---
+
+## Milestone 7: Error Handling Improvements ✅
+
+**Status:** Complete. `?` operator implemented for early return on Optional and Result types, with automatic error conversion via From trait. Error context via `.context()` method implemented.
+
+See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-7-error-handling-improvements) for full details.
+
+---
+
+## Milestone 8: Package Manager
+
+**Objective:** Implement basic package management.
+
+**Status:** Not started.
+
+### Manifest Format
+- [ ] Define klar.toml schema
+- [ ] Parse [package] section (name, version, authors)
+- [ ] Parse [dependencies] section
+- [ ] Parse [dev-dependencies] section
+- [ ] Support git dependencies with tag/branch/commit
+
+### CLI Commands
+- [ ] `klar init` - Create new project directory structure
+- [ ] `klar build` - Read klar.toml, resolve dependencies, build all files
+- [ ] `klar run` - Build if needed, execute binary
+- [ ] `klar test` - Discover and run test functions
+- [ ] `klar add` - Add dependency to klar.toml
+
+### Dependency Resolution
+- [ ] Build dependency graph
+- [ ] Resolve version constraints
+- [ ] Handle diamond dependencies
+- [ ] Generate klar.lock for reproducible builds
+
+---
+
+## Milestone 9: Tooling
+
+**Objective:** Developer tooling for productive Klar development.
+
+**Status:** Not started.
+
+### Code Formatter (klar fmt)
+- [ ] Parse source file into AST
+- [ ] Pretty-print AST with consistent formatting
+- [ ] Preserve/normalize comments
+
+### Documentation Generator (klar doc)
+- [ ] Extract `///` documentation comments
+- [ ] Generate HTML documentation
+- [ ] Include type signatures and cross-references
+
+### Language Server Protocol (LSP)
+- [ ] Implement JSON-RPC server
+- [ ] textDocument/hover, definition, references, completion, diagnostics
+
+### VS Code Extension
+- [ ] Syntax highlighting grammar
+- [ ] LSP client integration
+
+---
+
+## Milestone 10: REPL ✅
+
+**Status:** Complete. Basic REPL works with interpreter backend.
+
+See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-10-repl) for full details.
+
+---
+
+## Milestone 11: Comptime ✅
+
+**Status:** Complete. Comptime blocks, functions, parameters, reflection, and assertions all working.
+
+See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-11-comptime) for full details.
+
+---
+
+## Milestone 12: FFI (Foreign Function Interface) ✅
+
+**Objective:** Enable Klar programs to call C functions, use C-compatible type layouts, work with raw pointers, and clearly mark unsafe operations.
+
+**Status:** Complete. All phases implemented.
+
+> **Full specification:** [klar-ffi-spec.md](klar-ffi-spec.md)
+> **Documentation:** [docs/advanced/ffi.md](docs/advanced/ffi.md)
+
+### Phase 1: Unsafe Blocks ✅
+- [x] `unsafe { ... }` blocks as expressions/statements
+- [x] `unsafe fn` declarations
+- [x] Track "unsafe context" during type checking
 - [x] Error when unsafe operations occur outside unsafe context
-- [x] Propagate unsafe requirement through call chains (via `FunctionType.is_unsafe`)
 
-### 1.5 Codegen
-- [x] No special codegen needed - unsafe is a compile-time check only
-- [x] All backends (codegen, compiler, interpreter, ownership) handle `unsafe_block`
+### Phase 2: External Type Declarations ✅
+- [x] `extern type Name` (opaque, unknown size)
+- [x] `extern type(N) Name` (sized, N bytes)
+- [x] Generate LLVM pointer type for unsized, `[N x i8]` for sized
 
-### 1.6 Tests
-- [x] `test/native/ffi/unsafe_block.kl` - basic unsafe blocks
-- [x] `test/native/ffi/unsafe_fn.kl` - unsafe function declarations
-- [x] `test/native/ffi/unsafe_error.kl` - verify errors outside unsafe
+### Phase 3: Pointer Types ✅
+- [x] `CPtr[T]` (non-null raw pointer)
+- [x] `COptPtr[T]` (nullable raw pointer)
+- [x] `CStr` (borrowed null-terminated string)
+- [x] Builtin functions: `is_null`, `unwrap_ptr`, `offset`, `read`, `write`, `ref_to_ptr`, `ptr_cast`
 
----
+### Phase 4: External Function Declarations ✅
+- [x] `extern { fn name(...) -> Type }` blocks
+- [x] `out` parameter modifier
+- [x] Variadic `...` in parameter lists
+- [x] C calling convention
 
-## Phase 2: External Type Declarations ✅
+### Phase 5: C-Compatible Struct Layout ✅
+- [x] `extern struct Name { ... }` with C ABI layout
+- [x] `extern struct packed Name { ... }` for packed layout
 
-**Objective:** Support `extern type` for opaque and sized external types.
+### Phase 6: C-Compatible Enum Layout ✅
+- [x] `extern enum Name: IntType { Variant = Value, ... }`
+- [x] Explicit integer repr type and variant values
 
-### 2.1 Lexer Changes
-- [x] Add `extern` keyword token
+### Phase 7: String Conversions ✅
+- [x] `string.as_cstr() -> CStr` (borrow as C string)
+- [x] `CStr.to_string() -> String` (copy to Klar String)
+- [x] `CStr.len() -> usize`, `CStr.from_ptr()`
 
-### 2.2 Parser Changes
-- [x] Parse `extern type Name` (opaque, unknown size)
-- [x] Parse `extern type(N) Name` (sized, N bytes)
+### Phase 8: Integration & Linking ✅
+- [x] `-l` flag for linking additional system libraries
+- [x] `-L` flag for library search paths
+- [x] ABI-compliant struct passing and returns
+- [x] Tested on macOS and Linux
 
-### 2.3 AST Changes
-- [x] Add `ExternTypeDecl` node with optional size
+### Phase 9: Deferred FFI Features ✅
+- [x] Extern type validation (unsized only behind pointers, sized by value)
+- [x] Out parameters at call sites
+- [x] `CStrOwned` type with automatic deallocation
+- [x] `ptr_cast[U](ptr)` builtin with explicit type argument syntax
+- [x] `unsafe trait` and `unsafe impl` declarations
 
-### 2.4 Type System Changes
-- [x] Add `ExternType` variant to type representation
-- [x] Track whether extern type has known size
-- [x] Prevent construction/field access of extern types (inherent - no constructors)
-
-### 2.5 Checker Changes
-- [x] Register extern types in scope
-- ~~Validate extern types can only be used behind pointers (if unsized)~~ → moved to Phase 9
-- ~~Allow sized extern types to be passed by value~~ → moved to Phase 9
-
-### 2.6 Codegen
-- [x] Generate LLVM pointer type for unsized extern types
-- [x] Generate LLVM `[N x i8]` for sized extern types
-
-### 2.7 Tests
-- [x] `test/native/ffi/extern_type_opaque.kl`
-- [x] `test/native/ffi/extern_type_sized.kl`
-
----
-
-## Phase 3: Pointer Types ✅
-
-**Objective:** Add `CPtr[T]`, `COptPtr[T]`, and `CStr` types.
-
-### 3.1 Type System Changes
-- [x] Add `CPtr` generic type (non-null raw pointer)
-- [x] Add `COptPtr` generic type (nullable raw pointer)
-- [x] Add `CStr` type (borrowed null-terminated string)
-
-### 3.2 Builtin Functions
-- [x] `is_null[T](ptr: COptPtr[T]) -> bool` - safe, no unsafe required
-- [x] `unwrap_ptr[T](ptr: COptPtr[T]) -> CPtr[T]` - unsafe
-- [x] `offset[T](ptr: CPtr[T], count: isize) -> CPtr[T]` - unsafe
-- [x] `read[T](ptr: CPtr[T]) -> T` - unsafe
-- [x] `write[T](ptr: CPtr[T], value: T) -> void` - unsafe
-- [x] `ref_to_ptr[T](value: ref T) -> CPtr[T]` - unsafe
-- ~~`ptr_cast[U](ptr: CPtr[T]) -> CPtr[U]`~~ → moved to Phase 9
-
-### 3.3 Checker Changes
-- [x] Type check pointer operations
-- [x] Enforce unsafe requirement for dereference operations
-- [x] Validate type parameters for pointer generics
-
-### 3.4 Codegen
-- [x] Map `CPtr[T]` to LLVM `ptr` (opaque pointer)
-- [x] Map `COptPtr[T]` to LLVM `ptr`
-- [x] Generate null checks for `is_null`
-- [x] Generate `getelementptr` for `offset`
-- [x] Generate `load`/`store` for `read`/`write`
-- ~~Generate `bitcast` for `ptr_cast`~~ → moved to Phase 9
-
-### 3.5 Tests
-- [x] `test/native/ffi/cptr_basic.kl`
-- [x] `test/native/ffi/ptr_type_inference.kl`
-- [x] `test/native/ffi/ptr_functions.kl`
-- [x] `test/native/ffi/ptr_unsafe_required.kl`
+### Tests
+All FFI tests in `test/native/ffi/`:
+- unsafe_block.kl, unsafe_fn.kl, unsafe_error.kl
+- extern_type_opaque.kl, extern_type_sized.kl
+- cptr_basic.kl, ptr_functions.kl, ptr_cast.kl
+- extern_fn_*.kl, extern_struct*.kl, extern_enum.kl
+- string_to_cstr.kl, cstr_to_string.kl, cstr_owned.kl
+- unsafe_trait.kl, unsafe_trait_error.kl, unsafe_impl_error.kl
+- call_c_function.kl, sel4_bindings.kl
 
 ---
 
-## Phase 4: External Function Declarations ✅
+## Stretch Goals
 
-**Objective:** Support `extern { fn name(...) -> Type }` blocks.
+These are valuable but not required for Phase 4 completion:
 
-### 4.1 Parser Changes
-- [x] Parse `extern { ... }` blocks containing function declarations
-- [x] Parse `out` parameter modifier (contextual keyword)
-- [x] Parse variadic `...` in parameter lists
+### Async/Await
+- [ ] Design async runtime model
+- [ ] Implement Future trait
+- [ ] Implement async fn transformation
+- [ ] Implement .await syntax
 
-### 4.2 AST Changes
-- [x] Add `ExternBlock` node containing list of extern fn declarations
-- [x] Add `is_extern` flag to `FunctionDecl`
-- [x] Add `is_out` flag to parameters
-- [x] Add `is_variadic` flag to function signatures
+### Self-Hosting
+- [ ] Port lexer to Klar
+- [ ] Port parser to Klar
+- [ ] Port checker to Klar
+- [ ] Full self-hosted compiler
 
-### 4.3 Checker Changes
-- [x] Validate extern function signatures use FFI-compatible types
-- [x] Track which functions are extern (require unsafe to call)
-- [x] Validate variadic functions have at least one non-variadic param
-- ~~Handle `out` parameters (allocate stack space, pass pointer)~~ → moved to Phase 9
+### WebAssembly Target
+- [ ] Add WASM backend to codegen
+- [ ] Handle WASM-specific ABI
+- [ ] Test in browser/Node.js
 
-### 4.4 Codegen
-- [x] Generate LLVM `declare` for extern functions
-- [x] Use C calling convention (`ccc`)
-- [x] Handle variadic calls with LLVM vararg support
-- ~~For `out` params: alloca + pass pointer + mark initialized after call~~ → moved to Phase 9
+### REPL Enhancements
+- [ ] Multi-file import support
+- [ ] Tab completion for identifiers
+- [ ] History persistence across sessions
 
-### 4.5 Tests
-- [x] `test/native/ffi/extern_fn_basic.kl` - basic extern fn declaration
-- [x] `test/native/ffi/extern_fn_call.kl` - call libc `exit`
-- [x] `test/native/ffi/extern_fn_out.kl` - out parameter syntax
-- [x] `test/native/ffi/extern_fn_variadic.kl` - variadic function syntax
-
----
-
-## Phase 5: C-Compatible Struct Layout ✅
-
-**Objective:** Support `extern struct` with C ABI-compatible layout.
-
-### 5.1 Parser Changes
-- [x] Parse `extern struct Name { ... }`
-- [x] Parse `extern struct packed Name { ... }`
-- [x] Parse `pub extern struct` for visibility
-
-### 5.2 AST Changes
-- [x] Add `is_extern` flag to `StructDecl`
-- [x] Add `is_packed` flag to `StructDecl`
-
-### 5.3 Type System Changes
-- [x] Track struct layout kind (Klar default vs C-compatible vs packed)
-
-### 5.4 Checker Changes
-- [x] Validate extern struct fields are FFI-compatible types
-- [x] Prevent generic type parameters in extern structs
-
-### 5.5 Codegen
-- [x] For extern structs: use LLVM struct type with no packing (C layout)
-- [x] For packed structs: use LLVM packed struct
-- [x] Ensure field order matches declaration order
-- [x] Use target DataLayout for alignment
-
-### 5.6 Tests
-- [x] `test/native/ffi/extern_struct.kl`
-- [x] `test/native/ffi/extern_struct_packed.kl`
-
----
-
-## Phase 6: C-Compatible Enum Layout ✅
-
-**Objective:** Support `extern enum Name: IntType { ... }` with explicit repr.
-
-### 6.1 Parser Changes
-- [x] Parse `extern enum Name: Type { Variant = Value, ... }`
-- [x] Require explicit integer type for extern enums
-- [x] Require explicit values for all variants
-
-### 6.2 AST Changes
-- [x] Add `is_extern` flag to `EnumDecl`
-- [x] Add `repr_type` field to `EnumDecl`
-- [x] Add `value` field to `EnumVariant`
-
-### 6.3 Type System Changes
-- [x] Add `is_extern` and `repr_type` to `EnumType`
-- [x] Add `value` field to `EnumVariant`
-
-### 6.4 Checker Changes
-- [x] Validate repr type is an integer type
-- [x] Validate all variants have explicit values
-- [x] Validate values fit in repr type
-- [x] Prevent payload variants in extern enums
-- [x] Prevent type parameters on extern enums
-- [x] Update `isFfiCompatibleType` to accept extern enums
-
-### 6.5 Codegen
-- [x] Generate extern enum as the repr integer type
-- [x] Use explicit discriminant values for extern enum literals
-
-### 6.6 Tests
-- [x] `test/native/ffi/extern_enum.kl`
-
----
-
-## Phase 7: String Conversions ✅
-
-**Objective:** Implement string conversion between Klar `string` and C `CStr`.
-
-### 7.1 Type Additions
-- ~~`CStrOwned` type (owned null-terminated string)~~ → moved to Phase 9
-
-### 7.2 Built-in Methods on `string` and `String`
-- [x] `fn as_cstr(self: ref Self) -> CStr` - borrow as C string (works on primitive string and String)
-- ~~`fn to_cstr(self: ref Self) -> CStrOwned`~~ → moved to Phase 9
-
-### 7.3 Built-in Methods on `CStr`
-- [x] `unsafe fn to_string(self: Self) -> String` - copy to Klar String
-- [x] `unsafe fn len(self: Self) -> usize` - get length
-- [x] `fn from_ptr(ptr: CPtr[i8]) -> CStr` - construct from pointer
-
-### 7.4 Codegen
-- [x] `as_cstr`: return pointer to string data (string literals and String are null-terminated)
-- [x] `to_string`: call strlen, allocate, memcpy
-- [x] `len`: call strlen
-
-### 7.5 Tests
-- [x] `test/native/ffi/string_to_cstr.kl`
-- [x] `test/native/ffi/cstr_to_string.kl`
-
----
-
-## Phase 8: Integration & Linking ✅
-
-**Objective:** Ensure Klar object files link with C object files.
-
-### 8.1 Build System
-- [x] Basic libc linking works (puts, strlen, malloc, free, etc.)
-- [x] Document linking with C libraries (see docs/advanced/ffi.md)
-- [x] Add `-l` flag for linking additional system libraries
-- [x] Add `-L` flag for library search paths
-
-### 8.2 ABI Compliance
-- [x] Verify struct passing matches C ABI (by value vs by pointer)
-- [x] Verify return value handling (small structs returned in registers)
-- [x] Test on multiple platforms (macOS, Linux via Docker)
-
-### 8.3 Integration Tests
-- [x] FFI tests already link with libc successfully
-- [x] `test/native/ffi/extern_fn_return_struct.kl` - C struct return values
-- [x] `test/native/ffi/sel4_bindings.kl` - seL4-style FFI bindings
-- ~~`test/native/ffi/call_c_function.kl` - call custom C code~~ → moved to Phase 9
-
----
-
-## Phase 9: Deferred FFI Features ✅
-
-**Status:** Complete
-**Objective:** Complete remaining FFI features organized by implementation priority.
-
-### Batch A: Quick Wins (Validation & Testing) ✅
-
-- [x] `test/native/ffi/call_c_function.kl` - test linking with custom C code
-- [x] Validate unsized extern types can only be used behind pointers (`CPtr[T]`, `COptPtr[T]`)
-- [x] Allow sized extern types to be passed by value to C functions
-
-### Batch B: Out Parameters ✅
-
-- [x] Parser: Parse `out identifier` syntax at call sites
-- [x] Checker: Validate `out` arguments match extern function's out parameters
-- [x] Checker: Track out_params bitmask in FunctionType
-- [x] Codegen: For `out` params - pass pointer to variable's alloca
-- [x] Test: `test/native/ffi/extern_fn_out_call.kl` - end-to-end out parameter test
-
-### Batch C: String Ownership ✅
-
-- [x] Add `CStrOwned` type (owned null-terminated string)
-- [x] Add `fn to_cstr(self: ref Self) -> CStrOwned` method to `string`/`String`
-- [x] Add `as_cstr()`, `to_string()`, and `len()` methods to `CStrOwned`
-- [x] Automatic memory deallocation (Drop) for `CStrOwned` at scope exit
-- [x] Test: `test/native/ffi/cstr_owned.kl` - end-to-end CStrOwned test
-
-### Batch D: Pointer Cast ✅
-
-- [x] Add `ptr_cast[U](ptr: CPtr[T]) -> CPtr[U]` builtin (needs type arg syntax at call site)
-- [x] Parser: Support `func[Type](args)` syntax for function calls with explicit type arguments
-- [x] Codegen: Generate appropriate LLVM for `ptr_cast`
-- [x] Test: `test/native/ffi/ptr_cast.kl` - end-to-end ptr_cast test
-
-### Batch E: Unsafe Traits ✅
-
-- [x] Parse `unsafe trait` declarations
-- [x] Parse `unsafe impl` declarations
-- [x] Add `is_unsafe` field to TraitDecl and ImplDecl AST nodes
-- [x] Add `is_unsafe` field to TraitType in type system
-- [x] Validate that unsafe traits require unsafe impl
-- [x] Validate that unsafe impl can only be used with unsafe traits
-- [x] Test: `test/native/ffi/unsafe_trait.kl` - end-to-end unsafe trait test
-- [x] Test: `test/native/ffi/unsafe_trait_error.kl` - error when missing unsafe impl
-- [x] Test: `test/native/ffi/unsafe_impl_error.kl` - error when unsafe impl on safe trait
+### Windows Support
+- [ ] Windows target triple detection
+- [ ] Windows-specific stdio access
+- [ ] Windows CI testing
 
 ---
 
 ## Implementation Order
 
-The phases have dependencies:
+Based on dependencies:
 
-```
-Phase 1 (unsafe) ──┬──> Phase 3 (pointers)
-                   │
-                   ├──> Phase 4 (extern fn)
-                   │
-Phase 2 (extern type) ──> Phase 4 (extern fn)
-
-Phase 3 (pointers) ──> Phase 7 (strings)
-
-Phase 4 (extern fn) ──┬──> Phase 5 (extern struct)
-                      │
-                      └──> Phase 6 (extern enum)
-
-Phase 5,6 ──> Phase 8 (integration)
-```
-
-**Recommended sequence:**
-1. Phase 1: Unsafe blocks (foundation)
-2. Phase 2: External types (needed for pointers)
-3. Phase 3: Pointer types (needed for extern fn)
-4. Phase 4: External functions (core FFI capability)
-5. Phase 5: External structs (common FFI pattern)
-6. Phase 6: External enums (common FFI pattern)
-7. Phase 7: String conversions (convenience)
-8. Phase 8: Integration testing
-
----
-
-## File Changes Summary
-
-### New Files
-- `test/native/ffi/*.kl` - FFI test cases
-
-### Modified Files
-- `src/lexer.zig` - `unsafe`, `extern` keywords
-- `src/parser.zig` - extern blocks, unsafe blocks, out params
-- `src/ast.zig` - new node types
-- `src/types.zig` - CPtr, COptPtr, CStr, ExternType
-- `src/checker.zig` - unsafe context tracking, FFI validation
-- `src/codegen/emit.zig` - LLVM IR for extern functions and types
-
----
-
-## Known Limitations
-
-All previously tracked bugs have been fixed. See `BUG.md` for history.
-
-**Deferred features** are now tracked in Phase 9, organized by implementation batch.
-
----
-
-## Future Considerations
-
-These items may be addressed beyond Phase 9:
-
-1. **Variadic type safety**: How strictly should we validate arguments to variadic functions? (Currently minimal validation)
-
-2. **Platform-specific types**: Should we add `c_int`, `c_long`, etc. type aliases for portable FFI code?
+1. **Milestone 1: Generics** (foundation for everything) ✅
+2. **Milestone 2: Traits** (needs generics) ✅
+3. **Milestone 3: Modules** (needed for stdlib) ✅
+4. **Milestone 10: REPL** (uses interpreter, enables AI workflow) ✅
+5. **Milestone 11: Comptime** (uses interpreter, enables metaprogramming) ✅
+6. **Milestone 6: Iterators** (for-loops, collection adapters) ✅
+7. **Milestone 4: Stdlib Core** (needs generics, traits, modules) ✅
+8. **Milestone 7: Error Handling** (`?` operator, From/Into traits) ✅
+9. **Milestone 12: FFI** (C interoperability) ✅
+10. **Milestone 5: Stdlib I/O** (filesystem operations) ← **CURRENT**
+11. **Milestone 8: Package Manager** (needs modules)
+12. **Milestone 9: Tooling** (needs stable language)
 
 ---
 
 ## Success Criteria
 
-- [x] Can call libc functions (puts, printf, malloc, free)
-- [x] Can define C-compatible structs and pass to C functions
-- [x] Can receive C structs from C functions
-- [x] Can work with C strings safely
-- [x] All unsafe operations require explicit unsafe blocks
-- [x] Klar binaries link cleanly with C libraries
-- [x] seL4 example from spec compiles and type-checks
+Phase 4 is complete when:
+
+**Language Completeness:**
+- [x] Generic functions and types work correctly
+- [x] Traits can be defined and implemented
+- [x] Multi-file projects compile
+- [x] Standard library provides core functionality (as builtins)
+- [x] Comptime enables compile-time metaprogramming
+- [x] For-loops work with Range, arrays, List, Set, Map
+- [x] `?` operator for error propagation
+- [x] FFI enables C interoperability
+
+**AI-Native Development:**
+- [x] REPL provides interactive code exploration
+- [x] AI assistants can verify code before presenting to users
+- [x] Fast feedback loop for iterative development
+
+**Usability:**
+- [ ] Can write non-trivial programs (CLI tools, utilities)
+- [ ] Error messages are helpful and actionable
+- [ ] Documentation exists for language and stdlib
+
+**Tooling:**
+- [ ] Package manager works for dependencies
+- [ ] IDE support via LSP
+- [ ] Code formatter available
+
+**Example Programs:**
+- [ ] JSON parser using generics
+- [ ] File processing utility
+- [ ] HTTP client (stretch goal with async)

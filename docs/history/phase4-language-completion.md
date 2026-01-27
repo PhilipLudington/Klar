@@ -1,8 +1,10 @@
-# Klar Phase 4: Language Completion (Archived)
+# Phase 4: Language Completion - Detailed History
 
-> **Status:** Archived - This plan was superseded by the FFI implementation plan.
-> **Archived:** 2026-01-27
-> **See also:** [Current PLAN.md](../../PLAN.md) for FFI implementation
+> **Status:** Reference Document
+> **Purpose:** Detailed implementation notes for Phase 4 milestones (referenced from [PLAN.md](../../PLAN.md))
+> **Last Updated:** 2026-01-27
+
+This document contains the detailed implementation status for completed Phase 4 milestones. The main [PLAN.md](../../PLAN.md) provides the current overview and tracks remaining work.
 
 ---
 

@@ -111,9 +111,22 @@ let data: Rc[Data] = Rc.new(Data { ... })  // Reference counted
 let copy: Rc[Data] = data.clone()          // Explicit clone
 ```
 
+### C Interoperability (FFI)
+
+Call C functions and use C types with explicit `unsafe` blocks:
+
+```klar
+extern { fn puts(s: CStr) -> i32 }
+
+fn main() -> i32 {
+    unsafe { puts("Hello from Klar FFI!".as_cstr()) }
+    return 0
+}
+```
+
 ## Version
 
-Current version: **0.3.1-dev**
+Current version: **0.4.0**
 
 ## License
 

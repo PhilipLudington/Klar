@@ -227,6 +227,97 @@ let success: Result[i32, string] = Ok(42)
 let failure: Result[i32, string] = Err("error message")
 ```
 
+## FFI Pointer Functions
+
+These functions work with C pointers for FFI. Most require `unsafe` blocks.
+
+### is_null
+
+Check if a nullable pointer is null. Safe to call without `unsafe`.
+
+```klar
+let ptr: COptPtr[i32] = get_some_pointer()
+if is_null(ptr) {
+    println("Pointer is null")
+}
+```
+
+**Signature:** `fn is_null[T](ptr: COptPtr[T]) -> bool`
+
+### unwrap_ptr
+
+Convert a nullable pointer to a non-null pointer. Panics if null.
+
+```klar
+unsafe {
+    let non_null: CPtr[i32] = unwrap_ptr(ptr)
+}
+```
+
+**Signature:** `fn unwrap_ptr[T](ptr: COptPtr[T]) -> CPtr[T]` (unsafe)
+
+### read
+
+Read the value at a pointer location.
+
+```klar
+unsafe {
+    let value: i32 = read(ptr)
+}
+```
+
+**Signature:** `fn read[T](ptr: CPtr[T]) -> T` (unsafe)
+
+### write
+
+Write a value to a pointer location.
+
+```klar
+unsafe {
+    write(ptr, 42)
+}
+```
+
+**Signature:** `fn write[T](ptr: CPtr[T], value: T) -> void` (unsafe)
+
+### offset
+
+Perform pointer arithmetic.
+
+```klar
+unsafe {
+    let next: CPtr[i32] = offset(ptr, 1)  // Move forward by 1 element
+    let prev: CPtr[i32] = offset(ptr, -1) // Move backward by 1 element
+}
+```
+
+**Signature:** `fn offset[T](ptr: CPtr[T], count: isize) -> CPtr[T]` (unsafe)
+
+### ref_to_ptr
+
+Convert a reference to a raw pointer.
+
+```klar
+var x: i32 = 42
+unsafe {
+    let ptr: CPtr[i32] = ref_to_ptr(ref x)
+}
+```
+
+**Signature:** `fn ref_to_ptr[T](r: ref T) -> CPtr[T]` (unsafe)
+
+### ptr_cast
+
+Cast a pointer to a different type.
+
+```klar
+unsafe {
+    let byte_ptr: CPtr[u8] = ptr_cast[u8](int_ptr)
+}
+```
+
+**Signature:** `fn ptr_cast[U, T](ptr: CPtr[T]) -> CPtr[U]` (unsafe)
+
 ## Comptime Builtins
 
 These are available only in comptime contexts:
@@ -265,6 +356,18 @@ See [Comptime](../advanced/comptime.md) for details.
 | `None` | None value | `?T` |
 | `Ok(val)` | Create Ok | `Result[T, E]` |
 | `Err(val)` | Create Err | `Result[T, E]` |
+
+### FFI Functions (require `unsafe`)
+
+| Function | Description | Return Type |
+|----------|-------------|-------------|
+| `is_null(ptr)` | Check if null (safe) | `bool` |
+| `unwrap_ptr(ptr)` | Unwrap nullable pointer | `CPtr[T]` |
+| `read(ptr)` | Read from pointer | `T` |
+| `write(ptr, val)` | Write to pointer | `void` |
+| `offset(ptr, n)` | Pointer arithmetic | `CPtr[T]` |
+| `ref_to_ptr(ref)` | Reference to pointer | `CPtr[T]` |
+| `ptr_cast[U](ptr)` | Cast pointer type | `CPtr[U]` |
 
 ## Next Steps
 
