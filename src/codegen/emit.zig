@@ -7977,6 +7977,7 @@ pub const Emitter = struct {
     /// Emit an enum literal: EnumType::VariantName(payload)
     /// Also handles struct static method calls: StructType::method(args)
     /// Generates code to construct a tagged union value or call a static method.
+    /// For extern enums, returns the integer constant value directly.
     fn emitEnumLiteral(self: *Emitter, lit: *ast.EnumLiteral) EmitError!llvm.ValueRef {
         // Get the base type name
         const base_name = switch (lit.enum_type) {
@@ -8061,11 +8062,44 @@ pub const Emitter = struct {
         );
     }
 
+    /// Emit an extern enum literal as an integer constant.
+    /// Returns the variant's explicit value as the repr type.
+    fn emitExternEnumLiteral(self: *Emitter, enum_type: *types.EnumType, variant_name: []const u8) EmitError!llvm.ValueRef {
+        // Find the variant and get its value
+        for (enum_type.variants) |variant| {
+            if (std.mem.eql(u8, variant.name, variant_name)) {
+                const value = variant.value orelse return EmitError.InvalidAST;
+                const repr = enum_type.repr_type orelse return EmitError.UnsupportedFeature;
+                const llvm_type = self.typeToLLVM(repr);
+
+                // Check if it's a signed or unsigned type
+                const is_signed = switch (repr) {
+                    .primitive => |p| switch (p) {
+                        .i8_, .i16_, .i32_, .i64_, .isize_ => true,
+                        else => false,
+                    },
+                    else => false,
+                };
+
+                // For signed negative values, we need to handle the cast carefully
+                if (is_signed and value < 0) {
+                    // Cast to u64 with sign extension
+                    const unsigned_value: u64 = @bitCast(@as(i64, @intCast(value)));
+                    return llvm.Const.int(llvm_type, unsigned_value, true);
+                } else {
+                    return llvm.Const.int(llvm_type, @intCast(value), is_signed);
+                }
+            }
+        }
+        return EmitError.InvalidAST;
+    }
+
     /// Helper to emit enum literal with resolved type info
     fn emitEnumLiteralWithInfo(self: *Emitter, lit: *ast.EnumLiteral, enum_info: StructTypeInfo, enum_name: []const u8) EmitError!llvm.ValueRef {
         // Find the variant index
         var variant_index: ?u32 = null;
         var variant_payload: ?types.VariantPayload = null;
+        var found_enum_type: ?*types.EnumType = null;
 
         // We need to look up the enum definition to find variant info
         // For now, try to find it through the type checker's monomorphized enums
@@ -8077,6 +8111,7 @@ pub const Emitter = struct {
                         if (std.mem.eql(u8, v.name, lit.variant_name)) {
                             variant_index = @intCast(i);
                             variant_payload = v.payload;
+                            found_enum_type = mono.concrete_type;
                             break;
                         }
                     }
@@ -8091,16 +8126,28 @@ pub const Emitter = struct {
                 const enum_types = tc.getEnumTypes();
                 for (enum_types) |et| {
                     if (std.mem.eql(u8, et.name, enum_name)) {
+                        // Check if this is an extern enum
+                        if (et.is_extern) {
+                            return self.emitExternEnumLiteral(et, lit.variant_name);
+                        }
                         for (et.variants, 0..) |v, i| {
                             if (std.mem.eql(u8, v.name, lit.variant_name)) {
                                 variant_index = @intCast(i);
                                 variant_payload = v.payload;
+                                found_enum_type = et;
                                 break;
                             }
                         }
                         break;
                     }
                 }
+            }
+        }
+
+        // Check if the found enum is extern (from monomorphized enums)
+        if (found_enum_type) |et| {
+            if (et.is_extern) {
+                return self.emitExternEnumLiteral(et, lit.variant_name);
             }
         }
 
@@ -25434,11 +25481,31 @@ pub const Emitter = struct {
     }
 
     /// Register a single non-generic enum type.
-    /// Enums are represented as tagged unions: {tag: i8, payload_union}
+    /// Regular enums are represented as tagged unions: {tag: i8, payload_union}
+    /// Extern enums are represented as their repr integer type directly.
     fn registerNonGenericEnum(self: *Emitter, enum_type: *types.EnumType) EmitError!void {
         // Skip if already registered
         if (self.struct_types.contains(enum_type.name)) {
             return;
+        }
+
+        // For extern enums, the LLVM type is just the repr integer type
+        if (enum_type.is_extern) {
+            if (enum_type.repr_type) |repr| {
+                const llvm_repr_type = self.typeToLLVM(repr);
+
+                // For extern enums, we use the repr type directly (no struct wrapper)
+                // Store with empty field info since it's not a struct
+                const field_indices = self.allocator.alloc(u32, 0) catch return EmitError.OutOfMemory;
+                const field_names = self.allocator.alloc([]const u8, 0) catch return EmitError.OutOfMemory;
+
+                self.struct_types.put(enum_type.name, .{
+                    .llvm_type = llvm_repr_type,
+                    .field_indices = field_indices,
+                    .field_names = field_names,
+                }) catch return EmitError.OutOfMemory;
+                return;
+            }
         }
 
         // Calculate the maximum payload size across all variants

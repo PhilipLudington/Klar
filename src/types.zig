@@ -468,11 +468,14 @@ pub const EnumType = struct {
     name: []const u8,
     type_params: []const TypeVar,
     variants: []const EnumVariant,
+    is_extern: bool = false, // extern enum for C-compatible layout
+    repr_type: ?Type = null, // Resolved repr type for extern enums
 };
 
 pub const EnumVariant = struct {
     name: []const u8,
     payload: ?VariantPayload,
+    value: ?i128 = null, // Explicit discriminant value for extern enums
 };
 
 pub const VariantPayload = union(enum) {

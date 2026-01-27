@@ -2105,12 +2105,7 @@ pub const Parser = struct {
                     try self.reportError("'unsafe' modifier is not allowed on enum declarations");
                     return ParseError.UnexpectedToken;
                 }
-                if (is_extern) {
-                    // Future: extern enum declarations (Phase 6)
-                    try self.reportError("'extern enum' is not yet supported");
-                    return ParseError.UnexpectedToken;
-                }
-                break :blk self.parseEnumDecl(is_pub);
+                break :blk self.parseEnumDecl(is_pub, is_extern);
             },
             .trait => blk: {
                 if (is_unsafe) {
@@ -2433,12 +2428,31 @@ pub const Parser = struct {
         return .{ .struct_decl = struct_decl };
     }
 
-    fn parseEnumDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseEnumDecl(self: *Parser, is_pub: bool, is_extern: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'enum'
 
         const name = try self.consumeIdentifier();
-        const type_params = try self.parseTypeParams();
+
+        // For extern enums, parse repr type before type params (extern enums can't have type params)
+        var repr_type: ?ast.TypeExpr = null;
+        if (is_extern) {
+            if (self.match(.colon)) {
+                repr_type = try self.parseType();
+            } else {
+                try self.reportError("extern enum requires a repr type (e.g., 'extern enum Name: i32')");
+                return ParseError.UnexpectedToken;
+            }
+        }
+
+        // Parse type params (only for non-extern enums)
+        var type_params: []const ast.TypeParam = &.{};
+        if (!is_extern) {
+            type_params = try self.parseTypeParams();
+        } else if (self.check(.l_bracket)) {
+            try self.reportError("extern enums cannot have type parameters");
+            return ParseError.UnexpectedToken;
+        }
 
         try self.consume(.l_brace, "expected '{' after enum name");
 
@@ -2451,10 +2465,15 @@ pub const Parser = struct {
             const variant_span = self.spanFromToken(self.current);
             const variant_name = try self.consumeIdentifier();
 
-            // Parse optional payload
+            // Parse optional payload (not allowed for extern enums)
             var payload: ?ast.VariantPayload = null;
+            var value: ?i128 = null;
 
             if (self.match(.l_paren)) {
+                if (is_extern) {
+                    try self.reportError("extern enum variants cannot have payloads");
+                    return ParseError.UnexpectedToken;
+                }
                 // Tuple payload: Variant(T1, T2)
                 var tuple_types = std.ArrayListUnmanaged(ast.TypeExpr){};
                 if (!self.check(.r_paren)) {
@@ -2466,6 +2485,10 @@ pub const Parser = struct {
                 try self.consume(.r_paren, "expected ')' after tuple payload");
                 payload = .{ .tuple = try self.dupeSlice(ast.TypeExpr, tuple_types.items) };
             } else if (self.match(.l_brace)) {
+                if (is_extern) {
+                    try self.reportError("extern enum variants cannot have payloads");
+                    return ParseError.UnexpectedToken;
+                }
                 // Struct payload: Variant { field: T }
                 var struct_fields = std.ArrayListUnmanaged(ast.StructField){};
                 while (!self.check(.r_brace) and !self.check(.eof)) {
@@ -2490,9 +2513,44 @@ pub const Parser = struct {
                 payload = .{ .struct_ = try self.dupeSlice(ast.StructField, struct_fields.items) };
             }
 
+            // Parse explicit value: Variant = 123
+            if (self.match(.eq)) {
+                // Parse integer literal for discriminant value
+                if (self.check(.int_literal)) {
+                    const lit_str = self.source[self.current.loc.start..self.current.loc.end];
+                    value = std.fmt.parseInt(i128, lit_str, 10) catch {
+                        try self.reportError("invalid integer literal for enum variant value");
+                        return ParseError.UnexpectedToken;
+                    };
+                    self.advance();
+                } else if (self.check(.minus)) {
+                    // Handle negative values
+                    self.advance(); // consume '-'
+                    if (self.check(.int_literal)) {
+                        const lit_str = self.source[self.current.loc.start..self.current.loc.end];
+                        const abs_value = std.fmt.parseInt(i128, lit_str, 10) catch {
+                            try self.reportError("invalid integer literal for enum variant value");
+                            return ParseError.UnexpectedToken;
+                        };
+                        value = -abs_value;
+                        self.advance();
+                    } else {
+                        try self.reportError("expected integer literal after '-' for enum variant value");
+                        return ParseError.UnexpectedToken;
+                    }
+                } else {
+                    try self.reportError("expected integer literal for enum variant value");
+                    return ParseError.UnexpectedToken;
+                }
+            } else if (is_extern) {
+                try self.reportError("extern enum variants must have explicit values (e.g., 'Variant = 0')");
+                return ParseError.UnexpectedToken;
+            }
+
             try variants.append(self.allocator, .{
                 .name = variant_name,
                 .payload = payload,
+                .value = value,
                 .span = variant_span,
             });
 
@@ -2507,6 +2565,8 @@ pub const Parser = struct {
             .type_params = type_params,
             .variants = try self.dupeSlice(ast.EnumVariant, variants.items),
             .is_pub = is_pub,
+            .is_extern = is_extern,
+            .repr_type = repr_type,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .enum_decl = enum_decl };

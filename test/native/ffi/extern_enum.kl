@@ -1,0 +1,72 @@
+// Test extern enum declarations (C-compatible enum layout)
+
+// Basic extern enum with i32 repr
+extern enum Status: i32 {
+    Ok = 0,
+    Error = 1,
+    Pending = 2,
+}
+
+// Extern enum with negative values
+extern enum ErrorCode: i32 {
+    Success = 0,
+    NotFound = -1,
+    InvalidArg = -2,
+    OutOfMemory = -3,
+}
+
+// Extern enum with u8 repr (common for flags/small enums)
+extern enum LogLevel: u8 {
+    Debug = 0,
+    Info = 1,
+    Warn = 2,
+    Error = 3,
+    Fatal = 4,
+}
+
+// Extern enum with u32 repr
+extern enum Flags: u32 {
+    None = 0,
+    Read = 1,
+    Write = 2,
+    Execute = 4,
+}
+
+// Public extern enum
+pub extern enum PublicStatus: i32 {
+    Active = 1,
+    Inactive = 0,
+}
+
+fn check_status(s: Status) -> i32 {
+    if s == Status::Ok {
+        return 0
+    }
+    if s == Status::Error {
+        return 1
+    }
+    return 2
+}
+
+fn main() -> i32 {
+    // Test basic extern enum usage
+    let s: Status = Status::Ok
+    let result1: i32 = check_status(s)
+    if result1 != 0 {
+        return 1
+    }
+
+    // Test enum with negative values
+    let err: ErrorCode = ErrorCode::NotFound
+
+    // Test u8 repr enum
+    let level: LogLevel = LogLevel::Info
+
+    // Test u32 repr enum
+    let flags: Flags = Flags::Read
+
+    // Test public extern enum
+    let pub_status: PublicStatus = PublicStatus::Active
+
+    return 0
+}

@@ -8899,6 +8899,23 @@ pub const TypeChecker = struct {
         }
         defer if (has_type_params) self.popTypeParams();
 
+        // For extern enums, resolve and validate repr type
+        var resolved_repr_type: ?Type = null;
+        if (enum_decl.is_extern) {
+            if (enum_decl.repr_type) |repr_expr| {
+                const repr = self.resolveTypeExpr(repr_expr) catch {
+                    self.addError(.undefined_type, enum_decl.span, "cannot resolve repr type for extern enum", .{});
+                    return;
+                };
+                // Validate repr type is an integer primitive
+                if (repr != .primitive or !self.isIntegerPrimitive(repr.primitive)) {
+                    self.addError(.type_mismatch, enum_decl.span, "extern enum repr type must be an integer type (i8, i16, i32, i64, u8, u16, u32, u64, isize, usize)", .{});
+                    return;
+                }
+                resolved_repr_type = repr;
+            }
+        }
+
         // Pre-register enum type BEFORE resolving variants to allow recursive types.
         // This enables patterns like: enum JsonValue { Array(List[JsonValue]) }
         const enum_type = self.allocator.create(types.EnumType) catch return;
@@ -8906,6 +8923,8 @@ pub const TypeChecker = struct {
             .name = enum_decl.name,
             .type_params = enum_type_params,
             .variants = &.{}, // Will be filled in below
+            .is_extern = enum_decl.is_extern,
+            .repr_type = resolved_repr_type,
         };
 
         // Track for cleanup in deinit
@@ -8925,6 +8944,27 @@ pub const TypeChecker = struct {
         defer variants.deinit(self.allocator);
 
         for (enum_decl.variants) |variant| {
+            // For extern enums, validate variant constraints
+            if (enum_decl.is_extern) {
+                // Payload should already be forbidden by parser, but double-check
+                if (variant.payload != null) {
+                    self.addError(.invalid_operation, variant.span, "extern enum variants cannot have payloads", .{});
+                    continue;
+                }
+                // Explicit value should be required by parser, but double-check
+                if (variant.value == null) {
+                    self.addError(.invalid_operation, variant.span, "extern enum variants must have explicit values", .{});
+                    continue;
+                }
+                // Validate value fits in repr type
+                if (resolved_repr_type) |repr| {
+                    if (!self.valueInRange(variant.value.?, repr.primitive)) {
+                        self.addError(.type_mismatch, variant.span, "extern enum variant value '{d}' does not fit in repr type", .{variant.value.?});
+                        continue;
+                    }
+                }
+            }
+
             const payload: ?types.VariantPayload = if (variant.payload) |p| blk: {
                 break :blk switch (p) {
                     .tuple => |tuple_types| tup: {
@@ -8953,6 +8993,7 @@ pub const TypeChecker = struct {
             variants.append(self.allocator, .{
                 .name = variant.name,
                 .payload = payload,
+                .value = variant.value,
             }) catch {};
         }
 
@@ -10163,6 +10204,7 @@ pub const TypeChecker = struct {
     /// - CStr (null-terminated C strings)
     /// - Extern types (sized or opaque)
     /// - Other extern structs
+    /// - Extern enums (C-compatible enum layout)
     fn isFfiCompatibleType(self: *TypeChecker, t: Type) bool {
         _ = self;
         return switch (t) {
@@ -10172,6 +10214,37 @@ pub const TypeChecker = struct {
             .cstr => true,
             .extern_type => true,
             .struct_ => |s| s.is_extern,
+            .enum_ => |e| e.is_extern,
+            else => false,
+        };
+    }
+
+    /// Check if a primitive type is an integer type (suitable for extern enum repr).
+    fn isIntegerPrimitive(self: *TypeChecker, prim: types.Primitive) bool {
+        _ = self;
+        return switch (prim) {
+            .i8_, .i16_, .i32_, .i64_,
+            .u8_, .u16_, .u32_, .u64_,
+            .isize_, .usize_ => true,
+            else => false,
+        };
+    }
+
+    /// Check if an i128 value fits within the range of a primitive integer type.
+    fn valueInRange(self: *TypeChecker, value: i128, prim: types.Primitive) bool {
+        _ = self;
+        return switch (prim) {
+            .i8_ => value >= -128 and value <= 127,
+            .i16_ => value >= -32768 and value <= 32767,
+            .i32_ => value >= -2147483648 and value <= 2147483647,
+            .i64_ => value >= -9223372036854775808 and value <= 9223372036854775807,
+            .u8_ => value >= 0 and value <= 255,
+            .u16_ => value >= 0 and value <= 65535,
+            .u32_ => value >= 0 and value <= 4294967295,
+            .u64_ => value >= 0 and value <= 18446744073709551615,
+            // For isize/usize, assume 64-bit platform
+            .isize_ => value >= -9223372036854775808 and value <= 9223372036854775807,
+            .usize_ => value >= 0 and value <= 18446744073709551615,
             else => false,
         };
     }

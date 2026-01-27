@@ -192,26 +192,33 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 **Objective:** Support `extern enum Name: IntType { ... }` with explicit repr.
 
 ### 6.1 Parser Changes
-- [ ] Parse `extern enum Name: Type { Variant = Value, ... }`
-- [ ] Require explicit integer type for extern enums
-- [ ] Require explicit values for all variants
+- [x] Parse `extern enum Name: Type { Variant = Value, ... }`
+- [x] Require explicit integer type for extern enums
+- [x] Require explicit values for all variants
 
 ### 6.2 AST Changes
-- [ ] Add `is_extern` flag to `EnumDecl`
-- [ ] Add `repr_type` field to `EnumDecl`
+- [x] Add `is_extern` flag to `EnumDecl`
+- [x] Add `repr_type` field to `EnumDecl`
+- [x] Add `value` field to `EnumVariant`
 
-### 6.3 Checker Changes
-- [ ] Validate repr type is an integer type
-- [ ] Validate all variants have explicit values
-- [ ] Validate values fit in repr type
-- [ ] Prevent payload variants in extern enums
+### 6.3 Type System Changes
+- [x] Add `is_extern` and `repr_type` to `EnumType`
+- [x] Add `value` field to `EnumVariant`
 
-### 6.4 Codegen
-- [ ] Generate enum as the repr integer type
-- [ ] Use explicit discriminant values
+### 6.4 Checker Changes
+- [x] Validate repr type is an integer type
+- [x] Validate all variants have explicit values
+- [x] Validate values fit in repr type
+- [x] Prevent payload variants in extern enums
+- [x] Prevent type parameters on extern enums
+- [x] Update `isFfiCompatibleType` to accept extern enums
 
-### 6.5 Tests
-- [ ] `test/native/ffi/extern_enum.kl`
+### 6.5 Codegen
+- [x] Generate extern enum as the repr integer type
+- [x] Use explicit discriminant values for extern enum literals
+
+### 6.6 Tests
+- [x] `test/native/ffi/extern_enum.kl`
 
 ---
 

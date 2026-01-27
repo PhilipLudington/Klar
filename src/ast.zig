@@ -681,12 +681,15 @@ pub const EnumDecl = struct {
     type_params: []const TypeParam,
     variants: []const EnumVariant,
     is_pub: bool,
+    is_extern: bool = false, // extern enum for C-compatible layout
+    repr_type: ?TypeExpr = null, // Required for extern enums (e.g., i32)
     span: Span,
 };
 
 pub const EnumVariant = struct {
     name: []const u8,
     payload: ?VariantPayload,
+    value: ?i128 = null, // Explicit discriminant value for extern enums
     span: Span,
 };
 
