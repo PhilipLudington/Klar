@@ -1,0 +1,84 @@
+// Test string.slice(start, end) method
+
+fn main() -> i32 {
+    let s: string = "hello world"
+
+    // Basic slicing
+    let first_five: string = s.slice(0, 5)
+    if first_five != "hello" {
+        println("FAIL: basic slice(0, 5) expected 'hello', got '" + first_five + "'")
+        return 1
+    }
+
+    let world: string = s.slice(6, 11)
+    if world != "world" {
+        println("FAIL: slice(6, 11) expected 'world', got '" + world + "'")
+        return 2
+    }
+
+    // Empty result when start == end
+    let empty: string = s.slice(5, 5)
+    if empty != "" {
+        println("FAIL: slice(5, 5) expected empty string, got '" + empty + "'")
+        return 3
+    }
+
+    // Clamping end beyond length
+    let clamped_end: string = s.slice(6, 100)
+    if clamped_end != "world" {
+        println("FAIL: slice(6, 100) expected 'world', got '" + clamped_end + "'")
+        return 4
+    }
+
+    // Clamping start beyond length gives empty
+    let start_beyond: string = s.slice(50, 100)
+    if start_beyond != "" {
+        println("FAIL: slice(50, 100) expected empty string, got '" + start_beyond + "'")
+        return 5
+    }
+
+    // Inverted indices (start > end) gives empty
+    let inverted: string = s.slice(10, 5)
+    if inverted != "" {
+        println("FAIL: slice(10, 5) expected empty string, got '" + inverted + "'")
+        return 6
+    }
+
+    // Full string slice
+    let full: string = s.slice(0, s.len())
+    if full != "hello world" {
+        println("FAIL: slice(0, len) expected 'hello world', got '" + full + "'")
+        return 7
+    }
+
+    // Negative start gets clamped to 0
+    let neg_start: string = s.slice(-5, 5)
+    if neg_start != "hello" {
+        println("FAIL: slice(-5, 5) expected 'hello', got '" + neg_start + "'")
+        return 8
+    }
+
+    // Negative end (< start after clamping) gives empty
+    let neg_end: string = s.slice(5, -1)
+    if neg_end != "" {
+        println("FAIL: slice(5, -1) expected empty string, got '" + neg_end + "'")
+        return 9
+    }
+
+    // Single character slice
+    let single: string = s.slice(0, 1)
+    if single != "h" {
+        println("FAIL: slice(0, 1) expected 'h', got '" + single + "'")
+        return 10
+    }
+
+    // Middle slice
+    let middle: string = s.slice(3, 8)
+    if middle != "lo wo" {
+        println("FAIL: slice(3, 8) expected 'lo wo', got '" + middle + "'")
+        return 11
+    }
+
+    println("All string.slice tests passed!")
+    return 0
+}

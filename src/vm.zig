@@ -1434,6 +1434,33 @@ pub const VM = struct {
             }
             const arr = try ObjArray.createGC(&self.gc, bytes);
             try self.push(.{ .array = arr });
+        } else if (std.mem.eql(u8, method, "slice")) {
+            // slice(start, end) - extract substring with clamping
+            if (arg_count != 2) return RuntimeError.WrongArity;
+            const end_val = try self.pop();
+            const start_val = try self.pop();
+            _ = try self.pop(); // Pop receiver
+
+            const start_int = start_val.asInt() orelse return RuntimeError.TypeError;
+            const end_int = end_val.asInt() orelse return RuntimeError.TypeError;
+
+            const len: i64 = @intCast(str.chars.len);
+            var start_clamped = start_int;
+            var end_clamped = end_int;
+
+            // Clamp start to [0, len]
+            if (start_clamped < 0) start_clamped = 0;
+            if (start_clamped > len) start_clamped = len;
+
+            // Clamp end to [start, len]
+            if (end_clamped < start_clamped) end_clamped = start_clamped;
+            if (end_clamped > len) end_clamped = len;
+
+            const start_idx: usize = @intCast(start_clamped);
+            const end_idx: usize = @intCast(end_clamped);
+            const sliced = str.chars[start_idx..end_idx];
+            const new_str = try ObjString.createGC(&self.gc, sliced);
+            try self.push(.{ .string = new_str });
         } else {
             return RuntimeError.UndefinedField;
         }

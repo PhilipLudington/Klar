@@ -944,6 +944,33 @@ pub const Interpreter = struct {
                 }
                 return self.builder.array(bytes.items);
             }
+
+            if (std.mem.eql(u8, method.method_name, "slice")) {
+                // slice(start, end) - extract substring with clamping
+                if (args.items.len != 2) return RuntimeError.InvalidOperation;
+                const start_val = args.items[0];
+                const end_val = args.items[1];
+                if (start_val != .int or end_val != .int) return RuntimeError.InvalidOperation;
+
+                const len: i64 = @intCast(str.len);
+                var start = start_val.int.value;
+                var end = end_val.int.value;
+
+                // Clamp start to [0, len]
+                if (start < 0) start = 0;
+                if (start > len) start = len;
+
+                // Clamp end to [start, len]
+                if (end < start) end = start;
+                if (end > len) end = len;
+
+                const start_idx: usize = @intCast(start);
+                const end_idx: usize = @intCast(end);
+                const sliced = str[start_idx..end_idx];
+                const result = self.stringAllocator().alloc(u8, sliced.len) catch return RuntimeError.OutOfMemory;
+                @memcpy(result, sliced);
+                return self.builder.string(result);
+            }
         }
 
         // Array methods

@@ -4585,6 +4585,22 @@ pub const TypeChecker = struct {
                 const u8_type: Type = .{ .primitive = .u8_ };
                 return self.type_builder.sliceType(u8_type) catch return self.type_builder.unknownType();
             }
+            if (std.mem.eql(u8, method.method_name, "slice")) {
+                // slice(start, end) takes exactly 2 integer arguments
+                if (method.args.len != 2) {
+                    self.addError(.invalid_call, method.span, "slice() takes exactly 2 arguments (start, end)", .{});
+                } else {
+                    const start_type = self.checkExpr(method.args[0]);
+                    const end_type = self.checkExpr(method.args[1]);
+                    if (!start_type.isInteger()) {
+                        self.addError(.type_mismatch, method.span, "slice() start index must be an integer", .{});
+                    }
+                    if (!end_type.isInteger()) {
+                        self.addError(.type_mismatch, method.span, "slice() end index must be an integer", .{});
+                    }
+                }
+                return self.type_builder.stringType();
+            }
         }
 
         // Integer methods

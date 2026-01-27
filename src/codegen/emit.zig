@@ -5119,6 +5119,21 @@ pub const Emitter = struct {
                         };
                         return llvm.Types.struct_(self.ctx, &context_err_fields, false);
                     }
+
+                    // Try to look up user-defined generic struct types
+                    // Build mangled name: BaseName$Type1$Type2...
+                    var mangled = std.ArrayListUnmanaged(u8){};
+                    defer mangled.deinit(self.allocator);
+                    mangled.appendSlice(self.allocator, base_name) catch return EmitError.OutOfMemory;
+                    for (g.args) |arg| {
+                        mangled.append(self.allocator, '$') catch return EmitError.OutOfMemory;
+                        self.appendTypeNameForMangling(&mangled, arg) catch return EmitError.OutOfMemory;
+                    }
+
+                    // Look up the mangled struct type in cache
+                    if (self.struct_types.get(mangled.items)) |struct_info| {
+                        return struct_info.llvm_type;
+                    }
                 }
                 // Other complex types - return pointer as placeholder
                 return llvm.Types.pointer(self.ctx);
@@ -8666,6 +8681,12 @@ pub const Emitter = struct {
             }
             if (std.mem.eql(u8, method.method_name, "chars")) {
                 return self.emitStringChars(object);
+            }
+            if (std.mem.eql(u8, method.method_name, "slice")) {
+                if (method.args.len != 2) return EmitError.InvalidAST;
+                const start = try self.emitExpr(method.args[0]);
+                const end = try self.emitExpr(method.args[1]);
+                return self.emitStringSlice(object, start, end);
             }
         }
 
@@ -12747,6 +12768,25 @@ pub const Emitter = struct {
             &args,
             1,
             "chars_slice",
+        );
+    }
+
+    /// Emit string.slice(start, end) - extract substring with clamping.
+    /// Calls the klar_string_slice runtime function.
+    fn emitStringSlice(self: *Emitter, str: llvm.ValueRef, start: llvm.ValueRef, end: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const slice_fn = self.getOrDeclareStringSlice();
+        // Convert start and end to i64 if necessary
+        const i64_type = llvm.Types.int64(self.ctx);
+        const start_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, start, i64_type, "start_i64");
+        const end_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, end, i64_type, "end_i64");
+        var args = [_]llvm.ValueRef{ str, start_i64, end_i64 };
+        return llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(slice_fn),
+            slice_fn,
+            &args,
+            3,
+            "sliced",
         );
     }
 
@@ -21665,6 +21705,117 @@ pub const Emitter = struct {
         // Return block - add null terminator and return
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
         var gep_null = [_]llvm.ValueRef{len};
+        const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_null, 1, "null_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int1(self.ctx, false), null_ptr);
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, result);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
+    /// Declare or get the klar_string_slice runtime function.
+    /// Implements string.slice(start, end) with clamping semantics.
+    fn getOrDeclareStringSlice(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_slice";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // Declare: char* klar_string_slice(const char* s, int64_t start, int64_t end)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, i64_type, i64_type };
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 3, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+        // Build the function body
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const copy_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "copy");
+        const ret_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "return");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const zero_i64 = llvm.Const.int64(self.ctx, 0);
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+
+        // Entry block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+        const s = llvm.c.LLVMGetParam(func, 0);
+        const start_arg = llvm.c.LLVMGetParam(func, 1);
+        const end_arg = llvm.c.LLVMGetParam(func, 2);
+
+        // Get string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{s};
+        const len = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(strlen_fn),
+            strlen_fn,
+            &strlen_args,
+            1,
+            "len",
+        );
+
+        // Clamp start to [0, len]
+        // start = max(0, min(start, len))
+        const start_ge_0 = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSGT, start_arg, zero_i64, "start_ge_0");
+        const start_clamped_low = llvm.c.LLVMBuildSelect(self.builder.ref, start_ge_0, start_arg, zero_i64, "start_clamped_low");
+        const start_le_len = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSLT, start_clamped_low, len, "start_le_len");
+        const start_clamped = llvm.c.LLVMBuildSelect(self.builder.ref, start_le_len, start_clamped_low, len, "start_clamped");
+
+        // Clamp end to [start, len]
+        // end = max(start, min(end, len))
+        const end_ge_start = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSGT, end_arg, start_clamped, "end_ge_start");
+        const end_clamped_low = llvm.c.LLVMBuildSelect(self.builder.ref, end_ge_start, end_arg, start_clamped, "end_clamped_low");
+        const end_le_len = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSLT, end_clamped_low, len, "end_le_len");
+        const end_clamped = llvm.c.LLVMBuildSelect(self.builder.ref, end_le_len, end_clamped_low, len, "end_clamped");
+
+        // Calculate slice length
+        const slice_len = llvm.c.LLVMBuildSub(self.builder.ref, end_clamped, start_clamped, "slice_len");
+
+        // Allocate result buffer (slice_len + 1 for null terminator)
+        const alloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, slice_len, one_i64, "alloc_size");
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const result = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &malloc_args,
+            1,
+            "result",
+        );
+
+        // Check if we have bytes to copy
+        const has_bytes = llvm.c.LLVMBuildICmp(self.builder.ref, llvm.c.LLVMIntSGT, slice_len, zero_i64, "has_bytes");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, has_bytes, copy_bb, ret_bb);
+
+        // Copy block - use memcpy
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, copy_bb);
+        var src_gep = [_]llvm.ValueRef{start_clamped};
+        const src_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &src_gep, 1, "src_ptr");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ result, src_ptr, slice_len };
+        _ = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(memcpy_fn),
+            memcpy_fn,
+            &memcpy_args,
+            3,
+            "",
+        );
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, ret_bb);
+
+        // Return block - add null terminator and return
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
+        var gep_null = [_]llvm.ValueRef{slice_len};
         const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &gep_null, 1, "null_ptr");
         _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int1(self.ctx, false), null_ptr);
         _ = llvm.c.LLVMBuildRet(self.builder.ref, result);
