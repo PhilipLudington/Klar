@@ -249,7 +249,7 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ---
 
-## Phase 8: Integration & Linking
+## Phase 8: Integration & Linking ✅
 
 **Objective:** Ensure Klar object files link with C object files.
 
@@ -321,24 +321,27 @@ Phase 5,6 ──> Phase 8 (integration)
 
 ## Known Limitations
 
-See `BUG.md` for detailed descriptions and workarounds.
+All previously tracked bugs have been fixed. See `BUG.md` for history.
 
-- **Bug 1**: Cannot access array elements via struct field (`s.arr[i]` syntax)
-- **Bug 2**: Static method calls on structs fail (`Struct::method()` syntax)
-- **Bug 3**: Sized extern types not fully supported in impl method parameters
-- **Bug 4**: Extern type allocations not freed (minor memory leak)
+**Deferred features** (not needed for basic FFI):
+- `ptr_cast[U]` - requires explicit type argument syntax at call site
+- `CStrOwned` type - owned null-terminated strings
+- `out` parameter semantics - syntax parses but allocation/initialization tracking not implemented
+- `unsafe trait` and `unsafe impl` - for future trait safety requirements
 
 ---
 
-## Open Questions
+## Future Considerations
 
-1. ~~**Null terminator handling**: Should `string.as_cstr()` add a null terminator on-the-fly, or require strings to always be null-terminated internally?~~ **Resolved:** Klar strings (both primitive `string` and `String`) are already null-terminated internally, so `as_cstr()` just returns the pointer.
+These items may be addressed in future work:
 
-2. **Out parameter initialization**: Should the compiler track that `out` parameters are uninitialized before the call and initialized after?
+1. **Out parameter initialization**: Should the compiler track that `out` parameters are uninitialized before the call and initialized after? (Currently syntax-only)
 
-3. **Variadic type safety**: How strictly should we validate arguments to variadic functions?
+2. **Variadic type safety**: How strictly should we validate arguments to variadic functions? (Currently minimal validation)
 
-4. **Platform-specific types**: Should we add `c_int`, `c_long`, etc. type aliases?
+3. **Platform-specific types**: Should we add `c_int`, `c_long`, etc. type aliases for portable FFI code?
+
+4. **Custom C code integration**: The test `call_c_function.kl` would demonstrate linking with user-provided C object files.
 
 ---
 
