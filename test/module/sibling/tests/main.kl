@@ -1,0 +1,9 @@
+// Test file in tests/ subdirectory
+// Imports from sibling lib/ directory
+
+import lib.math.{ add }
+
+fn main() -> i32 {
+    // 30 + 12 = 42
+    return add(30, 12)
+}

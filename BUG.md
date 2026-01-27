@@ -1,79 +1,232 @@
-# Known Bugs and Limitations
+# Klar Language Bugs
 
-## [x] Bug 1: Cannot access array elements via struct field
-
-**Status:** Fixed
-**Discovered:** Phase 8 FFI integration testing
-**Category:** Parser
-**Fixed:** Added lookahead in `parseFieldOrMethod` to distinguish type arguments from array subscripts
-
-The parser did not handle `struct.array_field[index]` syntax correctly because it eagerly consumed `[` assuming type arguments for generic method calls.
-
-**Fix:** In `src/parser.zig`, added `canStartType()` helper and modified `parseFieldOrMethod` to check if the token after `[` can start a type expression. If not (e.g., an integer literal like `0`), the `[` is left for the subscript parser to handle.
-
-```klar
-// This now works:
-let m: Message = Message { data: [1, 2, 3, 4] }
-let x: i32 = m.data[0]  // OK
-```
+Bugs encountered while implementing the JSON parser for Klar.
 
 ---
 
-## [x] Bug 2: Static method calls on structs fail type checking
+## [x] Bug 1: Import path resolution from subdirectories
 
 **Status:** Fixed
-**Discovered:** Phase 8 FFI integration testing
-**Category:** Type Checker, Codegen
-**Fixed:** Modified type checker and codegen to handle struct static methods via `Type::method()` syntax
+**Severity:** High
+**Discovered:** 2026-01-27
 
-The parser creates `EnumLiteral` AST nodes for all `Type::name()` syntax. The fix teaches both the type checker and code generator to handle struct static methods when the type resolves to a struct instead of an enum.
+### Description
 
-**Fix:**
-- `src/checker.zig`: In `checkEnumLiteral`, added handling for struct types - looks up static methods and type-checks arguments
-- `src/codegen/emit.zig`: In `emitEnumLiteral`, added `emitStructStaticMethodCall` to emit calls to struct static methods
+Tests in a `tests/` subdirectory cannot import modules from sibling directories like `lib/`. Klar's module resolution is relative to the source file location, with no way to reference parent or sibling directory trees.
 
-```klar
-// This now works:
-let msg: Message = Message::new(100.as[u64])  // OK
-let msg2: Message = Message::default()        // OK
+### Steps to Reproduce
+
+1. Create project structure:
+   ```
+   project/
+   ├── lib/
+   │   └── json/
+   │       └── value.kl    # exports ParseError
+   └── tests/
+       └── lexer_test.kl   # wants to import from lib/json/value
+   ```
+
+2. In `tests/lexer_test.kl`, try:
+   ```klar
+   import lib.json.value.{ ParseError }
+   ```
+
+3. Run: `klar run tests/lexer_test.kl`
+
+### Expected Behavior
+
+Import resolves to `../lib/json/value.kl` relative to the test file.
+
+### Actual Behavior
+
 ```
+Module error: module 'lib.json.value' not found
+```
+
+### Solution
+
+The module resolver now adds the **current working directory** as a search path in addition to the entry file's directory. This allows imports to resolve relative to where the command is run.
+
+When running `klar run tests/lexer_test.kl` from the project root:
+- The cwd (`project/`) is added as a search path
+- `import lib.json.value` resolves to `project/lib/json/value.kl`
+
+**Fix applied in:** `src/main.zig` - Added cwd to resolver search paths before processing imports.
 
 ---
 
-## [ ] Bug 3: Sized extern types not fully supported in method parameters
+## [ ] Bug 2: String interpolation triggers on brace literals
 
 **Status:** Open
-**Discovered:** Phase 8 FFI integration testing
-**Category:** Codegen
+**Severity:** Medium
+**Discovered:** 2026-01-27
 
-Sized extern types (`extern type(N)`) work in standalone functions but cause LLVM verification errors when used as struct fields accessed in impl methods.
+### Description
+
+String literals containing `{` are incorrectly parsed as the start of string interpolation, even when there's no matching `}` or valid interpolation expression.
+
+### Steps to Reproduce
 
 ```klar
-extern type(8) SeL4CPtr
-
-pub struct Endpoint {
-    cap: SeL4CPtr,
-}
-
-impl Endpoint {
-    pub fn send(self: ref Self, info: SeL4MessageInfo) -> void {
-        unsafe {
-            seL4_Send(self.cap, info)  // LLVM error: Invalid indices for GEP
-        }
-    }
+fn main() -> i32 {
+    let json: string = "{"  // This fails
+    println(json)
+    return 0
 }
 ```
 
-**Workaround:** Use free functions instead of methods when working with sized extern types.
+### Expected Behavior
+
+The string `"{"` should be a valid string literal containing a single left brace character.
+
+### Actual Behavior
+
+```
+Parse error: error.UnterminatedString
+  X:Y: unmatched '{' in string interpolation
+```
+
+### Workaround
+
+Use character-to-string conversion:
+
+```klar
+fn lbrace() -> string { return '{'.to_string() }
+
+fn main() -> i32 {
+    let json: string = lbrace()  // Works
+    println(json)
+    return 0
+}
+```
 
 ---
 
-## [ ] Bug 4: Extern type allocations not freed
+## [ ] Bug 3: LLVM codegen error with string variable comparisons
 
-**Status:** Open (minor)
-**Discovered:** Phase 8 FFI integration testing
-**Category:** Memory
+**Status:** Open
+**Severity:** High
+**Discovered:** 2026-01-27
 
-`ExternType` objects created in `checkExternType` are allocated but not tracked for deallocation. This causes memory leak warnings in debug builds but doesn't affect correctness.
+### Description
 
-**Location:** `src/checker.zig:8725`
+String equality comparisons involving variables built through concatenation cause LLVM verification failures. The generated IR has type mismatches between string struct types and pointer types.
+
+### Steps to Reproduce
+
+```klar
+pub fn read_keyword(first: char) -> string {
+    var keyword: string = first.to_string()
+    keyword = keyword + "r"
+    keyword = keyword + "u"
+    keyword = keyword + "e"
+
+    if keyword == "true" {  // This causes LLVM error
+        return "matched"
+    }
+    return "no match"
+}
+
+fn main() -> i32 {
+    let result: string = read_keyword('t')
+    println(result)
+    return 0
+}
+```
+
+### Expected Behavior
+
+The code compiles and runs, printing "matched".
+
+### Actual Behavior
+
+```
+LLVM Module verification failed: Both operands to a binary operator are not of the same type!
+  %addtmp = add nsw { ptr, i32, i32 } %keyword, ptr %chartostr.heap
+Both operands to ICmp instruction are not of the same type!
+  %eqtmp = icmp eq { ptr, i32, i32 } %keyword, ptr @str
+
+LLVM verification failed: ModuleVerificationFailed
+```
+
+### Analysis
+
+The LLVM IR shows:
+- String variables are represented as `{ ptr, i32, i32 }` (pointer + length + capacity)
+- String literals are represented as `ptr`
+- Comparison and concatenation operations don't properly handle the type difference
+
+### Workaround
+
+None found. Avoid string equality comparisons with dynamically built strings. Use character-by-character comparison or restructure code to avoid this pattern.
+
+---
+
+## [ ] Bug 4: Parse error with certain if/else patterns in functions
+
+**Status:** Open
+**Severity:** Medium
+**Discovered:** 2026-01-27
+
+### Description
+
+Certain combinations of if/else statements within functions cause parse errors, even when the syntax appears correct. The error message indicates an unmatched brace, but the braces are properly balanced.
+
+### Steps to Reproduce
+
+```klar
+pub struct LexerState {
+    pos: i32,
+    len: i32,
+}
+
+pub fn lexer_next_token(state: LexerState) -> i32 {
+    if state.pos >= state.len { return 0 }
+
+    let c: char = 'x'
+
+    if c == '{' {
+        return 1
+    }
+    if c == '}' {
+        return 2
+    }
+    // ... more if statements
+
+    return -1
+}
+```
+
+When this function is part of a larger file with many other declarations, parse errors occur at seemingly random locations.
+
+### Expected Behavior
+
+The file parses successfully.
+
+### Actual Behavior
+
+```
+Parse error: error.UnexpectedToken
+  X:1: expected '}'
+```
+
+The line number often points to the start of a subsequent function, not the actual problem location.
+
+### Workaround
+
+- Isolate problematic code into smaller files
+- Reduce the number of sequential if statements
+- Use match expressions instead of multiple if statements where possible
+
+---
+
+## Impact on JSON Parser Project
+
+These bugs collectively block running comprehensive lexer tests:
+
+1. **BUG-001** prevents organizing tests in a `tests/` directory
+2. **BUG-002** requires helper functions for any JSON syntax in test strings
+3. **BUG-003** prevents testing keyword recognition (`true`, `false`, `null`)
+4. **BUG-004** limits the complexity of test files
+
+The lexer implementation itself works (verified through manual testing and partial test coverage), but automated test coverage is limited until these issues are resolved.

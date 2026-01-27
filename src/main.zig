@@ -531,6 +531,14 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             defer allocator.free(std_path);
         }
 
+        // Add current working directory as a search path
+        // This allows imports to resolve relative to where the command is run,
+        // enabling test files in subdirectories to import from sibling directories
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+            resolver.addSearchPath(cwd_path) catch {};
+        } else |_| {}
+
         // Register entry module
         const entry = resolver.resolveEntry(path) catch {
             try stderr.writeAll("Error: could not resolve entry module\n");
