@@ -1,0 +1,56 @@
+// Bug 12: Arrays as function parameters with complex return types
+// This tests that array-to-slice conversion happens correctly when
+// passing arrays to functions that return complex types like tuples with Result.
+
+pub enum Token { LBrace, Eof }
+pub struct LexerState { pos: i32 }
+
+fn next_token(chars: [char], state: LexerState) -> (Result[Token, string], LexerState) {
+    let new_state: LexerState = LexerState { pos: state.pos + chars.len() }
+    if state.pos == 0 {
+        return (Ok(Token::LBrace), new_state)
+    }
+    return (Ok(Token::Eof), new_state)
+}
+
+fn main() -> i32 {
+    let chars: [char] = ['a', 'b', 'c']
+    let state: LexerState = LexerState { pos: 0 }
+
+    // First call - should get LBrace
+    let result1: (Result[Token, string], LexerState) = next_token(chars, state)
+    let token_result1: Result[Token, string] = result1.0
+    let state1: LexerState = result1.1
+
+    match token_result1 {
+        Ok(token) => {
+            match token {
+                Token::LBrace => { }  // Expected
+                Token::Eof => { return 1 }  // Error
+            }
+        }
+        Err(_) => { return 2 }  // Error
+    }
+
+    // Second call with updated state - should get Eof
+    let result2: (Result[Token, string], LexerState) = next_token(chars, state1)
+    let token_result2: Result[Token, string] = result2.0
+    let state2: LexerState = result2.1
+
+    match token_result2 {
+        Ok(token) => {
+            match token {
+                Token::LBrace => { return 3 }  // Error
+                Token::Eof => { }  // Expected
+            }
+        }
+        Err(_) => { return 4 }  // Error
+    }
+
+    // Verify state progression: 0 -> 3 -> 6
+    if state2.pos != 6 {
+        return 5
+    }
+
+    return 0  // Success
+}

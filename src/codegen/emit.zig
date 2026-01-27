@@ -4125,6 +4125,14 @@ pub const Emitter = struct {
                 defer self.allocator.free(mangled_z);
 
                 if (self.module.getNamedFunction(mangled_z)) |func| {
+                    // Get function type and parameter types upfront for arg conversion
+                    const fn_type = llvm.getGlobalValueType(func);
+                    const param_count = llvm.c.LLVMCountParamTypes(fn_type);
+                    var param_types: [32]llvm.TypeRef = undefined;
+                    if (param_count <= 32) {
+                        llvm.c.LLVMGetParamTypes(fn_type, &param_types);
+                    }
+
                     // Check if this function uses sret
                     if (self.sret_functions.get(mangled_name)) |sret_return_type| {
                         // Sret call: allocate space, prepend pointer, call, load result
@@ -4136,12 +4144,16 @@ pub const Emitter = struct {
                         // First argument is the sret pointer
                         args.append(self.allocator, sret_alloca) catch return EmitError.OutOfMemory;
 
-                        // Then the user arguments
-                        for (call.args) |arg| {
-                            args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                        // Then the user arguments (sret is first param, so user args start at index 1)
+                        for (call.args, 0..) |arg, i| {
+                            const arg_value = try self.emitExpr(arg);
+                            const converted = if (param_count <= 32 and i + 1 < param_count)
+                                self.convertArgIfNeeded(arg_value, param_types[i + 1])
+                            else
+                                arg_value;
+                            args.append(self.allocator, converted) catch return EmitError.OutOfMemory;
                         }
 
-                        const fn_type = llvm.getGlobalValueType(func);
                         const call_inst = self.builder.buildCall(fn_type, func, args.items, "");
 
                         // Add sret attribute to the call site
@@ -4157,11 +4169,15 @@ pub const Emitter = struct {
                     var args = std.ArrayListUnmanaged(llvm.ValueRef){};
                     defer args.deinit(self.allocator);
 
-                    for (call.args) |arg| {
-                        args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                    for (call.args, 0..) |arg, i| {
+                        const arg_value = try self.emitExpr(arg);
+                        const converted = if (param_count <= 32 and i < param_count)
+                            self.convertArgIfNeeded(arg_value, param_types[i])
+                        else
+                            arg_value;
+                        args.append(self.allocator, converted) catch return EmitError.OutOfMemory;
                     }
 
-                    const fn_type = llvm.getGlobalValueType(func);
                     const return_type = llvm.getReturnType(fn_type);
                     const call_name_str: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
                     return self.builder.buildCall(fn_type, func, args.items, call_name_str);
@@ -4187,6 +4203,14 @@ pub const Emitter = struct {
             defer self.allocator.free(name_z);
 
             if (self.module.getNamedFunction(name_z)) |func| {
+                // Get function type and parameter types upfront for arg conversion
+                const fn_type = llvm.getGlobalValueType(func);
+                const param_count = llvm.c.LLVMCountParamTypes(fn_type);
+                var param_types: [32]llvm.TypeRef = undefined;
+                if (param_count <= 32) {
+                    llvm.c.LLVMGetParamTypes(fn_type, &param_types);
+                }
+
                 // Check if this function uses sret
                 if (self.sret_functions.get(lookup_name)) |sret_return_type| {
                     // Sret call: allocate space, prepend pointer, call, load result
@@ -4198,12 +4222,16 @@ pub const Emitter = struct {
                     // First argument is the sret pointer
                     args.append(self.allocator, sret_alloca) catch return EmitError.OutOfMemory;
 
-                    // Then the user arguments
-                    for (call.args) |arg| {
-                        args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                    // Then the user arguments (sret is first param, so user args start at index 1)
+                    for (call.args, 0..) |arg, i| {
+                        const arg_value = try self.emitExpr(arg);
+                        const converted = if (param_count <= 32 and i + 1 < param_count)
+                            self.convertArgIfNeeded(arg_value, param_types[i + 1])
+                        else
+                            arg_value;
+                        args.append(self.allocator, converted) catch return EmitError.OutOfMemory;
                     }
 
-                    const fn_type = llvm.getGlobalValueType(func);
                     const call_inst = self.builder.buildCall(fn_type, func, args.items, "");
 
                     // Add sret attribute to the call site
@@ -4219,11 +4247,15 @@ pub const Emitter = struct {
                 var args = std.ArrayListUnmanaged(llvm.ValueRef){};
                 defer args.deinit(self.allocator);
 
-                for (call.args) |arg| {
-                    args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                for (call.args, 0..) |arg, i| {
+                    const arg_value = try self.emitExpr(arg);
+                    const converted = if (param_count <= 32 and i < param_count)
+                        self.convertArgIfNeeded(arg_value, param_types[i])
+                    else
+                        arg_value;
+                    args.append(self.allocator, converted) catch return EmitError.OutOfMemory;
                 }
 
-                const fn_type = llvm.getGlobalValueType(func);
                 const return_type = llvm.getReturnType(fn_type);
                 const call_name_str: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
                 return self.builder.buildCall(fn_type, func, args.items, call_name_str);
@@ -20116,6 +20148,44 @@ pub const Emitter = struct {
 
         // Load and return the slice struct value
         return self.builder.buildLoad(slice_type, slice_alloca, "slice.val");
+    }
+
+    /// Convert an emitted argument value to match the expected parameter type if needed.
+    /// This handles array-to-slice conversion for function call arguments.
+    fn convertArgIfNeeded(self: *Emitter, arg_value: llvm.ValueRef, expected_type: llvm.TypeRef) llvm.ValueRef {
+        const arg_type = llvm.typeOf(arg_value);
+
+        // Check if the emitted value is an array and expected type is a slice struct
+        const arg_kind = llvm.c.LLVMGetTypeKind(arg_type);
+        const expected_kind = llvm.c.LLVMGetTypeKind(expected_type);
+
+        if (arg_kind == llvm.c.LLVMArrayTypeKind and expected_kind == llvm.c.LLVMStructTypeKind) {
+            // Check if expected type is a slice struct { ptr, i64 }
+            const num_fields = llvm.c.LLVMCountStructElementTypes(expected_type);
+            if (num_fields == 2) {
+                var field_types: [2]llvm.TypeRef = undefined;
+                llvm.c.LLVMGetStructElementTypes(expected_type, &field_types);
+
+                const first_is_ptr = llvm.c.LLVMGetTypeKind(field_types[0]) == llvm.c.LLVMPointerTypeKind;
+                const second_is_i64 = llvm.c.LLVMGetTypeKind(field_types[1]) == llvm.c.LLVMIntegerTypeKind and
+                    llvm.c.LLVMGetIntTypeWidth(field_types[1]) == 64;
+
+                if (first_is_ptr and second_is_i64) {
+                    // This is an array-to-slice conversion
+                    const array_len = llvm.Types.getArrayLength(arg_type);
+
+                    // Store the array value in an alloca so we can get a pointer to it
+                    const array_alloca = self.builder.buildAlloca(arg_type, "arg.arr.storage");
+                    _ = self.builder.buildStore(arg_value, array_alloca);
+
+                    // Convert to slice
+                    return self.convertArrayToSlice(array_alloca, array_len);
+                }
+            }
+        }
+
+        // No conversion needed
+        return arg_value;
     }
 
     /// Get type size in bytes from LLVM type.

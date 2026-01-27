@@ -111,11 +111,10 @@ fn main() -> i32 {
 
 ---
 
-## [ ] Bug 12: Arrays as Function Parameters with Complex Return Types (BLOCKING)
+## [x] Bug 12: Arrays as Function Parameters with Complex Return Types
 
-**Description:** Passing `[char]` as a function parameter when the function also returns complex types (tuples with Result) causes LLVM type mismatch.
+**Description:** Passing `[char]` as a function parameter when the function also returns complex types (tuples with Result) now works correctly. The fix ensures that when passing arrays to functions, they are automatically converted to slice structs `{ ptr, len }` to match the expected parameter type.
 
-**Reproduction:**
 ```klar
 pub enum Token { LBrace, Eof }
 pub struct LexerState { pos: i32 }
@@ -128,26 +127,32 @@ fn next_token(chars: [char], state: LexerState) -> (Result[Token, string], Lexer
 fn main() -> i32 {
     let chars: [char] = ['a', 'b']
     let state: LexerState = LexerState { pos: 0 }
-    let result: (Result[Token, string], LexerState) = next_token(chars, state)
-    // LLVM ERROR
+    let result: (Result[Token, string], LexerState) = next_token(chars, state)  // NOW WORKS
+
+    // Extract tuple elements first (direct field access on tuple elements is a separate issue)
+    let token_result: Result[Token, string] = result.0
+    let new_state: LexerState = result.1
+
+    match token_result {
+        Ok(token) => {
+            match token {
+                Token::LBrace => { println("Got LBrace!") }
+                Token::Eof => { println("Got Eof") }
+            }
+        }
+        Err(e) => { println("Error: {e}") }
+    }
+
+    println("New pos: {new_state.pos}")
     return 0
 }
 ```
-
-**Error:**
-```
-LLVM Module verification failed: Call parameter type does not match function signature!
-  %chars2 = load [2 x i32], ptr %chars, align 4
- { ptr, i64 }
-```
-
-**Workaround:** None found - this pattern is fundamental to lexer implementation.
 
 ---
 
 ## Summary
 
-**Bug Status: 5/6 fixed**
+**Bug Status: 6/6 fixed**
 
 | Bug | Feature | Status |
 |-----|---------|--------|
@@ -156,14 +161,20 @@ LLVM Module verification failed: Call parameter type does not match function sig
 | 9 | Match on tuple element | Fixed |
 | 10 | String `+` concatenation | Fixed |
 | 11 | Result with struct error | Fixed |
-| 12 | Arrays + complex returns | Blocking |
+| 12 | Arrays + complex returns | Fixed |
 
 ---
 
 ## Impact on JSON Parser
 
-The JSON lexer cannot be implemented due to bug 12:
+All blocking bugs have been fixed! The JSON lexer and parser can now be implemented using the fundamental patterns needed:
 
-1. **Bug 12** prevents the fundamental lexer pattern of passing char arrays to tokenization functions
+1. ✅ **Bug 12** - Array parameters with complex return types now work
+2. ✅ All other bugs are fixed
 
-The `value.kl` module (JsonValue types) works correctly. The lexer and parser are blocked until this compiler bug is fixed.
+**Note:** Direct field access through tuple indices (e.g., `result.1.pos`) is not yet supported. Use the workaround of extracting to a variable first:
+```klar
+let state: LexerState = result.1
+println("{state.pos}")  // Works
+// println("{result.1.pos}")  // Not yet supported
+```
