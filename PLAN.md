@@ -1,6 +1,6 @@
 # Klar FFI Implementation Plan
 
-**Status:** Complete (Phase 8 Done)
+**Status:** Phase 9 In Progress
 **Goal:** Implement Foreign Function Interface (FFI) for C interoperability
 
 ---
@@ -25,7 +25,7 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 ### 1.2 Parser Changes
 - [x] Parse `unsafe { ... }` blocks as expressions/statements
 - [x] Parse `unsafe fn` declarations
-- [ ] Parse `unsafe trait` and `unsafe impl` (future)
+- ~~Parse `unsafe trait` and `unsafe impl`~~ → moved to Phase 9
 
 ### 1.3 AST Changes
 - [x] Add `UnsafeBlock` node wrapping inner statements
@@ -68,8 +68,8 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ### 2.5 Checker Changes
 - [x] Register extern types in scope
-- [ ] Validate extern types can only be used behind pointers (if unsized) - deferred to Phase 3
-- [ ] Allow sized extern types to be passed by value - deferred to Phase 4
+- ~~Validate extern types can only be used behind pointers (if unsized)~~ → moved to Phase 9
+- ~~Allow sized extern types to be passed by value~~ → moved to Phase 9
 
 ### 2.6 Codegen
 - [x] Generate LLVM pointer type for unsized extern types
@@ -96,8 +96,8 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 - [x] `offset[T](ptr: CPtr[T], count: isize) -> CPtr[T]` - unsafe
 - [x] `read[T](ptr: CPtr[T]) -> T` - unsafe
 - [x] `write[T](ptr: CPtr[T], value: T) -> void` - unsafe
-- [ ] `ptr_cast[U](ptr: CPtr[T]) -> CPtr[U]` - unsafe (deferred: needs type arg syntax)
 - [x] `ref_to_ptr[T](value: ref T) -> CPtr[T]` - unsafe
+- ~~`ptr_cast[U](ptr: CPtr[T]) -> CPtr[U]`~~ → moved to Phase 9
 
 ### 3.3 Checker Changes
 - [x] Type check pointer operations
@@ -110,7 +110,7 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 - [x] Generate null checks for `is_null`
 - [x] Generate `getelementptr` for `offset`
 - [x] Generate `load`/`store` for `read`/`write`
-- [ ] Generate `bitcast` for `ptr_cast` (deferred with ptr_cast)
+- ~~Generate `bitcast` for `ptr_cast`~~ → moved to Phase 9
 
 ### 3.5 Tests
 - [x] `test/native/ffi/cptr_basic.kl`
@@ -138,14 +138,14 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 ### 4.3 Checker Changes
 - [x] Validate extern function signatures use FFI-compatible types
 - [x] Track which functions are extern (require unsafe to call)
-- [ ] Handle `out` parameters (allocate stack space, pass pointer) - deferred to call site impl
 - [x] Validate variadic functions have at least one non-variadic param
+- ~~Handle `out` parameters (allocate stack space, pass pointer)~~ → moved to Phase 9
 
 ### 4.4 Codegen
 - [x] Generate LLVM `declare` for extern functions
 - [x] Use C calling convention (`ccc`)
-- [ ] For `out` params: alloca + pass pointer + mark initialized after call - deferred to call site impl
 - [x] Handle variadic calls with LLVM vararg support
+- ~~For `out` params: alloca + pass pointer + mark initialized after call~~ → moved to Phase 9
 
 ### 4.5 Tests
 - [x] `test/native/ffi/extern_fn_basic.kl` - basic extern fn declaration
@@ -227,11 +227,11 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 **Objective:** Implement string conversion between Klar `string` and C `CStr`.
 
 ### 7.1 Type Additions
-- [ ] `CStrOwned` type (owned null-terminated string) - deferred, not needed for basic FFI
+- ~~`CStrOwned` type (owned null-terminated string)~~ → moved to Phase 9
 
 ### 7.2 Built-in Methods on `string` and `String`
 - [x] `fn as_cstr(self: ref Self) -> CStr` - borrow as C string (works on primitive string and String)
-- [ ] `fn to_cstr(self: ref Self) -> CStrOwned` - copy to owned - deferred with CStrOwned
+- ~~`fn to_cstr(self: ref Self) -> CStrOwned`~~ → moved to Phase 9
 
 ### 7.3 Built-in Methods on `CStr`
 - [x] `unsafe fn to_string(self: Self) -> String` - copy to Klar String
@@ -268,7 +268,39 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 - [x] FFI tests already link with libc successfully
 - [x] `test/native/ffi/extern_fn_return_struct.kl` - C struct return values
 - [x] `test/native/ffi/sel4_bindings.kl` - seL4-style FFI bindings
-- [ ] `test/native/ffi/call_c_function.kl` - call custom C code
+- ~~`test/native/ffi/call_c_function.kl` - call custom C code~~ → moved to Phase 9
+
+---
+
+## Phase 9: Deferred FFI Features
+
+**Status:** In Progress (Batch A Complete)
+**Objective:** Complete remaining FFI features organized by implementation priority.
+
+### Batch A: Quick Wins (Validation & Testing) ✅
+
+- [x] `test/native/ffi/call_c_function.kl` - test linking with custom C code
+- [x] Validate unsized extern types can only be used behind pointers (`CPtr[T]`, `COptPtr[T]`)
+- [x] Allow sized extern types to be passed by value to C functions
+
+### Batch B: Out Parameters
+
+- [ ] Checker: Handle `out` parameters (allocate stack space, pass pointer)
+- [ ] Codegen: For `out` params - alloca + pass pointer + mark initialized after call
+
+### Batch C: String Ownership
+
+- [ ] Add `CStrOwned` type (owned null-terminated string)
+- [ ] Add `fn to_cstr(self: ref Self) -> CStrOwned` method to `string`/`String`
+
+### Batch D: Pointer Cast (Requires Parser Changes)
+
+- [ ] Add `ptr_cast[U](ptr: CPtr[T]) -> CPtr[U]` builtin (needs type arg syntax at call site)
+- [ ] Codegen: Generate appropriate LLVM for `ptr_cast`
+
+### Batch E: Future (Low Priority)
+
+- [ ] Parse `unsafe trait` and `unsafe impl` declarations
 
 ---
 
@@ -323,25 +355,17 @@ Phase 5,6 ──> Phase 8 (integration)
 
 All previously tracked bugs have been fixed. See `BUG.md` for history.
 
-**Deferred features** (not needed for basic FFI):
-- `ptr_cast[U]` - requires explicit type argument syntax at call site
-- `CStrOwned` type - owned null-terminated strings
-- `out` parameter semantics - syntax parses but allocation/initialization tracking not implemented
-- `unsafe trait` and `unsafe impl` - for future trait safety requirements
+**Deferred features** are now tracked in Phase 9, organized by implementation batch.
 
 ---
 
 ## Future Considerations
 
-These items may be addressed in future work:
+These items may be addressed beyond Phase 9:
 
-1. **Out parameter initialization**: Should the compiler track that `out` parameters are uninitialized before the call and initialized after? (Currently syntax-only)
+1. **Variadic type safety**: How strictly should we validate arguments to variadic functions? (Currently minimal validation)
 
-2. **Variadic type safety**: How strictly should we validate arguments to variadic functions? (Currently minimal validation)
-
-3. **Platform-specific types**: Should we add `c_int`, `c_long`, etc. type aliases for portable FFI code?
-
-4. **Custom C code integration**: The test `call_c_function.kl` would demonstrate linking with user-provided C object files.
+2. **Platform-specific types**: Should we add `c_int`, `c_long`, etc. type aliases for portable FFI code?
 
 ---
 

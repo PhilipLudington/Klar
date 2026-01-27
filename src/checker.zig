@@ -8867,7 +8867,11 @@ pub const TypeChecker = struct {
 
             // Validate FFI-compatible types for extern structs
             if (struct_decl.is_extern and !self.isFfiCompatibleType(field_type)) {
-                self.addError(.type_mismatch, field.span, "extern struct fields must be FFI-compatible types (primitives, CPtr, COptPtr, CStr, or other extern types)", .{});
+                if (self.isUnsizedExternType(field_type)) {
+                    self.addError(.type_mismatch, field.span, "unsized extern type cannot be used in struct field; use CPtr[T] or COptPtr[T] instead", .{});
+                } else {
+                    self.addError(.type_mismatch, field.span, "extern struct fields must be FFI-compatible types (primitives, CPtr, COptPtr, CStr, or other extern types)", .{});
+                }
             }
 
             fields.append(self.allocator, .{
@@ -8937,6 +8941,15 @@ pub const TypeChecker = struct {
             const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
             param_types.append(self.allocator, param_type) catch {};
 
+            // Validate parameter type is FFI-compatible
+            if (!self.isFfiCompatibleType(param_type)) {
+                if (self.isUnsizedExternType(param_type)) {
+                    self.addError(.type_mismatch, param.span, "unsized extern type cannot be passed by value; use CPtr[T] or COptPtr[T] instead", .{});
+                } else {
+                    self.addError(.type_mismatch, param.span, "extern function parameters must be FFI-compatible types", .{});
+                }
+            }
+
             // Validate out parameters: must be used with pointer-compatible types
             if (param.is_out) {
                 // Out parameters get their address taken and passed as a pointer
@@ -8950,6 +8963,17 @@ pub const TypeChecker = struct {
             self.resolveTypeExpr(rt) catch self.type_builder.unknownType()
         else
             self.type_builder.voidType();
+
+        // Validate return type is FFI-compatible (if not void)
+        if (return_type != .void_) {
+            if (!self.isFfiCompatibleType(return_type)) {
+                if (self.isUnsizedExternType(return_type)) {
+                    self.addError(.type_mismatch, func.span, "unsized extern type cannot be returned by value; use CPtr[T] or COptPtr[T] instead", .{});
+                } else {
+                    self.addError(.type_mismatch, func.span, "extern function return type must be FFI-compatible", .{});
+                }
+            }
+        }
 
         // Create function type
         // Extern functions are implicitly unsafe to call
@@ -10282,9 +10306,12 @@ pub const TypeChecker = struct {
     /// - Primitive types (i8, i16, i32, i64, u8, u16, u32, u64, isize, usize, f32, f64, bool)
     /// - CPtr[T] and COptPtr[T] (raw pointers)
     /// - CStr (null-terminated C strings)
-    /// - Extern types (sized or opaque)
+    /// - Sized extern types (extern type(N) Name)
     /// - Other extern structs
     /// - Extern enums (C-compatible enum layout)
+    ///
+    /// Note: Unsized/opaque extern types (extern type Name) are NOT FFI-compatible
+    /// for direct use - they must be used behind pointers (CPtr[T] or COptPtr[T]).
     fn isFfiCompatibleType(self: *TypeChecker, t: Type) bool {
         _ = self;
         return switch (t) {
@@ -10292,11 +10319,17 @@ pub const TypeChecker = struct {
             .cptr => true,
             .copt_ptr => true,
             .cstr => true,
-            .extern_type => true,
+            .extern_type => |et| et.size != null, // Only sized extern types can be used directly
             .struct_ => |s| s.is_extern,
             .enum_ => |e| e.is_extern,
             else => false,
         };
+    }
+
+    /// Check if a type is an unsized extern type (opaque type that must be behind a pointer).
+    fn isUnsizedExternType(self: *TypeChecker, t: Type) bool {
+        _ = self;
+        return t == .extern_type and t.extern_type.size == null;
     }
 
     /// Check if a primitive type is an integer type (suitable for extern enum repr).

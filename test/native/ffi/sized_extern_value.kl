@@ -1,0 +1,52 @@
+// Test: Sized extern type passed by value
+// This test verifies that sized extern types can be passed to and from C functions.
+//
+// Build instructions:
+//   cc -c test/native/ffi/helper.c -o /tmp/helper.o && \
+//   ar rcs /tmp/libhelper.a /tmp/helper.o && \
+//   klar build test/native/ffi/sized_extern_value.kl -L/tmp -lhelper -o /tmp/sized_test && \
+//   /tmp/sized_test
+
+// Define Point as an extern struct (C-compatible layout)
+extern struct Point {
+    x: i32,
+    y: i32
+}
+
+extern {
+    // Takes a Point by value
+    fn point_sum(p: Point) -> i32
+
+    // Returns a Point by value
+    fn make_point(x: i32, y: i32) -> Point
+}
+
+fn main() -> i32 {
+    // Test 1: Pass struct by value to C
+    let p1: Point = Point { x: 10, y: 32 }
+    let sum1: i32 = unsafe { point_sum(p1) }
+    if sum1 != 42 {
+        return 1  // Failed: point_sum with Klar-created point
+    }
+
+    // Test 2: Receive struct by value from C
+    let p2: Point = unsafe { make_point(20, 22) }
+    if p2.x != 20 {
+        return 2  // Failed: make_point x
+    }
+    if p2.y != 22 {
+        return 3  // Failed: make_point y
+    }
+
+    // Test 3: Round-trip (C creates, Klar passes back)
+    let p3: Point = unsafe { make_point(5, 37) }
+    let sum2: i32 = unsafe { point_sum(p3) }
+    if sum2 != 42 {
+        return 4  // Failed: round-trip sum
+    }
+
+    // All tests passed
+    return 0
+}
+
+// expected: 0

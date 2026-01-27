@@ -114,12 +114,21 @@ pub const Emitter = struct {
 
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
 
+    /// Info for ABI-lowered parameter (struct -> integer conversion)
+    const AbiLoweredParam = struct {
+        struct_type: llvm.TypeRef,
+        int_type: llvm.TypeRef,
+    };
+
     const ExternFnInfo = struct {
         func: llvm.ValueRef,
         is_variadic: bool,
         /// For ABI lowering: if the function returns a struct that's lowered to an integer,
         /// this holds the original struct type so we can convert the return value.
         abi_lowered_return_type: ?llvm.TypeRef = null,
+        /// For ABI lowering: tracks which parameters are structs lowered to integers.
+        /// Index i contains both struct and int types if parameter i was lowered.
+        abi_lowered_param_types: ?[]const ?AbiLoweredParam = null,
     };
 
     const ReturnTypeInfo = struct {
@@ -963,17 +972,69 @@ pub const Emitter = struct {
             break :blk original_type;
         } else llvm.Types.void_(self.ctx);
 
-        // Build parameter types
+        // Build parameter types with ABI lowering for small structs
         var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
         defer param_types.deinit(self.allocator);
+
+        // Track which parameters need ABI lowering (struct -> integer)
+        var abi_lowered_params = std.ArrayListUnmanaged(?AbiLoweredParam){};
+        defer abi_lowered_params.deinit(self.allocator);
 
         for (func.params) |param| {
             // For out parameters, we pass a pointer to the type
             if (param.is_out) {
                 param_types.append(self.allocator, llvm.Types.pointer(self.ctx)) catch return EmitError.OutOfMemory;
+                abi_lowered_params.append(self.allocator, null) catch return EmitError.OutOfMemory;
             } else {
-                const param_ty = try self.typeExprToLLVM(param.type_);
-                param_types.append(self.allocator, param_ty) catch return EmitError.OutOfMemory;
+                const original_type = try self.typeExprToLLVM(param.type_);
+
+                // Check if this is a struct type that needs ABI lowering
+                if (llvm.getTypeKind(original_type) == llvm.c.LLVMStructTypeKind) {
+                    // Calculate struct size
+                    const struct_size: usize = if (self.type_checker) |tc| size_blk: {
+                        const type_name: ?[]const u8 = switch (param.type_) {
+                            .named => |n| n.name,
+                            else => null,
+                        };
+                        if (type_name) |pname| {
+                            if (tc.lookupSymbol(pname)) |sym| {
+                                if (sym.type_ == .struct_) {
+                                    const type_layout = self.layout_calc.getTypeLayout(sym.type_);
+                                    break :size_blk type_layout.size;
+                                }
+                            }
+                        }
+                        break :size_blk 0;
+                    } else 0;
+
+                    // On most platforms, small structs (≤ 8 bytes) are passed as integers
+                    if (struct_size <= 8 and struct_size > 0) {
+                        // Use integer type matching the struct size
+                        const lowered_type = if (struct_size <= 1)
+                            llvm.Types.int8(self.ctx)
+                        else if (struct_size <= 2)
+                            llvm.Types.int16(self.ctx)
+                        else if (struct_size <= 4)
+                            llvm.Types.int32(self.ctx)
+                        else
+                            llvm.Types.int64(self.ctx);
+
+                        // Save both types for conversion at call sites
+                        abi_lowered_params.append(self.allocator, .{
+                            .struct_type = original_type,
+                            .int_type = lowered_type,
+                        }) catch return EmitError.OutOfMemory;
+
+                        param_types.append(self.allocator, lowered_type) catch return EmitError.OutOfMemory;
+                    } else {
+                        // Large structs are passed as-is (or by pointer depending on ABI)
+                        param_types.append(self.allocator, original_type) catch return EmitError.OutOfMemory;
+                        abi_lowered_params.append(self.allocator, null) catch return EmitError.OutOfMemory;
+                    }
+                } else {
+                    param_types.append(self.allocator, original_type) catch return EmitError.OutOfMemory;
+                    abi_lowered_params.append(self.allocator, null) catch return EmitError.OutOfMemory;
+                }
             }
         }
 
@@ -988,12 +1049,25 @@ pub const Emitter = struct {
         // Use C calling convention for extern functions
         llvm.setFunctionCallConv(llvm_func, 0); // 0 = C calling convention (ccc)
 
+        // Store ABI lowered param info if any params were lowered
+        var has_lowered_params = false;
+        for (abi_lowered_params.items) |item| {
+            if (item != null) {
+                has_lowered_params = true;
+                break;
+            }
+        }
+
         // Store the function for extern function tracking
         const name_copy = self.allocator.dupe(u8, func.name) catch return EmitError.OutOfMemory;
         self.extern_functions.put(name_copy, .{
             .func = llvm_func,
             .is_variadic = func.is_variadic,
             .abi_lowered_return_type = abi_lowered_return_type,
+            .abi_lowered_param_types = if (has_lowered_params)
+                (self.allocator.dupe(?AbiLoweredParam, abi_lowered_params.items) catch null)
+            else
+                null,
         }) catch return EmitError.OutOfMemory;
     }
 
@@ -4412,24 +4486,45 @@ pub const Emitter = struct {
                     return self.builder.buildLoad(sret_return_type, sret_alloca, "sret.load");
                 }
 
-                // Check if this is an extern function with ABI-lowered struct return
+                // Check if this is an extern function with ABI-lowered types (struct return or params)
                 if (self.extern_functions.get(lookup_name)) |extern_info| {
-                    if (extern_info.abi_lowered_return_type) |struct_type| {
-                        // Call the function which returns an integer
+                    const has_abi_lowered_params = extern_info.abi_lowered_param_types != null;
+                    const has_abi_lowered_return = extern_info.abi_lowered_return_type != null;
+
+                    if (has_abi_lowered_return or has_abi_lowered_params) {
+                        // Build args with ABI lowering for struct parameters
                         var args = std.ArrayListUnmanaged(llvm.ValueRef){};
                         defer args.deinit(self.allocator);
 
-                        for (call.args) |arg| {
-                            args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+                        for (call.args, 0..) |arg, i| {
+                            const arg_value = try self.emitExpr(arg);
+
+                            // Check if this parameter needs ABI lowering (struct -> int)
+                            if (extern_info.abi_lowered_param_types) |lowered_params| {
+                                if (i < lowered_params.len) {
+                                    if (lowered_params[i]) |lowered| {
+                                        // Convert struct to integer by storing and loading as int
+                                        const tmp = self.builder.buildAlloca(lowered.struct_type, "abi.param.tmp");
+                                        _ = self.builder.buildStore(arg_value, tmp);
+                                        const int_val = self.builder.buildLoad(lowered.int_type, tmp, "abi.param.int");
+                                        args.append(self.allocator, int_val) catch return EmitError.OutOfMemory;
+                                        continue;
+                                    }
+                                }
+                            }
+                            args.append(self.allocator, arg_value) catch return EmitError.OutOfMemory;
                         }
 
                         // fn_type already declared in outer scope
-                        const int_result = self.builder.buildCall(fn_type, func, args.items, "abi.int");
+                        const call_result = self.builder.buildCall(fn_type, func, args.items, if (has_abi_lowered_return) "abi.int" else "calltmp");
 
-                        // Convert the integer back to struct by storing to memory and loading as struct
-                        const tmp_alloca = self.builder.buildAlloca(struct_type, "abi.struct.tmp");
-                        _ = self.builder.buildStore(int_result, tmp_alloca);
-                        return self.builder.buildLoad(struct_type, tmp_alloca, "abi.struct");
+                        // If return was ABI-lowered, convert integer back to struct
+                        if (extern_info.abi_lowered_return_type) |struct_type| {
+                            const tmp_alloca = self.builder.buildAlloca(struct_type, "abi.struct.tmp");
+                            _ = self.builder.buildStore(call_result, tmp_alloca);
+                            return self.builder.buildLoad(struct_type, tmp_alloca, "abi.struct");
+                        }
+                        return call_result;
                     }
                 }
 
