@@ -7882,24 +7882,35 @@ pub const Emitter = struct {
     }
 
     /// Emit an enum literal: EnumType::VariantName(payload)
-    /// Generates code to construct a tagged union value.
+    /// Also handles struct static method calls: StructType::method(args)
+    /// Generates code to construct a tagged union value or call a static method.
     fn emitEnumLiteral(self: *Emitter, lit: *ast.EnumLiteral) EmitError!llvm.ValueRef {
+        // Get the base type name
+        const base_name = switch (lit.enum_type) {
+            .named => |n| n.name,
+            .generic_apply => |g| switch (g.base) {
+                .named => |n| n.name,
+                else => return EmitError.UnsupportedFeature,
+            },
+            else => return EmitError.UnsupportedFeature,
+        };
+
+        // Check if this is a struct static method call
+        if (self.type_checker) |tc| {
+            if (tc.lookupStructMethod(base_name, lit.variant_name)) |struct_method| {
+                // This is a struct static method call, not an enum literal
+                if (!struct_method.has_self) {
+                    return self.emitStructStaticMethodCall(lit, base_name, struct_method);
+                }
+            }
+        }
+
         // Get the mangled enum type name
         const mangled_name = try self.getMangledEnumName(lit.enum_type);
 
         // Look up the registered enum type
         const enum_info = self.struct_types.get(mangled_name) orelse {
             // Enum type not registered - this might be a non-generic enum
-            // Try the base name if it's not a generic
-            const base_name = switch (lit.enum_type) {
-                .named => |n| n.name,
-                .generic_apply => |g| switch (g.base) {
-                    .named => |n| n.name,
-                    else => return EmitError.UnsupportedFeature,
-                },
-                else => return EmitError.UnsupportedFeature,
-            };
-
             // Try base name lookup
             if (self.struct_types.get(base_name)) |info| {
                 return self.emitEnumLiteralWithInfo(lit, info, base_name);
@@ -7908,6 +7919,53 @@ pub const Emitter = struct {
         };
 
         return self.emitEnumLiteralWithInfo(lit, enum_info, mangled_name);
+    }
+
+    /// Emit a static method call on a struct: StructType::method(args)
+    fn emitStructStaticMethodCall(
+        self: *Emitter,
+        lit: *ast.EnumLiteral,
+        struct_name: []const u8,
+        _: TypeChecker.StructMethod, // struct_method - unused but kept for potential future use
+    ) EmitError!llvm.ValueRef {
+        // Build the function name: StructName_methodName
+        var fn_name_buf = std.ArrayListUnmanaged(u8){};
+        defer fn_name_buf.deinit(self.allocator);
+        fn_name_buf.appendSlice(self.allocator, struct_name) catch return EmitError.OutOfMemory;
+        fn_name_buf.append(self.allocator, '_') catch return EmitError.OutOfMemory;
+        fn_name_buf.appendSlice(self.allocator, lit.variant_name) catch return EmitError.OutOfMemory;
+
+        const fn_name = self.allocator.dupeZ(u8, fn_name_buf.items) catch return EmitError.OutOfMemory;
+        defer self.allocator.free(fn_name);
+
+        // Get the function from the module
+        const callee = self.module.getNamedFunction(fn_name) orelse {
+            return EmitError.InvalidAST;
+        };
+
+        // Build arguments from the payload
+        var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer args.deinit(self.allocator);
+
+        for (lit.payload) |arg| {
+            const arg_val = try self.emitExpr(arg);
+            args.append(self.allocator, arg_val) catch return EmitError.OutOfMemory;
+        }
+
+        // Call the method
+        const fn_type = llvm.c.LLVMGlobalGetValueType(callee);
+
+        // Check if return type is void
+        const ret_type = llvm.c.LLVMGetReturnType(fn_type);
+        const is_void = llvm.c.LLVMGetTypeKind(ret_type) == llvm.c.LLVMVoidTypeKind;
+        const call_name: [:0]const u8 = if (is_void) "" else "static.result";
+
+        return self.builder.buildCall(
+            fn_type,
+            callee,
+            args.items,
+            call_name,
+        );
     }
 
     /// Helper to emit enum literal with resolved type info

@@ -19,41 +19,23 @@ let x: i32 = m.data[0]  // OK
 
 ---
 
-## [ ] Bug 2: Static method calls on structs fail type checking
+## [x] Bug 2: Static method calls on structs fail type checking
 
-**Status:** Open
+**Status:** Fixed
 **Discovered:** Phase 8 FFI integration testing
-**Category:** Type Checker
+**Category:** Type Checker, Codegen
+**Fixed:** Modified type checker and codegen to handle struct static methods via `Type::method()` syntax
 
-The `Type::method()` syntax works for enums but fails for structs with "expected enum type" error.
+The parser creates `EnumLiteral` AST nodes for all `Type::name()` syntax. The fix teaches both the type checker and code generator to handle struct static methods when the type resolves to a struct instead of an enum.
+
+**Fix:**
+- `src/checker.zig`: In `checkEnumLiteral`, added handling for struct types - looks up static methods and type-checks arguments
+- `src/codegen/emit.zig`: In `emitEnumLiteral`, added `emitStructStaticMethodCall` to emit calls to struct static methods
 
 ```klar
-pub struct Message {
-    label: u64,
-}
-
-impl Message {
-    pub fn new(label: u64) -> Message {
-        return Message { label: label }
-    }
-}
-
-fn main() -> i32 {
-    let msg: Message = Message::new(100.as[u64])  // Error: expected enum type
-    return 0
-}
-```
-
-**Workaround:** Use free functions instead of static methods:
-```klar
-fn new_message(label: u64) -> Message {
-    return Message { label: label }
-}
-
-fn main() -> i32 {
-    let msg: Message = new_message(100.as[u64])
-    return 0
-}
+// This now works:
+let msg: Message = Message::new(100.as[u64])  // OK
+let msg2: Message = Message::default()        // OK
 ```
 
 ---

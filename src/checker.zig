@@ -6814,16 +6814,74 @@ pub const TypeChecker = struct {
     }
 
     /// Type check enum literal construction: EnumType::VariantName(payload)
+    /// Also handles static method calls on structs: StructType::method(args)
     fn checkEnumLiteral(self: *TypeChecker, lit: *ast.EnumLiteral) Type {
         // Resolve the enum type
-        const enum_type = self.resolveTypeExpr(lit.enum_type) catch return self.type_builder.unknownType();
+        const resolved_type = self.resolveTypeExpr(lit.enum_type) catch return self.type_builder.unknownType();
 
-        if (enum_type != .enum_) {
+        // Handle struct static method calls: StructType::method(args)
+        if (resolved_type == .struct_) {
+            const struct_type = resolved_type.struct_;
+            if (self.lookupStructMethod(struct_type.name, lit.variant_name)) |struct_method| {
+                // Verify this is a static method (no self parameter)
+                if (struct_method.has_self) {
+                    self.addError(.invalid_call, lit.span, "cannot call instance method '{s}' without an object", .{lit.variant_name});
+                    return self.type_builder.unknownType();
+                }
+
+                // Check argument count
+                const expected_args = struct_method.func_type.function.params.len;
+                if (lit.payload.len != expected_args) {
+                    self.addError(.invalid_call, lit.span, "method '{s}' expects {d} argument(s), got {d}", .{ lit.variant_name, expected_args, lit.payload.len });
+                }
+
+                // Type check arguments
+                for (lit.payload, 0..) |arg, i| {
+                    const arg_type = self.checkExpr(arg);
+                    if (i < struct_method.func_type.function.params.len) {
+                        const expected_type = struct_method.func_type.function.params[i];
+                        // Skip type var parameters for now (generic methods)
+                        if (expected_type != .type_var and !arg_type.eql(expected_type)) {
+                            self.addError(.type_mismatch, lit.span, "argument type mismatch", .{});
+                        }
+                    }
+                }
+
+                // Handle monomorphized generic structs
+                if (std.mem.indexOf(u8, struct_type.name, "$")) |_| {
+                    self.recordMethodMonomorphization(struct_type, struct_method) catch {};
+
+                    for (self.monomorphized_structs.items) |mono| {
+                        if (std.mem.eql(u8, mono.mangled_name, struct_type.name)) {
+                            var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
+                            defer substitutions.deinit(self.allocator);
+
+                            for (struct_method.impl_type_params, 0..) |type_param, i| {
+                                if (i < mono.type_args.len) {
+                                    substitutions.put(self.allocator, type_param.id, mono.type_args[i]) catch {};
+                                }
+                            }
+
+                            const return_type = struct_method.func_type.function.return_type;
+                            const concrete_return = self.substituteTypeParams(return_type, substitutions) catch return_type;
+                            return concrete_return;
+                        }
+                    }
+                }
+
+                return struct_method.func_type.function.return_type;
+            } else {
+                self.addError(.undefined_method, lit.span, "struct '{s}' has no method '{s}'", .{ struct_type.name, lit.variant_name });
+                return self.type_builder.unknownType();
+            }
+        }
+
+        if (resolved_type != .enum_) {
             self.addError(.type_mismatch, lit.span, "expected enum type", .{});
             return self.type_builder.unknownType();
         }
 
-        const enum_def = enum_type.enum_;
+        const enum_def = resolved_type.enum_;
 
         // Find the variant
         var found_variant: ?types.EnumVariant = null;
@@ -6889,7 +6947,7 @@ pub const TypeChecker = struct {
             }
         }
 
-        return enum_type;
+        return resolved_type;
     }
 
     /// Type check a comptime block expression
