@@ -237,6 +237,8 @@ pub const TypeChecker = struct {
     trait_registry: std.StringHashMapUnmanaged(TraitInfo),
     /// Track trait type allocations for cleanup.
     trait_types: std.ArrayListUnmanaged(*types.TraitType),
+    /// Track extern type allocations for cleanup (created in checkExternType).
+    extern_types: std.ArrayListUnmanaged(*types.ExternType),
     /// Registry of trait implementations.
     /// Maps (struct_name, trait_name) -> TraitImplInfo.
     trait_impls: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(TraitImplInfo)),
@@ -562,6 +564,7 @@ pub const TypeChecker = struct {
             .monomorphized_methods = .{},
             .trait_registry = .{},
             .trait_types = .{},
+            .extern_types = .{},
             .trait_impls = .{},
             .type_var_slices = .{},
             .substituted_type_slices = .{},
@@ -713,6 +716,12 @@ pub const TypeChecker = struct {
             self.allocator.destroy(trait_type);
         }
         self.trait_types.deinit(self.allocator);
+
+        // Clean up extern type allocations
+        for (self.extern_types.items) |extern_type| {
+            self.allocator.destroy(extern_type);
+        }
+        self.extern_types.deinit(self.allocator);
 
         // Clean up trait implementations (including allocated keys and associated type bindings)
         var impls_key_iter = self.trait_impls.keyIterator();
@@ -8898,6 +8907,9 @@ pub const TypeChecker = struct {
             .name = extern_decl.name,
             .size = extern_decl.size,
         };
+
+        // Track for cleanup
+        self.extern_types.append(self.allocator, extern_type) catch {};
 
         // Register in current scope
         self.current_scope.define(.{

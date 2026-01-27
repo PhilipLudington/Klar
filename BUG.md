@@ -1,12 +1,12 @@
 # Known Bugs and Limitations
 
-## [ ] Bug 1: Cannot access array elements via struct field
+## [x] Bug 1: Cannot access array elements via struct field
 
-**Status:** Open
+**Status:** Fixed (verified after rebase from main)
 **Discovered:** Phase 8 FFI integration testing
 **Category:** Parser
 
-The parser does not handle `struct.array_field[index]` syntax correctly.
+The parser now correctly handles `struct.array_field[index]` syntax.
 
 ```klar
 pub struct Message {
@@ -14,27 +14,21 @@ pub struct Message {
 }
 
 fn main() -> i32 {
-    let m: Message = Message { data: [1, 2, 3, 4] }
-    let x: i32 = m.data[0]  // Parse error: expected type
+    let m: Message = Message { data: [10, 20, 30, 40] }
+    let x: i32 = m.data[0]  // Works correctly, returns 10
     return x
 }
 ```
 
-**Workaround:** Store the array in a local variable first:
-```klar
-let arr: [i32; 4] = m.data
-let x: i32 = arr[0]
-```
-
 ---
 
-## [ ] Bug 2: Static method calls on structs fail type checking
+## [x] Bug 2: Static method calls on structs fail type checking
 
-**Status:** Open
+**Status:** Fixed (verified after rebase from main)
 **Discovered:** Phase 8 FFI integration testing
 **Category:** Type Checker
 
-The `Type::method()` syntax works for enums but fails for structs with "expected enum type" error.
+The `Type::method()` syntax now works for both enums and structs.
 
 ```klar
 pub struct Message {
@@ -48,32 +42,28 @@ impl Message {
 }
 
 fn main() -> i32 {
-    let msg: Message = Message::new(100.as[u64])  // Error: expected enum type
-    return 0
-}
-```
-
-**Workaround:** Use free functions instead of static methods:
-```klar
-fn new_message(label: u64) -> Message {
-    return Message { label: label }
-}
-
-fn main() -> i32 {
-    let msg: Message = new_message(100.as[u64])
+    let msg: Message = Message::new(100.as[u64])  // Works correctly
     return 0
 }
 ```
 
 ---
 
-## [ ] Bug 3: Sized extern types not fully supported in method parameters
+## [x] Bug 3: Sized extern types not fully supported in method parameters
 
-**Status:** Open
+**Status:** Fixed
 **Discovered:** Phase 8 FFI integration testing
 **Category:** Codegen
 
-Sized extern types (`extern type(N)`) work in standalone functions but cause LLVM verification errors when used as struct fields accessed in impl methods.
+Sized extern types (`extern type(N)`) now work correctly in impl methods with `ref Self` parameters.
+
+**Root cause:** Two issues in `namedTypeToLLVM`:
+1. Extern types weren't being looked up in the type checker, causing fallback to `i32`
+2. When computing `reference_inner_type` for self parameters, "Self" wasn't resolved to the actual struct type
+
+**Fix:**
+- Added extern type lookup via `type_checker.lookupType()` in `namedTypeToLLVM`
+- For self parameters in impl methods, use the struct's LLVM type directly instead of trying to resolve "Self"
 
 ```klar
 extern type(8) SeL4CPtr
@@ -85,22 +75,25 @@ pub struct Endpoint {
 impl Endpoint {
     pub fn send(self: ref Self, info: SeL4MessageInfo) -> void {
         unsafe {
-            seL4_Send(self.cap, info)  // LLVM error: Invalid indices for GEP
+            seL4_Send(self.cap, info)  // Now works correctly
         }
     }
 }
 ```
 
-**Workaround:** Use free functions instead of methods when working with sized extern types.
-
 ---
 
-## [ ] Bug 4: Extern type allocations not freed
+## [x] Bug 4: Extern type allocations not freed
 
-**Status:** Open (minor)
+**Status:** Fixed
 **Discovered:** Phase 8 FFI integration testing
 **Category:** Memory
 
-`ExternType` objects created in `checkExternType` are allocated but not tracked for deallocation. This causes memory leak warnings in debug builds but doesn't affect correctness.
+**Root cause:** `ExternType` objects created in `checkExternType` were allocated but not tracked for deallocation.
 
-**Location:** `src/checker.zig:8725`
+**Fix:**
+- Added `extern_types: std.ArrayListUnmanaged(*types.ExternType)` field to TypeChecker
+- Track allocations in `checkExternType` by appending to the list
+- Free allocations in `TypeChecker.deinit()`
+
+No more memory leak warnings in debug builds.

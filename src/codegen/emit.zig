@@ -1181,6 +1181,13 @@ pub const Emitter = struct {
                 // Check if this is a reference parameter
                 const is_ref = param.type_ == .reference;
                 const ref_inner_type: ?llvm.TypeRef = if (is_ref) blk: {
+                    // For self parameter, use the struct type from struct_name directly
+                    // This handles the case where the type is "Self" which isn't a registered type
+                    if (std.mem.eql(u8, param.name, "self")) {
+                        if (self.struct_types.get(struct_name)) |struct_info| {
+                            break :blk struct_info.llvm_type;
+                        }
+                    }
                     break :blk try self.typeExprToLLVM(param.type_.reference.inner);
                 } else null;
 
@@ -4416,7 +4423,7 @@ pub const Emitter = struct {
                             args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
                         }
 
-                        const fn_type = llvm.getGlobalValueType(func);
+                        // fn_type already declared in outer scope
                         const int_result = self.builder.buildCall(fn_type, func, args.items, "abi.int");
 
                         // Convert the integer back to struct by storing to memory and loading as struct
@@ -5380,6 +5387,16 @@ pub const Emitter = struct {
         // FFI types
         if (std.mem.eql(u8, name, "CStr")) {
             return llvm.Types.pointer(self.ctx); // Null-terminated C string
+        }
+
+        // Check if it's an extern type registered in the type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            if (tc_mut.lookupType(name)) |ty| {
+                if (ty == .extern_type) {
+                    return self.typeToLLVM(ty);
+                }
+            }
         }
 
         // Default to i32
