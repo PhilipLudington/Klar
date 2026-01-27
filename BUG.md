@@ -4,9 +4,7 @@ Bugs discovered while implementing the JSON parser. Klar version: **0.3.1-dev**
 
 ---
 
-## Bug 7: Associated Functions on Structs with String Fields ✅ FIXED
-
-**Status:** Fixed
+## [x] Bug 7: Associated Functions on Structs with String Fields
 
 **Description:** Previously, calling associated functions on structs with string fields caused LLVM verification failures. This is now working.
 
@@ -25,9 +23,7 @@ impl Lexer {
 
 ---
 
-## Bug 8: Arrays in Struct Fields ✅ FIXED
-
-**Status:** Fixed
+## [x] Bug 8: Arrays in Struct Fields
 
 **Description:** Storing `[char]` (slice types) in struct fields now works correctly. The fix ensures that when an array literal is assigned to a slice-typed variable or struct field, it is properly converted to a slice struct `{ ptr, len }`.
 
@@ -47,9 +43,7 @@ fn main() -> i32 {
 
 ---
 
-## Bug 9: Pattern Matching on Tuple Elements ✅ FIXED
-
-**Status:** Fixed
+## [x] Bug 9: Pattern Matching on Tuple Elements
 
 **Description:** `match result.0` now works correctly without extracting to a variable first.
 
@@ -70,9 +64,7 @@ fn main() -> i32 {
 
 ---
 
-## Bug 10: String Concatenation with `+` Operator ✅ FIXED
-
-**Status:** Fixed
+## [x] Bug 10: String Concatenation with `+` Operator
 
 **Description:** String concatenation using `+` now works correctly. The type checker allows `string + string` operations, and all three backends (native LLVM, VM, interpreter) support it.
 
@@ -95,9 +87,7 @@ fn main() -> i32 {
 
 ---
 
-## Bug 11: Result with Struct Error Type ❌ BLOCKING
-
-**Status:** Blocking
+## [ ] Bug 11: Result with Struct Error Type (BLOCKING)
 
 **Description:** Using `Result[T, E]` where `E` is a struct causes codegen error "UnsupportedFeature".
 
@@ -130,9 +120,7 @@ Codegen error: UnsupportedFeature
 
 ---
 
-## Bug 12: Arrays as Function Parameters with Complex Return Types ❌ BLOCKING
-
-**Status:** Blocking
+## [ ] Bug 12: Arrays as Function Parameters with Complex Return Types (BLOCKING)
 
 **Description:** Passing `[char]` as a function parameter when the function also returns complex types (tuples with Result) causes LLVM type mismatch.
 
@@ -166,16 +154,18 @@ LLVM Module verification failed: Call parameter type does not match function sig
 
 ---
 
-## Summary Table
+## Summary
 
-| Bug | Feature | Status | Impact |
-|-----|---------|--------|--------|
-| 7 | Associated fn on string structs | ✅ Fixed | - |
-| 8 | Arrays in struct fields | ✅ Fixed | - |
-| 9 | Match on tuple element | ✅ Fixed | - |
-| 10 | String `+` concatenation | ✅ Fixed | - |
-| 11 | Result with struct error | ❌ Blocking | High |
-| 12 | Arrays + complex returns | ❌ Blocking | High |
+**Bug Status: 4/6 fixed**
+
+| Bug | Feature | Status |
+|-----|---------|--------|
+| 7 | Associated fn on string structs | Fixed |
+| 8 | Arrays in struct fields | Fixed |
+| 9 | Match on tuple element | Fixed |
+| 10 | String `+` concatenation | Fixed |
+| 11 | Result with struct error | Blocking |
+| 12 | Arrays + complex returns | Blocking |
 
 ---
 
