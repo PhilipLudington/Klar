@@ -274,7 +274,7 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ## Phase 9: Deferred FFI Features
 
-**Status:** In Progress (Batch B Complete)
+**Status:** In Progress (Batch C Complete)
 **Objective:** Complete remaining FFI features organized by implementation priority.
 
 ### Batch A: Quick Wins (Validation & Testing) ✅
@@ -291,10 +291,13 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 - [x] Codegen: For `out` params - pass pointer to variable's alloca
 - [x] Test: `test/native/ffi/extern_fn_out_call.kl` - end-to-end out parameter test
 
-### Batch C: String Ownership
+### Batch C: String Ownership ✅
 
-- [ ] Add `CStrOwned` type (owned null-terminated string)
-- [ ] Add `fn to_cstr(self: ref Self) -> CStrOwned` method to `string`/`String`
+- [x] Add `CStrOwned` type (owned null-terminated string)
+- [x] Add `fn to_cstr(self: ref Self) -> CStrOwned` method to `string`/`String`
+- [x] Add `as_cstr()`, `to_string()`, and `len()` methods to `CStrOwned`
+- [x] Automatic memory deallocation (Drop) for `CStrOwned` at scope exit
+- [x] Test: `test/native/ffi/cstr_owned.kl` - end-to-end CStrOwned test
 
 ### Batch D: Pointer Cast (Requires Parser Changes)
 

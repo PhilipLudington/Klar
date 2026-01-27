@@ -71,6 +71,7 @@ pub const Type = union(enum) {
     cptr: *CptrType, // Non-null raw pointer (CPtr[T])
     copt_ptr: *CoptPtrType, // Nullable raw pointer (COptPtr[T])
     cstr: void, // Null-terminated C string (borrowed)
+    cstr_owned: void, // Null-terminated C string (owned, must be freed)
 
     // Special types
     void_,
@@ -149,8 +150,8 @@ pub const Type = union(enum) {
             // FFI pointer types depend on inner type
             .cptr => |c| c.inner.eql(other.cptr.inner),
             .copt_ptr => |c| c.inner.eql(other.copt_ptr.inner),
-            // CStr is a singleton type (no type parameters)
-            .cstr => true,
+            // CStr and CStrOwned are singleton types (no type parameters)
+            .cstr, .cstr_owned => true,
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -228,6 +229,7 @@ pub const Type = union(enum) {
             .range => |r| r.element_type.isCopyType(),
 
             // Raw pointers are Copy (just the address, like in Rust)
+            // CStr is borrowed so it's Copy; CStrOwned is NOT Copy (owns memory)
             .cptr, .copt_ptr, .cstr => true,
 
             // These types are NOT Copy:
@@ -243,6 +245,7 @@ pub const Type = union(enum) {
             // - Map (owns heap memory, must be moved or cloned)
             // - Set (owns heap memory, must be moved or cloned)
             // - String (heap-allocated string, must be moved or cloned)
+            // - CStrOwned (owns null-terminated C string memory, must be moved)
             // - ContextError (contains a string message)
             // - File (owns file handle resource)
             // - IoError (may contain string payload)
@@ -251,7 +254,8 @@ pub const Type = union(enum) {
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
             // - Extern types (opaque or sized, treat as non-Copy for safety)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .unknown, .error_type, .associated_type_ref, .extern_type => false,
+            // - CStrOwned (owns null-terminated C string memory)
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .unknown, .error_type, .associated_type_ref, .extern_type, .cstr_owned => false,
         };
     }
 };
@@ -972,6 +976,11 @@ pub const TypeBuilder = struct {
         _ = self;
         return .{ .cstr = {} };
     }
+
+    pub fn cstrOwnedType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .cstr_owned = {} };
+    }
 };
 
 // ============================================================================
@@ -1129,6 +1138,7 @@ pub fn formatType(writer: anytype, t: Type) !void {
             try writer.writeAll("]");
         },
         .cstr => try writer.writeAll("CStr"),
+        .cstr_owned => try writer.writeAll("CStrOwned"),
         .void_ => try writer.writeAll("void"),
         .never => try writer.writeAll("!"),
         .unknown => try writer.writeAll("?unknown"),

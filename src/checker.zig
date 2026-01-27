@@ -2585,8 +2585,8 @@ pub const TypeChecker = struct {
                 return self.type_builder.coptPtrType(new_inner);
             },
 
-            // CStr - no type parameters to substitute
-            .cstr => typ,
+            // CStr and CStrOwned - no type parameters to substitute
+            .cstr, .cstr_owned => typ,
         };
     }
 
@@ -2594,7 +2594,7 @@ pub const TypeChecker = struct {
     pub fn containsTypeVar(self: *TypeChecker, typ: Type) bool {
         return switch (typ) {
             .type_var => true,
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type, .cstr => false,
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type, .cstr, .cstr_owned => false,
             .array => |arr| self.containsTypeVar(arr.element),
             .slice => |sl| self.containsTypeVar(sl.element),
             .tuple => |tup| {
@@ -2663,7 +2663,7 @@ pub const TypeChecker = struct {
                 return true;
             },
 
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type, .cstr => {
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type, .cstr, .cstr_owned => {
                 return pattern.eql(concrete);
             },
 
@@ -2865,6 +2865,10 @@ pub const TypeChecker = struct {
                 // Check for CStr (FFI: null-terminated borrowed C string)
                 if (std.mem.eql(u8, n.name, "CStr")) {
                     return self.type_builder.cstrType();
+                }
+                // Check for CStrOwned (FFI: null-terminated owned C string)
+                if (std.mem.eql(u8, n.name, "CStrOwned")) {
+                    return self.type_builder.cstrOwnedType();
                 }
                 // Check for Self
                 if (std.mem.eql(u8, n.name, "Self")) {
@@ -4849,6 +4853,13 @@ pub const TypeChecker = struct {
                 }
                 return self.type_builder.cstrType();
             }
+            // FFI: to_cstr() -> CStrOwned - allocates owned null-terminated copy
+            if (std.mem.eql(u8, method.method_name, "to_cstr")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "to_cstr() takes no arguments", .{});
+                }
+                return self.type_builder.cstrOwnedType();
+            }
         }
 
         // CStr methods (FFI: null-terminated C string)
@@ -4870,6 +4881,37 @@ pub const TypeChecker = struct {
                 }
                 if (!self.in_unsafe_context) {
                     self.addError(.invalid_call, method.span, "CStr.len() is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+                return Type{ .primitive = .usize_ };
+            }
+        }
+
+        // CStrOwned methods (FFI: owned null-terminated C string)
+        if (object_type == .cstr_owned) {
+            // CStrOwned.as_cstr() -> CStr - borrow as CStr for passing to C functions
+            if (std.mem.eql(u8, method.method_name, "as_cstr")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "as_cstr() takes no arguments", .{});
+                }
+                return self.type_builder.cstrType();
+            }
+            // CStrOwned.to_string() -> String - unsafe, copies to Klar String
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "to_string() takes no arguments", .{});
+                }
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, method.span, "CStrOwned.to_string() is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+                return self.type_builder.stringDataType() catch self.type_builder.unknownType();
+            }
+            // CStrOwned.len() -> usize - unsafe, reads from pointer to find null terminator
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "len() takes no arguments", .{});
+                }
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, method.span, "CStrOwned.len() is unsafe and requires unsafe block or unsafe fn", .{});
                 }
                 return Type{ .primitive = .usize_ };
             }
@@ -5990,6 +6032,14 @@ pub const TypeChecker = struct {
                     self.addError(.invalid_call, method.span, "as_cstr() takes no arguments", .{});
                 }
                 return self.type_builder.cstrType();
+            }
+
+            // to_cstr(&self) -> CStrOwned (FFI: allocate owned null-terminated copy)
+            if (std.mem.eql(u8, method.method_name, "to_cstr")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "to_cstr() takes no arguments", .{});
+                }
+                return self.type_builder.cstrOwnedType();
             }
 
             // clear(&mut self) -> void
@@ -8122,6 +8172,7 @@ pub const TypeChecker = struct {
             .cptr => "cptr",
             .copt_ptr => "copt_ptr",
             .cstr => "cstr",
+            .cstr_owned => "cstr_owned",
             .void_ => "void",
             .never => "never",
             .unknown => "unknown",
@@ -10355,6 +10406,7 @@ pub const TypeChecker = struct {
             .cptr => true,
             .copt_ptr => true,
             .cstr => true,
+            .cstr_owned => true, // Owned C strings are also FFI-compatible
             .extern_type => |et| et.size != null, // Only sized extern types can be used directly
             .struct_ => |s| s.is_extern,
             .enum_ => |e| e.is_extern,

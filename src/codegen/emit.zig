@@ -229,6 +229,8 @@ pub const Emitter = struct {
         is_arc: bool = false,
         /// True if this is a BufWriter type (needs flush on drop).
         is_buf_writer: bool = false,
+        /// True if this is a CStrOwned type (needs free on drop).
+        is_cstr_owned: bool = false,
     };
 
     /// Info about a scope for drop tracking.
@@ -1736,6 +1738,8 @@ pub const Emitter = struct {
                 // Check if this is a buffered I/O type
                 const is_buf_reader_let = self.isTypeBufReader(decl.type_);
                 const is_buf_writer_let = self.isTypeBufWriter(decl.type_);
+                // Check if this is a CStrOwned type (needs free on drop)
+                const is_cstr_owned_let = self.isTypeCstrOwned(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
                 const semantic_type = self.resolveTypeExprDirect(decl.type_);
                 self.named_values.put(decl.name, .{
@@ -1776,6 +1780,11 @@ pub const Emitter = struct {
                 // Register BufWriter variables for automatic flushing on drop
                 if (is_buf_writer_let) {
                     try self.registerBufWriterDroppable(decl.name, alloca);
+                }
+
+                // Register CStrOwned variables for automatic free on drop
+                if (is_cstr_owned_let) {
+                    try self.registerCstrOwnedDroppable(decl.name, alloca);
                 }
             },
             .var_decl => |decl| {
@@ -1853,6 +1862,8 @@ pub const Emitter = struct {
                 // Check if this is a buffered I/O type
                 const is_buf_reader = self.isTypeBufReader(decl.type_);
                 const is_buf_writer = self.isTypeBufWriter(decl.type_);
+                // Check if this is a CStrOwned type (needs free on drop)
+                const is_cstr_owned = self.isTypeCstrOwned(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
                 const semantic_type = self.resolveTypeExprDirect(decl.type_);
                 self.named_values.put(decl.name, .{
@@ -1893,6 +1904,11 @@ pub const Emitter = struct {
                 // Register BufWriter variables for automatic flushing on drop
                 if (is_buf_writer) {
                     try self.registerBufWriterDroppable(decl.name, alloca);
+                }
+
+                // Register CStrOwned variables for automatic free on drop
+                if (is_cstr_owned) {
+                    try self.registerCstrOwnedDroppable(decl.name, alloca);
                 }
             },
             .return_stmt => |ret| {
@@ -5542,7 +5558,10 @@ pub const Emitter = struct {
 
         // FFI types
         if (std.mem.eql(u8, name, "CStr")) {
-            return llvm.Types.pointer(self.ctx); // Null-terminated C string
+            return llvm.Types.pointer(self.ctx); // Null-terminated C string (borrowed)
+        }
+        if (std.mem.eql(u8, name, "CStrOwned")) {
+            return llvm.Types.pointer(self.ctx); // Null-terminated C string (owned)
         }
 
         // Check if it's an extern type registered in the type checker
@@ -5639,6 +5658,9 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, n.name, "CStr")) {
                     return .cstr;
                 }
+                if (std.mem.eql(u8, n.name, "CStrOwned")) {
+                    return .cstr_owned;
+                }
                 // For other named types, try type checker
                 if (self.type_checker) |tc| {
                     const tc_mut = @constCast(tc);
@@ -5725,6 +5747,15 @@ pub const Emitter = struct {
         _ = self;
         return switch (type_expr) {
             .generic_apply => |g| if (g.base == .named) std.mem.eql(u8, g.base.named.name, "BufWriter") else false,
+            else => false,
+        };
+    }
+
+    /// Check if a type expression is a CStrOwned type.
+    fn isTypeCstrOwned(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .named => |n| std.mem.eql(u8, n.name, "CStrOwned"),
             else => false,
         };
     }
@@ -6433,6 +6464,10 @@ pub const Emitter = struct {
                     if (std.mem.eql(u8, m.method_name, "as_cstr")) {
                         return llvm.Types.pointer(self.ctx);
                     }
+                    // to_cstr() returns CStrOwned (pointer)
+                    if (std.mem.eql(u8, m.method_name, "to_cstr")) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
                 }
 
                 // CStr methods
@@ -6447,10 +6482,30 @@ pub const Emitter = struct {
                     }
                 }
 
-                // Primitive string methods (as_cstr)
+                // CStrOwned methods
+                if (self.isCstrOwnedExpr(m.object)) {
+                    // as_cstr() returns CStr (pointer)
+                    if (std.mem.eql(u8, m.method_name, "as_cstr")) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                    // len() returns usize (i64)
+                    if (std.mem.eql(u8, m.method_name, "len")) {
+                        return llvm.Types.int64(self.ctx);
+                    }
+                    // to_string() returns String
+                    if (std.mem.eql(u8, m.method_name, "to_string")) {
+                        return self.getStringStructType();
+                    }
+                }
+
+                // Primitive string methods (as_cstr, to_cstr)
                 if (self.isPrimitiveStringExpr(m.object)) {
                     // as_cstr() returns CStr (pointer) - string literals are already null-terminated
                     if (std.mem.eql(u8, m.method_name, "as_cstr")) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                    // to_cstr() returns CStrOwned (pointer) - allocates null-terminated copy
+                    if (std.mem.eql(u8, m.method_name, "to_cstr")) {
                         return llvm.Types.pointer(self.ctx);
                     }
                 }
@@ -8944,6 +8999,10 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, method.method_name, "as_cstr")) {
                     return self.emitStringDataAsCstr(ptr);
                 }
+                // String.to_cstr() -> CStrOwned (allocates owned null-terminated copy)
+                if (std.mem.eql(u8, method.method_name, "to_cstr")) {
+                    return self.emitStringDataToCstrOwned(ptr);
+                }
             }
         }
 
@@ -8954,6 +9013,22 @@ pub const Emitter = struct {
                 return self.emitCstrToString(object);
             }
             // CStr.len() -> usize (returns length without null terminator)
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                return self.emitCstrLen(object);
+            }
+        }
+
+        // Check for CStrOwned methods (FFI: owned null-terminated C string)
+        if (self.isCstrOwnedExpr(method.object)) {
+            // CStrOwned.as_cstr() -> CStr (just returns the same pointer)
+            if (std.mem.eql(u8, method.method_name, "as_cstr")) {
+                return object;
+            }
+            // CStrOwned.to_string() -> String (copies to Klar String)
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                return self.emitCstrToString(object);
+            }
+            // CStrOwned.len() -> usize (returns length without null terminator)
             if (std.mem.eql(u8, method.method_name, "len")) {
                 return self.emitCstrLen(object);
             }
@@ -8977,6 +9052,27 @@ pub const Emitter = struct {
             // Fallback: Check via type checker
             if (self.isPrimitiveStringExpr(method.object)) {
                 return object; // Primitive string, already null-terminated
+            }
+        }
+
+        // Check for primitive string.to_cstr() (string literal or string variable)
+        // Creates an owned copy of the string data
+        if (std.mem.eql(u8, method.method_name, "to_cstr")) {
+            // Check for string literal directly
+            if (method.object == .literal and method.object.literal.kind == .string) {
+                return try self.emitPrimitiveStringToCstrOwned(object, method.object.literal);
+            }
+            // Check for identifier that refers to a string variable
+            if (method.object == .identifier) {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    if (local.is_string) {
+                        return try self.emitPrimitiveStringToCstrOwned(object, null);
+                    }
+                }
+            }
+            // Fallback: Check via type checker
+            if (self.isPrimitiveStringExpr(method.object)) {
+                return try self.emitPrimitiveStringToCstrOwned(object, null);
             }
         }
 
@@ -13212,6 +13308,32 @@ pub const Emitter = struct {
             const tc_mut = @constCast(tc);
             const expr_type = tc_mut.checkExpr(expr);
             return expr_type == .cstr;
+        }
+        return false;
+    }
+
+    /// Check if an expression is a CStrOwned (FFI: owned null-terminated C string) type.
+    fn isCstrOwnedExpr(self: *Emitter, expr: ast.Expr) bool {
+        // Check for method call that returns CStrOwned (like to_cstr)
+        if (expr == .method_call) {
+            const m = expr.method_call;
+            if (std.mem.eql(u8, m.method_name, "to_cstr")) {
+                return true; // to_cstr() returns CStrOwned
+            }
+        }
+        // Check for identifier with CStrOwned semantic type
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.semantic_type) |sem| {
+                    return sem == .cstr_owned;
+                }
+            }
+        }
+        // Fallback: check via type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .cstr_owned;
         }
         return false;
     }
@@ -19580,6 +19702,84 @@ pub const Emitter = struct {
         return self.builder.buildCall(strlen_fn_type, strlen_fn, &args, "cstr.len");
     }
 
+    /// Emit String.to_cstr() -> CStrOwned
+    /// Allocates a new null-terminated copy of the String data.
+    fn emitStringDataToCstrOwned(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Get the ptr field (source data)
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "to_cstr.src_ptr_ptr");
+        const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "to_cstr.src_ptr");
+
+        // Get the len field
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "to_cstr.len_ptr");
+        const len_i32 = self.builder.buildLoad(i32_type, len_ptr, "to_cstr.len");
+
+        // Allocate memory: len + 1 for null terminator
+        const one_i32 = llvm.Const.int32(self.ctx, 1);
+        const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, one_i32, "to_cstr.alloc_len");
+        const alloc_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_len, i64_type, "to_cstr.alloc_len_i64");
+
+        // Call malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_len_i64};
+        const dest_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "to_cstr.ptr");
+
+        // Call memcpy to copy the string data (without null terminator from String)
+        const len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, len_i32, i64_type, "to_cstr.len_i64");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ dest_ptr, src_ptr, len_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "to_cstr.memcpy");
+
+        // Add null terminator at the end
+        const i8_type = llvm.Types.int8(self.ctx);
+        var gep_indices = [_]llvm.ValueRef{len_i32};
+        const null_offset = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, dest_ptr, &gep_indices, 1, "to_cstr.null_pos");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), null_offset);
+
+        return dest_ptr;
+    }
+
+    /// Emit primitive string.to_cstr() -> CStrOwned
+    /// Allocates a new null-terminated copy of the primitive string data.
+    fn emitPrimitiveStringToCstrOwned(self: *Emitter, str_ptr: llvm.ValueRef, literal: ?ast.Literal) EmitError!llvm.ValueRef {
+        // Get the string length
+        const len: llvm.ValueRef = if (literal) |lit| blk: {
+            // For string literals, we know the length at compile time
+            const str_val = switch (lit.kind) {
+                .string => |s| s,
+                else => return EmitError.InvalidAST,
+            };
+            break :blk llvm.Const.int64(self.ctx, @intCast(str_val.len));
+        } else blk: {
+            // For string variables, call strlen
+            const strlen_fn = self.getOrDeclareStrlen();
+            var strlen_args = [_]llvm.ValueRef{str_ptr};
+            break :blk self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "to_cstr.strlen");
+        };
+
+        // Allocate memory: len + 1 for null terminator
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+        const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len, one_i64, "to_cstr.alloc_len");
+
+        // Call malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_len};
+        const dest_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "to_cstr.ptr");
+
+        // Call memcpy to copy the string data (including null terminator)
+        // Note: We copy len+1 bytes which includes the null terminator from the source
+        // (primitive strings are already null-terminated)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ dest_ptr, str_ptr, alloc_len };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "to_cstr.memcpy");
+
+        return dest_ptr;
+    }
+
     /// Get the LLVM struct type for String: { ptr, i32, i32 }
     fn getStringStructType(self: *Emitter) llvm.TypeRef {
         var fields = [_]llvm.TypeRef{
@@ -25377,6 +25577,22 @@ pub const Emitter = struct {
             // Flush BufWriter buffer on drop - call emitBufWriterFlush
             // This ensures any buffered data is written before the variable goes out of scope
             _ = self.emitBufWriterFlush(v.alloca) catch {};
+        } else if (v.is_cstr_owned) {
+            // Free CStrOwned memory on drop
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const cstr_ptr = self.builder.buildLoad(ptr_type, v.alloca, "cstr_owned_drop");
+
+            // Call free to release the memory
+            const free_fn = self.getOrDeclareFree();
+            var args = [_]llvm.ValueRef{cstr_ptr};
+            _ = llvm.c.LLVMBuildCall2(
+                self.builder.ref,
+                llvm.c.LLVMGlobalGetValueType(free_fn),
+                free_fn,
+                &args,
+                1,
+                "",
+            );
         }
         // For non-Rc types that need dropping (future: closures, custom destructors),
         // we would add additional cases here.
@@ -25435,6 +25651,20 @@ pub const Emitter = struct {
             .inner_type = llvm.Types.int32(self.ctx), // Placeholder, not used for BufWriter
             .is_rc = false,
             .is_buf_writer = true,
+        }) catch return EmitError.OutOfMemory;
+    }
+
+    /// Register a CStrOwned variable in the current scope for automatic free on drop.
+    fn registerCstrOwnedDroppable(self: *Emitter, name: []const u8, alloca: llvm.ValueRef) EmitError!void {
+        if (self.scope_stack.items.len == 0) return;
+
+        const scope = &self.scope_stack.items[self.scope_stack.items.len - 1];
+        scope.droppables.append(self.allocator, .{
+            .name = name,
+            .alloca = alloca,
+            .inner_type = llvm.Types.pointer(self.ctx), // CStrOwned is just a pointer
+            .is_rc = false,
+            .is_cstr_owned = true,
         }) catch return EmitError.OutOfMemory;
     }
 
@@ -25556,7 +25786,7 @@ pub const Emitter = struct {
                 }
             },
             // FFI pointer types are all just pointers (8 bytes on 64-bit)
-            .cptr, .copt_ptr, .cstr => 8,
+            .cptr, .copt_ptr, .cstr, .cstr_owned => 8,
         };
     }
 
@@ -25842,7 +26072,7 @@ pub const Emitter = struct {
                 }
             },
             // FFI pointer types are all LLVM opaque pointers
-            .cptr, .copt_ptr, .cstr => llvm.Types.pointer(self.ctx),
+            .cptr, .copt_ptr, .cstr, .cstr_owned => llvm.Types.pointer(self.ctx),
         };
     }
 
