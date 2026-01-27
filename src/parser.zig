@@ -146,6 +146,24 @@ pub const Parser = struct {
         return next;
     }
 
+    /// Check if a token kind can start a type expression.
+    /// Used to distinguish between type arguments (foo.method[T]()) and
+    /// array subscripts (foo.array[0]).
+    fn canStartType(kind: Token.Kind) bool {
+        return switch (kind) {
+            .identifier, // Named types: i32, String, MyType
+            .question, // Optional: ?T
+            .ref, // Reference: ref T
+            .inout, // Mutable reference: inout T
+            .l_bracket, // Array/slice: [T] or [T; N]
+            .l_paren, // Tuple: (T1, T2)
+            .fn_, // Function: fn(Args) -> Ret
+            .self_type, // Self type
+            => true,
+            else => false,
+        };
+    }
+
     fn match(self: *Parser, kind: Token.Kind) bool {
         if (!self.check(kind)) return false;
         self.advance();
@@ -1296,7 +1314,11 @@ pub const Parser = struct {
         }
 
         // Check for method call with type arguments: foo.method[T]()
-        if (self.check(.l_bracket)) {
+        // Only consume '[' if the next token can start a type expression.
+        // This distinguishes between:
+        //   - foo.method[T]() - type arguments (T can start a type)
+        //   - foo.array[0]    - array subscript (0 cannot start a type)
+        if (self.check(.l_bracket) and canStartType(self.peekNext().kind)) {
             self.advance(); // consume '['
             var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
             if (!self.check(.r_bracket)) {

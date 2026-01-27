@@ -1,126 +1,97 @@
-# Klar Language Bugs
+# Known Bugs and Limitations
 
-Bugs discovered while implementing the JSON parser.
+## [x] Bug 1: Cannot access array elements via struct field
+
+**Status:** Fixed
+**Discovered:** Phase 8 FFI integration testing
+**Category:** Parser
+**Fixed:** Added lookahead in `parseFieldOrMethod` to distinguish type arguments from array subscripts
+
+The parser did not handle `struct.array_field[index]` syntax correctly because it eagerly consumed `[` assuming type arguments for generic method calls.
+
+**Fix:** In `src/parser.zig`, added `canStartType()` helper and modified `parseFieldOrMethod` to check if the token after `[` can start a type expression. If not (e.g., an integer literal like `0`), the `[` is left for the subscript parser to handle.
+
+```klar
+// This now works:
+let m: Message = Message { data: [1, 2, 3, 4] }
+let x: i32 = m.data[0]  // OK
+```
 
 ---
 
-## [x] Bug 1: Cannot use `{` or `}` in string literals
+## [ ] Bug 2: Static method calls on structs fail type checking
 
-**Severity:** Blocking → **FIXED**
+**Status:** Open
+**Discovered:** Phase 8 FFI integration testing
+**Category:** Type Checker
 
-**Solution:** Use `\{` and `\}` to escape braces in strings:
+The `Type::method()` syntax works for enums but fails for structs with "expected enum type" error.
+
 ```klar
+pub struct Message {
+    label: u64,
+}
+
+impl Message {
+    pub fn new(label: u64) -> Message {
+        return Message { label: label }
+    }
+}
+
 fn main() -> i32 {
-    print("\{\}")           // Prints: {}
-    print("\{key\}")        // Prints: {key}
-    let x: i32 = 42
-    print("\{value: {x}\}") // Prints: {value: 42}
+    let msg: Message = Message::new(100.as[u64])  // Error: expected enum type
     return 0
 }
 ```
 
-**Original issue:** Any string containing `{` or `}` caused a parse error because the parser interpreted these as string interpolation delimiters.
-
----
-
-## [x] Bug 2: No escape sequence for braces in strings
-
-**Severity:** Blocking → **FIXED**
-
-**Solution:** Use `\{` to produce `{` and `\}` to produce `}`. See Bug 1 for examples.
-
-**Original issue:** There was no documented or working way to escape `{` or `}` characters in string literals.
-
----
-
-## [x] Bug 3: `char.to_string()` returns wrong type
-
-**Severity:** High → **FIXED**
-
-**Solution:** The type checker and code generator now correctly handle `char.to_string()`:
-- Type checker returns primitive `string` type for `char.to_string()` (not heap-allocated `String`)
-- Code generator emits a single-character null-terminated string
-- Variable declarations use type annotations to determine the correct LLVM type
-
+**Workaround:** Use free functions instead of static methods:
 ```klar
+fn new_message(label: u64) -> Message {
+    return Message { label: label }
+}
+
 fn main() -> i32 {
-    let c: char = 'a'
-    let s: string = c.to_string()  // Now works correctly
-    println(s)                      // Prints: a
+    let msg: Message = new_message(100.as[u64])
     return 0
 }
 ```
 
-**Original issue:** The type checker was returning `String` (heap-allocated) instead of `string` (primitive) for `char.to_string()`, and the code generator was treating chars like integers for the `to_string` method.
-
 ---
 
-## [x] Bug 4: Char interpolation prints code point, not character
+## [ ] Bug 3: Sized extern types not fully supported in method parameters
 
-**Severity:** Medium → **FIXED**
+**Status:** Open
+**Discovered:** Phase 8 FFI integration testing
+**Category:** Codegen
 
-**Solution:** The LLVM codegen now uses semantic type information to detect char expressions and uses `%c` format specifier instead of `%d`:
+Sized extern types (`extern type(N)`) work in standalone functions but cause LLVM verification errors when used as struct fields accessed in impl methods.
 
 ```klar
-fn main() -> i32 {
-    let c: char = 'a'
-    println("{c}")  // Now correctly prints "a"
+extern type(8) SeL4CPtr
 
-    let x: char = 'X'
-    println("char is: {x}")  // Prints "char is: X"
+pub struct Endpoint {
+    cap: SeL4CPtr,
+}
 
-    // Mixed interpolation works too
-    let num: i32 = 42
-    let letter: char = 'Z'
-    println("num={num}, char={letter}")  // Prints "num=42, char=Z"
-    return 0
+impl Endpoint {
+    pub fn send(self: ref Self, info: SeL4MessageInfo) -> void {
+        unsafe {
+            seL4_Send(self.cap, info)  // LLVM error: Invalid indices for GEP
+        }
+    }
 }
 ```
 
-**Original issue:** The LLVM codegen treated char values (stored as i32) the same as regular integers, using `%d` format which printed the numeric code point instead of the character.
+**Workaround:** Use free functions instead of methods when working with sized extern types.
 
 ---
 
-## [x] Bug 5: No string slicing method
+## [ ] Bug 4: Extern type allocations not freed
 
-**Severity:** High → **FIXED**
+**Status:** Open (minor)
+**Discovered:** Phase 8 FFI integration testing
+**Category:** Memory
 
-**Solution:** The `slice(start, end)` method is now implemented with clamping semantics:
-```klar
-fn main() -> i32 {
-    let s: string = "hello world"
-    let sub: string = s.slice(0, 5)   // "hello"
-    let end: string = s.slice(6, 11)  // "world"
-    println(sub)  // Prints: hello
-    println(end)  // Prints: world
-    return 0
-}
-```
+`ExternType` objects created in `checkExternType` are allocated but not tracked for deallocation. This causes memory leak warnings in debug builds but doesn't affect correctness.
 
-**Behavior:**
-- Indices outside valid range are clamped (like Python/Go)
-- `s.slice(0, 100)` on "hello" → "hello" (clamps end to 5)
-- `s.slice(10, 20)` on "hello" → "" (start >= len)
-- `s.slice(3, 1)` → "" (start > end)
-- Negative indices are clamped to 0
-
-**Original issue:** The `slice(start, end)` method did not exist on the `string` type.
-
----
-
-## Summary
-
-| Bug | Severity | Status |
-|-----|----------|--------|
-| Braces in strings | Blocking | ✅ FIXED - use `\{` and `\}` |
-| No brace escape | Blocking | ✅ FIXED - use `\{` and `\}` |
-| char.to_string() type | High | ✅ FIXED - returns `string` now |
-| Char interpolation | Medium | ✅ FIXED - uses `%c` format |
-| No string slicing | High | ✅ FIXED - use `s.slice(start, end)` |
-
-Remaining blockers for JSON parser:
-1. ~~Cannot write test strings containing `{` or `}`~~ ✅ Fixed
-2. ~~Cannot build strings from characters (needed for token construction)~~ ✅ Fixed
-3. ~~Cannot extract substrings (needed for keyword/string token extraction)~~ ✅ Fixed
-
-**All bugs resolved!** The JSON parser implementation can proceed.
+**Location:** `src/checker.zig:8725`
