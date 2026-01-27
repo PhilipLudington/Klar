@@ -55,26 +55,29 @@ fn main() -> i32 {
 
 ---
 
-## [ ] Bug 4: Char interpolation prints code point, not character
+## [x] Bug 4: Char interpolation prints code point, not character
 
-**Severity:** Medium
+**Severity:** Medium → **FIXED**
 
-**Description:** When interpolating a `char` value in a string, it prints the numeric Unicode code point rather than the character itself.
+**Solution:** The LLVM codegen now uses semantic type information to detect char expressions and uses `%c` format specifier instead of `%d`:
 
-**Reproduction:**
 ```klar
 fn main() -> i32 {
     let c: char = 'a'
-    println("{c}")  // Prints "97" instead of "a"
+    println("{c}")  // Now correctly prints "a"
+
+    let x: char = 'X'
+    println("char is: {x}")  // Prints "char is: X"
+
+    // Mixed interpolation works too
+    let num: i32 = 42
+    let letter: char = 'Z'
+    println("num={num}, char={letter}")  // Prints "num=42, char=Z"
     return 0
 }
 ```
 
-**Output:** `97`
-
-**Expected:** `a`
-
-**Impact:** Cannot easily print char values for debugging. Must convert to string first, but that's blocked by bug #3.
+**Original issue:** The LLVM codegen treated char values (stored as i32) the same as regular integers, using `%d` format which printed the numeric code point instead of the character.
 
 ---
 
@@ -112,7 +115,7 @@ fn main() -> i32 {
 | Braces in strings | Blocking | ✅ FIXED - use `\{` and `\}` |
 | No brace escape | Blocking | ✅ FIXED - use `\{` and `\}` |
 | char.to_string() type | High | ✅ FIXED - returns `string` now |
-| Char interpolation | Medium | ❌ Open |
+| Char interpolation | Medium | ✅ FIXED - uses `%c` format |
 | No string slicing | High | ✅ FIXED - use `s.slice(start, end)` |
 
 Remaining blockers for JSON parser:
@@ -120,4 +123,4 @@ Remaining blockers for JSON parser:
 2. ~~Cannot build strings from characters (needed for token construction)~~ ✅ Fixed
 3. ~~Cannot extract substrings (needed for keyword/string token extraction)~~ ✅ Fixed
 
-**All blocking issues resolved!** The JSON parser implementation can proceed.
+**All bugs resolved!** The JSON parser implementation can proceed.

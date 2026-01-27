@@ -10744,24 +10744,29 @@ pub const Emitter = struct {
                     expr_values.append(self.allocator, val) catch return EmitError.OutOfMemory;
 
                     // Determine the format specifier based on the expression type
-                    const val_type = llvm.c.LLVMTypeOf(val);
-                    const type_kind = llvm.c.LLVMGetTypeKind(val_type);
+                    // First check semantic type for char (which is i32 at LLVM level)
+                    const format_spec: []const u8 = if (self.isCharExpr(e))
+                        "%c" // char type - print as character
+                    else blk: {
+                        const val_type = llvm.c.LLVMTypeOf(val);
+                        const type_kind = llvm.c.LLVMGetTypeKind(val_type);
 
-                    const format_spec: []const u8 = switch (type_kind) {
-                        llvm.c.LLVMIntegerTypeKind => blk: {
-                            const bit_width = llvm.c.LLVMGetIntTypeWidth(val_type);
-                            if (bit_width == 1) {
-                                // Bool - we need special handling
-                                break :blk "%d";
-                            } else if (bit_width <= 32) {
-                                break :blk "%d";
-                            } else {
-                                break :blk "%lld";
-                            }
-                        },
-                        llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => "%g",
-                        llvm.c.LLVMPointerTypeKind => "%s",
-                        else => "%d", // Default to int
+                        break :blk switch (type_kind) {
+                            llvm.c.LLVMIntegerTypeKind => inner: {
+                                const bit_width = llvm.c.LLVMGetIntTypeWidth(val_type);
+                                if (bit_width == 1) {
+                                    // Bool - we need special handling
+                                    break :inner "%d";
+                                } else if (bit_width <= 32) {
+                                    break :inner "%d";
+                                } else {
+                                    break :inner "%lld";
+                                }
+                            },
+                            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => "%g",
+                            llvm.c.LLVMPointerTypeKind => "%s",
+                            else => "%d", // Default to int
+                        };
                     };
 
                     for (format_spec) |c| {
@@ -11051,7 +11056,10 @@ pub const Emitter = struct {
         };
         const buffer_ptr = self.builder.buildGEP(buffer_type, buffer, &indices, "buf_ptr");
 
-        const format_spec: [:0]const u8 = switch (type_kind) {
+        // Check semantic type for char first (which is i32 at LLVM level)
+        const format_spec: [:0]const u8 = if (self.isCharExpr(expr))
+            "%c" // char type - print as character
+        else switch (type_kind) {
             llvm.c.LLVMIntegerTypeKind => blk: {
                 const bit_width = llvm.c.LLVMGetIntTypeWidth(val_type);
                 if (bit_width <= 32) {
