@@ -1,6 +1,6 @@
 # Klar FFI Implementation Plan
 
-**Status:** In Progress (Phase 5 Complete)
+**Status:** In Progress (Phase 7 Complete)
 **Goal:** Implement Foreign Function Interface (FFI) for C interoperability
 
 ---
@@ -222,30 +222,30 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ---
 
-## Phase 7: String Conversions
+## Phase 7: String Conversions ✅
 
 **Objective:** Implement string conversion between Klar `string` and C `CStr`.
 
 ### 7.1 Type Additions
-- [ ] `CStrOwned` type (owned null-terminated string)
+- [ ] `CStrOwned` type (owned null-terminated string) - deferred, not needed for basic FFI
 
-### 7.2 Built-in Methods on `string`
-- [ ] `fn as_cstr(self: ref Self) -> CStr` - borrow as C string
-- [ ] `fn to_cstr(self: ref Self) -> CStrOwned` - copy to owned
+### 7.2 Built-in Methods on `string` and `String`
+- [x] `fn as_cstr(self: ref Self) -> CStr` - borrow as C string (works on primitive string and String)
+- [ ] `fn to_cstr(self: ref Self) -> CStrOwned` - copy to owned - deferred with CStrOwned
 
 ### 7.3 Built-in Methods on `CStr`
-- [ ] `unsafe fn to_string(self: Self) -> string` - copy to Klar string
-- [ ] `unsafe fn len(self: Self) -> usize` - get length
-- [ ] `fn from_ptr(ptr: CPtr[i8]) -> CStr` - construct from pointer
+- [x] `unsafe fn to_string(self: Self) -> String` - copy to Klar String
+- [x] `unsafe fn len(self: Self) -> usize` - get length
+- [x] `fn from_ptr(ptr: CPtr[i8]) -> CStr` - construct from pointer
 
 ### 7.4 Codegen
-- [ ] `as_cstr`: return pointer to string data (ensure null terminator)
-- [ ] `to_string`: call strlen, allocate, memcpy
-- [ ] `len`: call strlen
+- [x] `as_cstr`: return pointer to string data (string literals and String are null-terminated)
+- [x] `to_string`: call strlen, allocate, memcpy
+- [x] `len`: call strlen
 
 ### 7.5 Tests
-- [ ] `test/native/ffi/string_to_cstr.kl`
-- [ ] `test/native/ffi/cstr_to_string.kl`
+- [x] `test/native/ffi/string_to_cstr.kl`
+- [x] `test/native/ffi/cstr_to_string.kl`
 
 ---
 

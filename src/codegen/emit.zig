@@ -3100,7 +3100,29 @@ pub const Emitter = struct {
     fn emitLiteral(self: *Emitter, lit: ast.Literal) llvm.ValueRef {
         return switch (lit.kind) {
             .int => |v| blk: {
-                // Determine appropriate type based on value
+                // Check if we have an expected type that requires a specific width
+                if (self.expected_type) |expected| {
+                    if (expected == .primitive) {
+                        const prim = expected.primitive;
+                        // Use the expected type's width for the literal
+                        switch (prim) {
+                            .i8_ => break :blk llvm.Const.int(llvm.Types.int8(self.ctx), @intCast(v), true),
+                            .i16_ => break :blk llvm.Const.int(llvm.Types.int16(self.ctx), @intCast(v), true),
+                            .i32_ => break :blk llvm.Const.int32(self.ctx, @intCast(v)),
+                            .i64_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
+                            .i128_ => break :blk llvm.Const.int(llvm.Types.int128(self.ctx), @intCast(v), true),
+                            .isize_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
+                            .u8_ => break :blk llvm.Const.int(llvm.Types.int8(self.ctx), @intCast(v), false),
+                            .u16_ => break :blk llvm.Const.int(llvm.Types.int16(self.ctx), @intCast(v), false),
+                            .u32_ => break :blk llvm.Const.int(llvm.Types.int32(self.ctx), @intCast(v), false),
+                            .u64_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
+                            .u128_ => break :blk llvm.Const.int(llvm.Types.int128(self.ctx), @intCast(v), false),
+                            .usize_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
+                            else => {},
+                        }
+                    }
+                }
+                // Default: determine appropriate type based on value
                 if (v >= std.math.minInt(i32) and v <= std.math.maxInt(i32)) {
                     break :blk llvm.Const.int32(self.ctx, @intCast(v));
                 } else {
@@ -5288,6 +5310,11 @@ pub const Emitter = struct {
             return llvm.Types.pointer(self.ctx); // FILE*
         }
 
+        // FFI types
+        if (std.mem.eql(u8, name, "CStr")) {
+            return llvm.Types.pointer(self.ctx); // Null-terminated C string
+        }
+
         // Default to i32
         return llvm.Types.int32(self.ctx);
     }
@@ -5353,6 +5380,10 @@ pub const Emitter = struct {
                 // string is a primitive type
                 if (std.mem.eql(u8, n.name, "string")) {
                     return .{ .primitive = .string_ };
+                }
+                // FFI types
+                if (std.mem.eql(u8, n.name, "CStr")) {
+                    return .cstr;
                 }
                 // For other named types, try type checker
                 if (self.type_checker) |tc| {
@@ -5566,7 +5597,30 @@ pub const Emitter = struct {
     fn inferExprType(self: *Emitter, expr: ast.Expr) EmitError!llvm.TypeRef {
         return switch (expr) {
             .literal => |lit| switch (lit.kind) {
-                .int => llvm.Types.int32(self.ctx),
+                .int => blk: {
+                    // Check if we have an expected type that requires a specific width
+                    if (self.expected_type) |expected| {
+                        if (expected == .primitive) {
+                            const prim = expected.primitive;
+                            break :blk switch (prim) {
+                                .i8_ => llvm.Types.int8(self.ctx),
+                                .i16_ => llvm.Types.int16(self.ctx),
+                                .i32_ => llvm.Types.int32(self.ctx),
+                                .i64_ => llvm.Types.int64(self.ctx),
+                                .i128_ => llvm.Types.int128(self.ctx),
+                                .isize_ => llvm.Types.int64(self.ctx),
+                                .u8_ => llvm.Types.int8(self.ctx),
+                                .u16_ => llvm.Types.int16(self.ctx),
+                                .u32_ => llvm.Types.int32(self.ctx),
+                                .u64_ => llvm.Types.int64(self.ctx),
+                                .u128_ => llvm.Types.int128(self.ctx),
+                                .usize_ => llvm.Types.int64(self.ctx),
+                                else => llvm.Types.int32(self.ctx),
+                            };
+                        }
+                    }
+                    break :blk llvm.Types.int32(self.ctx);
+                },
                 .float => llvm.Types.float64(self.ctx),
                 .bool_ => llvm.Types.int1(self.ctx),
                 .char => llvm.Types.int32(self.ctx),
@@ -6114,6 +6168,30 @@ pub const Emitter = struct {
                     if (std.mem.eql(u8, m.method_name, "as_str")) {
                         return llvm.Types.pointer(self.ctx);
                     }
+                    // as_cstr() returns CStr (pointer)
+                    if (std.mem.eql(u8, m.method_name, "as_cstr")) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
+                }
+
+                // CStr methods
+                if (self.isCstrExpr(m.object)) {
+                    // len() returns usize (i64)
+                    if (std.mem.eql(u8, m.method_name, "len")) {
+                        return llvm.Types.int64(self.ctx);
+                    }
+                    // to_string() returns String
+                    if (std.mem.eql(u8, m.method_name, "to_string")) {
+                        return self.getStringStructType();
+                    }
+                }
+
+                // Primitive string methods (as_cstr)
+                if (self.isPrimitiveStringExpr(m.object)) {
+                    // as_cstr() returns CStr (pointer) - string literals are already null-terminated
+                    if (std.mem.eql(u8, m.method_name, "as_cstr")) {
+                        return llvm.Types.pointer(self.ctx);
+                    }
                 }
 
                 // Map methods
@@ -6592,6 +6670,13 @@ pub const Emitter = struct {
             .block => |blk| {
                 // Block type is the type of its final expression, or void if none
                 if (blk.final_expr) |final| {
+                    return try self.inferExprType(final);
+                }
+                return llvm.Types.void_(self.ctx);
+            },
+            .unsafe_block => |ub| {
+                // Unsafe block type is the type of its body block's final expression
+                if (ub.body.final_expr) |final| {
                     return try self.inferExprType(final);
                 }
                 return llvm.Types.void_(self.ctx);
@@ -8374,6 +8459,13 @@ pub const Emitter = struct {
             if (std.mem.eql(u8, obj_name, "BufWriter") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitBufWriterNew(method);
             }
+
+            // CStr.from_ptr(ptr: CPtr[i8]) -> CStr
+            // Just returns the pointer unchanged (CStr is represented as a pointer)
+            if (std.mem.eql(u8, obj_name, "CStr") and std.mem.eql(u8, method.method_name, "from_ptr")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                return try self.emitExpr(method.args[0]);
+            }
         }
 
         // Emit the object
@@ -8587,6 +8679,43 @@ pub const Emitter = struct {
                 if (std.mem.eql(u8, method.method_name, "hash")) {
                     return self.emitStringDataHash(ptr);
                 }
+                // String.as_cstr() -> CStr (returns pointer to null-terminated data)
+                if (std.mem.eql(u8, method.method_name, "as_cstr")) {
+                    return self.emitStringDataAsCstr(ptr);
+                }
+            }
+        }
+
+        // Check for CStr methods (FFI: null-terminated C string)
+        if (self.isCstrExpr(method.object)) {
+            // CStr.to_string() -> String (copies C string to Klar String)
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                return self.emitCstrToString(object);
+            }
+            // CStr.len() -> usize (returns length without null terminator)
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                return self.emitCstrLen(object);
+            }
+        }
+
+        // Check for primitive string.as_cstr() (string literal or string variable)
+        // String literals are already null-terminated pointers, so just return the pointer
+        if (std.mem.eql(u8, method.method_name, "as_cstr")) {
+            // Check for string literal directly
+            if (method.object == .literal and method.object.literal.kind == .string) {
+                return object; // String literals are already null-terminated pointers
+            }
+            // Check for identifier that refers to a string variable
+            if (method.object == .identifier) {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    if (local.is_string) {
+                        return object; // Primitive string variable is already a null-terminated pointer
+                    }
+                }
+            }
+            // Fallback: Check via type checker
+            if (self.isPrimitiveStringExpr(method.object)) {
+                return object; // Primitive string, already null-terminated
             }
         }
 
@@ -12778,6 +12907,58 @@ pub const Emitter = struct {
             const tc_mut = @constCast(tc);
             const expr_type = tc_mut.checkExpr(expr);
             return expr_type == .string_data;
+        }
+        return false;
+    }
+
+    /// Check if an expression is a CStr (FFI: null-terminated C string) type.
+    fn isCstrExpr(self: *Emitter, expr: ast.Expr) bool {
+        // Check for method call that returns CStr (like as_cstr)
+        if (expr == .method_call) {
+            const m = expr.method_call;
+            if (std.mem.eql(u8, m.method_name, "as_cstr")) {
+                return false; // This returns CStr but the object is not CStr
+            }
+            if (std.mem.eql(u8, m.method_name, "from_ptr")) {
+                return false; // This returns CStr but the object is CStr type identifier
+            }
+        }
+        // Check for identifier with CStr semantic type
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.semantic_type) |sem| {
+                    return sem == .cstr;
+                }
+            }
+        }
+        // Fallback: check via type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .cstr;
+        }
+        return false;
+    }
+
+    /// Check if an expression is a primitive string (string literal) type.
+    fn isPrimitiveStringExpr(self: *Emitter, expr: ast.Expr) bool {
+        // Check for string literal directly
+        if (expr == .literal and expr.literal.kind == .string) {
+            return true;
+        }
+        // Check for identifier with is_string flag
+        if (expr == .identifier) {
+            if (self.named_values.get(expr.identifier.name)) |local| {
+                if (local.is_string) {
+                    return true;
+                }
+            }
+        }
+        // Fallback: check via type checker
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type == .primitive and expr_type.primitive == .string_;
         }
         return false;
     }
@@ -19046,6 +19227,81 @@ pub const Emitter = struct {
 
         // Return hash as i64
         return self.builder.buildLoad(i64_type, hash_alloca, "hash.result");
+    }
+
+    /// Emit String.as_cstr() -> CStr
+    /// Returns a pointer to the null-terminated string data.
+    fn emitStringDataAsCstr(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Get pointer to the ptr field of the String struct
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "as_cstr.ptr_ptr");
+
+        // Load the data pointer - this is already null-terminated
+        return self.builder.buildLoad(ptr_type, ptr_ptr, "as_cstr.ptr");
+    }
+
+    /// Emit CStr.to_string() -> String
+    /// Copies the C string to a new Klar String.
+    /// Implements inline: strlen, malloc, memcpy (like emitStringFrom).
+    fn emitCstrToString(self: *Emitter, cstr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Call strlen to get the length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{cstr};
+        const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "cstr.len");
+
+        // Convert to i32 (String uses i32 for len)
+        const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "cstr.len_i32");
+
+        // Allocate memory: len + 1 for null terminator
+        const one_i32 = llvm.Const.int32(self.ctx, 1);
+        const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, one_i32, "cstr.alloc_len");
+        const alloc_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_len, i64_type, "cstr.alloc_len_i64");
+
+        // Call malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_len_i64};
+        const str_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "cstr.ptr");
+
+        // Call memcpy to copy the string (including null terminator)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ str_ptr, cstr, alloc_len_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "cstr.memcpy");
+
+        // Build the String result struct
+        const result = self.builder.buildAlloca(string_type, "cstr.result");
+
+        // Set ptr field
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 0, "cstr.ptr_ptr");
+        _ = self.builder.buildStore(str_ptr, ptr_ptr);
+
+        // Set len field
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 1, "cstr.len_ptr");
+        _ = self.builder.buildStore(len_i32, len_ptr);
+
+        // Set capacity field (capacity = len + 1)
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 2, "cstr.cap_ptr");
+        _ = self.builder.buildStore(alloc_len, cap_ptr);
+
+        // Load and return the struct
+        return self.builder.buildLoad(string_type, result, "cstr.to_string");
+    }
+
+    /// Emit CStr.len() -> usize
+    /// Returns the length of the C string by calling strlen.
+    fn emitCstrLen(self: *Emitter, cstr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Declare or get strlen
+        const strlen_fn = self.getOrDeclareStrlen();
+        const strlen_fn_type = llvm.c.LLVMGlobalGetValueType(strlen_fn);
+
+        // Call strlen(cstr)
+        var args = [_]llvm.ValueRef{cstr};
+        return self.builder.buildCall(strlen_fn_type, strlen_fn, &args, "cstr.len");
     }
 
     /// Get the LLVM struct type for String: { ptr, i32, i32 }

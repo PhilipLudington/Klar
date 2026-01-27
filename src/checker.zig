@@ -4504,6 +4504,28 @@ pub const TypeChecker = struct {
                 self.addError(.invalid_call, method.span, "BufWriter.new() requires a type argument: BufWriter.new[File](file)", .{});
                 return self.type_builder.unknownType();
             }
+
+            // CStr.from_ptr(ptr: CPtr[i8]) -> CStr - construct CStr from raw pointer
+            // This is a safe cast (just reinterprets the pointer), but using the CStr may be unsafe
+            if (std.mem.eql(u8, obj_name, "CStr") and std.mem.eql(u8, method.method_name, "from_ptr")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "CStr.from_ptr() takes exactly 1 argument", .{});
+                    return self.type_builder.cstrType();
+                }
+                if (method.type_args != null) {
+                    self.addError(.invalid_call, method.span, "CStr.from_ptr() does not take type arguments", .{});
+                }
+                // Check that the argument is CPtr[i8]
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type == .cptr) {
+                    if (arg_type.cptr.inner != .primitive or arg_type.cptr.inner.primitive != .i8_) {
+                        self.addError(.type_mismatch, method.span, "CStr.from_ptr() expects CPtr[i8]", .{});
+                    }
+                } else {
+                    self.addError(.type_mismatch, method.span, "CStr.from_ptr() expects CPtr[i8]", .{});
+                }
+                return self.type_builder.cstrType();
+            }
         }
 
         const object_type = self.checkExpr(method.object);
@@ -4533,14 +4555,21 @@ pub const TypeChecker = struct {
             return self.type_builder.stringDataType() catch self.type_builder.unknownType();
         }
 
-        // Check for len method on arrays, tuples, strings, lists, maps, sets, and String
-        // Returns i32 for ergonomic use with loop counters
+        // Check for len method on arrays, tuples, strings, lists, maps, sets, String, and CStr
+        // Returns i32 for ergonomic use with loop counters (except CStr which returns usize)
         if (std.mem.eql(u8, method.method_name, "len")) {
             if (object_type == .primitive and object_type.primitive == .string_) {
                 return .{ .primitive = .i32_ };
             }
             if (object_type == .array or object_type == .slice or object_type == .tuple or object_type == .list or object_type == .string_data or object_type == .map or object_type == .set) {
                 return .{ .primitive = .i32_ };
+            }
+            // CStr.len() returns usize and requires unsafe
+            if (object_type == .cstr) {
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, method.span, "CStr.len() is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+                return Type{ .primitive = .usize_ };
             }
             self.addError(.undefined_method, method.span, "len() requires array, tuple, string, list, map, or set", .{});
             return self.type_builder.unknownType();
@@ -4783,6 +4812,37 @@ pub const TypeChecker = struct {
                     }
                 }
                 return self.type_builder.stringType();
+            }
+            // FFI: as_cstr() -> CStr - borrows string as C string (string literals are already null-terminated)
+            if (std.mem.eql(u8, method.method_name, "as_cstr")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "as_cstr() takes no arguments", .{});
+                }
+                return self.type_builder.cstrType();
+            }
+        }
+
+        // CStr methods (FFI: null-terminated C string)
+        if (object_type == .cstr) {
+            // CStr.to_string() -> string - unsafe, copies C string to Klar string
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "to_string() takes no arguments", .{});
+                }
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, method.span, "CStr.to_string() is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+                return self.type_builder.stringDataType() catch self.type_builder.unknownType();
+            }
+            // CStr.len() -> usize - unsafe, reads from pointer to find null terminator
+            if (std.mem.eql(u8, method.method_name, "len")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "len() takes no arguments", .{});
+                }
+                if (!self.in_unsafe_context) {
+                    self.addError(.invalid_call, method.span, "CStr.len() is unsafe and requires unsafe block or unsafe fn", .{});
+                }
+                return Type{ .primitive = .usize_ };
             }
         }
 
@@ -5893,6 +5953,14 @@ pub const TypeChecker = struct {
                     self.addError(.invalid_call, method.span, "as_str() takes no arguments", .{});
                 }
                 return self.type_builder.stringType();
+            }
+
+            // as_cstr(&self) -> CStr (FFI: borrow as C string)
+            if (std.mem.eql(u8, method.method_name, "as_cstr")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "as_cstr() takes no arguments", .{});
+                }
+                return self.type_builder.cstrType();
             }
 
             // clear(&mut self) -> void
