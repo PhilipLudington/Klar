@@ -1312,6 +1312,9 @@ pub const Emitter = struct {
             // Check if this is a string type parameter
             const is_string = self.isTypeString(param.type_);
 
+            // Resolve semantic type for type checking (needed for char.to_string(), etc.)
+            const semantic_type = self.resolveTypeExprDirect(param.type_);
+
             self.named_values.put(param.name, .{
                 .value = alloca,
                 .is_alloca = true,
@@ -1324,6 +1327,7 @@ pub const Emitter = struct {
                 .array_size = if (array_info) |ai| ai.size else null,
                 .array_element_type = if (array_info) |ai| ai.element_type else null,
                 .is_string = is_string,
+                .semantic_type = semantic_type,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -1472,7 +1476,17 @@ pub const Emitter = struct {
                     _ = self.builder.buildStore(slice_value, alloca);
                 } else {
                     // Normal path: emit value and store
-                    const value = try self.emitExpr(decl.value);
+                    var value = try self.emitExpr(decl.value);
+
+                    // Handle string type coercion: if value is string_data struct but
+                    // target is string (ptr), extract the pointer
+                    const value_ty = llvm.typeOf(value);
+                    const value_is_struct = llvm.getTypeKind(value_ty) == llvm.c.LLVMStructTypeKind;
+                    const target_is_ptr = llvm.getTypeKind(ty) == llvm.c.LLVMPointerTypeKind;
+                    if (value_is_struct and target_is_ptr and self.isStringDataType(value_ty)) {
+                        value = self.builder.buildExtractValue(value, 0, "str.init.coerce");
+                    }
+
                     _ = self.builder.buildStore(value, alloca);
                 }
                 const is_signed = self.isTypeSigned(decl.type_);
@@ -1560,7 +1574,15 @@ pub const Emitter = struct {
 
                 // Determine the LLVM type for the alloca
                 // For slice types, use the declared slice type (not the array literal type)
+                // Also handle string type coercion: if declared as string but value is string_data
+                const is_string_type = if (decl.type_ == .named)
+                    std.mem.eql(u8, decl.type_.named.name, "string")
+                else
+                    false;
                 const ty = if (is_slice_decl)
+                    try self.typeExprToLLVM(decl.type_)
+                else if (is_string_type)
+                    // Use declared string type (ptr) rather than inferred type
                     try self.typeExprToLLVM(decl.type_)
                 else
                     try self.inferExprType(decl.value);
@@ -1589,7 +1611,17 @@ pub const Emitter = struct {
                     _ = self.builder.buildStore(slice_value, alloca);
                 } else {
                     // Normal path: emit value and store
-                    const value = try self.emitExpr(decl.value);
+                    var value = try self.emitExpr(decl.value);
+
+                    // Handle string type coercion: if value is string_data struct but
+                    // target is string (ptr), extract the pointer
+                    const value_ty = llvm.typeOf(value);
+                    const value_is_struct = llvm.getTypeKind(value_ty) == llvm.c.LLVMStructTypeKind;
+                    const target_is_ptr = llvm.getTypeKind(ty) == llvm.c.LLVMPointerTypeKind;
+                    if (value_is_struct and target_is_ptr and self.isStringDataType(value_ty)) {
+                        value = self.builder.buildExtractValue(value, 0, "str.init.coerce");
+                    }
+
                     _ = self.builder.buildStore(value, alloca);
                 }
                 const is_signed = self.isTypeSigned(decl.type_);
@@ -3145,10 +3177,10 @@ pub const Emitter = struct {
             llvm.getTypeKind(rhs_ty) == llvm.c.LLVMDoubleTypeKind;
         const is_float = lhs_is_float or rhs_is_float;
 
-        // Check if both operands are pointers (strings)
-        const lhs_is_ptr = llvm.getTypeKind(lhs_ty) == llvm.c.LLVMPointerTypeKind;
-        const rhs_is_ptr = llvm.getTypeKind(rhs_ty) == llvm.c.LLVMPointerTypeKind;
-        const is_string = lhs_is_ptr and rhs_is_ptr;
+        // Check if operands are strings (either ptr or string_data struct)
+        const lhs_is_string = self.isStringValue(lhs);
+        const rhs_is_string = self.isStringValue(rhs);
+        const is_string = lhs_is_string and rhs_is_string;
 
         // If mixed types, promote integer to float
         if (is_float and !lhs_is_float) {
@@ -3159,12 +3191,20 @@ pub const Emitter = struct {
             rhs = self.builder.buildSIToFP(rhs, lhs_ty, "promote_rhs");
         }
 
+        // Extract string pointers if either operand is a string_data struct
+        var lhs_str_ptr = lhs;
+        var rhs_str_ptr = rhs;
+        if (is_string) {
+            lhs_str_ptr = self.extractStringPtr(lhs);
+            rhs_str_ptr = self.extractStringPtr(rhs);
+        }
+
         return switch (bin.op) {
             // Standard arithmetic (with overflow checking for integers)
             .add => if (is_float)
                 self.builder.buildFAdd(lhs, rhs, "faddtmp")
             else if (is_string)
-                try self.emitStringConcatLiteral(lhs, rhs)
+                try self.emitStringConcatLiteral(lhs_str_ptr, rhs_str_ptr)
             else
                 self.emitCheckedAdd(lhs, rhs, true),
             .sub => if (is_float)
@@ -3198,13 +3238,13 @@ pub const Emitter = struct {
             .eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOEQ, lhs, rhs, "feqtmp")
             else if (is_string)
-                self.emitStringPtrEq(lhs, rhs)
+                self.emitStringPtrEq(lhs_str_ptr, rhs_str_ptr)
             else
                 self.builder.buildICmp(llvm.c.LLVMIntEQ, lhs, rhs, "eqtmp"),
             .not_eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealONE, lhs, rhs, "fnetmp")
             else if (is_string)
-                self.emitStringPtrNeq(lhs, rhs)
+                self.emitStringPtrNeq(lhs_str_ptr, rhs_str_ptr)
             else
                 self.builder.buildICmp(llvm.c.LLVMIntNE, lhs, rhs, "netmp"),
             .lt => if (is_float)
@@ -3342,6 +3382,39 @@ pub const Emitter = struct {
         );
     }
 
+    /// Check if an LLVM type is a string_data struct { ptr, i32, i32 }.
+    fn isStringDataType(self: *Emitter, ty: llvm.TypeRef) bool {
+        _ = self;
+        if (llvm.getTypeKind(ty) != llvm.c.LLVMStructTypeKind) return false;
+        // string_data has exactly 3 fields: ptr, i32, i32
+        return llvm.c.LLVMCountStructElementTypes(ty) == 3;
+    }
+
+    /// Check if an LLVM value is a string type (either ptr or string_data struct).
+    fn isStringValue(self: *Emitter, val: llvm.ValueRef) bool {
+        const ty = llvm.typeOf(val);
+        const kind = llvm.getTypeKind(ty);
+        if (kind == llvm.c.LLVMPointerTypeKind) return true;
+        if (kind == llvm.c.LLVMStructTypeKind) {
+            // Check if it's a string_data struct (3 fields)
+            return self.isStringDataType(ty);
+        }
+        return false;
+    }
+
+    /// Extract the pointer from a string value.
+    /// If it's already a pointer, returns it unchanged.
+    /// If it's a string_data struct, extracts field 0 (the ptr field).
+    fn extractStringPtr(self: *Emitter, val: llvm.ValueRef) llvm.ValueRef {
+        const ty = llvm.typeOf(val);
+        const kind = llvm.getTypeKind(ty);
+        if (kind == llvm.c.LLVMPointerTypeKind) {
+            return val;
+        }
+        // It's a struct - extract the ptr field (field 0)
+        return self.builder.buildExtractValue(val, 0, "str.ptr");
+    }
+
     /// Emit assignment (including compound assignment operators).
     fn emitAssignment(self: *Emitter, bin: *ast.Binary) EmitError!llvm.ValueRef {
         // Handle array index assignment: arr[i] = value
@@ -3404,11 +3477,23 @@ pub const Emitter = struct {
             else => return EmitError.InvalidAST,
         };
 
+        // Handle string type coercion: if value is string_data but target is string (ptr),
+        // extract the pointer from the struct
+        var coerced_value = value;
+        const value_ty = llvm.typeOf(value);
+        const target_ty = local.ty;
+        const value_is_struct = llvm.getTypeKind(value_ty) == llvm.c.LLVMStructTypeKind;
+        const target_is_ptr = llvm.getTypeKind(target_ty) == llvm.c.LLVMPointerTypeKind;
+        if (value_is_struct and target_is_ptr and self.isStringDataType(value_ty)) {
+            // Value is string_data struct, target expects string (ptr) - extract ptr
+            coerced_value = self.builder.buildExtractValue(value, 0, "str.coerce");
+        }
+
         // Store the result
-        _ = self.builder.buildStore(value, local.value);
+        _ = self.builder.buildStore(coerced_value, local.value);
 
         // Return the stored value (assignments are expressions in Klar)
-        return value;
+        return coerced_value;
     }
 
     /// Emit array index assignment: arr[i] = value
