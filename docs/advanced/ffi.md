@@ -311,9 +311,45 @@ fn get_home() -> ?String {
 | Method | Signature | Unsafe | Description |
 |--------|-----------|--------|-------------|
 | `as_cstr` | `fn(ref self) -> CStr` | No | Borrow string as C string |
+| `to_cstr` | `fn(ref self) -> CStrOwned` | No | Copy to owned C string |
 | `to_string` | `fn(self: CStr) -> String` | Yes | Copy C string to Klar String |
 | `len` | `fn(self: CStr) -> usize` | Yes | Get C string length |
 | `from_ptr` | `fn(CPtr[i8]) -> CStr` | No | Construct from pointer |
+
+### CStrOwned - Owned C String
+
+`CStrOwned` is an owned, null-terminated C string. Unlike `CStr` (which borrows), `CStrOwned` owns its memory and **automatically frees it when the variable goes out of scope**.
+
+```klar
+fn use_c_api() -> void {
+    // to_cstr() allocates and copies the string data
+    let owned: CStrOwned = "Hello, C!".to_cstr()
+
+    unsafe {
+        // Use the owned string with C APIs
+        some_c_function(owned.as_cstr())
+
+        // Get length
+        let length: usize = owned.len()
+
+        // Convert back to Klar String
+        let klar_string: String = owned.to_string()
+    }
+
+    // owned is automatically freed here (calls free())
+}
+```
+
+**Important:** `CStrOwned` calls `free()` when it goes out of scope. This means:
+- Do **not** pass `CStrOwned` to C functions that take ownership of the string
+- If a C function will free the string, use `CStr` with manual memory management instead
+- The automatic cleanup prevents memory leaks in normal usage
+
+| Method | Signature | Unsafe | Description |
+|--------|-----------|--------|-------------|
+| `as_cstr` | `fn(ref self) -> CStr` | No | Borrow as CStr |
+| `to_string` | `fn(self) -> String` | Yes | Copy to Klar String |
+| `len` | `fn(self) -> usize` | Yes | Get string length |
 
 ## Linking Libraries
 

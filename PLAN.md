@@ -3,6 +3,8 @@
 **Status:** Complete (All Phases Done)
 **Goal:** Implement Foreign Function Interface (FFI) for C interoperability
 
+> **Previous plans:** [Phase 4: Language Completion](docs/history/phase4-language-completion.md) (generics, traits, modules, stdlib)
+
 ---
 
 ## Overview
