@@ -1,6 +1,6 @@
 # Klar FFI Implementation Plan
 
-**Status:** In Progress (Phase 8 Substantially Complete)
+**Status:** Complete (Phase 8 Done)
 **Goal:** Implement Foreign Function Interface (FFI) for C interoperability
 
 ---
@@ -255,9 +255,9 @@ This plan implements the FFI specification (`klar-ffi-spec.md`) to enable Klar p
 
 ### 8.1 Build System
 - [x] Basic libc linking works (puts, strlen, malloc, free, etc.)
-- [ ] Document linking with C libraries
-- [ ] Add `-l` flag for linking additional system libraries
-- [ ] Add `-L` flag for library search paths
+- [x] Document linking with C libraries (see docs/advanced/ffi.md)
+- [x] Add `-l` flag for linking additional system libraries
+- [x] Add `-L` flag for library search paths
 
 ### 8.2 ABI Compliance
 - [x] Verify struct passing matches C ABI (by value vs by pointer)
