@@ -201,6 +201,8 @@ pub const Emitter = struct {
         is_stderr: bool = false,
         /// True if this is a Stdin type (FILE* handle).
         is_stdin: bool = false,
+        /// True if this is a Path type.
+        is_path: bool = false,
         /// True if this is a BufReader type.
         is_buf_reader: bool = false,
         /// For BufReader[R], the inner reader type.
@@ -1749,6 +1751,7 @@ pub const Emitter = struct {
                 const is_stdout_let = self.isTypeStdout(decl.type_);
                 const is_stderr_let = self.isTypeStderr(decl.type_);
                 const is_stdin_let = self.isTypeStdin(decl.type_);
+                const is_path_let = self.isTypePath(decl.type_);
                 // Check if this is a buffered I/O type
                 const is_buf_reader_let = self.isTypeBufReader(decl.type_);
                 const is_buf_writer_let = self.isTypeBufWriter(decl.type_);
@@ -1781,6 +1784,7 @@ pub const Emitter = struct {
                     .is_stdout = is_stdout_let,
                     .is_stderr = is_stderr_let,
                     .is_stdin = is_stdin_let,
+                    .is_path = is_path_let,
                     .is_buf_reader = is_buf_reader_let,
                     .is_buf_writer = is_buf_writer_let,
                     .semantic_type = semantic_type,
@@ -1891,6 +1895,7 @@ pub const Emitter = struct {
                 const is_stdout = self.isTypeStdout(decl.type_);
                 const is_stderr = self.isTypeStderr(decl.type_);
                 const is_stdin = self.isTypeStdin(decl.type_);
+                const is_path = self.isTypePath(decl.type_);
                 // Check if this is a buffered I/O type
                 const is_buf_reader = self.isTypeBufReader(decl.type_);
                 const is_buf_writer = self.isTypeBufWriter(decl.type_);
@@ -1923,6 +1928,7 @@ pub const Emitter = struct {
                     .is_stdout = is_stdout,
                     .is_stderr = is_stderr,
                     .is_stdin = is_stdin,
+                    .is_path = is_path,
                     .is_buf_reader = is_buf_reader,
                     .is_buf_writer = is_buf_writer,
                     .semantic_type = semantic_type,
@@ -4484,6 +4490,28 @@ pub const Emitter = struct {
                 const stdin_fn = self.getOrDeclareStdin();
                 return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stdin_fn), stdin_fn, &[_]llvm.ValueRef{}, "stdin.handle");
             }
+            // Filesystem Functions
+            else if (std.mem.eql(u8, name, "fs_exists")) {
+                return self.emitFsExists(call);
+            } else if (std.mem.eql(u8, name, "fs_is_file")) {
+                return self.emitFsIsFile(call);
+            } else if (std.mem.eql(u8, name, "fs_is_dir")) {
+                return self.emitFsIsDir(call);
+            } else if (std.mem.eql(u8, name, "fs_create_dir")) {
+                return self.emitFsCreateDir(call);
+            } else if (std.mem.eql(u8, name, "fs_create_dir_all")) {
+                return self.emitFsCreateDirAll(call);
+            } else if (std.mem.eql(u8, name, "fs_remove_file")) {
+                return self.emitFsRemoveFile(call);
+            } else if (std.mem.eql(u8, name, "fs_remove_dir")) {
+                return self.emitFsRemoveDir(call);
+            } else if (std.mem.eql(u8, name, "fs_read_string")) {
+                return self.emitFsReadString(call);
+            } else if (std.mem.eql(u8, name, "fs_write_string")) {
+                return self.emitFsWriteString(call);
+            } else if (std.mem.eql(u8, name, "fs_read_dir")) {
+                return self.emitFsReadDir(call);
+            }
             // FFI Pointer Functions
             else if (std.mem.eql(u8, name, "is_null")) {
                 return self.emitIsNull(call);
@@ -5563,6 +5591,10 @@ pub const Emitter = struct {
                         };
                         return llvm.Types.struct_(self.ctx, &context_err_fields, false);
                     }
+                    // List[T] is { ptr, len: i32, capacity: i32 }
+                    if (std.mem.eql(u8, base_name, "List") and g.args.len == 1) {
+                        return self.getListStructType();
+                    }
 
                     // Try to look up user-defined generic struct types
                     // Build mangled name: BaseName$Type1$Type2...
@@ -5649,6 +5681,16 @@ pub const Emitter = struct {
         }
         if (std.mem.eql(u8, name, "CStrOwned")) {
             return llvm.Types.pointer(self.ctx); // Null-terminated C string (owned)
+        }
+
+        // Filesystem types
+        if (std.mem.eql(u8, name, "Path")) {
+            return self.getPathStructType(); // { ptr, len: i32, capacity: i32 }
+        }
+
+        // Heap-allocated String type
+        if (std.mem.eql(u8, name, "String")) {
+            return self.getStringStructType(); // { ptr, len: i32, capacity: i32 }
         }
 
         // Check if it's an extern type registered in the type checker
@@ -5816,6 +5858,15 @@ pub const Emitter = struct {
         _ = self;
         return switch (type_expr) {
             .named => |named| std.mem.eql(u8, named.name, "Stdin"),
+            else => false,
+        };
+    }
+
+    /// Check if a type expression is a Path type.
+    fn isTypePath(self: *Emitter, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return switch (type_expr) {
+            .named => |named| std.mem.eql(u8, named.name, "Path"),
             else => false,
         };
     }
@@ -8869,6 +8920,11 @@ pub const Emitter = struct {
                 if (method.args.len != 1) return EmitError.InvalidAST;
                 return try self.emitExpr(method.args[0]);
             }
+
+            // Path.new(s: string) -> Path
+            if (std.mem.eql(u8, obj_name, "Path") and std.mem.eql(u8, method.method_name, "new")) {
+                return self.emitPathNew(method);
+            }
         }
 
         // Emit the object
@@ -9834,6 +9890,46 @@ pub const Emitter = struct {
                 if (method.args.len != 1) return EmitError.InvalidAST;
                 const buf_val = try self.emitExpr(method.args[0]);
                 return self.emitStdinRead(buf_val, method.args[0]);
+            }
+        }
+
+        // Check for Path methods
+        if (self.isPathExpr(method.object)) {
+            // Get the alloca pointer for the Path struct
+            const path_ptr = if (method.object == .identifier) blk: {
+                if (self.named_values.get(method.object.identifier.name)) |local| {
+                    break :blk local.value;
+                }
+                break :blk null;
+            } else null;
+
+            if (path_ptr) |ptr| {
+                if (std.mem.eql(u8, method.method_name, "join")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const other_val = try self.emitExpr(method.args[0]);
+                    return self.emitPathJoin(ptr, other_val);
+                }
+                if (std.mem.eql(u8, method.method_name, "parent")) {
+                    return self.emitPathParent(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "file_name")) {
+                    return self.emitPathFileName(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "extension")) {
+                    return self.emitPathExtension(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "to_string")) {
+                    return self.emitPathToString(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "exists")) {
+                    return self.emitPathExists(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "is_file")) {
+                    return self.emitPathIsFile(ptr);
+                }
+                if (std.mem.eql(u8, method.method_name, "is_dir")) {
+                    return self.emitPathIsDir(ptr);
+                }
             }
         }
 
@@ -13311,6 +13407,19 @@ pub const Emitter = struct {
             .identifier => |id| {
                 if (self.named_values.get(id.name)) |local| {
                     return local.is_stdin;
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    /// Check if an expression is a Path type.
+    fn isPathExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    return local.is_path;
                 }
             },
             else => {},
@@ -20880,6 +20989,1485 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
+    // ==================== Path Type Functions ====================
+
+    /// Get the LLVM struct type for Path: { ptr: *u8, len: i32, capacity: i32 }
+    fn getPathStructType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.pointer(self.ctx), // ptr
+            llvm.Types.int32(self.ctx), // len
+            llvm.Types.int32(self.ctx), // capacity
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM struct type for Result[Path, IoError]
+    fn getPathResultType(self: *Emitter) llvm.TypeRef {
+        const io_error_type = self.getIoErrorStructType();
+        const path_type = self.getPathStructType();
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag: 1=Ok, 0=Err
+            path_type, // Path { ptr, len, capacity }
+            io_error_type, // IoError
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM struct type for ?Path (Optional[Path])
+    fn getOptionalPathType(self: *Emitter) llvm.TypeRef {
+        const path_type = self.getPathStructType();
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag: 1=Some, 0=None
+            path_type, // Path { ptr, len, capacity }
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Get the LLVM struct type for ?string (Optional[string])
+    fn getOptionalStringType(self: *Emitter) llvm.TypeRef {
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag: 1=Some, 0=None
+            llvm.Types.pointer(self.ctx), // string pointer (null-terminated)
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Emit Path.new(s: string) -> Path
+    fn emitPathNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        if (method.args.len != 1) return EmitError.InvalidAST;
+
+        // Emit the string argument (which is a null-terminated const char*)
+        const str_val = try self.emitExpr(method.args[0]);
+
+        // Get string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str_val};
+        const str_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "path.strlen");
+
+        // Allocate memory for the path string (len + 1 for null terminator)
+        const malloc_fn = self.getOrDeclareMalloc();
+        const size_plus_one = llvm.c.LLVMBuildAdd(self.builder.ref, str_len, llvm.Const.int64(self.ctx, 1), "path.size");
+        var malloc_args = [_]llvm.ValueRef{size_plus_one};
+        const buffer = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "path.buffer");
+
+        // Copy the string (use memcpy)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ buffer, str_val, size_plus_one };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        // Build Path struct { ptr, len, capacity }
+        const path_type = self.getPathStructType();
+        const path_alloca = self.builder.buildAlloca(path_type, "path.alloca");
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Store ptr (field 0)
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_alloca, 0, "path.ptr_field");
+        _ = self.builder.buildStore(buffer, ptr_field);
+
+        // Store len (field 1) - truncate i64 to i32
+        const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, str_len, i32_type, "path.len_i32");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_alloca, 1, "path.len_field");
+        _ = self.builder.buildStore(len_i32, len_field);
+
+        // Store capacity (field 2)
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_alloca, 2, "path.cap_field");
+        _ = self.builder.buildStore(len_i32, cap_field);
+
+        return self.builder.buildLoad(path_type, path_alloca, "path.val");
+    }
+
+    /// Emit path.join(other: string) -> Path
+    fn emitPathJoin(self: *Emitter, path_ptr: llvm.ValueRef, other_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const path_type = self.getPathStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Load current path data
+        const path_data_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 0, "join.data_ptr");
+        const path_data = self.builder.buildLoad(ptr_type, path_data_ptr, "join.data");
+        const path_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 1, "join.len_ptr");
+        const path_len = self.builder.buildLoad(i32_type, path_len_ptr, "join.len");
+
+        // Get other string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{other_val};
+        const other_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "join.other_len");
+        const other_len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, other_len, i32_type, "join.other_len_i32");
+
+        // Calculate new length: path_len + 1 (separator) + other_len
+        const sep_size = llvm.Const.int32(self.ctx, 1);
+        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, path_len, sep_size, "join.len1");
+        const new_len2 = llvm.c.LLVMBuildAdd(self.builder.ref, new_len, other_len_i32, "join.new_len");
+        const new_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, new_len2, i64_type, "join.new_len_i64");
+
+        // Allocate new buffer (new_len + 1 for null terminator)
+        const malloc_fn = self.getOrDeclareMalloc();
+        const alloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, new_len_i64, llvm.Const.int64(self.ctx, 1), "join.alloc_size");
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const new_buffer = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "join.buffer");
+
+        // Copy path data
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        const path_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, path_len, i64_type, "join.path_len_i64");
+        var memcpy_args1 = [_]llvm.ValueRef{ new_buffer, path_data, path_len_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args1, "");
+
+        // Add separator '/'
+        const i8_type = llvm.Types.int8(self.ctx);
+        var sep_idx = [_]llvm.ValueRef{path_len_i64};
+        const sep_pos = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, new_buffer, &sep_idx, 1, "join.sep_pos");
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), sep_pos);
+
+        // Copy other string
+        const after_sep_i64 = llvm.c.LLVMBuildAdd(self.builder.ref, path_len_i64, llvm.Const.int64(self.ctx, 1), "join.after_sep");
+        var after_sep_idx = [_]llvm.ValueRef{after_sep_i64};
+        const other_pos = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, new_buffer, &after_sep_idx, 1, "join.other_pos");
+        const other_len_plus_null = llvm.c.LLVMBuildAdd(self.builder.ref, other_len, llvm.Const.int64(self.ctx, 1), "join.other_plus_null");
+        var memcpy_args2 = [_]llvm.ValueRef{ other_pos, other_val, other_len_plus_null };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args2, "");
+
+        // Build new Path struct
+        const new_path_alloca = self.builder.buildAlloca(path_type, "join.result");
+        const new_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, new_path_alloca, 0, "join.new_ptr");
+        _ = self.builder.buildStore(new_buffer, new_ptr_field);
+        const new_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, new_path_alloca, 1, "join.new_len_field");
+        _ = self.builder.buildStore(new_len2, new_len_field);
+        const new_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, new_path_alloca, 2, "join.new_cap");
+        _ = self.builder.buildStore(new_len2, new_cap_field);
+
+        return self.builder.buildLoad(path_type, new_path_alloca, "join.val");
+    }
+
+    /// Emit path.parent() -> ?Path
+    fn emitPathParent(self: *Emitter, path_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const path_type = self.getPathStructType();
+        const opt_path_type = self.getOptionalPathType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // Load path data and length
+        const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 0, "parent.data_ptr_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, data_ptr_ptr, "parent.data_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 1, "parent.len_ptr");
+        const len = self.builder.buildLoad(i32_type, len_ptr, "parent.len");
+
+        // Allocate result
+        const result_alloca = self.builder.buildAlloca(opt_path_type, "parent.result");
+
+        // Search backwards for '/'
+        // We'll use a loop to find the last '/' character
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "parent.loop");
+        const found_bb = llvm.appendBasicBlock(self.ctx, func, "parent.found");
+        const not_found_bb = llvm.appendBasicBlock(self.ctx, func, "parent.not_found");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "parent.cont");
+
+        // Create counter (start at len - 1)
+        const counter_alloca = self.builder.buildAlloca(i32_type, "parent.counter");
+        const len_minus_1 = llvm.c.LLVMBuildSub(self.builder.ref, len, llvm.Const.int32(self.ctx, 1), "parent.start");
+        _ = self.builder.buildStore(len_minus_1, counter_alloca);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Loop body
+        self.builder.positionAtEnd(loop_bb);
+        const counter = self.builder.buildLoad(i32_type, counter_alloca, "parent.i");
+        const is_neg = self.builder.buildICmp(llvm.c.LLVMIntSLT, counter, llvm.Const.int32(self.ctx, 0), "parent.neg");
+        _ = self.builder.buildCondBr(is_neg, not_found_bb, blk: {
+            // Check character
+            const check_bb = llvm.appendBasicBlock(self.ctx, func, "parent.check");
+            break :blk check_bb;
+        });
+
+        // Check current character
+        const check_bb = llvm.c.LLVMGetPreviousBasicBlock(not_found_bb);
+        self.builder.positionAtEnd(check_bb);
+        const counter_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, counter, i64_type, "parent.i64");
+        var char_idx = [_]llvm.ValueRef{counter_i64};
+        const char_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &char_idx, 1, "parent.char_ptr");
+        const char_val = self.builder.buildLoad(i8_type, char_ptr, "parent.char");
+        const is_slash = self.builder.buildICmp(llvm.c.LLVMIntEQ, char_val, llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), "parent.is_slash");
+        _ = self.builder.buildCondBr(is_slash, found_bb, blk: {
+            // Decrement and continue
+            const next_bb = llvm.appendBasicBlock(self.ctx, func, "parent.next");
+            break :blk next_bb;
+        });
+
+        // Decrement counter
+        const next_bb = llvm.c.LLVMGetPreviousBasicBlock(found_bb);
+        self.builder.positionAtEnd(next_bb);
+        const counter2 = self.builder.buildLoad(i32_type, counter_alloca, "parent.i2");
+        const counter_dec = llvm.c.LLVMBuildSub(self.builder.ref, counter2, llvm.Const.int32(self.ctx, 1), "parent.dec");
+        _ = self.builder.buildStore(counter_dec, counter_alloca);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Found slash - create parent path
+        self.builder.positionAtEnd(found_bb);
+        const slash_pos = self.builder.buildLoad(i32_type, counter_alloca, "parent.pos");
+        // Handle root path case (just "/")
+        const is_root = self.builder.buildICmp(llvm.c.LLVMIntEQ, slash_pos, llvm.Const.int32(self.ctx, 0), "parent.is_root");
+        const parent_len = llvm.c.LLVMBuildSelect(self.builder.ref, is_root, llvm.Const.int32(self.ctx, 1), slash_pos, "parent.new_len");
+
+        // Allocate and copy parent path
+        const malloc_fn = self.getOrDeclareMalloc();
+        const parent_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, parent_len, i64_type, "parent.len_i64");
+        const alloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, parent_len_i64, llvm.Const.int64(self.ctx, 1), "parent.alloc");
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const parent_buffer = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "parent.buf");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ parent_buffer, data_ptr, parent_len_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+        // Null terminate
+        var null_idx = [_]llvm.ValueRef{parent_len_i64};
+        const null_pos = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, parent_buffer, &null_idx, 1, "parent.null_pos");
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_pos);
+
+        // Store Some(Path)
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_path_type, result_alloca, 0, "parent.tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        const path_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_path_type, result_alloca, 1, "parent.path");
+        const path_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_field_ptr, 0, "parent.path_ptr");
+        _ = self.builder.buildStore(parent_buffer, path_ptr_field);
+        const path_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_field_ptr, 1, "parent.path_len");
+        _ = self.builder.buildStore(parent_len, path_len_field);
+        const path_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_field_ptr, 2, "parent.path_cap");
+        _ = self.builder.buildStore(parent_len, path_cap_field);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Not found - return None
+        self.builder.positionAtEnd(not_found_bb);
+        const tag_ptr2 = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_path_type, result_alloca, 0, "parent.tag2");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr2);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Continue
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(opt_path_type, result_alloca, "parent.val");
+    }
+
+    /// Emit path.file_name() -> ?string
+    fn emitPathFileName(self: *Emitter, path_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const path_type = self.getPathStructType();
+        const opt_string_type = self.getOptionalStringType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // Load path data and length
+        const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 0, "fname.data_ptr_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, data_ptr_ptr, "fname.data_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 1, "fname.len_ptr");
+        const len = self.builder.buildLoad(i32_type, len_ptr, "fname.len");
+
+        // Allocate result
+        const result_alloca = self.builder.buildAlloca(opt_string_type, "fname.result");
+
+        // Search backwards for '/'
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Create all blocks upfront
+        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "fname.loop");
+        const check_bb = llvm.appendBasicBlock(self.ctx, func, "fname.check");
+        const next_bb = llvm.appendBasicBlock(self.ctx, func, "fname.next");
+        const found_bb = llvm.appendBasicBlock(self.ctx, func, "fname.found");
+        const not_found_bb = llvm.appendBasicBlock(self.ctx, func, "fname.not_found");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "fname.cont");
+
+        // Create counter (start at len - 1)
+        const counter_alloca = self.builder.buildAlloca(i32_type, "fname.counter");
+        const len_minus_1 = llvm.c.LLVMBuildSub(self.builder.ref, len, llvm.Const.int32(self.ctx, 1), "fname.start");
+        _ = self.builder.buildStore(len_minus_1, counter_alloca);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Loop body - check if counter < 0
+        self.builder.positionAtEnd(loop_bb);
+        const counter = self.builder.buildLoad(i32_type, counter_alloca, "fname.i");
+        const is_neg = self.builder.buildICmp(llvm.c.LLVMIntSLT, counter, llvm.Const.int32(self.ctx, 0), "fname.neg");
+        _ = self.builder.buildCondBr(is_neg, not_found_bb, check_bb);
+
+        // Check current character
+        self.builder.positionAtEnd(check_bb);
+        const counter_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, counter, i64_type, "fname.i64");
+        var char_idx = [_]llvm.ValueRef{counter_i64};
+        const char_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &char_idx, 1, "fname.char_ptr");
+        const char_val = self.builder.buildLoad(i8_type, char_ptr, "fname.char");
+        const is_slash = self.builder.buildICmp(llvm.c.LLVMIntEQ, char_val, llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), "fname.is_slash");
+        _ = self.builder.buildCondBr(is_slash, found_bb, next_bb);
+
+        // Decrement counter and loop
+        self.builder.positionAtEnd(next_bb);
+        const counter2 = self.builder.buildLoad(i32_type, counter_alloca, "fname.i2");
+        const counter_dec = llvm.c.LLVMBuildSub(self.builder.ref, counter2, llvm.Const.int32(self.ctx, 1), "fname.dec");
+        _ = self.builder.buildStore(counter_dec, counter_alloca);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Found slash - file name is everything after it
+        self.builder.positionAtEnd(found_bb);
+        const slash_pos = self.builder.buildLoad(i32_type, counter_alloca, "fname.pos");
+        const fname_start = llvm.c.LLVMBuildAdd(self.builder.ref, slash_pos, llvm.Const.int32(self.ctx, 1), "fname.start_pos");
+        const fname_start_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, fname_start, i64_type, "fname.start_i64");
+        var fname_idx = [_]llvm.ValueRef{fname_start_i64};
+        const fname_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &fname_idx, 1, "fname.ptr");
+
+        // Store Some(string) - the pointer to the filename within the path data
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_string_type, result_alloca, 0, "fname.tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_string_type, result_alloca, 1, "fname.val_ptr");
+        _ = self.builder.buildStore(fname_ptr, val_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Not found - the whole path is the filename
+        self.builder.positionAtEnd(not_found_bb);
+        const tag_ptr2 = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_string_type, result_alloca, 0, "fname.tag2");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr2);
+        const val_ptr2 = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_string_type, result_alloca, 1, "fname.val_ptr2");
+        _ = self.builder.buildStore(data_ptr, val_ptr2);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Continue
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(opt_string_type, result_alloca, "fname.val");
+    }
+
+    /// Emit path.extension() -> ?string
+    fn emitPathExtension(self: *Emitter, path_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const path_type = self.getPathStructType();
+        const opt_string_type = self.getOptionalStringType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        // Load path data and length
+        const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 0, "ext.data_ptr_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, data_ptr_ptr, "ext.data_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 1, "ext.len_ptr");
+        const len = self.builder.buildLoad(i32_type, len_ptr, "ext.len");
+
+        // Allocate result
+        const result_alloca = self.builder.buildAlloca(opt_string_type, "ext.result");
+
+        // Search backwards for '.' (stopping at '/')
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        // Create all blocks upfront
+        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "ext.loop");
+        const check_bb = llvm.appendBasicBlock(self.ctx, func, "ext.check");
+        const slash_bb = llvm.appendBasicBlock(self.ctx, func, "ext.slash");
+        const dot_check_bb = llvm.appendBasicBlock(self.ctx, func, "ext.dot_check");
+        const next_bb = llvm.appendBasicBlock(self.ctx, func, "ext.next");
+        const found_bb = llvm.appendBasicBlock(self.ctx, func, "ext.found");
+        const not_found_bb = llvm.appendBasicBlock(self.ctx, func, "ext.not_found");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "ext.cont");
+
+        // Create counter (start at len - 1)
+        const counter_alloca = self.builder.buildAlloca(i32_type, "ext.counter");
+        const len_minus_1 = llvm.c.LLVMBuildSub(self.builder.ref, len, llvm.Const.int32(self.ctx, 1), "ext.start");
+        _ = self.builder.buildStore(len_minus_1, counter_alloca);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Loop body - check if counter < 0
+        self.builder.positionAtEnd(loop_bb);
+        const counter = self.builder.buildLoad(i32_type, counter_alloca, "ext.i");
+        const is_neg = self.builder.buildICmp(llvm.c.LLVMIntSLT, counter, llvm.Const.int32(self.ctx, 0), "ext.neg");
+        _ = self.builder.buildCondBr(is_neg, not_found_bb, check_bb);
+
+        // Check current character
+        self.builder.positionAtEnd(check_bb);
+        const counter_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, counter, i64_type, "ext.i64");
+        var char_idx = [_]llvm.ValueRef{counter_i64};
+        const char_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &char_idx, 1, "ext.char_ptr");
+        const char_val = self.builder.buildLoad(i8_type, char_ptr, "ext.char");
+
+        // Check for '/'
+        const is_slash = self.builder.buildICmp(llvm.c.LLVMIntEQ, char_val, llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), "ext.is_slash");
+        _ = self.builder.buildCondBr(is_slash, slash_bb, dot_check_bb);
+
+        // Slash found - no extension
+        self.builder.positionAtEnd(slash_bb);
+        _ = self.builder.buildBr(not_found_bb);
+
+        // Check for dot
+        self.builder.positionAtEnd(dot_check_bb);
+        const is_dot = self.builder.buildICmp(llvm.c.LLVMIntEQ, char_val, llvm.Const.int(i8_type, @as(c_ulonglong, '.'), false), "ext.is_dot");
+        _ = self.builder.buildCondBr(is_dot, found_bb, next_bb);
+
+        // Decrement counter and loop
+        self.builder.positionAtEnd(next_bb);
+        const counter2 = self.builder.buildLoad(i32_type, counter_alloca, "ext.i2");
+        const counter_dec = llvm.c.LLVMBuildSub(self.builder.ref, counter2, llvm.Const.int32(self.ctx, 1), "ext.dec");
+        _ = self.builder.buildStore(counter_dec, counter_alloca);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Found dot - extension is everything after it
+        self.builder.positionAtEnd(found_bb);
+        const dot_pos = self.builder.buildLoad(i32_type, counter_alloca, "ext.pos");
+        const ext_start = llvm.c.LLVMBuildAdd(self.builder.ref, dot_pos, llvm.Const.int32(self.ctx, 1), "ext.start_pos");
+        const ext_start_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, ext_start, i64_type, "ext.start_i64");
+        var ext_idx = [_]llvm.ValueRef{ext_start_i64};
+        const ext_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &ext_idx, 1, "ext.ptr");
+
+        // Store Some(string)
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_string_type, result_alloca, 0, "ext.tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        const val_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_string_type, result_alloca, 1, "ext.val_ptr");
+        _ = self.builder.buildStore(ext_ptr, val_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Not found - return None
+        self.builder.positionAtEnd(not_found_bb);
+        const tag_ptr2 = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_string_type, result_alloca, 0, "ext.tag2");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr2);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Continue
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(opt_string_type, result_alloca, "ext.val");
+    }
+
+    /// Emit path.to_string() -> string
+    fn emitPathToString(self: *Emitter, path_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const path_type = self.getPathStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load the pointer to the path data (which is already null-terminated)
+        const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 0, "tostr.data_ptr_ptr");
+        return self.builder.buildLoad(ptr_type, data_ptr_ptr, "tostr.data");
+    }
+
+    /// Emit path.exists() -> bool
+    fn emitPathExists(self: *Emitter, path_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const path_type = self.getPathStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load the path string pointer
+        const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 0, "exists.data_ptr_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, data_ptr_ptr, "exists.data");
+
+        // Call access(path, F_OK) - F_OK = 0
+        const access_fn = self.getOrDeclareAccess();
+        var access_args = [_]llvm.ValueRef{ data_ptr, llvm.Const.int32(self.ctx, 0) };
+        const result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(access_fn), access_fn, &access_args, "exists.result");
+
+        // access returns 0 on success, -1 on failure
+        return self.builder.buildICmp(llvm.c.LLVMIntEQ, result, llvm.Const.int32(self.ctx, 0), "exists.bool");
+    }
+
+    /// Emit path.is_file() -> bool
+    fn emitPathIsFile(self: *Emitter, path_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const path_type = self.getPathStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load the path string pointer
+        const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 0, "isfile.data_ptr_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, data_ptr_ptr, "isfile.data");
+
+        return self.emitStatIsFile(data_ptr);
+    }
+
+    /// Emit path.is_dir() -> bool
+    fn emitPathIsDir(self: *Emitter, path_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const path_type = self.getPathStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+
+        // Load the path string pointer
+        const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 0, "isdir.data_ptr_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, data_ptr_ptr, "isdir.data");
+
+        return self.emitStatIsDir(data_ptr);
+    }
+
+    // ==================== Filesystem Functions ====================
+
+    /// Helper to call stat and check if path is a regular file
+    fn emitStatIsFile(self: *Emitter, path_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // stat struct size varies by platform, use 256 bytes to be safe
+        const stat_buf = self.builder.buildAlloca(llvm.Types.array(llvm.Types.int8(self.ctx), 256), "stat.buf");
+
+        // Call stat(path, &stat_buf)
+        const stat_fn = self.getOrDeclareStat();
+        var stat_args = [_]llvm.ValueRef{ path_val, stat_buf };
+        const stat_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stat_fn), stat_fn, &stat_args, "stat.result");
+
+        // Check if stat succeeded (returns 0)
+        const stat_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, stat_result, llvm.Const.int32(self.ctx, 0), "stat.ok");
+
+        // Create branches for stat success/failure
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const stat_ok_bb = llvm.appendBasicBlock(self.ctx, func, "isfile.stat_ok");
+        const stat_fail_bb = llvm.appendBasicBlock(self.ctx, func, "isfile.stat_fail");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "isfile.cont");
+
+        _ = self.builder.buildCondBr(stat_ok, stat_ok_bb, stat_fail_bb);
+
+        // Stat succeeded - check st_mode
+        self.builder.positionAtEnd(stat_ok_bb);
+        // On macOS/Darwin, st_mode is at offset 4 (after st_dev which is 4 bytes)
+        // On Linux, st_mode is at different offsets depending on arch
+        // For simplicity, we use S_ISREG macro equivalent: (mode & S_IFMT) == S_IFREG
+        // S_IFMT = 0170000, S_IFREG = 0100000 (octal)
+        const mode_offset: u32 = if (builtin.os.tag == .macos) 4 else 24; // Adjust for platform
+        var gep_indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, mode_offset)};
+        const mode_ptr = llvm.c.LLVMBuildGEP2(
+            self.builder.ref,
+            llvm.Types.int8(self.ctx),
+            stat_buf,
+            &gep_indices,
+            1,
+            "mode.ptr",
+        );
+        const mode_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, mode_ptr, llvm.Types.pointer(self.ctx), "mode.ptr.cast");
+        // On macOS, st_mode is 16-bit; on Linux 64-bit it's 32-bit
+        const mode_type = llvm.Types.int16(self.ctx);
+        const mode = self.builder.buildLoad(mode_type, mode_ptr_cast, "mode");
+        const mode_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, mode, i32_type, "mode.i32");
+        // S_IFMT = 0xF000, S_IFREG = 0x8000
+        const masked = llvm.c.LLVMBuildAnd(self.builder.ref, mode_i32, llvm.Const.int32(self.ctx, 0xF000), "mode.masked");
+        const is_file = self.builder.buildICmp(llvm.c.LLVMIntEQ, masked, llvm.Const.int32(self.ctx, 0x8000), "isfile.check");
+        _ = self.builder.buildBr(cont_bb);
+
+        // Stat failed - return false
+        self.builder.positionAtEnd(stat_fail_bb);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Merge results with phi
+        self.builder.positionAtEnd(cont_bb);
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, llvm.Types.int1(self.ctx), "isfile.phi");
+        var incoming_vals = [_]llvm.ValueRef{ is_file, llvm.Const.int1(self.ctx, false) };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ stat_ok_bb, stat_fail_bb };
+        llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 2);
+
+        return phi;
+    }
+
+    /// Helper to call stat and check if path is a directory
+    fn emitStatIsDir(self: *Emitter, path_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // stat struct size varies by platform, use 256 bytes to be safe
+        const stat_buf = self.builder.buildAlloca(llvm.Types.array(llvm.Types.int8(self.ctx), 256), "stat.buf");
+
+        // Call stat(path, &stat_buf)
+        const stat_fn = self.getOrDeclareStat();
+        var stat_args = [_]llvm.ValueRef{ path_val, stat_buf };
+        const stat_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stat_fn), stat_fn, &stat_args, "stat.result");
+
+        // Check if stat succeeded
+        const stat_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, stat_result, llvm.Const.int32(self.ctx, 0), "stat.ok");
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const stat_ok_bb = llvm.appendBasicBlock(self.ctx, func, "isdir.stat_ok");
+        const stat_fail_bb = llvm.appendBasicBlock(self.ctx, func, "isdir.stat_fail");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "isdir.cont");
+
+        _ = self.builder.buildCondBr(stat_ok, stat_ok_bb, stat_fail_bb);
+
+        // Stat succeeded - check st_mode
+        self.builder.positionAtEnd(stat_ok_bb);
+        const mode_offset: u32 = if (builtin.os.tag == .macos) 4 else 24;
+        var gep_indices2 = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, mode_offset)};
+        const mode_ptr = llvm.c.LLVMBuildGEP2(
+            self.builder.ref,
+            llvm.Types.int8(self.ctx),
+            stat_buf,
+            &gep_indices2,
+            1,
+            "mode.ptr",
+        );
+        const mode_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, mode_ptr, llvm.Types.pointer(self.ctx), "mode.ptr.cast");
+        const mode_type = llvm.Types.int16(self.ctx);
+        const mode = self.builder.buildLoad(mode_type, mode_ptr_cast, "mode");
+        const mode_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, mode, i32_type, "mode.i32");
+        // S_IFMT = 0xF000, S_IFDIR = 0x4000
+        const masked = llvm.c.LLVMBuildAnd(self.builder.ref, mode_i32, llvm.Const.int32(self.ctx, 0xF000), "mode.masked");
+        const is_dir = self.builder.buildICmp(llvm.c.LLVMIntEQ, masked, llvm.Const.int32(self.ctx, 0x4000), "isdir.check");
+        _ = self.builder.buildBr(cont_bb);
+
+        // Stat failed - return false
+        self.builder.positionAtEnd(stat_fail_bb);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Merge results with phi
+        self.builder.positionAtEnd(cont_bb);
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, llvm.Types.int1(self.ctx), "isdir.phi");
+        var incoming_vals = [_]llvm.ValueRef{ is_dir, llvm.Const.int1(self.ctx, false) };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ stat_ok_bb, stat_fail_bb };
+        llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 2);
+
+        return phi;
+    }
+
+    /// Emit fs_exists(path: string) -> bool
+    fn emitFsExists(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const path_val = try self.emitExpr(call.args[0]);
+
+        // Call access(path, F_OK=0)
+        const access_fn = self.getOrDeclareAccess();
+        var access_args = [_]llvm.ValueRef{ path_val, llvm.Const.int32(self.ctx, 0) };
+        const result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(access_fn), access_fn, &access_args, "exists.result");
+
+        return self.builder.buildICmp(llvm.c.LLVMIntEQ, result, llvm.Const.int32(self.ctx, 0), "exists.bool");
+    }
+
+    /// Emit fs_is_file(path: string) -> bool
+    fn emitFsIsFile(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+        const path_val = try self.emitExpr(call.args[0]);
+        return self.emitStatIsFile(path_val);
+    }
+
+    /// Emit fs_is_dir(path: string) -> bool
+    fn emitFsIsDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+        const path_val = try self.emitExpr(call.args[0]);
+        return self.emitStatIsDir(path_val);
+    }
+
+    /// Helper to convert errno to IoError
+    fn emitErrnoToIoError(self: *Emitter, err_field_ptr: llvm.ValueRef) void {
+        const io_error_type = self.getIoErrorStructType();
+        const err_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, io_error_type, err_field_ptr, 0, "err.tag_ptr");
+
+        // Get errno
+        const errno_ptr = self.getOrDeclareErrno();
+        const errno_val = self.builder.buildLoad(llvm.Types.int32(self.ctx), errno_ptr, "errno.val");
+
+        // Map errno to IoError tag
+        // ENOENT=2 -> NotFound(0), EACCES=13 -> PermissionDenied(1), EEXIST=17 -> AlreadyExists(2)
+        // EINVAL=22 -> InvalidInput(3), Others -> Other(5)
+        const func = self.current_function orelse return;
+
+        // Create all blocks upfront
+        const check_enoent_bb = llvm.appendBasicBlock(self.ctx, func, "check.enoent");
+        const enoent_bb = llvm.appendBasicBlock(self.ctx, func, "err.enoent");
+        const check_eacces_bb = llvm.appendBasicBlock(self.ctx, func, "check.eacces");
+        const eacces_bb = llvm.appendBasicBlock(self.ctx, func, "err.eacces");
+        const check_eexist_bb = llvm.appendBasicBlock(self.ctx, func, "check.eexist");
+        const eexist_bb = llvm.appendBasicBlock(self.ctx, func, "err.eexist");
+        const check_einval_bb = llvm.appendBasicBlock(self.ctx, func, "check.einval");
+        const einval_bb = llvm.appendBasicBlock(self.ctx, func, "err.einval");
+        const other_bb = llvm.appendBasicBlock(self.ctx, func, "err.other");
+        const done_bb = llvm.appendBasicBlock(self.ctx, func, "err.done");
+
+        // Jump to first check
+        _ = self.builder.buildBr(check_enoent_bb);
+
+        // Check ENOENT (2)
+        self.builder.positionAtEnd(check_enoent_bb);
+        const is_enoent = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 2), "is_enoent");
+        _ = self.builder.buildCondBr(is_enoent, enoent_bb, check_eacces_bb);
+
+        // ENOENT path
+        self.builder.positionAtEnd(enoent_bb);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), err_tag_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // Check EACCES (13)
+        self.builder.positionAtEnd(check_eacces_bb);
+        const is_eacces = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 13), "is_eacces");
+        _ = self.builder.buildCondBr(is_eacces, eacces_bb, check_eexist_bb);
+
+        // EACCES path
+        self.builder.positionAtEnd(eacces_bb);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 1), err_tag_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // Check EEXIST (17)
+        self.builder.positionAtEnd(check_eexist_bb);
+        const is_eexist = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 17), "is_eexist");
+        _ = self.builder.buildCondBr(is_eexist, eexist_bb, check_einval_bb);
+
+        // EEXIST path
+        self.builder.positionAtEnd(eexist_bb);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 2), err_tag_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // Check EINVAL (22)
+        self.builder.positionAtEnd(check_einval_bb);
+        const is_einval = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 22), "is_einval");
+        _ = self.builder.buildCondBr(is_einval, einval_bb, other_bb);
+
+        // EINVAL path
+        self.builder.positionAtEnd(einval_bb);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 3), err_tag_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // Other path
+        self.builder.positionAtEnd(other_bb);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 5), err_tag_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // Done
+        self.builder.positionAtEnd(done_bb);
+    }
+
+    /// Emit fs_create_dir(path: string) -> Result[void, IoError]
+    fn emitFsCreateDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const path_val = try self.emitExpr(call.args[0]);
+
+        // Call mkdir(path, 0755)
+        const mkdir_fn = self.getOrDeclareMkdir();
+        var mkdir_args = [_]llvm.ValueRef{ path_val, llvm.Const.int32(self.ctx, 0o755) };
+        const result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &mkdir_args, "mkdir.result");
+
+        // Build Result[void, IoError]
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "mkdir.res");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "mkdir.tag_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "mkdir.err_ptr");
+
+        // Check if mkdir succeeded (returns 0)
+        const succeeded = self.builder.buildICmp(llvm.c.LLVMIntEQ, result, llvm.Const.int32(self.ctx, 0), "mkdir.ok");
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "mkdir.ok_bb");
+        const err_bb = llvm.appendBasicBlock(self.ctx, func, "mkdir.err_bb");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "mkdir.cont");
+
+        _ = self.builder.buildCondBr(succeeded, ok_bb, err_bb);
+
+        // OK path
+        self.builder.positionAtEnd(ok_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Error path
+        self.builder.positionAtEnd(err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Continue
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "mkdir.val");
+    }
+
+    /// Emit fs_create_dir_all(path: string) -> Result[void, IoError]
+    fn emitFsCreateDirAll(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const path_val = try self.emitExpr(call.args[0]);
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Get path length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{path_val};
+        const path_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "dirall.len");
+
+        // Allocate a mutable copy of the path
+        const malloc_fn = self.getOrDeclareMalloc();
+        const alloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, path_len, llvm.Const.int64(self.ctx, 1), "dirall.size");
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const path_copy = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "dirall.copy");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ path_copy, path_val, alloc_size };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        // Build Result[void, IoError]
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "dirall.res");
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "dirall.tag_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "dirall.err_ptr");
+
+        // Initialize as success
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+
+        // Loop through path creating directories
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.loop");
+        const mkdir_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.mkdir");
+        const next_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.next");
+        const error_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.error");
+        const done_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.done");
+
+        // Counter starts at 1 (skip leading /)
+        const counter_alloca = self.builder.buildAlloca(i64_type, "dirall.i");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 1), counter_alloca);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Loop
+        self.builder.positionAtEnd(loop_bb);
+        const i = self.builder.buildLoad(i64_type, counter_alloca, "dirall.i_val");
+        const at_end = self.builder.buildICmp(llvm.c.LLVMIntUGE, i, path_len, "dirall.at_end");
+        _ = self.builder.buildCondBr(at_end, done_bb, blk: {
+            const check_char = llvm.appendBasicBlock(self.ctx, func, "dirall.check");
+            break :blk check_char;
+        });
+
+        // Check character
+        const check_char = llvm.c.LLVMGetPreviousBasicBlock(done_bb);
+        self.builder.positionAtEnd(check_char);
+        var char_idx = [_]llvm.ValueRef{i};
+        const char_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, path_copy, &char_idx, 1, "dirall.char_ptr");
+        const char_val = self.builder.buildLoad(i8_type, char_ptr, "dirall.char");
+        const is_slash = self.builder.buildICmp(llvm.c.LLVMIntEQ, char_val, llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), "dirall.is_slash");
+        _ = self.builder.buildCondBr(is_slash, mkdir_bb, next_bb);
+
+        // Create directory at this point
+        self.builder.positionAtEnd(mkdir_bb);
+        // Temporarily null-terminate at the slash
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), char_ptr);
+        const mkdir_fn = self.getOrDeclareMkdir();
+        var mkdir_args = [_]llvm.ValueRef{ path_copy, llvm.Const.int32(self.ctx, 0o755) };
+        const mkdir_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &mkdir_args, "dirall.mkdir");
+        // Restore the slash
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), char_ptr);
+        // Check result (ignore EEXIST)
+        const mkdir_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, mkdir_result, llvm.Const.int32(self.ctx, 0), "dirall.mkdir_ok");
+        _ = self.builder.buildCondBr(mkdir_ok, next_bb, blk: {
+            // Check if error is EEXIST
+            const check_eexist = llvm.appendBasicBlock(self.ctx, func, "dirall.check_eexist");
+            break :blk check_eexist;
+        });
+
+        // Check if error is EEXIST (which is OK)
+        const check_eexist = llvm.c.LLVMGetPreviousBasicBlock(next_bb);
+        self.builder.positionAtEnd(check_eexist);
+        const errno_ptr = self.getOrDeclareErrno();
+        const errno_val = self.builder.buildLoad(i32_type, errno_ptr, "dirall.errno");
+        const is_eexist = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 17), "dirall.is_eexist");
+        _ = self.builder.buildCondBr(is_eexist, next_bb, error_bb);
+
+        // Error
+        self.builder.positionAtEnd(error_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        // Free the path copy
+        const free_fn = self.getOrDeclareFree();
+        var free_args = [_]llvm.ValueRef{path_copy};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
+        _ = self.builder.buildBr(blk: {
+            const final_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.final");
+            break :blk final_bb;
+        });
+
+        // Next iteration
+        self.builder.positionAtEnd(next_bb);
+        const iter_val = self.builder.buildLoad(i64_type, counter_alloca, "dirall.iter");
+        const i_next = llvm.c.LLVMBuildAdd(self.builder.ref, iter_val, llvm.Const.int64(self.ctx, 1), "dirall.i_next");
+        _ = self.builder.buildStore(i_next, counter_alloca);
+        _ = self.builder.buildBr(loop_bb);
+
+        // Done - create final directory
+        self.builder.positionAtEnd(done_bb);
+        var final_mkdir_args = [_]llvm.ValueRef{ path_copy, llvm.Const.int32(self.ctx, 0o755) };
+        const final_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &final_mkdir_args, "dirall.final_mkdir");
+        const final_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, final_result, llvm.Const.int32(self.ctx, 0), "dirall.final_ok");
+        _ = self.builder.buildCondBr(final_ok, blk: {
+            const success_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.success");
+            break :blk success_bb;
+        }, blk: {
+            const check_final_eexist = llvm.appendBasicBlock(self.ctx, func, "dirall.check_final_eexist");
+            break :blk check_final_eexist;
+        });
+
+        // Check final EEXIST
+        const check_final_eexist = llvm.c.LLVMGetPreviousBasicBlock(error_bb);
+        self.builder.positionAtEnd(check_final_eexist);
+        const errno_val2 = self.builder.buildLoad(i32_type, errno_ptr, "dirall.errno2");
+        const is_eexist2 = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val2, llvm.Const.int32(self.ctx, 17), "dirall.is_eexist2");
+        const success_bb = llvm.c.LLVMGetPreviousBasicBlock(check_final_eexist);
+        _ = self.builder.buildCondBr(is_eexist2, success_bb, error_bb);
+
+        // Success
+        self.builder.positionAtEnd(success_bb);
+        var free_args2 = [_]llvm.ValueRef{path_copy};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args2, "");
+        const final_bb = llvm.c.LLVMGetNextBasicBlock(error_bb);
+        _ = self.builder.buildBr(final_bb);
+
+        // Final
+        self.builder.positionAtEnd(final_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "dirall.val");
+    }
+
+    /// Emit fs_remove_file(path: string) -> Result[void, IoError]
+    fn emitFsRemoveFile(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const path_val = try self.emitExpr(call.args[0]);
+
+        // Call unlink(path)
+        const unlink_fn = self.getOrDeclareUnlink();
+        var unlink_args = [_]llvm.ValueRef{path_val};
+        const result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlink_fn), unlink_fn, &unlink_args, "unlink.result");
+
+        // Build Result[void, IoError]
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "unlink.res");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "unlink.tag_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "unlink.err_ptr");
+
+        const succeeded = self.builder.buildICmp(llvm.c.LLVMIntEQ, result, llvm.Const.int32(self.ctx, 0), "unlink.ok");
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "unlink.ok_bb");
+        const err_bb = llvm.appendBasicBlock(self.ctx, func, "unlink.err_bb");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "unlink.cont");
+
+        _ = self.builder.buildCondBr(succeeded, ok_bb, err_bb);
+
+        // OK path
+        self.builder.positionAtEnd(ok_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Error path
+        self.builder.positionAtEnd(err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Continue
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "unlink.val");
+    }
+
+    /// Emit fs_remove_dir(path: string) -> Result[void, IoError]
+    fn emitFsRemoveDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const path_val = try self.emitExpr(call.args[0]);
+
+        // Call rmdir(path)
+        const rmdir_fn = self.getOrDeclareRmdir();
+        var rmdir_args = [_]llvm.ValueRef{path_val};
+        const result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(rmdir_fn), rmdir_fn, &rmdir_args, "rmdir.result");
+
+        // Build Result[void, IoError]
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "rmdir.res");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "rmdir.tag_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "rmdir.err_ptr");
+
+        const succeeded = self.builder.buildICmp(llvm.c.LLVMIntEQ, result, llvm.Const.int32(self.ctx, 0), "rmdir.ok");
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "rmdir.ok_bb");
+        const err_bb = llvm.appendBasicBlock(self.ctx, func, "rmdir.err_bb");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "rmdir.cont");
+
+        _ = self.builder.buildCondBr(succeeded, ok_bb, err_bb);
+
+        // OK path
+        self.builder.positionAtEnd(ok_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Error path
+        self.builder.positionAtEnd(err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Continue
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "rmdir.val");
+    }
+
+    /// Emit fs_read_string(path: string) -> Result[String, IoError]
+    fn emitFsReadString(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        // Delegate to the existing File.read_to_string implementation
+        // by creating a synthetic method call structure
+        const path_val = try self.emitExpr(call.args[0]);
+
+        // Reuse the existing implementation pattern from emitFileReadToString
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
+
+        const fopen_fn = self.getOrDeclareFopen();
+        const fseek_fn = self.getOrDeclareFseek();
+        const ftell_fn = self.getOrDeclareFtell();
+        const fread_fn = self.getOrDeclareFread();
+        const fclose_fn = self.getOrDeclareFclose();
+        const malloc_fn = self.getOrDeclareMalloc();
+
+        // Open file for reading
+        const mode_str = self.builder.buildGlobalStringPtr("r", "mode.r");
+        var fopen_args = [_]llvm.ValueRef{ path_val, mode_str };
+        const file_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fopen_fn), fopen_fn, &fopen_args, "fs_readstr.file");
+
+        // Build Result[String, IoError] struct
+        const result_type = self.getStringResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "fs_readstr.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "fs_readstr.tag_ptr");
+        const str_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "fs_readstr.str_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "fs_readstr.err_ptr");
+
+        // Check if fopen returned null
+        const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, file_ptr, null_ptr, "fs_readstr.is_null");
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const open_ok_bb = llvm.appendBasicBlock(self.ctx, func, "fs_readstr.open_ok");
+        const open_err_bb = llvm.appendBasicBlock(self.ctx, func, "fs_readstr.open_err");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "fs_readstr.cont");
+
+        _ = self.builder.buildCondBr(is_null, open_err_bb, open_ok_bb);
+
+        // Open error
+        self.builder.positionAtEnd(open_err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Open OK
+        self.builder.positionAtEnd(open_ok_bb);
+
+        // Seek to end
+        var fseek_args = [_]llvm.ValueRef{ file_ptr, llvm.Const.int64(self.ctx, 0), llvm.Const.int32(self.ctx, 2) };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fseek_fn), fseek_fn, &fseek_args, "fs_readstr.seek_end");
+
+        // Get file size
+        var ftell_args = [_]llvm.ValueRef{file_ptr};
+        const file_size = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(ftell_fn), ftell_fn, &ftell_args, "fs_readstr.size");
+
+        // Seek back to start
+        var fseek_args2 = [_]llvm.ValueRef{ file_ptr, llvm.Const.int64(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fseek_fn), fseek_fn, &fseek_args2, "fs_readstr.seek_start");
+
+        // Allocate buffer
+        const size_plus_one = llvm.c.LLVMBuildAdd(self.builder.ref, file_size, llvm.Const.int64(self.ctx, 1), "fs_readstr.size_plus_one");
+        var malloc_args = [_]llvm.ValueRef{size_plus_one};
+        const buffer = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "fs_readstr.buffer");
+
+        // Read file
+        var fread_args = [_]llvm.ValueRef{ buffer, llvm.Const.int64(self.ctx, 1), file_size, file_ptr };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fread_fn), fread_fn, &fread_args, "fs_readstr.read");
+
+        // Null-terminate
+        var null_idx = [_]llvm.ValueRef{file_size};
+        const null_pos = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, buffer, &null_idx, 1, "fs_readstr.null_pos");
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_pos);
+
+        // Close file
+        var fclose_args = [_]llvm.ValueRef{file_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "fs_readstr.close");
+
+        // Build String struct
+        const string_type = self.getStringStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 0, "fs_readstr.str_ptr_field");
+        _ = self.builder.buildStore(buffer, str_ptr_field);
+
+        const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, file_size, i32_type, "fs_readstr.len_i32");
+        const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 1, "fs_readstr.str_len_field");
+        _ = self.builder.buildStore(len_i32, str_len_field);
+
+        const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 2, "fs_readstr.str_cap_field");
+        _ = self.builder.buildStore(len_i32, str_cap_field);
+
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Continue
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "fs_readstr.result_val");
+    }
+
+    /// Emit fs_write_string(path: string, content: string) -> Result[void, IoError]
+    fn emitFsWriteString(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 2) return EmitError.InvalidAST;
+
+        const path_val = try self.emitExpr(call.args[0]);
+        const content_val = try self.emitExpr(call.args[1]);
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        const fopen_fn = self.getOrDeclareFopen();
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const fclose_fn = self.getOrDeclareFclose();
+        const strlen_fn = self.getOrDeclareStrlen();
+
+        // Open file for writing
+        const mode_str = self.builder.buildGlobalStringPtr("w", "mode.w");
+        var fopen_args = [_]llvm.ValueRef{ path_val, mode_str };
+        const file_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fopen_fn), fopen_fn, &fopen_args, "fs_write.file");
+
+        // Build Result[void, IoError]
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "fs_write.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "fs_write.tag_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "fs_write.err_ptr");
+
+        // Check if fopen returned null
+        const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, file_ptr, null_ptr, "fs_write.is_null");
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const open_ok_bb = llvm.appendBasicBlock(self.ctx, func, "fs_write.open_ok");
+        const open_err_bb = llvm.appendBasicBlock(self.ctx, func, "fs_write.open_err");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "fs_write.cont");
+
+        _ = self.builder.buildCondBr(is_null, open_err_bb, open_ok_bb);
+
+        // Open error
+        self.builder.positionAtEnd(open_err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Open OK - write content
+        self.builder.positionAtEnd(open_ok_bb);
+
+        // Get content length
+        var strlen_args = [_]llvm.ValueRef{content_val};
+        const content_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "fs_write.len");
+
+        // Write content
+        var fwrite_args = [_]llvm.ValueRef{ content_val, llvm.Const.int(i64_type, 1, false), content_len, file_ptr };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "fs_write.written");
+
+        // Close file
+        var fclose_args = [_]llvm.ValueRef{file_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "fs_write.close");
+
+        // Success
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Continue
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "fs_write.val");
+    }
+
+    /// Get the LLVM struct type for Result[List[String], IoError]
+    fn getListStringResultType(self: *Emitter) llvm.TypeRef {
+        const io_error_type = self.getIoErrorStructType();
+        const list_type = self.getListStructType();
+        var fields = [_]llvm.TypeRef{
+            llvm.Types.int1(self.ctx), // tag: 1=Ok, 0=Err
+            list_type, // List { ptr, len, capacity }
+            io_error_type, // IoError
+        };
+        return llvm.Types.struct_(self.ctx, &fields, false);
+    }
+
+    /// Emit fs_read_dir(path: string) -> Result[List[String], IoError]
+    fn emitFsReadDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+
+        const path_val = try self.emitExpr(call.args[0]);
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Call opendir
+        const opendir_fn = self.getOrDeclareOpendir();
+        var opendir_args = [_]llvm.ValueRef{path_val};
+        const dir_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(opendir_fn), opendir_fn, &opendir_args, "readdir.dir");
+
+        // Build Result[List[String], IoError]
+        const result_type = self.getListStringResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "readdir.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "readdir.tag_ptr");
+        const list_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "readdir.list_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "readdir.err_ptr");
+
+        // Check if opendir failed
+        const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, dir_ptr, null_ptr, "readdir.is_null");
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const open_ok_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.open_ok");
+        const open_err_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.open_err");
+        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.loop");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.cont");
+
+        _ = self.builder.buildCondBr(is_null, open_err_bb, open_ok_bb);
+
+        // Open error
+        self.builder.positionAtEnd(open_err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Open OK - initialize list
+        self.builder.positionAtEnd(open_ok_bb);
+
+        // Initialize List { ptr, len, capacity }
+        const list_type = self.getListStructType();
+        const initial_cap: u32 = 16;
+        const string_struct_type = self.getStringStructType();
+        const string_size = 16; // { ptr, len, capacity } = 8 + 4 + 4 = 16 bytes
+
+        // Allocate initial array
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, initial_cap * string_size)};
+        const arr_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "readdir.arr");
+
+        // Store initial list state
+        const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readdir.list_ptr_field");
+        _ = self.builder.buildStore(arr_ptr, list_ptr_field);
+        const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 1, "readdir.list_len_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), list_len_field);
+        const list_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 2, "readdir.list_cap_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, initial_cap), list_cap_field);
+
+        _ = self.builder.buildBr(loop_bb);
+
+        // Loop - read directory entries
+        self.builder.positionAtEnd(loop_bb);
+
+        // Call readdir
+        const readdir_fn = self.getOrDeclareReaddir();
+        var readdir_args = [_]llvm.ValueRef{dir_ptr};
+        const entry_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(readdir_fn), readdir_fn, &readdir_args, "readdir.entry");
+
+        // Check if entry is null (end of directory)
+        const entry_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, entry_ptr, null_ptr, "readdir.entry_null");
+
+        const process_entry_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.process");
+        const done_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.done");
+
+        _ = self.builder.buildCondBr(entry_null, done_bb, process_entry_bb);
+
+        // Process entry
+        self.builder.positionAtEnd(process_entry_bb);
+
+        // Get d_name pointer (offset varies by platform, typically after d_ino and d_reclen)
+        // On macOS: d_ino (8) + d_seekoff (8) + d_reclen (2) + d_namlen (2) + d_type (1) = 21, aligned to 24
+        // On Linux: varies, but d_name is at offset 19 for most systems
+        // We'll use a safer approach - just use the pointer arithmetic
+        const d_name_offset: u32 = if (builtin.os.tag == .macos) 21 else 19;
+        var d_name_indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, d_name_offset)};
+        const d_name_ptr = llvm.c.LLVMBuildGEP2(
+            self.builder.ref,
+            llvm.Types.int8(self.ctx),
+            entry_ptr,
+            &d_name_indices,
+            1,
+            "readdir.d_name",
+        );
+
+        // Skip . and .. entries
+        const dot_str = self.builder.buildGlobalStringPtr(".", "dot");
+        const dotdot_str = self.builder.buildGlobalStringPtr("..", "dotdot");
+        const strcmp_fn = self.getOrDeclareStrcmp();
+        var cmp_dot_args = [_]llvm.ValueRef{ d_name_ptr, dot_str };
+        const is_dot = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &cmp_dot_args, "is_dot");
+        const is_dot_eq = self.builder.buildICmp(llvm.c.LLVMIntEQ, is_dot, llvm.Const.int32(self.ctx, 0), "is_dot_eq");
+
+        const check_dotdot_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.check_dotdot");
+        _ = self.builder.buildCondBr(is_dot_eq, loop_bb, check_dotdot_bb);
+
+        self.builder.positionAtEnd(check_dotdot_bb);
+        var cmp_dotdot_args = [_]llvm.ValueRef{ d_name_ptr, dotdot_str };
+        const is_dotdot = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &cmp_dotdot_args, "is_dotdot");
+        const is_dotdot_eq = self.builder.buildICmp(llvm.c.LLVMIntEQ, is_dotdot, llvm.Const.int32(self.ctx, 0), "is_dotdot_eq");
+
+        const add_entry_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.add_entry");
+        _ = self.builder.buildCondBr(is_dotdot_eq, loop_bb, add_entry_bb);
+
+        // Add entry to list
+        self.builder.positionAtEnd(add_entry_bb);
+
+        // Get current list length and capacity
+        const cur_len = self.builder.buildLoad(i32_type, list_len_field, "readdir.cur_len");
+        const cur_cap = self.builder.buildLoad(i32_type, list_cap_field, "readdir.cur_cap");
+
+        // Check if we need to grow
+        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_len, cur_cap, "readdir.need_grow");
+
+        const grow_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.grow");
+        const add_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.add");
+        _ = self.builder.buildCondBr(need_grow, grow_bb, add_bb);
+
+        // Grow list
+        self.builder.positionAtEnd(grow_bb);
+        const new_cap = llvm.c.LLVMBuildMul(self.builder.ref, cur_cap, llvm.Const.int32(self.ctx, 2), "readdir.new_cap");
+        const new_cap_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, new_cap, i64_type, "readdir.new_cap_i64");
+        const new_size = llvm.c.LLVMBuildMul(self.builder.ref, new_cap_i64, llvm.Const.int64(self.ctx, string_size), "readdir.new_size");
+        const cur_arr = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr");
+        const realloc_fn = self.getOrDeclareRealloc();
+        var realloc_args = [_]llvm.ValueRef{ cur_arr, new_size };
+        const new_arr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "readdir.new_arr");
+        _ = self.builder.buildStore(new_arr, list_ptr_field);
+        _ = self.builder.buildStore(new_cap, list_cap_field);
+        _ = self.builder.buildBr(add_bb);
+
+        // Add string to list
+        self.builder.positionAtEnd(add_bb);
+
+        // Get string length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{d_name_ptr};
+        const str_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "readdir.str_len");
+        const str_len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, str_len, i32_type, "readdir.str_len_i32");
+
+        // Allocate and copy string
+        const str_size_plus_one = llvm.c.LLVMBuildAdd(self.builder.ref, str_len, llvm.Const.int64(self.ctx, 1), "readdir.str_size");
+        var str_malloc_args = [_]llvm.ValueRef{str_size_plus_one};
+        const str_copy = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &str_malloc_args, "readdir.str_copy");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ str_copy, d_name_ptr, str_size_plus_one };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        // Get pointer to next slot in list
+        const cur_len2 = self.builder.buildLoad(i32_type, list_len_field, "readdir.cur_len2");
+        const cur_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, cur_len2, i64_type, "readdir.cur_len_i64");
+        const slot_offset = llvm.c.LLVMBuildMul(self.builder.ref, cur_len_i64, llvm.Const.int64(self.ctx, string_size), "readdir.slot_offset");
+        const cur_arr2 = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr2");
+        var slot_idx = [_]llvm.ValueRef{slot_offset};
+        const slot_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), cur_arr2, &slot_idx, 1, "readdir.slot_ptr");
+
+        // Store String struct { ptr, len, capacity }
+        const slot_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, slot_ptr, llvm.Types.pointer(self.ctx), "readdir.slot_cast");
+        const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 0, "readdir.str_ptr_field");
+        _ = self.builder.buildStore(str_copy, str_ptr_field);
+        const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 1, "readdir.str_len_field");
+        _ = self.builder.buildStore(str_len_i32, str_len_field);
+        const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 2, "readdir.str_cap_field");
+        _ = self.builder.buildStore(str_len_i32, str_cap_field);
+
+        // Increment length
+        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, cur_len2, llvm.Const.int32(self.ctx, 1), "readdir.new_len");
+        _ = self.builder.buildStore(new_len, list_len_field);
+
+        _ = self.builder.buildBr(loop_bb);
+
+        // Done - close directory
+        self.builder.positionAtEnd(done_bb);
+        const closedir_fn = self.getOrDeclareClosedir();
+        var closedir_args = [_]llvm.ValueRef{dir_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(closedir_fn), closedir_fn, &closedir_args, "readdir.closedir");
+
+        // Set success
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Continue
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "readdir.val");
+    }
+
+    // ==================== C Function Declarations for Filesystem ====================
+
+    fn getOrDeclareAccess(self: *Emitter) llvm.ValueRef {
+        const fn_name = "access";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // int access(const char *pathname, int mode)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareStat(self: *Emitter) llvm.ValueRef {
+        const fn_name = "stat";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // int stat(const char *pathname, struct stat *statbuf)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareMkdir(self: *Emitter) llvm.ValueRef {
+        const fn_name = "mkdir";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // int mkdir(const char *pathname, mode_t mode)
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareRmdir(self: *Emitter) llvm.ValueRef {
+        const fn_name = "rmdir";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // int rmdir(const char *pathname)
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareUnlink(self: *Emitter) llvm.ValueRef {
+        const fn_name = "unlink";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // int unlink(const char *pathname)
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareOpendir(self: *Emitter) llvm.ValueRef {
+        const fn_name = "opendir";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // DIR *opendir(const char *name)
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareReaddir(self: *Emitter) llvm.ValueRef {
+        const fn_name = "readdir";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // struct dirent *readdir(DIR *dirp)
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareClosedir(self: *Emitter) llvm.ValueRef {
+        const fn_name = "closedir";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+        // int closedir(DIR *dirp)
+        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    fn getOrDeclareErrno(self: *Emitter) llvm.ValueRef {
+        // On most systems, errno is accessed via __errno_location() (Linux) or __error() (macOS)
+        const errno_fn_name = if (builtin.os.tag == .macos) "__error" else "__errno_location";
+        const errno_fn = blk: {
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, errno_fn_name)) |func| {
+                break :blk func;
+            }
+            // int *__error(void) or int *__errno_location(void)
+            var param_types = [_]llvm.TypeRef{};
+            const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 0, 0);
+            break :blk llvm.c.LLVMAddFunction(self.module.ref, errno_fn_name, fn_type);
+        };
+        // Call the function to get the errno pointer
+        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(errno_fn), errno_fn, &[_]llvm.ValueRef{}, "errno.ptr");
+    }
+
     /// Emit BufReader.new[R](reader) -> BufReader[R]
     fn emitBufReaderNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         if (method.args.len != 1) return EmitError.InvalidAST;
@@ -26073,6 +27661,7 @@ pub const Emitter = struct {
             // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
             .set => 20,
             .string_data => 8, // pointer to string data
+            .path => 16, // Path: { ptr, len: i32, cap: i32 } = 8 + 4 + 4 = 16 bytes
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => 8, // handles/pointers
             .buf_reader, .buf_writer => 8, // pointers to buffered I/O structures
             .extern_type => |ext| {
@@ -26330,6 +27919,15 @@ pub const Emitter = struct {
             .stdin_handle => {
                 // Stdin is an opaque marker type - store as FILE* pointer
                 return llvm.Types.pointer(self.ctx);
+            },
+            .path => {
+                // Path is a wrapper around String: { ptr: *u8, len: i32, capacity: i32 }
+                var fields = [_]llvm.TypeRef{
+                    llvm.Types.pointer(self.ctx), // ptr
+                    llvm.Types.int32(self.ctx), // len
+                    llvm.Types.int32(self.ctx), // capacity
+                };
+                return llvm.Types.struct_(self.ctx, &fields, false);
             },
             .buf_reader => |br| {
                 // BufReader LLVM layout: { inner: R, buffer: [8192]u8, pos: i32, cap: i32 }

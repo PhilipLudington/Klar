@@ -1,0 +1,36 @@
+// Test Path.exists(), Path.is_file(), Path.is_dir() methods
+// Expected: 0
+
+fn main() -> i32 {
+    // Test with /tmp which should exist and be a directory
+    let tmp_path: Path = Path.new("/tmp")
+
+    if not tmp_path.exists() {
+        return 1
+    }
+
+    if not tmp_path.is_dir() {
+        return 2
+    }
+
+    if tmp_path.is_file() {
+        return 3  // /tmp should not be a file
+    }
+
+    // Test with a non-existent path
+    let nonexistent: Path = Path.new("/this/path/does/not/exist/12345")
+
+    if nonexistent.exists() {
+        return 4
+    }
+
+    if nonexistent.is_file() {
+        return 5
+    }
+
+    if nonexistent.is_dir() {
+        return 6
+    }
+
+    return 0
+}

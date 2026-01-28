@@ -1,0 +1,43 @@
+// Test Path type basic operations: construction, file_name, extension, parent
+// Expected: 0
+
+fn main() -> i32 {
+    // Test Path.new
+    let p: Path = Path.new("/home/user/documents/report.txt")
+
+    // Test to_string
+    let s: string = p.to_string()
+    if s != "/home/user/documents/report.txt" {
+        return 1
+    }
+
+    // Test file_name
+    let fname: ?string = p.file_name()
+    if fname.is_none() {
+        return 2
+    }
+    let fname_val: string = fname ?? ""
+    if fname_val != "report.txt" {
+        return 3
+    }
+
+    // Test extension
+    let ext: ?string = p.extension()
+    if ext.is_none() {
+        return 4
+    }
+    let ext_val: string = ext ?? ""
+    if ext_val != "txt" {
+        return 5
+    }
+
+    // Test join
+    let p2: Path = Path.new("/home/user")
+    let p3: Path = p2.join("documents")
+    let s3: string = p3.to_string()
+    if s3 != "/home/user/documents" {
+        return 6
+    }
+
+    return 0
+}

@@ -22,9 +22,9 @@
 - [x] **Milestone 10: REPL** - Interactive exploration with interpreter backend
 - [x] **Milestone 11: Comptime** - Compile-time evaluation, reflection, assertions
 - [x] **Milestone 12: FFI** - Foreign Function Interface for C interoperability
+- [x] **Milestone 5: Stdlib I/O** - File I/O, buffered I/O, Path type, filesystem operations
 
 **In Progress:**
-- **Milestone 5: Stdlib I/O** - Core I/O complete, filesystem operations pending
 - **Milestone 8: Package Manager** - Not started
 - **Milestone 9: Tooling** - Not started
 
@@ -64,11 +64,11 @@ See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-4-sta
 
 ---
 
-## Milestone 5: Standard Library - I/O
+## Milestone 5: Standard Library - I/O ✅
 
 **Objective:** Implement file and console I/O.
 
-**Status:** 🟡 Read/Write Traits Complete. Mutable buffer I/O with arrays working. Basic file I/O types and stdout/stderr implemented as builtins. Buffered I/O complete. Filesystem operations not yet started.
+**Status:** Complete. File I/O, buffered I/O, Path type, and filesystem operations all implemented.
 
 ### Completed
 - [x] Mutable buffer allocation (`@repeat`, `ref T`, `inout T`, deref assignment)
@@ -79,12 +79,37 @@ See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-4-sta
 - [x] Standard I/O (stdin, stdout, stderr)
 - [x] Platform-specific stdio access (macOS, Linux)
 - [x] Buffered I/O (BufReader, BufWriter with automatic flush on drop)
+- [x] Path type with path manipulation methods
+- [x] Directory operations (fs_exists, fs_is_file, fs_is_dir, fs_create_dir, fs_create_dir_all, fs_remove_file, fs_remove_dir, fs_read_dir)
+- [x] Convenience functions (fs_read_string, fs_write_string)
 
-### Remaining
-- [ ] Path type with path manipulation
-- [ ] Directory operations (fs.exists, fs.create_dir, fs.remove, fs.read_dir)
-- [ ] Convenience functions (fs.read, fs.read_string, fs.write, fs.write_string)
-- [ ] errno mapping for IoError conversion
+### Path Type Methods
+- `Path.new(s: string) -> Path` - construct from string
+- `.to_string() -> string` - convert to string
+- `.join(other: string) -> Path` - join path components
+- `.parent() -> ?Path` - get parent directory
+- `.file_name() -> ?string` - get filename component
+- `.extension() -> ?string` - get file extension
+- `.exists() -> bool` - check if path exists
+- `.is_file() -> bool` - check if path is a file
+- `.is_dir() -> bool` - check if path is a directory
+
+### Filesystem Functions
+- `fs_exists(path: string) -> bool`
+- `fs_is_file(path: string) -> bool`
+- `fs_is_dir(path: string) -> bool`
+- `fs_create_dir(path: string) -> Result[void, IoError]`
+- `fs_create_dir_all(path: string) -> Result[void, IoError]`
+- `fs_remove_file(path: string) -> Result[void, IoError]`
+- `fs_remove_dir(path: string) -> Result[void, IoError]`
+- `fs_read_string(path: string) -> Result[String, IoError]`
+- `fs_write_string(path: string, content: string) -> Result[void, IoError]`
+- `fs_read_dir(path: string) -> Result[List[String], IoError]`
+
+### Tests
+All filesystem tests in `test/native/fs/`:
+- fs_exists.kl, fs_create_remove.kl, fs_read_write.kl, fs_read_dir.kl
+- path_basic.kl, path_exists.kl
 
 ---
 
@@ -290,8 +315,8 @@ Based on dependencies:
 7. **Milestone 4: Stdlib Core** (needs generics, traits, modules) ✅
 8. **Milestone 7: Error Handling** (`?` operator, From/Into traits) ✅
 9. **Milestone 12: FFI** (C interoperability) ✅
-10. **Milestone 5: Stdlib I/O** (filesystem operations) ← **CURRENT**
-11. **Milestone 8: Package Manager** (needs modules)
+10. **Milestone 5: Stdlib I/O** (filesystem operations) ✅
+11. **Milestone 8: Package Manager** (needs modules) ← **NEXT**
 12. **Milestone 9: Tooling** (needs stable language)
 
 ---
@@ -316,7 +341,7 @@ Phase 4 is complete when:
 - [x] Fast feedback loop for iterative development
 
 **Usability:**
-- [ ] Can write non-trivial programs (CLI tools, utilities)
+- [x] Can write non-trivial programs (CLI tools, utilities) - filesystem I/O complete
 - [ ] Error messages are helpful and actionable
 - [ ] Documentation exists for language and stdlib
 
@@ -327,5 +352,5 @@ Phase 4 is complete when:
 
 **Example Programs:**
 - [ ] JSON parser using generics
-- [ ] File processing utility
+- [x] File processing utility - now possible with fs_* functions
 - [ ] HTTP client (stretch goal with async)

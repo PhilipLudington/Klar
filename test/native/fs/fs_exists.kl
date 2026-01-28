@@ -1,0 +1,24 @@
+// Test fs_exists, fs_is_file, fs_is_dir functions
+// Expected: 0
+
+fn main() -> i32 {
+    // Test that /tmp exists and is a directory
+    if not fs_exists("/tmp") {
+        return 1
+    }
+
+    if not fs_is_dir("/tmp") {
+        return 2
+    }
+
+    if fs_is_file("/tmp") {
+        return 3  // /tmp should not be a file
+    }
+
+    // Test that a non-existent path returns false
+    if fs_exists("/this/path/definitely/does/not/exist/12345") {
+        return 4
+    }
+
+    return 0
+}
