@@ -25,6 +25,7 @@
 - [x] **Milestone 5: Stdlib I/O** - File I/O, buffered I/O, Path type, filesystem operations
 
 **In Progress:**
+- **Milestone 13: FFI Function Pointers** - In progress ← **CURRENT**
 - **Milestone 8: Package Manager** - Not started
 - **Milestone 9: Tooling** - Not started
 
@@ -278,6 +279,242 @@ All FFI tests in `test/native/ffi/`:
 
 ---
 
+## Milestone 13: FFI Function Pointers
+
+**Objective:** Enable Klar to pass function pointers to C code (callbacks) and receive/call C function pointers, completing bidirectional FFI.
+
+**Status:** In progress.
+
+> **Depends on:** Milestone 12 (FFI) ✅
+
+### Background
+
+Milestone 12 implemented calling C functions from Klar, but many C APIs require passing function pointers as callbacks (e.g., qsort, signal handlers, event callbacks, plugin systems). This milestone adds:
+1. Passing Klar functions to C as callbacks
+2. Receiving C function pointers in Klar
+3. Calling C function pointers from Klar code
+
+### Design Principles
+
+1. **Safety First**: Function pointer operations require `unsafe` context
+2. **Explicit Types**: `extern fn` clearly distinguishes C function pointers from Klar closures
+3. **No Hidden Magic**: Closures with captures cannot become C callbacks (environment pointer incompatible)
+4. **Consistent Syntax**: Uses existing `extern` keyword (like `extern type`, `extern struct`)
+5. **Reuse Existing Features**: Nullable pointers use `?extern fn` (existing optional syntax)
+
+### Phase 1: Function Pointer Type Syntax ✅
+
+**Objective:** Add syntax for declaring function pointer types in FFI context.
+
+- [x] Add `extern fn(Args) -> Ret` type for C function pointers
+  - Represents a raw C function pointer (no environment)
+  - Can be received from C code
+  - Can be called from Klar (requires unsafe)
+- [x] Parse `extern fn` as a type expression (distinct from `extern { fn }` declarations)
+- [x] Add to type system (`extern_fn` variant in `Type` union)
+- [x] LLVM codegen: map to LLVM function pointer type (8 bytes, not 16-byte closure struct)
+
+**Example:**
+```klar
+// Receive a C function pointer
+extern {
+    fn get_callback() -> extern fn(i32) -> i32
+    fn set_callback(cb: extern fn(i32, i32) -> void)
+}
+```
+
+### Phase 2: Calling C Function Pointers
+
+**Objective:** Enable calling received C function pointers from Klar code.
+
+- [ ] Implement call syntax for `extern fn` values
+- [ ] Type check arguments and return type
+- [ ] Require unsafe context for calls (raw pointer dereference)
+- [ ] LLVM codegen: emit indirect call instruction
+
+**Example:**
+```klar
+fn use_callback() {
+    let cb: extern fn(i32) -> i32 = unsafe { get_callback() }
+
+    // Call the C function pointer (requires unsafe)
+    let result: i32 = unsafe { cb(42) }
+    println(result.to_string())
+}
+```
+
+### Phase 3: Creating C-Compatible Callbacks
+
+**Objective:** Convert Klar functions to C function pointers for passing to C APIs.
+
+- [ ] Add `@fn_ptr` builtin to get raw function pointer from:
+  - Named functions (always works)
+  - Closures with NO captures (stateless closures)
+- [ ] Compile-time error for closures with captures (incompatible with C ABI)
+- [ ] Return type is `extern fn(...) -> R`
+
+**Example:**
+```klar
+// Named function - can always get pointer
+fn my_compare(a: i32, b: i32) -> i32 {
+    return a - b
+}
+
+fn use_qsort() {
+    // Get function pointer from named function
+    let cmp: extern fn(i32, i32) -> i32 = @fn_ptr(my_compare)
+
+    unsafe {
+        // Pass to C qsort
+        c_qsort(arr_ptr, len, size, cmp)
+    }
+}
+
+// Stateless closure - works (no captures)
+let add_one: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x + 1 })
+
+// Closure with captures - COMPILE ERROR
+let offset: i32 = 10
+let bad: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x + offset })
+// Error: Cannot create C function pointer from closure with captures
+```
+
+### Phase 4: Function Pointer Parameters in Extern Functions
+
+**Objective:** Declare extern functions that accept function pointer parameters.
+
+- [ ] Support `extern fn` parameters in extern function declarations
+- [ ] Support `extern fn` return types in extern function declarations
+- [ ] Generate correct LLVM function signatures
+- [ ] Pass function pointers with C calling convention
+
+**Example:**
+```klar
+extern {
+    // qsort callback
+    fn qsort(
+        base: CPtr[void],
+        nmemb: usize,
+        size: usize,
+        compar: extern fn(CPtr[void], CPtr[void]) -> i32
+    )
+
+    // Signal handler
+    fn signal(
+        signum: i32,
+        handler: extern fn(i32) -> void
+    ) -> extern fn(i32) -> void
+
+    // Callback with user data (common pattern)
+    fn register_callback(
+        callback: extern fn(CPtr[void]) -> void,
+        user_data: CPtr[void]
+    )
+}
+```
+
+### Phase 5: Optional Function Pointers
+
+**Objective:** Support nullable function pointers for optional callbacks.
+
+- [ ] Use `?extern fn(...) -> R` for nullable function pointers (existing optional syntax)
+- [ ] Allow `None` as null function pointer
+- [ ] Unwrap with `??` or pattern matching before calling
+- [ ] Handle C's common pattern of NULL callback = no-op
+
+**Example:**
+```klar
+extern {
+    fn set_optional_callback(cb: ?extern fn(i32) -> void)
+}
+
+fn setup() {
+    // Pass None for no callback
+    unsafe { set_optional_callback(None) }
+
+    // Or pass a real callback wrapped in Some
+    let cb: ?extern fn(i32) -> void = Some(@fn_ptr(my_handler))
+    unsafe { set_optional_callback(cb) }
+}
+```
+
+### Phase 6: Variadic C Function Pointers (Deferred)
+
+**Objective:** Support function pointers to variadic C functions.
+
+- [ ] Parse variadic function pointer types: `extern fn(i32, ...) -> void`
+- [ ] Only usable with extern declarations (cannot create in Klar)
+- [ ] Example: printf-style callbacks
+
+**Note:** This phase may be deferred if use cases are rare.
+
+### Implementation Tasks
+
+#### Type System (src/types.zig)
+- [x] Add `extern_fn: *ExternFnType` variant to Type union
+- [x] `ExternFnType` contains function signature (params, return type)
+- [x] Equality and hash for extern function pointer types
+- [x] Optional extern fn uses existing optional type machinery
+- [x] `isCopyType()` returns true for extern_fn (just an address)
+- [x] `formatType()` formats as "extern fn(...) -> ..."
+- [x] `TypeBuilder.externFnType()` constructor
+
+#### Lexer/Parser (src/lexer.zig, src/parser.zig)
+- [x] Parse `extern fn(Args) -> Ret` as a type expression
+- [x] Distinguish from `extern { fn ... }` declaration blocks
+- [ ] Parse `@fn_ptr(expr)` builtin call
+
+#### Type Checker (src/checker.zig)
+- [x] Validate `extern fn` type structure
+- [x] Resolve extern_function AST node to extern_fn Type
+- [x] Type substitution for generics with extern_fn
+- [x] containsTypeVar() for extern_fn
+- [x] unifyTypes() for extern_fn
+- [ ] Check `@fn_ptr` argument is function or stateless closure
+- [ ] Error on closure with captures for `@fn_ptr`
+- [ ] Type check extern function pointer calls (argument/return types)
+- [ ] Require unsafe context for extern function pointer calls
+
+#### LLVM Codegen (src/codegen/emit.zig)
+- [x] Convert `extern fn` type to LLVM pointer type (ptr, not closure struct)
+- [x] Handle `?extern fn` as `{ i1, ptr }` optional struct
+- [x] Type mangling for extern_fn
+- [x] getSizeOfKlarType() returns 8 for extern_fn
+- [ ] Emit `@fn_ptr` as address-of for named functions
+- [ ] Emit `@fn_ptr` for stateless closures (extract lifted function)
+- [ ] Emit indirect call for extern function pointer invocation
+
+### Tests
+
+Create `test/native/ffi/fn_ptr/`:
+- [x] extern_fn_type.kl - Basic `extern fn` type declarations
+- [ ] extern_fn_call.kl - Calling C function pointers
+- [ ] extern_fn_create.kl - Creating function pointers with `@fn_ptr`
+- [ ] extern_fn_closure.kl - Stateless closure to function pointer
+- [ ] extern_fn_capture_error.kl - Error on closure with captures (negative test)
+- [ ] extern_fn_param.kl - Function pointer parameters in extern functions
+- [ ] extern_fn_optional.kl - Nullable function pointers with `?extern fn`
+- [ ] extern_fn_qsort.kl - Real-world qsort callback example
+
+### Documentation
+
+- [ ] Add section to docs/advanced/ffi.md
+- [ ] Update klar-ffi-spec.md with function pointer specification
+- [ ] Add examples in docs/examples/
+
+### Success Criteria
+
+- [x] `extern fn` type parses and type-checks correctly
+- [ ] Can pass Klar functions to C APIs expecting callbacks via `@fn_ptr`
+- [ ] Can receive and call C function pointers (`extern fn` values)
+- [ ] Compile-time error prevents capturing closures from becoming C callbacks
+- [x] `?extern fn` works for nullable function pointers
+- [ ] qsort example works with custom comparator
+- [ ] Signal handler example works
+- [ ] All tests pass
+
+---
+
 ## Stretch Goals
 
 These are valuable but not required for Phase 4 completion:
@@ -325,8 +562,9 @@ Based on dependencies:
 8. **Milestone 7: Error Handling** (`?` operator, From/Into traits) ✅
 9. **Milestone 12: FFI** (C interoperability) ✅
 10. **Milestone 5: Stdlib I/O** (filesystem operations) ✅
-11. **Milestone 8: Package Manager** (needs modules) ← **NEXT**
-12. **Milestone 9: Tooling** (needs stable language)
+11. **Milestone 13: FFI Function Pointers** (callbacks, completing FFI) ← **CURRENT**
+12. **Milestone 8: Package Manager** (needs modules)
+13. **Milestone 9: Tooling** (needs stable language)
 
 ---
 
@@ -343,6 +581,7 @@ Phase 4 is complete when:
 - [x] For-loops work with Range, arrays, List, Set, Map
 - [x] `?` operator for error propagation
 - [x] FFI enables C interoperability
+- [ ] FFI function pointers enable callbacks to C code
 
 **AI-Native Development:**
 - [x] REPL provides interactive code exploration

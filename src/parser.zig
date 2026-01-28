@@ -2167,6 +2167,33 @@ pub const Parser = struct {
             return .{ .tuple = tuple };
         }
 
+        // Extern function type: extern fn(Args) -> Ret
+        // Raw C function pointer (no closure environment)
+        if (self.check(.extern_) and self.peekNext().kind == .fn_) {
+            self.advance(); // consume extern
+            self.advance(); // consume fn
+            try self.consume(.l_paren, "expected '(' after 'extern fn'");
+
+            var params = std.ArrayListUnmanaged(ast.TypeExpr){};
+            if (!self.check(.r_paren)) {
+                while (true) {
+                    try params.append(self.allocator, try self.parseType());
+                    if (!self.match(.comma)) break;
+                }
+            }
+
+            try self.consume(.r_paren, "expected ')' after extern function parameters");
+            try self.consume(.arrow, "expected '->' after extern function parameters");
+            const return_type = try self.parseType();
+
+            const extern_func = try self.create(ast.ExternFunctionType, .{
+                .params = try self.dupeSlice(ast.TypeExpr, params.items),
+                .return_type = return_type,
+                .span = return_type.span(),
+            });
+            return .{ .extern_function = extern_func };
+        }
+
         // Function type: fn(Args) -> Ret
         if (self.match(.fn_)) {
             try self.consume(.l_paren, "expected '(' after fn");

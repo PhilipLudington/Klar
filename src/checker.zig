@@ -2707,6 +2707,27 @@ pub const TypeChecker = struct {
 
             // CStr and CStrOwned - no type parameters to substitute
             .cstr, .cstr_owned => typ,
+
+            // Extern fn - substitute param and return types
+            .extern_fn => |ef| {
+                var changed = false;
+                var new_params = std.ArrayListUnmanaged(Type){};
+                defer new_params.deinit(self.allocator);
+
+                for (ef.params) |param| {
+                    const new_param = try self.substituteTypeParams(param, substitutions);
+                    if (!param.eql(new_param)) changed = true;
+                    try new_params.append(self.allocator, new_param);
+                }
+
+                const new_ret = try self.substituteTypeParams(ef.return_type, substitutions);
+                if (!ef.return_type.eql(new_ret)) changed = true;
+
+                if (!changed) return typ;
+                const params_slice = try self.allocator.dupe(Type, new_params.items);
+                try self.substituted_type_slices.append(self.allocator, params_slice);
+                return self.type_builder.externFnType(params_slice, new_ret);
+            },
         };
     }
 
@@ -2757,6 +2778,13 @@ pub const TypeChecker = struct {
             // FFI pointer types may contain type variables in their inner type
             .cptr => |cptr| self.containsTypeVar(cptr.inner),
             .copt_ptr => |coptptr| self.containsTypeVar(coptptr.inner),
+            // Extern fn types may contain type variables in their params/return type
+            .extern_fn => |ef| {
+                for (ef.params) |param| {
+                    if (self.containsTypeVar(param)) return true;
+                }
+                return self.containsTypeVar(ef.return_type);
+            },
             // Associated type ref contains a type variable reference
             .associated_type_ref => true,
             .struct_, .enum_, .trait_ => false,
@@ -2957,6 +2985,18 @@ pub const TypeChecker = struct {
                 return self.unifyTypes(coptptr.inner, concrete.copt_ptr.inner, substitutions);
             },
 
+            .extern_fn => |ef| {
+                if (concrete != .extern_fn) return false;
+                const concrete_ef = concrete.extern_fn;
+                if (ef.params.len != concrete_ef.params.len) return false;
+                for (ef.params, concrete_ef.params) |pat_param, conc_param| {
+                    if (!try self.unifyTypes(pat_param, conc_param, substitutions)) {
+                        return false;
+                    }
+                }
+                return self.unifyTypes(ef.return_type, concrete_ef.return_type, substitutions);
+            },
+
             .struct_, .enum_, .trait_ => {
                 return pattern.eql(concrete);
             },
@@ -3057,6 +3097,15 @@ pub const TypeChecker = struct {
                 }
                 const ret_type = try self.resolveTypeExpr(f.return_type);
                 return try self.type_builder.functionType(param_types.items, ret_type);
+            },
+            .extern_function => |ef| {
+                var param_types: std.ArrayListUnmanaged(Type) = .{};
+                defer param_types.deinit(self.allocator);
+                for (ef.params) |param| {
+                    try param_types.append(self.allocator, try self.resolveTypeExpr(param));
+                }
+                const ret_type = try self.resolveTypeExpr(ef.return_type);
+                return try self.type_builder.externFnType(param_types.items, ret_type);
             },
             .reference => |r| {
                 const inner = try self.resolveTypeExpr(r.inner);
@@ -8428,6 +8477,7 @@ pub const TypeChecker = struct {
             .copt_ptr => "copt_ptr",
             .cstr => "cstr",
             .cstr_owned => "cstr_owned",
+            .extern_fn => "extern_fn",
             .void_ => "void",
             .never => "never",
             .unknown => "unknown",

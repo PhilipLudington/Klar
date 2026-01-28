@@ -5620,6 +5620,11 @@ pub const Emitter = struct {
                 // This is the same layout used in emitClosure
                 return self.getClosureStructType();
             },
+            .extern_function => {
+                // Extern function type is a raw function pointer (no closure struct)
+                // In LLVM opaque pointer mode, function pointers are just ptr
+                return llvm.Types.pointer(self.ctx);
+            },
             .result => |res| {
                 // Result[T, E] is a struct of { tag: i1, ok_value: T, err_value: E }
                 // tag: 1 = Ok, 0 = Err
@@ -7608,6 +7613,9 @@ pub const Emitter = struct {
             },
             .function => {
                 try buf.appendSlice(self.allocator, "fn");
+            },
+            .extern_function => {
+                try buf.appendSlice(self.allocator, "extern_fn");
             },
             .qualified => |q| {
                 // For qualified types like Self.Item, mangle as Base_Member
@@ -27746,6 +27754,8 @@ pub const Emitter = struct {
             },
             // FFI pointer types are all just pointers (8 bytes on 64-bit)
             .cptr, .copt_ptr, .cstr, .cstr_owned => 8,
+            // Extern fn is a raw function pointer (8 bytes)
+            .extern_fn => 8,
         };
     }
 
@@ -27844,6 +27854,11 @@ pub const Emitter = struct {
             .function => {
                 // Function types use closure representation
                 return self.getClosureStructType();
+            },
+            .extern_fn => {
+                // Extern function type is a raw function pointer (no closure struct)
+                // In LLVM opaque pointer mode, function pointers are just ptr
+                return llvm.Types.pointer(self.ctx);
             },
             .reference => llvm.Types.pointer(self.ctx),
             .struct_ => |s| {

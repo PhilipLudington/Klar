@@ -73,6 +73,7 @@ pub const Type = union(enum) {
     copt_ptr: *CoptPtrType, // Nullable raw pointer (COptPtr[T])
     cstr: void, // Null-terminated C string (borrowed)
     cstr_owned: void, // Null-terminated C string (owned, must be freed)
+    extern_fn: *ExternFnType, // C function pointer (extern fn)
 
     // Special types
     void_,
@@ -153,6 +154,15 @@ pub const Type = union(enum) {
             .copt_ptr => |c| c.inner.eql(other.copt_ptr.inner),
             // CStr and CStrOwned are singleton types (no type parameters)
             .cstr, .cstr_owned => true,
+            // Extern function type equality depends on params and return type
+            .extern_fn => |ef| blk: {
+                const oef = other.extern_fn;
+                if (ef.params.len != oef.params.len) break :blk false;
+                for (ef.params, oef.params) |p1, p2| {
+                    if (!p1.eql(p2)) break :blk false;
+                }
+                break :blk ef.return_type.eql(oef.return_type);
+            },
             .void_, .never, .unknown, .error_type => true,
         };
     }
@@ -231,7 +241,8 @@ pub const Type = union(enum) {
 
             // Raw pointers are Copy (just the address, like in Rust)
             // CStr is borrowed so it's Copy; CStrOwned is NOT Copy (owns memory)
-            .cptr, .copt_ptr, .cstr => true,
+            // Extern fn pointers are Copy (just an address, no captured state)
+            .cptr, .copt_ptr, .cstr, .extern_fn => true,
 
             // These types are NOT Copy:
             // - Slices (contain a pointer + length, may own data)
@@ -538,6 +549,14 @@ pub const CptrType = struct {
 /// Must check for null before dereferencing.
 pub const CoptPtrType = struct {
     inner: Type, // The pointed-to type
+};
+
+/// External function pointer type for FFI
+/// Represents a raw C function pointer (no environment/closure)
+/// Unlike FunctionType (closures), this is just a single pointer (8 bytes)
+pub const ExternFnType = struct {
+    params: []const Type,
+    return_type: Type,
 };
 
 // Note: CStr is represented as a void variant in Type union
@@ -989,6 +1008,13 @@ pub const TypeBuilder = struct {
         _ = self;
         return .{ .cstr_owned = {} };
     }
+
+    pub fn externFnType(self: *TypeBuilder, params: []const Type, return_type: Type) !Type {
+        const ef = try self.arena.allocator().create(ExternFnType);
+        const params_copy = try self.arena.allocator().dupe(Type, params);
+        ef.* = .{ .params = params_copy, .return_type = return_type };
+        return .{ .extern_fn = ef };
+    }
 };
 
 // ============================================================================
@@ -1035,6 +1061,15 @@ pub fn formatType(writer: anytype, t: Type) !void {
             }
             try writer.writeAll(") -> ");
             try formatType(writer, f.return_type);
+        },
+        .extern_fn => |ef| {
+            try writer.writeAll("extern fn(");
+            for (ef.params, 0..) |param, i| {
+                if (i > 0) try writer.writeAll(", ");
+                try formatType(writer, param);
+            }
+            try writer.writeAll(") -> ");
+            try formatType(writer, ef.return_type);
         },
         .reference => |r| {
             if (r.mutable) {
