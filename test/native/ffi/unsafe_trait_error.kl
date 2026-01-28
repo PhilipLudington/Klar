@@ -1,5 +1,6 @@
 // Test: Unsafe trait error - missing unsafe impl
-// Expected error: implementing unsafe trait requires 'unsafe impl'
+// Expected: build-error
+// Error: implementing unsafe trait requires 'unsafe impl'
 
 unsafe trait RawHandle {
     fn as_raw(self: ref Self) -> i64

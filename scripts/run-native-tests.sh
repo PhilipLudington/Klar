@@ -1,11 +1,17 @@
 #!/bin/bash
 # GitStat test wrapper for Klar native compilation tests
 # Compiles and runs test/native/*.kl files
+#
+# Test conventions:
+#   - "// Expected: build-error" in first 5 lines = test should fail to compile
+#   - "// Requires: c-helper" in first 5 lines = test needs external C library
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESULTS_FILE="$SCRIPT_DIR/.native-test-results.json"
 KLAR="$SCRIPT_DIR/zig-out/bin/klar"
 TEST_DIR="$SCRIPT_DIR/test/native"
+HELPER_C="$TEST_DIR/ffi/helper.c"
+HELPER_LIB="/tmp/libklarhelper.a"
 
 # Ensure compiler is built
 if [ ! -f "$KLAR" ]; then
@@ -13,9 +19,26 @@ if [ ! -f "$KLAR" ]; then
     cd "$SCRIPT_DIR" && zig build || exit 1
 fi
 
+# Build C helper library if helper.c exists
+if [ -f "$HELPER_C" ]; then
+    cc -c "$HELPER_C" -o /tmp/klarhelper.o 2>/dev/null
+    ar rcs "$HELPER_LIB" /tmp/klarhelper.o 2>/dev/null
+    rm -f /tmp/klarhelper.o
+fi
+
 PASSED=0
 FAILED=0
 FAILURES=""
+
+# Check if test expects a build error (looks in first 5 lines)
+expects_build_error() {
+    head -5 "$1" | grep -q "// Expected: build-error"
+}
+
+# Check if test requires external C helper library
+requires_c_helper() {
+    head -5 "$1" | grep -q "// Requires: c-helper"
+}
 
 # Get expected result for a test
 get_expected() {
@@ -49,8 +72,35 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
     name=$(basename "$f" .kl)
     temp_bin="/tmp/klar_test_$name"
 
-    # Compile
-    if $KLAR build "$f" -o "$temp_bin" 2>/dev/null | grep -q "^Built"; then
+    # Check if test expects a build error
+    if expects_build_error "$f"; then
+        # This test SHOULD fail to compile
+        if $KLAR build "$f" -o "$temp_bin" 2>/dev/null | grep -q "^Built"; then
+            # Compiled successfully - that's a failure for this test
+            echo "✗ $name (expected build error, but compiled)"
+            FAILED=$((FAILED + 1))
+            if [ -n "$FAILURES" ]; then
+                FAILURES="$FAILURES,"
+            fi
+            FAILURES="$FAILURES\"$name: expected build error, but compiled\""
+            rm -f "$temp_bin"
+        else
+            # Build failed as expected
+            echo "✓ $name (correctly rejected)"
+            PASSED=$((PASSED + 1))
+        fi
+        continue
+    fi
+
+    # Normal test - compile and run
+    # Add linker flags for tests requiring C helper
+    if requires_c_helper "$f"; then
+        BUILD_CMD="$KLAR build $f -o $temp_bin -L/tmp -lklarhelper"
+    else
+        BUILD_CMD="$KLAR build $f -o $temp_bin"
+    fi
+
+    if $BUILD_CMD 2>/dev/null | grep -q "^Built"; then
         # Run and get exit code
         "$temp_bin" 2>/dev/null
         result=$?

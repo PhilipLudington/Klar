@@ -1,5 +1,6 @@
 // Test: Unsafe impl error - used on safe trait
-// Expected error: 'unsafe impl' can only be used when implementing an unsafe trait
+// Expected: build-error
+// Error: 'unsafe impl' can only be used when implementing an unsafe trait
 
 trait Display {
     fn show(self: Self) -> i32
