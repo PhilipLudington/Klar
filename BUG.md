@@ -1,4 +1,264 @@
-# BUG.md - Code Review Issue Tracker
+# Klar Compiler Bugs
+
+Bugs discovered while implementing the JSON parser for Klar.
+
+---
+
+## [x] Bug 1: Inline method call in struct return causes LLVM type mismatch
+
+**Status:** Fixed
+
+**Description:** When a function returns a struct type and the return statement calls a method inline, LLVM codegen produces mismatched types causing verification failure.
+
+**Steps to reproduce:**
+1. Create a struct `ParseError` with fields
+2. Create a struct `State` with an `error()` method that returns `ParseError`
+3. Create a function that returns `ParseError` and calls `state.error()` inline
+
+```klar
+struct ParseError { message: string, line: i32, column: i32 }
+struct State { line: i32, column: i32 }
+
+impl State {
+    fn error(self: State, msg: string) -> ParseError {
+        return ParseError { message: msg, line: self.line, column: self.column }
+    }
+}
+
+fn parser_error(state: State, message: string) -> ParseError {
+    return state.error(message)  // BUG: causes LLVM verification failure
+}
+```
+
+**Expected:** Function compiles and returns the ParseError correctly.
+
+**Actual:** LLVM Module verification failed:
+```
+Function return type does not match operand type of return inst!
+  ret i32 0
+ { ptr, i32, i32 }
+```
+
+**Workaround:** Use a local variable:
+```klar
+fn parser_error(state: State, message: string) -> ParseError {
+    let err: ParseError = state.error(message)
+    return err
+}
+```
+
+---
+
+## [ ] Bug 2: Inline method call in Err() wrapper causes LLVM type mismatch
+
+**Status:** Open
+
+**Description:** When returning `Err(method())` in a function that returns `Result[T, E]`, the LLVM codegen produces incorrect types.
+
+**Steps to reproduce:**
+1. Create a function returning `Result[JsonValue, ParseError]`
+2. In a match arm, return `Err(state.method("message"))`
+
+```klar
+fn parse(source: string) -> Result[JsonValue, ParseError] {
+    // ... setup ...
+    match ps.current {
+        Token.Null => { return Ok(JsonValue::Null) }
+        _ => { return Err(ps.lexer_state.error("Unexpected")) }  // BUG
+    }
+}
+```
+
+**Expected:** Function compiles and returns the error correctly.
+
+**Actual:** LLVM Module verification failed:
+```
+Function return type does not match operand type of return inst!
+  ret { i1, { i8, [20 x i8] }, i32 } %err.result
+ { i1, { i8, [20 x i8] }, { ptr, i32, i32 } }
+```
+
+**Workaround:** Use a local variable:
+```klar
+_ => {
+    let err: ParseError = ps.lexer_state.error("Unexpected")
+    return Err(err)
+}
+```
+
+---
+
+## [ ] Bug 3: Method call on enum in if condition causes LLVM branch type error
+
+**Status:** Open
+
+**Description:** Calling a method on an enum value inside an `if` condition causes LLVM to generate an `i32` instead of `i1` for the branch condition.
+
+**Steps to reproduce:**
+1. Define an enum with an `impl` block containing a method returning `bool`
+2. Use that method in an `if` condition
+
+```klar
+enum JsonValue {
+    Null,
+    Bool(bool),
+    // ...
+}
+
+impl JsonValue {
+    fn is_null(self: JsonValue) -> bool {
+        match self {
+            JsonValue.Null => { return true }
+            _ => { return false }
+        }
+    }
+}
+
+fn test(v: JsonValue) {
+    if v.is_null() {  // BUG: branch condition is i32, not i1
+        println("null")
+    }
+}
+```
+
+**Expected:** Code compiles and the if condition works correctly.
+
+**Actual:** LLVM Module verification failed:
+```
+Branch condition is not 'i1' type!
+  br i32 0, label %then, label %else
+```
+
+**Workaround:** Use match instead of method call:
+```klar
+fn test(v: JsonValue) {
+    match v {
+        JsonValue.Null => { println("null") }
+        _ => { }
+    }
+}
+```
+
+---
+
+## [ ] Bug 4: Runtime segfault when extracting string from enum variant
+
+**Status:** Open
+
+**Description:** Extracting a string value from an enum variant (e.g., `Token.Str(s)`) and using it causes a segmentation fault at runtime. The code type-checks correctly but crashes when executed.
+
+**Steps to reproduce:**
+1. Define an enum with a string variant: `Token { Str(string), ... }`
+2. Match on the enum and extract the string
+3. Use the extracted string in any way
+
+```klar
+enum Token {
+    Str(string),
+    // ...
+}
+
+fn test_string() {
+    let tok: Token = Token::Str("hello")
+    match tok {
+        Token.Str(s) => {
+            if s == "hello" {  // SEGFAULT here
+                println("matched")
+            }
+        }
+        _ => { }
+    }
+}
+```
+
+**Expected:** String comparison works and prints "matched".
+
+**Actual:** Process terminated by signal: 11 (SIGSEGV)
+
+**Workaround:** None known. Avoid string extraction from enum variants.
+
+---
+
+## [ ] Bug 5: Runtime segfault with List/Map containing recursive enum types
+
+**Status:** Open
+
+**Description:** Creating and using `List[JsonValue]` or `Map[string, JsonValue]` where `JsonValue` is a recursive enum causes segmentation faults at runtime.
+
+**Steps to reproduce:**
+1. Define a recursive enum: `JsonValue { Array(List[JsonValue]), ... }`
+2. Parse JSON that creates a `List[JsonValue]`
+3. Access the list
+
+```klar
+enum JsonValue {
+    Null,
+    Array(List[JsonValue]),
+    Object(Map[string, JsonValue]),
+}
+
+fn test_array() {
+    let result: Result[JsonValue, ParseError] = parse("[]")
+    match result {
+        Ok(v) => {
+            match v {
+                JsonValue.Array(arr) => {
+                    if arr.len() == 0 {  // SEGFAULT
+                        println("empty")
+                    }
+                }
+                _ => { }
+            }
+        }
+        Err(_) => { }
+    }
+}
+```
+
+**Expected:** Empty array is parsed and length check succeeds.
+
+**Actual:** Process terminated by signal: 11 (SIGSEGV)
+
+**Workaround:** None known. Primitive types (null, bool, number) work; complex types (string, array, object) cause crashes.
+
+---
+
+## [x] Bug 6: Cross-file imports not working
+
+**Status:** Fixed
+
+**Description:** Import statements between files in a project don't resolve correctly. The module system documented in Klar doesn't function as expected.
+
+**Steps to reproduce:**
+1. Create `lib/json/lexer.kl` with `pub` exports
+2. Create `lib/json/parser.kl` with `import lexer.{ Token, ... }`
+3. Run `klar check parser.kl`
+
+```klar
+// parser.kl
+import lexer.{ Token, LexerState, lexer_new }  // BUG: module not found
+```
+
+**Expected:** Imports resolve and types are available.
+
+**Actual:** `[undefined_module]: module 'lexer' not found`
+
+**Workaround:** Duplicate all types in each file that needs them (self-contained files).
+
+---
+
+## Summary
+
+| Bug | Type | Severity | Workaround |
+|-----|------|----------|------------|
+| 1 | Codegen | High | **FIXED** |
+| 2 | Codegen | High | Use local variable |
+| 3 | Codegen | High | Use match instead |
+| 4 | Runtime | Critical | None |
+| 5 | Runtime | Critical | None |
+| 6 | Module System | High | **FIXED** |
+
+Bugs 4 and 5 block full testing of the JSON parser. The parser logic is correct (passes type checking), but runtime crashes prevent validation of string/array/object parsing.
 
 ---
 

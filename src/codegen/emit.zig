@@ -10194,7 +10194,33 @@ pub const Emitter = struct {
         // Call the method
         const fn_type = llvm.c.LLVMGlobalGetValueType(callee);
 
-        // Check if return type is void - LLVM doesn't allow naming void results
+        // Check if this method uses sret (struct return) calling convention
+        if (self.sret_functions.get(fn_name)) |sret_return_type| {
+            // Sret call: allocate space, prepend pointer, call, load result
+            const sret_alloca = self.builder.buildAlloca(sret_return_type, "sret.tmp");
+
+            // Build new args list with sret pointer prepended
+            var sret_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+            defer sret_args.deinit(self.allocator);
+
+            // First argument is the sret pointer
+            sret_args.append(self.allocator, sret_alloca) catch return EmitError.OutOfMemory;
+
+            // Then the original arguments (self + user args)
+            sret_args.appendSlice(self.allocator, args.items) catch return EmitError.OutOfMemory;
+
+            const call_inst = self.builder.buildCall(fn_type, callee, sret_args.items, "");
+
+            // Add sret attribute to the call site (parameter index 1 = first param)
+            const sret_kind = self.getSretAttrKind();
+            const sret_attr = llvm.createTypeAttribute(self.ctx, sret_kind, sret_return_type);
+            llvm.addCallSiteAttribute(call_inst, 1, sret_attr);
+
+            // Load and return the result from the sret alloca
+            return self.builder.buildLoad(sret_return_type, sret_alloca, "sret.load");
+        }
+
+        // Non-sret call: check if return type is void - LLVM doesn't allow naming void results
         const ret_type = llvm.c.LLVMGetReturnType(fn_type);
         const is_void = llvm.c.LLVMGetTypeKind(ret_type) == llvm.c.LLVMVoidTypeKind;
         const call_name: [:0]const u8 = if (is_void) "" else "method.result";
