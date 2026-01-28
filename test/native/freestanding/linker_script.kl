@@ -1,0 +1,7 @@
+// Test: klar build linker_script.kl --target aarch64-none-elf --freestanding -T test.ld
+// Expected: Links with custom linker script (requires cross-linker installed)
+
+fn _start() -> i32 {
+    // Entry point for bare-metal
+    return 0
+}

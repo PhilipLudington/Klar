@@ -112,6 +112,12 @@ pub const Emitter = struct {
     /// True if main() takes [String] args (needs wrapper generation).
     main_takes_args: bool = false,
 
+    /// Freestanding mode: no libc, no runtime, no main wrapper.
+    freestanding: bool = false,
+
+    /// Custom entry point symbol name (for freestanding mode).
+    entry_point: ?[]const u8 = null,
+
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
 
     /// Info for ABI-lowered parameter (struct -> integer conversion)
@@ -484,9 +490,20 @@ pub const Emitter = struct {
         }
 
         // Fourth pass: generate main wrapper if main takes args
-        if (self.main_takes_args) {
+        // Skip wrapper generation in freestanding mode - user's entry point is used directly
+        if (self.main_takes_args and !self.freestanding) {
             try self.emitMainArgsWrapper();
         }
+    }
+
+    /// Set freestanding mode (no libc, no runtime, no main wrapper).
+    pub fn setFreestanding(self: *Emitter, freestanding: bool) void {
+        self.freestanding = freestanding;
+    }
+
+    /// Set custom entry point symbol name.
+    pub fn setEntryPoint(self: *Emitter, entry_point: ?[]const u8) void {
+        self.entry_point = entry_point;
     }
 
     /// Generate a C-style main(argc, argv) wrapper that converts args to [String].
@@ -874,11 +891,12 @@ pub const Emitter = struct {
         }
 
         // Check if this is main(args: [String]) - needs special handling
+        // In freestanding mode, we don't do the wrapper dance
         const is_main_with_args = std.mem.eql(u8, func.name, "main") and
             func.params.len == 1 and
             self.isStringSliceTypeExpr(func.params[0].type_);
 
-        if (is_main_with_args) {
+        if (is_main_with_args and !self.freestanding) {
             self.main_takes_args = true;
         }
 
@@ -908,8 +926,22 @@ pub const Emitter = struct {
 
         const fn_type = llvm.Types.function(return_type, param_types.items, false);
 
-        // Use _klar_user_main for main(args: [String]), otherwise use the function name
-        const func_name = if (is_main_with_args) "_klar_user_main" else func.name;
+        // Determine the function name:
+        // - In freestanding mode: use custom entry point if this is "main", otherwise use original name
+        // - In normal mode: use _klar_user_main for main(args: [String]), otherwise use original name
+        const func_name = blk: {
+            if (self.freestanding) {
+                // In freestanding mode, if user specified --entry and this is main, use entry name
+                if (std.mem.eql(u8, func.name, "main")) {
+                    break :blk self.entry_point orelse "main";
+                }
+                // Otherwise use the original name
+                break :blk func.name;
+            } else {
+                // Normal mode: rename main(args: [String]) to _klar_user_main
+                break :blk if (is_main_with_args) "_klar_user_main" else func.name;
+            }
+        };
         const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
         const llvm_func = llvm.addFunction(self.module, name, fn_type);
@@ -1374,11 +1406,22 @@ pub const Emitter = struct {
         }
 
         // Check if this is main(args: [String]) - look up _klar_user_main instead
+        // In freestanding mode, we don't do the wrapper dance
         const is_main_with_args = std.mem.eql(u8, func.name, "main") and
             func.params.len == 1 and
             self.isStringSliceTypeExpr(func.params[0].type_);
 
-        const func_name = if (is_main_with_args) "_klar_user_main" else func.name;
+        // Determine the function name - must match what declareFunction used
+        const func_name = blk: {
+            if (self.freestanding) {
+                if (std.mem.eql(u8, func.name, "main")) {
+                    break :blk self.entry_point orelse "main";
+                }
+                break :blk func.name;
+            } else {
+                break :blk if (is_main_with_args) "_klar_user_main" else func.name;
+            }
+        };
         const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
 

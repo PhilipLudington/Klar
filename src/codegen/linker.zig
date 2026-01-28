@@ -21,6 +21,10 @@ pub const LinkerOptions = struct {
     link_libs: []const []const u8 = &.{},
     /// Library search paths.
     link_paths: []const []const u8 = &.{},
+    /// Custom linker script path (for bare-metal targets).
+    linker_script: ?[]const u8 = null,
+    /// Freestanding mode: no libc, no standard startup.
+    freestanding: bool = false,
 };
 
 /// Invoke the system linker to create an executable for the host platform.
@@ -81,6 +85,11 @@ fn linkForPlatform(
 
     var args = std.ArrayListUnmanaged([]const u8){};
     defer args.deinit(allocator);
+
+    // Bare-metal/freestanding targets use a different linking approach
+    if (platform.isFreestanding() or options.freestanding) {
+        return linkBareMetalTarget(allocator, object_file, output_file, target_info_opt, options);
+    }
 
     switch (platform.os) {
         .macos => {
@@ -310,6 +319,154 @@ pub fn linkWithClang(
     child.spawn() catch return LinkerError.LinkerFailed;
 
     // Wait for completion and get result
+    const result = child.wait() catch return LinkerError.LinkerFailed;
+
+    switch (result) {
+        .Exited => |code| {
+            if (code != 0) {
+                return LinkerError.LinkerFailed;
+            }
+        },
+        else => return LinkerError.LinkerFailed,
+    }
+}
+
+/// Link for bare-metal/freestanding targets.
+/// Uses ld directly without libc or standard startup.
+fn linkBareMetalTarget(
+    allocator: std.mem.Allocator,
+    object_file: []const u8,
+    output_file: []const u8,
+    target_info_opt: ?target.TargetInfo,
+    options: LinkerOptions,
+) LinkerError!void {
+    var args = std.ArrayListUnmanaged([]const u8){};
+    defer args.deinit(allocator);
+
+    // Determine the linker to use based on target architecture
+    const ld_name: []const u8 = if (target_info_opt) |ti| switch (ti.arch) {
+        .aarch64 => "aarch64-none-elf-ld",
+        .x86_64 => "x86_64-elf-ld",
+        .unknown => "ld",
+    } else "ld";
+
+    // Try the cross-linker first, fall back to generic ld
+    args.append(allocator, ld_name) catch return LinkerError.OutOfMemory;
+
+    // Add linker script if provided
+    if (options.linker_script) |script| {
+        args.append(allocator, "-T") catch return LinkerError.OutOfMemory;
+        args.append(allocator, script) catch return LinkerError.OutOfMemory;
+    }
+
+    // Output file
+    args.append(allocator, "-o") catch return LinkerError.OutOfMemory;
+    args.append(allocator, output_file) catch return LinkerError.OutOfMemory;
+
+    // Input object file
+    args.append(allocator, object_file) catch return LinkerError.OutOfMemory;
+
+    // No standard libraries for bare-metal
+    args.append(allocator, "--nostdlib") catch return LinkerError.OutOfMemory;
+
+    // Track allocated strings for cleanup
+    var allocated_strings = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (allocated_strings.items) |s| {
+            allocator.free(s);
+        }
+        allocated_strings.deinit(allocator);
+    }
+
+    // Add library search paths (-L flags)
+    for (options.link_paths) |path| {
+        const formatted = std.fmt.allocPrint(allocator, "-L{s}", .{path}) catch return LinkerError.OutOfMemory;
+        allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+        args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+    }
+
+    // Add libraries to link (for bare-metal, these would be static archives)
+    for (options.link_libs) |lib| {
+        const formatted = std.fmt.allocPrint(allocator, "-l{s}", .{lib}) catch return LinkerError.OutOfMemory;
+        allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+        args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+    }
+
+    var child = std.process.Child.init(args.items, allocator);
+    child.stderr_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+
+    child.spawn() catch |err| {
+        // If the cross-linker isn't found, try generic ld
+        if (err == error.FileNotFound and !std.mem.eql(u8, ld_name, "ld")) {
+            return linkBareMetalWithGenericLd(allocator, object_file, output_file, options);
+        }
+        return LinkerError.LinkerNotFound;
+    };
+
+    // Wait for completion and get result
+    const result = child.wait() catch return LinkerError.LinkerFailed;
+
+    switch (result) {
+        .Exited => |code| {
+            if (code != 0) {
+                return LinkerError.LinkerFailed;
+            }
+        },
+        else => return LinkerError.LinkerFailed,
+    }
+}
+
+/// Fallback bare-metal linking using generic ld.
+fn linkBareMetalWithGenericLd(
+    allocator: std.mem.Allocator,
+    object_file: []const u8,
+    output_file: []const u8,
+    options: LinkerOptions,
+) LinkerError!void {
+    var args = std.ArrayListUnmanaged([]const u8){};
+    defer args.deinit(allocator);
+
+    args.append(allocator, "ld") catch return LinkerError.OutOfMemory;
+
+    // Add linker script if provided
+    if (options.linker_script) |script| {
+        args.append(allocator, "-T") catch return LinkerError.OutOfMemory;
+        args.append(allocator, script) catch return LinkerError.OutOfMemory;
+    }
+
+    args.append(allocator, "-o") catch return LinkerError.OutOfMemory;
+    args.append(allocator, output_file) catch return LinkerError.OutOfMemory;
+    args.append(allocator, object_file) catch return LinkerError.OutOfMemory;
+    args.append(allocator, "--nostdlib") catch return LinkerError.OutOfMemory;
+
+    // Track allocated strings for cleanup
+    var allocated_strings = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (allocated_strings.items) |s| {
+            allocator.free(s);
+        }
+        allocated_strings.deinit(allocator);
+    }
+
+    for (options.link_paths) |path| {
+        const formatted = std.fmt.allocPrint(allocator, "-L{s}", .{path}) catch return LinkerError.OutOfMemory;
+        allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+        args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+    }
+
+    for (options.link_libs) |lib| {
+        const formatted = std.fmt.allocPrint(allocator, "-l{s}", .{lib}) catch return LinkerError.OutOfMemory;
+        allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+        args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
+    }
+
+    var child = std.process.Child.init(args.items, allocator);
+    child.stderr_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+
+    child.spawn() catch return LinkerError.LinkerNotFound;
+
     const result = child.wait() catch return LinkerError.LinkerFailed;
 
     switch (result) {

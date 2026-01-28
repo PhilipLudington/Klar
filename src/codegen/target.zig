@@ -33,6 +33,11 @@ pub const TargetInfo = struct {
                     .x86_64 => "x86_64",
                     .unknown => "unknown",
                 },
+                .none => switch (self) {
+                    .aarch64 => "aarch64",
+                    .x86_64 => "elf_x86_64",
+                    .unknown => "unknown",
+                },
                 else => switch (self) {
                     .aarch64 => "aarch64",
                     .x86_64 => "x86_64",
@@ -46,6 +51,7 @@ pub const TargetInfo = struct {
         macos,
         linux,
         windows,
+        none, // bare-metal/freestanding
         unknown,
 
         pub fn fromString(s: []const u8) Os {
@@ -60,19 +66,29 @@ pub const TargetInfo = struct {
             {
                 return .windows;
             }
+            if (std.mem.eql(u8, s, "none")) return .none;
             return .unknown;
+        }
+
+        /// Check if this is a bare-metal/freestanding target.
+        pub fn isFreestanding(self: Os) bool {
+            return self == .none;
         }
     };
 
     pub const Abi = enum {
         gnu,
         msvc,
+        eabi, // embedded ABI (ARM)
+        elf, // generic ELF (bare-metal)
         none,
         unknown,
 
         pub fn fromString(s: []const u8) Abi {
             if (std.mem.eql(u8, s, "gnu")) return .gnu;
             if (std.mem.eql(u8, s, "msvc")) return .msvc;
+            if (std.mem.eql(u8, s, "eabi")) return .eabi;
+            if (std.mem.eql(u8, s, "elf")) return .elf;
             if (s.len == 0) return .none;
             return .unknown;
         }
@@ -167,6 +183,7 @@ pub const TargetInfo = struct {
             .linux => .gnu,
             .windows => .msvc,
             .macos => .none,
+            .none => .elf, // bare-metal defaults to ELF
             .unknown => .unknown,
         };
     }
@@ -181,16 +198,20 @@ pub const TargetInfo = struct {
             .unknown => "unknown",
         };
 
+        // For bare-metal targets, use "none" as the OS/vendor field
         const os_str = switch (os) {
             .macos => "apple-macosx",
             .linux => "unknown-linux",
             .windows => "pc-windows",
+            .none => "none",
             .unknown => "unknown-unknown",
         };
 
         const abi_str = switch (abi) {
             .gnu => "-gnu",
             .msvc => "-msvc",
+            .eabi => "-eabi",
+            .elf => "-elf",
             .none => "",
             .unknown => "",
         };
@@ -213,6 +234,7 @@ pub const TargetInfo = struct {
                 .macos => .macos,
                 .linux => .linux,
                 .windows => .windows,
+                .none => .freestanding,
                 .unknown => builtin.os.tag, // Fallback to host
             },
             .arch = switch (self.arch) {
@@ -223,6 +245,11 @@ pub const TargetInfo = struct {
         };
     }
 
+    /// Check if this is a bare-metal/freestanding target.
+    pub fn isFreestanding(self: TargetInfo) bool {
+        return self.os.isFreestanding();
+    }
+
     /// Get the linker architecture string.
     pub fn getLinkerArch(self: TargetInfo) []const u8 {
         return self.arch.toLinkerArch(self.os);
@@ -230,6 +257,10 @@ pub const TargetInfo = struct {
 
     /// Check if this is a cross-compilation (target != host).
     pub fn isCrossCompile(self: TargetInfo) bool {
+        // Bare-metal is always "cross-compilation" in the sense that
+        // we're not compiling for the host OS
+        if (self.os == .none) return true;
+
         const host_arch: Arch = switch (builtin.cpu.arch) {
             .x86_64 => .x86_64,
             .aarch64 => .aarch64,
@@ -309,8 +340,14 @@ pub const Platform = struct {
             .macos => "/usr/bin/ld",
             .linux => "/usr/bin/ld",
             .windows => "link.exe",
+            .freestanding => "ld", // Use generic ld for bare-metal
             else => "ld",
         };
+    }
+
+    /// Check if this is a bare-metal/freestanding target.
+    pub fn isFreestanding(self: Platform) bool {
+        return self.os == .freestanding;
     }
 
     /// Get the object file extension for this platform.
@@ -335,6 +372,11 @@ pub const Platform = struct {
             .macos => switch (self.arch) {
                 .aarch64 => "arm64",
                 .x86_64 => "x86_64",
+                else => "unknown",
+            },
+            .freestanding => switch (self.arch) {
+                .aarch64 => "aarch64",
+                .x86_64 => "elf_x86_64",
                 else => "unknown",
             },
             else => switch (self.arch) {

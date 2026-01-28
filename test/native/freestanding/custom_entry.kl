@@ -1,0 +1,7 @@
+// Test: klar build custom_entry.kl --target aarch64-none-elf --freestanding --entry kernel_main -c
+// Expected: Compiles with kernel_main as entry point symbol
+
+// This function will be renamed to kernel_main in freestanding mode
+fn main() -> i32 {
+    return 0
+}
