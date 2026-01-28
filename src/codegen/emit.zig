@@ -4207,7 +4207,7 @@ pub const Emitter = struct {
             },
             .ref => {
                 // Taking address of a value - for lvalues, return the alloca pointer
-                // For now, handle identifiers which have an alloca
+                // Handle identifiers which have an alloca
                 if (un.operand == .identifier) {
                     const id = un.operand.identifier;
                     if (self.named_values.get(id.name)) |local| {
@@ -4216,6 +4216,10 @@ pub const Emitter = struct {
                             return local.value;
                         }
                     }
+                }
+                // Handle array indexing: ref arr[idx] should return pointer to element
+                if (un.operand == .index) {
+                    return try self.emitIndexAddressOf(un.operand.index);
                 }
                 // Fallback: emit the operand as-is (may need refinement)
                 return try self.emitExpr(un.operand);
@@ -4229,6 +4233,10 @@ pub const Emitter = struct {
                             return local.value;
                         }
                     }
+                }
+                // Handle array indexing: ref_mut arr[idx] should return pointer to element
+                if (un.operand == .index) {
+                    return try self.emitIndexAddressOf(un.operand.index);
                 }
                 return try self.emitExpr(un.operand);
             },
@@ -8374,6 +8382,187 @@ pub const Emitter = struct {
             // For slices, we'd need to bounds check and extract the data pointer
             // For now, treat as raw pointer indexing
             return EmitError.UnsupportedFeature;
+        }
+
+        return EmitError.UnsupportedFeature;
+    }
+
+    /// Emit the address of an array/slice element (for ref arr[idx]).
+    /// Similar to emitIndexAccess but returns the element pointer instead of loading the value.
+    fn emitIndexAddressOf(self: *Emitter, idx: *ast.Index) EmitError!llvm.ValueRef {
+        // Emit the index first
+        const index_val = try self.emitExpr(idx.index);
+
+        // Handle identifier with alloca - GEP directly without loading
+        if (idx.object == .identifier) {
+            const arr_id = idx.object.identifier;
+            if (self.named_values.get(arr_id.name)) |local| {
+                if (local.is_alloca) {
+                    const arr_type = local.ty;
+                    const arr_type_kind = llvm.getTypeKind(arr_type);
+
+                    if (arr_type_kind == llvm.c.LLVMArrayTypeKind) {
+                        // Get array length for bounds checking
+                        const array_len = llvm.Types.getArrayLength(arr_type);
+                        const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
+
+                        // Zero-extend or sign-extend index to i64 for comparison
+                        const index_type = llvm.typeOf(index_val);
+                        const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
+                        const i64_type = llvm.Types.int64(self.ctx);
+
+                        const index_i64 = if (index_bits < 64)
+                            self.builder.buildZExt(index_val, i64_type, "idx.ext")
+                        else if (index_bits > 64)
+                            self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
+                        else
+                            index_val;
+
+                        // Bounds check: index < length (unsigned comparison)
+                        const in_bounds = self.builder.buildICmp(
+                            llvm.c.LLVMIntULT,
+                            index_i64,
+                            len_val,
+                            "bounds.check",
+                        );
+
+                        // Create blocks for bounds check
+                        const func = self.current_function orelse return EmitError.InvalidAST;
+                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
+                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
+
+                        // Branch based on bounds check
+                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+                        // Fail block: trap/unreachable
+                        self.builder.positionAtEnd(fail_block);
+                        _ = self.builder.buildUnreachable();
+
+                        // Continue in OK block
+                        self.builder.positionAtEnd(ok_block);
+
+                        // GEP directly from the alloca - return the pointer, don't load!
+                        var indices = [_]llvm.ValueRef{
+                            llvm.Const.int32(self.ctx, 0),
+                            index_val,
+                        };
+                        return self.builder.buildGEP(arr_type, local.value, &indices, "elem.addr");
+                    } else if (arr_type_kind == llvm.c.LLVMStructTypeKind and local.is_array and local.array_size == null) {
+                        // Slice indexing: slices are stored as { ptr: *T, len: i64 }
+                        const i64_type = llvm.Types.int64(self.ctx);
+                        const slice_type = self.getSliceStructType();
+
+                        // Get element type from stored type info
+                        const element_llvm_type = if (local.array_element_type) |elem_type|
+                            self.typeToLLVM(elem_type)
+                        else
+                            llvm.Types.int32(self.ctx);
+
+                        // Load length from slice struct (field 1)
+                        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 1, "slice.len_ptr");
+                        const slice_len = self.builder.buildLoad(i64_type, len_ptr, "slice.len");
+
+                        // Zero-extend or sign-extend index to i64 for comparison
+                        const index_type = llvm.typeOf(index_val);
+                        const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
+
+                        const index_i64 = if (index_bits < 64)
+                            self.builder.buildZExt(index_val, i64_type, "idx.ext")
+                        else if (index_bits > 64)
+                            self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
+                        else
+                            index_val;
+
+                        // Bounds check: index < length (unsigned comparison)
+                        const in_bounds = self.builder.buildICmp(
+                            llvm.c.LLVMIntULT,
+                            index_i64,
+                            slice_len,
+                            "bounds.check",
+                        );
+
+                        // Create blocks for bounds check
+                        const func = self.current_function orelse return EmitError.InvalidAST;
+                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
+                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
+
+                        // Branch based on bounds check
+                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+                        // Fail block: trap/unreachable
+                        self.builder.positionAtEnd(fail_block);
+                        _ = self.builder.buildUnreachable();
+
+                        // Continue in OK block
+                        self.builder.positionAtEnd(ok_block);
+
+                        // Load data pointer from slice struct (field 0)
+                        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, local.value, 0, "slice.ptr_ptr");
+                        const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "slice.data_ptr");
+
+                        // GEP into data pointer with the index - return pointer, don't load!
+                        var gep_indices = [_]llvm.ValueRef{index_i64};
+                        return llvm.c.LLVMBuildGEP2(self.builder.ref, element_llvm_type, data_ptr, &gep_indices, 1, "slice.elem.addr");
+                    }
+                }
+            }
+        }
+
+        // Fallback: for computed array expressions, emit and store to temp
+        const obj = try self.emitExpr(idx.object);
+        const obj_type = llvm.typeOf(obj);
+        const obj_type_kind = llvm.getTypeKind(obj_type);
+
+        if (obj_type_kind == llvm.c.LLVMArrayTypeKind) {
+            // Get array length for bounds checking
+            const array_len = llvm.Types.getArrayLength(obj_type);
+            const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
+
+            // Zero-extend or sign-extend index to i64 for comparison
+            const index_type = llvm.typeOf(index_val);
+            const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
+            const i64_type = llvm.Types.int64(self.ctx);
+
+            const index_i64 = if (index_bits < 64)
+                self.builder.buildZExt(index_val, i64_type, "idx.ext")
+            else if (index_bits > 64)
+                self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
+            else
+                index_val;
+
+            // Bounds check: index < length (unsigned comparison)
+            const in_bounds = self.builder.buildICmp(
+                llvm.c.LLVMIntULT,
+                index_i64,
+                len_val,
+                "bounds.check",
+            );
+
+            // Create blocks for bounds check
+            const func = self.current_function orelse return EmitError.InvalidAST;
+            const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
+            const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
+
+            // Branch based on bounds check
+            _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+            // Fail block: trap/unreachable
+            self.builder.positionAtEnd(fail_block);
+            _ = self.builder.buildUnreachable();
+
+            // Continue in OK block
+            self.builder.positionAtEnd(ok_block);
+
+            // Store to temp for GEP (needed for computed array expressions)
+            const alloca = self.builder.buildAlloca(obj_type, "arr.tmp");
+            _ = self.builder.buildStore(obj, alloca);
+
+            // GEP with the index - return pointer, don't load!
+            var indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                index_val,
+            };
+            return self.builder.buildGEP(obj_type, alloca, &indices, "elem.addr");
         }
 
         return EmitError.UnsupportedFeature;

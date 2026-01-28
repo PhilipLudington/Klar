@@ -4,9 +4,9 @@ Active bugs discovered during development.
 
 ---
 
-## [ ] Bug 1: `ref arr[idx]` returns pointer to wrong memory
+## [x] Bug 1: `ref arr[idx]` returns pointer to wrong memory
 
-**Status:** Open
+**Status:** Fixed
 **Type:** Codegen / FFI
 **Severity:** Medium
 
@@ -75,5 +75,11 @@ The issue is likely in how `ref` handles indexed expressions in codegen. The ref
 ### Discovered
 
 While implementing the `extern_fn_qsort.kl` test for FFI function pointers.
+
+### Fix
+
+Added `emitIndexAddressOf()` function in `src/codegen/emit.zig` that computes the element pointer via GEP without loading the value. Modified `.ref` and `.ref_mut` cases in `emitUnary()` to call this function when the operand is an `.index` expression.
+
+The root cause was that `emitIndexAccess()` always loads the element value after computing its address. For `ref arr[idx]`, we need the address, not the value. The fix adds a separate code path that returns the GEP result directly.
 
 ---
