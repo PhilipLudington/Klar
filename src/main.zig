@@ -18,6 +18,7 @@ const module_resolver = @import("module_resolver.zig");
 const ModuleResolver = module_resolver.ModuleResolver;
 const ModuleInfo = module_resolver.ModuleInfo;
 const Repl = @import("repl.zig").Repl;
+const manifest = @import("pkg/manifest.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -44,19 +45,17 @@ pub fn main() !void {
     const command = args[1];
 
     if (std.mem.eql(u8, command, "run")) {
-        if (args.len < 3) {
-            try getStdErr().writeAll("Error: no input file\n");
-            return;
-        }
         // Parse flags and collect program arguments
-        // Format: klar run file.kl [--vm] [--debug] [--interpret] [-- program_args...]
-        // Or: klar run file.kl [flags] arg1 arg2 (non-flag args go to program)
+        // Format: klar run [file.kl] [--vm] [--debug] [--interpret] [-- program_args...]
+        // Or: klar run [file.kl] [flags] arg1 arg2 (non-flag args go to program)
+        // If no file argument, look for klar.json in current directory
         var use_vm = false;
         var debug_mode = false;
         var use_interpreter = false;
+        var source_file: ?[]const u8 = null;
         var program_args_start: usize = args.len; // Default: no program args
 
-        var i: usize = 3;
+        var i: usize = 2;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
             if (std.mem.eql(u8, arg, "--")) {
@@ -69,23 +68,95 @@ pub fn main() !void {
                 debug_mode = true;
             } else if (std.mem.eql(u8, arg, "--interpret")) {
                 use_interpreter = true;
-            } else {
-                // Non-flag argument: this and everything after goes to the program
+            } else if (!std.mem.startsWith(u8, arg, "-") and source_file == null) {
+                // First non-flag argument is the source file
+                source_file = arg;
+            } else if (!std.mem.startsWith(u8, arg, "-")) {
+                // Subsequent non-flag arguments go to the program
                 program_args_start = i;
                 break;
             }
         }
         const program_args = if (program_args_start < args.len) args[program_args_start..] else &[_][]const u8{};
 
+        // Determine source file: explicit argument or from klar.json
+        var loaded_manifest: ?manifest.Manifest = null;
+        var entry_path_buf: ?[]const u8 = null;
+        defer if (entry_path_buf) |p| allocator.free(p);
+        defer if (loaded_manifest) |*m| m.deinit();
+
+        const final_source = if (source_file) |sf| sf else blk: {
+            // Try to load klar.json from current directory
+            loaded_manifest = manifest.loadManifest(allocator, "klar.json") catch |err| switch (err) {
+                error.FileNotFound => {
+                    try getStdErr().writeAll("Error: no input file and no klar.json found\n");
+                    try getStdErr().writeAll("Usage: klar run <file.kl> or run from a project directory\n");
+                    return;
+                },
+                error.InvalidJson => {
+                    try getStdErr().writeAll("Error: invalid JSON in klar.json\n");
+                    return;
+                },
+                error.MissingPackageSection => {
+                    try getStdErr().writeAll("Error: klar.json missing 'package' section\n");
+                    return;
+                },
+                error.MissingPackageName => {
+                    try getStdErr().writeAll("Error: klar.json missing 'package.name'\n");
+                    return;
+                },
+                else => {
+                    try getStdErr().writeAll("Error: failed to load klar.json\n");
+                    return;
+                },
+            };
+
+            entry_path_buf = loaded_manifest.?.getEntryPath(allocator) catch {
+                try getStdErr().writeAll("Error: failed to resolve entry path\n");
+                return;
+            };
+            break :blk entry_path_buf.?;
+        };
+
+        // Resolve dependency paths for module search
+        var dep_paths = std.ArrayListUnmanaged([]const u8){};
+        defer {
+            for (dep_paths.items) |p| allocator.free(p);
+            dep_paths.deinit(allocator);
+        }
+
+        if (loaded_manifest) |m| {
+            var dep_it = m.dependencies.iterator();
+            while (dep_it.next()) |entry| {
+                const dep = entry.value_ptr.*;
+                if (dep.path) |rel_path| {
+                    // Resolve path relative to manifest directory
+                    const abs_path = std.fs.path.join(allocator, &.{ m.root_dir, rel_path }) catch continue;
+
+                    // Resolve to canonical path
+                    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
+                        allocator.free(abs_path);
+                        dep_paths.append(allocator, allocator.dupe(u8, resolved) catch continue) catch continue;
+                    } else |_| {
+                        dep_paths.append(allocator, abs_path) catch {
+                            allocator.free(abs_path);
+                            continue;
+                        };
+                    }
+                }
+            }
+        }
+
         if (use_vm or use_interpreter) {
             if (use_interpreter) {
-                try runInterpreterFile(allocator, args[2], program_args);
+                try runInterpreterFile(allocator, final_source, program_args);
             } else {
-                try runVmFile(allocator, args[2], debug_mode, program_args);
+                try runVmFile(allocator, final_source, debug_mode, program_args);
             }
         } else {
             // Default: compile to native and run
-            try runNativeFile(allocator, args[2], program_args);
+            try runNativeFileWithOptions(allocator, final_source, program_args, dep_paths.items);
         }
     } else if (std.mem.eql(u8, command, "tokenize")) {
         if (args.len < 3) {
@@ -100,11 +171,7 @@ pub fn main() !void {
         }
         try parseFile(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "build")) {
-        if (args.len < 3) {
-            try getStdErr().writeAll("Error: no input file\n");
-            return;
-        }
-        // Parse options
+        // Parse options - need to determine if first arg after "build" is a file or a flag
         var output_path: ?[]const u8 = null;
         var emit_llvm = false;
         var emit_asm = false;
@@ -121,8 +188,9 @@ pub fn main() !void {
         var entry_point: ?[]const u8 = null;
         var linker_script: ?[]const u8 = null;
         var compile_only = false;
+        var source_file: ?[]const u8 = null;
 
-        var i: usize = 3;
+        var i: usize = 2;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
             if (std.mem.eql(u8, arg, "-o") and i + 1 < args.len) {
@@ -182,23 +250,105 @@ pub fn main() !void {
                 linker_script = arg["--linker-script=".len..];
             } else if (std.mem.eql(u8, arg, "-c")) {
                 compile_only = true;
+            } else if (!std.mem.startsWith(u8, arg, "-") and source_file == null) {
+                // Non-flag argument is the source file
+                source_file = arg;
             }
         }
+
+        // Determine source file: explicit argument or from klar.json
+        var loaded_manifest: ?manifest.Manifest = null;
+        var entry_path_buf: ?[]const u8 = null;
+        defer if (entry_path_buf) |p| allocator.free(p);
+        defer if (loaded_manifest) |*m| m.deinit();
+
+        const final_source = if (source_file) |sf| sf else blk: {
+            // Try to load klar.json from current directory
+            loaded_manifest = manifest.loadManifest(allocator, "klar.json") catch |err| switch (err) {
+                error.FileNotFound => {
+                    try getStdErr().writeAll("Error: no input file and no klar.json found\n");
+                    try getStdErr().writeAll("Usage: klar build <file.kl> or run from a project directory\n");
+                    return;
+                },
+                error.InvalidJson => {
+                    try getStdErr().writeAll("Error: invalid JSON in klar.json\n");
+                    return;
+                },
+                error.MissingPackageSection => {
+                    try getStdErr().writeAll("Error: klar.json missing 'package' section\n");
+                    return;
+                },
+                error.MissingPackageName => {
+                    try getStdErr().writeAll("Error: klar.json missing 'package.name'\n");
+                    return;
+                },
+                else => {
+                    try getStdErr().writeAll("Error: failed to load klar.json\n");
+                    return;
+                },
+            };
+
+            entry_path_buf = loaded_manifest.?.getEntryPath(allocator) catch {
+                try getStdErr().writeAll("Error: failed to resolve entry path\n");
+                return;
+            };
+            break :blk entry_path_buf.?;
+        };
 
         // Warn if --entry is used without --freestanding
         if (entry_point != null and !freestanding) {
             try getStdErr().writeAll("Warning: --entry has no effect without --freestanding\n");
         }
 
-        try buildNative(allocator, args[2], .{
-            .output_path = output_path,
+        // Use project name as output if building from manifest and no -o specified
+        // Put in build/ directory for project builds
+        var project_output_buf: ?[]const u8 = null;
+        defer if (project_output_buf) |p| allocator.free(p);
+        const final_output = if (output_path) |o| o else if (loaded_manifest) |m| blk: {
+            project_output_buf = std.fmt.allocPrint(allocator, "build/{s}", .{m.package.name}) catch null;
+            break :blk project_output_buf;
+        } else null;
+
+        // Resolve dependency paths for module search
+        var dep_paths = std.ArrayListUnmanaged([]const u8){};
+        defer {
+            for (dep_paths.items) |p| allocator.free(p);
+            dep_paths.deinit(allocator);
+        }
+
+        if (loaded_manifest) |m| {
+            var dep_it = m.dependencies.iterator();
+            while (dep_it.next()) |entry| {
+                const dep = entry.value_ptr.*;
+                if (dep.path) |rel_path| {
+                    // Resolve path relative to manifest directory
+                    const abs_path = std.fs.path.join(allocator, &.{ m.root_dir, rel_path }) catch continue;
+
+                    // Resolve to canonical path
+                    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
+                        allocator.free(abs_path);
+                        dep_paths.append(allocator, allocator.dupe(u8, resolved) catch continue) catch continue;
+                    } else |_| {
+                        // Path doesn't exist, but still add it (will error during compilation)
+                        dep_paths.append(allocator, abs_path) catch {
+                            allocator.free(abs_path);
+                            continue;
+                        };
+                    }
+                }
+            }
+        }
+
+        try buildNative(allocator, final_source, .{
+            .output_path = final_output,
             .emit_llvm_ir = emit_llvm,
             .emit_assembly = emit_asm,
             .emit_klar_ir = emit_ir,
             .opt_level = opt_level,
             .verbose_opt = verbose_opt,
             .debug_info = debug_info,
-            .source_path = args[2],
+            .source_path = final_source,
             .target_triple = target_triple,
             .link_libs = link_libs.items,
             .link_paths = link_paths.items,
@@ -206,6 +356,7 @@ pub fn main() !void {
             .entry_point = entry_point,
             .linker_script = linker_script,
             .compile_only = compile_only,
+            .search_paths = dep_paths.items,
         });
     } else if (std.mem.eql(u8, command, "check")) {
         if (args.len < 3) {
@@ -228,6 +379,22 @@ pub fn main() !void {
         try disasmFile(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "repl")) {
         try runRepl(allocator);
+    } else if (std.mem.eql(u8, command, "init")) {
+        // Parse init options
+        var is_lib = false;
+        var project_name: ?[]const u8 = null;
+
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--lib")) {
+                is_lib = true;
+            } else if (!std.mem.startsWith(u8, arg, "-")) {
+                project_name = arg;
+            }
+        }
+
+        try initProject(allocator, project_name, is_lib);
     } else if (std.mem.eql(u8, command, "test")) {
         try getStdErr().writeAll("Test not yet implemented\n");
     } else if (std.mem.eql(u8, command, "fmt")) {
@@ -684,6 +851,11 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
             resolver.addSearchPath(cwd_path) catch {};
         } else |_| {}
+
+        // Add additional search paths (e.g., from package dependencies)
+        for (options.search_paths) |search_path| {
+            resolver.addSearchPath(search_path) catch {};
+        }
 
         // Register entry module
         const entry = resolver.resolveEntry(path) catch {
@@ -1178,6 +1350,10 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
 }
 
 fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8) !void {
+    return runNativeFileWithOptions(allocator, path, program_args, &.{});
+}
+
+fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8) !void {
     // Generate a unique temp path for the executable
     const timestamp = std.time.timestamp();
     var temp_path_buf: [256]u8 = undefined;
@@ -1191,6 +1367,7 @@ fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: [
         .output_path = temp_path,
         .source_path = path,
         .quiet = true,
+        .search_paths = search_paths,
     };
 
     // Build the executable
@@ -1989,6 +2166,98 @@ fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
     try stdout.writeAll(disasm.getOutput());
 }
 
+fn initProject(allocator: std.mem.Allocator, name_arg: ?[]const u8, is_lib: bool) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+    const cwd = std.fs.cwd();
+
+    // Determine project name: use argument, or current directory name
+    const project_name = if (name_arg) |n| n else blk: {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd_path = cwd.realpath(".", &path_buf) catch {
+            try stderr.writeAll("Error: could not determine current directory\n");
+            return;
+        };
+        break :blk std.fs.path.basename(cwd_path);
+    };
+
+    // Check if klar.json already exists
+    if (cwd.access("klar.json", .{})) |_| {
+        try stderr.writeAll("Error: klar.json already exists in this directory\n");
+        return;
+    } else |_| {}
+
+    // Generate manifest content
+    const manifest_content = manifest.generateDefault(allocator, project_name, is_lib) catch {
+        try stderr.writeAll("Error: failed to generate manifest\n");
+        return;
+    };
+    defer allocator.free(manifest_content);
+
+    // Create src/ directory if it doesn't exist
+    cwd.makeDir("src") catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => {
+            try stderr.writeAll("Error: failed to create src/ directory\n");
+            return;
+        },
+    };
+
+    // Create the entry point file
+    const entry_file = if (is_lib) "src/lib.kl" else "src/main.kl";
+    const entry_content = if (is_lib)
+        \\// Library entry point
+        \\
+        \\pub fn greet(name: string) -> string {
+        \\    return "Hello, " + name + "!"
+        \\}
+        \\
+    else
+        \\// Main entry point
+        \\
+        \\fn main(args: [String]) -> i32 {
+        \\    println("Hello, Klar!")
+        \\    return 0
+        \\}
+        \\
+    ;
+
+    // Only create entry file if it doesn't exist
+    if (cwd.access(entry_file, .{})) |_| {
+        // File exists, don't overwrite
+    } else |_| {
+        const entry = cwd.createFile(entry_file, .{}) catch {
+            try stderr.writeAll("Error: failed to create entry point file\n");
+            return;
+        };
+        defer entry.close();
+        entry.writeAll(entry_content) catch {
+            try stderr.writeAll("Error: failed to write entry point file\n");
+            return;
+        };
+    }
+
+    // Write klar.json
+    const manifest_file = cwd.createFile("klar.json", .{}) catch {
+        try stderr.writeAll("Error: failed to create klar.json\n");
+        return;
+    };
+    defer manifest_file.close();
+    manifest_file.writeAll(manifest_content) catch {
+        try stderr.writeAll("Error: failed to write klar.json\n");
+        return;
+    };
+
+    // Success message
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Created Klar {s} '{s}'\n  klar.json\n  {s}\n", .{
+        if (is_lib) "library" else "project",
+        project_name,
+        entry_file,
+    }) catch "Project created\n";
+    try stdout.writeAll(msg);
+}
+
 fn printUsage() !void {
     try getStdOut().writeAll(
         \\
@@ -1997,17 +2266,18 @@ fn printUsage() !void {
         \\Usage: klar <command> [options]
         \\
         \\Commands:
-        \\  run <file>           Run a Klar program (native compilation)
-        \\  repl                 Interactive REPL (Read-Eval-Print Loop)
-        \\  tokenize <file>      Tokenize a file (lexer output)
-        \\  parse <file>         Parse a file (AST output)
+        \\  init [name]          Create a new Klar project
+        \\  build [file]         Build project or file to native executable
+        \\  run [file]           Build and run project or file
         \\  check <file>         Type check a file
-        \\  disasm <file>        Disassemble bytecode
-        \\  build <file>         Build native executable
-        \\  test                 Run tests
-        \\  fmt                  Format source files
+        \\  repl                 Interactive REPL (Read-Eval-Print Loop)
+        \\  test                 Run tests (not implemented)
+        \\  fmt                  Format source files (not implemented)
         \\  help                 Show this help
         \\  version              Show version
+        \\  tokenize <file>      Tokenize a file (debug)
+        \\  parse <file>         Parse a file (debug)
+        \\  disasm <file>        Disassemble bytecode (debug)
         \\
         \\Build Options:
         \\  -o <name>            Output file name
@@ -2036,6 +2306,9 @@ fn printUsage() !void {
         \\  --debug              Enable instruction tracing (VM only)
         \\  --interpret          Use tree-walking interpreter (VM only)
         \\
+        \\Init Options:
+        \\  --lib                Create a library project (src/lib.kl instead of src/main.kl)
+        \\
         \\Target Triples:
         \\  x86_64-linux-gnu     Linux on x86_64
         \\  aarch64-linux-gnu    Linux on ARM64
@@ -2046,18 +2319,20 @@ fn printUsage() !void {
         \\  aarch64-none-eabi    Bare-metal ARM64 (EABI)
         \\
         \\Examples:
-        \\  klar run hello.kl
-        \\  klar run hello.kl --debug
-        \\  klar build hello.kl
-        \\  klar build hello.kl -o myapp
-        \\  klar build hello.kl -O2
-        \\  klar build hello.kl --target x86_64-linux-gnu
-        \\  klar build hello.kl --emit-llvm
-        \\  klar build hello.kl --emit-ir
-        \\  klar build hello.kl -lm -L/usr/local/lib
-        \\  klar build kernel.kl --target aarch64-none-elf --freestanding
-        \\  klar build kernel.kl --target aarch64-none-elf --freestanding -T linker.ld
-        \\  klar check example.kl
+        \\  klar init                               Create project in current directory
+        \\  klar init my-project                    Create project with specific name
+        \\  klar init --lib                         Create library project
+        \\  klar build                              Build project (requires klar.json)
+        \\  klar run                                Build and run project
+        \\  klar run hello.kl                       Run a single file
+        \\  klar run hello.kl --debug               Run with debug output
+        \\  klar build hello.kl                     Build a single file
+        \\  klar build hello.kl -o myapp            Build with custom output name
+        \\  klar build hello.kl -O2                 Build with optimizations
+        \\  klar build hello.kl --target x86_64-linux-gnu  Cross-compile
+        \\  klar build hello.kl --emit-llvm         Emit LLVM IR
+        \\  klar build hello.kl -lm -L/usr/local/lib  Link libraries
+        \\  klar check example.kl                   Type-check a file
         \\
     );
 }
@@ -2077,6 +2352,7 @@ test {
     _ = @import("values.zig");
     _ = @import("interpreter.zig");
     _ = @import("bytecode.zig");
+    _ = @import("pkg/manifest.zig");
     _ = @import("chunk.zig");
     _ = @import("compiler.zig");
     _ = @import("vm.zig");

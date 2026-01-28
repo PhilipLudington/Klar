@@ -142,27 +142,69 @@ See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-7-err
 
 **Objective:** Implement basic package management.
 
-**Status:** Not started.
+**Status:** Phase 3 Complete (Path Dependencies). Phase 4 (Lock File) next.
 
-### Manifest Format
-- [ ] Define klar.toml schema
-- [ ] Parse [package] section (name, version, authors)
-- [ ] Parse [dependencies] section
-- [ ] Parse [dev-dependencies] section
-- [ ] Support git dependencies with tag/branch/commit
+> **Design Decision:** Using JSON format (`klar.json`) instead of TOML, as Zig stdlib provides `std.json` and this matches the project's existing JSON conventions for status files.
 
-### CLI Commands
-- [ ] `klar init` - Create new project directory structure
-- [ ] `klar build` - Read klar.toml, resolve dependencies, build all files
-- [ ] `klar run` - Build if needed, execute binary
-- [ ] `klar test` - Discover and run test functions
-- [ ] `klar add` - Add dependency to klar.toml
+### Phase 1: Project Structure & Manifest ✅
+- [x] Define `klar.json` schema (package metadata)
+- [x] Implement manifest parsing with `std.json`
+- [x] `klar init` - Create new project with klar.json
+- [x] `klar init --lib` - Create library project structure
 
-### Dependency Resolution
-- [ ] Build dependency graph
-- [ ] Resolve version constraints
-- [ ] Handle diamond dependencies
-- [ ] Generate klar.lock for reproducible builds
+### Phase 2: Local Package Build ✅
+- [x] `klar build` (no args) - Build project from klar.json
+- [x] `klar run` (no args) - Build and run main entry point
+- [x] Support `src/main.kl` as default entry point
+- [x] Support `src/lib.kl` for library projects
+
+### Phase 3: Path Dependencies ✅
+- [x] Parse `dependencies` section with path dependencies
+- [x] Resolve local package paths relative to manifest
+- [x] Integrate with ModuleResolver search paths
+- [x] Build dependency graph with cycle detection (via existing ModuleResolver)
+
+### Phase 4: Lock File & Reproducibility
+- [ ] Generate `klar.lock` on first build
+- [ ] Read lockfile for reproducible builds
+- [ ] `klar update` - Regenerate lockfile
+
+### Phase 5: Git Dependencies (Stretch)
+- [ ] Support git URL with tag/branch/commit
+- [ ] Clone to cache directory (`.klar/cache/`)
+- [ ] Checkout specified ref
+
+### Manifest Schema (klar.json)
+```json
+{
+  "package": {
+    "name": "my-project",
+    "version": "0.1.0",
+    "authors": ["Author Name"],
+    "entry": "src/main.kl"
+  },
+  "dependencies": {
+    "utils": { "path": "../utils" }
+  },
+  "dev-dependencies": {
+    "testing": { "path": "../test-framework" }
+  }
+}
+```
+
+### Project Directory Structure
+```
+my-project/
+├── klar.json
+├── klar.lock
+├── src/
+│   ├── main.kl      (binary entry)
+│   └── lib.kl       (library entry)
+├── tests/
+│   └── *.kl
+└── build/
+    └── (compiled output)
+```
 
 ---
 

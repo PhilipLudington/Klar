@@ -304,6 +304,8 @@ pub const ModuleResolver = struct {
         // Look relative to importing module first, then walk up directory tree
         if (from) |f| {
             var current_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+            var current_dir_buf2: [std.fs.max_path_bytes]u8 = undefined;
+            var use_buf1 = true;
             var current_dir: ?[]const u8 = std.fs.path.dirname(f.file_path);
 
             while (current_dir) |dir| {
@@ -312,10 +314,16 @@ pub const ModuleResolver = struct {
                 }
 
                 // Walk up to parent directory
-                // Copy to buffer since dirname returns a slice of the input
-                if (dir.len < current_dir_buf.len) {
-                    @memcpy(current_dir_buf[0..dir.len], dir);
-                    current_dir = std.fs.path.dirname(current_dir_buf[0..dir.len]);
+                // Use alternating buffers to avoid aliasing issues with @memcpy
+                if (dir.len < std.fs.max_path_bytes) {
+                    if (use_buf1) {
+                        @memcpy(current_dir_buf[0..dir.len], dir);
+                        current_dir = std.fs.path.dirname(current_dir_buf[0..dir.len]);
+                    } else {
+                        @memcpy(current_dir_buf2[0..dir.len], dir);
+                        current_dir = std.fs.path.dirname(current_dir_buf2[0..dir.len]);
+                    }
+                    use_buf1 = !use_buf1;
                 } else {
                     break;
                 }
