@@ -4,261 +4,126 @@ Bugs discovered while implementing the JSON parser for Klar.
 
 ---
 
-## [x] Bug 1: Inline method call in struct return causes LLVM type mismatch
+## [x] Bug 1: Cross-file imports not working
 
 **Status:** Fixed
+**Type:** Module System
+**Severity:** High
 
-**Description:** When a function returns a struct type and the return statement calls a method inline, LLVM codegen produces mismatched types causing verification failure.
+### Description
 
-**Steps to reproduce:**
-1. Create a struct `ParseError` with fields
-2. Create a struct `State` with an `error()` method that returns `ParseError`
-3. Create a function that returns `ParseError` and calls `state.error()` inline
+Import statements between files in a project don't resolve correctly. The compiler cannot locate sibling modules regardless of the import syntax used.
 
+### Project Structure
+
+```
+klar-json/
+├── lib/
+│   └── json/
+│       ├── lexer.kl      # exports Token, LexerState, lexer_new, etc.
+│       └── parser.kl     # wants to import from lexer.kl
+└── tests/
+    └── parser_test.kl    # wants to import from lib/json/
+```
+
+### Steps to Reproduce
+
+1. Create `lib/json/lexer.kl` with public exports:
 ```klar
-struct ParseError { message: string, line: i32, column: i32 }
-struct State { line: i32, column: i32 }
-
-impl State {
-    fn error(self: State, msg: string) -> ParseError {
-        return ParseError { message: msg, line: self.line, column: self.column }
-    }
-}
-
-fn parser_error(state: State, message: string) -> ParseError {
-    return state.error(message)  // BUG: causes LLVM verification failure
-}
-```
-
-**Expected:** Function compiles and returns the ParseError correctly.
-
-**Actual:** LLVM Module verification failed:
-```
-Function return type does not match operand type of return inst!
-  ret i32 0
- { ptr, i32, i32 }
-```
-
-**Workaround:** Use a local variable:
-```klar
-fn parser_error(state: State, message: string) -> ParseError {
-    let err: ParseError = state.error(message)
-    return err
-}
-```
-
----
-
-## [x] Bug 2: Inline method call in Err() wrapper causes LLVM type mismatch
-
-**Status:** Fixed (by Bug 1 fix)
-
-**Description:** When returning `Err(method())` in a function that returns `Result[T, E]`, the LLVM codegen produces incorrect types.
-
-**Steps to reproduce:**
-1. Create a function returning `Result[JsonValue, ParseError]`
-2. In a match arm, return `Err(state.method("message"))`
-
-```klar
-fn parse(source: string) -> Result[JsonValue, ParseError] {
-    // ... setup ...
-    match ps.current {
-        Token.Null => { return Ok(JsonValue::Null) }
-        _ => { return Err(ps.lexer_state.error("Unexpected")) }  // BUG
-    }
-}
-```
-
-**Expected:** Function compiles and returns the error correctly.
-
-**Actual:** LLVM Module verification failed:
-```
-Function return type does not match operand type of return inst!
-  ret { i1, { i8, [20 x i8] }, i32 } %err.result
- { i1, { i8, [20 x i8] }, { ptr, i32, i32 } }
-```
-
-**Workaround:** Use a local variable:
-```klar
-_ => {
-    let err: ParseError = ps.lexer_state.error("Unexpected")
-    return Err(err)
-}
-```
-
----
-
-## [x] Bug 3: Method call on enum in if condition causes LLVM branch type error
-
-**Status:** Fixed (by Bug 1 fix)
-
-**Description:** Calling a method on an enum value inside an `if` condition causes LLVM to generate an `i32` instead of `i1` for the branch condition.
-
-**Steps to reproduce:**
-1. Define an enum with an `impl` block containing a method returning `bool`
-2. Use that method in an `if` condition
-
-```klar
-enum JsonValue {
+pub enum Token {
     Null,
-    Bool(bool),
+    True,
+    False,
     // ...
 }
 
-impl JsonValue {
-    fn is_null(self: JsonValue) -> bool {
-        match self {
-            JsonValue.Null => { return true }
-            _ => { return false }
-        }
-    }
+pub struct LexerState {
+    source: string,
+    pos: i32,
 }
 
-fn test(v: JsonValue) {
-    if v.is_null() {  // BUG: branch condition is i32, not i1
-        println("null")
-    }
+pub fn lexer_new(source: string) -> LexerState {
+    return LexerState { source: source, pos: 0 }
 }
 ```
 
-**Expected:** Code compiles and the if condition works correctly.
-
-**Actual:** LLVM Module verification failed:
-```
-Branch condition is not 'i1' type!
-  br i32 0, label %then, label %else
-```
-
-**Workaround:** Use match instead of method call:
+2. Create `lib/json/parser.kl` attempting to import:
 ```klar
-fn test(v: JsonValue) {
-    match v {
-        JsonValue.Null => { println("null") }
-        _ => { }
-    }
-}
+import lexer.{ Token, LexerState, lexer_new }
 ```
 
----
+3. Run `klar check lib/json/parser.kl`
 
-## [x] Bug 4: Runtime segfault when extracting string from enum variant
+### Import Variations Tried
 
-**Status:** Fixed (likely by Bug 1 fix or prior changes)
-
-**Description:** Extracting a string value from an enum variant (e.g., `Token.Str(s)`) and using it causes a segmentation fault at runtime. The code type-checks correctly but crashes when executed.
-
-**Steps to reproduce:**
-1. Define an enum with a string variant: `Token { Str(string), ... }`
-2. Match on the enum and extract the string
-3. Use the extracted string in any way
+All of the following fail with `module not found`:
 
 ```klar
-enum Token {
-    Str(string),
-    // ...
-}
-
-fn test_string() {
-    let tok: Token = Token::Str("hello")
-    match tok {
-        Token.Str(s) => {
-            if s == "hello" {  // SEGFAULT here
-                println("matched")
-            }
-        }
-        _ => { }
-    }
-}
+import lexer.{ Token }                    // module 'lexer' not found
+import json.lexer.{ Token }               // module 'json' not found
+import lib.json.lexer.{ Token }           // module 'lib' not found
+import ./lexer.{ Token }                  // syntax error
+import "lexer".{ Token }                  // syntax error
 ```
 
-**Expected:** String comparison works and prints "matched".
+### Expected Behavior
 
-**Actual:** Process terminated by signal: 11 (SIGSEGV)
+Imports resolve relative to the current file's directory, or via a project-level module path configuration.
 
-**Workaround:** None known. Avoid string extraction from enum variants.
+### Actual Behavior
 
----
-
-## [x] Bug 5: Runtime segfault with List/Map containing recursive enum types
-
-**Status:** Fixed (likely by Bug 1-4 fixes)
-
-**Description:** Creating and using `List[JsonValue]` or `Map[string, JsonValue]` where `JsonValue` is a recursive enum causes segmentation faults at runtime.
-
-**Steps to reproduce:**
-1. Define a recursive enum: `JsonValue { Array(List[JsonValue]), ... }`
-2. Parse JSON that creates a `List[JsonValue]`
-3. Access the list
-
-```klar
-enum JsonValue {
-    Null,
-    Array(List[JsonValue]),
-    Object(Map[string, JsonValue]),
-}
-
-fn test_array() {
-    let result: Result[JsonValue, ParseError] = parse("[]")
-    match result {
-        Ok(v) => {
-            match v {
-                JsonValue.Array(arr) => {
-                    if arr.len() == 0 {  // SEGFAULT
-                        println("empty")
-                    }
-                }
-                _ => { }
-            }
-        }
-        Err(_) => { }
-    }
-}
+```
+[undefined_module]: module 'lexer' not found
 ```
 
-**Expected:** Empty array is parsed and length check succeeds.
+### Questions for Compiler Team
 
-**Actual:** Process terminated by signal: 11 (SIGSEGV)
+1. **Module resolution**: How does Klar resolve module paths? Is there a `klar.toml` or similar project file that defines module roots?
 
-**Workaround:** None known. Primitive types (null, bool, number) work; complex types (string, array, object) cause crashes.
+2. **Relative vs absolute**: Should imports be relative to the importing file, or relative to a project root?
 
----
+3. **File extension**: Does the module name include or exclude the `.kl` extension?
 
-## [x] Bug 6: Cross-file imports not working
+4. **pub keyword**: Is `pub` sufficient to export items, or is there an explicit `mod` declaration needed?
 
-**Status:** Fixed
+5. **Documentation**: The docs at `~/Fun/Klar/docs` mention imports but the examples don't show multi-file projects. Is there a working example of cross-file imports?
 
-**Description:** Import statements between files in a project don't resolve correctly. The module system documented in Klar doesn't function as expected.
+### Current Workaround
 
-**Steps to reproduce:**
-1. Create `lib/json/lexer.kl` with `pub` exports
-2. Create `lib/json/parser.kl` with `import lexer.{ Token, ... }`
-3. Run `klar check parser.kl`
+Duplicate all shared types and functions in each file that needs them. This works but defeats the purpose of modular code organization.
 
-```klar
-// parser.kl
-import lexer.{ Token, LexerState, lexer_new }  // BUG: module not found
+### Impact
+
+This bug forces the JSON parser to be a single monolithic file (~400 lines) instead of cleanly separated lexer/parser modules. It also prevents writing test files that import the library.
+
+### Resolution
+
+**Fixed by:** Adding current working directory (CWD) as a module search path.
+
+The module resolver now uses multiple search paths in order:
+1. Relative to the importing file's directory (for same-directory imports)
+2. Current working directory (for project-relative imports like `lib.math`)
+3. Standard library path (for `std.*` imports)
+
+**Code changes** in `src/main.zig` - added to all 4 compilation commands (check, run VM, run interpreter, build native):
+
+```zig
+// Add current working directory as a search path
+var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+    resolver.addSearchPath(cwd_path) catch {};
+} else |_| {}
 ```
 
-**Expected:** Imports resolve and types are available.
+**Usage:** Run commands from the project root directory:
+```bash
+# From project root:
+klar check tests/main.kl      # main.kl can import lib.math
+klar run tests/main.kl        # Works for run too
+klar build tests/main.kl      # And build
+```
 
-**Actual:** `[undefined_module]: module 'lexer' not found`
-
-**Fix:** Added module resolution support to `checkFile()`, `runVmFile()`, and `runInterpreterFile()` in `main.zig`. These functions now use the same multi-file compilation pipeline as `buildNative()` when the entry module has imports.
-
----
-
-## Summary
-
-| Bug | Type | Severity | Workaround |
-|-----|------|----------|------------|
-| 1 | Codegen | High | **FIXED** |
-| 2 | Codegen | High | **FIXED** (by Bug 1 fix) |
-| 3 | Codegen | High | **FIXED** (by Bug 1 fix) |
-| 4 | Runtime | Critical | **FIXED** |
-| 5 | Runtime | Critical | **FIXED** |
-| 6 | Module System | High | **FIXED** |
-
-All bugs resolved. Multi-file JSON parser development is now unblocked.
+All 7 module tests pass, including the `sibling` test that specifically validates this fix.
 
 ---
 

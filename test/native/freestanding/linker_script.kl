@@ -1,3 +1,4 @@
+// Skip: native-tests (use run-freestanding-tests.sh instead)
 // Test: klar build linker_script.kl --target aarch64-none-elf --freestanding -T test.ld
 // Expected: Links with custom linker script (requires cross-linker installed)
 

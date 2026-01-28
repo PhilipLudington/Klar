@@ -5,6 +5,7 @@
 # Test conventions:
 #   - "// Expected: build-error" in first 5 lines = test should fail to compile
 #   - "// Requires: c-helper" in first 5 lines = test needs external C library
+#   - "// Skip: native-tests" in first 5 lines = skip (handled by different runner)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESULTS_FILE="$SCRIPT_DIR/.native-test-results.json"
@@ -40,6 +41,11 @@ requires_c_helper() {
     head -5 "$1" | grep -q "// Requires: c-helper"
 }
 
+# Check if test should be skipped (handled by different runner)
+should_skip() {
+    head -5 "$1" | grep -q "// Skip: native-tests"
+}
+
 # Get expected result for a test
 get_expected() {
     case "$1" in
@@ -71,6 +77,11 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
 
     name=$(basename "$f" .kl)
     temp_bin="/tmp/klar_test_$name"
+
+    # Check if test should be skipped
+    if should_skip "$f"; then
+        continue
+    fi
 
     # Check if test expects a build error
     if expects_build_error "$f"; then

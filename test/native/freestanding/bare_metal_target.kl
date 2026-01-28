@@ -1,3 +1,4 @@
+// Skip: native-tests (use run-freestanding-tests.sh instead)
 // Test: klar build bare_metal_target.kl --target aarch64-none-elf --freestanding -c
 // Expected: Compiles to ELF object file without linking
 

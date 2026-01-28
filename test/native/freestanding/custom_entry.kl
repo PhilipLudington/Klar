@@ -1,3 +1,4 @@
+// Skip: native-tests (use run-freestanding-tests.sh instead)
 // Test: klar build custom_entry.kl --target aarch64-none-elf --freestanding --entry kernel_main -c
 // Expected: Compiles with kernel_main as entry point symbol
 
