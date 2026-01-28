@@ -50,6 +50,14 @@ pub const CompileOptions = struct {
     link_libs: []const []const u8 = &.{},
     /// Library search paths (e.g., "/usr/local/lib").
     link_paths: []const []const u8 = &.{},
+    /// Freestanding mode: compile without standard library (no libc).
+    freestanding: bool = false,
+    /// Entry point symbol name (default: main). Used with --freestanding.
+    entry_point: ?[]const u8 = null,
+    /// Custom linker script path. Used with --freestanding.
+    linker_script: ?[]const u8 = null,
+    /// Compile only - produce object file, don't link.
+    compile_only: bool = false,
 };
 
 /// Convenience re-exports

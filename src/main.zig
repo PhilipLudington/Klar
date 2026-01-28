@@ -117,6 +117,10 @@ pub fn main() !void {
         defer link_libs.deinit(allocator);
         var link_paths = std.ArrayListUnmanaged([]const u8){};
         defer link_paths.deinit(allocator);
+        var freestanding = false;
+        var entry_point: ?[]const u8 = null;
+        var linker_script: ?[]const u8 = null;
+        var compile_only = false;
 
         var i: usize = 3;
         while (i < args.len) : (i += 1) {
@@ -161,7 +165,29 @@ pub fn main() !void {
             } else if (std.mem.startsWith(u8, arg, "-L")) {
                 // -Lpath (combined)
                 try link_paths.append(allocator, arg[2..]);
+            } else if (std.mem.eql(u8, arg, "--freestanding")) {
+                freestanding = true;
+            } else if (std.mem.eql(u8, arg, "--entry") and i + 1 < args.len) {
+                entry_point = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--entry=")) {
+                entry_point = arg["--entry=".len..];
+            } else if (std.mem.eql(u8, arg, "-T") and i + 1 < args.len) {
+                linker_script = args[i + 1];
+                i += 1;
+            } else if (std.mem.eql(u8, arg, "--linker-script") and i + 1 < args.len) {
+                linker_script = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--linker-script=")) {
+                linker_script = arg["--linker-script=".len..];
+            } else if (std.mem.eql(u8, arg, "-c")) {
+                compile_only = true;
             }
+        }
+
+        // Warn if --entry is used without --freestanding
+        if (entry_point != null and !freestanding) {
+            try getStdErr().writeAll("Warning: --entry has no effect without --freestanding\n");
         }
 
         try buildNative(allocator, args[2], .{
@@ -176,6 +202,10 @@ pub fn main() !void {
             .target_triple = target_triple,
             .link_libs = link_libs.items,
             .link_paths = link_paths.items,
+            .freestanding = freestanding,
+            .entry_point = entry_point,
+            .linker_script = linker_script,
+            .compile_only = compile_only,
         });
     } else if (std.mem.eql(u8, command, "check")) {
         if (args.len < 3) {
@@ -736,6 +766,12 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     var emitter = codegen.Emitter.init(allocator, module_name);
     defer emitter.deinit();
 
+    // Set freestanding mode if requested
+    if (options.freestanding) {
+        emitter.setFreestanding(true);
+        emitter.setEntryPoint(options.entry_point);
+    }
+
     // Initialize debug info if requested
     if (options.debug_info) {
         if (options.source_path) |source_path_str| {
@@ -954,6 +990,31 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     };
 
+    // If compile only (-c), don't link - just keep the object file
+    if (options.compile_only) {
+        // Optionally rename object file to output path
+        if (options.output_path) |out_path| {
+            std.fs.cwd().rename(obj_path, out_path) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Failed to rename object file: {s}\n", .{@errorName(err)}) catch "Failed to rename object file\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+            if (!options.quiet) {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Compiled {s}\n", .{out_path}) catch "Compiled object file\n";
+                try stdout.writeAll(msg);
+            }
+        } else {
+            if (!options.quiet) {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Compiled {s}\n", .{obj_path_str}) catch "Compiled object file\n";
+                try stdout.writeAll(msg);
+            }
+        }
+        return;
+    }
+
     // Link to create executable (default: build/<base_name>)
     const exe_path = options.output_path orelse blk: {
         // Create build directory if it doesn't exist
@@ -971,10 +1032,24 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     const owns_exe_path = options.output_path == null;
     defer if (owns_exe_path) allocator.free(exe_path);
 
+    // Create parent directory if it doesn't exist (for explicit -o path)
+    if (options.output_path != null) {
+        if (std.fs.path.dirname(exe_path)) |parent_dir| {
+            std.fs.cwd().makePath(parent_dir) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Failed to create output directory: {s}\n", .{@errorName(err)}) catch "Failed to create output directory\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+        }
+    }
+
     // Use cross-compilation linker if target specified
     const linker_options = codegen.linker.LinkerOptions{
         .link_libs = options.link_libs,
         .link_paths = options.link_paths,
+        .linker_script = options.linker_script,
+        .freestanding = options.freestanding,
     };
     const link_result = if (target_info) |ti|
         codegen.linker.linkForTargetWithOptions(allocator, obj_path, exe_path, ti, linker_options)
@@ -1648,6 +1723,7 @@ fn printUsage() !void {
         \\
         \\Build Options:
         \\  -o <name>            Output file name
+        \\  -c                   Compile only (produce object file, don't link)
         \\  --target <triple>    Cross-compile for target (e.g., x86_64-linux-gnu)
         \\  -O0                  No optimizations (default)
         \\  -O1                  Basic optimizations (constant folding, DCE)
@@ -1661,6 +1737,12 @@ fn printUsage() !void {
         \\  --emit-ir            Output Klar IR (.ir file)
         \\  --verbose-opt        Show optimization statistics
         \\
+        \\Bare-Metal Options:
+        \\  --freestanding       Compile without standard library (no libc)
+        \\  --entry <symbol>     Set entry point symbol (default: main)
+        \\  -T <path>            Use custom linker script
+        \\  --linker-script <path>  Same as -T
+        \\
         \\Run Options:
         \\  --vm                 Use bytecode VM instead of native
         \\  --debug              Enable instruction tracing (VM only)
@@ -1672,6 +1754,8 @@ fn printUsage() !void {
         \\  x86_64-apple-macosx  macOS on Intel
         \\  arm64-apple-macosx   macOS on Apple Silicon
         \\  x86_64-windows-msvc  Windows on x86_64
+        \\  aarch64-none-elf     Bare-metal ARM64 (ELF)
+        \\  aarch64-none-eabi    Bare-metal ARM64 (EABI)
         \\
         \\Examples:
         \\  klar run hello.kl
@@ -1683,6 +1767,8 @@ fn printUsage() !void {
         \\  klar build hello.kl --emit-llvm
         \\  klar build hello.kl --emit-ir
         \\  klar build hello.kl -lm -L/usr/local/lib
+        \\  klar build kernel.kl --target aarch64-none-elf --freestanding
+        \\  klar build kernel.kl --target aarch64-none-elf --freestanding -T linker.ld
         \\  klar check example.kl
         \\
     );

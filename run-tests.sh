@@ -52,6 +52,7 @@ run_suite "Native Tests" "./scripts/run-native-tests.sh" || TOTAL_FAILED=$((TOTA
 run_suite "App Tests" "./scripts/run-app-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 run_suite "Module Tests" "./scripts/run-module-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 run_suite "Args Tests" "./scripts/run-args-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
+run_suite "Freestanding Tests" "./scripts/run-freestanding-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 
 # Summary
 echo ""
@@ -76,15 +77,23 @@ MODULE_PASSED=$(read_json_field .module-test-results.json passed)
 MODULE_FAILED=$(read_json_field .module-test-results.json failed)
 ARGS_PASSED=$(read_json_field .args-test-results.json passed)
 ARGS_FAILED=$(read_json_field .args-test-results.json failed)
+FREESTANDING_PASSED=$(read_json_field .freestanding-test-results.json passed)
+FREESTANDING_FAILED=$(read_json_field .freestanding-test-results.json failed)
+FREESTANDING_SKIPPED=$(read_json_field .freestanding-test-results.json skipped)
 
-TOTAL_PASSED=$((UNIT_PASSED + NATIVE_PASSED + APP_PASSED + MODULE_PASSED + ARGS_PASSED))
-TOTAL_FAILED=$((UNIT_FAILED + NATIVE_FAILED + APP_FAILED + MODULE_FAILED + ARGS_FAILED))
+TOTAL_PASSED=$((UNIT_PASSED + NATIVE_PASSED + APP_PASSED + MODULE_PASSED + ARGS_PASSED + FREESTANDING_PASSED))
+TOTAL_FAILED=$((UNIT_FAILED + NATIVE_FAILED + APP_FAILED + MODULE_FAILED + ARGS_FAILED + FREESTANDING_FAILED))
 
 printf "  %-15s %3d passed, %d failed\n" "Unit Tests:" "$UNIT_PASSED" "$UNIT_FAILED"
 printf "  %-15s %3d passed, %d failed\n" "Native Tests:" "$NATIVE_PASSED" "$NATIVE_FAILED"
 printf "  %-15s %3d passed, %d failed\n" "App Tests:" "$APP_PASSED" "$APP_FAILED"
 printf "  %-15s %3d passed, %d failed\n" "Module Tests:" "$MODULE_PASSED" "$MODULE_FAILED"
 printf "  %-15s %3d passed, %d failed\n" "Args Tests:" "$ARGS_PASSED" "$ARGS_FAILED"
+if [ "$FREESTANDING_SKIPPED" -gt 0 ]; then
+    printf "  %-15s %3d passed, %d failed, %d skipped\n" "Freestanding:" "$FREESTANDING_PASSED" "$FREESTANDING_FAILED" "$FREESTANDING_SKIPPED"
+else
+    printf "  %-15s %3d passed, %d failed\n" "Freestanding:" "$FREESTANDING_PASSED" "$FREESTANDING_FAILED"
+fi
 echo "───────────────────────────────────────────────────────────"
 printf "  %-15s %3d passed, %d failed\n" "TOTAL:" "$TOTAL_PASSED" "$TOTAL_FAILED"
 echo ""
