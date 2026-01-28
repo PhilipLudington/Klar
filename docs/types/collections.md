@@ -279,23 +279,53 @@ fn process() {
 }
 ```
 
+### What drop() Frees
+
+The `drop()` method frees **only** the collection's backing array, not any heap
+allocations owned by elements within the collection.
+
+| Element Type | drop() Behavior |
+|--------------|-----------------|
+| Primitives (`i32`, `bool`, etc.) | Fully cleaned up |
+| Structs (value types) | Fully cleaned up |
+| `String` | **Leaks** - String's buffer not freed |
+| `List[T]` | **Leaks** - Inner list's array not freed |
+| `Rc[T]`, `Arc[T]` | Reference count decremented properly |
+
+**Example of leak:**
+```klar
+var names: List[String] = List.new[String]()
+names.push("alice".to_string())
+names.push("bob".to_string())
+names.drop()  // Frees the List's array, but "alice" and "bob" buffers leak!
+```
+
 ### Nested Collections
 
-Drop inner collections before outer:
+For nested collections, you must manually drop inner elements:
 
 ```klar
 var matrix: List[List[i32]] = List.new[List[i32]]()
 
-// Create rows
 var row1: List[i32] = List.new[i32]()
 row1.push(1)
 row1.push(2)
 matrix.push(row1)
 
-// When cleaning up, drop rows first (they're moved into matrix)
-// matrix.drop() will handle it
+var row2: List[i32] = List.new[i32]()
+row2.push(3)
+row2.push(4)
+matrix.push(row2)
+
+// Clean up: iterate and drop each row, then drop matrix
+for row: List[i32] in matrix {
+    row.drop()
+}
 matrix.drop()
 ```
+
+> **Note:** Future versions of Klar may implement automatic nested cleanup via
+> the Drop trait for collection types.
 
 ## Example: Graph Adjacency List
 

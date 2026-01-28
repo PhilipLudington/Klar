@@ -281,6 +281,101 @@ fn interactive_menu() -> i32 {
 }
 ```
 
+## Filesystem Functions
+
+Klar provides standalone functions for common filesystem operations.
+
+### Path Queries
+
+```klar
+// Check if path exists (file or directory)
+let exists: bool = fs_exists("/path/to/file")
+
+// Check if path is a file
+let is_file: bool = fs_is_file("/path/to/file")
+
+// Check if path is a directory
+let is_dir: bool = fs_is_dir("/path/to/directory")
+```
+
+### Directory Operations
+
+```klar
+// Create a single directory
+let result: Result[void, IoError] = fs_create_dir("/path/to/new_dir")
+
+// Create directory and all parent directories
+let result: Result[void, IoError] = fs_create_dir_all("/path/to/deep/nested/dir")
+
+// Remove an empty directory
+let result: Result[void, IoError] = fs_remove_dir("/path/to/dir")
+
+// Remove a file
+let result: Result[void, IoError] = fs_remove_file("/path/to/file")
+```
+
+### File Content
+
+```klar
+// Read entire file as string
+let content: Result[String, IoError] = fs_read_string("/path/to/file.txt")
+
+// Write string to file (creates or overwrites)
+let result: Result[void, IoError] = fs_write_string("/path/to/file.txt", "content")
+```
+
+### Reading Directory Contents
+
+```klar
+let entries: Result[List[String], IoError] = fs_read_dir("/path/to/dir")
+
+match entries {
+    Ok(list) => {
+        for name: String in list {
+            println(name)
+        }
+        // IMPORTANT: You must manually clean up each string
+        // before dropping the list. See ownership note below.
+        list.drop()
+    }
+    Err(e) => {
+        println("Error: {e}")
+    }
+}
+```
+
+#### Ownership for fs_read_dir
+
+> **Important:** `fs_read_dir` returns a `List[String]` where:
+> - The **List** owns its backing array (freed by `list.drop()`)
+> - Each **String** owns its own heap-allocated filename buffer
+>
+> **Current limitation:** Calling `list.drop()` frees only the List's backing array,
+> not the individual String buffers. This means the filename strings will leak memory.
+>
+> **Workaround:** For short-lived operations, the memory leak is negligible. For
+> long-running programs that call `fs_read_dir` repeatedly, be aware of this limitation.
+> A future version of Klar will implement proper nested cleanup for `List[String]`.
+
+### Filesystem Function Reference
+
+| Function | Description |
+|----------|-------------|
+| `fs_exists(path) -> bool` | Check if path exists |
+| `fs_is_file(path) -> bool` | Check if path is a regular file |
+| `fs_is_dir(path) -> bool` | Check if path is a directory |
+| `fs_create_dir(path) -> Result[void, IoError]` | Create single directory |
+| `fs_create_dir_all(path) -> Result[void, IoError]` | Create directory tree |
+| `fs_remove_file(path) -> Result[void, IoError]` | Delete a file |
+| `fs_remove_dir(path) -> Result[void, IoError]` | Delete empty directory |
+| `fs_read_string(path) -> Result[String, IoError]` | Read file contents |
+| `fs_write_string(path, content) -> Result[void, IoError]` | Write file contents |
+| `fs_read_dir(path) -> Result[List[String], IoError]` | List directory entries |
+
+> **Note:** Filesystem operations currently support macOS and Linux only. Windows is not implemented.
+
+---
+
 ## Best Practices
 
 ### Always Handle Errors

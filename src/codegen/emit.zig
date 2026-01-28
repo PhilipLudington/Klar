@@ -14,6 +14,35 @@ const llvm = @import("llvm.zig");
 const target = @import("target.zig");
 const layout = @import("layout.zig");
 
+// ==================== Platform-Specific Struct Offsets ====================
+// Use @cImport to get correct struct layouts from system headers.
+// This ensures portability across different:
+// - Operating systems (macOS, Linux, *BSD)
+// - Architectures (x86_64, aarch64, 32-bit)
+// - C libraries (glibc, musl)
+//
+// Note: These are computed at Zig compile time for the HOST platform.
+// Cross-compilation of filesystem operations is not currently supported.
+
+const posix = @cImport({
+    @cInclude("sys/stat.h");
+    @cInclude("dirent.h");
+});
+
+/// Offset of st_mode field within struct stat (in bytes).
+const stat_mode_offset: u32 = @offsetOf(posix.struct_stat, "st_mode");
+
+/// Size of st_mode field in bits (16 on macOS, 32 on Linux typically).
+const stat_mode_bits: u32 = @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_mode));
+
+/// Offset of d_name field within struct dirent (in bytes).
+const dirent_name_offset: u32 = @offsetOf(posix.struct_dirent, "d_name");
+
+/// File type mask and constants from POSIX (these are standardized).
+const S_IFMT: u32 = 0o170000; // File type mask
+const S_IFREG: u32 = 0o100000; // Regular file
+const S_IFDIR: u32 = 0o040000; // Directory
+
 /// Errors that can occur during IR emission.
 pub const EmitError = error{
     OutOfMemory,
@@ -21507,12 +21536,9 @@ pub const Emitter = struct {
 
         // Stat succeeded - check st_mode
         self.builder.positionAtEnd(stat_ok_bb);
-        // On macOS/Darwin, st_mode is at offset 4 (after st_dev which is 4 bytes)
-        // On Linux, st_mode is at different offsets depending on arch
-        // For simplicity, we use S_ISREG macro equivalent: (mode & S_IFMT) == S_IFREG
-        // S_IFMT = 0170000, S_IFREG = 0100000 (octal)
-        const mode_offset: u32 = if (builtin.os.tag == .macos) 4 else 24; // Adjust for platform
-        var gep_indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, mode_offset)};
+        // Use S_ISREG macro equivalent: (mode & S_IFMT) == S_IFREG
+        // Offsets are computed from system headers via @cImport (see top of file)
+        var gep_indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, stat_mode_offset)};
         const mode_ptr = llvm.c.LLVMBuildGEP2(
             self.builder.ref,
             llvm.Types.int8(self.ctx),
@@ -21522,13 +21548,15 @@ pub const Emitter = struct {
             "mode.ptr",
         );
         const mode_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, mode_ptr, llvm.Types.pointer(self.ctx), "mode.ptr.cast");
-        // On macOS, st_mode is 16-bit; on Linux 64-bit it's 32-bit
-        const mode_type = llvm.Types.int16(self.ctx);
+        // Load st_mode with correct size from system headers
+        const mode_type = if (stat_mode_bits == 16) llvm.Types.int16(self.ctx) else llvm.Types.int32(self.ctx);
         const mode = self.builder.buildLoad(mode_type, mode_ptr_cast, "mode");
-        const mode_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, mode, i32_type, "mode.i32");
-        // S_IFMT = 0xF000, S_IFREG = 0x8000
-        const masked = llvm.c.LLVMBuildAnd(self.builder.ref, mode_i32, llvm.Const.int32(self.ctx, 0xF000), "mode.masked");
-        const is_file = self.builder.buildICmp(llvm.c.LLVMIntEQ, masked, llvm.Const.int32(self.ctx, 0x8000), "isfile.check");
+        const mode_i32 = if (stat_mode_bits == 16)
+            llvm.c.LLVMBuildZExt(self.builder.ref, mode, i32_type, "mode.i32")
+        else
+            mode;
+        const masked = llvm.c.LLVMBuildAnd(self.builder.ref, mode_i32, llvm.Const.int32(self.ctx, S_IFMT), "mode.masked");
+        const is_file = self.builder.buildICmp(llvm.c.LLVMIntEQ, masked, llvm.Const.int32(self.ctx, S_IFREG), "isfile.check");
         _ = self.builder.buildBr(cont_bb);
 
         // Stat failed - return false
@@ -21567,10 +21595,10 @@ pub const Emitter = struct {
 
         _ = self.builder.buildCondBr(stat_ok, stat_ok_bb, stat_fail_bb);
 
-        // Stat succeeded - check st_mode
+        // Stat succeeded - check st_mode for directory
+        // Offsets are computed from system headers via @cImport (see top of file)
         self.builder.positionAtEnd(stat_ok_bb);
-        const mode_offset: u32 = if (builtin.os.tag == .macos) 4 else 24;
-        var gep_indices2 = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, mode_offset)};
+        var gep_indices2 = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, stat_mode_offset)};
         const mode_ptr = llvm.c.LLVMBuildGEP2(
             self.builder.ref,
             llvm.Types.int8(self.ctx),
@@ -21580,12 +21608,15 @@ pub const Emitter = struct {
             "mode.ptr",
         );
         const mode_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, mode_ptr, llvm.Types.pointer(self.ctx), "mode.ptr.cast");
-        const mode_type = llvm.Types.int16(self.ctx);
+        // Load st_mode with correct size from system headers
+        const mode_type = if (stat_mode_bits == 16) llvm.Types.int16(self.ctx) else llvm.Types.int32(self.ctx);
         const mode = self.builder.buildLoad(mode_type, mode_ptr_cast, "mode");
-        const mode_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, mode, i32_type, "mode.i32");
-        // S_IFMT = 0xF000, S_IFDIR = 0x4000
-        const masked = llvm.c.LLVMBuildAnd(self.builder.ref, mode_i32, llvm.Const.int32(self.ctx, 0xF000), "mode.masked");
-        const is_dir = self.builder.buildICmp(llvm.c.LLVMIntEQ, masked, llvm.Const.int32(self.ctx, 0x4000), "isdir.check");
+        const mode_i32 = if (stat_mode_bits == 16)
+            llvm.c.LLVMBuildZExt(self.builder.ref, mode, i32_type, "mode.i32")
+        else
+            mode;
+        const masked = llvm.c.LLVMBuildAnd(self.builder.ref, mode_i32, llvm.Const.int32(self.ctx, S_IFMT), "mode.masked");
+        const is_dir = self.builder.buildICmp(llvm.c.LLVMIntEQ, masked, llvm.Const.int32(self.ctx, S_IFDIR), "isdir.check");
         _ = self.builder.buildBr(cont_bb);
 
         // Stat failed - return false
@@ -22246,12 +22277,8 @@ pub const Emitter = struct {
         // Process entry
         self.builder.positionAtEnd(process_entry_bb);
 
-        // Get d_name pointer (offset varies by platform, typically after d_ino and d_reclen)
-        // On macOS: d_ino (8) + d_seekoff (8) + d_reclen (2) + d_namlen (2) + d_type (1) = 21, aligned to 24
-        // On Linux: varies, but d_name is at offset 19 for most systems
-        // We'll use a safer approach - just use the pointer arithmetic
-        const d_name_offset: u32 = if (builtin.os.tag == .macos) 21 else 19;
-        var d_name_indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, d_name_offset)};
+        // Get d_name pointer - offset computed from system headers via @cImport (see top of file)
+        var d_name_indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, dirent_name_offset)};
         const d_name_ptr = llvm.c.LLVMBuildGEP2(
             self.builder.ref,
             llvm.Types.int8(self.ctx),
