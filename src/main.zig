@@ -1027,6 +1027,18 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     const owns_exe_path = options.output_path == null;
     defer if (owns_exe_path) allocator.free(exe_path);
 
+    // Create parent directory if it doesn't exist (for explicit -o path)
+    if (options.output_path != null) {
+        if (std.fs.path.dirname(exe_path)) |parent_dir| {
+            std.fs.cwd().makePath(parent_dir) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Failed to create output directory: {s}\n", .{@errorName(err)}) catch "Failed to create output directory\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+        }
+    }
+
     // Use cross-compilation linker if target specified
     const linker_options = codegen.linker.LinkerOptions{
         .link_libs = options.link_libs,
