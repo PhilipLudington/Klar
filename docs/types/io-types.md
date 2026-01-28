@@ -281,6 +281,169 @@ fn interactive_menu() -> i32 {
 }
 ```
 
+## Path Type
+
+The `Path` type represents a filesystem path and provides methods for path manipulation.
+
+### Creating Paths
+
+```klar
+let p: Path = Path.new("/home/user/documents")
+```
+
+### Path Methods
+
+```klar
+let p: Path = Path.new("/home/user/file.txt")
+
+// Convert to string
+let s: string = p.to_string()  // "/home/user/file.txt"
+
+// Join path components (handles trailing slashes correctly)
+let joined: Path = p.join("subdir")  // "/home/user/file.txt/subdir"
+
+// Get parent directory
+let parent: ?Path = p.parent()  // Some(Path("/home/user"))
+
+// Get filename
+let name: ?string = p.file_name()  // Some("file.txt")
+
+// Get extension
+let ext: ?string = p.extension()  // Some("txt")
+
+// Check existence and type
+let exists: bool = p.exists()
+let is_file: bool = p.is_file()
+let is_dir: bool = p.is_dir()
+```
+
+### Path Method Reference
+
+| Method | Description |
+|--------|-------------|
+| `Path.new(s)` | Create path from string |
+| `.to_string()` | Convert to string |
+| `.join(other)` | Join with another path component |
+| `.parent()` | Get parent directory as `?Path` |
+| `.file_name()` | Get filename component as `?string` |
+| `.extension()` | Get file extension as `?string` |
+| `.exists()` | Check if path exists |
+| `.is_file()` | Check if path is a regular file |
+| `.is_dir()` | Check if path is a directory |
+
+### Edge Cases for `.parent()`
+
+The `.parent()` method returns `None` for paths without a directory separator:
+
+| Path | `.parent()` Result |
+|------|-------------------|
+| `"/home/user"` | `Some(Path("/home"))` |
+| `"/home"` | `Some(Path("/"))` |
+| `"/"` | `Some(Path("/"))` — root is its own parent |
+| `"file.txt"` | `None` — no directory separator |
+| `"dir/file.txt"` | `Some(Path("dir"))` |
+
+> **Note:** Unlike some languages that return `"."` for paths without a separator,
+> Klar returns `None` to make it explicit that there is no parent directory component.
+> Use pattern matching to handle this case.
+
+---
+
+## Filesystem Functions
+
+Klar provides standalone functions for common filesystem operations.
+
+### Path Queries
+
+```klar
+// Check if path exists (file or directory)
+let exists: bool = fs_exists("/path/to/file")
+
+// Check if path is a file
+let is_file: bool = fs_is_file("/path/to/file")
+
+// Check if path is a directory
+let is_dir: bool = fs_is_dir("/path/to/directory")
+```
+
+### Directory Operations
+
+```klar
+// Create a single directory
+let result: Result[void, IoError] = fs_create_dir("/path/to/new_dir")
+
+// Create directory and all parent directories
+let result: Result[void, IoError] = fs_create_dir_all("/path/to/deep/nested/dir")
+
+// Remove an empty directory
+let result: Result[void, IoError] = fs_remove_dir("/path/to/dir")
+
+// Remove a file
+let result: Result[void, IoError] = fs_remove_file("/path/to/file")
+```
+
+### File Content
+
+```klar
+// Read entire file as string
+let content: Result[String, IoError] = fs_read_string("/path/to/file.txt")
+
+// Write string to file (creates or overwrites)
+let result: Result[void, IoError] = fs_write_string("/path/to/file.txt", "content")
+```
+
+### Reading Directory Contents
+
+```klar
+let entries: Result[List[String], IoError] = fs_read_dir("/path/to/dir")
+
+match entries {
+    Ok(list) => {
+        for name: String in list {
+            println(name)
+        }
+        // IMPORTANT: You must manually clean up each string
+        // before dropping the list. See ownership note below.
+        list.drop()
+    }
+    Err(e) => {
+        println("Error: {e}")
+    }
+}
+```
+
+#### Ownership for fs_read_dir
+
+> **Important:** `fs_read_dir` returns a `List[String]` where:
+> - The **List** owns its backing array (freed by `list.drop()`)
+> - Each **String** owns its own heap-allocated filename buffer
+>
+> **Current limitation:** Calling `list.drop()` frees only the List's backing array,
+> not the individual String buffers. This means the filename strings will leak memory.
+>
+> **Workaround:** For short-lived operations, the memory leak is negligible. For
+> long-running programs that call `fs_read_dir` repeatedly, be aware of this limitation.
+> A future version of Klar will implement proper nested cleanup for `List[String]`.
+
+### Filesystem Function Reference
+
+| Function | Description |
+|----------|-------------|
+| `fs_exists(path) -> bool` | Check if path exists |
+| `fs_is_file(path) -> bool` | Check if path is a regular file |
+| `fs_is_dir(path) -> bool` | Check if path is a directory |
+| `fs_create_dir(path) -> Result[void, IoError]` | Create single directory |
+| `fs_create_dir_all(path) -> Result[void, IoError]` | Create directory tree |
+| `fs_remove_file(path) -> Result[void, IoError]` | Delete a file |
+| `fs_remove_dir(path) -> Result[void, IoError]` | Delete empty directory |
+| `fs_read_string(path) -> Result[String, IoError]` | Read file contents |
+| `fs_write_string(path, content) -> Result[void, IoError]` | Write file contents |
+| `fs_read_dir(path) -> Result[List[String], IoError]` | List directory entries |
+
+> **Note:** Filesystem operations currently support macOS and Linux only. Windows is not implemented.
+
+---
+
 ## Best Practices
 
 ### Always Handle Errors

@@ -1,4 +1,5 @@
 // Test: Out parameters in extern function calls
+// Requires: c-helper
 // This test verifies that out parameters work correctly at call sites.
 //
 // Build instructions:

@@ -1,4 +1,5 @@
 // Test: Sized extern type passed by value
+// Requires: c-helper
 // This test verifies that sized extern types can be passed to and from C functions.
 //
 // Build instructions:

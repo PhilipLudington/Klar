@@ -1,0 +1,34 @@
+// Test fs_read_string and fs_write_string
+// Expected: 0
+
+fn main() -> i32 {
+    let test_file: string = "/tmp/klar_fs_readwrite_test.txt"
+    let content: string = "Hello from Klar filesystem test!"
+
+    // Write content to file
+    let write_result: Result[void, IoError] = fs_write_string(test_file, content)
+    if not write_result.is_ok() {
+        return 1
+    }
+
+    // Read content back
+    let read_result: Result[String, IoError] = fs_read_string(test_file)
+    if not read_result.is_ok() {
+        return 2
+    }
+
+    let read_content: String = read_result!
+
+    // Check length matches
+    if read_content.len() != 32 {  // "Hello from Klar filesystem test!" = 32 chars
+        return 3
+    }
+
+    // Clean up - remove the test file
+    let remove_result: Result[void, IoError] = fs_remove_file(test_file)
+    if not remove_result.is_ok() {
+        return 4
+    }
+
+    return 0
+}

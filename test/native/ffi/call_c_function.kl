@@ -1,4 +1,5 @@
 // Test: Calling custom C functions
+// Requires: c-helper
 // This test demonstrates linking Klar with user-provided C code.
 //
 // Build instructions:

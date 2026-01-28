@@ -1781,6 +1781,124 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
+        // Path type - filesystem path wrapper around String
+        try self.current_scope.define(.{
+            .name = "Path",
+            .type_ = self.type_builder.pathType(),
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
+        // Register filesystem functions
+        // ====================================================================
+
+        // fs_exists(path: string) -> bool
+        const fs_exists_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, self.type_builder.boolType());
+        try self.current_scope.define(.{
+            .name = "fs_exists",
+            .type_ = fs_exists_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_is_file(path: string) -> bool
+        const fs_is_file_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, self.type_builder.boolType());
+        try self.current_scope.define(.{
+            .name = "fs_is_file",
+            .type_ = fs_is_file_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_is_dir(path: string) -> bool
+        const fs_is_dir_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, self.type_builder.boolType());
+        try self.current_scope.define(.{
+            .name = "fs_is_dir",
+            .type_ = fs_is_dir_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_create_dir(path: string) -> Result[void, IoError]
+        const fs_create_dir_ret = try self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType());
+        const fs_create_dir_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_create_dir_ret);
+        try self.current_scope.define(.{
+            .name = "fs_create_dir",
+            .type_ = fs_create_dir_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_create_dir_all(path: string) -> Result[void, IoError]
+        const fs_create_dir_all_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_create_dir_ret);
+        try self.current_scope.define(.{
+            .name = "fs_create_dir_all",
+            .type_ = fs_create_dir_all_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_remove_file(path: string) -> Result[void, IoError]
+        const fs_remove_file_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_create_dir_ret);
+        try self.current_scope.define(.{
+            .name = "fs_remove_file",
+            .type_ = fs_remove_file_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_remove_dir(path: string) -> Result[void, IoError]
+        const fs_remove_dir_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_create_dir_ret);
+        try self.current_scope.define(.{
+            .name = "fs_remove_dir",
+            .type_ = fs_remove_dir_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_read_string(path: string) -> Result[String, IoError]
+        const string_type = try self.type_builder.stringDataType();
+        const fs_read_string_ret = try self.type_builder.resultType(string_type, self.type_builder.ioErrorType());
+        const fs_read_string_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_read_string_ret);
+        try self.current_scope.define(.{
+            .name = "fs_read_string",
+            .type_ = fs_read_string_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_write_string(path: string, content: string) -> Result[void, IoError]
+        const fs_write_string_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.stringType() }, fs_create_dir_ret);
+        try self.current_scope.define(.{
+            .name = "fs_write_string",
+            .type_ = fs_write_string_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_read_dir(path: string) -> Result[List[String], IoError]
+        const list_string_type = try self.type_builder.listType(string_type);
+        const fs_read_dir_ret = try self.type_builder.resultType(list_string_type, self.type_builder.ioErrorType());
+        const fs_read_dir_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_read_dir_ret);
+        try self.current_scope.define(.{
+            .name = "fs_read_dir",
+            .type_ = fs_read_dir_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
         // ====================================================================
         // Register builtin trait implementations for I/O types
         // ====================================================================
@@ -2352,7 +2470,7 @@ pub const TypeChecker = struct {
 
             // Primitive types - no substitution needed
             // I/O types and extern types also don't need substitution (they have no type parameters)
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type => typ,
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .path, .extern_type => typ,
 
             // Array - substitute element type
             .array => |arr| {
@@ -2596,7 +2714,7 @@ pub const TypeChecker = struct {
     pub fn containsTypeVar(self: *TypeChecker, typ: Type) bool {
         return switch (typ) {
             .type_var => true,
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type, .cstr, .cstr_owned => false,
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .path, .extern_type, .cstr, .cstr_owned => false,
             .array => |arr| self.containsTypeVar(arr.element),
             .slice => |sl| self.containsTypeVar(sl.element),
             .tuple => |tup| {
@@ -2665,7 +2783,7 @@ pub const TypeChecker = struct {
                 return true;
             },
 
-            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .extern_type, .cstr, .cstr_owned => {
+            .primitive, .void_, .never, .unknown, .error_type, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .path, .extern_type, .cstr, .cstr_owned => {
                 return pattern.eql(concrete);
             },
 
@@ -4451,6 +4569,23 @@ pub const TypeChecker = struct {
                 return self.type_builder.stringDataType() catch self.type_builder.unknownType();
             }
 
+            // Path.new(s: string) -> Path - static constructor from string
+            if (std.mem.eql(u8, obj_name, "Path") and std.mem.eql(u8, method.method_name, "new")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "Path.new() takes exactly 1 argument (path string)", .{});
+                    return self.type_builder.unknownType();
+                }
+                if (method.type_args != null) {
+                    self.addError(.invalid_call, method.span, "Path.new() does not take type arguments", .{});
+                }
+                // Check that the argument is a string
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "Path.new() expects a string argument", .{});
+                }
+                return self.type_builder.pathType();
+            }
+
             // File.open(path: string, mode: string) -> Result[File, IoError]
             if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "open")) {
                 if (method.args.len != 2) {
@@ -4622,10 +4757,14 @@ pub const TypeChecker = struct {
         }
 
         // Check for built-in methods on all types
-        // to_string() returns string (primitive) for char, String (heap-allocated) for other types
+        // to_string() returns string (primitive) for char and Path, String (heap-allocated) for other types
         if (std.mem.eql(u8, method.method_name, "to_string")) {
             // char.to_string() returns primitive string (single char doesn't need heap allocation)
             if (object_type == .primitive and object_type.primitive == .char_) {
+                return self.type_builder.stringType();
+            }
+            // Path.to_string() returns primitive string (returns pointer to internal data)
+            if (object_type == .path) {
                 return self.type_builder.stringType();
             }
             return self.type_builder.stringDataType() catch self.type_builder.unknownType();
@@ -6397,6 +6536,78 @@ pub const TypeChecker = struct {
                     self.addError(.invalid_call, method.span, "flush() takes no arguments", .{});
                 }
                 return self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType()) catch self.type_builder.unknownType();
+            }
+        }
+
+        // Path methods
+        if (object_type == .path) {
+            // join(other: string) -> Path
+            if (std.mem.eql(u8, method.method_name, "join")) {
+                if (method.args.len != 1) {
+                    self.addError(.invalid_call, method.span, "join() expects exactly 1 argument (path component)", .{});
+                    return self.type_builder.pathType();
+                }
+                const arg_type = self.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .string_) {
+                    self.addError(.type_mismatch, method.span, "join() expects a string argument", .{});
+                }
+                return self.type_builder.pathType();
+            }
+
+            // parent() -> ?Path
+            if (std.mem.eql(u8, method.method_name, "parent")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "parent() takes no arguments", .{});
+                }
+                return self.type_builder.optionalType(self.type_builder.pathType()) catch self.type_builder.unknownType();
+            }
+
+            // file_name() -> ?string
+            if (std.mem.eql(u8, method.method_name, "file_name")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "file_name() takes no arguments", .{});
+                }
+                return self.type_builder.optionalType(self.type_builder.stringType()) catch self.type_builder.unknownType();
+            }
+
+            // extension() -> ?string
+            if (std.mem.eql(u8, method.method_name, "extension")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "extension() takes no arguments", .{});
+                }
+                return self.type_builder.optionalType(self.type_builder.stringType()) catch self.type_builder.unknownType();
+            }
+
+            // to_string() -> string
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "to_string() takes no arguments", .{});
+                }
+                return self.type_builder.stringType();
+            }
+
+            // exists() -> bool
+            if (std.mem.eql(u8, method.method_name, "exists")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "exists() takes no arguments", .{});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // is_file() -> bool
+            if (std.mem.eql(u8, method.method_name, "is_file")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "is_file() takes no arguments", .{});
+                }
+                return self.type_builder.boolType();
+            }
+
+            // is_dir() -> bool
+            if (std.mem.eql(u8, method.method_name, "is_dir")) {
+                if (method.args.len != 0) {
+                    self.addError(.invalid_call, method.span, "is_dir() takes no arguments", .{});
+                }
+                return self.type_builder.boolType();
             }
         }
 
@@ -8209,6 +8420,7 @@ pub const TypeChecker = struct {
             .stdout_handle => "stdout",
             .stderr_handle => "stderr",
             .stdin_handle => "stdin",
+            .path => "path",
             .buf_reader => "buf_reader",
             .buf_writer => "buf_writer",
             .extern_type => "extern",

@@ -1,0 +1,59 @@
+// Test fs_create_dir, fs_remove_dir, fs_remove_file
+// Expected: 0
+
+fn main() -> i32 {
+    let test_dir: string = "/tmp/klar_fs_test_dir"
+    let test_file: string = "/tmp/klar_fs_test_file.txt"
+
+    // Create a directory
+    let create_result: Result[void, IoError] = fs_create_dir(test_dir)
+    if not create_result.is_ok() {
+        return 1
+    }
+
+    // Verify it exists and is a directory
+    if not fs_exists(test_dir) {
+        return 2
+    }
+    if not fs_is_dir(test_dir) {
+        return 3
+    }
+
+    // Remove the directory
+    let remove_result: Result[void, IoError] = fs_remove_dir(test_dir)
+    if not remove_result.is_ok() {
+        return 4
+    }
+
+    // Verify it's gone
+    if fs_exists(test_dir) {
+        return 5
+    }
+
+    // Create a file using fs_write_string
+    let write_result: Result[void, IoError] = fs_write_string(test_file, "hello")
+    if not write_result.is_ok() {
+        return 6
+    }
+
+    // Verify it exists and is a file
+    if not fs_exists(test_file) {
+        return 7
+    }
+    if not fs_is_file(test_file) {
+        return 8
+    }
+
+    // Remove the file
+    let remove_file_result: Result[void, IoError] = fs_remove_file(test_file)
+    if not remove_file_result.is_ok() {
+        return 9
+    }
+
+    // Verify it's gone
+    if fs_exists(test_file) {
+        return 10
+    }
+
+    return 0
+}

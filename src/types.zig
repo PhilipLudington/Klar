@@ -61,6 +61,7 @@ pub const Type = union(enum) {
     stdout_handle: void, // Stdout marker type
     stderr_handle: void, // Stderr marker type
     stdin_handle: void, // Stdin marker type
+    path: void, // Path type (wrapper around String for filesystem paths)
 
     // Buffered I/O types
     buf_reader: *BufReaderType, // BufReader[R: Read] buffered reader wrapper
@@ -144,7 +145,7 @@ pub const Type = union(enum) {
             .buf_reader => |br| br.inner.eql(other.buf_reader.inner),
             .buf_writer => |bw| bw.inner.eql(other.buf_writer.inner),
             // I/O types are singleton types
-            .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => true,
+            .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .path => true,
             // Extern types are equal if they have the same name
             .extern_type => |e| std.mem.eql(u8, e.name, other.extern_type.name),
             // FFI pointer types depend on inner type
@@ -251,11 +252,12 @@ pub const Type = union(enum) {
             // - IoError (may contain string payload)
             // - Stdout/Stderr/Stdin (unique handles)
             // - BufReader/BufWriter (wrap I/O types, have internal state)
+            // - Path (owns string data for filesystem path)
             // - Unknown/error types (conservative)
             // - Associated type refs (will be resolved during monomorphization)
             // - Extern types (opaque or sized, treat as non-Copy for safety)
             // - CStrOwned (owns null-terminated C string memory)
-            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .unknown, .error_type, .associated_type_ref, .extern_type, .cstr_owned => false,
+            .slice, .enum_, .trait_, .result, .function, .rc, .weak_rc, .arc, .weak_arc, .cell, .list, .map, .set, .string_data, .context_error, .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle, .buf_reader, .buf_writer, .path, .unknown, .error_type, .associated_type_ref, .extern_type, .cstr_owned => false,
         };
     }
 };
@@ -947,6 +949,11 @@ pub const TypeBuilder = struct {
         return .{ .stdin_handle = {} };
     }
 
+    pub fn pathType(self: *TypeBuilder) Type {
+        _ = self;
+        return .{ .path = {} };
+    }
+
     // Buffered I/O type constructors
     pub fn bufReaderType(self: *TypeBuilder, inner: Type) !Type {
         const br = try self.arena.allocator().create(BufReaderType);
@@ -1110,6 +1117,7 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .stdout_handle => try writer.writeAll("Stdout"),
         .stderr_handle => try writer.writeAll("Stderr"),
         .stdin_handle => try writer.writeAll("Stdin"),
+        .path => try writer.writeAll("Path"),
         .buf_reader => |br| {
             try writer.writeAll("BufReader[");
             try formatType(writer, br.inner);

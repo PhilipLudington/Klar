@@ -1,0 +1,51 @@
+// Test fs_read_dir function
+// Expected: 0
+
+fn main() -> i32 {
+    let test_dir: string = "/tmp/klar_fs_readdir_test"
+
+    // Create a test directory
+    let create_result: Result[void, IoError] = fs_create_dir(test_dir)
+    if not create_result.is_ok() {
+        // Directory might already exist, try to remove and recreate
+        let _: Result[void, IoError] = fs_remove_dir(test_dir)
+        let create_result2: Result[void, IoError] = fs_create_dir(test_dir)
+        if not create_result2.is_ok() {
+            return 1
+        }
+    }
+
+    // Create some test files in the directory
+    let file1: string = "/tmp/klar_fs_readdir_test/file1.txt"
+    let file2: string = "/tmp/klar_fs_readdir_test/file2.txt"
+    let file3: string = "/tmp/klar_fs_readdir_test/file3.txt"
+
+    let w1: Result[void, IoError] = fs_write_string(file1, "a")
+    let w2: Result[void, IoError] = fs_write_string(file2, "b")
+    let w3: Result[void, IoError] = fs_write_string(file3, "c")
+
+    if not w1.is_ok() or not w2.is_ok() or not w3.is_ok() {
+        return 2
+    }
+
+    // Read directory contents
+    let entries_result: Result[List[String], IoError] = fs_read_dir(test_dir)
+    if not entries_result.is_ok() {
+        return 3
+    }
+
+    let entries: List[String] = entries_result!
+
+    // Should have exactly 3 files (. and .. are filtered out)
+    if entries.len() != 3 {
+        return 4
+    }
+
+    // Clean up - remove files and directory
+    let _r1: Result[void, IoError] = fs_remove_file(file1)
+    let _r2: Result[void, IoError] = fs_remove_file(file2)
+    let _r3: Result[void, IoError] = fs_remove_file(file3)
+    let _r4: Result[void, IoError] = fs_remove_dir(test_dir)
+
+    return 0
+}

@@ -1,5 +1,5 @@
 // Test: Error when unsafe function called outside unsafe context
-// This file SHOULD produce a compile error.
+// Expected: build-error
 
 unsafe fn dangerous() -> i32 {
     return 42
