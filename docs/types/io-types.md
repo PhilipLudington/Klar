@@ -281,6 +281,74 @@ fn interactive_menu() -> i32 {
 }
 ```
 
+## Path Type
+
+The `Path` type represents a filesystem path and provides methods for path manipulation.
+
+### Creating Paths
+
+```klar
+let p: Path = Path.new("/home/user/documents")
+```
+
+### Path Methods
+
+```klar
+let p: Path = Path.new("/home/user/file.txt")
+
+// Convert to string
+let s: string = p.to_string()  // "/home/user/file.txt"
+
+// Join path components (handles trailing slashes correctly)
+let joined: Path = p.join("subdir")  // "/home/user/file.txt/subdir"
+
+// Get parent directory
+let parent: ?Path = p.parent()  // Some(Path("/home/user"))
+
+// Get filename
+let name: ?string = p.file_name()  // Some("file.txt")
+
+// Get extension
+let ext: ?string = p.extension()  // Some("txt")
+
+// Check existence and type
+let exists: bool = p.exists()
+let is_file: bool = p.is_file()
+let is_dir: bool = p.is_dir()
+```
+
+### Path Method Reference
+
+| Method | Description |
+|--------|-------------|
+| `Path.new(s)` | Create path from string |
+| `.to_string()` | Convert to string |
+| `.join(other)` | Join with another path component |
+| `.parent()` | Get parent directory as `?Path` |
+| `.file_name()` | Get filename component as `?string` |
+| `.extension()` | Get file extension as `?string` |
+| `.exists()` | Check if path exists |
+| `.is_file()` | Check if path is a regular file |
+| `.is_dir()` | Check if path is a directory |
+
+### Edge Cases for `.parent()`
+
+The `.parent()` method returns `None` for paths without a directory separator:
+
+| Path | `.parent()` Result |
+|------|-------------------|
+| `"/home/user"` | `Some(Path("/home"))` |
+| `"/home"` | `Some(Path("/"))` |
+| `"/"` | `Some(Path("/"))` — root is its own parent |
+| `"file.txt"` | `None` — no directory separator |
+| `"dir/file.txt"` | `Some(Path("dir"))` |
+
+> **Note:** Unlike some languages that return `"."` for paths without a separator,
+> Klar returns `None` to make it explicit that there is no parent directory component.
+> Use pattern matching to handle this case.
+
+---
+
 ## Filesystem Functions
 
 Klar provides standalone functions for common filesystem operations.

@@ -73,7 +73,7 @@ Added test cases in `test/native/fs/path_basic.kl` for:
 
 ---
 
-## [ ] Bug 4: Missing test coverage for fs_create_dir_all with deep nesting
+## [x] Bug 4: Missing test coverage for fs_create_dir_all with deep nesting
 
 **File:** `test/native/fs/`
 
@@ -86,11 +86,20 @@ let result: Result[void, IoError] = fs_create_dir_all(deep_path)
 // Verify all intermediate directories were created
 ```
 
+**Resolution:** Added `test/native/fs/fs_create_dir_all.kl` with comprehensive tests for:
+- Creating a deeply nested path `/tmp/klar_test_deep/a/b/c/d/e`
+- Verifying all intermediate directories (`a`, `a/b`, `a/b/c`, `a/b/c/d`) are created
+- Creating an already-existing directory (should succeed - idempotent)
+- Creating a path with trailing slash `/tmp/klar_test_deep/x/y/z/`
+- Proper cleanup of all created directories
+
+Also fixed a bug in `emitFsCreateDirAll` in `src/codegen/emit.zig` where basic blocks were created inline and then incorrectly looked up via `LLVMGetPreviousBasicBlock`. The fix creates all basic blocks upfront and references them directly.
+
 **Severity:** Low
 
 ---
 
-## [ ] Bug 5: Magic numbers for file mode constants
+## [x] Bug 5: Magic numbers for file mode constants
 
 **File:** `src/codegen/emit.zig:1257-1258`, `1313-1315`
 
@@ -108,11 +117,19 @@ const S_IFREG: u32 = 0x8000;
 const S_IFDIR: u32 = 0x4000;
 ```
 
+**Resolution:** Named constants are already defined at the top of `src/codegen/emit.zig` (lines 41-44):
+```zig
+const S_IFMT: u32 = 0o170000; // File type mask
+const S_IFREG: u32 = 0o100000; // Regular file
+const S_IFDIR: u32 = 0o040000; // Directory
+```
+These constants are used in `emitStatIsFile` and `emitStatIsDir`. The octal notation (`0o170000`) is equivalent to hex (`0xF000`) but is more consistent with POSIX documentation.
+
 **Severity:** Low (code quality)
 
 ---
 
-## [ ] Bug 6: Code duplication in emitStatIsFile and emitStatIsDir
+## [x] Bug 6: Code duplication in emitStatIsFile and emitStatIsDir
 
 **File:** `src/codegen/emit.zig:1213-1330`
 
@@ -122,6 +139,16 @@ const S_IFDIR: u32 = 0x4000;
 ```zig
 fn emitStatModeCheck(self: *Emitter, path_val: llvm.ValueRef, mode_mask: u32) EmitError!llvm.ValueRef
 ```
+
+**Resolution:** Extracted common helper `emitStatModeCheck` that takes comptime parameters for the file type mask and label prefix:
+```zig
+fn emitStatModeCheck(self: *Emitter, path_val: llvm.ValueRef, comptime file_type_mask: u32, comptime label_prefix: []const u8) EmitError!llvm.ValueRef
+```
+The original functions are now one-liners that delegate to this helper:
+- `emitStatIsFile` calls `emitStatModeCheck(path_val, S_IFREG, "isfile")`
+- `emitStatIsDir` calls `emitStatModeCheck(path_val, S_IFDIR, "isdir")`
+
+This reduces ~120 lines of duplicated code to ~60 lines of shared code plus 2 one-liner wrappers.
 
 **Severity:** Low (code quality)
 
@@ -156,7 +183,7 @@ Also updated `scripts/run-native-tests.sh` to include tests from subdirectories.
 
 ---
 
-## [ ] Bug 8: Windows support not documented as unsupported
+## [x] Bug 8: Windows support not documented as unsupported
 
 **File:** `PLAN.md`, `docs/`
 
@@ -165,11 +192,15 @@ Also updated `scripts/run-native-tests.sh` to include tests from subdirectories.
 **Suggested Fix:** Add a note to PLAN.md Milestone 5 section:
 > Note: Filesystem operations currently support macOS and Linux only. Windows support is not implemented.
 
+**Resolution:** Platform support is now documented in two places:
+- `PLAN.md` Milestone 5 section: Added "Platform Support" subsection with note about POSIX-only implementation
+- `docs/types/io-types.md` line 375: Already had a note stating "Filesystem operations currently support macOS and Linux only. Windows is not implemented."
+
 **Severity:** Low (documentation)
 
 ---
 
-## [ ] Bug 9: errno values are Linux-specific in emitErrnoToIoError
+## [x] Bug 9: errno values are Linux-specific in emitErrnoToIoError
 
 **File:** `src/codegen/emit.zig:1361-1436`
 
@@ -182,17 +213,40 @@ While these values are consistent across most Unix systems, they should ideally 
 
 **Suggested Fix:** Consider using `@cImport` to get errno constants, or document that these are POSIX-standard values.
 
+**Resolution:** Used `@cImport` to get errno values from system headers:
+1. Added `@cInclude("errno.h")` to the existing posix `@cImport` block
+2. Defined named constants at module level:
+   ```zig
+   const ENOENT: i32 = posix.ENOENT; // No such file or directory
+   const EACCES: i32 = posix.EACCES; // Permission denied
+   const EEXIST: i32 = posix.EEXIST; // File exists
+   const EINVAL: i32 = posix.EINVAL; // Invalid argument
+   ```
+3. Updated `emitErrnoToIoError` and `emitFsCreateDirAll` to use these named constants instead of magic numbers
+
+This ensures correct errno values on all POSIX platforms (macOS, Linux, *BSD).
+
 **Severity:** Low
 
 ---
 
-## [ ] Bug 10: Path.parent() returns None for paths without separator
+## [x] Bug 10: Path.parent() returns None for paths without separator
 
 **File:** `src/codegen/emit.zig:802-942`
 
 **Description:** For a path like `"filename.txt"` (no directory component), `parent()` returns `None`. This might be unexpected - some users might expect `"."` (current directory) to be returned.
 
 **Suggested Fix:** Document the behavior clearly, or consider returning `Some(Path.new("."))` for relative paths without a parent.
+
+**Resolution:** Documented the behavior clearly in two places:
+
+1. **PLAN.md** - Added detailed note with examples showing `.parent()` behavior for different path types
+2. **docs/types/io-types.md** - Added comprehensive "Path Type" section with:
+   - Method reference table
+   - "Edge Cases for `.parent()`" table showing all scenarios
+   - Explicit note explaining that Klar returns `None` (not `"."`) to make it explicit there's no parent
+
+The current behavior (returning `None`) is intentional as it makes the absence of a parent explicit, requiring pattern matching to handle the case.
 
 **Severity:** Low (design decision)
 
@@ -203,8 +257,10 @@ While these values are consistent across most Unix systems, they should ideally 
 | Severity | Count | Fixed |
 |----------|-------|-------|
 | Medium   | 3     | 3     |
-| Low      | 7     | 1     |
+| Low      | 7     | 7     |
 
-**Total Issues:** 10 (4 fixed, 6 remaining)
+**Total Issues:** 10 (10 fixed, 0 remaining)
+
+**All issues from PR #2 code review have been addressed.**
 
 **Recommendation:** The PR is ready to merge with these issues tracked for future improvement. The remaining medium-severity issue (missing error tests) should be addressed in follow-up work.

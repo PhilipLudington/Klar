@@ -86,13 +86,19 @@ See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-4-sta
 ### Path Type Methods
 - `Path.new(s: string) -> Path` - construct from string
 - `.to_string() -> string` - convert to string
-- `.join(other: string) -> Path` - join path components
-- `.parent() -> ?Path` - get parent directory
+- `.join(other: string) -> Path` - join path components (handles trailing slashes)
+- `.parent() -> ?Path` - get parent directory (returns `None` for paths without `/`)
 - `.file_name() -> ?string` - get filename component
 - `.extension() -> ?string` - get file extension
 - `.exists() -> bool` - check if path exists
 - `.is_file() -> bool` - check if path is a file
 - `.is_dir() -> bool` - check if path is a directory
+
+> **Note on `.parent()` behavior:**
+> - `Path.new("/home/user").parent()` → `Some(Path("/home"))`
+> - `Path.new("/").parent()` → `Some(Path("/"))` (root is its own parent)
+> - `Path.new("file.txt").parent()` → `None` (no directory separator)
+> - `Path.new("dir/file.txt").parent()` → `Some(Path("dir"))`
 
 ### Filesystem Functions
 - `fs_exists(path: string) -> bool`
@@ -110,6 +116,9 @@ See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-4-sta
 All filesystem tests in `test/native/fs/`:
 - fs_exists.kl, fs_create_remove.kl, fs_read_write.kl, fs_read_dir.kl
 - path_basic.kl, path_exists.kl
+
+### Platform Support
+> **Note:** File I/O and filesystem operations use POSIX syscalls (stat, mkdir, unlink, rmdir, opendir, readdir, etc.) and currently support **macOS and Linux only**. Windows is not implemented.
 
 ---
 

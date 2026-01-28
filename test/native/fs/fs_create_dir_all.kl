@@ -1,0 +1,78 @@
+// Test fs_create_dir_all with deep nesting
+// Expected: 0
+
+fn main() -> i32 {
+    let base_dir: string = "/tmp/klar_test_deep"
+    let deep_path: string = "/tmp/klar_test_deep/a/b/c/d/e"
+
+    // Clean up any leftover test directories from previous runs
+    // Remove in reverse order (deepest first)
+    let pre1: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/a/b/c/d/e")
+    let pre2: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/a/b/c/d")
+    let pre3: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/a/b/c")
+    let pre4: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/a/b")
+    let pre5: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/a")
+    let pre6: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep")
+
+    // Create the deep directory structure
+    let result: Result[void, IoError] = fs_create_dir_all(deep_path)
+    if not result.is_ok() {
+        return 1
+    }
+
+    // Verify the deepest directory exists
+    if not fs_exists(deep_path) {
+        return 2
+    }
+    if not fs_is_dir(deep_path) {
+        return 3
+    }
+
+    // Verify all intermediate directories were created
+    if not fs_is_dir("/tmp/klar_test_deep/a") {
+        return 4
+    }
+    if not fs_is_dir("/tmp/klar_test_deep/a/b") {
+        return 5
+    }
+    if not fs_is_dir("/tmp/klar_test_deep/a/b/c") {
+        return 6
+    }
+    if not fs_is_dir("/tmp/klar_test_deep/a/b/c/d") {
+        return 7
+    }
+
+    // Test creating a directory that already exists (should succeed)
+    let result2: Result[void, IoError] = fs_create_dir_all(deep_path)
+    if not result2.is_ok() {
+        return 8
+    }
+
+    // Test creating with trailing slash
+    let trailing_path: string = "/tmp/klar_test_deep/x/y/z/"
+    let result3: Result[void, IoError] = fs_create_dir_all(trailing_path)
+    if not result3.is_ok() {
+        return 9
+    }
+    if not fs_is_dir("/tmp/klar_test_deep/x/y/z") {
+        return 10
+    }
+
+    // Clean up: remove all created directories (deepest first)
+    let c1: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/x/y/z")
+    let c2: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/x/y")
+    let c3: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/x")
+    let c4: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/a/b/c/d/e")
+    let c5: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/a/b/c/d")
+    let c6: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/a/b/c")
+    let c7: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/a/b")
+    let c8: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep/a")
+    let c9: Result[void, IoError] = fs_remove_dir("/tmp/klar_test_deep")
+
+    // Verify cleanup
+    if fs_exists(base_dir) {
+        return 11
+    }
+
+    return 0
+}

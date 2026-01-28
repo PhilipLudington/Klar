@@ -27,6 +27,7 @@ const layout = @import("layout.zig");
 const posix = @cImport({
     @cInclude("sys/stat.h");
     @cInclude("dirent.h");
+    @cInclude("errno.h");
 });
 
 /// Offset of st_mode field within struct stat (in bytes).
@@ -42,6 +43,13 @@ const dirent_name_offset: u32 = @offsetOf(posix.struct_dirent, "d_name");
 const S_IFMT: u32 = 0o170000; // File type mask
 const S_IFREG: u32 = 0o100000; // Regular file
 const S_IFDIR: u32 = 0o040000; // Directory
+
+/// POSIX errno values from system headers.
+/// These are used to map C library errors to Klar's IoError enum.
+const ENOENT: i32 = posix.ENOENT; // No such file or directory
+const EACCES: i32 = posix.EACCES; // Permission denied
+const EEXIST: i32 = posix.EEXIST; // File exists
+const EINVAL: i32 = posix.EINVAL; // Invalid argument
 
 /// Errors that can occur during IR emission.
 pub const EmitError = error{
@@ -21555,7 +21563,9 @@ pub const Emitter = struct {
     // ==================== Filesystem Functions ====================
 
     /// Helper to call stat and check if path is a regular file
-    fn emitStatIsFile(self: *Emitter, path_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+    /// Common helper to call stat and check if path matches a file type.
+    /// Returns true if stat succeeds and (st_mode & S_IFMT) == file_type_mask.
+    fn emitStatModeCheck(self: *Emitter, path_val: llvm.ValueRef, comptime file_type_mask: u32, comptime label_prefix: []const u8) EmitError!llvm.ValueRef {
         const i32_type = llvm.Types.int32(self.ctx);
 
         // stat struct size varies by platform, use 256 bytes to be safe
@@ -21571,15 +21581,15 @@ pub const Emitter = struct {
 
         // Create branches for stat success/failure
         const func = self.current_function orelse return EmitError.InvalidAST;
-        const stat_ok_bb = llvm.appendBasicBlock(self.ctx, func, "isfile.stat_ok");
-        const stat_fail_bb = llvm.appendBasicBlock(self.ctx, func, "isfile.stat_fail");
-        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "isfile.cont");
+        const stat_ok_bb = llvm.appendBasicBlock(self.ctx, func, label_prefix ++ ".stat_ok");
+        const stat_fail_bb = llvm.appendBasicBlock(self.ctx, func, label_prefix ++ ".stat_fail");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, label_prefix ++ ".cont");
 
         _ = self.builder.buildCondBr(stat_ok, stat_ok_bb, stat_fail_bb);
 
         // Stat succeeded - check st_mode
         self.builder.positionAtEnd(stat_ok_bb);
-        // Use S_ISREG macro equivalent: (mode & S_IFMT) == S_IFREG
+        // Use S_ISREG/S_ISDIR macro equivalent: (mode & S_IFMT) == file_type_mask
         // Offsets are computed from system headers via @cImport (see top of file)
         var gep_indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, stat_mode_offset)};
         const mode_ptr = llvm.c.LLVMBuildGEP2(
@@ -21599,7 +21609,7 @@ pub const Emitter = struct {
         else
             mode;
         const masked = llvm.c.LLVMBuildAnd(self.builder.ref, mode_i32, llvm.Const.int32(self.ctx, S_IFMT), "mode.masked");
-        const is_file = self.builder.buildICmp(llvm.c.LLVMIntEQ, masked, llvm.Const.int32(self.ctx, S_IFREG), "isfile.check");
+        const matches = self.builder.buildICmp(llvm.c.LLVMIntEQ, masked, llvm.Const.int32(self.ctx, @intCast(file_type_mask)), label_prefix ++ ".check");
         _ = self.builder.buildBr(cont_bb);
 
         // Stat failed - return false
@@ -21608,72 +21618,22 @@ pub const Emitter = struct {
 
         // Merge results with phi
         self.builder.positionAtEnd(cont_bb);
-        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, llvm.Types.int1(self.ctx), "isfile.phi");
-        var incoming_vals = [_]llvm.ValueRef{ is_file, llvm.Const.int1(self.ctx, false) };
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, llvm.Types.int1(self.ctx), label_prefix ++ ".phi");
+        var incoming_vals = [_]llvm.ValueRef{ matches, llvm.Const.int1(self.ctx, false) };
         var incoming_blocks = [_]llvm.BasicBlockRef{ stat_ok_bb, stat_fail_bb };
         llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 2);
 
         return phi;
     }
 
+    /// Helper to call stat and check if path is a regular file
+    fn emitStatIsFile(self: *Emitter, path_val: llvm.ValueRef) EmitError!llvm.ValueRef {
+        return self.emitStatModeCheck(path_val, S_IFREG, "isfile");
+    }
+
     /// Helper to call stat and check if path is a directory
     fn emitStatIsDir(self: *Emitter, path_val: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const i32_type = llvm.Types.int32(self.ctx);
-
-        // stat struct size varies by platform, use 256 bytes to be safe
-        const stat_buf = self.builder.buildAlloca(llvm.Types.array(llvm.Types.int8(self.ctx), 256), "stat.buf");
-
-        // Call stat(path, &stat_buf)
-        const stat_fn = self.getOrDeclareStat();
-        var stat_args = [_]llvm.ValueRef{ path_val, stat_buf };
-        const stat_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stat_fn), stat_fn, &stat_args, "stat.result");
-
-        // Check if stat succeeded
-        const stat_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, stat_result, llvm.Const.int32(self.ctx, 0), "stat.ok");
-
-        const func = self.current_function orelse return EmitError.InvalidAST;
-        const stat_ok_bb = llvm.appendBasicBlock(self.ctx, func, "isdir.stat_ok");
-        const stat_fail_bb = llvm.appendBasicBlock(self.ctx, func, "isdir.stat_fail");
-        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "isdir.cont");
-
-        _ = self.builder.buildCondBr(stat_ok, stat_ok_bb, stat_fail_bb);
-
-        // Stat succeeded - check st_mode for directory
-        // Offsets are computed from system headers via @cImport (see top of file)
-        self.builder.positionAtEnd(stat_ok_bb);
-        var gep_indices2 = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, stat_mode_offset)};
-        const mode_ptr = llvm.c.LLVMBuildGEP2(
-            self.builder.ref,
-            llvm.Types.int8(self.ctx),
-            stat_buf,
-            &gep_indices2,
-            1,
-            "mode.ptr",
-        );
-        const mode_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, mode_ptr, llvm.Types.pointer(self.ctx), "mode.ptr.cast");
-        // Load st_mode with correct size from system headers
-        const mode_type = if (stat_mode_bits == 16) llvm.Types.int16(self.ctx) else llvm.Types.int32(self.ctx);
-        const mode = self.builder.buildLoad(mode_type, mode_ptr_cast, "mode");
-        const mode_i32 = if (stat_mode_bits == 16)
-            llvm.c.LLVMBuildZExt(self.builder.ref, mode, i32_type, "mode.i32")
-        else
-            mode;
-        const masked = llvm.c.LLVMBuildAnd(self.builder.ref, mode_i32, llvm.Const.int32(self.ctx, S_IFMT), "mode.masked");
-        const is_dir = self.builder.buildICmp(llvm.c.LLVMIntEQ, masked, llvm.Const.int32(self.ctx, S_IFDIR), "isdir.check");
-        _ = self.builder.buildBr(cont_bb);
-
-        // Stat failed - return false
-        self.builder.positionAtEnd(stat_fail_bb);
-        _ = self.builder.buildBr(cont_bb);
-
-        // Merge results with phi
-        self.builder.positionAtEnd(cont_bb);
-        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, llvm.Types.int1(self.ctx), "isdir.phi");
-        var incoming_vals = [_]llvm.ValueRef{ is_dir, llvm.Const.int1(self.ctx, false) };
-        var incoming_blocks = [_]llvm.BasicBlockRef{ stat_ok_bb, stat_fail_bb };
-        llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 2);
-
-        return phi;
+        return self.emitStatModeCheck(path_val, S_IFDIR, "isdir");
     }
 
     /// Emit fs_exists(path: string) -> bool
@@ -21713,9 +21673,9 @@ pub const Emitter = struct {
         const errno_ptr = self.getOrDeclareErrno();
         const errno_val = self.builder.buildLoad(llvm.Types.int32(self.ctx), errno_ptr, "errno.val");
 
-        // Map errno to IoError tag
-        // ENOENT=2 -> NotFound(0), EACCES=13 -> PermissionDenied(1), EEXIST=17 -> AlreadyExists(2)
-        // EINVAL=22 -> InvalidInput(3), Others -> Other(5)
+        // Map errno to IoError tag using constants from system headers
+        // ENOENT -> NotFound(0), EACCES -> PermissionDenied(1), EEXIST -> AlreadyExists(2)
+        // EINVAL -> InvalidInput(3), Others -> Other(5)
         const func = self.current_function orelse return;
 
         // Create all blocks upfront
@@ -21733,9 +21693,9 @@ pub const Emitter = struct {
         // Jump to first check
         _ = self.builder.buildBr(check_enoent_bb);
 
-        // Check ENOENT (2)
+        // Check ENOENT
         self.builder.positionAtEnd(check_enoent_bb);
-        const is_enoent = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 2), "is_enoent");
+        const is_enoent = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, ENOENT), "is_enoent");
         _ = self.builder.buildCondBr(is_enoent, enoent_bb, check_eacces_bb);
 
         // ENOENT path
@@ -21743,9 +21703,9 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), err_tag_ptr);
         _ = self.builder.buildBr(done_bb);
 
-        // Check EACCES (13)
+        // Check EACCES
         self.builder.positionAtEnd(check_eacces_bb);
-        const is_eacces = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 13), "is_eacces");
+        const is_eacces = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, EACCES), "is_eacces");
         _ = self.builder.buildCondBr(is_eacces, eacces_bb, check_eexist_bb);
 
         // EACCES path
@@ -21753,9 +21713,9 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 1), err_tag_ptr);
         _ = self.builder.buildBr(done_bb);
 
-        // Check EEXIST (17)
+        // Check EEXIST
         self.builder.positionAtEnd(check_eexist_bb);
-        const is_eexist = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 17), "is_eexist");
+        const is_eexist = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, EEXIST), "is_eexist");
         _ = self.builder.buildCondBr(is_eexist, eexist_bb, check_einval_bb);
 
         // EEXIST path
@@ -21763,9 +21723,9 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 2), err_tag_ptr);
         _ = self.builder.buildBr(done_bb);
 
-        // Check EINVAL (22)
+        // Check EINVAL
         self.builder.positionAtEnd(check_einval_bb);
-        const is_einval = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 22), "is_einval");
+        const is_einval = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, EINVAL), "is_einval");
         _ = self.builder.buildCondBr(is_einval, einval_bb, other_bb);
 
         // EINVAL path
@@ -21860,11 +21820,17 @@ pub const Emitter = struct {
 
         // Loop through path creating directories
         const func = self.current_function orelse return EmitError.InvalidAST;
+        // Create all basic blocks upfront
         const loop_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.loop");
+        const check_char_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.check");
         const mkdir_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.mkdir");
+        const check_eexist_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.check_eexist");
         const next_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.next");
-        const error_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.error");
         const done_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.done");
+        const check_final_eexist_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.check_final_eexist");
+        const success_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.success");
+        const error_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.error");
+        const final_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.final");
 
         // Counter starts at 1 (skip leading /)
         const counter_alloca = self.builder.buildAlloca(i64_type, "dirall.i");
@@ -21875,14 +21841,10 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(loop_bb);
         const i = self.builder.buildLoad(i64_type, counter_alloca, "dirall.i_val");
         const at_end = self.builder.buildICmp(llvm.c.LLVMIntUGE, i, path_len, "dirall.at_end");
-        _ = self.builder.buildCondBr(at_end, done_bb, blk: {
-            const check_char = llvm.appendBasicBlock(self.ctx, func, "dirall.check");
-            break :blk check_char;
-        });
+        _ = self.builder.buildCondBr(at_end, done_bb, check_char_bb);
 
         // Check character
-        const check_char = llvm.c.LLVMGetPreviousBasicBlock(done_bb);
-        self.builder.positionAtEnd(check_char);
+        self.builder.positionAtEnd(check_char_bb);
         var char_idx = [_]llvm.ValueRef{i};
         const char_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, path_copy, &char_idx, 1, "dirall.char_ptr");
         const char_val = self.builder.buildLoad(i8_type, char_ptr, "dirall.char");
@@ -21900,32 +21862,14 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), char_ptr);
         // Check result (ignore EEXIST)
         const mkdir_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, mkdir_result, llvm.Const.int32(self.ctx, 0), "dirall.mkdir_ok");
-        _ = self.builder.buildCondBr(mkdir_ok, next_bb, blk: {
-            // Check if error is EEXIST
-            const check_eexist = llvm.appendBasicBlock(self.ctx, func, "dirall.check_eexist");
-            break :blk check_eexist;
-        });
+        _ = self.builder.buildCondBr(mkdir_ok, next_bb, check_eexist_bb);
 
         // Check if error is EEXIST (which is OK)
-        const check_eexist = llvm.c.LLVMGetPreviousBasicBlock(next_bb);
-        self.builder.positionAtEnd(check_eexist);
-        const errno_ptr = self.getOrDeclareErrno();
-        const errno_val = self.builder.buildLoad(i32_type, errno_ptr, "dirall.errno");
-        const is_eexist = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 17), "dirall.is_eexist");
+        self.builder.positionAtEnd(check_eexist_bb);
+        const errno_ptr1 = self.getOrDeclareErrno();
+        const errno_val = self.builder.buildLoad(i32_type, errno_ptr1, "dirall.errno");
+        const is_eexist = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, EEXIST), "dirall.is_eexist");
         _ = self.builder.buildCondBr(is_eexist, next_bb, error_bb);
-
-        // Error
-        self.builder.positionAtEnd(error_bb);
-        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
-        self.emitErrnoToIoError(err_field_ptr);
-        // Free the path copy
-        const free_fn = self.getOrDeclareFree();
-        var free_args = [_]llvm.ValueRef{path_copy};
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
-        _ = self.builder.buildBr(blk: {
-            const final_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.final");
-            break :blk final_bb;
-        });
 
         // Next iteration
         self.builder.positionAtEnd(next_bb);
@@ -21939,27 +21883,28 @@ pub const Emitter = struct {
         var final_mkdir_args = [_]llvm.ValueRef{ path_copy, llvm.Const.int32(self.ctx, 0o755) };
         const final_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &final_mkdir_args, "dirall.final_mkdir");
         const final_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, final_result, llvm.Const.int32(self.ctx, 0), "dirall.final_ok");
-        _ = self.builder.buildCondBr(final_ok, blk: {
-            const success_bb = llvm.appendBasicBlock(self.ctx, func, "dirall.success");
-            break :blk success_bb;
-        }, blk: {
-            const check_final_eexist = llvm.appendBasicBlock(self.ctx, func, "dirall.check_final_eexist");
-            break :blk check_final_eexist;
-        });
+        _ = self.builder.buildCondBr(final_ok, success_bb, check_final_eexist_bb);
 
         // Check final EEXIST
-        const check_final_eexist = llvm.c.LLVMGetPreviousBasicBlock(error_bb);
-        self.builder.positionAtEnd(check_final_eexist);
-        const errno_val2 = self.builder.buildLoad(i32_type, errno_ptr, "dirall.errno2");
+        self.builder.positionAtEnd(check_final_eexist_bb);
+        const errno_ptr2 = self.getOrDeclareErrno();
+        const errno_val2 = self.builder.buildLoad(i32_type, errno_ptr2, "dirall.errno2");
         const is_eexist2 = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val2, llvm.Const.int32(self.ctx, 17), "dirall.is_eexist2");
-        const success_bb = llvm.c.LLVMGetPreviousBasicBlock(check_final_eexist);
         _ = self.builder.buildCondBr(is_eexist2, success_bb, error_bb);
 
         // Success
         self.builder.positionAtEnd(success_bb);
-        var free_args2 = [_]llvm.ValueRef{path_copy};
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args2, "");
-        const final_bb = llvm.c.LLVMGetNextBasicBlock(error_bb);
+        const free_fn = self.getOrDeclareFree();
+        var free_args_success = [_]llvm.ValueRef{path_copy};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args_success, "");
+        _ = self.builder.buildBr(final_bb);
+
+        // Error
+        self.builder.positionAtEnd(error_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        var free_args_error = [_]llvm.ValueRef{path_copy};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args_error, "");
         _ = self.builder.buildBr(final_bb);
 
         // Final
