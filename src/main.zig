@@ -185,6 +185,11 @@ pub fn main() !void {
             }
         }
 
+        // Warn if --entry is used without --freestanding
+        if (entry_point != null and !freestanding) {
+            try getStdErr().writeAll("Warning: --entry has no effect without --freestanding\n");
+        }
+
         try buildNative(allocator, args[2], .{
             .output_path = output_path,
             .emit_llvm_ir = emit_llvm,

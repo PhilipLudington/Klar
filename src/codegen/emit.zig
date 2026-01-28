@@ -860,6 +860,19 @@ pub const Emitter = struct {
         return llvm.c.LLVMAddFunction(self.module.ref, "snprintf", fn_type);
     }
 
+    /// Determine the LLVM function name for a Klar function.
+    /// - In freestanding mode: use custom entry point if this is "main", otherwise use original name
+    /// - In normal mode: use _klar_user_main for main(args: [String]), otherwise use original name
+    fn getFunctionName(self: *Emitter, func_name: []const u8, is_main_with_args: bool) []const u8 {
+        if (self.freestanding) {
+            if (std.mem.eql(u8, func_name, "main")) {
+                return self.entry_point orelse "main";
+            }
+            return func_name;
+        }
+        return if (is_main_with_args) "_klar_user_main" else func_name;
+    }
+
     /// Register a struct declaration for later field name resolution.
     fn registerStructDecl(self: *Emitter, struct_decl: *ast.StructDecl) EmitError!void {
         // Skip if already registered
@@ -926,22 +939,7 @@ pub const Emitter = struct {
 
         const fn_type = llvm.Types.function(return_type, param_types.items, false);
 
-        // Determine the function name:
-        // - In freestanding mode: use custom entry point if this is "main", otherwise use original name
-        // - In normal mode: use _klar_user_main for main(args: [String]), otherwise use original name
-        const func_name = blk: {
-            if (self.freestanding) {
-                // In freestanding mode, if user specified --entry and this is main, use entry name
-                if (std.mem.eql(u8, func.name, "main")) {
-                    break :blk self.entry_point orelse "main";
-                }
-                // Otherwise use the original name
-                break :blk func.name;
-            } else {
-                // Normal mode: rename main(args: [String]) to _klar_user_main
-                break :blk if (is_main_with_args) "_klar_user_main" else func.name;
-            }
-        };
+        const func_name = self.getFunctionName(func.name, is_main_with_args);
         const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
         const llvm_func = llvm.addFunction(self.module, name, fn_type);
@@ -1411,17 +1409,7 @@ pub const Emitter = struct {
             func.params.len == 1 and
             self.isStringSliceTypeExpr(func.params[0].type_);
 
-        // Determine the function name - must match what declareFunction used
-        const func_name = blk: {
-            if (self.freestanding) {
-                if (std.mem.eql(u8, func.name, "main")) {
-                    break :blk self.entry_point orelse "main";
-                }
-                break :blk func.name;
-            } else {
-                break :blk if (is_main_with_args) "_klar_user_main" else func.name;
-            }
-        };
+        const func_name = self.getFunctionName(func.name, is_main_with_args);
         const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
 
