@@ -26,9 +26,9 @@ This is fragile and may break on:
 
 ---
 
-## [ ] Bug 2: Path.join() doesn't handle trailing slashes
+## [x] Bug 2: Path.join() doesn't handle trailing slashes
 
-**File:** `src/codegen/emit.zig:694-791`
+**File:** `src/codegen/emit.zig:21109-21169`
 
 **Description:** The `Path.join()` implementation always adds a `/` separator between the base path and the component being joined. This can lead to double slashes:
 
@@ -39,6 +39,16 @@ let p2: Path = p.join("documents")
 ```
 
 **Suggested Fix:** Check if the base path already ends with `/` before adding the separator, or normalize paths after joining.
+
+**Resolution:** Updated `emitPathJoin` to check if the path already ends with `/` before adding a separator. The fix:
+1. Loads the last character of the path
+2. Compares it to '/'
+3. Uses LLVM select to conditionally determine if separator is needed
+4. Adjusts buffer allocation and copy positions accordingly
+
+Added test cases in `test/native/fs/path_basic.kl` for:
+- Path with trailing slash joined with component
+- Root path "/" joined with component
 
 **Severity:** Low
 
@@ -193,8 +203,8 @@ While these values are consistent across most Unix systems, they should ideally 
 | Severity | Count | Fixed |
 |----------|-------|-------|
 | Medium   | 3     | 3     |
-| Low      | 7     | 0     |
+| Low      | 7     | 1     |
 
-**Total Issues:** 10 (3 fixed, 7 remaining)
+**Total Issues:** 10 (4 fixed, 6 remaining)
 
 **Recommendation:** The PR is ready to merge with these issues tracked for future improvement. The remaining medium-severity issue (missing error tests) should be addressed in follow-up work.

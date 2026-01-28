@@ -21111,6 +21111,7 @@ pub const Emitter = struct {
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
 
         // Load current path data
         const path_data_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, path_type, path_ptr, 0, "join.data_ptr");
@@ -21124,9 +21125,35 @@ pub const Emitter = struct {
         const other_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "join.other_len");
         const other_len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, other_len, i32_type, "join.other_len_i32");
 
-        // Calculate new length: path_len + 1 (separator) + other_len
-        const sep_size = llvm.Const.int32(self.ctx, 1);
-        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, path_len, sep_size, "join.len1");
+        // Check if path already ends with '/' to avoid double slashes
+        // If path_len > 0, check last character; otherwise need separator
+        const path_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, path_len, i64_type, "join.path_len_i64");
+        const len_gt_zero = self.builder.buildICmp(llvm.c.LLVMIntSGT, path_len, llvm.Const.int32(self.ctx, 0), "join.len_gt_zero");
+
+        // Load last character (path_data[path_len - 1])
+        const last_idx_i32 = llvm.c.LLVMBuildSub(self.builder.ref, path_len, llvm.Const.int32(self.ctx, 1), "join.last_idx");
+        const last_idx_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, last_idx_i32, i64_type, "join.last_idx_i64");
+        var last_char_idx = [_]llvm.ValueRef{last_idx_i64};
+        const last_char_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, path_data, &last_char_idx, 1, "join.last_char_ptr");
+        const last_char = self.builder.buildLoad(i8_type, last_char_ptr, "join.last_char");
+
+        // Check if last char is '/'
+        const slash_char = llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false);
+        const ends_with_slash = self.builder.buildICmp(llvm.c.LLVMIntEQ, last_char, slash_char, "join.ends_slash");
+
+        // need_sep = !(len > 0 && ends_with_slash)
+        // If path is empty or doesn't end with slash, we need a separator
+        const has_trailing_slash = self.builder.buildAnd(len_gt_zero, ends_with_slash, "join.has_trailing");
+        const need_sep = llvm.c.LLVMBuildSelect(
+            self.builder.ref,
+            has_trailing_slash,
+            llvm.Const.int32(self.ctx, 0), // Don't add separator
+            llvm.Const.int32(self.ctx, 1), // Add separator
+            "join.need_sep",
+        );
+
+        // Calculate new length: path_len + need_sep + other_len
+        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, path_len, need_sep, "join.len1");
         const new_len2 = llvm.c.LLVMBuildAdd(self.builder.ref, new_len, other_len_i32, "join.new_len");
         const new_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, new_len2, i64_type, "join.new_len_i64");
 
@@ -21138,20 +21165,36 @@ pub const Emitter = struct {
 
         // Copy path data
         const memcpy_fn = self.getOrDeclareMemcpy();
-        const path_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, path_len, i64_type, "join.path_len_i64");
         var memcpy_args1 = [_]llvm.ValueRef{ new_buffer, path_data, path_len_i64 };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args1, "");
 
-        // Add separator '/'
-        const i8_type = llvm.Types.int8(self.ctx);
+        // Conditionally add separator '/' only if needed
+        // We'll always write to path_len position, but the value depends on need_sep
+        // If need_sep == 1, write '/'; if need_sep == 0, the other string copy will overwrite
         var sep_idx = [_]llvm.ValueRef{path_len_i64};
         const sep_pos = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, new_buffer, &sep_idx, 1, "join.sep_pos");
-        _ = self.builder.buildStore(llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), sep_pos);
+        const sep_needed = self.builder.buildICmp(llvm.c.LLVMIntEQ, need_sep, llvm.Const.int32(self.ctx, 1), "join.sep_needed");
 
-        // Copy other string
-        const after_sep_i64 = llvm.c.LLVMBuildAdd(self.builder.ref, path_len_i64, llvm.Const.int64(self.ctx, 1), "join.after_sep");
-        var after_sep_idx = [_]llvm.ValueRef{after_sep_i64};
-        const other_pos = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, new_buffer, &after_sep_idx, 1, "join.other_pos");
+        // Use basic blocks to conditionally store the separator
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const store_sep_bb = llvm.appendBasicBlock(self.ctx, func, "join.store_sep");
+        const after_sep_bb = llvm.appendBasicBlock(self.ctx, func, "join.after_sep");
+
+        _ = self.builder.buildCondBr(sep_needed, store_sep_bb, after_sep_bb);
+
+        // Store separator block
+        self.builder.positionAtEnd(store_sep_bb);
+        _ = self.builder.buildStore(slash_char, sep_pos);
+        _ = self.builder.buildBr(after_sep_bb);
+
+        // Continue after conditional separator
+        self.builder.positionAtEnd(after_sep_bb);
+
+        // Copy other string at position path_len + need_sep
+        const need_sep_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, need_sep, i64_type, "join.need_sep_i64");
+        const other_offset_i64 = llvm.c.LLVMBuildAdd(self.builder.ref, path_len_i64, need_sep_i64, "join.other_offset");
+        var other_offset_idx = [_]llvm.ValueRef{other_offset_i64};
+        const other_pos = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, new_buffer, &other_offset_idx, 1, "join.other_pos");
         const other_len_plus_null = llvm.c.LLVMBuildAdd(self.builder.ref, other_len, llvm.Const.int64(self.ctx, 1), "join.other_plus_null");
         var memcpy_args2 = [_]llvm.ValueRef{ other_pos, other_val, other_len_plus_null };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args2, "");

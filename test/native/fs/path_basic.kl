@@ -39,5 +39,21 @@ fn main() -> i32 {
         return 6
     }
 
+    // Test join with trailing slash (Bug 2 fix: should not produce double slashes)
+    let p4: Path = Path.new("/home/user/")
+    let p5: Path = p4.join("documents")
+    let s5: string = p5.to_string()
+    if s5 != "/home/user/documents" {
+        return 7
+    }
+
+    // Test join on root path with trailing slash
+    let p6: Path = Path.new("/")
+    let p7: Path = p6.join("home")
+    let s7: string = p7.to_string()
+    if s7 != "/home" {
+        return 8
+    }
+
     return 0
 }
