@@ -497,11 +497,12 @@ Create `test/native/ffi/fn_ptr/`:
 - [x] extern_fn_param.kl - Function pointer parameters in extern functions (in scratch/)
 - [x] extern_fn_optional.kl - Nullable function pointers with `?extern fn`
 - [x] extern_fn_qsort.kl - Real-world qsort callback example
+- [x] extern_fn_signal.kl - Signal handler callback example
 
 ### Documentation
 
-- [ ] Add section to docs/advanced/ffi.md
-- [ ] Update klar-ffi-spec.md with function pointer specification
+- [x] Add section to docs/advanced/ffi.md
+- [x] Update klar-ffi-spec.md with function pointer specification
 - [ ] Add examples in docs/examples/
 
 ### Success Criteria
@@ -512,7 +513,7 @@ Create `test/native/ffi/fn_ptr/`:
 - [x] Compile-time error prevents capturing closures from becoming C callbacks
 - [x] `?extern fn` works for nullable function pointers
 - [x] qsort example works with custom comparator
-- [ ] Signal handler example works
+- [x] Signal handler example works
 - [x] All tests pass
 
 ---

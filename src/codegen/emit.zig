@@ -960,7 +960,7 @@ pub const Emitter = struct {
         // Check if return type requires sret calling convention
         const needs_sret = if (func.return_type) |rt| self.requiresSretForTypeExpr(rt) else false;
         const return_llvm_type = if (func.return_type) |rt|
-            try self.typeExprToLLVM(rt)
+            if (isVoidTypeExpr(rt)) llvm.Types.void_(self.ctx) else try self.typeExprToLLVM(rt)
         else
             llvm.Types.void_(self.ctx);
 
@@ -1015,6 +1015,8 @@ pub const Emitter = struct {
         // Build return type, with ABI lowering for structs
         var abi_lowered_return_type: ?llvm.TypeRef = null;
         const return_llvm_type = if (func.return_type) |rt| blk: {
+            // Check for explicit void return type
+            if (isVoidTypeExpr(rt)) break :blk llvm.Types.void_(self.ctx);
             const original_type = try self.typeExprToLLVM(rt);
 
             // Check if this is a struct type that needs ABI lowering
@@ -1232,7 +1234,7 @@ pub const Emitter = struct {
 
             // Get return type
             const return_type = if (method.return_type) |rt|
-                try self.typeExprToLLVM(rt)
+                if (isVoidTypeExpr(rt)) llvm.Types.void_(self.ctx) else try self.typeExprToLLVM(rt)
             else
                 llvm.Types.void_(self.ctx);
 
@@ -1657,7 +1659,10 @@ pub const Emitter = struct {
 
             // If block has a value and we haven't terminated, return it
             if (!self.has_terminator) {
-                if (func.return_type == null) {
+                // Check if this is a void-returning function (either implicit or explicit -> void)
+                const is_void_return = func.return_type == null or
+                    (func.return_type.? == .named and std.mem.eql(u8, func.return_type.?.named.name, "void"));
+                if (is_void_return) {
                     // Void function - always emit void return, ignore any expression value
                     // (e.g., if-without-else returns a placeholder that we discard)
                     self.emitDropsForReturn();
@@ -5892,6 +5897,11 @@ pub const Emitter = struct {
 
         // Default to i32
         return llvm.Types.int32(self.ctx);
+    }
+
+    /// Check if a type expression is explicitly "void".
+    fn isVoidTypeExpr(type_expr: ast.TypeExpr) bool {
+        return type_expr == .named and std.mem.eql(u8, type_expr.named.name, "void");
     }
 
     /// Check if a type expression represents a signed type.
@@ -12298,8 +12308,11 @@ pub const Emitter = struct {
             const wrapper_name = self.allocator.dupeZ(u8, name_slice) catch return EmitError.OutOfMemory;
             defer self.allocator.free(wrapper_name);
 
-            // Determine return type
-            const return_type = try self.typeExprToLLVM(closure.return_type);
+            // Determine return type (check for explicit void)
+            const return_type = if (isVoidTypeExpr(closure.return_type))
+                llvm.Types.void_(self.ctx)
+            else
+                try self.typeExprToLLVM(closure.return_type);
 
             // Build parameter types (NO env pointer - this is for C compatibility)
             var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
@@ -12397,7 +12410,12 @@ pub const Emitter = struct {
 
             // Add return if not terminated
             if (!self.has_terminator) {
-                _ = self.builder.buildRet(body_value);
+                // For void-returning functions, use buildRetVoid
+                if (llvm.isVoidType(return_type)) {
+                    _ = self.builder.buildRetVoid();
+                } else {
+                    _ = self.builder.buildRet(body_value);
+                }
             }
 
             // Restore original context

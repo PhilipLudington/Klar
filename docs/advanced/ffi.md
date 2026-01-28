@@ -12,6 +12,7 @@ Klar provides a Foreign Function Interface (FFI) for calling C libraries and int
 - [External Structs](#external-structs)
 - [External Enums](#external-enums)
 - [String Conversions](#string-conversions)
+- [Function Pointers](#function-pointers)
 - [Linking Libraries](#linking-libraries)
 
 ## Quick Start
@@ -350,6 +351,194 @@ fn use_c_api() -> void {
 | `as_cstr` | `fn(ref self) -> CStr` | No | Borrow as CStr |
 | `to_string` | `fn(self) -> String` | Yes | Copy to Klar String |
 | `len` | `fn(self) -> usize` | Yes | Get string length |
+
+## Function Pointers
+
+Klar supports C function pointers for passing callbacks to C code and receiving/calling function pointers from C APIs.
+
+### The `extern fn` Type
+
+The `extern fn` type represents a raw C function pointer (8 bytes), distinct from Klar closures (which are 16-byte structs containing both a function pointer and an environment pointer).
+
+```klar
+// Type syntax: extern fn(ParamTypes) -> ReturnType
+let callback: extern fn(i32) -> i32
+let handler: extern fn(i32) -> void
+let comparator: extern fn(CPtr[void], CPtr[void]) -> i32
+```
+
+### Creating Function Pointers with `@fn_ptr`
+
+Use the `@fn_ptr` builtin to convert a Klar function to a C-compatible function pointer:
+
+```klar
+// Named function
+fn my_callback(x: i32) -> i32 {
+    return x * 2
+}
+
+fn main() -> i32 {
+    // Get function pointer from named function
+    let fp: extern fn(i32) -> i32 = @fn_ptr(my_callback)
+
+    // Call the function pointer (requires unsafe)
+    let result: i32 = unsafe { fp(21) }
+    println(result.to_string())  // prints "42"
+
+    return 0
+}
+```
+
+### Stateless Closures
+
+Closures without captures can also be converted to function pointers:
+
+```klar
+// Stateless closure (no captures) - works
+let add_one: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x + 1 })
+
+// Closure with captures - COMPILE ERROR
+let offset: i32 = 10
+let bad: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x + offset })
+// Error: Cannot create C function pointer from closure with captures
+```
+
+Closures with captures cannot become C function pointers because C function pointers have no way to store the captured environment.
+
+### Calling Function Pointers
+
+Calling a function pointer received from C requires `unsafe`:
+
+```klar
+extern {
+    fn get_callback() -> extern fn(i32) -> i32
+}
+
+fn main() -> i32 {
+    let cb: extern fn(i32) -> i32 = unsafe { get_callback() }
+
+    // Call requires unsafe (raw pointer dereference)
+    let result: i32 = unsafe { cb(42) }
+    return result
+}
+```
+
+### Function Pointer Parameters in Extern Functions
+
+Declare extern functions that accept or return function pointers:
+
+```klar
+extern {
+    // qsort callback
+    fn qsort(
+        base: CPtr[void],
+        nmemb: usize,
+        size: usize,
+        compar: extern fn(CPtr[void], CPtr[void]) -> i32
+    )
+
+    // Signal handler
+    fn signal(
+        signum: i32,
+        handler: extern fn(i32) -> void
+    ) -> extern fn(i32) -> void
+}
+```
+
+### Optional Function Pointers
+
+Use `?extern fn` for nullable function pointers:
+
+```klar
+fn get_optional_callback() -> ?extern fn(i32) -> i32 {
+    // Return None implicitly by not returning a value
+}
+
+fn get_some_callback() -> ?extern fn(i32) -> i32 {
+    return @fn_ptr(my_func)  // Automatically wrapped in Some
+}
+
+fn use_callback() {
+    let cb: ?extern fn(i32) -> i32 = get_optional_callback()
+
+    match cb {
+        Some(fp) => {
+            let result: i32 = unsafe { fp(42) }
+            println(result.to_string())
+        }
+        None => {
+            println("No callback")
+        }
+    }
+}
+```
+
+### Example: qsort Callback
+
+A complete example using C's `qsort` function:
+
+```klar
+extern {
+    fn qsort(
+        base: CPtr[void],
+        nmemb: usize,
+        size: usize,
+        compar: extern fn(CPtr[void], CPtr[void]) -> i32
+    )
+}
+
+// Compare function for ascending order
+fn compare_ascending(a: CPtr[void], b: CPtr[void]) -> i32 {
+    let a_ptr: CPtr[i32] = unsafe { ptr_cast[i32](a) }
+    let b_ptr: CPtr[i32] = unsafe { ptr_cast[i32](b) }
+    let a_val: i32 = unsafe { read(a_ptr) }
+    let b_val: i32 = unsafe { read(b_ptr) }
+    return a_val - b_val
+}
+
+fn main() -> i32 {
+    var arr: [i32; 5] = [5, 2, 8, 1, 9]
+
+    let arr_ptr: CPtr[[i32; 5]] = unsafe { ref_to_ptr(ref arr) }
+    let base: CPtr[void] = unsafe { ptr_cast[void](arr_ptr) }
+
+    let cmp: extern fn(CPtr[void], CPtr[void]) -> i32 = @fn_ptr(compare_ascending)
+
+    unsafe {
+        qsort(base, 5.as[usize], 4.as[usize], cmp)
+    }
+
+    // arr is now [1, 2, 5, 8, 9]
+    return 0
+}
+```
+
+### Example: Signal Handler
+
+Register a signal handler:
+
+```klar
+extern {
+    fn signal(signum: i32, handler: extern fn(i32) -> void) -> extern fn(i32) -> void
+}
+
+fn my_handler(sig: i32) -> void {
+    println("Received signal")
+    return
+}
+
+fn main() -> i32 {
+    let SIGTERM: i32 = 15
+    let handler: extern fn(i32) -> void = @fn_ptr(my_handler)
+
+    let old_handler: extern fn(i32) -> void = unsafe { signal(SIGTERM, handler) }
+
+    // Later, restore the old handler
+    unsafe { signal(SIGTERM, old_handler) }
+
+    return 0
+}
+```
 
 ## Linking Libraries
 

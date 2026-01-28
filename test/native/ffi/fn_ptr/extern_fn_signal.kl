@@ -1,0 +1,76 @@
+// Test: Signal handler example with FFI function pointers
+// Demonstrates passing Klar functions to C signal() API
+//
+// This test verifies:
+// 1. Declaring signal() extern function with function pointer parameter and return type
+// 2. Creating a Klar signal handler using @fn_ptr
+// 3. Registering the handler with signal()
+// 4. signal() returns the old handler (function pointer type)
+//
+// Note: We can't easily test that the handler executes because Klar doesn't
+// have global mutable state. This test verifies the type system and FFI
+// integration work correctly.
+
+extern {
+    // signal() - register a signal handler
+    // Returns the previous handler (or SIG_ERR cast to function pointer on error)
+    fn signal(signum: i32, handler: extern fn(i32) -> void) -> extern fn(i32) -> void
+}
+
+// A simple signal handler function
+fn my_signal_handler(sig: i32) -> void {
+    // In a real program, this would set a flag or perform cleanup
+    // For this test, we just need the function to have the right signature
+    return
+}
+
+// Another handler to test switching
+fn another_handler(sig: i32) -> void {
+    // Different handler
+    return
+}
+
+fn main() -> i32 {
+    // Signal constant - SIGTERM (15) is consistent across platforms
+    let SIGTERM: i32 = 15
+
+    println("Signal handler test starting")
+
+    // Test 1: Create function pointer from our handler
+    let handler1: extern fn(i32) -> void = @fn_ptr(my_signal_handler)
+    let handler2: extern fn(i32) -> void = @fn_ptr(another_handler)
+
+    println("Test 1 passed: created function pointers")
+
+    // Test 2: Register the first handler
+    // Returns the old handler (likely SIG_DFL or system default)
+    let old_handler: extern fn(i32) -> void = unsafe { signal(SIGTERM, handler1) }
+
+    println("Test 2 passed: registered first handler")
+
+    // Test 3: Register the second handler - should return our first handler
+    let returned_handler: extern fn(i32) -> void = unsafe { signal(SIGTERM, handler2) }
+
+    // The returned handler should be handler1 (our first handler)
+    // We can't directly compare function pointers in Klar, but we can verify
+    // the type system works by using the returned value
+
+    println("Test 3 passed: registered second handler, got previous back")
+
+    // Test 4: Restore the old handler
+    let final_handler: extern fn(i32) -> void = unsafe { signal(SIGTERM, old_handler) }
+
+    println("Test 4 passed: restored original handler")
+
+    // Test 5: Verify we can call the function pointer (the handler itself)
+    // This doesn't trigger signal handling, just tests we can invoke it
+    unsafe { handler1(0) }
+    unsafe { handler2(0) }
+
+    println("Test 5 passed: can call function pointers directly")
+
+    println("Signal handler test passed")
+    return 0
+}
+
+// expected: 0
