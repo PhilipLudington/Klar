@@ -117,7 +117,7 @@ fn emitStatModeCheck(self: *Emitter, path_val: llvm.ValueRef, mode_mask: u32) Em
 
 ---
 
-## [ ] Bug 7: No error case tests for filesystem functions
+## [x] Bug 7: No error case tests for filesystem functions
 
 **File:** `test/native/fs/`
 
@@ -129,6 +129,18 @@ fn emitStatModeCheck(self: *Emitter, path_val: llvm.ValueRef, mode_mask: u32) Em
 - `fs_write_string` to a read-only directory
 
 **Suggested Fix:** Add error case tests that verify the correct `IoError` variant is returned.
+
+**Resolution:** Added `test/native/fs/fs_errors.kl` with tests for:
+- `fs_remove_file` on non-existent file (returns error)
+- `fs_remove_dir` on non-existent directory (returns error)
+- `fs_create_dir` on existing directory (returns error)
+- `fs_remove_dir` on non-empty directory (returns error)
+- `fs_read_string` on non-existent file (returns error)
+- `fs_write_string` to non-existent parent directory (returns error)
+- `fs_read_dir` on non-existent directory (returns error)
+- `fs_read_dir` on a file (not directory) (returns error)
+
+Also updated `scripts/run-native-tests.sh` to include tests from subdirectories.
 
 **Severity:** Medium
 
@@ -180,9 +192,9 @@ While these values are consistent across most Unix systems, they should ideally 
 
 | Severity | Count | Fixed |
 |----------|-------|-------|
-| Medium   | 3     | 2     |
+| Medium   | 3     | 3     |
 | Low      | 7     | 0     |
 
-**Total Issues:** 10 (2 fixed, 8 remaining)
+**Total Issues:** 10 (3 fixed, 7 remaining)
 
 **Recommendation:** The PR is ready to merge with these issues tracked for future improvement. The remaining medium-severity issue (missing error tests) should be addressed in follow-up work.

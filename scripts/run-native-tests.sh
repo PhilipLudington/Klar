@@ -42,8 +42,8 @@ get_expected() {
     esac
 }
 
-# Run each test
-for f in "$TEST_DIR"/*.kl; do
+# Run each test (including subdirectories)
+for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
     [ -f "$f" ] || continue
 
     name=$(basename "$f" .kl)

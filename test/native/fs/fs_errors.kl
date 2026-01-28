@@ -1,0 +1,112 @@
+// Test filesystem function error cases
+// Expected: 0
+
+fn main() -> i32 {
+    let base_dir: string = "/tmp/klar_fs_error_test"
+
+    // Clean up any previous test artifacts
+    let cleanup1: Result[void, IoError] = fs_remove_file("/tmp/klar_fs_error_test/file.txt")
+    let cleanup2: Result[void, IoError] = fs_remove_dir(base_dir)
+
+    // ============================================================
+    // Test 1: fs_remove_file on non-existent file should fail
+    // ============================================================
+    let nonexistent_file: string = "/tmp/klar_nonexistent_file_12345.txt"
+    let remove_nonexistent: Result[void, IoError] = fs_remove_file(nonexistent_file)
+    if not remove_nonexistent.is_err() {
+        return 1  // Should have returned error for non-existent file
+    }
+
+    // ============================================================
+    // Test 2: fs_remove_dir on non-existent directory should fail
+    // ============================================================
+    let nonexistent_dir: string = "/tmp/klar_nonexistent_dir_12345"
+    let remove_nonexistent_dir: Result[void, IoError] = fs_remove_dir(nonexistent_dir)
+    if not remove_nonexistent_dir.is_err() {
+        return 2  // Should have returned error for non-existent directory
+    }
+
+    // ============================================================
+    // Test 3: fs_create_dir on existing directory should fail
+    // ============================================================
+    // First create the directory
+    let create1: Result[void, IoError] = fs_create_dir(base_dir)
+    if not create1.is_ok() {
+        return 3  // Failed to create test directory
+    }
+
+    // Try to create again - should fail with AlreadyExists
+    let create2: Result[void, IoError] = fs_create_dir(base_dir)
+    if not create2.is_err() {
+        let c1: Result[void, IoError] = fs_remove_dir(base_dir)
+        return 4  // Should have returned error for existing directory
+    }
+
+    // ============================================================
+    // Test 4: fs_remove_dir on non-empty directory should fail
+    // ============================================================
+    // Create a file inside the directory
+    let file_in_dir: string = "/tmp/klar_fs_error_test/file.txt"
+    let write_result: Result[void, IoError] = fs_write_string(file_in_dir, "content")
+    if not write_result.is_ok() {
+        let c2: Result[void, IoError] = fs_remove_dir(base_dir)
+        return 5  // Failed to create file in directory
+    }
+
+    // Try to remove non-empty directory - should fail
+    let remove_nonempty: Result[void, IoError] = fs_remove_dir(base_dir)
+    if not remove_nonempty.is_err() {
+        let c3: Result[void, IoError] = fs_remove_file(file_in_dir)
+        let c4: Result[void, IoError] = fs_remove_dir(base_dir)
+        return 6  // Should have returned error for non-empty directory
+    }
+
+    // ============================================================
+    // Test 5: fs_read_string on non-existent file should fail
+    // ============================================================
+    let read_nonexistent: Result[String, IoError] = fs_read_string("/tmp/klar_nonexistent_file_12345.txt")
+    if not read_nonexistent.is_err() {
+        let c5: Result[void, IoError] = fs_remove_file(file_in_dir)
+        let c6: Result[void, IoError] = fs_remove_dir(base_dir)
+        return 7  // Should have returned error for non-existent file
+    }
+
+    // ============================================================
+    // Test 6: fs_write_string to non-existent directory should fail
+    // ============================================================
+    let bad_path: string = "/tmp/klar_nonexistent_parent_12345/file.txt"
+    let write_bad_path: Result[void, IoError] = fs_write_string(bad_path, "content")
+    if not write_bad_path.is_err() {
+        let c7: Result[void, IoError] = fs_remove_file(file_in_dir)
+        let c8: Result[void, IoError] = fs_remove_dir(base_dir)
+        return 8  // Should have returned error for non-existent parent directory
+    }
+
+    // ============================================================
+    // Test 7: fs_read_dir on non-existent directory should fail
+    // ============================================================
+    let read_nonexistent_dir: Result[List[String], IoError] = fs_read_dir("/tmp/klar_nonexistent_dir_12345")
+    if not read_nonexistent_dir.is_err() {
+        let c9: Result[void, IoError] = fs_remove_file(file_in_dir)
+        let c10: Result[void, IoError] = fs_remove_dir(base_dir)
+        return 9  // Should have returned error for non-existent directory
+    }
+
+    // ============================================================
+    // Test 8: fs_read_dir on a file (not directory) should fail
+    // ============================================================
+    let read_file_as_dir: Result[List[String], IoError] = fs_read_dir(file_in_dir)
+    if not read_file_as_dir.is_err() {
+        let c11: Result[void, IoError] = fs_remove_file(file_in_dir)
+        let c12: Result[void, IoError] = fs_remove_dir(base_dir)
+        return 10  // Should have returned error when reading file as directory
+    }
+
+    // ============================================================
+    // Cleanup
+    // ============================================================
+    let final_cleanup1: Result[void, IoError] = fs_remove_file(file_in_dir)
+    let final_cleanup2: Result[void, IoError] = fs_remove_dir(base_dir)
+
+    return 0
+}
