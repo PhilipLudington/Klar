@@ -49,9 +49,9 @@ fn parser_error(state: State, message: string) -> ParseError {
 
 ---
 
-## [ ] Bug 2: Inline method call in Err() wrapper causes LLVM type mismatch
+## [x] Bug 2: Inline method call in Err() wrapper causes LLVM type mismatch
 
-**Status:** Open
+**Status:** Fixed (by Bug 1 fix)
 
 **Description:** When returning `Err(method())` in a function that returns `Result[T, E]`, the LLVM codegen produces incorrect types.
 
@@ -252,7 +252,7 @@ import lexer.{ Token, LexerState, lexer_new }  // BUG: module not found
 | Bug | Type | Severity | Workaround |
 |-----|------|----------|------------|
 | 1 | Codegen | High | **FIXED** |
-| 2 | Codegen | High | Use local variable |
+| 2 | Codegen | High | **FIXED** (by Bug 1 fix) |
 | 3 | Codegen | High | Use match instead |
 | 4 | Runtime | Critical | None |
 | 5 | Runtime | Critical | None |
