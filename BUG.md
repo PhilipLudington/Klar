@@ -4,11 +4,13 @@ Bugs discovered while implementing the JSON parser for Klar.
 
 ---
 
-## [ ] Bug 1: Cross-file imports not working
+## [x] Bug 1: Cross-file imports not working
 
-**Status:** Open
+**Status:** Fixed
 **Type:** Module System
 **Severity:** High
+
+**Fix:** Modified `findModuleFile()` in `src/module_resolver.zig` to walk up the directory tree from the importing file's location when searching for modules. Previously, only the immediate directory and search paths (CWD) were checked. Now the resolver searches parent directories, enabling imports like `import lib.math` from a sibling `tests/` directory.
 
 ### Description
 
@@ -265,3 +267,133 @@ None found. This completely blocks working with arrays or objects that contain v
 - Serializer cannot test array/object output
 
 This is a critical blocker for any recursive data structure in Klar.
+
+---
+
+## [x] Bug 4: Imported enum types cannot be used for variant construction
+
+**Status:** Fixed
+**Type:** Type Checker / Module System
+**Severity:** High
+
+**Fix:** Modified `registerModuleExports()` in `src/checker.zig` to look up the actual type from the current scope for struct, enum, and type alias exports instead of storing `null`. The types are already registered in scope by `checkStruct()`, `checkEnum()`, and `checkTypeAlias()` before exports are registered, so the lookup succeeds and the proper type information is now preserved through the import system.
+
+### Description
+
+When importing an enum type from another module, the type checker fails to recognize it as an enum when constructing variants. The error `expected enum type` occurs even though the import succeeds and the module is found.
+
+### Minimal Reproduction
+
+**enum_lib.kl:**
+```klar
+pub enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+pub fn get_red() -> Color {
+    return Color::Red
+}
+```
+
+**main.kl:**
+```klar
+import enum_lib.{ Color, get_red }
+
+fn main() -> i32 {
+    let c: Color = Color::Red   // ERROR: expected enum type
+    let d: Color = get_red()    // This would work if we got past line above
+    return 0
+}
+```
+
+### Steps to Reproduce
+
+1. Create the two files above in the same directory
+2. Run `klar check main.kl`
+
+### Expected Behavior
+
+The code type-checks successfully. `Color::Red` should construct an enum variant of type `Color`.
+
+### Actual Behavior
+
+```
+Type check failed with 1 error(s):
+  4:20 [type_mismatch]: expected enum type
+```
+
+### Investigation Notes
+
+The issue is in how imported enum types are registered in the scope. Looking at the relevant code:
+
+1. In `registerModuleExports()` (checker.zig ~line 10842):
+   ```zig
+   .enum_decl => |e| {
+       if (e.is_pub) {
+           const sym = ModuleSymbol{
+               .name = e.name,
+               .kind = .enum_type,
+               .type_ = null,  // <-- Problem: no type info stored
+               .is_pub = true,
+           };
+       }
+   }
+   ```
+
+2. In `importSpecificSymbol()` (checker.zig ~line 10987):
+   ```zig
+   self.current_scope.define(.{
+       .name = local_name,
+       .type_ = sym.type_ orelse self.type_builder.unknownType(),  // Results in unknownType()
+       .kind = symbol_kind,  // This is .type_ for enums
+       ...
+   });
+   ```
+
+The enum is registered with `type_ = null` because the comment says "Types don't have a Type value." When imported, this becomes `unknownType()`. When the type checker later sees `Color::Red`, it cannot resolve `Color` as an actual enum type.
+
+### Root Cause
+
+The module export/import system doesn't preserve the actual enum type definition. It only records that a symbol named `Color` exists and is an enum, but doesn't store the information needed to:
+1. Resolve `Color` as a valid type annotation
+2. Look up variants like `Red`, `Green`, `Blue`
+3. Validate variant construction expressions like `Color::Red`
+
+### Potential Fix Approaches
+
+1. **Store enum type reference**: Instead of `type_ = null`, store a reference to the actual enum type definition so it can be resolved in the importing module.
+
+2. **Register enum in type namespace**: When importing an enum, register it in the importing module's type namespace (similar to how struct imports should work).
+
+3. **Cross-module type resolution**: Add mechanism for the type checker to look up type definitions from imported modules when resolving type expressions.
+
+### Workaround
+
+Import only functions that return the enum type, not the enum type itself:
+
+```klar
+// Instead of: import enum_lib.{ Color }
+// Use:        import enum_lib.{ get_red, get_green, get_blue }
+
+import enum_lib.{ get_red }
+
+fn main() -> i32 {
+    let c = get_red()  // Type inferred, no explicit Color:: needed
+    return 0
+}
+```
+
+This is severely limiting as it requires wrapper functions for every variant.
+
+### Impact
+
+- Cannot import and use enum types across modules
+- Cannot pattern match on imported enums
+- Forces duplication of enum definitions or awkward wrapper functions
+- Blocks modular code organization for any project using enums
+
+### Related
+
+This bug is independent of Bug 1 (module resolution). Bug 1 prevented finding modules; this bug occurs even when modules are found successfully. Likely also affects struct type imports (not yet verified).
