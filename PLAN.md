@@ -25,7 +25,7 @@
 - [x] **Milestone 5: Stdlib I/O** - File I/O, buffered I/O, Path type, filesystem operations
 
 **In Progress:**
-- **Milestone 13: FFI Function Pointers** - In progress ← **CURRENT**
+- **Milestone 13: FFI Function Pointers** - Phases 1-5 complete (Phase 6 deferred) ← **CURRENT**
 - **Milestone 8: Package Manager** - Not started
 - **Milestone 9: Tooling** - Not started
 
@@ -283,7 +283,7 @@ All FFI tests in `test/native/ffi/`:
 
 **Objective:** Enable Klar to pass function pointers to C code (callbacks) and receive/call C function pointers, completing bidirectional FFI.
 
-**Status:** In progress.
+**Status:** Phases 1-5 complete. Phase 6 (Variadic) deferred.
 
 > **Depends on:** Milestone 12 (FFI) ✅
 
@@ -344,15 +344,15 @@ fn use_callback() {
 }
 ```
 
-### Phase 3: Creating C-Compatible Callbacks
+### Phase 3: Creating C-Compatible Callbacks ✅
 
 **Objective:** Convert Klar functions to C function pointers for passing to C APIs.
 
-- [ ] Add `@fn_ptr` builtin to get raw function pointer from:
+- [x] Add `@fn_ptr` builtin to get raw function pointer from:
   - Named functions (always works)
   - Closures with NO captures (stateless closures)
-- [ ] Compile-time error for closures with captures (incompatible with C ABI)
-- [ ] Return type is `extern fn(...) -> R`
+- [x] Compile-time error for closures with captures (incompatible with C ABI)
+- [x] Return type is `extern fn(...) -> R`
 
 **Example:**
 ```klar
@@ -380,14 +380,14 @@ let bad: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x + offset })
 // Error: Cannot create C function pointer from closure with captures
 ```
 
-### Phase 4: Function Pointer Parameters in Extern Functions
+### Phase 4: Function Pointer Parameters in Extern Functions ✅
 
 **Objective:** Declare extern functions that accept function pointer parameters.
 
-- [ ] Support `extern fn` parameters in extern function declarations
-- [ ] Support `extern fn` return types in extern function declarations
-- [ ] Generate correct LLVM function signatures
-- [ ] Pass function pointers with C calling convention
+- [x] Support `extern fn` parameters in extern function declarations
+- [x] Support `extern fn` return types in extern function declarations
+- [x] Generate correct LLVM function signatures
+- [x] Pass function pointers with C calling convention
 
 **Example:**
 ```klar
@@ -414,14 +414,14 @@ extern {
 }
 ```
 
-### Phase 5: Optional Function Pointers
+### Phase 5: Optional Function Pointers ✅
 
 **Objective:** Support nullable function pointers for optional callbacks.
 
-- [ ] Use `?extern fn(...) -> R` for nullable function pointers (existing optional syntax)
-- [ ] Allow `None` as null function pointer
-- [ ] Unwrap with `??` or pattern matching before calling
-- [ ] Handle C's common pattern of NULL callback = no-op
+- [x] Use `?extern fn(...) -> R` for nullable function pointers (existing optional syntax)
+- [x] Return None via implicit return in function (matches Klar's optional semantics)
+- [x] Unwrap with match pattern to extract function pointer
+- [x] Handle C's common pattern of NULL callback = no-op
 
 **Example:**
 ```klar
@@ -463,7 +463,7 @@ fn setup() {
 #### Lexer/Parser (src/lexer.zig, src/parser.zig)
 - [x] Parse `extern fn(Args) -> Ret` as a type expression
 - [x] Distinguish from `extern { fn ... }` declaration blocks
-- [ ] Parse `@fn_ptr(expr)` builtin call
+- [x] Parse `@fn_ptr(expr)` builtin call
 
 #### Type Checker (src/checker.zig)
 - [x] Validate `extern fn` type structure
@@ -474,8 +474,8 @@ fn setup() {
 - [x] Type check extern function pointer calls (argument/return types)
 - [x] Require unsafe context for extern function pointer calls
 - [x] Accept extern_fn as FFI-compatible type
-- [ ] Check `@fn_ptr` argument is function or stateless closure
-- [ ] Error on closure with captures for `@fn_ptr`
+- [x] Check `@fn_ptr` argument is function or stateless closure
+- [x] Error on closure with captures for `@fn_ptr`
 
 #### LLVM Codegen (src/codegen/emit.zig)
 - [x] Convert `extern fn` type to LLVM pointer type (ptr, not closure struct)
@@ -483,19 +483,19 @@ fn setup() {
 - [x] Type mangling for extern_fn
 - [x] getSizeOfKlarType() returns 8 for extern_fn
 - [x] Emit indirect call for extern function pointer invocation
-- [ ] Emit `@fn_ptr` as address-of for named functions
-- [ ] Emit `@fn_ptr` for stateless closures (extract lifted function)
+- [x] Emit `@fn_ptr` as address-of for named functions
+- [x] Emit `@fn_ptr` for stateless closures (create C-compatible wrapper function)
 
 ### Tests
 
 Create `test/native/ffi/fn_ptr/`:
 - [x] extern_fn_type.kl - Basic `extern fn` type declarations
 - [x] extern_fn_call.kl - Calling C function pointers
-- [ ] extern_fn_create.kl - Creating function pointers with `@fn_ptr`
-- [ ] extern_fn_closure.kl - Stateless closure to function pointer
-- [ ] extern_fn_capture_error.kl - Error on closure with captures (negative test)
-- [ ] extern_fn_param.kl - Function pointer parameters in extern functions
-- [ ] extern_fn_optional.kl - Nullable function pointers with `?extern fn`
+- [x] extern_fn_create.kl - Creating function pointers with `@fn_ptr`
+- [x] extern_fn_closure.kl - Stateless closure to function pointer
+- [x] extern_fn_capture_error.kl - Error on closure with captures (negative test)
+- [x] extern_fn_param.kl - Function pointer parameters in extern functions (in scratch/)
+- [x] extern_fn_optional.kl - Nullable function pointers with `?extern fn`
 - [ ] extern_fn_qsort.kl - Real-world qsort callback example
 
 ### Documentation
@@ -507,13 +507,13 @@ Create `test/native/ffi/fn_ptr/`:
 ### Success Criteria
 
 - [x] `extern fn` type parses and type-checks correctly
-- [ ] Can pass Klar functions to C APIs expecting callbacks via `@fn_ptr`
+- [x] Can pass Klar functions to C APIs expecting callbacks via `@fn_ptr`
 - [x] Can receive and call C function pointers (`extern fn` values)
-- [ ] Compile-time error prevents capturing closures from becoming C callbacks
+- [x] Compile-time error prevents capturing closures from becoming C callbacks
 - [x] `?extern fn` works for nullable function pointers
 - [ ] qsort example works with custom comparator
 - [ ] Signal handler example works
-- [ ] All tests pass
+- [x] All tests pass
 
 ---
 

@@ -1,0 +1,54 @@
+// Test: Optional function pointers (?extern fn)
+// Phase 5 of FFI Function Pointers
+
+fn my_callback(x: i32) -> i32 {
+    return x * 2
+}
+
+// Helper function to return Some(fn_ptr)
+fn get_some_callback() -> ?extern fn(i32) -> i32 {
+    return @fn_ptr(my_callback)
+}
+
+// Helper function to return None
+fn get_none_callback() -> ?extern fn(i32) -> i32 {
+    // Implicit None return
+}
+
+fn main() -> i32 {
+    // Test 1: Some(fn_ptr) via function return
+    let cb: ?extern fn(i32) -> i32 = get_some_callback()
+
+    match cb {
+        Some(fp) => {
+            let result: i32 = unsafe { fp(21) }
+            if result != 42 {
+                println("FAIL: expected 42")
+                return 1
+            }
+            println("Test 1 passed: Some(fn_ptr) works")
+        }
+        None => {
+            println("FAIL: should be Some")
+            return 2
+        }
+    }
+
+    // Test 2: None via function return
+    let cb2: ?extern fn(i32) -> i32 = get_none_callback()
+
+    match cb2 {
+        Some(_) => {
+            println("FAIL: should be None")
+            return 3
+        }
+        None => {
+            println("Test 2 passed: None works")
+        }
+    }
+
+    println("Optional function pointer tests passed")
+    return 0
+}
+
+// expected: 0

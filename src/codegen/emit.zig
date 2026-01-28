@@ -5430,9 +5430,15 @@ pub const Emitter = struct {
                         .string_data => {
                             local_value.is_string_data = true;
                         },
-                        .struct_ => |s| {
+                        .struct_ => |st| {
                             // Set struct type name for field access
-                            local_value.struct_type_name = s.name;
+                            local_value.struct_type_name = st.name;
+                        },
+                        .extern_fn => |ef| {
+                            // C function pointer - mark for correct call dispatch
+                            local_value.is_extern_fn = true;
+                            local_value.semantic_type = et;
+                            local_value.extern_fn_type = self.buildExternFnLLVMType(ef) catch null;
                         },
                         else => {},
                     }
@@ -11909,6 +11915,11 @@ pub const Emitter = struct {
     /// Also handles user-defined comptime function calls via @name(...) syntax.
     /// These are evaluated at compile time and the results are stored in type_checker.
     fn emitBuiltinCall(self: *Emitter, bc: *ast.BuiltinCall) EmitError!llvm.ValueRef {
+        // Handle @fn_ptr specially - it requires runtime code generation
+        if (std.mem.eql(u8, bc.name, "fn_ptr")) {
+            return self.emitBuiltinFnPtr(bc);
+        }
+
         // Look up the precomputed result from the type checker
         if (self.type_checker) |tc| {
             // Check for user-defined comptime function call results first
@@ -12050,6 +12061,172 @@ pub const Emitter = struct {
             return repeat_info;
         }
         return null;
+    }
+
+    /// Emit @fn_ptr(func) -> extern fn(Params) -> Return
+    /// Converts a Klar function or stateless closure to a raw C function pointer.
+    fn emitBuiltinFnPtr(self: *Emitter, bc: *ast.BuiltinCall) EmitError!llvm.ValueRef {
+        if (bc.args.len != 1) {
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+
+        const arg = switch (bc.args[0]) {
+            .expr_arg => |e| e,
+            .type_arg => return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx)),
+        };
+
+        // Check if it's a named function (identifier)
+        if (arg == .identifier) {
+            const id = arg.identifier;
+
+            // Look up the function in the module
+            const name_z = self.allocator.dupeZ(u8, id.name) catch return EmitError.OutOfMemory;
+            defer self.allocator.free(name_z);
+
+            if (self.module.getNamedFunction(name_z)) |func| {
+                // Return the function pointer directly
+                // With LLVM opaque pointers, the function itself is already a pointer
+                return func;
+            }
+
+            // Function not found - return null pointer
+            return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        }
+
+        // Check if it's a closure (stateless)
+        if (arg == .closure) {
+            const closure = arg.closure;
+
+            // For stateless closures, we create a C-compatible wrapper function
+            // that doesn't have the env pointer parameter.
+            // Generate unique name for this wrapper
+            const wrapper_id = self.closure_counter;
+            self.closure_counter += 1;
+
+            var name_buf: [64]u8 = undefined;
+            const name_slice = std.fmt.bufPrint(&name_buf, "__klar_fn_ptr_{d}", .{wrapper_id}) catch
+                return EmitError.OutOfMemory;
+            const wrapper_name = self.allocator.dupeZ(u8, name_slice) catch return EmitError.OutOfMemory;
+            defer self.allocator.free(wrapper_name);
+
+            // Determine return type
+            const return_type = try self.typeExprToLLVM(closure.return_type);
+
+            // Build parameter types (NO env pointer - this is for C compatibility)
+            var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+            defer param_types.deinit(self.allocator);
+
+            for (closure.params) |param| {
+                const param_ty = try self.typeExprToLLVM(param.type_);
+                param_types.append(self.allocator, param_ty) catch return EmitError.OutOfMemory;
+            }
+
+            // Create the wrapper function type (no env pointer)
+            const wrapper_fn_type = llvm.Types.function(return_type, param_types.items, false);
+
+            // Create the wrapper function
+            const wrapper_fn = llvm.addFunction(self.module, wrapper_name, wrapper_fn_type);
+            llvm.setFunctionCallConv(wrapper_fn, self.calling_convention.toLLVM());
+
+            // Save current state before emitting the wrapper body
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+            const saved_named_values = self.named_values;
+            const saved_return_type = self.current_return_type;
+            const saved_terminator = self.has_terminator;
+
+            // Set up new context for wrapper function
+            self.named_values = std.StringHashMap(LocalValue).init(self.allocator);
+            self.current_function = wrapper_fn;
+            self.has_terminator = false;
+
+            // Set up return type info
+            const rt = closure.return_type;
+            const is_opt = rt == .optional or (rt == .generic_apply and
+                rt.generic_apply.base == .named and
+                std.mem.eql(u8, rt.generic_apply.base.named.name, "Option"));
+            const is_res = rt == .result or (rt == .generic_apply and
+                rt.generic_apply.base == .named and
+                std.mem.eql(u8, rt.generic_apply.base.named.name, "Result"));
+
+            var inner_type: ?llvm.TypeRef = null;
+            var ok_type: ?llvm.TypeRef = null;
+            var err_type: ?llvm.TypeRef = null;
+
+            if (is_opt) {
+                if (rt == .optional) {
+                    inner_type = try self.typeExprToLLVM(rt.optional.inner);
+                } else if (rt == .generic_apply and rt.generic_apply.args.len >= 1) {
+                    inner_type = try self.typeExprToLLVM(rt.generic_apply.args[0]);
+                }
+            }
+            if (is_res) {
+                if (rt == .result) {
+                    ok_type = try self.typeExprToLLVM(rt.result.ok_type);
+                    err_type = try self.typeExprToLLVM(rt.result.err_type);
+                } else if (rt == .generic_apply and rt.generic_apply.args.len >= 2) {
+                    ok_type = try self.typeExprToLLVM(rt.generic_apply.args[0]);
+                    err_type = try self.typeExprToLLVM(rt.generic_apply.args[1]);
+                }
+            }
+
+            self.current_return_type = .{
+                .llvm_type = return_type,
+                .is_optional = is_opt,
+                .is_result = is_res,
+                .inner_type = inner_type,
+                .ok_type = ok_type,
+                .err_type = err_type,
+            };
+            self.current_return_klar_type = self.resolveExpectedType(rt);
+
+            // Create entry block for wrapper function
+            const entry_bb = llvm.appendBasicBlock(self.ctx, wrapper_fn, "entry");
+            self.builder.positionAtEnd(entry_bb);
+
+            // Add parameters to named_values (NO env pointer for wrapper)
+            for (closure.params, 0..) |param, i| {
+                const param_value = llvm.getParam(wrapper_fn, @intCast(i));
+                const param_ty = try self.typeExprToLLVM(param.type_);
+
+                const param_name = self.allocator.dupeZ(u8, param.name) catch return EmitError.OutOfMemory;
+                defer self.allocator.free(param_name);
+
+                const alloca = self.builder.buildAlloca(param_ty, param_name);
+                _ = self.builder.buildStore(param_value, alloca);
+
+                self.named_values.put(param.name, .{
+                    .value = alloca,
+                    .is_alloca = true,
+                    .ty = param_ty,
+                    .is_signed = self.isTypeExprSigned(param.type_),
+                }) catch return EmitError.OutOfMemory;
+            }
+
+            // Emit the closure body directly
+            const body_value = try self.emitExpr(closure.body);
+
+            // Add return if not terminated
+            if (!self.has_terminator) {
+                _ = self.builder.buildRet(body_value);
+            }
+
+            // Restore original context
+            self.named_values.deinit();
+            self.named_values = saved_named_values;
+            self.current_function = saved_func;
+            self.current_return_type = saved_return_type;
+            self.has_terminator = saved_terminator;
+            if (saved_bb) |bb| {
+                self.builder.positionAtEnd(bb);
+            }
+
+            // Return the wrapper function pointer
+            return wrapper_fn;
+        }
+
+        // Unsupported argument type
+        return llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
     }
 
     /// Emit a ComptimeValue as an LLVM constant.

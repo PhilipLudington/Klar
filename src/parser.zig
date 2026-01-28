@@ -962,11 +962,17 @@ pub const Parser = struct {
 
         var args = std.ArrayListUnmanaged(ast.BuiltinArg){};
 
+        // @fn_ptr always expects an expression (function value), not a type
+        const always_expr = std.mem.eql(u8, name, "fn_ptr");
+
         if (!self.check(.r_paren)) {
             while (true) {
                 // Try to parse as type first, then fall back to expression
                 // This is a bit tricky - types start with identifiers or certain keywords
-                const arg = try self.parseBuiltinArg();
+                const arg = if (always_expr)
+                    ast.BuiltinArg{ .expr_arg = try self.parseExpression() }
+                else
+                    try self.parseBuiltinArg();
                 try args.append(self.allocator, arg);
 
                 if (!self.match(.comma)) break;

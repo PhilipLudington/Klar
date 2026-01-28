@@ -1,0 +1,12 @@
+// Test @fn_ptr builtin rejects closures with captures
+// Tests Phase 3 of FFI Function Pointers - negative test
+// Expected: build-error
+
+fn main() -> i32 {
+    let offset: i32 = 10
+
+    // ERROR: closure with capture cannot be converted to C function pointer
+    let fp: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x + offset })
+
+    return 0
+}

@@ -8326,6 +8326,8 @@ pub const TypeChecker = struct {
             return self.checkBuiltinAssert(builtin);
         } else if (std.mem.eql(u8, builtin.name, "repeat")) {
             return self.checkBuiltinRepeat(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "fn_ptr")) {
+            return self.checkBuiltinFnPtr(builtin);
         } else {
             self.addError(.undefined_function, builtin.span, "unknown builtin '@{s}'", .{builtin.name});
             return self.type_builder.unknownType();
@@ -8779,6 +8781,63 @@ pub const TypeChecker = struct {
 
         // Return the array type
         return self.type_builder.arrayType(element_type, count) catch self.type_builder.unknownType();
+    }
+
+    /// @fn_ptr(func) -> extern fn(Params) -> Return
+    /// Converts a Klar function or stateless closure to a C function pointer.
+    /// - Named functions always work
+    /// - Closures must have NO captures (stateless)
+    fn checkBuiltinFnPtr(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len != 1) {
+            self.addError(.wrong_number_of_args, builtin.span, "@fn_ptr expects 1 argument, got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
+        }
+
+        // Argument must be an expression (not a type)
+        const arg_expr = switch (builtin.args[0]) {
+            .expr_arg => |expr| expr,
+            .type_arg => {
+                self.addError(.type_mismatch, builtin.span, "@fn_ptr expects a function or closure, not a type", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        // Type-check the expression
+        const arg_type = self.checkExpr(arg_expr);
+
+        // Check if it's a closure and validate it has no captures
+        if (arg_expr == .closure) {
+            const closure = arg_expr.closure;
+            if (closure.captures != null and closure.captures.?.len > 0) {
+                self.addError(.type_mismatch, builtin.span, "cannot create C function pointer from closure with captures", .{});
+                return self.type_builder.unknownType();
+            }
+            // Stateless closure - allowed
+        } else if (arg_expr == .identifier) {
+            // Named function - check that it resolves to a function
+            if (arg_type != .function) {
+                self.addError(.type_mismatch, builtin.span, "@fn_ptr expects a function, got {s}", .{@tagName(arg_type)});
+                return self.type_builder.unknownType();
+            }
+            // Named function - allowed
+        } else {
+            // Not a closure or identifier - check if it's a function type
+            if (arg_type != .function) {
+                self.addError(.type_mismatch, builtin.span, "@fn_ptr expects a function or stateless closure, got {s}", .{@tagName(arg_type)});
+                return self.type_builder.unknownType();
+            }
+        }
+
+        // At this point, arg_type should be a function type
+        if (arg_type != .function) {
+            self.addError(.type_mismatch, builtin.span, "@fn_ptr expects a function type", .{});
+            return self.type_builder.unknownType();
+        }
+
+        const func = arg_type.function;
+
+        // Build the extern fn type from the function signature
+        return self.type_builder.externFnType(func.params, func.return_type) catch self.type_builder.unknownType();
     }
 
     /// @hasField(T, "field_name") -> bool
