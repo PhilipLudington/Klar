@@ -4066,6 +4066,11 @@ pub const TypeChecker = struct {
 
         const callee_type = self.checkExpr(call.callee);
 
+        // Handle extern function pointer calls
+        if (callee_type == .extern_fn) {
+            return self.checkExternFnCall(call, callee_type.extern_fn);
+        }
+
         if (callee_type != .function) {
             self.addError(.invalid_call, call.span, "cannot call non-function type", .{});
             return self.type_builder.unknownType();
@@ -4224,6 +4229,33 @@ pub const TypeChecker = struct {
             }
             return func.return_type;
         }
+    }
+
+    /// Type check a call to an extern function pointer (C function pointer).
+    /// Extern function pointer calls always require unsafe context.
+    fn checkExternFnCall(self: *TypeChecker, call: *ast.Call, extern_fn: *const types.ExternFnType) Type {
+        // Calling through a C function pointer is unsafe (raw pointer dereference)
+        if (!self.in_unsafe_context) {
+            self.addError(.invalid_call, call.span, "call to extern fn pointer requires unsafe block or unsafe fn", .{});
+        }
+
+        // Check argument count
+        if (call.args.len != extern_fn.params.len) {
+            self.addError(.invalid_call, call.span, "expected {d} arguments, got {d}", .{ extern_fn.params.len, call.args.len });
+            return extern_fn.return_type;
+        }
+
+        // Check argument types
+        for (call.args, extern_fn.params) |arg, param_type| {
+            const arg_type = self.checkExpr(arg);
+            if (!arg_type.eql(param_type)) {
+                const expected_str = types.typeToString(self.allocator, param_type) catch "unknown";
+                const got_str = types.typeToString(self.allocator, arg_type) catch "unknown";
+                self.addError(.type_mismatch, arg.span(), "expected {s}, got {s}", .{ expected_str, got_str });
+            }
+        }
+
+        return extern_fn.return_type;
     }
 
     fn checkIndex(self: *TypeChecker, idx: *ast.Index) Type {
@@ -10728,6 +10760,7 @@ pub const TypeChecker = struct {
             .extern_type => |et| et.size != null, // Only sized extern types can be used directly
             .struct_ => |s| s.is_extern,
             .enum_ => |e| e.is_extern,
+            .extern_fn => true, // C function pointers are FFI-compatible
             else => false,
         };
     }

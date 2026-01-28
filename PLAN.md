@@ -323,14 +323,15 @@ extern {
 }
 ```
 
-### Phase 2: Calling C Function Pointers
+### Phase 2: Calling C Function Pointers ✅
 
 **Objective:** Enable calling received C function pointers from Klar code.
 
-- [ ] Implement call syntax for `extern fn` values
-- [ ] Type check arguments and return type
-- [ ] Require unsafe context for calls (raw pointer dereference)
-- [ ] LLVM codegen: emit indirect call instruction
+- [x] Implement call syntax for `extern fn` values
+- [x] Type check arguments and return type
+- [x] Require unsafe context for calls (raw pointer dereference)
+- [x] LLVM codegen: emit indirect call instruction
+- [x] `extern fn` types accepted as FFI-compatible in extern function signatures
 
 **Example:**
 ```klar
@@ -470,25 +471,26 @@ fn setup() {
 - [x] Type substitution for generics with extern_fn
 - [x] containsTypeVar() for extern_fn
 - [x] unifyTypes() for extern_fn
+- [x] Type check extern function pointer calls (argument/return types)
+- [x] Require unsafe context for extern function pointer calls
+- [x] Accept extern_fn as FFI-compatible type
 - [ ] Check `@fn_ptr` argument is function or stateless closure
 - [ ] Error on closure with captures for `@fn_ptr`
-- [ ] Type check extern function pointer calls (argument/return types)
-- [ ] Require unsafe context for extern function pointer calls
 
 #### LLVM Codegen (src/codegen/emit.zig)
 - [x] Convert `extern fn` type to LLVM pointer type (ptr, not closure struct)
 - [x] Handle `?extern fn` as `{ i1, ptr }` optional struct
 - [x] Type mangling for extern_fn
 - [x] getSizeOfKlarType() returns 8 for extern_fn
+- [x] Emit indirect call for extern function pointer invocation
 - [ ] Emit `@fn_ptr` as address-of for named functions
 - [ ] Emit `@fn_ptr` for stateless closures (extract lifted function)
-- [ ] Emit indirect call for extern function pointer invocation
 
 ### Tests
 
 Create `test/native/ffi/fn_ptr/`:
 - [x] extern_fn_type.kl - Basic `extern fn` type declarations
-- [ ] extern_fn_call.kl - Calling C function pointers
+- [x] extern_fn_call.kl - Calling C function pointers
 - [ ] extern_fn_create.kl - Creating function pointers with `@fn_ptr`
 - [ ] extern_fn_closure.kl - Stateless closure to function pointer
 - [ ] extern_fn_capture_error.kl - Error on closure with captures (negative test)
@@ -506,7 +508,7 @@ Create `test/native/ffi/fn_ptr/`:
 
 - [x] `extern fn` type parses and type-checks correctly
 - [ ] Can pass Klar functions to C APIs expecting callbacks via `@fn_ptr`
-- [ ] Can receive and call C function pointers (`extern fn` values)
+- [x] Can receive and call C function pointers (`extern fn` values)
 - [ ] Compile-time error prevents capturing closures from becoming C callbacks
 - [x] `?extern fn` works for nullable function pointers
 - [ ] qsort example works with custom comparator

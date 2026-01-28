@@ -256,6 +256,11 @@ pub const Emitter = struct {
         buf_writer_inner_type: ?types.Type = null,
         /// Full semantic type for pattern matching (Result, Optional, etc.)
         semantic_type: ?types.Type = null,
+        /// True if this is an extern fn (C function pointer) type.
+        /// Extern fn values are raw function pointers (no environment), unlike closures.
+        is_extern_fn: bool = false,
+        /// For extern fn types, the LLVM type of the function.
+        extern_fn_type: ?llvm.TypeRef = null,
     };
 
     const LoopContext = struct {
@@ -1618,6 +1623,13 @@ pub const Emitter = struct {
             // Resolve semantic type for type checking (needed for char.to_string(), etc.)
             const semantic_type = self.resolveTypeExprDirect(param.type_);
 
+            // Check if this is an extern fn type (C function pointer)
+            const is_extern_fn = if (semantic_type) |st| st == .extern_fn else false;
+            const extern_fn_llvm_type: ?llvm.TypeRef = if (is_extern_fn)
+                self.buildExternFnLLVMType(semantic_type.?.extern_fn) catch null
+            else
+                null;
+
             self.named_values.put(param.name, .{
                 .value = alloca,
                 .is_alloca = true,
@@ -1631,6 +1643,8 @@ pub const Emitter = struct {
                 .array_element_type = if (array_info) |ai| ai.element_type else null,
                 .is_string = is_string,
                 .semantic_type = semantic_type,
+                .is_extern_fn = is_extern_fn,
+                .extern_fn_type = extern_fn_llvm_type,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -1827,6 +1841,12 @@ pub const Emitter = struct {
                 const is_cstr_owned_let = self.isTypeCstrOwned(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
                 const semantic_type = self.resolveTypeExprDirect(decl.type_);
+                // Check if this is an extern fn type (C function pointer)
+                const is_extern_fn_let = if (semantic_type) |st| st == .extern_fn else false;
+                const extern_fn_llvm_type_let: ?llvm.TypeRef = if (is_extern_fn_let)
+                    self.buildExternFnLLVMType(semantic_type.?.extern_fn) catch null
+                else
+                    null;
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -1856,6 +1876,8 @@ pub const Emitter = struct {
                     .is_buf_reader = is_buf_reader_let,
                     .is_buf_writer = is_buf_writer_let,
                     .semantic_type = semantic_type,
+                    .is_extern_fn = is_extern_fn_let,
+                    .extern_fn_type = extern_fn_llvm_type_let,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -1971,6 +1993,12 @@ pub const Emitter = struct {
                 const is_cstr_owned = self.isTypeCstrOwned(decl.type_);
                 // Resolve semantic type for pattern matching (Result, Optional, etc.)
                 const semantic_type = self.resolveTypeExprDirect(decl.type_);
+                // Check if this is an extern fn type (C function pointer)
+                const is_extern_fn_var = if (semantic_type) |st| st == .extern_fn else false;
+                const extern_fn_llvm_type_var: ?llvm.TypeRef = if (is_extern_fn_var)
+                    self.buildExternFnLLVMType(semantic_type.?.extern_fn) catch null
+                else
+                    null;
                 self.named_values.put(decl.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -2000,6 +2028,8 @@ pub const Emitter = struct {
                     .is_buf_reader = is_buf_reader,
                     .is_buf_writer = is_buf_writer,
                     .semantic_type = semantic_type,
+                    .is_extern_fn = is_extern_fn_var,
+                    .extern_fn_type = extern_fn_llvm_type_var,
                 }) catch return EmitError.OutOfMemory;
 
                 // Register Rc/Arc variables for automatic dropping
@@ -4806,9 +4836,14 @@ pub const Emitter = struct {
                 return self.builder.buildCall(fn_type, func, args.items, call_name_str);
             }
 
-            // Check if it's a local variable (closure)
+            // Check if it's a local variable
             if (self.named_values.get(name)) |local| {
-                // Load the closure value from the local variable
+                // Check if it's an extern fn (C function pointer)
+                if (local.is_extern_fn) {
+                    return self.emitExternFnCall(local, call.args);
+                }
+
+                // Otherwise it's a closure
                 const closure_struct_type = self.getClosureStructType();
                 const closure_value = if (local.is_alloca)
                     self.builder.buildLoad(closure_struct_type, local.value, "closure.load")
@@ -4821,6 +4856,71 @@ pub const Emitter = struct {
         // Generic callee - evaluate it and call as closure
         const callee_value = try self.emitExpr(call.callee);
         return self.emitClosureCallTyped(callee_value, call.args, null, null);
+    }
+
+    /// Emit a call through an extern fn (C function pointer) stored in a local variable.
+    fn emitExternFnCall(self: *Emitter, local: LocalValue, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        // Load the function pointer
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const fn_ptr = if (local.is_alloca)
+            self.builder.buildLoad(ptr_type, local.value, "extern_fn.load")
+        else
+            local.value;
+
+        // Get the LLVM function type
+        const fn_type = local.extern_fn_type orelse {
+            // Fallback: try to get from semantic type
+            if (local.semantic_type) |sem_type| {
+                if (sem_type == .extern_fn) {
+                    return self.emitExternFnPtrCall(fn_ptr, sem_type.extern_fn, args);
+                }
+            }
+            return EmitError.InvalidAST;
+        };
+
+        // Build arguments
+        var call_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer call_args.deinit(self.allocator);
+
+        for (args) |arg| {
+            call_args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+        }
+
+        // Get return type for naming the result
+        const return_type = llvm.getReturnType(fn_type);
+        const call_name: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "extern_fn.call";
+
+        // Emit indirect call
+        return self.builder.buildCall(fn_type, fn_ptr, call_args.items, call_name);
+    }
+
+    /// Emit a call through an extern fn pointer value with known Klar type.
+    fn emitExternFnPtrCall(self: *Emitter, fn_ptr: llvm.ValueRef, extern_fn: *const types.ExternFnType, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        // Build LLVM function type from Klar extern fn type
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer param_types.deinit(self.allocator);
+
+        for (extern_fn.params) |param_type| {
+            const llvm_type = self.typeToLLVM(param_type);
+            param_types.append(self.allocator, llvm_type) catch return EmitError.OutOfMemory;
+        }
+
+        const return_type = self.typeToLLVM(extern_fn.return_type);
+        const fn_type = llvm.Types.function(return_type, param_types.items, false);
+
+        // Build arguments
+        var call_args = std.ArrayListUnmanaged(llvm.ValueRef){};
+        defer call_args.deinit(self.allocator);
+
+        for (args) |arg| {
+            call_args.append(self.allocator, try self.emitExpr(arg)) catch return EmitError.OutOfMemory;
+        }
+
+        // Get call name based on return type
+        const call_name: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "extern_fn.call";
+
+        // Emit indirect call
+        return self.builder.buildCall(fn_type, fn_ptr, call_args.items, call_name);
     }
 
     /// Emit a call to a closure value with optional type information.
@@ -5969,6 +6069,20 @@ pub const Emitter = struct {
             .named => |n| std.mem.eql(u8, n.name, "CStrOwned"),
             else => false,
         };
+    }
+
+    /// Build LLVM function type for an extern fn (C function pointer).
+    fn buildExternFnLLVMType(self: *Emitter, extern_fn: *const types.ExternFnType) EmitError!llvm.TypeRef {
+        var param_types = std.ArrayListUnmanaged(llvm.TypeRef){};
+        defer param_types.deinit(self.allocator);
+
+        for (extern_fn.params) |param_type| {
+            const llvm_type = self.typeToLLVM(param_type);
+            param_types.append(self.allocator, llvm_type) catch return EmitError.OutOfMemory;
+        }
+
+        const return_type = self.typeToLLVM(extern_fn.return_type);
+        return llvm.Types.function(return_type, param_types.items, false);
     }
 
     /// Check if a type expression is an array or slice type.
