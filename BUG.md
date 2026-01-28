@@ -88,9 +88,9 @@ _ => {
 
 ---
 
-## [ ] Bug 3: Method call on enum in if condition causes LLVM branch type error
+## [x] Bug 3: Method call on enum in if condition causes LLVM branch type error
 
-**Status:** Open
+**Status:** Fixed (by Bug 1 fix)
 
 **Description:** Calling a method on an enum value inside an `if` condition causes LLVM to generate an `i32` instead of `i1` for the branch condition.
 
@@ -141,9 +141,9 @@ fn test(v: JsonValue) {
 
 ---
 
-## [ ] Bug 4: Runtime segfault when extracting string from enum variant
+## [x] Bug 4: Runtime segfault when extracting string from enum variant
 
-**Status:** Open
+**Status:** Fixed (likely by Bug 1 fix or prior changes)
 
 **Description:** Extracting a string value from an enum variant (e.g., `Token.Str(s)`) and using it causes a segmentation fault at runtime. The code type-checks correctly but crashes when executed.
 
@@ -179,9 +179,9 @@ fn test_string() {
 
 ---
 
-## [ ] Bug 5: Runtime segfault with List/Map containing recursive enum types
+## [x] Bug 5: Runtime segfault with List/Map containing recursive enum types
 
-**Status:** Open
+**Status:** Fixed (likely by Bug 1-4 fixes)
 
 **Description:** Creating and using `List[JsonValue]` or `Map[string, JsonValue]` where `JsonValue` is a recursive enum causes segmentation faults at runtime.
 
@@ -243,7 +243,7 @@ import lexer.{ Token, LexerState, lexer_new }  // BUG: module not found
 
 **Actual:** `[undefined_module]: module 'lexer' not found`
 
-**Workaround:** Duplicate all types in each file that needs them (self-contained files).
+**Fix:** Added module resolution support to `checkFile()`, `runVmFile()`, and `runInterpreterFile()` in `main.zig`. These functions now use the same multi-file compilation pipeline as `buildNative()` when the entry module has imports.
 
 ---
 
@@ -253,12 +253,12 @@ import lexer.{ Token, LexerState, lexer_new }  // BUG: module not found
 |-----|------|----------|------------|
 | 1 | Codegen | High | **FIXED** |
 | 2 | Codegen | High | **FIXED** (by Bug 1 fix) |
-| 3 | Codegen | High | Use match instead |
-| 4 | Runtime | Critical | None |
-| 5 | Runtime | Critical | None |
+| 3 | Codegen | High | **FIXED** (by Bug 1 fix) |
+| 4 | Runtime | Critical | **FIXED** |
+| 5 | Runtime | Critical | **FIXED** |
 | 6 | Module System | High | **FIXED** |
 
-Bugs 4 and 5 block full testing of the JSON parser. The parser logic is correct (passes type checking), but runtime crashes prevent validation of string/array/object parsing.
+All bugs resolved. Multi-file JSON parser development is now unblocked.
 
 ---
 

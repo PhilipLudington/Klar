@@ -282,7 +282,103 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
     var checker = TypeChecker.init(allocator);
     defer checker.deinit();
 
-    checker.checkModule(module);
+    // Track source strings for imported modules
+    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (module_sources.items) |src| {
+            allocator.free(src);
+        }
+        module_sources.deinit(allocator);
+    }
+
+    // Check if this module has imports (multi-file compilation)
+    if (module.imports.len > 0) {
+        // Set up module resolver for multi-file checking
+        var resolver = ModuleResolver.init(allocator);
+        defer resolver.deinit();
+
+        // Try to find standard library
+        if (findStdLibPath(allocator)) |std_path| {
+            resolver.setStdLibPath(std_path);
+            defer allocator.free(std_path);
+        }
+
+        // Add current working directory as a search path
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+            resolver.addSearchPath(cwd_path) catch {};
+        } else |_| {}
+
+        // Register entry module
+        const entry = resolver.resolveEntry(path) catch {
+            try stderr.writeAll("Error: could not resolve entry module\n");
+            return;
+        };
+        entry.module_ast = module;
+        entry.state = .parsed;
+
+        // Discover all imported modules (breadth-first)
+        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+        defer modules_to_process.deinit(allocator);
+        try modules_to_process.append(allocator, entry);
+
+        var processed_idx: usize = 0;
+        while (processed_idx < modules_to_process.items.len) {
+            const mod = modules_to_process.items[processed_idx];
+            processed_idx += 1;
+
+            // Parse if not already parsed
+            if (mod.state == .discovered) {
+                const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
+                try module_sources.append(allocator, src);
+            }
+
+            // Discover imports
+            if (mod.module_ast) |mod_ast| {
+                for (mod_ast.imports) |import_decl| {
+                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
+                    if (dep.state == .discovered) {
+                        try modules_to_process.append(allocator, dep);
+                    }
+                }
+            }
+        }
+
+        // Check for resolution errors
+        if (resolver.hasErrors()) {
+            var buf: [512]u8 = undefined;
+            for (resolver.errors.items) |err| {
+                const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return;
+        }
+
+        // Get topological order
+        const compilation_order = resolver.getCompilationOrder() catch |err| {
+            if (err == error.CircularImport) {
+                try stderr.writeAll("Error: circular import detected\n");
+            }
+            return;
+        };
+        defer allocator.free(compilation_order);
+
+        // Set up checker with module resolver
+        checker.setModuleResolver(&resolver);
+
+        // Type check all modules in order
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |mod_ast| {
+                checker.prepareForNewModule();
+                checker.setCurrentModule(mod);
+                checker.checkModule(mod_ast);
+                checker.registerModuleExports(mod) catch {};
+            }
+        }
+    } else {
+        // Single-file compilation (no imports)
+        checker.checkModule(module);
+    }
 
     if (checker.hasErrors()) {
         var buf: [512]u8 = undefined;
@@ -1402,7 +1498,103 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
     var checker = TypeChecker.init(allocator);
     defer checker.deinit();
 
-    checker.checkModule(module);
+    // Track source strings for imported modules
+    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (module_sources.items) |src| {
+            allocator.free(src);
+        }
+        module_sources.deinit(allocator);
+    }
+
+    // Check if this module has imports (multi-file compilation)
+    if (module.imports.len > 0) {
+        // Set up module resolver for multi-file checking
+        var resolver = ModuleResolver.init(allocator);
+        defer resolver.deinit();
+
+        // Try to find standard library
+        if (findStdLibPath(allocator)) |std_path| {
+            resolver.setStdLibPath(std_path);
+            defer allocator.free(std_path);
+        }
+
+        // Add current working directory as a search path
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+            resolver.addSearchPath(cwd_path) catch {};
+        } else |_| {}
+
+        // Register entry module
+        const entry = resolver.resolveEntry(path) catch {
+            try stderr.writeAll("Error: could not resolve entry module\n");
+            return;
+        };
+        entry.module_ast = module;
+        entry.state = .parsed;
+
+        // Discover all imported modules (breadth-first)
+        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+        defer modules_to_process.deinit(allocator);
+        try modules_to_process.append(allocator, entry);
+
+        var processed_idx: usize = 0;
+        while (processed_idx < modules_to_process.items.len) {
+            const mod = modules_to_process.items[processed_idx];
+            processed_idx += 1;
+
+            // Parse if not already parsed
+            if (mod.state == .discovered) {
+                const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
+                try module_sources.append(allocator, src);
+            }
+
+            // Discover imports
+            if (mod.module_ast) |mod_ast| {
+                for (mod_ast.imports) |import_decl| {
+                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
+                    if (dep.state == .discovered) {
+                        try modules_to_process.append(allocator, dep);
+                    }
+                }
+            }
+        }
+
+        // Check for resolution errors
+        if (resolver.hasErrors()) {
+            var buf: [512]u8 = undefined;
+            for (resolver.errors.items) |err| {
+                const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return;
+        }
+
+        // Get topological order
+        const compilation_order = resolver.getCompilationOrder() catch |err| {
+            if (err == error.CircularImport) {
+                try stderr.writeAll("Error: circular import detected\n");
+            }
+            return;
+        };
+        defer allocator.free(compilation_order);
+
+        // Set up checker with module resolver
+        checker.setModuleResolver(&resolver);
+
+        // Type check all modules in order
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |mod_ast| {
+                checker.prepareForNewModule();
+                checker.setCurrentModule(mod);
+                checker.checkModule(mod_ast);
+                checker.registerModuleExports(mod) catch {};
+            }
+        }
+    } else {
+        // Single-file compilation (no imports)
+        checker.checkModule(module);
+    }
 
     var buf: [512]u8 = undefined;
 
@@ -1501,7 +1693,103 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
     var checker = TypeChecker.init(allocator);
     defer checker.deinit();
 
-    checker.checkModule(module);
+    // Track source strings for imported modules
+    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (module_sources.items) |src| {
+            allocator.free(src);
+        }
+        module_sources.deinit(allocator);
+    }
+
+    // Check if this module has imports (multi-file compilation)
+    if (module.imports.len > 0) {
+        // Set up module resolver for multi-file checking
+        var resolver = ModuleResolver.init(allocator);
+        defer resolver.deinit();
+
+        // Try to find standard library
+        if (findStdLibPath(allocator)) |std_path| {
+            resolver.setStdLibPath(std_path);
+            defer allocator.free(std_path);
+        }
+
+        // Add current working directory as a search path
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+            resolver.addSearchPath(cwd_path) catch {};
+        } else |_| {}
+
+        // Register entry module
+        const entry = resolver.resolveEntry(path) catch {
+            try stderr.writeAll("Error: could not resolve entry module\n");
+            return;
+        };
+        entry.module_ast = module;
+        entry.state = .parsed;
+
+        // Discover all imported modules (breadth-first)
+        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+        defer modules_to_process.deinit(allocator);
+        try modules_to_process.append(allocator, entry);
+
+        var processed_idx: usize = 0;
+        while (processed_idx < modules_to_process.items.len) {
+            const mod = modules_to_process.items[processed_idx];
+            processed_idx += 1;
+
+            // Parse if not already parsed
+            if (mod.state == .discovered) {
+                const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
+                try module_sources.append(allocator, src);
+            }
+
+            // Discover imports
+            if (mod.module_ast) |mod_ast| {
+                for (mod_ast.imports) |import_decl| {
+                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
+                    if (dep.state == .discovered) {
+                        try modules_to_process.append(allocator, dep);
+                    }
+                }
+            }
+        }
+
+        // Check for resolution errors
+        if (resolver.hasErrors()) {
+            var buf: [512]u8 = undefined;
+            for (resolver.errors.items) |err| {
+                const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return;
+        }
+
+        // Get topological order
+        const compilation_order = resolver.getCompilationOrder() catch |err| {
+            if (err == error.CircularImport) {
+                try stderr.writeAll("Error: circular import detected\n");
+            }
+            return;
+        };
+        defer allocator.free(compilation_order);
+
+        // Set up checker with module resolver
+        checker.setModuleResolver(&resolver);
+
+        // Type check all modules in order
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |mod_ast| {
+                checker.prepareForNewModule();
+                checker.setCurrentModule(mod);
+                checker.checkModule(mod_ast);
+                checker.registerModuleExports(mod) catch {};
+            }
+        }
+    } else {
+        // Single-file compilation (no imports)
+        checker.checkModule(module);
+    }
 
     if (checker.hasErrors()) {
         var buf: [512]u8 = undefined;
