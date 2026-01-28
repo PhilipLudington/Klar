@@ -71,6 +71,13 @@ pub const TargetInfo = struct {
         }
 
         /// Check if this is a bare-metal/freestanding target.
+        ///
+        /// Returns true when `os == .none`, which indicates no operating system
+        /// (bare-metal). This is the canonical check for freestanding targets
+        /// when working with parsed target triples.
+        ///
+        /// See also: `TargetInfo.isFreestanding()` (delegates here),
+        ///           `Platform.isFreestanding()` (uses std.Target.Os.Tag).
         pub fn isFreestanding(self: Os) bool {
             return self == .none;
         }
@@ -246,6 +253,13 @@ pub const TargetInfo = struct {
     }
 
     /// Check if this is a bare-metal/freestanding target.
+    ///
+    /// Delegates to `Os.isFreestanding()`. Use this when you have a `TargetInfo`
+    /// (from parsing a target triple like "aarch64-none-elf").
+    ///
+    /// Note: `TargetInfo` uses custom `Os`/`Arch` enums for parsing user input,
+    /// while `Platform` uses `std.Target` types for LLVM/linker integration.
+    /// Both have `isFreestanding()` methods that check for bare-metal targets.
     pub fn isFreestanding(self: TargetInfo) bool {
         return self.os.isFreestanding();
     }
@@ -346,6 +360,13 @@ pub const Platform = struct {
     }
 
     /// Check if this is a bare-metal/freestanding target.
+    ///
+    /// Returns true when `os == .freestanding` (from `std.Target.Os.Tag`).
+    /// Use this when you have a `Platform` (for LLVM codegen and linker operations).
+    ///
+    /// Note: This uses `std.Target.Os.Tag.freestanding`, while `TargetInfo.Os`
+    /// uses `.none` for bare-metal. Both represent the same concept but come
+    /// from different type systems (std.Target vs. custom parsing enums).
     pub fn isFreestanding(self: Platform) bool {
         return self.os == .freestanding;
     }

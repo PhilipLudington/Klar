@@ -64,21 +64,38 @@ The tests in `test/native/freestanding/` were manual (comment-based instructions
 
 # Suggestions (Non-blocking)
 
-## [ ] Suggestion 1: Linker Script Validation
+## [x] Suggestion 1: Linker Script Validation
 
-Check if the linker script file exists before invoking the linker to provide a better error message.
+**File:** `src/codegen/linker.zig`
+
+Added `LinkerScriptNotFound` error and validation in `tryLinkBareMetal` to check if the linker script file exists before invoking the linker. Now provides clear error message:
+```
+error: linker script not found: <path>
+```
 
 ---
 
-## [ ] Suggestion 2: Better -c Output Default
+## [x] Suggestion 2: Better -c Output Default
 
-When using `-c` without `-o`, the object file stays in the temp directory. Consider defaulting to `<source>.o` in the current directory for better discoverability.
+**Status:** Already working as expected.
+
+When using `-c` without `-o`, the object file is output as `<source>.o` in the current working directory. This matches standard compiler behavior (gcc/clang):
+```
+klar build path/to/foo.kl -c  →  foo.o (in current directory)
+```
 
 ---
 
-## [ ] Suggestion 3: Document Platform Method Relationship
+## [x] Suggestion 3: Document Platform Method Relationship
 
-`isFreestanding()` exists on both `TargetInfo` and `Platform`. The delegation relationship could be documented for clarity.
+**File:** `src/codegen/target.zig`
+
+Added documentation to all three `isFreestanding()` methods explaining:
+- `Os.isFreestanding()` - Canonical check for parsed target triples (checks `.none`)
+- `TargetInfo.isFreestanding()` - Delegates to `Os.isFreestanding()`
+- `Platform.isFreestanding()` - Uses `std.Target.Os.Tag.freestanding` for LLVM/linker ops
+
+The docs clarify that `TargetInfo` uses custom enums for parsing user input, while `Platform` uses `std.Target` types for LLVM integration.
 
 ---
 

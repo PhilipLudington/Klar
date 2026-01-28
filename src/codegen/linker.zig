@@ -10,6 +10,7 @@ const target = @import("target.zig");
 pub const LinkerError = error{
     LinkerFailed,
     LinkerNotFound,
+    LinkerScriptNotFound,
     OutputWriteFailed,
     OutOfMemory,
     CrossCompilationNotSupported,
@@ -379,6 +380,11 @@ fn tryLinkBareMetal(
 
     // Add linker script if provided
     if (options.linker_script) |script| {
+        // Validate linker script exists before invoking linker
+        std.fs.cwd().access(script, .{}) catch {
+            std.debug.print("error: linker script not found: {s}\n", .{script});
+            return LinkerError.LinkerScriptNotFound;
+        };
         args.append(allocator, "-T") catch return LinkerError.OutOfMemory;
         args.append(allocator, script) catch return LinkerError.OutOfMemory;
     }
