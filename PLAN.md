@@ -496,7 +496,7 @@ Create `test/native/ffi/fn_ptr/`:
 - [x] extern_fn_capture_error.kl - Error on closure with captures (negative test)
 - [x] extern_fn_param.kl - Function pointer parameters in extern functions (in scratch/)
 - [x] extern_fn_optional.kl - Nullable function pointers with `?extern fn`
-- [ ] extern_fn_qsort.kl - Real-world qsort callback example
+- [x] extern_fn_qsort.kl - Real-world qsort callback example
 
 ### Documentation
 
@@ -511,7 +511,7 @@ Create `test/native/ffi/fn_ptr/`:
 - [x] Can receive and call C function pointers (`extern fn` values)
 - [x] Compile-time error prevents capturing closures from becoming C callbacks
 - [x] `?extern fn` works for nullable function pointers
-- [ ] qsort example works with custom comparator
+- [x] qsort example works with custom comparator
 - [ ] Signal handler example works
 - [x] All tests pass
 
