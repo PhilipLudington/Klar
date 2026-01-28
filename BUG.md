@@ -1,206 +1,131 @@
-# Klar Language Bugs
+# PR #3 Review: Bare-Metal/Freestanding Compilation Support
 
-Bugs encountered while implementing various features in Klar.
-
----
-
-## [x] Bug 1: Import path resolution from subdirectories
-
-**Status:** Fixed
-**Severity:** High
-**Discovered:** 2026-01-27
-
-Tests in a `tests/` subdirectory cannot import modules from sibling directories like `lib/`. Fixed by improving module resolution.
+Issues and suggestions from code review of the BareMetal branch.
 
 ---
 
-## [x] Bug 2: String interpolation triggers on brace literals
+## [x] Bug 1: Code Duplication in linker.zig
 
-**Status:** Fixed
-**Severity:** Medium
-**Discovered:** 2026-01-27
+**File:** `src/codegen/linker.zig`
+**Severity:** Medium (code quality)
 
-String literals containing `{` were incorrectly parsed as string interpolation. Fixed by validating interpolation content.
+`linkBareMetalTarget` and `linkBareMetalWithGenericLd` were nearly identical (~150 lines duplicated).
 
----
-
-## [x] Bug 3: LLVM codegen error with string variable comparisons
-
-**Status:** Fixed
-**Severity:** High
-**Discovered:** 2026-01-27
-
-String equality comparisons involving variables built through concatenation caused LLVM verification failures. Fixed by properly handling string struct types vs pointer types in codegen.
+**Fix:** Refactored into `linkBareMetalTarget` (tries multiple linker names) and `tryLinkBareMetal` (single attempt). Removed ~70 lines of duplication.
 
 ---
 
-## [x] Bug 4: Parse error with certain if/else patterns in functions
+## [x] Bug 2: Unused Process Pipes in linker.zig
 
-**Status:** Fixed
-**Severity:** Medium
-**Discovered:** 2026-01-27
+**File:** `src/codegen/linker.zig`
+**Severity:** Medium (potential deadlock)
 
-Certain combinations of if/else statements with brace character literals caused parse errors. Fixed by improved brace handling in string interpolation validation.
+Pipes were set but never read, risking deadlock if linker produced output.
+
+**Fix:** Changed to `.Inherit` so linker errors are visible to user.
 
 ---
 
-## [x] Bug 5: Parse error with `.to[T]` generic method syntax
+## [x] Bug 3: Duplicate Entry Point Logic in emit.zig
 
-**Status:** Fixed
-**Severity:** High
-**Discovered:** 2026-01-27
-**Fixed:** 2026-01-27
+**File:** `src/codegen/emit.zig:929-943, 1413-1424`
+**Severity:** Low (code quality)
 
-### Description
+The `func_name` block logic was duplicated between `declareFunction` and `emitFunctionBody`.
 
-The `.to[T]` generic method syntax caused a parse error (`error.UnexpectedToken`). This affected any use of the `.to[T]` conversion method, regardless of the source or target type.
+**Fix:** Extracted to `getFunctionName` helper method at line 866. Removed ~20 lines of duplication.
 
-### Root Cause
+---
 
-The parser handled `.as[T]` and `.trunc[T]` specially (without requiring parentheses), but `.to[T]` was not included. When the parser encountered `.to[T]`, it fell through to generic method parsing which required `method[T]()` with parentheses, causing the `UnexpectedToken` error.
+## [x] Bug 4: Missing --entry Flag Validation
 
-Additionally, the type checker returned `T` for all conversion methods, but `.to[T]` should return `?T` (optional) since it's a fallible conversion.
+**File:** `src/main.zig`
+**Severity:** Low (UX improvement)
 
-### Fix
+`--entry` is only meaningful with `--freestanding`, but no warning was issued if used alone.
 
-Three changes were required:
+**Fix:** Added validation after flag parsing to warn the user.
 
-1. **Parser** (`src/parser.zig`): Added special handling for `.to[T]` in `parseFieldOrMethod`, similar to `.as[T]` and `.trunc[T]`. The new `parseFallibleConversion` function parses `.to[T]` and creates a MethodCall node with type_args and empty args.
+---
 
-2. **Type Checker** (`src/checker.zig`): Modified `checkMethodCall` to return `?T` (optional type) for `.to` method calls, instead of returning `T` directly like `.as` and `.trunc`.
+## [x] Bug 5: Freestanding Tests Not Integrated
 
-3. **Code Generator** (`src/codegen/emit.zig`): Added `emitStringToNumeric` function to handle string-to-numeric conversions. This function:
-   - Uses `strtol` for integer conversions
-   - Uses `strtod` for float conversions
-   - Checks if the entire string was consumed (valid parse)
-   - Returns `Some(value)` on success, `None` on failure
+**File:** `test/native/freestanding/`
+**Severity:** Low (test coverage)
 
-### Test Cases
+The tests in `test/native/freestanding/` were manual (comment-based instructions) and not integrated into the test runner.
 
-```klar
-// Valid integer conversion
-let n: ?i32 = "42".to[i32]     // Some(42)
+**Fix:** Created `scripts/run-freestanding-tests.sh` that:
+- Runs compilation-only tests (work without cross-linker)
+- Conditionally runs linking tests if cross-linker is available
+- Integrated into `run-tests.sh` with JSON results output
 
-// Invalid conversion returns None
-let bad: ?i32 = "abc".to[i32]  // None
+---
 
-// Negative numbers work
-let neg: ?i32 = "-100".to[i32] // Some(-100)
+# Suggestions (Non-blocking)
 
-// Float conversion
-let f: ?f64 = "3.14".to[f64]   // Some(3.14)
+## [x] Suggestion 1: Linker Script Validation
+
+**File:** `src/codegen/linker.zig`
+
+Added `LinkerScriptNotFound` error and validation in `tryLinkBareMetal` to check if the linker script file exists before invoking the linker. Now provides clear error message:
+```
+error: linker script not found: <path>
 ```
 
 ---
 
-## [x] Bug 6: Cannot access array elements via struct field
+## [x] Suggestion 2: Better -c Output Default
 
-**Status:** Fixed
-**Discovered:** Phase 8 FFI integration testing
-**Category:** Parser
+**Status:** Already working as expected.
 
-The parser now correctly handles `struct.array_field[index]` syntax.
-
-```klar
-pub struct Message {
-    data: [i32; 4],
-}
-
-fn main() -> i32 {
-    let m: Message = Message { data: [10, 20, 30, 40] }
-    let x: i32 = m.data[0]  // Works correctly, returns 10
-    return x
-}
+When using `-c` without `-o`, the object file is output as `<source>.o` in the current working directory. This matches standard compiler behavior (gcc/clang):
+```
+klar build path/to/foo.kl -c  →  foo.o (in current directory)
 ```
 
 ---
 
-## [x] Bug 7: Type::method() syntax not working for structs
+## [x] Suggestion 3: Document Platform Method Relationship
 
-**Status:** Fixed
-**Discovered:** Phase 8 FFI integration testing
-**Category:** Type Checker
+**File:** `src/codegen/target.zig`
 
-The `Type::method()` syntax now works for both enums and structs.
+Added documentation to all three `isFreestanding()` methods explaining:
+- `Os.isFreestanding()` - Canonical check for parsed target triples (checks `.none`)
+- `TargetInfo.isFreestanding()` - Delegates to `Os.isFreestanding()`
+- `Platform.isFreestanding()` - Uses `std.Target.Os.Tag.freestanding` for LLVM/linker ops
 
-```klar
-pub struct Message {
-    label: u64,
-}
-
-impl Message {
-    pub fn new(label: u64) -> Message {
-        return Message { label: label }
-    }
-}
-
-fn main() -> i32 {
-    let msg: Message = Message::new(100.as[u64])  // Works correctly
-    return 0
-}
-```
+The docs clarify that `TargetInfo` uses custom enums for parsing user input, while `Platform` uses `std.Target` types for LLVM integration.
 
 ---
 
-## [x] Bug 8: Sized extern types not fully supported in method parameters
+## [x] Bug 6: Wrong Cross-Linker Name
 
-**Status:** Fixed
-**Discovered:** Phase 8 FFI integration testing
-**Category:** Codegen
+**File:** `src/codegen/linker.zig`
+**Severity:** High (linker not found)
 
-Sized extern types (`extern type(N)`) now work correctly in impl methods with `ref Self` parameters.
+The code used `aarch64-none-elf-ld` but Homebrew installs `aarch64-elf-ld`.
 
-**Root cause:** Two issues in `namedTypeToLLVM`:
-1. Extern types weren't being looked up in the type checker, causing fallback to `i32`
-2. When computing `reference_inner_type` for self parameters, "Self" wasn't resolved to the actual struct type
-
-**Fix:**
-- Added extern type lookup via `type_checker.lookupType()` in `namedTypeToLLVM`
-- For self parameters in impl methods, use the struct's LLVM type directly instead of trying to resolve "Self"
-
-```klar
-extern type SeL4MessageInfo(8)
-
-struct Endpoint { cap: u64 }
-
-impl Endpoint {
-    pub fn send(self: ref Self, info: SeL4MessageInfo) -> void {
-        unsafe {
-            seL4_Send(self.cap, info)  // Now works correctly
-        }
-    }
-}
-```
+**Fix:** Now tries multiple names in order: `aarch64-elf-ld`, `aarch64-none-elf-ld`, `ld`.
 
 ---
 
-## [x] Bug 9: Extern type allocations not freed
+## [x] Bug 7: Output Directory Not Created for Explicit -o Path
 
-**Status:** Fixed
-**Discovered:** Phase 8 FFI integration testing
-**Category:** Memory
+**File:** `src/main.zig`
+**Severity:** Medium (linker fails with "No such file or directory")
 
-**Root cause:** `ExternType` objects created in `checkExternType` were allocated but not tracked for deallocation.
+When using `-o build/foo`, the `build/` directory was only created for default output paths.
 
-**Fix:**
-- Added `extern_types: std.ArrayListUnmanaged(*types.ExternType)` field to TypeChecker
-- Track allocations in `checkExternType` by appending to the list
-- Free allocations in `TypeChecker.deinit()`
-
-No more memory leak warnings in debug builds.
+**Fix:** Added parent directory creation for explicit `-o` paths before linking.
 
 ---
 
-## Summary of Fixed Bugs
+# Test Status
 
-All bugs have been verified as fixed:
-
-1. **Import path resolution** - Tests can now import from sibling directories
-2. **String brace literals** - `"{"` and `"}"` now work in string literals
-3. **String comparison codegen** - String equality after concatenation works
-4. **If/else parse patterns** - Multiple if statements with char comparisons work
-5. **`.to[T]` parse/type/codegen** - Fallible conversions now parse, type-check, and execute correctly
-6. **Array element via struct field** - `struct.array[i]` syntax works
-7. **Type::method() for structs** - Static method calls work for structs
-8. **Extern types in methods** - Sized extern types work in impl methods
-9. **Extern type memory** - No more memory leaks from extern type allocations
+| Test | Status |
+|------|--------|
+| All 436 tests | Pass |
+| Freestanding: bare_metal_target.kl | Pass (automated) |
+| Freestanding: custom_entry.kl | Pass (automated) |
+| Freestanding: linker_script.kl | Pass (automated, skipped if no cross-linker) |

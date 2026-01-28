@@ -14,6 +14,7 @@ zig-out/
 .module-test-results.json
 .app-test-results.json
 .args-test-results.json
+.freestanding-test-results.json
 .benchmark-results.json
 
 # LLVM IR output (when debugging)
