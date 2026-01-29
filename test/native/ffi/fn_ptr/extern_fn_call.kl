@@ -1,0 +1,46 @@
+// Test: calling extern fn types (C function pointers)
+// Phase 2 of FFI Function Pointers milestone
+//
+// This test verifies:
+// 1. Calling extern fn directly (which requires unsafe)
+// 2. Type checking of extern fn arguments and return types
+// 3. Functions that accept extern fn parameters compile correctly
+
+extern {
+    fn abs(x: i32) -> i32
+}
+
+// Test function that takes an extern fn parameter
+// (The actual indirect call codegen is tested in scratch/test_fn_ptr_indirect.kl
+// since it requires a C helper to provide function pointers)
+fn call_fn_ptr(fp: extern fn(i32) -> i32, x: i32) -> i32 {
+    return unsafe { fp(x) }
+}
+
+// Helper using libc's abs
+fn abs_helper(x: i32) -> i32 {
+    return unsafe { abs(x) }
+}
+
+fn main() -> i32 {
+    // Test 1: Direct extern function call requires unsafe
+    let result1: i32 = unsafe { abs(-42) }
+    if result1 != 42 {
+        println("FAIL: abs(-42) should be 42")
+        return 1
+    }
+    println("Test 1 passed: direct extern call")
+
+    // Test 2: Helper function with extern call
+    let r2: i32 = abs_helper(-100)
+    if r2 != 100 {
+        println("FAIL: abs_helper(-100) should be 100")
+        return 2
+    }
+    println("Test 2 passed: helper function works")
+
+    println("extern fn call tests passed")
+    return 0
+}
+
+// expected: 0

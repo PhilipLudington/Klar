@@ -2707,6 +2707,27 @@ pub const TypeChecker = struct {
 
             // CStr and CStrOwned - no type parameters to substitute
             .cstr, .cstr_owned => typ,
+
+            // Extern fn - substitute param and return types
+            .extern_fn => |ef| {
+                var changed = false;
+                var new_params = std.ArrayListUnmanaged(Type){};
+                defer new_params.deinit(self.allocator);
+
+                for (ef.params) |param| {
+                    const new_param = try self.substituteTypeParams(param, substitutions);
+                    if (!param.eql(new_param)) changed = true;
+                    try new_params.append(self.allocator, new_param);
+                }
+
+                const new_ret = try self.substituteTypeParams(ef.return_type, substitutions);
+                if (!ef.return_type.eql(new_ret)) changed = true;
+
+                if (!changed) return typ;
+                const params_slice = try self.allocator.dupe(Type, new_params.items);
+                try self.substituted_type_slices.append(self.allocator, params_slice);
+                return self.type_builder.externFnType(params_slice, new_ret);
+            },
         };
     }
 
@@ -2757,6 +2778,13 @@ pub const TypeChecker = struct {
             // FFI pointer types may contain type variables in their inner type
             .cptr => |cptr| self.containsTypeVar(cptr.inner),
             .copt_ptr => |coptptr| self.containsTypeVar(coptptr.inner),
+            // Extern fn types may contain type variables in their params/return type
+            .extern_fn => |ef| {
+                for (ef.params) |param| {
+                    if (self.containsTypeVar(param)) return true;
+                }
+                return self.containsTypeVar(ef.return_type);
+            },
             // Associated type ref contains a type variable reference
             .associated_type_ref => true,
             .struct_, .enum_, .trait_ => false,
@@ -2957,6 +2985,18 @@ pub const TypeChecker = struct {
                 return self.unifyTypes(coptptr.inner, concrete.copt_ptr.inner, substitutions);
             },
 
+            .extern_fn => |ef| {
+                if (concrete != .extern_fn) return false;
+                const concrete_ef = concrete.extern_fn;
+                if (ef.params.len != concrete_ef.params.len) return false;
+                for (ef.params, concrete_ef.params) |pat_param, conc_param| {
+                    if (!try self.unifyTypes(pat_param, conc_param, substitutions)) {
+                        return false;
+                    }
+                }
+                return self.unifyTypes(ef.return_type, concrete_ef.return_type, substitutions);
+            },
+
             .struct_, .enum_, .trait_ => {
                 return pattern.eql(concrete);
             },
@@ -3057,6 +3097,15 @@ pub const TypeChecker = struct {
                 }
                 const ret_type = try self.resolveTypeExpr(f.return_type);
                 return try self.type_builder.functionType(param_types.items, ret_type);
+            },
+            .extern_function => |ef| {
+                var param_types: std.ArrayListUnmanaged(Type) = .{};
+                defer param_types.deinit(self.allocator);
+                for (ef.params) |param| {
+                    try param_types.append(self.allocator, try self.resolveTypeExpr(param));
+                }
+                const ret_type = try self.resolveTypeExpr(ef.return_type);
+                return try self.type_builder.externFnType(param_types.items, ret_type);
             },
             .reference => |r| {
                 const inner = try self.resolveTypeExpr(r.inner);
@@ -4017,6 +4066,11 @@ pub const TypeChecker = struct {
 
         const callee_type = self.checkExpr(call.callee);
 
+        // Handle extern function pointer calls
+        if (callee_type == .extern_fn) {
+            return self.checkExternFnCall(call, callee_type.extern_fn);
+        }
+
         if (callee_type != .function) {
             self.addError(.invalid_call, call.span, "cannot call non-function type", .{});
             return self.type_builder.unknownType();
@@ -4175,6 +4229,33 @@ pub const TypeChecker = struct {
             }
             return func.return_type;
         }
+    }
+
+    /// Type check a call to an extern function pointer (C function pointer).
+    /// Extern function pointer calls always require unsafe context.
+    fn checkExternFnCall(self: *TypeChecker, call: *ast.Call, extern_fn: *const types.ExternFnType) Type {
+        // Calling through a C function pointer is unsafe (raw pointer dereference)
+        if (!self.in_unsafe_context) {
+            self.addError(.invalid_call, call.span, "call to extern fn pointer requires unsafe block or unsafe fn", .{});
+        }
+
+        // Check argument count
+        if (call.args.len != extern_fn.params.len) {
+            self.addError(.invalid_call, call.span, "expected {d} arguments, got {d}", .{ extern_fn.params.len, call.args.len });
+            return extern_fn.return_type;
+        }
+
+        // Check argument types
+        for (call.args, extern_fn.params) |arg, param_type| {
+            const arg_type = self.checkExpr(arg);
+            if (!arg_type.eql(param_type)) {
+                const expected_str = types.typeToString(self.allocator, param_type) catch "unknown";
+                const got_str = types.typeToString(self.allocator, arg_type) catch "unknown";
+                self.addError(.type_mismatch, arg.span(), "expected {s}, got {s}", .{ expected_str, got_str });
+            }
+        }
+
+        return extern_fn.return_type;
     }
 
     fn checkIndex(self: *TypeChecker, idx: *ast.Index) Type {
@@ -8245,6 +8326,8 @@ pub const TypeChecker = struct {
             return self.checkBuiltinAssert(builtin);
         } else if (std.mem.eql(u8, builtin.name, "repeat")) {
             return self.checkBuiltinRepeat(builtin);
+        } else if (std.mem.eql(u8, builtin.name, "fn_ptr")) {
+            return self.checkBuiltinFnPtr(builtin);
         } else {
             self.addError(.undefined_function, builtin.span, "unknown builtin '@{s}'", .{builtin.name});
             return self.type_builder.unknownType();
@@ -8428,6 +8511,7 @@ pub const TypeChecker = struct {
             .copt_ptr => "copt_ptr",
             .cstr => "cstr",
             .cstr_owned => "cstr_owned",
+            .extern_fn => "extern_fn",
             .void_ => "void",
             .never => "never",
             .unknown => "unknown",
@@ -8697,6 +8781,80 @@ pub const TypeChecker = struct {
 
         // Return the array type
         return self.type_builder.arrayType(element_type, count) catch self.type_builder.unknownType();
+    }
+
+    /// @fn_ptr(func) -> extern fn(Params) -> Return
+    /// Converts a Klar function or stateless closure to a C function pointer.
+    /// - Named functions always work
+    /// - Closures must have NO captures (stateless)
+    fn checkBuiltinFnPtr(self: *TypeChecker, builtin: *ast.BuiltinCall) Type {
+        if (builtin.args.len != 1) {
+            self.addError(.wrong_number_of_args, builtin.span, "@fn_ptr expects 1 argument, got {d}", .{builtin.args.len});
+            return self.type_builder.unknownType();
+        }
+
+        // Argument must be an expression (not a type)
+        const arg_expr = switch (builtin.args[0]) {
+            .expr_arg => |expr| expr,
+            .type_arg => {
+                self.addError(.type_mismatch, builtin.span, "@fn_ptr expects a function or closure, not a type", .{});
+                return self.type_builder.unknownType();
+            },
+        };
+
+        // Type-check the expression
+        const arg_type = self.checkExpr(arg_expr);
+
+        // Check if it's a closure and validate it has no captures
+        if (arg_expr == .closure) {
+            const closure = arg_expr.closure;
+            if (closure.captures != null and closure.captures.?.len > 0) {
+                self.addError(.type_mismatch, builtin.span, "cannot create C function pointer from closure with captures", .{});
+                return self.type_builder.unknownType();
+            }
+            // Stateless closure - allowed
+        } else if (arg_expr == .identifier) {
+            // Named function - check that it resolves to a function
+            if (arg_type != .function) {
+                self.addError(.type_mismatch, builtin.span, "@fn_ptr expects a function, got {s}", .{@tagName(arg_type)});
+                return self.type_builder.unknownType();
+            }
+            // Named function - allowed
+        } else {
+            // Not a closure or identifier - check if it's a function type
+            if (arg_type != .function) {
+                self.addError(.type_mismatch, builtin.span, "@fn_ptr expects a function or stateless closure, got {s}", .{@tagName(arg_type)});
+                return self.type_builder.unknownType();
+            }
+        }
+
+        // At this point, arg_type should be a function type
+        if (arg_type != .function) {
+            self.addError(.type_mismatch, builtin.span, "@fn_ptr expects a function type", .{});
+            return self.type_builder.unknownType();
+        }
+
+        const func = arg_type.function;
+
+        // Issue 4 fix: Validate all parameter types and return type are FFI-compatible
+        // C function pointers can only work with C-compatible types
+        for (func.params, 0..) |param_type, i| {
+            if (!self.isFfiCompatibleType(param_type)) {
+                const type_str = types.typeToString(self.allocator, param_type) catch "unknown";
+                self.addError(.type_mismatch, builtin.span, "@fn_ptr: parameter {d} has non-FFI-compatible type '{s}'", .{ i + 1, type_str });
+                return self.type_builder.unknownType();
+            }
+        }
+
+        // Check return type (void is always compatible)
+        if (func.return_type != .void_ and !self.isFfiCompatibleType(func.return_type)) {
+            const type_str = types.typeToString(self.allocator, func.return_type) catch "unknown";
+            self.addError(.type_mismatch, builtin.span, "@fn_ptr: return type '{s}' is not FFI-compatible", .{type_str});
+            return self.type_builder.unknownType();
+        }
+
+        // Build the extern fn type from the function signature
+        return self.type_builder.externFnType(func.params, func.return_type) catch self.type_builder.unknownType();
     }
 
     /// @hasField(T, "field_name") -> bool
@@ -10678,6 +10836,7 @@ pub const TypeChecker = struct {
             .extern_type => |et| et.size != null, // Only sized extern types can be used directly
             .struct_ => |s| s.is_extern,
             .enum_ => |e| e.is_extern,
+            .extern_fn => true, // C function pointers are FFI-compatible
             else => false,
         };
     }
