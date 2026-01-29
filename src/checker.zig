@@ -8836,6 +8836,23 @@ pub const TypeChecker = struct {
 
         const func = arg_type.function;
 
+        // Issue 4 fix: Validate all parameter types and return type are FFI-compatible
+        // C function pointers can only work with C-compatible types
+        for (func.params, 0..) |param_type, i| {
+            if (!self.isFfiCompatibleType(param_type)) {
+                const type_str = types.typeToString(self.allocator, param_type) catch "unknown";
+                self.addError(.type_mismatch, builtin.span, "@fn_ptr: parameter {d} has non-FFI-compatible type '{s}'", .{ i + 1, type_str });
+                return self.type_builder.unknownType();
+            }
+        }
+
+        // Check return type (void is always compatible)
+        if (func.return_type != .void_ and !self.isFfiCompatibleType(func.return_type)) {
+            const type_str = types.typeToString(self.allocator, func.return_type) catch "unknown";
+            self.addError(.type_mismatch, builtin.span, "@fn_ptr: return type '{s}' is not FFI-compatible", .{type_str});
+            return self.type_builder.unknownType();
+        }
+
         // Build the extern fn type from the function signature
         return self.type_builder.externFnType(func.params, func.return_type) catch self.type_builder.unknownType();
     }

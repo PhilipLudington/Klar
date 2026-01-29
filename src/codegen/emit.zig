@@ -8518,63 +8518,17 @@ pub const Emitter = struct {
             }
         }
 
-        // Fallback: for computed array expressions, emit and store to temp
-        const obj = try self.emitExpr(idx.object);
-        const obj_type = llvm.typeOf(obj);
-        const obj_type_kind = llvm.getTypeKind(obj_type);
-
-        if (obj_type_kind == llvm.c.LLVMArrayTypeKind) {
-            // Get array length for bounds checking
-            const array_len = llvm.Types.getArrayLength(obj_type);
-            const len_val = llvm.Const.int64(self.ctx, @intCast(array_len));
-
-            // Zero-extend or sign-extend index to i64 for comparison
-            const index_type = llvm.typeOf(index_val);
-            const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
-            const i64_type = llvm.Types.int64(self.ctx);
-
-            const index_i64 = if (index_bits < 64)
-                self.builder.buildZExt(index_val, i64_type, "idx.ext")
-            else if (index_bits > 64)
-                self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
-            else
-                index_val;
-
-            // Bounds check: index < length (unsigned comparison)
-            const in_bounds = self.builder.buildICmp(
-                llvm.c.LLVMIntULT,
-                index_i64,
-                len_val,
-                "bounds.check",
-            );
-
-            // Create blocks for bounds check
-            const func = self.current_function orelse return EmitError.InvalidAST;
-            const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
-            const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
-
-            // Branch based on bounds check
-            _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-            // Fail block: trap/unreachable
-            self.builder.positionAtEnd(fail_block);
-            _ = self.builder.buildUnreachable();
-
-            // Continue in OK block
-            self.builder.positionAtEnd(ok_block);
-
-            // Store to temp for GEP (needed for computed array expressions)
-            const alloca = self.builder.buildAlloca(obj_type, "arr.tmp");
-            _ = self.builder.buildStore(obj, alloca);
-
-            // GEP with the index - return pointer, don't load!
-            var indices = [_]llvm.ValueRef{
-                llvm.Const.int32(self.ctx, 0),
-                index_val,
-            };
-            return self.builder.buildGEP(obj_type, alloca, &indices, "elem.addr");
-        }
-
+        // Issue 3 fix: Taking a reference to a computed array expression (e.g., `ref get_array()[0]`)
+        // is unsafe because the computed array is a temporary value. Returning a pointer to it
+        // would create a dangling pointer when the temporary goes out of scope.
+        // The caller should store the array in a variable first, then take the reference.
+        //
+        // Valid pattern:
+        //   var arr: [i32; 5] = get_array()
+        //   let ptr: CPtr[i32] = unsafe { ref_to_ptr(ref arr[0]) }
+        //
+        // Invalid pattern (would cause UB):
+        //   let ptr: CPtr[i32] = unsafe { ref_to_ptr(ref get_array()[0]) }
         return EmitError.UnsupportedFeature;
     }
 
@@ -12298,12 +12252,18 @@ pub const Emitter = struct {
 
             // For stateless closures, we create a C-compatible wrapper function
             // that doesn't have the env pointer parameter.
-            // Generate unique name for this wrapper
+            // Generate unique name for this wrapper (Issue 2 fix: include source file hash for uniqueness)
             const wrapper_id = self.closure_counter;
             self.closure_counter += 1;
 
-            var name_buf: [64]u8 = undefined;
-            const name_slice = std.fmt.bufPrint(&name_buf, "__klar_fn_ptr_{d}", .{wrapper_id}) catch
+            // Hash the source filename for uniqueness across compilation units
+            const file_hash: u32 = if (self.source_filename) |filename|
+                std.hash.Fnv1a_32.hash(filename)
+            else
+                0;
+
+            var name_buf: [96]u8 = undefined;
+            const name_slice = std.fmt.bufPrint(&name_buf, "__klar_fn_ptr_{x}_{d}", .{ file_hash, wrapper_id }) catch
                 return EmitError.OutOfMemory;
             const wrapper_name = self.allocator.dupeZ(u8, name_slice) catch return EmitError.OutOfMemory;
             defer self.allocator.free(wrapper_name);
@@ -12339,6 +12299,17 @@ pub const Emitter = struct {
 
             // Set up new context for wrapper function
             self.named_values = std.StringHashMap(LocalValue).init(self.allocator);
+            // Ensure cleanup on error (Issue 1 fix: prevent memory leak)
+            errdefer {
+                self.named_values.deinit();
+                self.named_values = saved_named_values;
+                self.current_function = saved_func;
+                self.current_return_type = saved_return_type;
+                self.has_terminator = saved_terminator;
+                if (saved_bb) |bb| {
+                    self.builder.positionAtEnd(bb);
+                }
+            }
             self.current_function = wrapper_fn;
             self.has_terminator = false;
 
