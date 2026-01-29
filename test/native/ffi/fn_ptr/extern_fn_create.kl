@@ -1,0 +1,41 @@
+// Test @fn_ptr builtin - creating C function pointers from Klar functions
+// Tests Phase 3 of FFI Function Pointers
+
+// A simple named function to convert to function pointer
+fn add_one(x: i32) -> i32 {
+    return x + 1
+}
+
+// Another function with different signature
+fn add_two(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn main() -> i32 {
+    // Get function pointer from named function
+    let fp: extern fn(i32) -> i32 = @fn_ptr(add_one)
+
+    // Call the function pointer (requires unsafe)
+    let result: i32 = unsafe { fp(41) }
+
+    if result != 42 {
+        println("FAIL: @fn_ptr single param test")
+        return 1
+    }
+    println("Test 1 passed: @fn_ptr with single param function")
+
+    // Test with two parameters
+    let fp2: extern fn(i32, i32) -> i32 = @fn_ptr(add_two)
+    let result2: i32 = unsafe { fp2(20, 22) }
+
+    if result2 != 42 {
+        println("FAIL: @fn_ptr two param test")
+        return 1
+    }
+    println("Test 2 passed: @fn_ptr with two param function")
+
+    println("@fn_ptr tests passed")
+    return 0
+}
+
+// expected: 0

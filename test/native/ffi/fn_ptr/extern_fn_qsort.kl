@@ -1,0 +1,128 @@
+// Test: Real-world qsort callback example
+// Demonstrates FFI function pointers with C's qsort
+//
+// This test verifies:
+// 1. Declaring extern function with function pointer parameter
+// 2. Creating Klar callback compatible with C qsort
+// 3. Passing callback via @fn_ptr
+// 4. qsort correctly sorts the array
+
+extern {
+    fn qsort(base: CPtr[void], nmemb: usize, size: usize, compar: extern fn(CPtr[void], CPtr[void]) -> i32)
+}
+
+// Compare function for ascending order sort of i32 values
+// qsort passes pointers to elements, so we cast from void* to i32*
+fn compare_i32_asc(a: CPtr[void], b: CPtr[void]) -> i32 {
+    let a_ptr: CPtr[i32] = unsafe { ptr_cast[i32](a) }
+    let b_ptr: CPtr[i32] = unsafe { ptr_cast[i32](b) }
+    let a_val: i32 = unsafe { read(a_ptr) }
+    let b_val: i32 = unsafe { read(b_ptr) }
+    return a_val - b_val
+}
+
+// Compare function for descending order
+fn compare_i32_desc(a: CPtr[void], b: CPtr[void]) -> i32 {
+    let a_ptr: CPtr[i32] = unsafe { ptr_cast[i32](a) }
+    let b_ptr: CPtr[i32] = unsafe { ptr_cast[i32](b) }
+    let a_val: i32 = unsafe { read(a_ptr) }
+    let b_val: i32 = unsafe { read(b_ptr) }
+    return b_val - a_val
+}
+
+fn main() -> i32 {
+    // Test 1: Sort ascending
+    var arr1: [i32; 5] = [5, 2, 8, 1, 9]
+
+    // Get pointer to array (use ref arr, then cast to element type)
+    let arr1_ptr: CPtr[[i32; 5]] = unsafe { ref_to_ptr(ref arr1) }
+    let base1: CPtr[void] = unsafe { ptr_cast[void](arr1_ptr) }
+
+    // Create function pointer and call qsort
+    let cmp_asc: extern fn(CPtr[void], CPtr[void]) -> i32 = @fn_ptr(compare_i32_asc)
+    unsafe {
+        qsort(base1, 5.as[usize], 4.as[usize], cmp_asc)
+    }
+
+    // Verify ascending sort: [1, 2, 5, 8, 9]
+    if arr1[0] != 1 {
+        println("FAIL: ascending arr[0] should be 1")
+        return 1
+    }
+    if arr1[1] != 2 {
+        println("FAIL: ascending arr[1] should be 2")
+        return 1
+    }
+    if arr1[2] != 5 {
+        println("FAIL: ascending arr[2] should be 5")
+        return 1
+    }
+    if arr1[3] != 8 {
+        println("FAIL: ascending arr[3] should be 8")
+        return 1
+    }
+    if arr1[4] != 9 {
+        println("FAIL: ascending arr[4] should be 9")
+        return 1
+    }
+    println("Test 1 passed: qsort ascending")
+
+    // Test 2: Sort descending
+    var arr2: [i32; 5] = [3, 7, 1, 4, 6]
+
+    let arr2_ptr: CPtr[[i32; 5]] = unsafe { ref_to_ptr(ref arr2) }
+    let base2: CPtr[void] = unsafe { ptr_cast[void](arr2_ptr) }
+
+    let cmp_desc: extern fn(CPtr[void], CPtr[void]) -> i32 = @fn_ptr(compare_i32_desc)
+    unsafe {
+        qsort(base2, 5.as[usize], 4.as[usize], cmp_desc)
+    }
+
+    // Verify descending sort: [7, 6, 4, 3, 1]
+    if arr2[0] != 7 {
+        println("FAIL: descending arr[0] should be 7")
+        return 2
+    }
+    if arr2[4] != 1 {
+        println("FAIL: descending arr[4] should be 1")
+        return 2
+    }
+    println("Test 2 passed: qsort descending")
+
+    // Test 3: Already sorted array (edge case)
+    var arr3: [i32; 3] = [1, 2, 3]
+
+    let arr3_ptr: CPtr[[i32; 3]] = unsafe { ref_to_ptr(ref arr3) }
+    let base3: CPtr[void] = unsafe { ptr_cast[void](arr3_ptr) }
+
+    unsafe {
+        qsort(base3, 3.as[usize], 4.as[usize], cmp_asc)
+    }
+
+    if arr3[0] != 1 or arr3[1] != 2 or arr3[2] != 3 {
+        println("FAIL: already sorted array changed")
+        return 3
+    }
+    println("Test 3 passed: already sorted array")
+
+    // Test 4: Single element array (edge case)
+    var arr4: [i32; 1] = [42]
+
+    let arr4_ptr: CPtr[[i32; 1]] = unsafe { ref_to_ptr(ref arr4) }
+    let base4: CPtr[void] = unsafe { ptr_cast[void](arr4_ptr) }
+
+    unsafe {
+        qsort(base4, 1.as[usize], 4.as[usize], cmp_asc)
+    }
+
+    if arr4[0] != 42 {
+        println("FAIL: single element changed")
+        return 4
+    }
+    println("Test 4 passed: single element array")
+
+    println("All qsort tests passed")
+    return 0
+}
+
+// expected: 0

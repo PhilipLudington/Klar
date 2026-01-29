@@ -1,0 +1,24 @@
+// Test: extern fn type parsing and type checking
+// extern fn types are raw C function pointers (8 bytes), unlike fn types (closures, 16 bytes)
+
+// Helper function that returns an optional extern fn
+fn get_none() -> ?extern fn(i32) -> i32 {
+    // Returns None implicitly
+}
+
+fn main() -> i32 {
+    // Test parsing of extern fn type in return position
+    let f: ?extern fn(i32) -> i32 = get_none()
+
+    // Test multiple parameter types
+    let multi: ?extern fn(i32, f64, bool) -> void = get_multi_param()
+
+    println("extern fn types parsed successfully")
+    return 0
+}
+
+fn get_multi_param() -> ?extern fn(i32, f64, bool) -> void {
+    // Returns None implicitly
+}
+
+// expected: 0

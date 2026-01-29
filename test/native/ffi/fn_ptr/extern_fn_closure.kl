@@ -1,0 +1,31 @@
+// Test @fn_ptr builtin with stateless closures
+// Tests Phase 3 of FFI Function Pointers
+
+fn main() -> i32 {
+    // Stateless closure (no captures) - should work
+    let fp: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x * 2 })
+
+    // Call the function pointer (requires unsafe)
+    let result: i32 = unsafe { fp(21) }
+
+    if result != 42 {
+        println("FAIL: stateless closure test")
+        return 1
+    }
+    println("Test 1 passed: @fn_ptr with stateless closure")
+
+    // Another stateless closure with multiple params
+    let fp2: extern fn(i32, i32) -> i32 = @fn_ptr(|a: i32, b: i32| -> i32 { return a + b })
+    let result2: i32 = unsafe { fp2(20, 22) }
+
+    if result2 != 42 {
+        println("FAIL: stateless closure two params test")
+        return 1
+    }
+    println("Test 2 passed: @fn_ptr with two param stateless closure")
+
+    println("stateless closure @fn_ptr tests passed")
+    return 0
+}
+
+// expected: 0

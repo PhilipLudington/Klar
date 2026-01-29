@@ -797,6 +797,7 @@ pub const TypeExpr = union(enum) {
     optional: *OptionalType,
     result: *ResultType,
     function: *FunctionType,
+    extern_function: *ExternFunctionType, // C function pointer (extern fn)
     reference: *ReferenceType,
     generic_apply: *GenericApply,
     qualified: *QualifiedType, // For Self.Item, T.Associated, etc.
@@ -810,6 +811,7 @@ pub const TypeExpr = union(enum) {
             .optional => |o| o.span,
             .result => |r| r.span,
             .function => |f| f.span,
+            .extern_function => |ef| ef.span,
             .reference => |r| r.span,
             .generic_apply => |g| g.span,
             .qualified => |q| q.span,
@@ -858,6 +860,14 @@ pub const ResultType = struct {
 };
 
 pub const FunctionType = struct {
+    params: []const TypeExpr,
+    return_type: TypeExpr,
+    span: Span,
+};
+
+/// External function type for C function pointers
+/// Unlike FunctionType (closures), this is just a raw function pointer (8 bytes)
+pub const ExternFunctionType = struct {
     params: []const TypeExpr,
     return_type: TypeExpr,
     span: Span,

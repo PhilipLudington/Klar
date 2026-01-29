@@ -628,7 +628,132 @@ Klar object files (`.o` from LLVM) link directly with C object files. No special
 
 ---
 
-## 10. Future Extensions
+## 10. Function Pointers
+
+Function pointers enable bidirectional FFI: passing Klar functions to C as callbacks and receiving/calling function pointers from C APIs.
+
+### Function Pointer Type Syntax
+
+The `extern fn` type represents a raw C function pointer:
+
+```klar
+// Basic function pointer types
+extern fn(i32) -> i32           // Takes i32, returns i32
+extern fn(i32, i32) -> void     // Takes two i32, returns void
+extern fn(CPtr[void], CPtr[void]) -> i32  // qsort comparator signature
+```
+
+Unlike Klar closures (which are 16-byte structs containing function pointer + environment), `extern fn` is an 8-byte raw pointer compatible with C.
+
+### Creating Function Pointers with `@fn_ptr`
+
+The `@fn_ptr` builtin converts Klar functions to C function pointers:
+
+```klar
+// Named function
+fn my_callback(x: i32) -> i32 {
+    return x * 2
+}
+
+// Get function pointer
+let fp: extern fn(i32) -> i32 = @fn_ptr(my_callback)
+```
+
+Stateless closures (closures without captures) can also be converted:
+
+```klar
+// Stateless closure - works
+let add_one: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x + 1 })
+
+// Closure with captures - COMPILE ERROR
+let offset: i32 = 10
+let bad: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x + offset })
+// Error: Cannot create C function pointer from closure with captures
+```
+
+### Calling Function Pointers
+
+Calling a function pointer requires `unsafe`:
+
+```klar
+let fp: extern fn(i32) -> i32 = @fn_ptr(my_func)
+let result: i32 = unsafe { fp(42) }
+```
+
+### Function Pointer Parameters in Extern Functions
+
+Extern functions can accept and return function pointers:
+
+```klar
+extern {
+    // qsort - accepts a comparator callback
+    fn qsort(
+        base: CPtr[void],
+        nmemb: usize,
+        size: usize,
+        compar: extern fn(CPtr[void], CPtr[void]) -> i32
+    )
+
+    // signal - accepts handler, returns old handler
+    fn signal(
+        signum: i32,
+        handler: extern fn(i32) -> void
+    ) -> extern fn(i32) -> void
+}
+```
+
+### Optional Function Pointers
+
+Use `?extern fn` for nullable function pointers:
+
+```klar
+fn get_callback() -> ?extern fn(i32) -> i32 {
+    // Returns None implicitly
+}
+
+fn use_callback() {
+    let cb: ?extern fn(i32) -> i32 = get_callback()
+    match cb {
+        Some(fp) => {
+            let result: i32 = unsafe { fp(42) }
+        }
+        None => { }
+    }
+}
+```
+
+### Example: qsort
+
+```klar
+extern {
+    fn qsort(
+        base: CPtr[void],
+        nmemb: usize,
+        size: usize,
+        compar: extern fn(CPtr[void], CPtr[void]) -> i32
+    )
+}
+
+fn compare_i32(a: CPtr[void], b: CPtr[void]) -> i32 {
+    let a_ptr: CPtr[i32] = unsafe { ptr_cast[i32](a) }
+    let b_ptr: CPtr[i32] = unsafe { ptr_cast[i32](b) }
+    let a_val: i32 = unsafe { read(a_ptr) }
+    let b_val: i32 = unsafe { read(b_ptr) }
+    return a_val - b_val
+}
+
+fn sort_array() {
+    var arr: [i32; 5] = [5, 2, 8, 1, 9]
+    let base: CPtr[void] = unsafe { ptr_cast[void](ref_to_ptr(ref arr)) }
+    let cmp: extern fn(CPtr[void], CPtr[void]) -> i32 = @fn_ptr(compare_i32)
+    unsafe { qsort(base, 5.as[usize], 4.as[usize], cmp) }
+    // arr is now [1, 2, 5, 8, 9]
+}
+```
+
+---
+
+## 11. Future Extensions
 
 ### Inline Assembly
 
@@ -645,29 +770,6 @@ unsafe fn read_timestamp() -> u64 {
 }
 ```
 
-### Callback Functions
-
-Passing Klar functions to C as function pointers:
-
-```klar
-extern {
-    fn qsort(
-        base: CPtr[void],
-        num: usize,
-        size: usize,
-        cmp: extern fn(CPtr[void], CPtr[void]) -> i32
-    ) -> void
-}
-
-extern fn compare_ints(a: CPtr[void], b: CPtr[void]) -> i32 {
-    unsafe {
-        let a_val = read(a.cast[i32]())
-        let b_val = read(b.cast[i32]())
-        return a_val - b_val
-    }
-}
-```
-
 ### Global Variables
 
 Accessing C global variables:
@@ -677,6 +779,15 @@ extern {
     static errno: i32
     static mut environ: CPtr[CPtr[i8]]
 }
+```
+
+### Variadic Function Pointers
+
+Function pointers to variadic C functions (deferred):
+
+```klar
+// Not yet implemented
+extern fn(CStr, ...) -> i32  // printf-style callback
 ```
 
 ---

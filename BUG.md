@@ -1,102 +1,86 @@
 # Klar Compiler Bugs
 
-Bugs discovered while implementing the JSON parser for Klar.
+Active bugs discovered during development.
 
 ---
 
-## [x] Bug 1: Cross-file imports not working
+## [x] Bug 1: `ref arr[idx]` returns pointer to wrong memory
 
 **Status:** Fixed
-**Type:** Module System
-**Severity:** High
-
-**Fix:** Modified `findModuleFile()` in `src/module_resolver.zig` to walk up the directory tree from the importing file's location when searching for modules. Previously, only the immediate directory and search paths (CWD) were checked. Now the resolver searches parent directories, enabling imports like `import lib.math` from a sibling `tests/` directory.
+**Type:** Codegen / FFI
+**Severity:** Medium
 
 ### Description
 
-Import statements between files in a project don't resolve correctly. The compiler cannot locate sibling modules regardless of the import syntax used.
-
-### Project Structure
-
-```
-klar-json/
-├── lib/
-│   └── json/
-│       ├── lexer.kl      # exports Token, LexerState, lexer_new, etc.
-│       └── parser.kl     # wants to import from lexer.kl
-└── tests/
-    └── parser_test.kl    # wants to import from lib/json/
-```
+Taking a reference to an array element via `ref arr[idx]` and converting it to a C pointer with `ref_to_ptr` results in a pointer to the wrong memory location (reads as 0, not the actual element value).
 
 ### Steps to Reproduce
 
-1. Create `lib/json/lexer.kl` with public exports:
 ```klar
-pub enum Token {
-    Null,
-    True,
-    False,
-    // ...
+fn main() -> i32 {
+    var arr: [i32; 5] = [5, 2, 8, 1, 9]
+
+    // This works - single variable
+    var x: i32 = 42
+    let x_ptr: CPtr[i32] = unsafe { ref_to_ptr(ref x) }
+    let x_val: i32 = unsafe { read(x_ptr) }
+    // x_val == 42 ✓
+
+    // This FAILS - array element
+    let ptr0: CPtr[i32] = unsafe { ref_to_ptr(ref arr[0]) }
+    let val0: i32 = unsafe { read(ptr0) }
+    // val0 == 0 ✗ (expected 5)
+
+    return 0
 }
-
-pub struct LexerState {
-    source: string,
-    pos: i32,
-}
-
-pub fn lexer_new(source: string) -> LexerState {
-    return LexerState { source: source, pos: 0 }
-}
-```
-
-2. Create `lib/json/parser.kl` attempting to import:
-```klar
-import lexer.{ Token, LexerState, lexer_new }
-```
-
-3. Run `klar check lib/json/parser.kl`
-
-### Import Variations Tried
-
-All of the following fail with `module not found`:
-
-```klar
-import lexer.{ Token }                    // module 'lexer' not found
-import json.lexer.{ Token }               // module 'json' not found
-import lib.json.lexer.{ Token }           // module 'lib' not found
-import ./lexer.{ Token }                  // syntax error
-import "lexer".{ Token }                  // syntax error
 ```
 
 ### Expected Behavior
 
-Imports resolve relative to the current file's directory, or via a project-level module path configuration.
+`ref arr[0]` should return a reference to the first element of the array, and `ref_to_ptr` should convert that to a valid `CPtr[i32]` pointing to the element's memory location.
 
 ### Actual Behavior
 
+The pointer returned by `ref_to_ptr(ref arr[0])` does not point to the array element. Reading through it returns 0 (or garbage) instead of the actual element value.
+
+### Workaround
+
+Get a pointer to the whole array, then cast to element type:
+
+```klar
+var arr: [i32; 5] = [5, 2, 8, 1, 9]
+
+// Instead of: ref_to_ptr(ref arr[0])  -- BROKEN
+// Use:
+let arr_ptr: CPtr[[i32; 5]] = unsafe { ref_to_ptr(ref arr) }
+let elem_ptr: CPtr[i32] = unsafe { ptr_cast[i32](arr_ptr) }
+let val0: i32 = unsafe { read(elem_ptr) }
+// val0 == 5 ✓
+
+// For arr[n], use offset:
+let elem_n: CPtr[i32] = unsafe { offset(elem_ptr, n.as[isize]) }
 ```
-[undefined_module]: module 'lexer' not found
-```
-
-### Questions for Compiler Team
-
-1. **Module resolution**: How does Klar resolve module paths? Is there a `klar.toml` or similar project file that defines module roots?
-
-2. **Relative vs absolute**: Should imports be relative to the importing file, or relative to a project root?
-
-3. **File extension**: Does the module name include or exclude the `.kl` extension?
-
-4. **pub keyword**: Is `pub` sufficient to export items, or is there an explicit `mod` declaration needed?
-
-5. **Documentation**: The docs at `~/Fun/Klar/docs` mention imports but the examples don't show multi-file projects. Is there a working example of cross-file imports?
-
-### Current Workaround
-
-Duplicate all shared types and functions in each file that needs them. This works but defeats the purpose of modular code organization.
 
 ### Impact
 
-This bug forces the JSON parser to be a single monolithic file (~400 lines) instead of cleanly separated lexer/parser modules. It also prevents writing test files that import the library.
+Affects FFI code that needs pointers to array elements. The workaround is verbose but functional.
+
+### Investigation Notes
+
+The issue is likely in how `ref` handles indexed expressions in codegen. The reference to `arr[0]` may be:
+1. Creating a temporary copy and returning a reference to that
+2. Incorrectly computing the GEP (GetElementPtr) offset
+3. Not properly handling the array indexing in the reference context
+
+### Discovered
+
+While implementing the `extern_fn_qsort.kl` test for FFI function pointers.
+
+### Fix
+
+Added `emitIndexAddressOf()` function in `src/codegen/emit.zig` that computes the element pointer via GEP without loading the value. Modified `.ref` and `.ref_mut` cases in `emitUnary()` to call this function when the operand is an `.index` expression.
+
+The root cause was that `emitIndexAccess()` always loads the element value after computing its address. For `ref arr[idx]`, we need the address, not the value. The fix adds a separate code path that returns the GEP result directly.
 
 ---
 
