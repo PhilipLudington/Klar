@@ -723,9 +723,10 @@ pub const Compiler = struct {
             .type_cast => |tc| try self.compileTypeCast(tc),
             .grouped => |g| try self.compileExpr(g.expr),
             .interpolated_string => |i| try self.compileInterpolatedString(i),
-            .enum_literal => {
-                // TODO: Enum literal compilation for bytecode VM
-                // For now, enum literals are only supported in native compilation
+            .enum_literal => |e| {
+                // Enum literals are not yet supported in the bytecode VM.
+                // Use native compilation (klar build) for programs using enums.
+                try self.addError(.internal_error, e.span, "enum literals not yet supported in bytecode VM; use native compilation");
             },
             .comptime_block => {
                 // Comptime blocks are evaluated at compile time by the type checker
