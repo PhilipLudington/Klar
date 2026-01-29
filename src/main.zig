@@ -134,7 +134,13 @@ pub fn main() !void {
         defer if (dep_resolution) |*dr| dr.deinit();
 
         if (loaded_manifest) |*m| {
-            dep_resolution = resolveDependencies(allocator, m, m.root_dir) catch null;
+            dep_resolution = resolveDependencies(allocator, m, m.root_dir) catch |err| {
+                // Error already printed by resolveDependencies
+                if (err == error.LockfileMismatch or err == error.DependencyNotFound) {
+                    return;
+                }
+                return err;
+            };
         }
 
         const search_paths = if (dep_resolution) |dr| dr.paths.items else &[_][]const u8{};
@@ -286,7 +292,13 @@ pub fn main() !void {
         defer if (dep_resolution) |*dr| dr.deinit();
 
         if (loaded_manifest) |*m| {
-            dep_resolution = resolveDependencies(allocator, m, m.root_dir) catch null;
+            dep_resolution = resolveDependencies(allocator, m, m.root_dir) catch |err| {
+                // Error already printed by resolveDependencies
+                if (err == error.LockfileMismatch or err == error.DependencyNotFound) {
+                    return;
+                }
+                return err;
+            };
         }
 
         const search_paths = if (dep_resolution) |dr| dr.paths.items else &[_][]const u8{};
@@ -2133,6 +2145,19 @@ const DependencyResolution = struct {
     }
 };
 
+/// Get version string from a dependency's klar.json manifest.
+/// Returns null if manifest doesn't exist or version can't be read.
+/// Caller owns the returned string and must free it.
+fn getDepVersion(allocator: std.mem.Allocator, dep_path: []const u8) ?[]const u8 {
+    const dep_manifest_path = std.fs.path.join(allocator, &.{ dep_path, "klar.json" }) catch return null;
+    defer allocator.free(dep_manifest_path);
+
+    var dm = manifest.loadManifest(allocator, dep_manifest_path) catch return null;
+    defer dm.deinit();
+
+    return dm.package.version.toString(allocator) catch null;
+}
+
 /// Resolve dependencies using lock file for reproducibility.
 /// If lock file doesn't exist, generates it. If it exists, uses locked versions.
 /// Returns resolved paths and whether lock file was newly generated.
@@ -2183,13 +2208,14 @@ fn resolveDependencies(
         }
 
         if (mismatched.len > 0) {
-            try stderr.writeAll("Warning: klar.lock is out of date with klar.json\n");
+            try stderr.writeAll("Error: klar.lock is out of date with klar.json\n");
             try stderr.writeAll("  Changed dependencies: ");
             for (mismatched, 0..) |name, i| {
                 if (i > 0) try stderr.writeAll(", ");
                 try stderr.writeAll(name);
             }
             try stderr.writeAll("\n  Run 'klar update' to regenerate the lock file\n");
+            return error.LockfileMismatch;
         }
 
         // Use locked paths
@@ -2237,24 +2263,7 @@ fn resolveDependencies(
                     try result.paths.append(allocator, try allocator.dupe(u8, resolved));
 
                     // Try to get version from dependency's manifest
-                    var dep_version: ?[]const u8 = null;
-                    const dep_manifest_path = std.fs.path.join(allocator, &.{ resolved, "klar.json" }) catch null;
-                    if (dep_manifest_path) |dmp| {
-                        defer allocator.free(dmp);
-                        if (manifest.loadManifest(allocator, dmp)) |dm_val| {
-                            var dm = dm_val;
-                            defer dm.deinit();
-                            var version_buf: [32]u8 = undefined;
-                            const v = dm.package.version;
-                        const version_str = if (v.prerelease) |pre|
-                            std.fmt.bufPrint(&version_buf, "{d}.{d}.{d}-{s}", .{ v.major, v.minor, v.patch, pre }) catch null
-                        else
-                            std.fmt.bufPrint(&version_buf, "{d}.{d}.{d}", .{ v.major, v.minor, v.patch }) catch null;
-                            if (version_str) |vs| {
-                                dep_version = allocator.dupe(u8, vs) catch null;
-                            }
-                        } else |_| {}
-                    }
+                    const dep_version = getDepVersion(allocator, resolved);
                     defer if (dep_version) |v| allocator.free(v);
 
                     try new_lock.addDependency(name, .{
@@ -2264,10 +2273,11 @@ fn resolveDependencies(
                         .version = dep_version,
                     });
                 } else |_| {
-                    // Path doesn't exist
+                    // Path doesn't exist - this is an error, not a warning
                     var buf: [512]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&buf, "Warning: dependency path not found: {s}\n", .{rel_path}) catch "Warning: dependency path not found\n";
+                    const msg = std.fmt.bufPrint(&buf, "Error: dependency '{s}' path not found: {s}\n", .{ name, rel_path }) catch "Error: dependency path not found\n";
                     try stderr.writeAll(msg);
+                    return error.DependencyNotFound;
                 }
             }
         }
@@ -2357,24 +2367,7 @@ fn updateLockfile(allocator: std.mem.Allocator) !void {
             var path_buf: [std.fs.max_path_bytes]u8 = undefined;
             if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
                 // Try to get version from dependency's manifest
-                var dep_version: ?[]const u8 = null;
-                const dep_manifest_path = std.fs.path.join(allocator, &.{ resolved, "klar.json" }) catch null;
-                if (dep_manifest_path) |dmp| {
-                    defer allocator.free(dmp);
-                    if (manifest.loadManifest(allocator, dmp)) |dm_val| {
-                        var dm = dm_val;
-                        defer dm.deinit();
-                        var version_buf: [32]u8 = undefined;
-                        const v = dm.package.version;
-                        const version_str = if (v.prerelease) |pre|
-                            std.fmt.bufPrint(&version_buf, "{d}.{d}.{d}-{s}", .{ v.major, v.minor, v.patch, pre }) catch null
-                        else
-                            std.fmt.bufPrint(&version_buf, "{d}.{d}.{d}", .{ v.major, v.minor, v.patch }) catch null;
-                        if (version_str) |vs| {
-                            dep_version = allocator.dupe(u8, vs) catch null;
-                        }
-                    } else |_| {}
-                }
+                const dep_version = getDepVersion(allocator, resolved);
                 defer if (dep_version) |v| allocator.free(v);
 
                 new_lock.addDependency(name, .{
@@ -2397,7 +2390,7 @@ fn updateLockfile(allocator: std.mem.Allocator) !void {
                 }
             } else |_| {
                 var buf: [512]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Warning: dependency path not found: {s}\n", .{rel_path}) catch "Warning: dependency path not found\n";
+                const msg = std.fmt.bufPrint(&buf, "Error: dependency '{s}' path not found: {s}\n", .{ name, rel_path }) catch "Error: dependency path not found\n";
                 stderr.writeAll(msg) catch {};
             }
         }

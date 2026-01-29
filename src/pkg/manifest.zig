@@ -72,6 +72,16 @@ pub const Version = struct {
             try writer.print("-{s}", .{pre});
         }
     }
+
+    /// Convert version to an owned string. Caller must free the result.
+    pub fn toString(self: Version, allocator: Allocator) ![]const u8 {
+        var buf: [64]u8 = undefined;
+        const len = if (self.prerelease) |pre|
+            (std.fmt.bufPrint(&buf, "{d}.{d}.{d}-{s}", .{ self.major, self.minor, self.patch, pre }) catch return error.InvalidVersion).len
+        else
+            (std.fmt.bufPrint(&buf, "{d}.{d}.{d}", .{ self.major, self.minor, self.patch }) catch return error.InvalidVersion).len;
+        return try allocator.dupe(u8, buf[0..len]);
+    }
 };
 
 /// A dependency specification.
@@ -383,6 +393,20 @@ test "Version.parse with prerelease" {
     try std.testing.expectEqual(@as(u32, 0), v.minor);
     try std.testing.expectEqual(@as(u32, 0), v.patch);
     try std.testing.expectEqualStrings("beta", v.prerelease.?);
+}
+
+test "Version.toString basic" {
+    const v = Version{ .major = 1, .minor = 2, .patch = 3 };
+    const str = try v.toString(std.testing.allocator);
+    defer std.testing.allocator.free(str);
+    try std.testing.expectEqualStrings("1.2.3", str);
+}
+
+test "Version.toString with prerelease" {
+    const v = Version{ .major = 2, .minor = 0, .patch = 0, .prerelease = "rc1" };
+    const str = try v.toString(std.testing.allocator);
+    defer std.testing.allocator.free(str);
+    try std.testing.expectEqualStrings("2.0.0-rc1", str);
 }
 
 test "parseManifest minimal" {

@@ -103,6 +103,41 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+echo ""
+echo "--- Test 6: Lockfile mismatch is detected ---"
+# Save original klar.json
+cp "$TEST_DIR/klar.json" "$TEST_DIR/klar.json.bak"
+
+# Modify klar.json to add a fake dependency
+cat > "$TEST_DIR/klar.json" << 'EOF'
+{
+  "package": {
+    "name": "myproject",
+    "version": "0.1.0",
+    "entry": "src/main.kl"
+  },
+  "dependencies": {
+    "utils": { "path": "../utils" },
+    "newdep": { "path": "../newdep" }
+  }
+}
+EOF
+
+cd "$TEST_DIR"
+OUTPUT=$($KLAR build 2>&1) || true
+cd - > /dev/null
+
+if echo "$OUTPUT" | grep -q "Error: klar.lock is out of date"; then
+    echo "  ✓ Lockfile mismatch correctly detected"
+    PASSED=$((PASSED + 1))
+else
+    echo "  ✗ Lockfile mismatch not detected: $OUTPUT"
+    FAILED=$((FAILED + 1))
+fi
+
+# Restore original klar.json
+mv "$TEST_DIR/klar.json.bak" "$TEST_DIR/klar.json"
+
 # Clean up build artifacts
 rm -f "$TEST_DIR/build/myproject"
 
