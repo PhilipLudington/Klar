@@ -1,12 +1,51 @@
 //! Native code generation module.
 //!
 //! Provides LLVM-based code generation for Klar programs.
+//!
+//! ## Module Organization
+//!
+//! | Module          | Purpose                                          |
+//! |-----------------|--------------------------------------------------|
+//! | emit.zig        | Main Emitter struct (AST -> LLVM IR)             |
+//! | llvm.zig        | LLVM C API bindings                              |
+//! | target.zig      | Target platform/ABI information                  |
+//! | layout.zig      | Struct layout calculation                        |
+//! | linker.zig      | Native linker invocation                         |
+//! | runtime.zig     | C library declarations, Rc/Arc runtime           |
+//! | generics.zig    | Monomorphization utilities                       |
+//! | types_emit.zig  | Type conversion documentation                    |
+//! | strings_emit.zig| String type utilities                            |
+//! | list.zig        | List[T] utilities                                |
+//! | map.zig         | Map[K,V] utilities                               |
+//! | set.zig         | Set[T] utilities                                 |
+//! | io.zig          | I/O type utilities                               |
+//! | optionals.zig   | Optional/Result utilities                        |
+//! | builtins.zig    | Built-in function utilities                      |
+//! | expressions.zig | Expression emission utilities                    |
+//! | statements.zig  | Statement emission utilities                     |
+//! | functions.zig   | Function emission utilities                      |
 
 pub const llvm = @import("llvm.zig");
 pub const target = @import("target.zig");
 pub const emit = @import("emit.zig");
 pub const linker = @import("linker.zig");
 pub const layout = @import("layout.zig");
+pub const runtime = @import("runtime.zig");
+
+// Supporting modules with utilities and documentation
+// These are re-exported from emit.zig for convenience
+pub const generics = emit.generics;
+pub const types_emit = emit.types_emit;
+pub const strings_emit = emit.strings_emit;
+pub const list = emit.list;
+pub const map = emit.map;
+pub const set = emit.set;
+pub const io = emit.io;
+pub const optionals = emit.optionals;
+pub const builtins = emit.builtins;
+pub const expressions = emit.expressions;
+pub const statements = emit.statements;
+pub const functions = emit.functions;
 
 /// Errors that can occur during code generation.
 pub const CodegenError = error{

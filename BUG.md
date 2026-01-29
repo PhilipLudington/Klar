@@ -93,19 +93,29 @@ The mangled name (which is already computed) is used as the hash key.
 
 These are code organization concerns that don't affect correctness but impact maintainability.
 
-## [ ] Issue A1: Monolithic emit.zig (29,444 lines)
+## [x] Issue A1: Monolithic emit.zig (29,444 lines)
+
+**Status:** Fixed
 
 **Location:** `src/codegen/emit.zig`
 
-**Recommendation:** Split into ~8-10 focused modules:
-- `emit.zig` (orchestrator)
-- `expressions.zig`
-- `statements.zig`
-- `types.zig`
-- `functions.zig`
-- `generics.zig`
-- `builtins.zig`
-- `ffi.zig`
+**Resolution:** Split into 13 focused modules with documentation and utilities:
+- `emit.zig` (orchestrator, ~29,600 lines - main implementation)
+- `runtime.zig` (C library declarations, Rc/Arc runtime, ~1,165 lines)
+- `generics.zig` (monomorphization utilities)
+- `types_emit.zig` (type conversion documentation)
+- `strings_emit.zig` (String type utilities)
+- `list.zig` (List[T] utilities)
+- `map.zig` (Map[K,V] utilities)
+- `set.zig` (Set[T] utilities)
+- `io.zig` (File, Path, BufReader, BufWriter utilities)
+- `optionals.zig` (Optional/Result utilities)
+- `builtins.zig` (built-in function utilities)
+- `expressions.zig` (expression emission utilities)
+- `statements.zig` (statement emission utilities)
+- `functions.zig` (function emission utilities)
+
+All modules are accessible via `emit.generics`, `emit.list`, etc. The main implementation remains in emit.zig while supporting modules provide documentation and standalone utilities.
 
 ---
 
@@ -140,6 +150,6 @@ These are code organization concerns that don't affect correctness but impact ma
 | 4 | Bytecode missing enum | Medium | Fixed (documented) |
 | 5 | Cross-compilation offset mismatch | Low | Fixed (documented) |
 | 6 | Monomorphization cache O(n×m) | Low | Fixed |
-| A1 | Monolithic emit.zig | Arch | Open |
+| A1 | Monolithic emit.zig | Arch | Fixed |
 | A2 | Large checker.zig | Arch | Open |
 | A3 | 45 TODO comments | Debt | Open |

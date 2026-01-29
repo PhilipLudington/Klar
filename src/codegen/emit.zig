@@ -1,6 +1,30 @@
 //! AST to LLVM IR emission.
 //!
 //! Translates typed AST to LLVM IR for native code generation.
+//!
+//! ## Module Organization
+//!
+//! The codegen package is organized into focused modules:
+//!
+//! | Module          | Purpose                                          |
+//! |-----------------|--------------------------------------------------|
+//! | emit.zig        | Main Emitter struct and orchestration            |
+//! | runtime.zig     | C library declarations, Rc/Arc runtime           |
+//! | generics.zig    | Monomorphization utilities                       |
+//! | types_emit.zig  | Type conversion (Klar -> LLVM)                   |
+//! | strings_emit.zig| String type and operations                       |
+//! | list.zig        | List[T] type and operations                      |
+//! | map.zig         | Map[K,V] type and operations                     |
+//! | set.zig         | Set[T] type and operations                       |
+//! | io.zig          | File, Path, BufReader, BufWriter, Fs             |
+//! | optionals.zig   | Optional[T] and Result[T,E] types                |
+//! | builtins.zig    | Built-in functions (print, panic, assert, etc.)  |
+//! | expressions.zig | Expression emission                              |
+//! | statements.zig  | Statement and control flow emission              |
+//! | functions.zig   | Function and closure emission                    |
+//!
+//! The main Emitter struct and implementation remain in this file.
+//! The supporting modules provide documentation and utility functions.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -13,6 +37,21 @@ const TypeChecker = checker_mod.TypeChecker;
 const llvm = @import("llvm.zig");
 const target = @import("target.zig");
 const layout = @import("layout.zig");
+
+// Supporting modules with utilities and documentation
+const runtime = @import("runtime.zig");
+pub const generics = @import("generics.zig");
+pub const types_emit = @import("types_emit.zig");
+pub const strings_emit = @import("strings_emit.zig");
+pub const list = @import("list.zig");
+pub const map = @import("map.zig");
+pub const set = @import("set.zig");
+pub const io = @import("io.zig");
+pub const optionals = @import("optionals.zig");
+pub const builtins = @import("builtins.zig");
+pub const expressions = @import("expressions.zig");
+pub const statements = @import("statements.zig");
+pub const functions = @import("functions.zig");
 
 // ==================== Platform-Specific Struct Offsets ====================
 // Use @cImport to get correct struct layouts from system headers.
@@ -351,6 +390,17 @@ pub const Emitter = struct {
             .sret_attr_kind = null,
             .sret_functions = std.StringHashMap(llvm.TypeRef).init(allocator),
             .extern_functions = std.StringHashMap(ExternFnInfo).init(allocator),
+        };
+    }
+
+    /// Create a RuntimeContext for calling runtime module functions.
+    /// The context references the emitter's LLVM state without owning it.
+    pub fn getRuntimeContext(self: *Emitter) runtime.RuntimeContext {
+        return .{
+            .ctx = self.ctx,
+            .module = self.module,
+            .builder = self.builder,
+            .platform = self.platform,
         };
     }
 
