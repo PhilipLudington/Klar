@@ -1,0 +1,14 @@
+// Main project that depends on utils
+// The dependency path ../utils is added to search paths
+// So we can import from src/lib relative to that path
+import src.lib.{ add }
+
+fn main(args: [String]) -> i32 {
+    let result: i32 = add(10, 20)
+    if result == 30 {
+        println("Test passed: add(10, 20) = 30")
+        return 0
+    }
+    println("Test failed!")
+    return 1
+}

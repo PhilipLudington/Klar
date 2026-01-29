@@ -23,11 +23,11 @@
 - [x] **Milestone 11: Comptime** - Compile-time evaluation, reflection, assertions
 - [x] **Milestone 12: FFI** - Foreign Function Interface for C interoperability
 - [x] **Milestone 5: Stdlib I/O** - File I/O, buffered I/O, Path type, filesystem operations
+- [x] **Milestone 8: Package Manager** - Project init, build, run, path dependencies, lock files
 - [x] **Milestone 13: FFI Function Pointers** - C callbacks, `@fn_ptr`, `extern fn` types
 
 **In Progress:**
-- **Milestone 8: Package Manager** - Not started ← **CURRENT**
-- **Milestone 9: Tooling** - Not started
+- **Milestone 9: Tooling** - Not started (formatter, doc generator, LSP)
 
 > **Previous plans archived:** [Phase 4 History](docs/history/phase4-language-completion.md)
 
@@ -139,31 +139,96 @@ See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-7-err
 
 ---
 
-## Milestone 8: Package Manager
+## Milestone 8: Package Manager ✅
 
 **Objective:** Implement basic package management.
 
-**Status:** Not started.
+**Status:** Complete. Core functionality (Phases 1-4) implemented. Phase 5 (Git Dependencies) is a stretch goal for future work.
 
-### Manifest Format
-- [ ] Define klar.toml schema
-- [ ] Parse [package] section (name, version, authors)
-- [ ] Parse [dependencies] section
-- [ ] Parse [dev-dependencies] section
-- [ ] Support git dependencies with tag/branch/commit
+> **Design Decision:** Using JSON format (`klar.json`) instead of TOML, as Zig stdlib provides `std.json` and this matches the project's existing JSON conventions for status files.
 
-### CLI Commands
-- [ ] `klar init` - Create new project directory structure
-- [ ] `klar build` - Read klar.toml, resolve dependencies, build all files
-- [ ] `klar run` - Build if needed, execute binary
-- [ ] `klar test` - Discover and run test functions
-- [ ] `klar add` - Add dependency to klar.toml
+### Phase 1: Project Structure & Manifest ✅
+- [x] Define `klar.json` schema (package metadata)
+- [x] Implement manifest parsing with `std.json`
+- [x] `klar init` - Create new project with klar.json
+- [x] `klar init --lib` - Create library project structure
 
-### Dependency Resolution
-- [ ] Build dependency graph
-- [ ] Resolve version constraints
-- [ ] Handle diamond dependencies
-- [ ] Generate klar.lock for reproducible builds
+### Phase 2: Local Package Build ✅
+- [x] `klar build` (no args) - Build project from klar.json
+- [x] `klar run` (no args) - Build and run main entry point
+- [x] Support `src/main.kl` as default entry point
+- [x] Support `src/lib.kl` for library projects
+
+### Phase 3: Path Dependencies ✅
+- [x] Parse `dependencies` section with path dependencies
+- [x] Resolve local package paths relative to manifest
+- [x] Integrate with ModuleResolver search paths
+- [x] Build dependency graph with cycle detection (via existing ModuleResolver)
+
+### Phase 4: Lock File & Reproducibility ✅
+- [x] Generate `klar.lock` on first build
+- [x] Read lockfile for reproducible builds
+- [x] `klar update` - Regenerate lockfile
+
+### Phase 5: Git Dependencies (Stretch)
+- [ ] Support git URL with tag/branch/commit
+- [ ] Clone to cache directory (`.klar/cache/`)
+- [ ] Checkout specified ref
+
+### Manifest Schema (klar.json)
+```json
+{
+  "package": {
+    "name": "my-project",
+    "version": "0.1.0",
+    "authors": ["Author Name"],
+    "entry": "src/main.kl"
+  },
+  "dependencies": {
+    "utils": { "path": "../utils" }
+  },
+  "dev-dependencies": {
+    "testing": { "path": "../test-framework" }
+  }
+}
+```
+
+### Lock File Schema (klar.lock)
+```json
+{
+  "version": 1,
+  "dependencies": {
+    "utils": {
+      "source": "path",
+      "path": "../utils",
+      "resolved": "/absolute/path/to/utils",
+      "version": "0.2.0"
+    }
+  }
+}
+```
+
+The lock file is automatically generated on first build and records:
+- **version**: Lock file format version (currently 1)
+- **source**: Dependency type (`path` or `git`)
+- **path/git**: Original path or URL from manifest
+- **resolved**: Absolute path on disk
+- **version**: Version from dependency's klar.json (if available)
+- **commit**: Git commit hash (for git dependencies, future)
+
+### Project Directory Structure
+```
+my-project/
+├── klar.json
+├── klar.lock
+├── src/
+│   ├── main.kl      (binary entry)
+│   └── lib.kl       (library entry)
+├── tests/
+│   └── *.kl
+└── build/
+    └── (compiled output)
+```
 
 ---
 
@@ -565,9 +630,9 @@ Based on dependencies:
 8. **Milestone 7: Error Handling** (`?` operator, From/Into traits) ✅
 9. **Milestone 12: FFI** (C interoperability) ✅
 10. **Milestone 5: Stdlib I/O** (filesystem operations) ✅
-11. **Milestone 13: FFI Function Pointers** (callbacks, completing FFI) ← **CURRENT**
-12. **Milestone 8: Package Manager** (needs modules)
-13. **Milestone 9: Tooling** (needs stable language)
+11. **Milestone 13: FFI Function Pointers** (callbacks, completing FFI) ✅
+12. **Milestone 8: Package Manager** (needs modules) ✅
+13. **Milestone 9: Tooling** (needs stable language) ← **NEXT**
 
 ---
 
@@ -597,7 +662,7 @@ Phase 4 is complete when:
 - [ ] Documentation exists for language and stdlib
 
 **Tooling:**
-- [ ] Package manager works for dependencies
+- [x] Package manager works for dependencies
 - [ ] IDE support via LSP
 - [ ] Code formatter available
 

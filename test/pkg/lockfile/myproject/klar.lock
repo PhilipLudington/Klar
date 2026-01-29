@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "dependencies": {
+    "utils": {
+      "source": "path",
+      "path": "../utils",
+      "resolved": "/Users/mrphil/Fun/Klar/PackageManager/test/pkg/lockfile/utils",
+      "version": "0.2.0"
+    }
+  }
+}
