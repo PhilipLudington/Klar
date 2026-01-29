@@ -22,3 +22,6 @@ zig-out/
 
 # AI scratch/sandbox directory
 scratch/
+
+# Generated lock files in test fixtures (contain machine-specific absolute paths)
+test/pkg/**/klar.lock

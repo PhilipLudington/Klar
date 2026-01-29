@@ -116,13 +116,25 @@ pub const Lockfile = struct {
         const name_copy = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(name_copy);
 
-        // Copy the dependency strings
+        // Copy the dependency strings with proper errdefer for each allocation
+        const original_copy = try self.allocator.dupe(u8, dep.original);
+        errdefer self.allocator.free(original_copy);
+
+        const resolved_copy = try self.allocator.dupe(u8, dep.resolved);
+        errdefer self.allocator.free(resolved_copy);
+
+        const version_copy: ?[]const u8 = if (dep.version) |v| try self.allocator.dupe(u8, v) else null;
+        errdefer if (version_copy) |vc| self.allocator.free(vc);
+
+        const commit_copy: ?[]const u8 = if (dep.commit) |c| try self.allocator.dupe(u8, c) else null;
+        // No errdefer needed for last allocation - if put fails, deinit handles it
+
         const dep_copy = ResolvedDependency{
             .source = dep.source,
-            .original = try self.allocator.dupe(u8, dep.original),
-            .resolved = try self.allocator.dupe(u8, dep.resolved),
-            .version = if (dep.version) |v| try self.allocator.dupe(u8, v) else null,
-            .commit = if (dep.commit) |c| try self.allocator.dupe(u8, c) else null,
+            .original = original_copy,
+            .resolved = resolved_copy,
+            .version = version_copy,
+            .commit = commit_copy,
         };
 
         try self.dependencies.put(self.allocator, name_copy, dep_copy);
@@ -303,27 +315,44 @@ fn parseResolvedDependency(allocator: Allocator, value: std.json.Value) !Resolve
 }
 
 /// Generate lock file JSON content.
-pub fn generateLockfile(allocator: Allocator, lockfile: *const Lockfile) ![]const u8 {
+/// Dependencies are sorted alphabetically by name for deterministic output.
+pub fn generateLockfile(allocator: Allocator, lf: *const Lockfile) ![]const u8 {
     var buffer = std.ArrayListUnmanaged(u8){};
+    errdefer buffer.deinit(allocator);
     const writer = buffer.writer(allocator);
 
     try writer.writeAll("{\n");
-    try writer.print("  \"version\": {d},\n", .{lockfile.version});
+    try writer.print("  \"version\": {d},\n", .{lf.version});
     try writer.writeAll("  \"dependencies\": {");
 
-    var first = true;
-    var it = lockfile.dependencies.iterator();
+    // Collect and sort dependency names for deterministic output
+    var names = std.ArrayListUnmanaged([]const u8){};
+    defer names.deinit(allocator);
+
+    var it = lf.dependencies.iterator();
     while (it.next()) |entry| {
+        try names.append(allocator, entry.key_ptr.*);
+    }
+
+    // Sort alphabetically
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    var first = true;
+    for (names.items) |name| {
         if (!first) {
             try writer.writeAll(",");
         }
         first = false;
 
         try writer.writeAll("\n    \"");
-        try writer.writeAll(entry.key_ptr.*);
+        try writeJsonEscaped(writer, name);
         try writer.writeAll("\": {\n");
 
-        const dep = entry.value_ptr.*;
+        const dep = lf.dependencies.get(name).?;
         try writer.print("      \"source\": \"{s}\",\n", .{dep.source.toString()});
 
         // Write original path/URL
@@ -331,16 +360,24 @@ pub fn generateLockfile(allocator: Allocator, lockfile: *const Lockfile) ![]cons
             .path => "path",
             .git => "git",
         };
-        try writer.print("      \"{s}\": \"{s}\",\n", .{ key, escapeJsonString(dep.original) });
+        try writer.print("      \"{s}\": \"", .{key});
+        try writeJsonEscaped(writer, dep.original);
+        try writer.writeAll("\",\n");
 
-        try writer.print("      \"resolved\": \"{s}\"", .{escapeJsonString(dep.resolved)});
+        try writer.writeAll("      \"resolved\": \"");
+        try writeJsonEscaped(writer, dep.resolved);
+        try writer.writeAll("\"");
 
         if (dep.version) |v| {
-            try writer.print(",\n      \"version\": \"{s}\"", .{v});
+            try writer.writeAll(",\n      \"version\": \"");
+            try writeJsonEscaped(writer, v);
+            try writer.writeAll("\"");
         }
 
         if (dep.commit) |c| {
-            try writer.print(",\n      \"commit\": \"{s}\"", .{c});
+            try writer.writeAll(",\n      \"commit\": \"");
+            try writeJsonEscaped(writer, c);
+            try writer.writeAll("\"");
         }
 
         try writer.writeAll("\n    }");
@@ -365,11 +402,23 @@ pub fn saveLockfile(lockfile: *const Lockfile, lockfile_path: []const u8) !void 
     try file.writeAll(content);
 }
 
-/// Escape special characters for JSON string.
-fn escapeJsonString(str: []const u8) []const u8 {
-    // For simplicity, we assume paths don't contain special characters
-    // that need escaping. A full implementation would escape \, ", etc.
-    return str;
+/// Write a string with JSON escaping to the writer.
+/// Escapes: backslash, double quote, and control characters.
+fn writeJsonEscaped(writer: anytype, str: []const u8) !void {
+    for (str) |c| {
+        switch (c) {
+            '\\' => try writer.writeAll("\\\\"),
+            '"' => try writer.writeAll("\\\""),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            // Control characters (0x00-0x1F) excluding \t (0x09), \n (0x0A), \r (0x0D)
+            0x00...0x08, 0x0B, 0x0C, 0x0E...0x1F => {
+                try writer.print("\\u{x:0>4}", .{c});
+            },
+            else => try writer.writeByte(c),
+        }
+    }
 }
 
 // Tests
@@ -479,11 +528,11 @@ test "generateLockfile roundtrip" {
 }
 
 test "Lockfile checkMismatch detects new dependency" {
-    var lockfile = Lockfile.init(std.testing.allocator);
-    defer lockfile.deinit();
+    var lf = Lockfile.init(std.testing.allocator);
+    defer lf.deinit();
 
     // Lock file has only "utils"
-    try lockfile.addDependency("utils", .{
+    try lf.addDependency("utils", .{
         .source = .path,
         .original = "../utils",
         .resolved = "/path/to/utils",
@@ -496,7 +545,7 @@ test "Lockfile checkMismatch detects new dependency" {
     try manifest_deps.put(std.testing.allocator, "utils", .{ .path = "../utils" });
     try manifest_deps.put(std.testing.allocator, "http", .{ .path = "../http" });
 
-    const mismatched = try lockfile.checkMismatch(&manifest_deps, std.testing.allocator);
+    const mismatched = try lf.checkMismatch(&manifest_deps, std.testing.allocator);
     defer {
         for (mismatched) |m| std.testing.allocator.free(m);
         std.testing.allocator.free(mismatched);
@@ -504,4 +553,52 @@ test "Lockfile checkMismatch detects new dependency" {
 
     try std.testing.expectEqual(@as(usize, 1), mismatched.len);
     try std.testing.expectEqualStrings("http", mismatched[0]);
+}
+
+test "generateLockfile escapes special characters" {
+    var lf = Lockfile.init(std.testing.allocator);
+    defer lf.deinit();
+
+    // Path with backslashes (Windows-style) and quotes
+    try lf.addDependency("test", .{
+        .source = .path,
+        .original = "C:\\Users\\test\\path",
+        .resolved = "C:\\Program Files\\test\"app",
+    });
+
+    const content = try generateLockfile(std.testing.allocator, &lf);
+    defer std.testing.allocator.free(content);
+
+    // Verify escaping in output
+    try std.testing.expect(std.mem.indexOf(u8, content, "C:\\\\Users\\\\test\\\\path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "C:\\\\Program Files\\\\test\\\"app") != null);
+
+    // Parse it back and verify roundtrip
+    var parsed = try parseLockfile(std.testing.allocator, content);
+    defer parsed.deinit();
+
+    const dep = parsed.dependencies.get("test").?;
+    try std.testing.expectEqualStrings("C:\\Users\\test\\path", dep.original);
+    try std.testing.expectEqualStrings("C:\\Program Files\\test\"app", dep.resolved);
+}
+
+test "generateLockfile produces deterministic output" {
+    var lf = Lockfile.init(std.testing.allocator);
+    defer lf.deinit();
+
+    // Add dependencies in non-alphabetical order
+    try lf.addDependency("zebra", .{ .source = .path, .original = "../zebra", .resolved = "/zebra" });
+    try lf.addDependency("alpha", .{ .source = .path, .original = "../alpha", .resolved = "/alpha" });
+    try lf.addDependency("middle", .{ .source = .path, .original = "../middle", .resolved = "/middle" });
+
+    const content = try generateLockfile(std.testing.allocator, &lf);
+    defer std.testing.allocator.free(content);
+
+    // Dependencies should be sorted alphabetically in output
+    const alpha_pos = std.mem.indexOf(u8, content, "\"alpha\"").?;
+    const middle_pos = std.mem.indexOf(u8, content, "\"middle\"").?;
+    const zebra_pos = std.mem.indexOf(u8, content, "\"zebra\"").?;
+
+    try std.testing.expect(alpha_pos < middle_pos);
+    try std.testing.expect(middle_pos < zebra_pos);
 }

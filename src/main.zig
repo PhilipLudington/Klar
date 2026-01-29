@@ -30,6 +30,35 @@ fn getStdErr() std.fs.File {
     return .{ .handle = std.posix.STDERR_FILENO };
 }
 
+/// Result of attempting to load a manifest with user-friendly error messages.
+const ManifestLoadResult = union(enum) {
+    success: manifest.Manifest,
+    failure,
+};
+
+/// Load a manifest file with user-friendly error reporting.
+/// Returns the manifest on success, or .failure after printing error to stderr.
+fn loadManifestWithErrors(allocator: std.mem.Allocator, path: []const u8, command_hint: []const u8) ManifestLoadResult {
+    const stderr = getStdErr();
+    return .{
+        .success = manifest.loadManifest(allocator, path) catch |err| {
+            const msg = switch (err) {
+                error.FileNotFound => blk: {
+                    stderr.writeAll("Error: no input file and no klar.json found\n") catch {};
+                    var buf: [256]u8 = undefined;
+                    break :blk std.fmt.bufPrint(&buf, "Usage: klar {s} <file.kl> or run from a project directory\n", .{command_hint}) catch "";
+                },
+                error.InvalidJson => "Error: invalid JSON in klar.json\n",
+                error.MissingPackageSection => "Error: klar.json missing 'package' section\n",
+                error.MissingPackageName => "Error: klar.json missing 'package.name'\n",
+                else => "Error: failed to load klar.json\n",
+            };
+            stderr.writeAll(msg) catch {};
+            return .failure;
+        },
+    };
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -88,28 +117,9 @@ pub fn main() !void {
 
         const final_source = if (source_file) |sf| sf else blk: {
             // Try to load klar.json from current directory
-            loaded_manifest = manifest.loadManifest(allocator, "klar.json") catch |err| switch (err) {
-                error.FileNotFound => {
-                    try getStdErr().writeAll("Error: no input file and no klar.json found\n");
-                    try getStdErr().writeAll("Usage: klar run <file.kl> or run from a project directory\n");
-                    return;
-                },
-                error.InvalidJson => {
-                    try getStdErr().writeAll("Error: invalid JSON in klar.json\n");
-                    return;
-                },
-                error.MissingPackageSection => {
-                    try getStdErr().writeAll("Error: klar.json missing 'package' section\n");
-                    return;
-                },
-                error.MissingPackageName => {
-                    try getStdErr().writeAll("Error: klar.json missing 'package.name'\n");
-                    return;
-                },
-                else => {
-                    try getStdErr().writeAll("Error: failed to load klar.json\n");
-                    return;
-                },
+            loaded_manifest = switch (loadManifestWithErrors(allocator, "klar.json", "run")) {
+                .success => |m| m,
+                .failure => return,
             };
 
             entry_path_buf = loaded_manifest.?.getEntryPath(allocator) catch {
@@ -245,28 +255,9 @@ pub fn main() !void {
 
         const final_source = if (source_file) |sf| sf else blk: {
             // Try to load klar.json from current directory
-            loaded_manifest = manifest.loadManifest(allocator, "klar.json") catch |err| switch (err) {
-                error.FileNotFound => {
-                    try getStdErr().writeAll("Error: no input file and no klar.json found\n");
-                    try getStdErr().writeAll("Usage: klar build <file.kl> or run from a project directory\n");
-                    return;
-                },
-                error.InvalidJson => {
-                    try getStdErr().writeAll("Error: invalid JSON in klar.json\n");
-                    return;
-                },
-                error.MissingPackageSection => {
-                    try getStdErr().writeAll("Error: klar.json missing 'package' section\n");
-                    return;
-                },
-                error.MissingPackageName => {
-                    try getStdErr().writeAll("Error: klar.json missing 'package.name'\n");
-                    return;
-                },
-                else => {
-                    try getStdErr().writeAll("Error: failed to load klar.json\n");
-                    return;
-                },
+            loaded_manifest = switch (loadManifestWithErrors(allocator, "klar.json", "build")) {
+                .success => |m| m,
+                .failure => return,
             };
 
             entry_path_buf = loaded_manifest.?.getEntryPath(allocator) catch {
@@ -2333,27 +2324,9 @@ fn updateLockfile(allocator: std.mem.Allocator) !void {
     const stderr = getStdErr();
 
     // Load manifest
-    var loaded_manifest = manifest.loadManifest(allocator, "klar.json") catch |err| switch (err) {
-        error.FileNotFound => {
-            try stderr.writeAll("Error: no klar.json found in current directory\n");
-            return;
-        },
-        error.InvalidJson => {
-            try stderr.writeAll("Error: invalid JSON in klar.json\n");
-            return;
-        },
-        error.MissingPackageSection => {
-            try stderr.writeAll("Error: klar.json missing 'package' section\n");
-            return;
-        },
-        error.MissingPackageName => {
-            try stderr.writeAll("Error: klar.json missing 'package.name'\n");
-            return;
-        },
-        else => {
-            try stderr.writeAll("Error: failed to load klar.json\n");
-            return;
-        },
+    var loaded_manifest = switch (loadManifestWithErrors(allocator, "klar.json", "update")) {
+        .success => |m| m,
+        .failure => return,
     };
     defer loaded_manifest.deinit();
 
