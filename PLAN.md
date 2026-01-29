@@ -23,10 +23,10 @@
 - [x] **Milestone 11: Comptime** - Compile-time evaluation, reflection, assertions
 - [x] **Milestone 12: FFI** - Foreign Function Interface for C interoperability
 - [x] **Milestone 5: Stdlib I/O** - File I/O, buffered I/O, Path type, filesystem operations
+- [x] **Milestone 13: FFI Function Pointers** - C callbacks, `@fn_ptr`, `extern fn` types
 
 **In Progress:**
-- **Milestone 13: FFI Function Pointers** - Phases 1-5 complete (Phase 6 deferred) ← **CURRENT**
-- **Milestone 8: Package Manager** - Not started
+- **Milestone 8: Package Manager** - Not started ← **CURRENT**
 - **Milestone 9: Tooling** - Not started
 
 > **Previous plans archived:** [Phase 4 History](docs/history/phase4-language-completion.md)
@@ -279,11 +279,11 @@ All FFI tests in `test/native/ffi/`:
 
 ---
 
-## Milestone 13: FFI Function Pointers
+## Milestone 13: FFI Function Pointers ✅
 
 **Objective:** Enable Klar to pass function pointers to C code (callbacks) and receive/call C function pointers, completing bidirectional FFI.
 
-**Status:** Phases 1-5 complete. Phase 6 (Variadic) deferred.
+**Status:** Complete. Phases 1-5 implemented. Phase 6 (Variadic) deferred.
 
 > **Depends on:** Milestone 12 (FFI) ✅
 
@@ -503,7 +503,7 @@ Create `test/native/ffi/fn_ptr/`:
 
 - [x] Add section to docs/advanced/ffi.md
 - [x] Update klar-ffi-spec.md with function pointer specification
-- [ ] Add examples in docs/examples/
+- [x] Add examples in docs/examples/ (inline in docs/advanced/ffi.md: qsort, signal handler)
 
 ### Success Criteria
 
@@ -584,7 +584,7 @@ Phase 4 is complete when:
 - [x] For-loops work with Range, arrays, List, Set, Map
 - [x] `?` operator for error propagation
 - [x] FFI enables C interoperability
-- [ ] FFI function pointers enable callbacks to C code
+- [x] FFI function pointers enable callbacks to C code
 
 **AI-Native Development:**
 - [x] REPL provides interactive code exploration
