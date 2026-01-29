@@ -7566,7 +7566,47 @@ pub const Emitter = struct {
         // For field expressions, look up the field's type in the parent struct
         if (expr == .field) {
             const field = expr.field;
-            // Recursively get the struct type name of the object
+
+            // Check if this is a numeric index (tuple element access)
+            const field_index: ?u32 = std.fmt.parseInt(u32, field.field_name, 10) catch null;
+            if (field_index) |idx| {
+                // Tuple element access - get the tuple's element type
+                // First try to get the type from local variables (for identifiers)
+                if (field.object == .identifier) {
+                    const var_name = field.object.identifier.name;
+                    if (self.named_values.get(var_name)) |local| {
+                        // Check if this local has a semantic_type that's a tuple
+                        if (local.semantic_type) |st| {
+                            if (st == .tuple) {
+                                const tuple_types = st.tuple.elements;
+                                if (idx < tuple_types.len) {
+                                    const elem_type = tuple_types[idx];
+                                    if (elem_type == .struct_) {
+                                        return elem_type.struct_.name;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Fall back to type checker
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const obj_type = tc_mut.checkExpr(field.object);
+                    if (obj_type == .tuple) {
+                        const tuple_types = obj_type.tuple.elements;
+                        if (idx < tuple_types.len) {
+                            const elem_type = tuple_types[idx];
+                            if (elem_type == .struct_) {
+                                return elem_type.struct_.name;
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
+
+            // Named field access - recursively get the struct type name of the object
             const parent_struct_name = self.getStructTypeNameFromExpr(field.object) orelse return null;
             // Look up the field type
             return self.lookupFieldStructTypeName(parent_struct_name, field.field_name);
@@ -8392,6 +8432,78 @@ pub const Emitter = struct {
             // For slices, we'd need to bounds check and extract the data pointer
             // For now, treat as raw pointer indexing
             return EmitError.UnsupportedFeature;
+        } else if (obj_type_kind == llvm.c.LLVMStructTypeKind) {
+            // Could be a slice struct { ptr, len }
+            // Check if this is a slice by checking struct element count and types
+            const num_elements = llvm.c.LLVMCountStructElementTypes(obj_type);
+            if (num_elements == 2) {
+                // Likely a slice struct - store to temp and do slice indexing
+                const slice_alloca = self.builder.buildAlloca(obj_type, "slice.tmp");
+                _ = self.builder.buildStore(obj, slice_alloca);
+
+                const i64_type = llvm.Types.int64(self.ctx);
+                const slice_type = self.getSliceStructType();
+
+                // Determine element type from context
+                // Try to get element type from the index expression's object type via type checker
+                var element_llvm_type = llvm.Types.int32(self.ctx); // Default to char
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const obj_klar_type = tc_mut.checkExpr(idx.object);
+                    if (obj_klar_type == .slice) {
+                        element_llvm_type = self.typeToLLVM(obj_klar_type.slice.element);
+                    }
+                }
+
+                // Load length from slice struct (field 1)
+                const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_alloca, 1, "slice.len_ptr");
+                const slice_len = self.builder.buildLoad(i64_type, len_ptr, "slice.len");
+
+                // Zero-extend or sign-extend index to i64 for comparison
+                const index_type = llvm.typeOf(index_val);
+                const index_bits = llvm.c.LLVMGetIntTypeWidth(index_type);
+
+                const index_i64 = if (index_bits < 64)
+                    self.builder.buildZExt(index_val, i64_type, "idx.ext")
+                else if (index_bits > 64)
+                    self.builder.buildTrunc(index_val, i64_type, "idx.trunc")
+                else
+                    index_val;
+
+                // Bounds check: index < length (unsigned comparison)
+                const in_bounds = self.builder.buildICmp(
+                    llvm.c.LLVMIntULT,
+                    index_i64,
+                    slice_len,
+                    "bounds.check",
+                );
+
+                // Create blocks for bounds check
+                const func = self.current_function orelse return EmitError.InvalidAST;
+                const ok_block = llvm.appendBasicBlock(self.ctx, func, "bounds.ok");
+                const fail_block = llvm.appendBasicBlock(self.ctx, func, "bounds.fail");
+
+                // Branch based on bounds check
+                _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+                // Fail block: trap/unreachable
+                self.builder.positionAtEnd(fail_block);
+                _ = self.builder.buildUnreachable();
+
+                // Continue in OK block
+                self.builder.positionAtEnd(ok_block);
+
+                // Load data pointer from slice struct (field 0)
+                const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, slice_type, slice_alloca, 0, "slice.ptr_ptr");
+                const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "slice.data_ptr");
+
+                // GEP into data pointer with the index
+                var gep_indices = [_]llvm.ValueRef{index_i64};
+                const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, element_llvm_type, data_ptr, &gep_indices, 1, "slice.elem.ptr");
+
+                // Load and return the element
+                return self.builder.buildLoad(element_llvm_type, elem_ptr, "slice.elem.val");
+            }
         }
 
         return EmitError.UnsupportedFeature;
@@ -28246,14 +28358,105 @@ pub const Emitter = struct {
 
     /// Check if an AST TypeExpr requires sret calling convention.
     /// This is used for non-generic functions where we have AST types instead of checker types.
-    fn requiresSretForTypeExpr(_: *Emitter, type_expr: ast.TypeExpr) bool {
+    fn requiresSretForTypeExpr(self: *Emitter, type_expr: ast.TypeExpr) bool {
         return switch (type_expr) {
             // Arrays always need sret - they can't be returned in registers
             .array => true,
-            // Tuple types with more than 2 elements likely need sret
-            .tuple => |t| t.elements.len > 2,
+            // Tuples need sret if more than 2 elements OR if size exceeds register return limit
+            .tuple => |t| {
+                if (t.elements.len > 2) return true;
+                const size = self.getSizeOfTypeExpr(type_expr);
+                return size > self.abi.maxRegisterReturnSize();
+            },
+            // Slices are 16 bytes (ptr + len) - may need sret on Windows
+            .slice => self.getSizeOfTypeExpr(type_expr) > self.abi.maxRegisterReturnSize(),
+            // Named types could be structs - check size if possible
+            .named => |n| {
+                // Check if it's a struct type registered with the emitter
+                if (self.struct_types.get(n.name)) |_| {
+                    const size = self.getSizeOfTypeExpr(type_expr);
+                    return size > self.abi.maxRegisterReturnSize();
+                }
+                return false;
+            },
             // Other types can generally be returned in registers
             else => false,
+        };
+    }
+
+    /// Estimate the size of an AST TypeExpr in bytes.
+    /// Used for determining calling convention (sret vs register return).
+    fn getSizeOfTypeExpr(self: *Emitter, type_expr: ast.TypeExpr) usize {
+        return switch (type_expr) {
+            .named => |n| {
+                // Check for primitive types
+                if (std.mem.eql(u8, n.name, "i8") or std.mem.eql(u8, n.name, "u8") or std.mem.eql(u8, n.name, "bool")) return 1;
+                if (std.mem.eql(u8, n.name, "i16") or std.mem.eql(u8, n.name, "u16")) return 2;
+                if (std.mem.eql(u8, n.name, "i32") or std.mem.eql(u8, n.name, "u32") or std.mem.eql(u8, n.name, "f32") or std.mem.eql(u8, n.name, "char")) return 4;
+                if (std.mem.eql(u8, n.name, "i64") or std.mem.eql(u8, n.name, "u64") or std.mem.eql(u8, n.name, "f64") or std.mem.eql(u8, n.name, "isize") or std.mem.eql(u8, n.name, "usize")) return 8;
+                if (std.mem.eql(u8, n.name, "i128") or std.mem.eql(u8, n.name, "u128")) return 16;
+                if (std.mem.eql(u8, n.name, "string")) return 8; // pointer
+
+                // Check if it's a known struct type via the type checker
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    if (tc_mut.lookupType(n.name)) |klar_type| {
+                        if (klar_type == .struct_) {
+                            return self.getSizeOfKlarType(klar_type);
+                        }
+                    }
+                }
+
+                // Default to pointer size for unknown types
+                return 8;
+            },
+            .array => |arr| {
+                const elem_size = self.getSizeOfTypeExpr(arr.element);
+                const size: u64 = switch (arr.size) {
+                    .literal => |lit| switch (lit.kind) {
+                        .int => |v| @intCast(v),
+                        else => 0,
+                    },
+                    else => 0,
+                };
+                return elem_size * @as(usize, @intCast(size));
+            },
+            .slice => 16, // ptr (8) + len (8)
+            .tuple => |t| {
+                var total: usize = 0;
+                for (t.elements) |elem| {
+                    total += self.getSizeOfTypeExpr(elem);
+                }
+                return total;
+            },
+            .optional => |opt| {
+                // 1 byte tag + inner type (with alignment padding)
+                const inner_size = self.getSizeOfTypeExpr(opt.inner);
+                return 8 + inner_size; // Simplified: assume 8-byte alignment
+            },
+            .result => |res| {
+                const ok_size = self.getSizeOfTypeExpr(res.ok_type);
+                const err_size = self.getSizeOfTypeExpr(res.err_type);
+                return 8 + ok_size + err_size; // tag + both variants
+            },
+            .function => 16, // closure struct: fn_ptr + env_ptr
+            .reference => 8, // pointer
+            .generic_apply => |g| {
+                // For generic types like List[T], Map[K,V], etc.
+                if (g.base == .named) {
+                    const base_name = g.base.named.name;
+                    if (std.mem.eql(u8, base_name, "List")) return 16;
+                    if (std.mem.eql(u8, base_name, "Map") or std.mem.eql(u8, base_name, "Set")) return 20;
+                    if (std.mem.eql(u8, base_name, "Result") and g.args.len == 2) {
+                        const ok_size = self.getSizeOfTypeExpr(g.args[0]);
+                        const err_size = self.getSizeOfTypeExpr(g.args[1]);
+                        return 8 + ok_size + err_size;
+                    }
+                }
+                return 8; // Default to pointer size
+            },
+            // Qualified types (Self.Item, T.Associated) - assume pointer size
+            .qualified => 8,
         };
     }
 

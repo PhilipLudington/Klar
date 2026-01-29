@@ -1,0 +1,10 @@
+// Test importing tuple with [char]
+
+import lib.tuple_char_array.{ State, init }
+
+fn main() -> i32 {
+    let pair: (State, [char]) = init("test")
+    println("Len: {pair.0.len}")
+    println("Char: {pair.1[0]}")
+    return 0
+}

@@ -1,0 +1,19 @@
+// Test returning tuple with [char]
+
+pub struct State {
+    pos: i32,
+    len: i32,
+}
+
+pub fn init(s: string) -> (State, [char]) {
+    let chars: [char] = s.chars()
+    let state: State = State { pos: 0, len: s.len() }
+    return (state, chars)
+}
+
+fn main() -> i32 {
+    let pair: (State, [char]) = init("hello")
+    println("Len: {pair.0.len}")
+    println("First: {pair.1[0]}")
+    return 0
+}

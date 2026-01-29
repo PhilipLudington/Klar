@@ -90,8 +90,6 @@ The root cause was that `emitIndexAccess()` always loads the element value after
 **Type:** Codegen / Runtime
 **Severity:** High
 
-**Fix:** Changed `emitInterpolatedString()` and `emitExprAsString()` in `src/codegen/emit.zig` to allocate string buffers on the heap (via `malloc`) instead of the stack (via `buildAlloca`). Stack-allocated buffers became invalid when the match arm scope was popped, causing the returned pointer to be dangling.
-
 ### Description
 
 When returning a dynamically-created string (e.g., from string interpolation) from a match arm that pattern-matches on a recursive enum, the returned string is corrupted or empty. Literal string returns work correctly.
@@ -254,130 +252,129 @@ This is a critical blocker for any recursive data structure in Klar.
 
 ---
 
-## [x] Bug 4: Imported enum types cannot be used for variant construction
+## [x] Bug 4: Codegen crash when importing modules with tuple-containing-array return types
 
 **Status:** Fixed
-**Type:** Type Checker / Module System
+**Type:** Codegen / Import
 **Severity:** High
-
-**Fix:** Modified `registerModuleExports()` in `src/checker.zig` to look up the actual type from the current scope for struct, enum, and type alias exports instead of storing `null`. The types are already registered in scope by `checkStruct()`, `checkEnum()`, and `checkTypeAlias()` before exports are registered, so the lookup succeeds and the proper type information is now preserved through the import system.
 
 ### Description
 
-When importing an enum type from another module, the type checker fails to recognize it as an enum when constructing variants. The error `expected enum type` occurs even though the import succeeds and the module is found.
+Importing from a module that contains a function returning a tuple with a `[char]` array element causes the compiler to crash (exit code 133) or fail with "UnsupportedFeature". The module compiles and runs correctly in isolation (with its own `main()`), but any import from it triggers the bug.
+
+**Root Cause Identified:** Functions returning `(T, [char])` tuple types trigger codegen failures when the containing module is imported.
 
 ### Minimal Reproduction
 
-**enum_lib.kl:**
+**File: `bug4_repro/lib/tuple_char_array.kl`**
 ```klar
-pub enum Color {
-    Red,
-    Green,
-    Blue,
+pub struct State {
+    pos: i32,
+    len: i32,
 }
 
-pub fn get_red() -> Color {
-    return Color::Red
+pub fn init(s: string) -> (State, [char]) {
+    let chars: [char] = s.chars()
+    let state: State = State { pos: 0, len: s.len() }
+    return (state, chars)
+}
+
+fn main() -> i32 {
+    let pair: (State, [char]) = init("hello")
+    println("Len: {pair.0.len}")
+    return 0
 }
 ```
 
-**main.kl:**
+**File: `bug4_repro/test_tuple_char.kl`**
 ```klar
-import enum_lib.{ Color, get_red }
+import lib.tuple_char_array.{ State, init }
 
 fn main() -> i32 {
-    let c: Color = Color::Red   // ERROR: expected enum type
-    let d: Color = get_red()    // This would work if we got past line above
+    let pair: (State, [char]) = init("test")
+    println("Len: {pair.0.len}")
     return 0
 }
 ```
 
 ### Steps to Reproduce
 
-1. Create the two files above in the same directory
-2. Run `klar check main.kl`
+```bash
+cd bug4_repro
 
-### Expected Behavior
+# Type checking passes:
+klar check lib/tuple_char_array.kl
+# Output: All checks passed
 
-The code type-checks successfully. `Color::Red` should construct an enum variant of type `Color`.
+# But codegen fails even in isolation:
+klar run lib/tuple_char_array.kl
+# Error: Codegen error: UnsupportedFeature
 
-### Actual Behavior
-
+# Import also fails:
+klar run test_tuple_char.kl
+# Exit code 133 (crash) or "Codegen error: UnsupportedFeature"
 ```
-Type check failed with 1 error(s):
-  4:20 [type_mismatch]: expected enum type
-```
+
+**Note:** The real `lib/json/lexer.kl` uses this same pattern in `lexer_new()` but has additional complexity. The lexer type-checks successfully (`klar check lib/json/lexer.kl` passes), but importing from it crashes the compiler.
+
+### Error Messages Observed
+
+1. **Exit code 133** - Crash during codegen (most common)
+2. **`Codegen error: UnsupportedFeature`** - When tuple type is in return position
+3. Original LLVM error (may be related):
+   ```
+   LLVM Module verification failed: Both operands to a binary operator are not of the same type!
+     %addtmp = add nsw ptr %num_str29, i32 0
+   ```
 
 ### Investigation Notes
 
-The issue is in how imported enum types are registered in the scope. Looking at the relevant code:
+**What Works:**
+- Returning `[char]` alone from an imported function ✅
+- Returning `(State, string)` tuples from imports ✅
+- Returning `Result[string, Error]` from imports ✅
+- String concatenation in imported modules ✅
+- Multiple functions with string operations in imports ✅
 
-1. In `registerModuleExports()` (checker.zig ~line 10842):
-   ```zig
-   .enum_decl => |e| {
-       if (e.is_pub) {
-           const sym = ModuleSymbol{
-               .name = e.name,
-               .kind = .enum_type,
-               .type_ = null,  // <-- Problem: no type info stored
-               .is_pub = true,
-           };
-       }
-   }
-   ```
+**What Fails:**
+- Returning `(State, [char])` from any function in an imported module ❌
+- Returning `(T, [char])` for any struct `T` ❌
+- Even importing *other* symbols from a module that *contains* such a function ❌
 
-2. In `importSpecificSymbol()` (checker.zig ~line 10987):
-   ```zig
-   self.current_scope.define(.{
-       .name = local_name,
-       .type_ = sym.type_ orelse self.type_builder.unknownType(),  // Results in unknownType()
-       .kind = symbol_kind,  // This is .type_ for enums
-       ...
-   });
-   ```
+### Real-World Impact
 
-The enum is registered with `type_ = null` because the comment says "Types don't have a Type value." When imported, this becomes `unknownType()`. When the type checker later sees `Color::Red`, it cannot resolve `Color` as an actual enum type.
-
-### Root Cause
-
-The module export/import system doesn't preserve the actual enum type definition. It only records that a symbol named `Color` exists and is an enum, but doesn't store the information needed to:
-1. Resolve `Color` as a valid type annotation
-2. Look up variants like `Red`, `Green`, `Blue`
-3. Validate variant construction expressions like `Color::Red`
-
-### Potential Fix Approaches
-
-1. **Store enum type reference**: Instead of `type_ = null`, store a reference to the actual enum type definition so it can be resolved in the importing module.
-
-2. **Register enum in type namespace**: When importing an enum, register it in the importing module's type namespace (similar to how struct imports should work).
-
-3. **Cross-module type resolution**: Add mechanism for the type checker to look up type definitions from imported modules when resolving type expressions.
-
-### Workaround
-
-Import only functions that return the enum type, not the enum type itself:
-
+The JSON lexer (`lib/json/lexer.kl`) uses this pattern:
 ```klar
-// Instead of: import enum_lib.{ Color }
-// Use:        import enum_lib.{ get_red, get_green, get_blue }
-
-import enum_lib.{ get_red }
-
-fn main() -> i32 {
-    let c = get_red()  // Type inferred, no explicit Color:: needed
-    return 0
+pub fn lexer_new(source: string) -> (LexerState, [char]) {
+    let chars: [char] = source.chars()
+    let state: LexerState = LexerState.new(source.len())
+    return (state, chars)
 }
 ```
 
-This is severely limiting as it requires wrapper functions for every variant.
+This prevents:
+- Importing the lexer module for use in parser
+- Writing separate test files that import lexer functions
+- Modular library design with character-based parsing
 
-### Impact
+### Suggested Investigation Areas
 
-- Cannot import and use enum types across modules
-- Cannot pattern match on imported enums
-- Forces duplication of enum definitions or awkward wrapper functions
-- Blocks modular code organization for any project using enums
+1. **Codegen for tuple types containing arrays** - The LLVM IR generation for `(T, [array])` return types may have incorrect type handling when resolving imports
+2. **Import symbol resolution** - The crash occurs even when importing unrelated symbols from a module containing such functions, suggesting the issue is in how the imported module is compiled, not the specific imported symbol
+3. **Memory layout for mixed tuple types** - The `add nsw ptr, i32` error suggests a pointer/integer type confusion when computing struct field offsets
 
-### Related
+### Workaround
 
-This bug is independent of Bug 1 (module resolution). Bug 1 prevented finding modules; this bug occurs even when modules are found successfully. Likely also affects struct type imports (not yet verified).
+Avoid returning `[char]` in tuples. Instead, pass the array as an output parameter or restructure to avoid the pattern:
+
+```klar
+// Instead of returning (State, [char]), return just State
+// and have caller create the char array separately
+pub fn lexer_new_state(source_len: i32) -> LexerState {
+    return LexerState.new(source_len)
+}
+
+// Caller does:
+let chars: [char] = source.chars()
+let state: LexerState = lexer_new_state(source.len())
+```
