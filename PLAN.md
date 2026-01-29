@@ -23,10 +23,10 @@
 - [x] **Milestone 11: Comptime** - Compile-time evaluation, reflection, assertions
 - [x] **Milestone 12: FFI** - Foreign Function Interface for C interoperability
 - [x] **Milestone 5: Stdlib I/O** - File I/O, buffered I/O, Path type, filesystem operations
+- [x] **Milestone 8: Package Manager** - Project init, build, run, path dependencies, lock files
 
 **In Progress:**
-- **Milestone 8: Package Manager** - Not started
-- **Milestone 9: Tooling** - Not started
+- **Milestone 9: Tooling** - Not started (formatter, doc generator, LSP)
 
 > **Previous plans archived:** [Phase 4 History](docs/history/phase4-language-completion.md)
 
@@ -138,11 +138,11 @@ See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-7-err
 
 ---
 
-## Milestone 8: Package Manager
+## Milestone 8: Package Manager ✅
 
 **Objective:** Implement basic package management.
 
-**Status:** Phase 3 Complete (Path Dependencies). Phase 4 (Lock File) next.
+**Status:** Complete. Core functionality (Phases 1-4) implemented. Phase 5 (Git Dependencies) is a stretch goal for future work.
 
 > **Design Decision:** Using JSON format (`klar.json`) instead of TOML, as Zig stdlib provides `std.json` and this matches the project's existing JSON conventions for status files.
 
@@ -164,10 +164,10 @@ See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-7-err
 - [x] Integrate with ModuleResolver search paths
 - [x] Build dependency graph with cycle detection (via existing ModuleResolver)
 
-### Phase 4: Lock File & Reproducibility
-- [ ] Generate `klar.lock` on first build
-- [ ] Read lockfile for reproducible builds
-- [ ] `klar update` - Regenerate lockfile
+### Phase 4: Lock File & Reproducibility ✅
+- [x] Generate `klar.lock` on first build
+- [x] Read lockfile for reproducible builds
+- [x] `klar update` - Regenerate lockfile
 
 ### Phase 5: Git Dependencies (Stretch)
 - [ ] Support git URL with tag/branch/commit
@@ -191,6 +191,29 @@ See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-7-err
   }
 }
 ```
+
+### Lock File Schema (klar.lock)
+```json
+{
+  "version": 1,
+  "dependencies": {
+    "utils": {
+      "source": "path",
+      "path": "../utils",
+      "resolved": "/absolute/path/to/utils",
+      "version": "0.2.0"
+    }
+  }
+}
+```
+
+The lock file is automatically generated on first build and records:
+- **version**: Lock file format version (currently 1)
+- **source**: Dependency type (`path` or `git`)
+- **path/git**: Original path or URL from manifest
+- **resolved**: Absolute path on disk
+- **version**: Version from dependency's klar.json (if available)
+- **commit**: Git commit hash (for git dependencies, future)
 
 ### Project Directory Structure
 ```
@@ -367,8 +390,8 @@ Based on dependencies:
 8. **Milestone 7: Error Handling** (`?` operator, From/Into traits) ✅
 9. **Milestone 12: FFI** (C interoperability) ✅
 10. **Milestone 5: Stdlib I/O** (filesystem operations) ✅
-11. **Milestone 8: Package Manager** (needs modules) ← **NEXT**
-12. **Milestone 9: Tooling** (needs stable language)
+11. **Milestone 8: Package Manager** (needs modules) ✅
+12. **Milestone 9: Tooling** (needs stable language) ← **NEXT**
 
 ---
 
@@ -397,7 +420,7 @@ Phase 4 is complete when:
 - [ ] Documentation exists for language and stdlib
 
 **Tooling:**
-- [ ] Package manager works for dependencies
+- [x] Package manager works for dependencies
 - [ ] IDE support via LSP
 - [ ] Code formatter available
 

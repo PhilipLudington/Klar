@@ -19,6 +19,7 @@ const ModuleResolver = module_resolver.ModuleResolver;
 const ModuleInfo = module_resolver.ModuleInfo;
 const Repl = @import("repl.zig").Repl;
 const manifest = @import("pkg/manifest.zig");
+const lockfile = @import("pkg/lockfile.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -118,35 +119,15 @@ pub fn main() !void {
             break :blk entry_path_buf.?;
         };
 
-        // Resolve dependency paths for module search
-        var dep_paths = std.ArrayListUnmanaged([]const u8){};
-        defer {
-            for (dep_paths.items) |p| allocator.free(p);
-            dep_paths.deinit(allocator);
+        // Resolve dependency paths for module search (with lock file support)
+        var dep_resolution: ?DependencyResolution = null;
+        defer if (dep_resolution) |*dr| dr.deinit();
+
+        if (loaded_manifest) |*m| {
+            dep_resolution = resolveDependencies(allocator, m, m.root_dir) catch null;
         }
 
-        if (loaded_manifest) |m| {
-            var dep_it = m.dependencies.iterator();
-            while (dep_it.next()) |entry| {
-                const dep = entry.value_ptr.*;
-                if (dep.path) |rel_path| {
-                    // Resolve path relative to manifest directory
-                    const abs_path = std.fs.path.join(allocator, &.{ m.root_dir, rel_path }) catch continue;
-
-                    // Resolve to canonical path
-                    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-                    if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
-                        allocator.free(abs_path);
-                        dep_paths.append(allocator, allocator.dupe(u8, resolved) catch continue) catch continue;
-                    } else |_| {
-                        dep_paths.append(allocator, abs_path) catch {
-                            allocator.free(abs_path);
-                            continue;
-                        };
-                    }
-                }
-            }
-        }
+        const search_paths = if (dep_resolution) |dr| dr.paths.items else &[_][]const u8{};
 
         if (use_vm or use_interpreter) {
             if (use_interpreter) {
@@ -156,7 +137,7 @@ pub fn main() !void {
             }
         } else {
             // Default: compile to native and run
-            try runNativeFileWithOptions(allocator, final_source, program_args, dep_paths.items);
+            try runNativeFileWithOptions(allocator, final_source, program_args, search_paths);
         }
     } else if (std.mem.eql(u8, command, "tokenize")) {
         if (args.len < 3) {
@@ -309,36 +290,15 @@ pub fn main() !void {
             break :blk project_output_buf;
         } else null;
 
-        // Resolve dependency paths for module search
-        var dep_paths = std.ArrayListUnmanaged([]const u8){};
-        defer {
-            for (dep_paths.items) |p| allocator.free(p);
-            dep_paths.deinit(allocator);
+        // Resolve dependency paths for module search (with lock file support)
+        var dep_resolution: ?DependencyResolution = null;
+        defer if (dep_resolution) |*dr| dr.deinit();
+
+        if (loaded_manifest) |*m| {
+            dep_resolution = resolveDependencies(allocator, m, m.root_dir) catch null;
         }
 
-        if (loaded_manifest) |m| {
-            var dep_it = m.dependencies.iterator();
-            while (dep_it.next()) |entry| {
-                const dep = entry.value_ptr.*;
-                if (dep.path) |rel_path| {
-                    // Resolve path relative to manifest directory
-                    const abs_path = std.fs.path.join(allocator, &.{ m.root_dir, rel_path }) catch continue;
-
-                    // Resolve to canonical path
-                    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-                    if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
-                        allocator.free(abs_path);
-                        dep_paths.append(allocator, allocator.dupe(u8, resolved) catch continue) catch continue;
-                    } else |_| {
-                        // Path doesn't exist, but still add it (will error during compilation)
-                        dep_paths.append(allocator, abs_path) catch {
-                            allocator.free(abs_path);
-                            continue;
-                        };
-                    }
-                }
-            }
-        }
+        const search_paths = if (dep_resolution) |dr| dr.paths.items else &[_][]const u8{};
 
         try buildNative(allocator, final_source, .{
             .output_path = final_output,
@@ -356,7 +316,7 @@ pub fn main() !void {
             .entry_point = entry_point,
             .linker_script = linker_script,
             .compile_only = compile_only,
-            .search_paths = dep_paths.items,
+            .search_paths = search_paths,
         });
     } else if (std.mem.eql(u8, command, "check")) {
         if (args.len < 3) {
@@ -395,6 +355,8 @@ pub fn main() !void {
         }
 
         try initProject(allocator, project_name, is_lib);
+    } else if (std.mem.eql(u8, command, "update")) {
+        try updateLockfile(allocator);
     } else if (std.mem.eql(u8, command, "test")) {
         try getStdErr().writeAll("Test not yet implemented\n");
     } else if (std.mem.eql(u8, command, "fmt")) {
@@ -2166,6 +2128,327 @@ fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
     try stdout.writeAll(disasm.getOutput());
 }
 
+/// Result of dependency resolution with lock file handling.
+const DependencyResolution = struct {
+    allocator: std.mem.Allocator,
+    /// Resolved paths for module search.
+    paths: std.ArrayListUnmanaged([]const u8),
+    /// Whether lock file was generated this run.
+    generated_lockfile: bool,
+
+    pub fn deinit(self: *DependencyResolution) void {
+        for (self.paths.items) |p| self.allocator.free(p);
+        self.paths.deinit(self.allocator);
+    }
+};
+
+/// Resolve dependencies using lock file for reproducibility.
+/// If lock file doesn't exist, generates it. If it exists, uses locked versions.
+/// Returns resolved paths and whether lock file was newly generated.
+fn resolveDependencies(
+    allocator: std.mem.Allocator,
+    loaded_manifest: *const manifest.Manifest,
+    root_dir: []const u8,
+) !DependencyResolution {
+    const stderr = getStdErr();
+    var result = DependencyResolution{
+        .allocator = allocator,
+        .paths = .{},
+        .generated_lockfile = false,
+    };
+    errdefer result.deinit();
+
+    // Check if klar.lock exists
+    const lockfile_path = std.fs.path.join(allocator, &.{ root_dir, "klar.lock" }) catch {
+        return resolveDependenciesWithoutLock(allocator, loaded_manifest);
+    };
+    defer allocator.free(lockfile_path);
+
+    var existing_lock: ?lockfile.Lockfile = null;
+    defer if (existing_lock) |*lf| lf.deinit();
+
+    existing_lock = lockfile.loadLockfile(allocator, lockfile_path) catch |err| blk: {
+        switch (err) {
+            error.FileNotFound => {},
+            error.UnsupportedVersion => {
+                stderr.writeAll("Warning: klar.lock version is newer than this Klar version, regenerating\n") catch {};
+            },
+            else => {
+                stderr.writeAll("Warning: failed to read klar.lock, regenerating\n") catch {};
+            },
+        }
+        break :blk null;
+    };
+
+    if (existing_lock) |*lf| {
+        // Check for mismatches between manifest and lock file
+        const mismatched = lf.checkMismatch(&loaded_manifest.dependencies, allocator) catch {
+            try stderr.writeAll("Warning: failed to check lock file consistency\n");
+            return resolveDependenciesWithoutLock(allocator, loaded_manifest);
+        };
+        defer {
+            for (mismatched) |m| allocator.free(m);
+            allocator.free(mismatched);
+        }
+
+        if (mismatched.len > 0) {
+            try stderr.writeAll("Warning: klar.lock is out of date with klar.json\n");
+            try stderr.writeAll("  Changed dependencies: ");
+            for (mismatched, 0..) |name, i| {
+                if (i > 0) try stderr.writeAll(", ");
+                try stderr.writeAll(name);
+            }
+            try stderr.writeAll("\n  Run 'klar update' to regenerate the lock file\n");
+        }
+
+        // Use locked paths
+        var lock_it = lf.dependencies.iterator();
+        while (lock_it.next()) |entry| {
+            const dep = entry.value_ptr.*;
+            // Verify the resolved path still exists
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (std.fs.cwd().realpath(dep.resolved, &path_buf)) |resolved| {
+                try result.paths.append(allocator, try allocator.dupe(u8, resolved));
+            } else |_| {
+                // Path no longer exists, re-resolve from original
+                if (dep.source == .path) {
+                    const abs_path = std.fs.path.join(allocator, &.{ root_dir, dep.original }) catch continue;
+                    defer allocator.free(abs_path);
+
+                    if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
+                        try result.paths.append(allocator, try allocator.dupe(u8, resolved));
+                    } else |_| {
+                        var buf: [512]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf, "Warning: dependency path not found: {s}\n", .{dep.original}) catch "Warning: dependency path not found\n";
+                        try stderr.writeAll(msg);
+                    }
+                }
+            }
+        }
+    } else {
+        // No lock file exists, resolve and generate one
+        var new_lock = lockfile.Lockfile.init(allocator);
+        errdefer new_lock.deinit();
+
+        var dep_it = loaded_manifest.dependencies.iterator();
+        while (dep_it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const dep = entry.value_ptr.*;
+
+            if (dep.path) |rel_path| {
+                // Resolve path relative to manifest directory
+                const abs_path = std.fs.path.join(allocator, &.{ root_dir, rel_path }) catch continue;
+                defer allocator.free(abs_path);
+
+                // Resolve to canonical path
+                var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+                if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
+                    try result.paths.append(allocator, try allocator.dupe(u8, resolved));
+
+                    // Try to get version from dependency's manifest
+                    var dep_version: ?[]const u8 = null;
+                    const dep_manifest_path = std.fs.path.join(allocator, &.{ resolved, "klar.json" }) catch null;
+                    if (dep_manifest_path) |dmp| {
+                        defer allocator.free(dmp);
+                        if (manifest.loadManifest(allocator, dmp)) |dm_val| {
+                            var dm = dm_val;
+                            defer dm.deinit();
+                            var version_buf: [32]u8 = undefined;
+                            const v = dm.package.version;
+                        const version_str = if (v.prerelease) |pre|
+                            std.fmt.bufPrint(&version_buf, "{d}.{d}.{d}-{s}", .{ v.major, v.minor, v.patch, pre }) catch null
+                        else
+                            std.fmt.bufPrint(&version_buf, "{d}.{d}.{d}", .{ v.major, v.minor, v.patch }) catch null;
+                            if (version_str) |vs| {
+                                dep_version = allocator.dupe(u8, vs) catch null;
+                            }
+                        } else |_| {}
+                    }
+                    defer if (dep_version) |v| allocator.free(v);
+
+                    try new_lock.addDependency(name, .{
+                        .source = .path,
+                        .original = rel_path,
+                        .resolved = resolved,
+                        .version = dep_version,
+                    });
+                } else |_| {
+                    // Path doesn't exist
+                    var buf: [512]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "Warning: dependency path not found: {s}\n", .{rel_path}) catch "Warning: dependency path not found\n";
+                    try stderr.writeAll(msg);
+                }
+            }
+        }
+
+        // Save lock file
+        if (new_lock.dependencies.count() > 0) {
+            lockfile.saveLockfile(&new_lock, lockfile_path) catch |err| {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Warning: failed to save klar.lock: {s}\n", .{@errorName(err)}) catch "Warning: failed to save klar.lock\n";
+                try stderr.writeAll(msg);
+            };
+            result.generated_lockfile = true;
+        }
+        new_lock.deinit();
+    }
+
+    return result;
+}
+
+/// Fallback: resolve dependencies without lock file.
+fn resolveDependenciesWithoutLock(
+    allocator: std.mem.Allocator,
+    loaded_manifest: *const manifest.Manifest,
+) !DependencyResolution {
+    var result = DependencyResolution{
+        .allocator = allocator,
+        .paths = .{},
+        .generated_lockfile = false,
+    };
+    errdefer result.deinit();
+
+    var dep_it = loaded_manifest.dependencies.iterator();
+    while (dep_it.next()) |entry| {
+        const dep = entry.value_ptr.*;
+        if (dep.path) |rel_path| {
+            const abs_path = std.fs.path.join(allocator, &.{ loaded_manifest.root_dir, rel_path }) catch continue;
+            defer allocator.free(abs_path);
+
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
+                try result.paths.append(allocator, try allocator.dupe(u8, resolved));
+            } else |_| {
+                try result.paths.append(allocator, try allocator.dupe(u8, abs_path));
+            }
+        }
+    }
+
+    return result;
+}
+
+/// Update (regenerate) the lock file from klar.json.
+fn updateLockfile(allocator: std.mem.Allocator) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+
+    // Load manifest
+    var loaded_manifest = manifest.loadManifest(allocator, "klar.json") catch |err| switch (err) {
+        error.FileNotFound => {
+            try stderr.writeAll("Error: no klar.json found in current directory\n");
+            return;
+        },
+        error.InvalidJson => {
+            try stderr.writeAll("Error: invalid JSON in klar.json\n");
+            return;
+        },
+        error.MissingPackageSection => {
+            try stderr.writeAll("Error: klar.json missing 'package' section\n");
+            return;
+        },
+        error.MissingPackageName => {
+            try stderr.writeAll("Error: klar.json missing 'package.name'\n");
+            return;
+        },
+        else => {
+            try stderr.writeAll("Error: failed to load klar.json\n");
+            return;
+        },
+    };
+    defer loaded_manifest.deinit();
+
+    // Delete existing lock file if it exists
+    std.fs.cwd().deleteFile("klar.lock") catch |err| switch (err) {
+        error.FileNotFound => {}, // OK, doesn't exist
+        else => {
+            try stderr.writeAll("Warning: could not delete existing klar.lock\n");
+        },
+    };
+
+    // Generate new lock file
+    var new_lock = lockfile.Lockfile.init(allocator);
+    defer new_lock.deinit();
+
+    var updated_count: usize = 0;
+    var dep_it = loaded_manifest.dependencies.iterator();
+    while (dep_it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        const dep = entry.value_ptr.*;
+
+        if (dep.path) |rel_path| {
+            // Resolve path relative to manifest directory
+            const abs_path = std.fs.path.join(allocator, &.{ loaded_manifest.root_dir, rel_path }) catch continue;
+            defer allocator.free(abs_path);
+
+            // Resolve to canonical path
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (std.fs.cwd().realpath(abs_path, &path_buf)) |resolved| {
+                // Try to get version from dependency's manifest
+                var dep_version: ?[]const u8 = null;
+                const dep_manifest_path = std.fs.path.join(allocator, &.{ resolved, "klar.json" }) catch null;
+                if (dep_manifest_path) |dmp| {
+                    defer allocator.free(dmp);
+                    if (manifest.loadManifest(allocator, dmp)) |dm_val| {
+                        var dm = dm_val;
+                        defer dm.deinit();
+                        var version_buf: [32]u8 = undefined;
+                        const v = dm.package.version;
+                        const version_str = if (v.prerelease) |pre|
+                            std.fmt.bufPrint(&version_buf, "{d}.{d}.{d}-{s}", .{ v.major, v.minor, v.patch, pre }) catch null
+                        else
+                            std.fmt.bufPrint(&version_buf, "{d}.{d}.{d}", .{ v.major, v.minor, v.patch }) catch null;
+                        if (version_str) |vs| {
+                            dep_version = allocator.dupe(u8, vs) catch null;
+                        }
+                    } else |_| {}
+                }
+                defer if (dep_version) |v| allocator.free(v);
+
+                new_lock.addDependency(name, .{
+                    .source = .path,
+                    .original = rel_path,
+                    .resolved = resolved,
+                    .version = dep_version,
+                }) catch continue;
+
+                updated_count += 1;
+
+                // Print update message
+                var buf: [512]u8 = undefined;
+                if (dep_version) |v| {
+                    const msg = std.fmt.bufPrint(&buf, "  {s} ({s}) -> {s}\n", .{ name, v, resolved }) catch continue;
+                    stdout.writeAll(msg) catch {};
+                } else {
+                    const msg = std.fmt.bufPrint(&buf, "  {s} -> {s}\n", .{ name, resolved }) catch continue;
+                    stdout.writeAll(msg) catch {};
+                }
+            } else |_| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Warning: dependency path not found: {s}\n", .{rel_path}) catch "Warning: dependency path not found\n";
+                stderr.writeAll(msg) catch {};
+            }
+        }
+    }
+
+    // Save lock file
+    if (updated_count > 0) {
+        lockfile.saveLockfile(&new_lock, "klar.lock") catch |err| {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error: failed to save klar.lock: {s}\n", .{@errorName(err)}) catch "Error: failed to save klar.lock\n";
+            stderr.writeAll(msg) catch {};
+            return;
+        };
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Updated klar.lock with {d} dependencies\n", .{updated_count}) catch "Updated klar.lock\n";
+        stdout.writeAll(msg) catch {};
+    } else if (loaded_manifest.dependencies.count() == 0) {
+        stdout.writeAll("No dependencies to lock\n") catch {};
+    } else {
+        stderr.writeAll("Warning: no dependencies could be resolved\n") catch {};
+    }
+}
+
 fn initProject(allocator: std.mem.Allocator, name_arg: ?[]const u8, is_lib: bool) !void {
     const stdout = getStdOut();
     const stderr = getStdErr();
@@ -2269,6 +2552,7 @@ fn printUsage() !void {
         \\  init [name]          Create a new Klar project
         \\  build [file]         Build project or file to native executable
         \\  run [file]           Build and run project or file
+        \\  update               Regenerate klar.lock from klar.json
         \\  check <file>         Type check a file
         \\  repl                 Interactive REPL (Read-Eval-Print Loop)
         \\  test                 Run tests (not implemented)
@@ -2353,6 +2637,7 @@ test {
     _ = @import("interpreter.zig");
     _ = @import("bytecode.zig");
     _ = @import("pkg/manifest.zig");
+    _ = @import("pkg/lockfile.zig");
     _ = @import("chunk.zig");
     _ = @import("compiler.zig");
     _ = @import("vm.zig");

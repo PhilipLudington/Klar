@@ -1,0 +1,8 @@
+{
+  "package": {
+    "name": "utils",
+    "version": "0.2.0",
+    "entry": "src/lib.kl"
+  },
+  "dependencies": {}
+}
