@@ -8434,10 +8434,26 @@ pub const Emitter = struct {
             return EmitError.UnsupportedFeature;
         } else if (obj_type_kind == llvm.c.LLVMStructTypeKind) {
             // Could be a slice struct { ptr, len }
-            // Check if this is a slice by checking struct element count and types
+            // Verify this is actually a slice by checking:
+            // 1. Exactly 2 elements
+            // 2. First element is a pointer type
+            // 3. Second element is i64 (length)
             const num_elements = llvm.c.LLVMCountStructElementTypes(obj_type);
             if (num_elements == 2) {
-                // Likely a slice struct - store to temp and do slice indexing
+                // Get the struct element types to verify this is a slice
+                var element_types: [2]llvm.TypeRef = undefined;
+                llvm.c.LLVMGetStructElementTypes(obj_type, &element_types);
+
+                const first_is_ptr = llvm.c.LLVMGetTypeKind(element_types[0]) == llvm.c.LLVMPointerTypeKind;
+                const second_is_i64 = llvm.c.LLVMGetTypeKind(element_types[1]) == llvm.c.LLVMIntegerTypeKind and
+                    llvm.c.LLVMGetIntTypeWidth(element_types[1]) == 64;
+
+                if (!first_is_ptr or !second_is_i64) {
+                    // Not a slice struct, fall through to UnsupportedFeature
+                    return EmitError.UnsupportedFeature;
+                }
+
+                // Verified slice struct { ptr, i64 } - store to temp and do slice indexing
                 const slice_alloca = self.builder.buildAlloca(obj_type, "slice.tmp");
                 _ = self.builder.buildStore(obj, slice_alloca);
 
@@ -8446,7 +8462,8 @@ pub const Emitter = struct {
 
                 // Determine element type from context
                 // Try to get element type from the index expression's object type via type checker
-                var element_llvm_type = llvm.Types.int32(self.ctx); // Default to char
+                // Default to i32 (Klar's char type is i32 for Unicode code points)
+                var element_llvm_type = llvm.Types.int32(self.ctx);
                 if (self.type_checker) |tc| {
                     const tc_mut = @constCast(tc);
                     const obj_klar_type = tc_mut.checkExpr(idx.object);
@@ -28423,6 +28440,10 @@ pub const Emitter = struct {
             },
             .slice => 16, // ptr (8) + len (8)
             .tuple => |t| {
+                // Note: This is a conservative estimate that ignores alignment padding.
+                // For example, (i8, i64) returns 9 but actual padded size is 16.
+                // This is intentional: underestimating size makes us more likely to
+                // use sret (safer) rather than incorrectly trying register return.
                 var total: usize = 0;
                 for (t.elements) |elem| {
                     total += self.getSizeOfTypeExpr(elem);
@@ -28440,6 +28461,7 @@ pub const Emitter = struct {
                 return 8 + ok_size + err_size; // tag + both variants
             },
             .function => 16, // closure struct: fn_ptr + env_ptr
+            .extern_function => 8, // raw C function pointer
             .reference => 8, // pointer
             .generic_apply => |g| {
                 // For generic types like List[T], Map[K,V], etc.
