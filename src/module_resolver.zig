@@ -301,11 +301,23 @@ pub const ModuleResolver = struct {
             }
         }
 
-        // Look relative to importing module first
+        // Look relative to importing module first, then walk up directory tree
         if (from) |f| {
-            if (std.fs.path.dirname(f.file_path)) |dir| {
+            var current_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+            var current_dir: ?[]const u8 = std.fs.path.dirname(f.file_path);
+
+            while (current_dir) |dir| {
                 if (try self.tryFindFile(arena, dir, path)) |found| {
                     return found;
+                }
+
+                // Walk up to parent directory
+                // Copy to buffer since dirname returns a slice of the input
+                if (dir.len < current_dir_buf.len) {
+                    @memcpy(current_dir_buf[0..dir.len], dir);
+                    current_dir = std.fs.path.dirname(current_dir_buf[0..dir.len]);
+                } else {
+                    break;
                 }
             }
         }

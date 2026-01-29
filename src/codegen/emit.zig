@@ -12031,18 +12031,18 @@ pub const Emitter = struct {
         format_parts.append(self.allocator, 0) catch return EmitError.OutOfMemory; // null terminate
         const format_str = self.builder.buildGlobalStringPtr(format_parts.items[0 .. format_parts.items.len - 1 :0], "interp_fmt");
 
-        // Allocate a buffer on the stack for the result
+        // Allocate buffer on the HEAP to survive scope exit (e.g., match arm returns)
         const buffer_size: u64 = 1024;
-        const i8_type = llvm.Types.int8(self.ctx);
-        const buffer_type = llvm.Types.array(i8_type, buffer_size);
-        const buffer = self.builder.buildAlloca(buffer_type, "interp_buf");
-
-        // Get pointer to buffer start
-        var indices = [_]llvm.ValueRef{
-            llvm.Const.int32(self.ctx, 0),
-            llvm.Const.int32(self.ctx, 0),
-        };
-        const buffer_ptr = self.builder.buildGEP(buffer_type, buffer, &indices, "buf_ptr");
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, buffer_size)};
+        const buffer_ptr = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &malloc_args,
+            1,
+            "interp_buf",
+        );
 
         // Call snprintf(buffer, size, format, args...)
         const snprintf_fn = self.getOrDeclareSnprintf();
@@ -12491,17 +12491,18 @@ pub const Emitter = struct {
             return val;
         }
 
-        // For other types, use sprintf to convert
+        // Allocate buffer on the HEAP to survive scope exit (e.g., match arm returns)
         const buffer_size: u64 = 64;
-        const i8_type = llvm.Types.int8(self.ctx);
-        const buffer_type = llvm.Types.array(i8_type, buffer_size);
-        const buffer = self.builder.buildAlloca(buffer_type, "tostr_buf");
-
-        var indices = [_]llvm.ValueRef{
-            llvm.Const.int32(self.ctx, 0),
-            llvm.Const.int32(self.ctx, 0),
-        };
-        const buffer_ptr = self.builder.buildGEP(buffer_type, buffer, &indices, "buf_ptr");
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, buffer_size)};
+        const buffer_ptr = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &malloc_args,
+            1,
+            "tostr_buf",
+        );
 
         // Check semantic type for char first (which is i32 at LLVM level)
         const format_spec: [:0]const u8 = if (self.isCharExpr(expr))

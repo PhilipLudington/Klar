@@ -10989,10 +10989,12 @@ pub const TypeChecker = struct {
                     },
                     .struct_decl => |s| {
                         if (s.is_pub) {
+                            // Look up the struct type from scope (registered by checkStruct)
+                            const type_info = self.current_scope.lookup(s.name);
                             const sym = ModuleSymbol{
                                 .name = s.name,
                                 .kind = .struct_type,
-                                .type_ = null, // Types don't have a Type value
+                                .type_ = if (type_info) |info| info.type_ else null,
                                 .is_pub = true,
                             };
                             try symbols.symbols.put(self.allocator, s.name, sym);
@@ -11000,10 +11002,12 @@ pub const TypeChecker = struct {
                     },
                     .enum_decl => |e| {
                         if (e.is_pub) {
+                            // Look up the enum type from scope (registered by checkEnum)
+                            const type_info = self.current_scope.lookup(e.name);
                             const sym = ModuleSymbol{
                                 .name = e.name,
                                 .kind = .enum_type,
-                                .type_ = null,
+                                .type_ = if (type_info) |info| info.type_ else null,
                                 .is_pub = true,
                             };
                             try symbols.symbols.put(self.allocator, e.name, sym);
@@ -11033,10 +11037,12 @@ pub const TypeChecker = struct {
                     },
                     .type_alias => |t| {
                         if (t.is_pub) {
+                            // Look up the aliased type from scope (registered by checkTypeAlias)
+                            const type_info = self.current_scope.lookup(t.name);
                             const sym = ModuleSymbol{
                                 .name = t.name,
                                 .kind = .type_alias,
-                                .type_ = null,
+                                .type_ = if (type_info) |info| info.type_ else null,
                                 .is_pub = true,
                             };
                             try symbols.symbols.put(self.allocator, t.name, sym);
