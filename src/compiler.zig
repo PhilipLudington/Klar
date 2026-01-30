@@ -270,7 +270,7 @@ pub const Compiler = struct {
             .const_decl => |c| try self.compileConstDecl(c),
             .struct_decl => |s| try self.compileStructDecl(s),
             .enum_decl => |e| try self.compileEnumDecl(e),
-            // TODO: Implement remaining declarations
+            // VM limitation: traits, impls, imports not supported - use native compilation
             .trait_decl, .impl_decl, .type_alias, .import_decl, .module_decl => {},
             // Extern types and blocks are compile-time only (FFI not supported in VM)
             .extern_type_decl, .extern_block => {},
@@ -375,11 +375,11 @@ pub const Compiler = struct {
     }
 
     fn compileStructDecl(_: *Compiler, _: *ast.StructDecl) Error!void {
-        // TODO: Implement struct compilation
+        // Struct declarations are compile-time only; instances created via struct literals
     }
 
     fn compileEnumDecl(_: *Compiler, _: *ast.EnumDecl) Error!void {
-        // TODO: Implement enum compilation
+        // VM limitation: enum declarations not supported - use native compilation
     }
 
     // -------------------------------------------------------------------------

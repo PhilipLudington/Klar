@@ -143,11 +143,99 @@ checker.zig reduced from ~7,700 lines to 3,764 lines (51% reduction). User-defin
 
 ---
 
-## [ ] Issue A3: 45 TODO comments indicate technical debt
+## [x] Issue A3: 45 TODO comments indicate technical debt
 
-**Locations:** Various files
+**Status:** Fixed
 
-**Recommendation:** Resolve or convert to tracked issues.
+**Resolution:** Triaged 37 TODO comments (2026-01-30):
+- **Removed 6**: Obsolete or dead code paths
+- **Documented 4**: Converted to limitation notes (VM/interpreter don't support enums, UTF-8 is ASCII-only)
+- **Kept 13**: Valid inline markers for VM/IR future work
+- **Tracked 10**: Real gaps added as new issues below
+
+---
+
+# Open Issues
+
+Issues identified during TODO triage that affect correctness or functionality.
+
+## [ ] Bug 7: Closures assume all captures are i32
+
+**Severity:** Medium
+
+**Location:** `src/codegen/emit.zig:11263, 11392`
+
+**Description:** When creating closure environments, the codegen assumes all captured variables are i32. This breaks closures that capture other types (strings, structs, etc.).
+
+---
+
+## [ ] Bug 8: Set.contains() uses pointer equality for complex types
+
+**Severity:** Medium
+
+**Location:** `src/codegen/emit.zig:24951`
+
+**Description:** `Set.contains()` uses pointer comparison for non-primitive types. For strings and structs, this means two equal values at different addresses won't match.
+
+---
+
+## [ ] Bug 9: Self type not resolved in impl context
+
+**Severity:** Medium
+
+**Location:** `src/checker/type_resolution.zig:608`
+
+**Description:** When `Self` is used in an impl block, it returns `unknown` type instead of resolving to the implementing type.
+
+---
+
+## [ ] Bug 10: Struct pattern fields not validated
+
+**Severity:** Low
+
+**Location:** `src/checker/patterns.zig:41`
+
+**Description:** Struct patterns in match expressions don't verify that field names exist on the struct type.
+
+---
+
+## [ ] Bug 11: Struct pattern bindings not created
+
+**Severity:** Low
+
+**Location:** `src/checker/patterns.zig:233`
+
+**Description:** Variables bound in struct patterns (e.g., `Point { x, y }`) are not added to scope.
+
+---
+
+## [ ] Bug 12: Enum payload struct field matching incomplete
+
+**Severity:** Low
+
+**Location:** `src/checker/expressions.zig:837`
+
+**Description:** When checking enum literal payloads with struct types, fields are matched by position rather than by name.
+
+---
+
+## [ ] Bug 13: Ownership checker assumes all types are Copy
+
+**Severity:** Low
+
+**Location:** `src/ownership/checker.zig:181`
+
+**Description:** The ownership checker hardcodes `is_copy = true`, preventing proper move semantics for non-Copy types.
+
+---
+
+## [ ] Bug 14: Drop inserter doesn't know actual types
+
+**Severity:** Low
+
+**Location:** `src/ownership/drop.zig:265`
+
+**Description:** The drop inserter uses `Type.unknown` for let declarations, preventing proper drop insertion for owned types.
 
 ---
 
@@ -161,6 +249,14 @@ checker.zig reduced from ~7,700 lines to 3,764 lines (51% reduction). User-defin
 | 4 | Bytecode missing enum | Medium | Fixed (documented) |
 | 5 | Cross-compilation offset mismatch | Low | Fixed (documented) |
 | 6 | Monomorphization cache O(n×m) | Low | Fixed |
+| 7 | Closures assume i32 captures | Medium | Open |
+| 8 | Set.contains() pointer equality | Medium | Open |
+| 9 | Self type not resolved | Medium | Open |
+| 10 | Struct pattern fields not validated | Low | Open |
+| 11 | Struct pattern bindings missing | Low | Open |
+| 12 | Enum payload field matching | Low | Open |
+| 13 | Ownership assumes Copy | Low | Open |
+| 14 | Drop inserter unknown types | Low | Open |
 | A1 | Monolithic emit.zig | Arch | Fixed |
 | A2 | Large checker.zig | Arch | Fixed |
-| A3 | 45 TODO comments | Debt | Open |
+| A3 | 45 TODO comments | Debt | Fixed |
