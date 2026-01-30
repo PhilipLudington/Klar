@@ -32,8 +32,17 @@ const version = @import("../version.zig");
 const Allocator = std.mem.Allocator;
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
-const checker_mod = @import("../checker.zig");
+const checker_mod = @import("../checker/mod.zig");
 const TypeChecker = checker_mod.TypeChecker;
+
+// Type definitions from checker submodules
+const MonomorphizedFunction = checker_mod.MonomorphizedFunction;
+const MonomorphizedStruct = checker_mod.MonomorphizedStruct;
+const MonomorphizedEnum = checker_mod.MonomorphizedEnum;
+const MonomorphizedMethod = checker_mod.MonomorphizedMethod;
+const StructMethod = checker_mod.StructMethod;
+const ComptimeValue = checker_mod.ComptimeValue;
+const RepeatInfo = checker_mod.RepeatInfo;
 const llvm = @import("llvm.zig");
 const target = @import("target.zig");
 const layout = @import("layout.zig");
@@ -9192,7 +9201,7 @@ pub const Emitter = struct {
         self: *Emitter,
         lit: *ast.EnumLiteral,
         struct_name: []const u8,
-        _: TypeChecker.StructMethod, // struct_method - unused but kept for potential future use
+        _: StructMethod, // struct_method - unused but kept for potential future use
     ) EmitError!llvm.ValueRef {
         // Build the function name: StructName_methodName
         var fn_name_buf = std.ArrayListUnmanaged(u8){};
@@ -10683,7 +10692,7 @@ pub const Emitter = struct {
         method: *ast.MethodCall,
         object: llvm.ValueRef,
         struct_name: []const u8,
-        struct_method: TypeChecker.StructMethod,
+        struct_method: StructMethod,
     ) EmitError!llvm.ValueRef {
         // Determine the mangled function name
         // For generic structs, the struct_name already contains the monomorphization (e.g., "Pair$i32$i32")
@@ -12388,7 +12397,7 @@ pub const Emitter = struct {
     }
 
     /// Emit @repeat(value, count) as an array with the value repeated count times.
-    fn emitRepeat(self: *Emitter, repeat_info: TypeChecker.RepeatInfo) EmitError!llvm.ValueRef {
+    fn emitRepeat(self: *Emitter, repeat_info: RepeatInfo) EmitError!llvm.ValueRef {
         const element_llvm_type = self.typeToLLVM(repeat_info.element_type);
         const array_type = llvm.Types.array(element_llvm_type, repeat_info.count);
 
@@ -12431,7 +12440,7 @@ pub const Emitter = struct {
 
     /// Emit @repeat directly into a destination pointer, avoiding intermediate load/store.
     /// This is used for large arrays to avoid stack overflow from loading entire arrays as values.
-    fn emitRepeatInto(self: *Emitter, repeat_info: TypeChecker.RepeatInfo, dest_ptr: llvm.ValueRef) EmitError!void {
+    fn emitRepeatInto(self: *Emitter, repeat_info: RepeatInfo, dest_ptr: llvm.ValueRef) EmitError!void {
         const element_llvm_type = self.typeToLLVM(repeat_info.element_type);
         const array_type = llvm.Types.array(element_llvm_type, repeat_info.count);
 
@@ -12468,7 +12477,7 @@ pub const Emitter = struct {
 
     /// Check if an expression is a large @repeat that should use direct initialization.
     /// Returns the RepeatInfo if it's a large array (> 4096 bytes for byte types), null otherwise.
-    fn tryGetLargeRepeatInfo(self: *Emitter, expr: ast.Expr) ?TypeChecker.RepeatInfo {
+    fn tryGetLargeRepeatInfo(self: *Emitter, expr: ast.Expr) ?RepeatInfo {
         // Check if it's a builtin call
         if (expr != .builtin_call) return null;
         const bc = expr.builtin_call;
@@ -12692,7 +12701,7 @@ pub const Emitter = struct {
     }
 
     /// Emit a ComptimeValue as an LLVM constant.
-    fn emitComptimeValue(self: *Emitter, comptime_value: TypeChecker.ComptimeValue) EmitError!llvm.ValueRef {
+    fn emitComptimeValue(self: *Emitter, comptime_value: ComptimeValue) EmitError!llvm.ValueRef {
         return switch (comptime_value) {
             .int => |i| if (i.is_i32)
                 llvm.Const.int32(self.ctx, @intCast(i.value))
@@ -28936,7 +28945,7 @@ pub const Emitter = struct {
     }
 
     /// Register a single monomorphized struct type.
-    fn registerMonomorphizedStruct(self: *Emitter, mono: TypeChecker.MonomorphizedStruct) EmitError!void {
+    fn registerMonomorphizedStruct(self: *Emitter, mono: MonomorphizedStruct) EmitError!void {
         // Skip if already registered
         if (self.struct_types.contains(mono.mangled_name)) {
             return;
@@ -28987,7 +28996,7 @@ pub const Emitter = struct {
 
     /// Register a single monomorphized enum type.
     /// Enums are represented as tagged unions: {tag: i8, payload_union}
-    fn registerMonomorphizedEnum(self: *Emitter, mono: TypeChecker.MonomorphizedEnum) EmitError!void {
+    fn registerMonomorphizedEnum(self: *Emitter, mono: MonomorphizedEnum) EmitError!void {
         // Skip if already registered (uses struct_types map since enum codegen
         // will reuse struct infrastructure for tagged unions)
         if (self.struct_types.contains(mono.mangled_name)) {
@@ -29237,7 +29246,7 @@ pub const Emitter = struct {
     }
 
     /// Declare a monomorphized function without emitting its body.
-    fn declareMonomorphizedFunction(self: *Emitter, mono: TypeChecker.MonomorphizedFunction) EmitError!void {
+    fn declareMonomorphizedFunction(self: *Emitter, mono: MonomorphizedFunction) EmitError!void {
         const func_type = mono.concrete_type.function;
 
         // Check if return type requires sret calling convention
@@ -29286,7 +29295,7 @@ pub const Emitter = struct {
     }
 
     /// Emit a monomorphized function body.
-    fn emitMonomorphizedFunction(self: *Emitter, mono: TypeChecker.MonomorphizedFunction) EmitError!void {
+    fn emitMonomorphizedFunction(self: *Emitter, mono: MonomorphizedFunction) EmitError!void {
         const func = mono.original_decl;
         const func_type = mono.concrete_type.function;
 
@@ -29444,7 +29453,7 @@ pub const Emitter = struct {
     }
 
     /// Declare a monomorphized method without emitting its body.
-    fn declareMonomorphizedMethod(self: *Emitter, mono: TypeChecker.MonomorphizedMethod) EmitError!void {
+    fn declareMonomorphizedMethod(self: *Emitter, mono: MonomorphizedMethod) EmitError!void {
         const func_type = mono.concrete_type.function;
 
         // Build parameter types from the concrete function type
@@ -29473,7 +29482,7 @@ pub const Emitter = struct {
     }
 
     /// Emit a monomorphized method body.
-    fn emitMonomorphizedMethod(self: *Emitter, mono: TypeChecker.MonomorphizedMethod) EmitError!void {
+    fn emitMonomorphizedMethod(self: *Emitter, mono: MonomorphizedMethod) EmitError!void {
         const func = mono.original_decl;
         const func_type = mono.concrete_type.function;
 

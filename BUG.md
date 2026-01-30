@@ -119,16 +119,27 @@ All modules are accessible via `emit.generics`, `emit.list`, etc. The main imple
 
 ---
 
-## [ ] Issue A2: Large checker.zig (11,424 lines)
+## [x] Issue A2: Large checker.zig (3,764 lines remaining)
 
-**Location:** `src/checker.zig`
+**Status:** Fixed
 
-**Recommendation:** Split into focused modules:
-- `checker_core.zig`
-- `checker_traits.zig`
-- `checker_generics.zig`
-- `checker_comptime.zig`
-- `checker_modules.zig`
+**Location:** `src/checker/checker.zig`
+
+**Resolution:** Modularization complete. Final modules:
+- `method_calls.zig` (2,624 lines) - Static constructors and builtin method checking
+- `type_resolution.zig` (1,003 lines) - Type substitution, unification, AST resolution
+- `expressions.zig` (976 lines) - Expression type checking
+- `declarations.zig` (868 lines) - Declaration checking
+- `builtins_check.zig` (726 lines) - Builtin function checking
+- `comptime_eval.zig` (603 lines) - Compile-time evaluation
+- `patterns.zig` (328 lines) - Pattern matching
+- `methods.zig` (318 lines) - Method resolution and signature verification
+- `statements.zig` (242 lines) - Statement checking
+- `type_utils.zig` (167 lines) - Type compatibility utilities
+- `trait_checking.zig` (157 lines) - Trait implementation and bounds checking
+- Type definition modules: `generics.zig`, `traits.zig`, `comptime.zig`, `builtins.zig`, `modules.zig`
+
+checker.zig reduced from ~7,700 lines to 3,764 lines (51% reduction). User-defined method lookup remains in checker.zig (~200 lines).
 
 ---
 
@@ -151,5 +162,5 @@ All modules are accessible via `emit.generics`, `emit.list`, etc. The main imple
 | 5 | Cross-compilation offset mismatch | Low | Fixed (documented) |
 | 6 | Monomorphization cache O(n×m) | Low | Fixed |
 | A1 | Monolithic emit.zig | Arch | Fixed |
-| A2 | Large checker.zig | Arch | Open |
+| A2 | Large checker.zig | Arch | Fixed |
 | A3 | 45 TODO comments | Debt | Open |
