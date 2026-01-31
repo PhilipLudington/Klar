@@ -177,13 +177,17 @@ Issues identified during TODO triage that affect correctness or functionality.
 
 ---
 
-## [ ] Bug 8: Set.contains() uses pointer equality for complex types
+## [x] Bug 8: Array.contains() uses pointer equality for complex types
+
+**Status:** Fixed
 
 **Severity:** Medium
 
-**Location:** `src/codegen/emit.zig:24951`
+**Location:** `src/codegen/emit.zig:24971-24979`
 
-**Description:** `Set.contains()` uses pointer comparison for non-primitive types. For strings and structs, this means two equal values at different addresses won't match.
+**Description:** `emitArrayContains()` used pointer comparison for non-primitive types. For strings, this meant two equal strings at different addresses wouldn't match. (Note: The original bug title said "Set.contains()" but Set already uses the correct `emitEqComparison()` helper; the actual bug was in Array.)
+
+**Resolution:** Replaced inline comparison logic with call to `emitEqComparison()` helper, which properly handles strings using `strcmp()`, integers/bools using integer comparison, and floats using float comparison.
 
 ---
 
@@ -258,7 +262,7 @@ Issues identified during TODO triage that affect correctness or functionality.
 | 5 | Cross-compilation offset mismatch | Low | Fixed (documented) |
 | 6 | Monomorphization cache O(n×m) | Low | Fixed |
 | 7 | Closures assume i32 captures | Medium | Fixed |
-| 8 | Set.contains() pointer equality | Medium | Open |
+| 8 | Array.contains() pointer equality | Medium | Fixed |
 | 9 | Self type not resolved | Medium | Open |
 | 10 | Struct pattern fields not validated | Low | Open |
 | 11 | Struct pattern bindings missing | Low | Open |
