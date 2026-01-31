@@ -24968,15 +24968,8 @@ pub const Emitter = struct {
             break :blk self.builder.buildLoad(elem_llvm_type, elem_ptr, "elem");
         };
 
-        // Compare with value
-        const is_eq = if (element_type.isInteger() or element_type == .primitive and element_type.primitive == .bool_)
-            self.builder.buildICmp(llvm.c.LLVMIntEQ, elem_val, value, "is_eq")
-        else if (element_type.isFloat())
-            self.builder.buildFCmp(llvm.c.LLVMRealOEQ, elem_val, value, "is_eq")
-        else
-            // For other types (strings, structs), use pointer comparison for now
-            // TODO: Use proper equality
-            self.builder.buildICmp(llvm.c.LLVMIntEQ, elem_val, value, "is_eq");
+        // Compare with value using proper equality for all types
+        const is_eq = try self.emitEqComparison(elem_val, value, element_type);
 
         _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_eq, found_bb, loop_inc_bb);
 
