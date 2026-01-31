@@ -11194,6 +11194,30 @@ pub const Emitter = struct {
         const lifted_fn = llvm.addFunction(self.module, fn_name, fn_type);
         llvm.setFunctionCallConv(lifted_fn, self.calling_convention.toLLVM());
 
+        // Compute capture metadata BEFORE switching named_values (while we have access
+        // to the original variable types and metadata). This ensures:
+        // 1. Consistency between the env struct built here and in createClosureEnvironment
+        // 2. Method resolution works correctly (is_string, struct_type_name, etc.)
+        var capture_local_values: [32]LocalValue = undefined;
+        var num_captures: usize = 0;
+        if (closure.captures) |captures| {
+            num_captures = captures.len;
+            for (captures, 0..) |capture, i| {
+                if (self.named_values.get(capture.name)) |local| {
+                    // Copy the full LocalValue metadata (except value pointer which changes)
+                    capture_local_values[i] = local;
+                } else {
+                    // Fallback with minimal info
+                    capture_local_values[i] = .{
+                        .value = undefined, // Will be set later
+                        .is_alloca = true,
+                        .ty = try self.typeExprToLLVM(capture.type_expr),
+                        .is_signed = self.isTypeExprSigned(capture.type_expr),
+                    };
+                }
+            }
+        }
+
         // Save current state before emitting the lifted function body
         const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
         const saved_func = self.current_function;
@@ -11256,14 +11280,14 @@ pub const Emitter = struct {
 
         // Load captured variables from environment and add to named_values.
         // The environment is a heap-allocated struct with values stored directly (not pointers).
+        // Use the pre-computed LocalValue metadata (computed before named_values was switched).
         if (closure.captures) |captures| {
-            // Build the environment struct type (must match what createClosureEnvironment built).
-            // For now, assume all captures are i32. TODO: pass type info through AST.
+            // Build the environment struct type using pre-computed actual types
             var field_types: [32]llvm.TypeRef = undefined;
-            for (0..captures.len) |i| {
-                field_types[i] = llvm.Types.int32(self.ctx);
+            for (0..num_captures) |i| {
+                field_types[i] = capture_local_values[i].ty;
             }
-            const env_struct_type = llvm.Types.struct_(self.ctx, field_types[0..captures.len], false);
+            const env_struct_type = llvm.Types.struct_(self.ctx, field_types[0..num_captures], false);
 
             for (captures, 0..) |capture, i| {
                 // GEP to get pointer to the value field in the env struct
@@ -11279,18 +11303,17 @@ pub const Emitter = struct {
                 );
 
                 // Load the value from the env struct into a local alloca
-                const cap_ty = llvm.Types.int32(self.ctx);
+                const cap_ty = capture_local_values[i].ty;
                 const local_alloca = self.builder.buildAlloca(cap_ty, "cap.local");
                 const cap_value = self.builder.buildLoad(cap_ty, field_ptr, "cap.value");
                 _ = self.builder.buildStore(cap_value, local_alloca);
 
-                // Store the alloca as the named value (will be loaded when accessed)
-                self.named_values.put(capture.name, .{
-                    .value = local_alloca,
-                    .is_alloca = true,
-                    .ty = cap_ty,
-                    .is_signed = true,
-                }) catch return EmitError.OutOfMemory;
+                // Copy the full LocalValue with updated value pointer
+                var local_value = capture_local_values[i];
+                local_value.value = local_alloca;
+                local_value.is_alloca = true;
+
+                self.named_values.put(capture.name, local_value) catch return EmitError.OutOfMemory;
             }
         }
 
@@ -11372,27 +11395,32 @@ pub const Emitter = struct {
 
         // Build a struct type containing all captured values (by value, not by pointer).
         // This allows closures to be returned from functions without dangling pointers.
+        // Use the actual LLVM types from named_values (which may differ from type expressions
+        // due to internal type coercions like string -> struct).
         var field_types: [32]llvm.TypeRef = undefined;
         if (captures_list.len > 32) return EmitError.OutOfMemory;
 
+        // First pass: collect the actual LLVM types from named_values
         for (captures_list, 0..) |capture, i| {
             if (self.named_values.get(capture.name)) |local| {
                 field_types[i] = local.ty;
             } else {
-                // Fallback to i32 if not found
-                field_types[i] = llvm.Types.int32(self.ctx);
+                // Fallback to type expression if not found
+                field_types[i] = try self.typeExprToLLVM(capture.type_expr);
             }
         }
 
         const env_struct_type = llvm.Types.struct_(self.ctx, field_types[0..captures_list.len], false);
 
-        // Calculate size of the struct: each i32 is 4 bytes, no padding needed for homogeneous structs
-        // TODO: Use proper target data layout when capturing non-i32 types
-        const size_of_env: u64 = captures_list.len * 4;
+        // Get the size of the struct using LLVM (handles alignment and padding correctly)
+        const size_of_env = llvm.c.LLVMSizeOf(env_struct_type);
 
         // Allocate on the heap using malloc
         const malloc_fn = self.getOrDeclareMalloc();
-        var malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, @intCast(size_of_env))};
+        // Cast the size constant to i64 for malloc
+        const i64_type = llvm.Types.int64(self.ctx);
+        const size_val = llvm.c.LLVMBuildIntCast2(self.builder.ref, size_of_env, i64_type, 0, "env.size");
+        var malloc_args = [_]llvm.ValueRef{size_val};
         const env_ptr = llvm.c.LLVMBuildCall2(
             self.builder.ref,
             llvm.c.LLVMGlobalGetValueType(malloc_fn),
@@ -11404,14 +11432,15 @@ pub const Emitter = struct {
 
         // Copy each captured value into the heap-allocated struct
         for (captures_list, 0..) |capture, i| {
-            if (self.named_values.get(capture.name)) |local| {
-                // GEP to the i-th field in the environment struct
-                var indices = [_]llvm.ValueRef{
-                    llvm.Const.int32(self.ctx, 0),
-                    llvm.Const.int32(self.ctx, @intCast(i)),
-                };
-                const field_ptr = self.builder.buildGEP(env_struct_type, env_ptr, &indices, "env.field");
+            // GEP to the i-th field in the environment struct
+            var indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, @intCast(i)),
+            };
+            const field_ptr = self.builder.buildGEP(env_struct_type, env_ptr, &indices, "env.field");
 
+            // Get the value from named_values (should exist in the current scope)
+            if (self.named_values.get(capture.name)) |local| {
                 // Load the value from the local variable and store it in the env
                 const value = self.builder.buildLoad(local.ty, local.value, "cap.load");
                 _ = self.builder.buildStore(value, field_ptr);

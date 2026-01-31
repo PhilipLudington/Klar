@@ -159,13 +159,21 @@ checker.zig reduced from ~7,700 lines to 3,764 lines (51% reduction). User-defin
 
 Issues identified during TODO triage that affect correctness or functionality.
 
-## [ ] Bug 7: Closures assume all captures are i32
+## [x] Bug 7: Closures assume all captures are i32
+
+**Status:** Fixed
 
 **Severity:** Medium
 
-**Location:** `src/codegen/emit.zig:11263, 11392`
+**Location:** `src/codegen/emit.zig:11197-11220, 11280-11310, 11398-11430`
 
-**Description:** When creating closure environments, the codegen assumes all captured variables are i32. This breaks closures that capture other types (strings, structs, etc.).
+**Description:** When creating closure environments, the codegen assumed all captured variables are i32. This broke closures that capture other types (i64, f64, strings, structs, etc.).
+
+**Resolution:** Fixed by preserving full `LocalValue` metadata for captured variables:
+1. Compute capture metadata BEFORE switching `named_values` (while original variable types are accessible)
+2. Store complete `LocalValue` info including `ty`, `is_signed`, `is_string`, `struct_type_name`, etc.
+3. Use actual LLVM types from `named_values` for environment struct (not just `typeExprToLLVM`)
+4. Copy full metadata when creating closure-local variables for method resolution to work
 
 ---
 
@@ -249,7 +257,7 @@ Issues identified during TODO triage that affect correctness or functionality.
 | 4 | Bytecode missing enum | Medium | Fixed (documented) |
 | 5 | Cross-compilation offset mismatch | Low | Fixed (documented) |
 | 6 | Monomorphization cache O(n×m) | Low | Fixed |
-| 7 | Closures assume i32 captures | Medium | Open |
+| 7 | Closures assume i32 captures | Medium | Fixed |
 | 8 | Set.contains() pointer equality | Medium | Open |
 | 9 | Self type not resolved | Medium | Open |
 | 10 | Struct pattern fields not validated | Low | Open |

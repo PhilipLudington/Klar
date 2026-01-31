@@ -21,6 +21,181 @@ const builtins_check = @import("builtins_check.zig");
 const statements = @import("statements.zig");
 
 // ============================================================================
+// Type Conversion Utilities
+// ============================================================================
+
+/// Convert a types.Type to an ast.TypeExpr for use in AST nodes.
+/// This is needed for closure captures where we know the type from the checker
+/// but need to store it in AST form for code generation.
+fn typeToTypeExpr(allocator: std.mem.Allocator, ty: Type) ast.TypeExpr {
+    const empty_span = ast.Span{ .start = 0, .end = 0, .line = 0, .column = 0 };
+
+    return switch (ty) {
+        .primitive => |p| .{ .named = .{
+            .name = switch (p) {
+                .i8_ => "i8",
+                .i16_ => "i16",
+                .i32_ => "i32",
+                .i64_ => "i64",
+                .i128_ => "i128",
+                .isize_ => "isize",
+                .u8_ => "u8",
+                .u16_ => "u16",
+                .u32_ => "u32",
+                .u64_ => "u64",
+                .u128_ => "u128",
+                .usize_ => "usize",
+                .f32_ => "f32",
+                .f64_ => "f64",
+                .bool_ => "bool",
+                .char_ => "char",
+                .string_ => "string",
+            },
+            .span = empty_span,
+        } },
+        .void_ => .{ .named = .{ .name = "void", .span = empty_span } },
+        .optional => |inner| blk: {
+            const opt_type = allocator.create(ast.OptionalType) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            opt_type.* = .{
+                .inner = typeToTypeExpr(allocator, inner.*),
+                .span = empty_span,
+            };
+            break :blk .{ .optional = opt_type };
+        },
+        .struct_ => |s| .{ .named = .{ .name = s.name, .span = empty_span } },
+        .enum_ => |e| .{ .named = .{ .name = e.name, .span = empty_span } },
+        .array => |a| blk: {
+            const arr_type = allocator.create(ast.ArrayType) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            arr_type.* = .{
+                .element = typeToTypeExpr(allocator, a.element),
+                .size = .{ .literal = .{ .kind = .{ .int = @intCast(a.size) }, .span = empty_span } },
+                .span = empty_span,
+            };
+            break :blk .{ .array = arr_type };
+        },
+        .slice => |s| blk: {
+            const slice_type = allocator.create(ast.SliceType) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            slice_type.* = .{
+                .element = typeToTypeExpr(allocator, s.element),
+                .span = empty_span,
+            };
+            break :blk .{ .slice = slice_type };
+        },
+        .function => |f| blk: {
+            const fn_type = allocator.create(ast.FunctionType) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            var param_types = allocator.alloc(ast.TypeExpr, f.params.len) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            for (f.params, 0..) |param, i| {
+                param_types[i] = typeToTypeExpr(allocator, param);
+            }
+            fn_type.* = .{
+                .params = param_types,
+                .return_type = typeToTypeExpr(allocator, f.return_type),
+                .span = empty_span,
+            };
+            break :blk .{ .function = fn_type };
+        },
+        .reference => |r| blk: {
+            const ref_type = allocator.create(ast.ReferenceType) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            ref_type.* = .{
+                .inner = typeToTypeExpr(allocator, r.inner),
+                .mutable = r.mutable,
+                .span = empty_span,
+            };
+            break :blk .{ .reference = ref_type };
+        },
+        .tuple => |t| blk: {
+            const tuple_type = allocator.create(ast.TupleType) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            var elements = allocator.alloc(ast.TypeExpr, t.elements.len) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            for (t.elements, 0..) |elem, i| {
+                elements[i] = typeToTypeExpr(allocator, elem);
+            }
+            tuple_type.* = .{
+                .elements = elements,
+                .span = empty_span,
+            };
+            break :blk .{ .tuple = tuple_type };
+        },
+        .rc => |r| blk: {
+            // Rc[T] -> GenericApply with base "Rc" and arg T
+            const generic = allocator.create(ast.GenericApply) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            var args = allocator.alloc(ast.TypeExpr, 1) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            args[0] = typeToTypeExpr(allocator, r.inner);
+            generic.* = .{
+                .base = .{ .named = .{ .name = "Rc", .span = empty_span } },
+                .args = args,
+                .span = empty_span,
+            };
+            break :blk .{ .generic_apply = generic };
+        },
+        .arc => |a| blk: {
+            const generic = allocator.create(ast.GenericApply) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            var args = allocator.alloc(ast.TypeExpr, 1) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            args[0] = typeToTypeExpr(allocator, a.inner);
+            generic.* = .{
+                .base = .{ .named = .{ .name = "Arc", .span = empty_span } },
+                .args = args,
+                .span = empty_span,
+            };
+            break :blk .{ .generic_apply = generic };
+        },
+        .list => |l| blk: {
+            const generic = allocator.create(ast.GenericApply) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            var args = allocator.alloc(ast.TypeExpr, 1) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            args[0] = typeToTypeExpr(allocator, l.element);
+            generic.* = .{
+                .base = .{ .named = .{ .name = "List", .span = empty_span } },
+                .args = args,
+                .span = empty_span,
+            };
+            break :blk .{ .generic_apply = generic };
+        },
+        .map => |m| blk: {
+            const generic = allocator.create(ast.GenericApply) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            var args = allocator.alloc(ast.TypeExpr, 2) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            args[0] = typeToTypeExpr(allocator, m.key);
+            args[1] = typeToTypeExpr(allocator, m.value);
+            generic.* = .{
+                .base = .{ .named = .{ .name = "Map", .span = empty_span } },
+                .args = args,
+                .span = empty_span,
+            };
+            break :blk .{ .generic_apply = generic };
+        },
+        .set => |s| blk: {
+            const generic = allocator.create(ast.GenericApply) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            var args = allocator.alloc(ast.TypeExpr, 1) catch
+                return .{ .named = .{ .name = "unknown", .span = empty_span } };
+            args[0] = typeToTypeExpr(allocator, s.element);
+            generic.* = .{
+                .base = .{ .named = .{ .name = "Set", .span = empty_span } },
+                .args = args,
+                .span = empty_span,
+            };
+            break :blk .{ .generic_apply = generic };
+        },
+        // Default fallback for types not yet handled
+        else => .{ .named = .{ .name = "unknown", .span = empty_span } },
+    };
+}
+
+// ============================================================================
 // Expression Checking - Main Entry Points
 // ============================================================================
 
@@ -122,6 +297,7 @@ fn checkIdentifier(tc: anytype, id: ast.Identifier) Type {
                 if (sym.kind == .variable or sym.kind == .parameter or sym.kind == .constant) {
                     tc.closure_captures.put(tc.allocator, id.name, .{
                         .is_mutable = sym.mutable,
+                        .type_ = sym.type_,
                     }) catch {};
                 }
             }
@@ -465,6 +641,7 @@ fn checkClosure(tc: anytype, closure: *ast.Closure) Type {
             captures.append(tc.allocator, .{
                 .name = entry.key_ptr.*,
                 .is_mutable = entry.value_ptr.is_mutable,
+                .type_expr = typeToTypeExpr(tc.allocator, entry.value_ptr.type_),
             }) catch {};
         }
         closure.captures = captures.toOwnedSlice(tc.allocator) catch null;
