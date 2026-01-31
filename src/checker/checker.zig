@@ -380,6 +380,7 @@ pub const TypeChecker = struct {
 
     const CaptureInfo = struct {
         is_mutable: bool,
+        type_: Type,
     };
 
     pub fn init(allocator: Allocator) TypeChecker {

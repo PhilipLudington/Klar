@@ -274,6 +274,8 @@ pub const CapturedVar = struct {
     name: []const u8,
     /// True if the captured variable is mutable (captured by reference).
     is_mutable: bool,
+    /// The type of the captured variable, used for codegen.
+    type_expr: TypeExpr,
 };
 
 pub const ClosureParam = struct {
