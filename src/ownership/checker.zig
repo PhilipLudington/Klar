@@ -99,6 +99,55 @@ pub const OwnershipChecker = struct {
         return ty.isCopyType();
     }
 
+    /// Determine if a type expression represents a Copy type.
+    /// Uses the syntactic type expression since resolved types aren't available
+    /// in the ownership pass. Primitives and references are Copy; structs,
+    /// strings, smart pointers, and closures are not.
+    pub fn isCopyTypeExpr(self: *OwnershipChecker, type_expr: ast.TypeExpr) bool {
+        _ = self;
+        return isCopyFromTypeExpr(type_expr);
+    }
+
+    fn isCopyFromTypeExpr(type_expr: ast.TypeExpr) bool {
+        switch (type_expr) {
+            .named => |n| {
+                // Primitive types are Copy
+                const copy_types = [_][]const u8{
+                    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                    "f32", "f64", "bool", "char", "void", "usize", "isize",
+                };
+                for (copy_types) |ct| {
+                    if (std.mem.eql(u8, n.name, ct)) return true;
+                }
+                // Non-Copy named types
+                const non_copy_types = [_][]const u8{
+                    "String", "string", "Rc", "Arc", "List", "Map", "Set",
+                    "File", "Path", "BufReader", "BufWriter",
+                };
+                for (non_copy_types) |nct| {
+                    if (std.mem.eql(u8, n.name, nct)) return false;
+                }
+                // User-defined structs: conservatively not Copy
+                return false;
+            },
+            .reference => return true,
+            .array => |a| return isCopyFromTypeExpr(a.element),
+            .tuple => |t| {
+                for (t.elements) |elem| {
+                    if (!isCopyFromTypeExpr(elem)) return false;
+                }
+                return true;
+            },
+            .optional => |o| return isCopyFromTypeExpr(o.inner),
+            .function => return false,
+            .extern_function => return true,
+            .generic_apply => return false, // Generic types (Rc[T], etc.) conservatively not Copy
+            .slice => return false,
+            .result => return false,
+            .qualified => return false,
+        }
+    }
+
     // ========================================================================
     // Declaration Analysis
     // ========================================================================
@@ -177,8 +226,8 @@ pub const OwnershipChecker = struct {
         // Analyze the value expression
         const value_state = try self.analyzeExpr(let_decl.value);
 
-        // Get the type (may need to infer from value)
-        const is_copy = true; // TODO: Determine from actual type
+        // Determine Copy status from the declared type expression
+        const is_copy = self.isCopyTypeExpr(let_decl.type_);
 
         // Define the new variable
         try self.defineVariable(let_decl.name, .unknown, let_decl.span, is_copy);
@@ -195,7 +244,8 @@ pub const OwnershipChecker = struct {
 
     fn analyzeVar(self: *OwnershipChecker, var_decl: *ast.VarDecl) !void {
         _ = try self.analyzeExpr(var_decl.value);
-        try self.defineVariable(var_decl.name, .unknown, var_decl.span, true);
+        const is_copy = self.isCopyTypeExpr(var_decl.type_);
+        try self.defineVariable(var_decl.name, .unknown, var_decl.span, is_copy);
     }
 
     fn analyzeAssignment(self: *OwnershipChecker, assign: *ast.Assignment) !void {

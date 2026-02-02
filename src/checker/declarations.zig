@@ -656,6 +656,11 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
         }) catch {};
     }
 
+    // Set current impl type so Self resolves correctly inside method bodies
+    const prev_impl_type = tc.current_impl_type;
+    tc.current_impl_type = target_type;
+    defer tc.current_impl_type = prev_impl_type;
+
     // Process each method in the impl block
     for (impl_decl.methods) |*method_decl_const| {
         // Need to cast to mutable pointer for registration
