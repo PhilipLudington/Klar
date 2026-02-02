@@ -155,7 +155,7 @@ checker.zig reduced from ~7,700 lines to 3,764 lines (51% reduction). User-defin
 
 ---
 
-# Open Issues
+# Issues from TODO Triage
 
 Issues identified during TODO triage that affect correctness or functionality.
 
@@ -191,47 +191,65 @@ Issues identified during TODO triage that affect correctness or functionality.
 
 ---
 
-## [ ] Bug 9: Self type not resolved in impl context
+## [x] Bug 9: Self type not resolved in impl context
+
+**Status:** Fixed
 
 **Severity:** Medium
 
-**Location:** `src/checker/type_resolution.zig:608`
+**Location:** `src/checker/type_resolution.zig:607-615`
 
 **Description:** When `Self` is used in an impl block, it returns `unknown` type instead of resolving to the implementing type.
 
+**Resolution:** Added `current_impl_type` field to TypeChecker. Set in `checkImpl()` before processing method bodies, restored after. `Self` now resolves to the concrete impl target type in impl blocks and to the trait type in trait definitions. Also added `.trait_` case for qualified type resolution so `Self.Item` works when Self resolves to a trait type.
+
 ---
 
-## [ ] Bug 10: Struct pattern fields not validated
+## [x] Bug 10: Struct pattern fields not validated
+
+**Status:** Fixed
 
 **Severity:** Low
 
-**Location:** `src/checker/patterns.zig:41`
+**Location:** `src/checker/patterns.zig:36-57`
 
 **Description:** Struct patterns in match expressions don't verify that field names exist on the struct type.
 
+**Resolution:** `checkPattern` now iterates struct pattern fields, looks up each field name in the struct type's field list, reports `.undefined_field` errors for unknown fields, and recursively type-checks nested field patterns against the struct field's declared type.
+
 ---
 
-## [ ] Bug 11: Struct pattern bindings not created
+## [x] Bug 11: Struct pattern bindings not created
+
+**Status:** Fixed
 
 **Severity:** Low
 
-**Location:** `src/checker/patterns.zig:233`
+**Location:** `src/checker/patterns.zig:232-255`
 
 **Description:** Variables bound in struct patterns (e.g., `Point { x, y }`) are not added to scope.
 
+**Resolution:** `bindPattern` now handles `.struct_pattern` by looking up each field's type from the struct definition, recursively binding nested patterns, and creating variable bindings for shorthand fields (where the field name becomes the variable name).
+
 ---
 
-## [ ] Bug 12: Enum payload struct field matching incomplete
+## [x] Bug 12: Enum payload struct field matching incomplete
+
+**Status:** Fixed
 
 **Severity:** Low
 
-**Location:** `src/checker/expressions.zig:837`
+**Location:** `src/checker/expressions.zig:1009-1015`
 
-**Description:** When checking enum literal payloads with struct types, fields are matched by position rather than by name.
+**Description:** When checking enum literal payloads with struct types, only the field count was validated. Individual field types were not checked.
+
+**Resolution:** Added per-field type checking: each payload expression is now type-checked against the corresponding struct field's declared type, with type mismatch errors reporting the field name.
 
 ---
 
-## [ ] Bug 13: Ownership checker assumes all types are Copy
+## [x] Bug 13: Ownership checker assumes all types are Copy
+
+**Status:** Fixed
 
 **Severity:** Low
 
@@ -239,15 +257,21 @@ Issues identified during TODO triage that affect correctness or functionality.
 
 **Description:** The ownership checker hardcodes `is_copy = true`, preventing proper move semantics for non-Copy types.
 
+**Resolution:** Added `isCopyTypeExpr()` helper that determines Copy status from the syntactic `TypeExpr` on declarations. Recognizes primitive types as Copy, and String/Rc/Arc/List/Map/Set/closures as non-Copy. `analyzeLet` and `analyzeVar` now use the declared type expression instead of hardcoding `true`.
+
 ---
 
-## [ ] Bug 14: Drop inserter doesn't know actual types
+## [x] Bug 14: Drop inserter doesn't know actual types
+
+**Status:** Fixed
 
 **Severity:** Low
 
 **Location:** `src/ownership/drop.zig:265`
 
 **Description:** The drop inserter uses `Type.unknown` for let declarations, preventing proper drop insertion for owned types.
+
+**Resolution:** `analyzeLet` and `analyzeVar` in the drop inserter now use `isCopyTypeExpr()` from the ownership checker to determine Copy status from the declared type expression, instead of always using `Type.unknown` which made `isCopyType()` return false for everything.
 
 ---
 
@@ -263,12 +287,12 @@ Issues identified during TODO triage that affect correctness or functionality.
 | 6 | Monomorphization cache O(n×m) | Low | Fixed |
 | 7 | Closures assume i32 captures | Medium | Fixed |
 | 8 | Array.contains() pointer equality | Medium | Fixed |
-| 9 | Self type not resolved | Medium | Open |
-| 10 | Struct pattern fields not validated | Low | Open |
-| 11 | Struct pattern bindings missing | Low | Open |
-| 12 | Enum payload field matching | Low | Open |
-| 13 | Ownership assumes Copy | Low | Open |
-| 14 | Drop inserter unknown types | Low | Open |
+| 9 | Self type not resolved | Medium | Fixed |
+| 10 | Struct pattern fields not validated | Low | Fixed |
+| 11 | Struct pattern bindings missing | Low | Fixed |
+| 12 | Enum payload field matching | Low | Fixed |
+| 13 | Ownership assumes Copy | Low | Fixed |
+| 14 | Drop inserter unknown types | Low | Fixed |
 | A1 | Monolithic emit.zig | Arch | Fixed |
 | A2 | Large checker.zig | Arch | Fixed |
 | A3 | 45 TODO comments | Debt | Fixed |

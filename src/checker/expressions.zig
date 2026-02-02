@@ -1010,8 +1010,14 @@ pub fn checkEnumLiteral(tc: anytype, lit: *ast.EnumLiteral) Type {
                 // For struct payloads, check each field
                 if (lit.payload.len != fields.len) {
                     tc.addError(.type_mismatch, lit.span, "expected {d} struct fields, got {d}", .{ fields.len, lit.payload.len });
+                } else {
+                    for (lit.payload, fields) |payload_expr, field| {
+                        const actual_type = checkExpr(tc, payload_expr);
+                        if (!actual_type.eql(field.type_)) {
+                            tc.addError(.type_mismatch, payload_expr.span(), "expected type for field '{s}'", .{field.name});
+                        }
+                    }
                 }
-                // TODO: Proper struct field matching by name
             },
         }
     } else {

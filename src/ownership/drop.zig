@@ -261,10 +261,9 @@ pub const DropInserter = struct {
         // Analyze value first
         try self.analyzeExpr(let_decl.value);
 
-        // Track the new variable
-        const var_type: Type = .unknown; // TODO: Get actual type
-        const is_copy = self.ownership_checker.isCopyType(var_type);
-        try self.trackVariable(let_decl.name, var_type, is_copy, let_decl.span);
+        // Determine Copy status from the declared type expression
+        const is_copy = self.ownership_checker.isCopyTypeExpr(let_decl.type_);
+        try self.trackVariable(let_decl.name, .unknown, is_copy, let_decl.span);
     }
 
     fn analyzeVar(self: *DropInserter, var_decl: *ast.VarDecl) !void {
@@ -272,9 +271,8 @@ pub const DropInserter = struct {
             try self.analyzeExpr(value);
         }
 
-        const var_type: Type = .unknown;
-        const is_copy = self.ownership_checker.isCopyType(var_type);
-        try self.trackVariable(var_decl.name, var_type, is_copy, var_decl.span);
+        const is_copy = self.ownership_checker.isCopyTypeExpr(var_decl.type_);
+        try self.trackVariable(var_decl.name, .unknown, is_copy, var_decl.span);
     }
 
     fn analyzeAssignment(self: *DropInserter, assign: *ast.Assignment) !void {

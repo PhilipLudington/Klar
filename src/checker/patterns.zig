@@ -38,7 +38,25 @@ pub fn checkPattern(tc: anytype, pattern: ast.Pattern, expected_type: Type) void
                 tc.addError(.invalid_pattern, s.span, "struct pattern requires struct type", .{});
                 return;
             }
-            // TODO: check fields exist and match
+            const struct_type = expected_type.struct_;
+            for (s.fields) |field| {
+                // Verify field exists on the struct
+                var found_field: ?types.StructField = null;
+                for (struct_type.fields) |sf| {
+                    if (std.mem.eql(u8, sf.name, field.name)) {
+                        found_field = sf;
+                        break;
+                    }
+                }
+                if (found_field) |sf| {
+                    if (field.pattern) |field_pattern| {
+                        checkPattern(tc, field_pattern, sf.type_);
+                    }
+                    // If no nested pattern, the field name becomes a binding (handled in bindPattern)
+                } else {
+                    tc.addError(.undefined_field, field.span, "struct '{s}' has no field '{s}'", .{ struct_type.name, field.name });
+                }
+            }
         },
         .tuple_pattern => |t| {
             if (expected_type != .tuple) {
@@ -230,8 +248,31 @@ pub fn bindPattern(tc: anytype, pattern: ast.Pattern, t: Type) void {
             bindVariantPattern(tc, v, t);
         },
         .struct_pattern => |s| {
-            // TODO: bind struct field patterns
-            _ = s;
+            if (t != .struct_) return;
+            const struct_type = t.struct_;
+            for (s.fields) |field| {
+                // Find the field type from the struct definition
+                var field_type: Type = tc.type_builder.unknownType();
+                for (struct_type.fields) |sf| {
+                    if (std.mem.eql(u8, sf.name, field.name)) {
+                        field_type = sf.type_;
+                        break;
+                    }
+                }
+                if (field.pattern) |field_pattern| {
+                    // Bind nested pattern with the field's type
+                    bindPattern(tc, field_pattern, field_type);
+                } else {
+                    // Shorthand: field name becomes a binding (e.g., Point { x, y })
+                    tc.current_scope.define(.{
+                        .name = field.name,
+                        .type_ = field_type,
+                        .kind = .variable,
+                        .mutable = false,
+                        .span = field.span,
+                    }) catch {};
+                }
+            }
         },
         .tuple_pattern => |tup| {
             if (t == .tuple) {

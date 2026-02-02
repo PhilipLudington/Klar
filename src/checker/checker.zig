@@ -294,6 +294,8 @@ pub const TypeChecker = struct {
     trait_method_calls: std.ArrayListUnmanaged(TraitMethodCall),
     /// Current trait being checked (for Self.Item resolution in trait method signatures)
     current_trait_type: ?*types.TraitType,
+    /// Current impl target type (for resolving Self in impl blocks)
+    current_impl_type: ?Type,
 
     // Module system fields
     /// Registry of symbols from other modules, keyed by module canonical name.
@@ -416,6 +418,7 @@ pub const TypeChecker = struct {
             .substituted_type_slices = .{},
             .trait_method_calls = .{},
             .current_trait_type = null,
+            .current_impl_type = null,
             .module_registry = .{},
             .current_module = null,
             .module_resolver_ref = null,
