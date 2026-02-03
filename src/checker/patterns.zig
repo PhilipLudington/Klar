@@ -28,7 +28,9 @@ pub fn checkPattern(tc: anytype, pattern: ast.Pattern, expected_type: Type) void
                 .kind = .variable,
                 .mutable = bind.mutable,
                 .span = bind.span,
-            }) catch {};
+            }) catch {
+                tc.addError(.invalid_pattern, bind.span, "failed to define pattern binding '{s}'", .{bind.name});
+            };
         },
         .variant => |v| {
             checkVariantPattern(tc, v, expected_type);
@@ -242,7 +244,9 @@ pub fn bindPattern(tc: anytype, pattern: ast.Pattern, t: Type) void {
                 .kind = .variable,
                 .mutable = bind.mutable,
                 .span = bind.span,
-            }) catch {};
+            }) catch {
+                tc.addError(.invalid_pattern, bind.span, "failed to define pattern binding '{s}'", .{bind.name});
+            };
         },
         .variant => |v| {
             bindVariantPattern(tc, v, t);
@@ -270,7 +274,9 @@ pub fn bindPattern(tc: anytype, pattern: ast.Pattern, t: Type) void {
                         .kind = .variable,
                         .mutable = false,
                         .span = field.span,
-                    }) catch {};
+                    }) catch {
+                        tc.addError(.invalid_pattern, field.span, "failed to define struct field binding '{s}'", .{field.name});
+                    };
                 }
             }
         },

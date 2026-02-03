@@ -1,0 +1,9 @@
+// Expected: check-pass
+// Test that f64 is Copy (Bug 13 fix)
+
+fn main() -> i32 {
+    let x: f64 = 3.14
+    let y: f64 = x
+    let z: f64 = x + y
+    return 0
+}

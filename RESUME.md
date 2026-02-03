@@ -1,72 +1,87 @@
-# Resume Point: Checker Modularization Complete
+# Resume Point: emit.zig Modularization
 
-**Date:** 2026-01-30
+**Date:** 2026-02-03
 **Branch:** QAReview
 
-## Summary
+## Context
 
-Completed checker.zig modularization (Issue A2 from BUG.md). Reduced checker.zig from ~7,700 lines to 3,764 lines (51% reduction).
+QA review of the QAReview branch is complete. All bug fixes (7-14) verified, missing tests added, silent `catch {}` fixed. Full test suite passes (507 tests). Ready to modularize emit.zig.
 
-## Final Module Structure
+## Completed This Session
 
-```
-src/checker/
-├── mod.zig              # Public exports
-├── checker.zig          # Main TypeChecker (3,764 lines)
-├── method_calls.zig     # Static constructors + builtin methods (2,624 lines)
-├── type_resolution.zig  # Type substitution/unification (1,003 lines)
-├── expressions.zig      # Expression checking (976 lines)
-├── declarations.zig     # Declaration checking (868 lines)
-├── builtins_check.zig   # Builtin function checking (726 lines)
-├── comptime_eval.zig    # Compile-time evaluation (603 lines)
-├── patterns.zig         # Pattern matching (328 lines)
-├── methods.zig          # Method resolution (318 lines)
-├── statements.zig       # Statement checking (242 lines)
-├── type_utils.zig       # Type utilities (167 lines)
-├── trait_checking.zig   # Trait checking (157 lines)
-└── [type definitions]   # generics.zig, traits.zig, comptime.zig, builtins.zig, modules.zig
-```
+- Reviewed PR (3 parallel review agents: checker refactoring, codegen, bug fixes)
+- Added 8 new tests for bugs 9-14:
+  - `test/native/self_type_impl.kl` — Bug 9: Self type in ref/inout impl methods
+  - `test/native/enum_struct_payload.kl` — Bug 12: Enum struct payload construction
+  - `test/native/enum_struct_payload_mismatch.kl` — Bug 12: Type mismatch rejected
+  - `test/check/ownership_string_move.kl` — Bug 13: String is non-Copy
+  - `test/check/ownership_var_string_move.kl` — Bug 14: Second move caught
+  - `test/check/ownership_i32_copy.kl` — Bug 13: i32 is Copy
+  - `test/check/ownership_f64_copy.kl` — Bug 13: f64 is Copy
+  - `test/check/ownership_bool_copy.kl` — Bug 13: bool is Copy
+- Created `scripts/run-check-tests.sh` — new test suite for `klar check` tests
+- Wired check tests into `run-tests.sh`
+- Fixed silent `catch {}` in `src/checker/patterns.zig` (3 instances → report via `tc.addError`)
 
-## Extraction Summary
+## Untestable Bugs (documented limitations)
 
-| Module | Lines | Contents |
-|--------|-------|----------|
-| `method_calls.zig` | 2,624 | `checkStaticConstructor`, `checkBuiltinMethod` - all builtin type method checking |
-| `type_resolution.zig` | 1,003 | `substituteTypeParams`, `containsTypeVar`, `unifyTypes`, `resolveTypeExpr` |
-| `expressions.zig` | 976 | Expression type checking |
-| `declarations.zig` | 868 | Declaration checking |
-| `builtins_check.zig` | 726 | Builtin function checking |
-| `comptime_eval.zig` | 603 | Compile-time evaluation |
-| `patterns.zig` | 328 | Pattern matching |
-| `methods.zig` | 318 | Method resolution |
-| `statements.zig` | 242 | Statement checking |
-| `type_utils.zig` | 167 | Type compatibility utilities |
-| `trait_checking.zig` | 157 | Trait implementation checking |
+- **Bugs 10-11** (struct patterns): Parser doesn't support struct pattern syntax (`Point { x, y }` in match). Checker fixes are forward-looking.
+- **Bug 9** (Self as return type / non-self param): Codegen doesn't handle `Self` in these positions. Works for `ref Self` and `inout Self` only.
 
-## Architecture Pattern
+## Next: Modularize emit.zig
 
-All extracted modules use duck typing via `tc: anytype` to avoid circular imports:
+**Goal:** Reduce emit.zig from ~29,600 → ~9,000-12,000 lines (60-70% reduction).
+
+### Phase 1: C Library Declarations → `clib_emit.zig` (~8,500 lines)
+
+Extract 83 `getOrDeclare*` functions (malloc, strlen, strcmp, fopen, stat, Rc/Arc runtime, etc.). Pure LLVM function declarations — lowest risk, highest line reduction.
+
+### Phase 2: Scope/Drop → `scope_emit.zig` (~600 lines)
+
+Extract: `pushScope`, `popScope`, `registerDroppable`, `emitDropsForVars`, `emitDropForVar`, `emitDropsForReturn`, `emitDropsForLoopExit`.
+
+### Phase 3: Debug Info → `debug_emit.zig` (~600 lines)
+
+Extract: `initDebugInfo`, `finalizeDebugInfo`, all `emitDebug*` variants.
+
+### Phase 4: Collections → `collections_emit.zig` (~6,000 lines)
+
+Extract List (21 fn), Map (20 fn), Set (20 fn) operations plus type info helpers.
+
+### Phase 5: Pattern Matching → `pattern_emit.zig` (~800 lines)
+
+Extract: `emitPatternMatch`, `bindPatternVariables`, `lookupVariantIndex`, `extractEnumPayload`, etc.
+
+### Phase 6: Closures → `closure_emit.zig` (~900 lines)
+
+Extract: `emitClosure`, `createClosureEnvironment`, `emitClosureCallTyped`, `emitClosureCallWithValue`, `getClosureStructType`.
+
+### Implementation Pattern
+
+Follow checker.zig approach — use `anytype` duck typing:
 
 ```zig
-pub fn someFunction(tc: anytype, ...) ?Type {
-    // Access tc.allocator, tc.type_builder, etc.
-    // Call tc.addError(), tc.checkExpr(), etc.
-    return result_type;  // or null if not handled
+// clib_emit.zig
+pub fn getOrDeclareMalloc(emitter: anytype) llvm.ValueRef {
+    if (emitter.module.getNamedFunction("malloc")) |f| return f;
+    // ...
 }
+
+// emit.zig
+const clib = @import("clib_emit.zig");
+// Replace self.getOrDeclareMalloc() → clib.getOrDeclareMalloc(self)
 ```
 
-## Test Status
+### What Stays in emit.zig
 
-All 497 tests passing.
+- Emitter struct + init/deinit
+- Core dispatchers: `emitModule`, `emitStmt`, `emitExpr`, `emitBlock`
+- Expression/statement emission (high fan-out, deeply recursive)
+- Type management: `typeToLLVM`, `typeExprToLLVM`, `inferExprType`
+- Function/method declaration + monomorphization
+- String, Optional/Result, Rc/Arc operations (moderate coupling)
+- ABI/struct layout
 
-## Remaining Open Items from BUG.md
+### Verification
 
-- Issue A3: 45 TODO comments indicating technical debt (not started)
-
-## What Remains in checker.zig
-
-- TypeChecker struct definition and initialization
-- Scope management
-- Type environment
-- User-defined method lookup (~200 lines)
-- Delegation wrappers to extracted modules
+After each phase: `./build.sh && ./run-tests.sh` — all 507 tests must pass.
