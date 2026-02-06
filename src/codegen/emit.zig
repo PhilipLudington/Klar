@@ -4553,21 +4553,8 @@ pub const Emitter = struct {
     }
 
     fn isSignedIntType(self: *Emitter, expr: ast.Expr) bool {
-        _ = self;
-        // Try to determine signedness from expression
-        // For literals, check if the value is negative
-        if (expr == .literal) {
-            const lit = expr.literal;
-            if (lit.kind == .int) {
-                // Negative values are definitely signed
-                if (lit.kind.int < 0) return true;
-                // Default: integers are signed (i32) in Klar
-                return true;
-            }
-        }
-        // For identifiers, we'd need type info from the checker
-        // Default to signed for safety (i32 is the default int type)
-        return true;
+        // Use isExprSigned which checks named_values for proper signedness
+        return self.isExprSigned(expr);
     }
 
     /// Infer the type that results from dereferencing an expression.
@@ -11236,6 +11223,7 @@ pub const Emitter = struct {
         var capture_local_values: [32]LocalValue = undefined;
         var num_captures: usize = 0;
         if (closure.captures) |captures| {
+            if (captures.len > 32) return EmitError.OutOfMemory;
             num_captures = captures.len;
             for (captures, 0..) |capture, i| {
                 if (self.named_values.get(capture.name)) |local| {
@@ -11491,8 +11479,13 @@ pub const Emitter = struct {
         _ = self;
         return switch (type_expr) {
             .named => |n| {
-                // Unsigned types
-                if (std.mem.startsWith(u8, n.name, "u")) return false;
+                // Check for exact unsigned type names
+                if (std.mem.eql(u8, n.name, "u8")) return false;
+                if (std.mem.eql(u8, n.name, "u16")) return false;
+                if (std.mem.eql(u8, n.name, "u32")) return false;
+                if (std.mem.eql(u8, n.name, "u64")) return false;
+                if (std.mem.eql(u8, n.name, "u128")) return false;
+                if (std.mem.eql(u8, n.name, "usize")) return false;
                 return true;
             },
             else => true,
