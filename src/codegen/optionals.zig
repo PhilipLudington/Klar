@@ -1,11 +1,18 @@
-//! Optional and Result emission utilities for codegen.
+//! Optional and Result helper utilities for codegen.
 //!
-//! This module documents the Optional[T] and Result[T, E] type implementations
-//! for code generation.
+//! Provides constants, type constructors, and predicates for Optional[T]
+//! and Result[T, E] code generation. The emission implementation
+//! (emitSome, emitNone, emitOk, emitErr, etc.) remains in emit.zig.
+//!
+//! ## Provided by this module
+//!
+//! - `OptionalField` / `ResultField`: Struct field index constants
+//! - `createOptionalType`: Build LLVM type for Optional[T]
+//! - `createResultType`: Build LLVM type for Result[T, E]
+//! - `createResultStringErrorType`: Build Result[T, String] type
+//! - `isSomeValue` / `isOkValue`: Tag predicates
 //!
 //! ## Optional[T] Layout
-//!
-//! Optionals use a discriminated union representation:
 //!
 //! ```
 //! struct Optional[T] {
@@ -14,11 +21,7 @@
 //! }
 //! ```
 //!
-//! The size depends on T with padding for alignment.
-//!
 //! ## Result[T, E] Layout
-//!
-//! Results use a discriminated union with space for the larger payload:
 //!
 //! ```
 //! struct Result[T, E] {
@@ -26,37 +29,6 @@
 //!     payload: [max(sizeof(T), sizeof(E)) x i8],
 //! }
 //! ```
-//!
-//! ## Optional Operations
-//!
-//! Key functions in emit.zig:
-//!
-//! - `emitSome`: Create Some(value)
-//! - `emitNone`: Create None
-//! - `emitOptionalIsSome`: Check if Some
-//! - `emitOptionalIsNone`: Check if None
-//! - `emitOptionalUnwrap`: Get value (panics if None)
-//! - `emitUnwrapOr`: Get value or default
-//! - `emitOptionalEq`: Compare two optionals
-//!
-//! ## Result Operations
-//!
-//! Key functions in emit.zig:
-//!
-//! - `emitOk`: Create Ok(value)
-//! - `emitErr`: Create Err(error)
-//! - `emitResultIsOk`: Check if Ok
-//! - `emitResultIsErr`: Check if Err
-//! - `emitResultUnwrap`: Get Ok value (panics if Err)
-//! - `emitResultUnwrapErr`: Get Err value (panics if Ok)
-//! - `emitResultEq`: Compare two results
-//!
-//! ## Combinator Methods
-//!
-//! - `emitMapMethod`: Transform Ok value with function
-//! - `emitMapErrMethod`: Transform Err value with function
-//! - `emitAndThenMethod`: Chain operations that return Result
-//! - `emitContextMethod`: Add context to errors
 
 const std = @import("std");
 const llvm = @import("llvm.zig");
@@ -83,9 +55,11 @@ pub fn createOptionalType(ctx: llvm.Context, inner_type: llvm.TypeRef) llvm.Type
 }
 
 /// Create the LLVM type for Result[T, E] with payload size for the larger of T or E.
-pub fn createResultType(ctx: llvm.Context, ok_type: llvm.TypeRef, err_type: llvm.TypeRef) llvm.TypeRef {
-    const ok_size = llvm.c.LLVMABISizeOfType(llvm.c.LLVMGetModuleDataLayout(null), ok_type);
-    const err_size = llvm.c.LLVMABISizeOfType(llvm.c.LLVMGetModuleDataLayout(null), err_type);
+/// Requires a module reference for target data layout (used to compute ABI type sizes).
+pub fn createResultType(module: llvm.Module, ctx: llvm.Context, ok_type: llvm.TypeRef, err_type: llvm.TypeRef) llvm.TypeRef {
+    const target_data = llvm.c.LLVMGetModuleDataLayout(module.ref);
+    const ok_size = llvm.c.LLVMABISizeOfType(target_data, ok_type);
+    const err_size = llvm.c.LLVMABISizeOfType(target_data, err_type);
 
     const payload_type = if (ok_size >= err_size) ok_type else err_type;
 
@@ -97,7 +71,7 @@ pub fn createResultType(ctx: llvm.Context, ok_type: llvm.TypeRef, err_type: llvm
 }
 
 /// Standard Result type with String error.
-pub fn createResultStringErrorType(ctx: llvm.Context, ok_type: llvm.TypeRef) llvm.TypeRef {
+pub fn createResultStringErrorType(module: llvm.Module, ctx: llvm.Context, ok_type: llvm.TypeRef) llvm.TypeRef {
     // String struct: { ptr, i32, i32 } = 16 bytes
     var string_fields = [_]llvm.TypeRef{
         llvm.Types.pointer(ctx),
@@ -106,7 +80,7 @@ pub fn createResultStringErrorType(ctx: llvm.Context, ok_type: llvm.TypeRef) llv
     };
     const string_type = llvm.Types.struct_(ctx, &string_fields, false);
 
-    return createResultType(ctx, ok_type, string_type);
+    return createResultType(module, ctx, ok_type, string_type);
 }
 
 /// Check if a value represents Some (has_value == 1).

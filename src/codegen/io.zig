@@ -1,92 +1,24 @@
-//! I/O emission utilities for codegen.
+//! I/O helper utilities for codegen.
 //!
-//! This module documents the File, Path, BufReader, and BufWriter type
-//! implementations for code generation.
+//! Provides constants, type constructors, and POSIX constants for File, Path,
+//! BufReader, and BufWriter code generation. The emission implementation
+//! (emitFileOpen, emitFileRead, emitFsExists, etc.) remains in emit.zig.
 //!
-//! ## File Type
+//! ## Provided by this module
 //!
-//! Files are represented as C FILE* pointers:
+//! - `buffer_size`: Buffer size constant for BufReader/BufWriter (8KB)
+//! - `BufReaderField` / `BufWriterField`: Struct field index constants
+//! - `IoErrorVariant`: Error variant index constants
+//! - `AccessMode` / `SeekWhence`: POSIX flag constants
+//! - `createBufReaderStructType` / `createBufWriterStructType`: LLVM type builders
+//! - `createPathStructType`: LLVM type builder for Path
 //!
-//! ```
-//! type File = ptr  // FILE* from libc
-//! ```
+//! ## Type Layouts (reference)
 //!
-//! File operations wrap standard C library functions:
-//! - `fopen`, `fclose`, `fread`, `fwrite`, `fflush`, `fseek`, `ftell`
-//!
-//! ## Path Type
-//!
-//! Paths are String wrappers for filesystem operations:
-//!
-//! ```
-//! struct Path {
-//!     inner: String,  // Path string data
-//! }
-//! ```
-//!
-//! ## BufReader Type
-//!
-//! Buffered reader for efficient I/O:
-//!
-//! ```
-//! struct BufReader[R] {
-//!     inner: R,           // Underlying reader (File, etc.)
-//!     buffer: [u8; 8192], // Internal buffer
-//!     pos: i32,           // Current position in buffer
-//!     filled: i32,        // Bytes filled in buffer
-//! }
-//! ```
-//!
-//! ## BufWriter Type
-//!
-//! Buffered writer for efficient I/O:
-//!
-//! ```
-//! struct BufWriter[W] {
-//!     inner: W,           // Underlying writer (File, etc.)
-//!     buffer: [u8; 8192], // Internal buffer
-//!     pos: i32,           // Current position in buffer
-//! }
-//! ```
-//!
-//! ## IoError Enum
-//!
-//! I/O operations return Result[T, IoError]:
-//!
-//! ```
-//! enum IoError {
-//!     NotFound,        // ENOENT
-//!     PermissionDenied, // EACCES
-//!     AlreadyExists,   // EEXIST
-//!     InvalidInput,    // EINVAL
-//!     Other,           // Catch-all
-//! }
-//! ```
-//!
-//! ## Filesystem Operations
-//!
-//! Key functions in emit.zig:
-//!
-//! - `emitFileOpen`: Open file for reading/writing
-//! - `emitFileRead`: Read bytes from file
-//! - `emitFileWrite`: Write bytes to file
-//! - `emitFileClose`: Close file handle
-//! - `emitFileFlush`: Flush file buffer
-//! - `emitFsExists`: Check if path exists
-//! - `emitFsIsFile`: Check if path is a file
-//! - `emitFsIsDir`: Check if path is a directory
-//! - `emitFsCreateDir`: Create a directory
-//! - `emitFsRemoveFile`: Remove a file
-//! - `emitFsRemoveDir`: Remove a directory
-//! - `emitFsReadString`: Read entire file to string
-//! - `emitFsWriteString`: Write string to file
-//! - `emitFsReadDir`: List directory contents
-//!
-//! ## Standard Streams
-//!
-//! - `emitStdoutWrite`: Write to stdout
-//! - `emitStderrWrite`: Write to stderr
-//! - `emitStdinRead`: Read from stdin
+//! - File: `ptr` (C FILE*)
+//! - Path: `{ String }` (wrapper around String)
+//! - BufReader: `{ ptr inner, [8192 x i8] buffer, i32 pos, i32 filled }`
+//! - BufWriter: `{ ptr inner, [8192 x i8] buffer, i32 pos }`
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

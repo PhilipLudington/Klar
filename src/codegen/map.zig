@@ -1,60 +1,33 @@
-//! Map emission utilities for codegen.
+//! Map[K, V] helper utilities for codegen.
 //!
-//! This module documents the Map[K, V] type implementation and provides
-//! utilities for working with hash maps during code generation.
+//! Provides constants, type constructors, and hash table helpers for Map[K, V]
+//! code generation. The emission implementation (emitMapNew, emitMapInsert,
+//! etc.) remains in emit.zig.
+//!
+//! ## Provided by this module
+//!
+//! - `MapField` / `EntryState`: Struct field and entry state constants
+//! - `map_struct_size`: Size constant (20 bytes)
+//! - `initial_capacity` / `growth_factor` / `max_load_factor`: Policy constants
+//! - `fnv_offset` / `fnv_prime`: FNV-1a hash constants
+//! - `createMapStructType`: Build the LLVM struct type for Map
+//! - `slotIndex`: Calculate slot from hash and capacity (power-of-2 mask)
+//! - `needsResize`: Check if load factor exceeds threshold
 //!
 //! ## Map Struct Layout
 //!
-//! Klar maps use open addressing with linear probing:
+//! Open addressing with linear probing:
 //!
 //! ```
 //! struct Map[K, V] {
 //!     entries: *Entry,   // Pointer to entry array
 //!     len: i32,          // Current number of elements
-//!     capacity: i32,     // Total slots in entry array
+//!     capacity: i32,     // Total slots (power of 2)
 //!     tombstones: i32,   // Count of deleted entries
-//! }
-//!
-//! struct Entry {
-//!     key: K,
-//!     value: V,
-//!     state: u8,  // 0=empty, 1=occupied, 2=tombstone
 //! }
 //! ```
 //!
-//! Total Map struct size: 20 bytes (8 + 4 + 4 + 4)
-//!
-//! ## Hash Algorithm
-//!
-//! Uses FNV-1a hash for keys. Key types must implement the Hash trait.
-//!
-//! ## Load Factor
-//!
-//! Maps resize when (len + tombstones) / capacity > 0.75
-//!
-//! ## Map Operations
-//!
-//! Key functions in emit.zig:
-//!
-//! - `getMapStructType`: Returns the LLVM struct type for Map
-//! - `emitMapNew`: Create a new empty map
-//! - `emitMapWithCapacity`: Create map with initial capacity
-//! - `emitMapInsert`: Insert or update key-value pair
-//! - `emitMapGet`: Get value for key (returns Optional)
-//! - `emitMapRemove`: Remove key-value pair
-//! - `emitMapContains`: Check if key exists
-//! - `emitMapLen`: Get current element count
-//! - `emitMapIsEmpty`: Check if map is empty
-//! - `emitMapClear`: Remove all entries
-//! - `emitMapKeys`: Get iterator over keys
-//! - `emitMapValues`: Get iterator over values
-//! - `emitMapClone`: Create a copy of the map
-//! - `emitMapDrop`: Free map memory
-//!
-//! ## Hashing Support
-//!
-//! - `emitHashValue`: Generate hash for a value (type-dependent)
-//! - `emitEqComparison`: Generate equality check (type-dependent)
+//! Resizes when (len + tombstones) / capacity > 0.75.
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

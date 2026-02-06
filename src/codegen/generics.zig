@@ -1,29 +1,12 @@
-//! Generic/monomorphization support for codegen.
+//! Generic/monomorphization helper utilities for codegen.
 //!
-//! This module provides utilities for handling generic types and functions
-//! during code generation. The main implementation is in emit.zig, but this
-//! module documents the interface for working with monomorphized entities.
+//! Provides name-mangling helpers for monomorphized types and functions.
+//! The monomorphization registration and emission logic remains in emit.zig.
 //!
-//! Key concepts:
-//! - Monomorphization: The process of creating concrete type instantiations
-//!   from generic templates (e.g., List[i32] from List[T])
-//! - Mangled names: Unique names for each concrete instantiation
-//!   (e.g., "List$i32" for List[i32])
+//! ## Provided by this module
 //!
-//! The TypeChecker tracks all monomorphized types and functions. The Emitter
-//! uses this information to:
-//! 1. Register concrete struct/enum types before emitting code
-//! 2. Declare function signatures before emitting bodies
-//! 3. Emit function bodies with concrete type parameters
-//!
-//! Usage flow:
-//! 1. registerMonomorphizedStructs - Register all concrete struct types
-//! 2. registerMonomorphizedEnums - Register all concrete enum types
-//! 3. declareMonomorphizedFunctions - Declare all concrete function signatures
-//! 4. declareMonomorphizedMethods - Declare all concrete method signatures
-//! 5. emitModule - Emit main module code
-//! 6. emitMonomorphizedFunctions - Emit all concrete function bodies
-//! 7. emitMonomorphizedMethods - Emit all concrete method bodies
+//! - `appendTypeNameForMangling`: Append type name with safe character substitution
+//! - `buildMangledName`: Build a full mangled name (e.g., "Map$string_i32")
 
 const std = @import("std");
 

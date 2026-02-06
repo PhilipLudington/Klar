@@ -1,11 +1,17 @@
-//! String emission utilities for codegen.
+//! String helper utilities for codegen.
 //!
-//! This module documents the String type implementation and provides
-//! utilities for working with strings during code generation.
+//! Provides constants, type constructors, and a compile-time hash function
+//! for String code generation. The emission implementation (emitStringConcat,
+//! emitStringEq, etc.) remains in emit.zig.
+//!
+//! ## Provided by this module
+//!
+//! - `StringField`: Struct field index constants
+//! - `string_struct_size`: Size constant (16 bytes)
+//! - `createStringStructType`: Build the LLVM struct type for String
+//! - `hashString`: FNV-1a hash (matches runtime implementation)
 //!
 //! ## String Struct Layout
-//!
-//! Klar strings are heap-allocated with the following layout:
 //!
 //! ```
 //! struct String {
@@ -16,27 +22,6 @@
 //! ```
 //!
 //! Total size: 16 bytes (8 + 4 + 4)
-//!
-//! ## String Operations
-//!
-//! Key functions in emit.zig:
-//!
-//! - `getStringStructType`: Returns the LLVM struct type for String
-//! - `emitStringConcat`: Emits code for string concatenation
-//! - `emitStringEq`: Emits code for string equality comparison
-//! - `emitStringHash`: Emits code for string hashing
-//! - `emitStringChars`: Emits code to get character iterator
-//! - `emitStringSlice`: Emits code for substring extraction
-//! - `emitStringTrim`: Emits code for whitespace trimming
-//! - `emitStringToUppercase/Lowercase`: Case conversion
-//!
-//! ## Runtime Functions
-//!
-//! String operations use these C library functions:
-//! - `strlen`: Get string length (for C string input)
-//! - `strcmp`: Compare strings
-//! - `memcpy`: Copy string data
-//! - `malloc`/`free`: Allocate/deallocate string data
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

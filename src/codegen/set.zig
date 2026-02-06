@@ -1,50 +1,29 @@
-//! Set emission utilities for codegen.
+//! Set[T] helper utilities for codegen.
 //!
-//! This module documents the Set[T] type implementation and provides
-//! utilities for working with hash sets during code generation.
+//! Provides constants, type constructors, and hash table helpers for Set[T]
+//! code generation. The emission implementation (emitSetNew, emitSetInsert,
+//! etc.) remains in emit.zig.
+//!
+//! ## Provided by this module
+//!
+//! - `SetField` / `EntryState`: Struct field and entry state constants
+//! - `set_struct_size`: Size constant (20 bytes)
+//! - `initial_capacity` / `growth_factor` / `max_load_factor`: Policy constants
+//! - `createSetStructType`: Build the LLVM struct type for Set
+//! - `needsResize`: Check if load factor exceeds threshold
 //!
 //! ## Set Struct Layout
 //!
-//! Klar sets use the same open addressing approach as Map:
+//! Same open addressing approach as Map:
 //!
 //! ```
 //! struct Set[T] {
 //!     entries: *Entry,   // Pointer to entry array
 //!     len: i32,          // Current number of elements
-//!     capacity: i32,     // Total slots in entry array
+//!     capacity: i32,     // Total slots (power of 2)
 //!     tombstones: i32,   // Count of deleted entries
 //! }
-//!
-//! struct Entry {
-//!     value: T,
-//!     state: u8,  // 0=empty, 1=occupied, 2=tombstone
-//! }
 //! ```
-//!
-//! Total Set struct size: 20 bytes (8 + 4 + 4 + 4)
-//!
-//! ## Set Operations
-//!
-//! Key functions in emit.zig:
-//!
-//! - `getSetStructType`: Returns the LLVM struct type for Set
-//! - `emitSetNew`: Create a new empty set
-//! - `emitSetWithCapacity`: Create set with initial capacity
-//! - `emitSetInsert`: Add element to set
-//! - `emitSetRemove`: Remove element from set
-//! - `emitSetContains`: Check if element exists
-//! - `emitSetLen`: Get current element count
-//! - `emitSetIsEmpty`: Check if set is empty
-//! - `emitSetClear`: Remove all elements
-//! - `emitSetClone`: Create a copy of the set
-//! - `emitSetDrop`: Free set memory
-//!
-//! ## Set Theory Operations (future)
-//!
-//! - `emitSetUnion`: Combine two sets
-//! - `emitSetIntersection`: Elements in both sets
-//! - `emitSetDifference`: Elements in first but not second
-//! - `emitSetSymmetricDifference`: Elements in one but not both
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

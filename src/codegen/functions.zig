@@ -1,69 +1,16 @@
-//! Function emission utilities for codegen.
+//! Function helper utilities for codegen.
 //!
-//! This module documents function and method emission for code generation.
+//! Provides constants, predicates, and type constructors for function and
+//! closure emission. The emission implementation (declareFunction, emitFunction,
+//! emitClosure, etc.) remains in emit.zig.
 //!
-//! ## Function Declaration
+//! ## Provided by this module
 //!
-//! Klar functions are emitted in two passes:
-//! 1. Declaration: Create LLVM function with signature
-//! 2. Emission: Generate function body
-//!
-//! This allows mutual recursion and forward references.
-//!
-//! ## Function Types
-//!
-//! | Type          | Example                    | Notes                    |
-//! |---------------|----------------------------|--------------------------|
-//! | Regular       | `fn foo(x: i32) -> i32`    | Standard function        |
-//! | Method        | `impl Foo { fn bar(self) }`| Receiver-based           |
-//! | Generic       | `fn max[T](a: T, b: T)`    | Type-parameterized       |
-//! | Extern        | `extern fn malloc(n: u64)` | C FFI declaration        |
-//! | Closure       | `\|x\| { x + 1 }`            | Lambda with captures     |
-//!
-//! ## Calling Conventions
-//!
-//! - Default: Platform standard (System V AMD64 on Linux/macOS)
-//! - Sret: Large struct returns via hidden first parameter
-//!
-//! ## Parameter Passing
-//!
-//! - Primitives: By value
-//! - Structs (small): By value
-//! - Structs (large): By pointer (sret for return)
-//! - References (&T): As pointer
-//! - Slices: As {ptr, len} struct
-//!
-//! ## Closure Implementation
-//!
-//! Closures are represented as a fat pointer:
-//!
-//! ```
-//! struct Closure {
-//!     fn_ptr: *fn(env, args...) -> ret,  // Function pointer
-//!     env_ptr: *Environment,              // Captured values
-//! }
-//! ```
-//!
-//! The environment struct is heap-allocated and contains copies of
-//! all captured variables.
-//!
-//! ## Entry Point
-//!
-//! For `fn main(args: [String]) -> i32`:
-//! 1. User's main is renamed to `_klar_user_main`
-//! 2. A C-style `main(argc, argv)` wrapper is generated
-//! 3. Wrapper converts argv to [String] and calls user main
-//!
-//! ## Key Functions in emit.zig
-//!
-//! - `declareFunction`: Create function signature
-//! - `emitFunction`: Generate function body
-//! - `declareExternFunction`: Declare C FFI function
-//! - `declareImplMethods`: Declare all methods in impl block
-//! - `emitImplMethods`: Generate method bodies
-//! - `emitClosure`: Generate closure struct and lifted function
-//! - `createClosureEnvironment`: Allocate and populate env struct
-//! - `emitMainArgsWrapper`: Generate main() wrapper for args
+//! - `FnAttr`: LLVM function attribute name constants
+//! - `getAttributeKind`: Look up LLVM attribute kind by name
+//! - `sret_threshold_bytes` / `requiresSretForSize`: Struct-return ABI check
+//! - `ClosureField`: Closure struct field index constants
+//! - `createClosureType`: Build the LLVM type for a closure (fn_ptr + env_ptr)
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

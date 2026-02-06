@@ -1,11 +1,18 @@
-//! List emission utilities for codegen.
+//! List[T] helper utilities for codegen.
 //!
-//! This module documents the List[T] type implementation and provides
-//! utilities for working with lists during code generation.
+//! Provides constants, type constructors, and growth helpers for List[T]
+//! code generation. The emission implementation (emitListNew, emitListPush,
+//! etc.) remains in emit.zig.
+//!
+//! ## Provided by this module
+//!
+//! - `ListField`: Struct field index constants
+//! - `list_struct_size`: Size constant (16 bytes)
+//! - `initial_capacity` / `growth_factor`: Growth policy constants
+//! - `createListStructType`: Build the LLVM struct type for List
+//! - `growCapacity`: Calculate new capacity after growth
 //!
 //! ## List Struct Layout
-//!
-//! Klar lists are generic dynamic arrays with the following layout:
 //!
 //! ```
 //! struct List[T] {
@@ -15,39 +22,7 @@
 //! }
 //! ```
 //!
-//! Total size: 16 bytes (8 + 4 + 4)
-//!
-//! ## Element Storage
-//!
-//! Elements are stored contiguously in memory. The `data` pointer
-//! points to an array of T values. Growth is typically 2x when
-//! capacity is exceeded.
-//!
-//! ## List Operations
-//!
-//! Key functions in emit.zig:
-//!
-//! - `getListStructType`: Returns the LLVM struct type for List
-//! - `emitListNew`: Create a new empty list
-//! - `emitListWithCapacity`: Create list with initial capacity
-//! - `emitListPush`: Append element to list
-//! - `emitListPop`: Remove and return last element
-//! - `emitListGet`: Get element at index (returns Optional)
-//! - `emitListSet`: Set element at index
-//! - `emitListLen`: Get current length
-//! - `emitListCapacity`: Get current capacity
-//! - `emitListIsEmpty`: Check if list is empty
-//! - `emitListFirst/Last`: Get first/last element (Optional)
-//! - `emitListClear`: Remove all elements
-//! - `emitListClone`: Create a copy of the list
-//! - `emitListDrop`: Free list memory
-//!
-//! ## Runtime Functions
-//!
-//! These are generated inline in the emitter:
-//! - `klar_list_new`: Allocate empty list
-//! - `klar_list_push`: Push with capacity check
-//! - `klar_list_get`: Bounds-checked access
+//! Total size: 16 bytes (8 + 4 + 4). Growth is 2x when capacity is exceeded.
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

@@ -1,49 +1,23 @@
-//! Built-in function emission utilities for codegen.
+//! Built-in function helper utilities for codegen.
 //!
-//! This module documents the built-in functions available in Klar
-//! and their code generation.
+//! Provides name constants and predicates for Klar's built-in functions.
+//! The emission implementation (emitPrint, emitPanic, emitAssert, etc.)
+//! remains in emit.zig.
 //!
-//! ## Output Functions
+//! ## Provided by this module
 //!
-//! - `print(arg)`: Print any value to stdout (with newline)
-//! - `println(arg)`: Alias for print
-//! - `debug(arg)`: Print debug representation
+//! - `BuiltinName`: String constants for all built-in function names
+//! - `isBuiltin`: Check if a function name is a built-in
+//! - `isPrintBuiltin`: Check if a built-in is a print function
+//! - `isAssertBuiltin`: Check if a built-in is an assertion
 //!
-//! ## Assertions
+//! ## Built-in Functions (reference)
 //!
-//! - `assert(condition)`: Panic if condition is false
-//! - `assert_eq(a, b)`: Panic if a != b
-//! - `assert_ne(a, b)`: Panic if a == b
-//!
-//! ## Panic
-//!
-//! - `panic(message)`: Abort with message
-//!
-//! ## Type Information
-//!
-//! - `type_name[T]()`: Get string name of type
-//! - `len(collection)`: Get length (works on String, Array, List, etc.)
-//!
-//! ## Collection Utilities
-//!
-//! - `repeat(value, count)`: Create array of repeated value (comptime)
-//!
-//! ## Comptime Functions
-//!
-//! - `comptime_print(...)`: Print at compile time (debugging)
-//!
-//! ## Key Functions in emit.zig
-//!
-//! - `emitBuiltinCall`: Dispatch to specific builtin handler
-//! - `emitBuiltinFnPtr`: Get function pointer for builtin
-//! - `emitPrint`: Generate print code for any type
-//! - `emitPanic`: Generate panic/abort code
-//! - `emitAssert`: Generate assertion code
-//! - `emitAssertEq`: Generate equality assertion
-//! - `emitAssertNe`: Generate inequality assertion
-//! - `emitTypeName`: Generate type name string
-//! - `emitLen`: Generate length accessor
-//! - `emitRepeat`: Generate array repetition (comptime)
+//! Output: `print`, `println`, `debug`
+//! Assertions: `assert`, `assert_eq`, `assert_ne`
+//! Control: `panic`
+//! Introspection: `type_name`, `len`
+//! Comptime: `repeat`, `comptime_print`
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

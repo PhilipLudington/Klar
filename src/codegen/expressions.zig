@@ -1,29 +1,18 @@
-//! Expression emission utilities for codegen.
+//! Expression helper utilities for codegen.
 //!
-//! This module documents the expression emission logic in code generation.
+//! Provides enums and predicate conversion functions for expression emission.
+//! The emission implementation (emitExpr, emitBinary, emitCall, etc.)
+//! remains in emit.zig.
 //!
-//! ## Expression Types
+//! ## Provided by this module
 //!
-//! Klar expressions that generate LLVM IR:
+//! - `ArithOp`: Arithmetic operation enum (add, sub, mul)
+//! - `CompareOp`: Comparison operation enum (eq, ne, lt, le, gt, ge)
+//! - `compareOpToSignedPredicate`: Convert to LLVM signed int predicate
+//! - `compareOpToUnsignedPredicate`: Convert to LLVM unsigned int predicate
+//! - `compareOpToFloatPredicate`: Convert to LLVM ordered float predicate
 //!
-//! | Expression      | Example              | Notes                    |
-//! |-----------------|----------------------|--------------------------|
-//! | Literal         | `42`, `"hello"`      | Constants                |
-//! | Identifier      | `x`                  | Variable reference       |
-//! | Binary          | `a + b`              | Binary operations        |
-//! | Unary           | `-x`, `!b`           | Unary operations         |
-//! | Call            | `foo(1, 2)`          | Function call            |
-//! | MethodCall      | `x.foo()`            | Method invocation        |
-//! | FieldAccess     | `point.x`            | Struct field access      |
-//! | IndexAccess     | `arr[i]`             | Array/collection index   |
-//! | TypeCast        | `x.as[i64]`          | Type conversion          |
-//! | StructLiteral   | `Point { x: 1 }`     | Struct construction      |
-//! | ArrayLiteral    | `[1, 2, 3]`          | Array construction       |
-//! | EnumLiteral     | `Color::Red`         | Enum variant             |
-//! | Range           | `0..10`              | Range literal            |
-//! | Closure         | `|x| { x + 1 }`      | Lambda expression        |
-//!
-//! ## Binary Operators
+//! ## Binary Operators (reference)
 //!
 //! | Operator | Operation       | Notes                          |
 //! |----------|-----------------|--------------------------------|
@@ -46,30 +35,6 @@
 //! | `>=`     | Greater or eq   |                                |
 //! | `and`    | Logical and     | Short-circuit evaluation       |
 //! | `or`     | Logical or      | Short-circuit evaluation       |
-//! | `=`      | Assignment      | Modifies lvalue                |
-//!
-//! ## Key Functions in emit.zig
-//!
-//! - `emitExpr`: Main dispatch for all expression types
-//! - `emitLiteral`: Integer, float, bool, string literals
-//! - `emitIdentifier`: Variable/parameter reference
-//! - `emitBinary`: Binary operations with operator dispatch
-//! - `emitUnary`: Unary operations (negation, not, deref)
-//! - `emitCall`: Regular function calls
-//! - `emitMethodCall`: Method calls with receiver
-//! - `emitFieldAccess`: Struct field access
-//! - `emitIndexAccess`: Array/slice/collection indexing
-//! - `emitTypeCast`: Type conversions (.as, .to, .trunc)
-//! - `emitStructLiteral`: Struct value construction
-//! - `emitArrayLiteral`: Array value construction
-//! - `emitEnumLiteral`: Enum variant construction
-//! - `emitRangeLiteral`: Range value construction
-//! - `emitClosure`: Closure/lambda construction
-//!
-//! ## Overflow Operations
-//!
-//! - `emitCheckedAdd/Sub/Mul`: Panic on overflow
-//! - `emitSaturatingAdd/Sub/Mul`: Clamp to type limits
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

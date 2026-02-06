@@ -1,7 +1,14 @@
 //! Runtime function declarations for codegen.
 //!
-//! Contains Rc/Arc allocators and C library declarations.
-//! These functions take LLVM primitives directly to avoid circular imports.
+//! Implements C library declarations (malloc, free, string ops, file I/O)
+//! and Rc/Arc reference counting runtime via inline LLVM IR generation.
+//! Functions take LLVM primitives directly to avoid circular imports.
+//!
+//! ## Provided by this module
+//!
+//! - `RuntimeContext`: LLVM state wrapper with save/restore for nested generation
+//! - `getOrDeclare*`: Cached C library function declarations
+//! - `getOrCreateRc*` / `getOrCreateArc*`: Reference counting implementations
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

@@ -1,10 +1,17 @@
-//! Type conversion utilities for codegen.
+//! Type conversion helper utilities for codegen.
 //!
-//! This module documents the type system mapping between Klar types and LLVM IR.
-//! The main implementation is in emit.zig, but this provides reference documentation
-//! and utility functions for working with types during code generation.
+//! Provides constants and helpers for primitive Klar-to-LLVM type mapping.
+//! The full type conversion implementation (typeExprToLLVM, typeToLLVM,
+//! namedTypeToLLVM, etc.) remains in emit.zig.
 //!
-//! ## Klar to LLVM Type Mapping
+//! ## Provided by this module
+//!
+//! - `TypeSize`: Byte-size constants for each primitive type
+//! - `isSignedTypeName`: Check if a type name is signed
+//! - `getPrimitiveBitSize`: Get bit width for a primitive type name
+//! - `primitiveToLLVM`: Convert a primitive type name to LLVM type
+//!
+//! ## Klar to LLVM Type Mapping (reference)
 //!
 //! | Klar Type    | LLVM Type          | Notes                              |
 //! |--------------|--------------------|------------------------------------|
@@ -30,26 +37,6 @@
 //! | struct {...} | {field1, field2..} | LLVM struct                        |
 //! | enum {...}   | {i8, [N x i8]}     | Tagged union                       |
 //! | fn(T) -> R   | {ptr, ptr}         | Closure: fn_ptr + env_ptr         |
-//!
-//! ## Collection Types
-//!
-//! | Klar Type    | LLVM Struct Layout                                    |
-//! |--------------|-------------------------------------------------------|
-//! | String       | {ptr data, i32 len, i32 capacity}                     |
-//! | List[T]      | {ptr data, i32 len, i32 capacity}                     |
-//! | Map[K,V]     | {ptr entries, i32 len, i32 cap, i32 tombstones}       |
-//! | Set[T]       | {ptr entries, i32 len, i32 cap, i32 tombstones}       |
-//!
-//! ## Key Functions in emit.zig
-//!
-//! - `typeExprToLLVM`: Converts AST type expression to LLVM type
-//! - `typeToLLVM`: Converts checker Type to LLVM type
-//! - `namedTypeToLLVM`: Converts type name string to LLVM type
-//! - `getOrCreateStructType`: Creates/retrieves LLVM struct type
-//! - `isTypeSigned`: Checks if a type is signed integer
-//! - `getLLVMTypeSize`: Gets size of LLVM type in bytes
-//! - `getLLVMTypeAlignment`: Gets alignment of LLVM type
-//! - `requiresSret`: Checks if type needs struct-return ABI
 
 const std = @import("std");
 const llvm = @import("llvm.zig");
