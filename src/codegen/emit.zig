@@ -3372,6 +3372,34 @@ pub const Emitter = struct {
         return kind == llvm.c.LLVMIntegerTypeKind;
     }
 
+    /// Determine if an expression produces a signed integer type.
+    /// Used by overflow checking to select signed vs unsigned LLVM intrinsics.
+    /// Checks identifiers via named_values, type casts via target type,
+    /// and defaults to signed for literals and other expressions.
+    fn isExprSigned(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    return local.is_signed;
+                }
+                return true;
+            },
+            .type_cast => |tc| {
+                return self.isTypeSigned(tc.target_type);
+            },
+            .grouped => |g| {
+                return self.isExprSigned(g.expr);
+            },
+            .unary => |u| {
+                return self.isExprSigned(u.operand);
+            },
+            .binary => |b| {
+                return self.isExprSigned(b.left);
+            },
+            else => return true, // Literals and other expressions default to signed
+        }
+    }
+
     fn emitInfiniteLoop(self: *Emitter, loop: *ast.LoopStmt) EmitError!void {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
@@ -3646,6 +3674,9 @@ pub const Emitter = struct {
             rhs_str_ptr = self.extractStringPtr(rhs);
         }
 
+        // Determine signedness from the left operand's Klar type
+        const is_signed = self.isExprSigned(bin.left);
+
         return switch (bin.op) {
             // Standard arithmetic (with overflow checking for integers)
             .add => if (is_float)
@@ -3653,23 +3684,27 @@ pub const Emitter = struct {
             else if (is_string)
                 try self.emitStringConcatLiteral(lhs_str_ptr, rhs_str_ptr)
             else
-                self.emitCheckedAdd(lhs, rhs, true),
+                self.emitCheckedAdd(lhs, rhs, is_signed),
             .sub => if (is_float)
                 self.builder.buildFSub(lhs, rhs, "fsubtmp")
             else
-                self.emitCheckedSub(lhs, rhs, true),
+                self.emitCheckedSub(lhs, rhs, is_signed),
             .mul => if (is_float)
                 self.builder.buildFMul(lhs, rhs, "fmultmp")
             else
-                self.emitCheckedMul(lhs, rhs, true),
+                self.emitCheckedMul(lhs, rhs, is_signed),
             .div => if (is_float)
                 self.builder.buildFDiv(lhs, rhs, "fdivtmp")
+            else if (is_signed)
+                self.builder.buildSDiv(lhs, rhs, "divtmp")
             else
-                self.builder.buildSDiv(lhs, rhs, "divtmp"),
+                self.builder.buildUDiv(lhs, rhs, "udivtmp"),
             .mod => if (is_float)
                 self.builder.buildFRem(lhs, rhs, "fremtmp")
+            else if (is_signed)
+                self.builder.buildSRem(lhs, rhs, "modtmp")
             else
-                self.builder.buildSRem(lhs, rhs, "modtmp"),
+                self.builder.buildURem(lhs, rhs, "umodtmp"),
 
             // Wrapping arithmetic (no overflow check, wraps around)
             .add_wrap => self.builder.buildAdd(lhs, rhs, "addwrap"),
@@ -3677,9 +3712,9 @@ pub const Emitter = struct {
             .mul_wrap => self.builder.buildMul(lhs, rhs, "mulwrap"),
 
             // Saturating arithmetic
-            .add_sat => self.emitSaturatingAdd(lhs, rhs, true),
-            .sub_sat => self.emitSaturatingSub(lhs, rhs, true),
-            .mul_sat => self.emitSaturatingMul(lhs, rhs, true),
+            .add_sat => self.emitSaturatingAdd(lhs, rhs, is_signed),
+            .sub_sat => self.emitSaturatingSub(lhs, rhs, is_signed),
+            .mul_sat => self.emitSaturatingMul(lhs, rhs, is_signed),
 
             // Comparison - use appropriate type
             .eq => if (is_float)
@@ -3697,26 +3732,26 @@ pub const Emitter = struct {
             .lt => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOLT, lhs, rhs, "flttmp")
             else
-                self.builder.buildICmp(llvm.c.LLVMIntSLT, lhs, rhs, "lttmp"),
+                self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSLT else llvm.c.LLVMIntULT, lhs, rhs, "lttmp"),
             .gt => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOGT, lhs, rhs, "fgttmp")
             else
-                self.builder.buildICmp(llvm.c.LLVMIntSGT, lhs, rhs, "gttmp"),
+                self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSGT else llvm.c.LLVMIntUGT, lhs, rhs, "gttmp"),
             .lt_eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOLE, lhs, rhs, "fletmp")
             else
-                self.builder.buildICmp(llvm.c.LLVMIntSLE, lhs, rhs, "letmp"),
+                self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSLE else llvm.c.LLVMIntULE, lhs, rhs, "letmp"),
             .gt_eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOGE, lhs, rhs, "fgetmp")
             else
-                self.builder.buildICmp(llvm.c.LLVMIntSGE, lhs, rhs, "getmp"),
+                self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSGE else llvm.c.LLVMIntUGE, lhs, rhs, "getmp"),
 
             // Bitwise
             .bit_and => self.builder.buildAnd(lhs, rhs, "andtmp"),
             .bit_or => self.builder.buildOr(lhs, rhs, "ortmp"),
             .bit_xor => self.builder.buildXor(lhs, rhs, "xortmp"),
             .shl => self.builder.buildShl(lhs, rhs, "shltmp"),
-            .shr => self.builder.buildAShr(lhs, rhs, "shrtmp"),
+            .shr => if (is_signed) self.builder.buildAShr(lhs, rhs, "shrtmp") else self.builder.buildLShr(lhs, rhs, "lshrtmp"),
 
             else => llvm.Const.int32(self.ctx, 0), // Placeholder
         };

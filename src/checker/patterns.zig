@@ -205,11 +205,16 @@ fn checkVariantPattern(tc: anytype, v: *ast.VariantPattern, expected_type: Type)
 
             for (generic.args) |arg| {
                 const resolved_arg = tc.resolveTypeExpr(arg) catch continue;
-                type_args.append(tc.allocator, resolved_arg) catch {};
+                type_args.append(tc.allocator, resolved_arg) catch {
+                    tc.addError(.invalid_pattern, v.span, "failed to record type argument for enum monomorphization", .{});
+                    return;
+                };
             }
 
             // Record enum monomorphization
-            _ = tc.recordEnumMonomorphization(enum_def.name, enum_def, type_args.items) catch {};
+            _ = tc.recordEnumMonomorphization(enum_def.name, enum_def, type_args.items) catch {
+                tc.addError(.invalid_pattern, v.span, "failed to record enum monomorphization for '{s}'", .{enum_def.name});
+            };
         }
     }
 }
