@@ -440,7 +440,7 @@ pub const TypeChecker = struct {
             .in_unsafe_context = false,
             .debug_call_types = .{},
         };
-        checker.initBuiltins() catch {};
+        checker.initBuiltins() catch @panic("Failed to initialize builtin types");
         return checker;
     }
 

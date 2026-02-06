@@ -1,0 +1,57 @@
+// Test saturating arithmetic operators (Bug 2 regression test)
+// Saturating operators clamp at type limits instead of overflowing.
+// expect: 0
+
+fn main() -> i32 {
+    let max: i32 = 2147483647
+    // Compute min without literal overflow: -(max) - 1 via wrapping
+    let min: i32 = max +% 1
+
+    // Saturating addition: max + 1 should stay at max
+    let sat_add: i32 = max +| 1
+    if sat_add != max {
+        return 1
+    }
+
+    // Saturating subtraction: min - 1 should stay at min
+    let sat_sub: i32 = min -| 1
+    if sat_sub != min {
+        return 3
+    }
+
+    // Saturating subtraction: max - (-1) should stay at max
+    let sat_sub_neg: i32 = max -| -1
+    if sat_sub_neg != max {
+        return 4
+    }
+
+    // Saturating multiplication: max * 2 should stay at max
+    let sat_mul: i32 = max *| 2
+    if sat_mul != max {
+        return 5
+    }
+
+    // Saturating multiplication: min * 2 should stay at min
+    let sat_mul_neg: i32 = min *| 2
+    if sat_mul_neg != min {
+        return 6
+    }
+
+    // Non-overflowing saturating ops should behave normally
+    let normal_add: i32 = 10 +| 20
+    if normal_add != 30 {
+        return 7
+    }
+
+    let normal_sub: i32 = 50 -| 20
+    if normal_sub != 30 {
+        return 8
+    }
+
+    let normal_mul: i32 = 6 *| 7
+    if normal_mul != 42 {
+        return 9
+    }
+
+    return 0
+}
