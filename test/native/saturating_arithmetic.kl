@@ -37,6 +37,26 @@ fn main() -> i32 {
         return 6
     }
 
+    // Saturating multiplication: negative * positive overflows negatively -> MIN
+    let neg: i32 = -1073741824
+    let sat_mul_neg_pos: i32 = neg *| 3
+    if sat_mul_neg_pos != min {
+        return 10
+    }
+
+    // Saturating multiplication: negative * negative overflows positively -> MAX
+    let sat_mul_neg_neg: i32 = min *| -1
+    if sat_mul_neg_neg != max {
+        return 11
+    }
+
+    // Saturating multiplication: -1 * -1 = 1 (no overflow, exact result)
+    let neg_one: i32 = -1
+    let sat_mul_neg1: i32 = neg_one *| neg_one
+    if sat_mul_neg1 != 1 {
+        return 12
+    }
+
     // Non-overflowing saturating ops should behave normally
     let normal_add: i32 = 10 +| 20
     if normal_add != 30 {
