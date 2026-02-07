@@ -70,6 +70,9 @@ get_expected() {
         saturating_add) echo 0 ;;  # +| clamps at INT_MAX/INT_MIN
         saturating_sub) echo 0 ;;  # -| clamps at INT_MAX/INT_MIN
         saturating_mul) echo 0 ;;  # *| clamps at INT_MAX/INT_MIN
+        wrapping_add) echo 0 ;;  # +% wraps on overflow
+        wrapping_sub) echo 0 ;;  # -% wraps on overflow
+        wrapping_mul) echo 0 ;;  # *% wraps on overflow
         *) echo -1 ;;  # -1 means accept any result
     esac
 }

@@ -31,18 +31,8 @@ pub const comptime_ = @import("comptime.zig");
 pub const builtins = @import("builtins.zig");
 pub const modules = @import("modules.zig");
 
-// Implementation modules (internal, not re-exported)
-const statements = @import("statements.zig");
-const patterns = @import("patterns.zig");
-const builtins_check = @import("builtins_check.zig");
-const declarations = @import("declarations.zig");
-const comptime_eval = @import("comptime_eval.zig");
-const expressions = @import("expressions.zig");
-const type_utils = @import("type_utils.zig");
-const methods_mod = @import("methods.zig");
-const type_resolution_mod = @import("type_resolution.zig");
-const trait_checking_mod = @import("trait_checking.zig");
-const method_calls_mod = @import("method_calls.zig");
+// Implementation modules are imported by checker.zig directly.
+// They are not re-exported here as they are internal implementation details.
 
 // Re-export main checker types from checker.zig
 pub const TypeChecker = checker.TypeChecker;

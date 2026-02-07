@@ -1,0 +1,25 @@
+// Test wrapping multiplication (*%)
+// Wrapping operator should wrap on overflow instead of trapping
+fn main() -> i32 {
+    // Normal case: no wrapping needed
+    let a: i32 = 6 *% 7
+    if a != 42 {
+        return 1
+    }
+
+    // Wrapping mul: result wraps around
+    let max: i32 = 2147483647
+    let b: i32 = max *% 2
+    // 2147483647 * 2 = 4294967294, wraps to -2 in i32
+    if b != -2 {
+        return 2
+    }
+
+    // Zero multiplication: always 0, no wrapping
+    let c: i32 = max *% 0
+    if c != 0 {
+        return 3
+    }
+
+    return 0
+}

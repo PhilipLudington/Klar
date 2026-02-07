@@ -4,26 +4,10 @@
 //!
 //! ## Module Organization
 //!
-//! The codegen package is organized into focused modules:
-//!
-//! | Module          | Purpose                                          |
-//! |-----------------|--------------------------------------------------|
-//! | emit.zig        | Main Emitter struct and orchestration            |
-//! | generics.zig    | Monomorphization utilities                       |
-//! | types_emit.zig  | Type conversion (Klar -> LLVM)                   |
-//! | strings_emit.zig| String type and operations                       |
-//! | list.zig        | List[T] type and operations                      |
-//! | map.zig         | Map[K,V] type and operations                     |
-//! | set.zig         | Set[T] type and operations                       |
-//! | io.zig          | File, Path, BufReader, BufWriter, Fs             |
-//! | optionals.zig   | Optional[T] and Result[T,E] types                |
-//! | builtins.zig    | Built-in functions (print, panic, assert, etc.)  |
-//! | expressions.zig | Expression emission                              |
-//! | statements.zig  | Statement and control flow emission              |
-//! | functions.zig   | Function and closure emission                    |
-//!
-//! The main Emitter struct and implementation remain in this file.
-//! The supporting modules provide documentation and utility functions.
+//! The main Emitter struct and all implementation code reside in this file.
+//! Documentation-only modules provide reference guides for specific subsystems:
+//! generics.zig, types_emit.zig, strings_emit.zig, list.zig, map.zig, set.zig,
+//! io.zig, optionals.zig, builtins.zig, expressions.zig, statements.zig, functions.zig
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -46,19 +30,9 @@ const llvm = @import("llvm.zig");
 const target = @import("target.zig");
 const layout = @import("layout.zig");
 
-// Supporting modules with utilities and documentation
-pub const generics = @import("generics.zig");
-pub const types_emit = @import("types_emit.zig");
-pub const strings_emit = @import("strings_emit.zig");
-pub const list = @import("list.zig");
-pub const map = @import("map.zig");
-pub const set = @import("set.zig");
-pub const io = @import("io.zig");
-pub const optionals = @import("optionals.zig");
-pub const builtins = @import("builtins.zig");
-pub const expressions = @import("expressions.zig");
-pub const statements = @import("statements.zig");
-pub const functions = @import("functions.zig");
+// Supporting documentation modules (pure doc comments, see each file for details):
+// generics.zig, types_emit.zig, strings_emit.zig, list.zig, map.zig, set.zig,
+// io.zig, optionals.zig, builtins.zig, expressions.zig, statements.zig, functions.zig
 
 // ==================== Platform-Specific Struct Offsets ====================
 // Use @cImport to get correct struct layouts from system headers.

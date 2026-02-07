@@ -8,7 +8,8 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const Type = types.Type;
-const CheckError = @import("checker.zig").CheckError;
+const checker_mod = @import("checker.zig");
+const CheckError = checker_mod.CheckError;
 
 // ============================================================================
 // Statement Checking
