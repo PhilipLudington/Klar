@@ -1,0 +1,25 @@
+// Test array.contains() with strings - verifies value equality, not pointer equality
+fn main() -> i32 {
+    // Test array.contains() with strings
+    let arr: [string; 3] = ["hello", "world", "test"]
+
+    // Should find existing strings (by value, not pointer)
+    assert(arr.contains("hello"))
+    assert(arr.contains("world"))
+    assert(arr.contains("test"))
+
+    // Should not find non-existent strings
+    assert(not arr.contains("foo"))
+    assert(not arr.contains("HELLO"))
+    assert(not arr.contains(""))
+
+    // Test with dynamic array (slice type)
+    let slice: [string] = ["apple", "banana", "cherry"]
+    assert(slice.contains("apple"))
+    assert(slice.contains("banana"))
+    assert(slice.contains("cherry"))
+    assert(not slice.contains("grape"))
+    assert(not slice.contains("Apple"))
+
+    return 0
+}

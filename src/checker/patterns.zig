@@ -28,7 +28,9 @@ pub fn checkPattern(tc: anytype, pattern: ast.Pattern, expected_type: Type) void
                 .kind = .variable,
                 .mutable = bind.mutable,
                 .span = bind.span,
-            }) catch {};
+            }) catch {
+                tc.addError(.invalid_pattern, bind.span, "failed to define pattern binding '{s}'", .{bind.name});
+            };
         },
         .variant => |v| {
             checkVariantPattern(tc, v, expected_type);
@@ -38,7 +40,25 @@ pub fn checkPattern(tc: anytype, pattern: ast.Pattern, expected_type: Type) void
                 tc.addError(.invalid_pattern, s.span, "struct pattern requires struct type", .{});
                 return;
             }
-            // TODO: check fields exist and match
+            const struct_type = expected_type.struct_;
+            for (s.fields) |field| {
+                // Verify field exists on the struct
+                var found_field: ?types.StructField = null;
+                for (struct_type.fields) |sf| {
+                    if (std.mem.eql(u8, sf.name, field.name)) {
+                        found_field = sf;
+                        break;
+                    }
+                }
+                if (found_field) |sf| {
+                    if (field.pattern) |field_pattern| {
+                        checkPattern(tc, field_pattern, sf.type_);
+                    }
+                    // If no nested pattern, the field name becomes a binding (handled in bindPattern)
+                } else {
+                    tc.addError(.undefined_field, field.span, "struct '{s}' has no field '{s}'", .{ struct_type.name, field.name });
+                }
+            }
         },
         .tuple_pattern => |t| {
             if (expected_type != .tuple) {
@@ -185,11 +205,16 @@ fn checkVariantPattern(tc: anytype, v: *ast.VariantPattern, expected_type: Type)
 
             for (generic.args) |arg| {
                 const resolved_arg = tc.resolveTypeExpr(arg) catch continue;
-                type_args.append(tc.allocator, resolved_arg) catch {};
+                type_args.append(tc.allocator, resolved_arg) catch {
+                    tc.addError(.invalid_pattern, v.span, "failed to record type argument for enum monomorphization", .{});
+                    return;
+                };
             }
 
             // Record enum monomorphization
-            _ = tc.recordEnumMonomorphization(enum_def.name, enum_def, type_args.items) catch {};
+            _ = tc.recordEnumMonomorphization(enum_def.name, enum_def, type_args.items) catch {
+                tc.addError(.invalid_pattern, v.span, "failed to record enum monomorphization for '{s}'", .{enum_def.name});
+            };
         }
     }
 }
@@ -224,14 +249,41 @@ pub fn bindPattern(tc: anytype, pattern: ast.Pattern, t: Type) void {
                 .kind = .variable,
                 .mutable = bind.mutable,
                 .span = bind.span,
-            }) catch {};
+            }) catch {
+                tc.addError(.invalid_pattern, bind.span, "failed to define pattern binding '{s}'", .{bind.name});
+            };
         },
         .variant => |v| {
             bindVariantPattern(tc, v, t);
         },
         .struct_pattern => |s| {
-            // TODO: bind struct field patterns
-            _ = s;
+            if (t != .struct_) return;
+            const struct_type = t.struct_;
+            for (s.fields) |field| {
+                // Find the field type from the struct definition
+                var field_type: Type = tc.type_builder.unknownType();
+                for (struct_type.fields) |sf| {
+                    if (std.mem.eql(u8, sf.name, field.name)) {
+                        field_type = sf.type_;
+                        break;
+                    }
+                }
+                if (field.pattern) |field_pattern| {
+                    // Bind nested pattern with the field's type
+                    bindPattern(tc, field_pattern, field_type);
+                } else {
+                    // Shorthand: field name becomes a binding (e.g., Point { x, y })
+                    tc.current_scope.define(.{
+                        .name = field.name,
+                        .type_ = field_type,
+                        .kind = .variable,
+                        .mutable = false,
+                        .span = field.span,
+                    }) catch {
+                        tc.addError(.invalid_pattern, field.span, "failed to define struct field binding '{s}'", .{field.name});
+                    };
+                }
+            }
         },
         .tuple_pattern => |tup| {
             if (t == .tuple) {

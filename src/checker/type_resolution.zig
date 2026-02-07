@@ -605,7 +605,13 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
             }
             // Check for Self
             if (std.mem.eql(u8, n.name, "Self")) {
-                // TODO: resolve Self in impl context
+                if (tc.current_impl_type) |impl_type| {
+                    return impl_type;
+                }
+                if (tc.current_trait_type) |trait_type| {
+                    return .{ .trait_ = trait_type };
+                }
+                tc.addError(.undefined_type, n.span, "'Self' can only be used inside impl or trait blocks", .{});
                 return tc.type_builder.unknownType();
             }
             // Check for type parameters (e.g., T in fn foo[T](x: T))
@@ -991,6 +997,19 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     } else {
                         tc.addError(.undefined_type, q.span, "cannot use Self.{s} outside trait context", .{q.member});
                     }
+                    return tc.type_builder.unknownType();
+                },
+                .trait_ => |trait_type| {
+                    // Self.Item where Self resolved to a trait type
+                    // Look up the associated type in the trait's declarations
+                    for (trait_type.associated_types) |assoc| {
+                        if (std.mem.eql(u8, assoc.name, q.member)) {
+                            // In trait method signatures, Self.Item is a placeholder
+                            // resolved to the concrete type during impl checking
+                            return tc.type_builder.unknownType();
+                        }
+                    }
+                    tc.addError(.undefined_type, q.span, "trait '{s}' has no associated type '{s}'", .{ trait_type.name, q.member });
                     return tc.type_builder.unknownType();
                 },
                 else => {
