@@ -9,7 +9,6 @@
 //! | Module          | Purpose                                          |
 //! |-----------------|--------------------------------------------------|
 //! | emit.zig        | Main Emitter struct and orchestration            |
-//! | runtime.zig     | C library declarations, Rc/Arc runtime           |
 //! | generics.zig    | Monomorphization utilities                       |
 //! | types_emit.zig  | Type conversion (Klar -> LLVM)                   |
 //! | strings_emit.zig| String type and operations                       |
@@ -48,7 +47,6 @@ const target = @import("target.zig");
 const layout = @import("layout.zig");
 
 // Supporting modules with utilities and documentation
-const runtime = @import("runtime.zig");
 pub const generics = @import("generics.zig");
 pub const types_emit = @import("types_emit.zig");
 pub const strings_emit = @import("strings_emit.zig");
@@ -399,17 +397,6 @@ pub const Emitter = struct {
             .sret_attr_kind = null,
             .sret_functions = std.StringHashMap(llvm.TypeRef).init(allocator),
             .extern_functions = std.StringHashMap(ExternFnInfo).init(allocator),
-        };
-    }
-
-    /// Create a RuntimeContext for calling runtime module functions.
-    /// The context references the emitter's LLVM state without owning it.
-    pub fn getRuntimeContext(self: *Emitter) runtime.RuntimeContext {
-        return .{
-            .ctx = self.ctx,
-            .module = self.module,
-            .builder = self.builder,
-            .platform = self.platform,
         };
     }
 

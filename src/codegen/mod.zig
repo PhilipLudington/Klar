@@ -11,7 +11,6 @@
 //! | target.zig      | Target platform/ABI information                  |
 //! | layout.zig      | Struct layout calculation                        |
 //! | linker.zig      | Native linker invocation                         |
-//! | runtime.zig     | C library declarations, Rc/Arc runtime           |
 //! | generics.zig    | Monomorphization utilities                       |
 //! | types_emit.zig  | Type conversion documentation                    |
 //! | strings_emit.zig| String type utilities                            |
@@ -30,8 +29,6 @@ pub const target = @import("target.zig");
 pub const emit = @import("emit.zig");
 pub const linker = @import("linker.zig");
 pub const layout = @import("layout.zig");
-pub const runtime = @import("runtime.zig");
-
 // Supporting modules with utilities and documentation
 // These are re-exported from emit.zig for convenience
 pub const generics = emit.generics;

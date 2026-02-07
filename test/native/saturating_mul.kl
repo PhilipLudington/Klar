@@ -1,0 +1,25 @@
+// Test saturating multiplication (*|)
+fn main() -> i32 {
+    // Saturate at i32 max: 2147483647 *| 2 = 2147483647
+    let max: i32 = 2147483647
+    let a: i32 = max *| 2
+    if a != max {
+        return 1
+    }
+
+    // Negative saturation: -2147483647 *| 2 saturates at min
+    let neg: i32 = -2147483647
+    let b: i32 = neg *| 2
+    // Result must be <= neg (saturated to INT_MIN)
+    if b > neg {
+        return 2
+    }
+
+    // Normal case: no saturation
+    let c: i32 = 6 *| 7
+    if c != 42 {
+        return 3
+    }
+
+    return 0
+}

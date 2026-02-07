@@ -1,0 +1,8 @@
+// Test that multiplication overflow traps at runtime
+// Standard * operator must trap on i32 overflow (SIGILL)
+// This program should NOT return 0 — if it does, overflow checking is broken
+fn main() -> i32 {
+    let big: i32 = 2147483647
+    let result: i32 = big * 2
+    return 0
+}
