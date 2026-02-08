@@ -123,19 +123,19 @@ fn find_user(id: i32) -> ?User {
 
 fn main() -> i32 {
     let user: ?User = find_user(42)
-    
-    // Pattern 1: Default value
-    let name: string = user?.name ?? "Unknown"
-    
+
+    // Pattern 1: Default value with ??
+    let id: i32 = find_id("Alice") ?? -1
+
     // Pattern 2: Match for complex logic
     match user {
         Some(u) => { println("Found: {u.name}") }
         None => { println("Not found") }
     }
-    
+
     // Pattern 3: Force unwrap (traps if None)
     let forced: User = user!  // Use only when None is a bug
-    
+
     return 0
 }
 ```
@@ -195,7 +195,7 @@ impl Point {
 }
 
 fn main() -> i32 {
-    var p: Point = Point::new(3.0, 4.0)
+    var p: Point = Point.new(3.0, 4.0)
     println("Distance: {p.distance()}")  // 5.0
     p.translate(1.0, 1.0)
     return 0
@@ -429,4 +429,4 @@ loop {
 
 ---
 
-*Klar: designed by Claude Code, for Claude Code.*
+*Klar: No ambiguity. No surprises.*

@@ -60,7 +60,7 @@ fn main() -> i32 {
     
     // Create a default counter
     println("Creating default counter (step=1):")
-    var counter: Counter = Counter::new()
+    var counter: Counter = Counter.new()
     counter.display()
     
     // Increment a few times
@@ -102,7 +102,7 @@ fn main() -> i32 {
     // Create counter with custom step
     println("")
     println("Creating counter with step=5:")
-    var big_counter: Counter = Counter::with_step(5)
+    var big_counter: Counter = Counter.with_step(5)
     big_counter.display()
     
     println("")

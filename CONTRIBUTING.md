@@ -247,4 +247,4 @@ By contributing, you agree that your contributions will be licensed under the MI
 
 ---
 
-Thank you for contributing to Klar! 🎉
+Thank you for contributing to Klar!
