@@ -1,5 +1,5 @@
 #!/bin/bash
-# GitStat test wrapper for Klar module/multi-file compilation tests
+# AirTower test wrapper for Klar module/multi-file compilation tests
 # Tests import resolution, visibility, circular detection, etc.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

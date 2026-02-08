@@ -109,7 +109,7 @@ run_tests() {
         bash -c "
             set -e
             echo '=== Building Klar compiler ==='
-            ./build.sh
+            ./run-build.sh
 
             echo ''
             echo '=== Running tests ==='

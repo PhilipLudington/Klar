@@ -9,7 +9,7 @@ TEST_DIR="$SCRIPT_DIR/test/args"
 # Ensure compiler is built
 if [ ! -f "$KLAR" ]; then
     echo "Building Klar compiler first..."
-    cd "$SCRIPT_DIR" && ./build.sh || exit 1
+    cd "$SCRIPT_DIR" && ./run-build.sh || exit 1
 fi
 
 PASSED=0

@@ -7,7 +7,7 @@ build/
 .zig-cache/
 zig-out/
 
-# GitStat result files
+# AirTower result files
 .build-results.json
 .test-results.json
 .native-test-results.json

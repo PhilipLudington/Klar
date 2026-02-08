@@ -41,7 +41,7 @@ run_suite() {
 echo "═══════════════════════════════════════════════════════════"
 echo -e "${YELLOW}Building compiler...${NC}"
 echo "═══════════════════════════════════════════════════════════"
-if ! ./build.sh; then
+if ! ./run-build.sh; then
     echo -e "${RED}Build failed - aborting tests${NC}"
     exit 1
 fi

@@ -1,5 +1,5 @@
 #!/bin/bash
-# GitStat test wrapper for Klar native compilation tests
+# AirTower test wrapper for Klar native compilation tests
 # Compiles and runs test/native/*.kl files
 #
 # Test conventions:

@@ -50,7 +50,7 @@ Clone the repository and build:
 ```bash
 git clone https://github.com/yourusername/klar.git
 cd klar
-./build.sh
+./run-build.sh
 ```
 
 The build script compiles the Klar compiler to `./zig-out/bin/klar`.

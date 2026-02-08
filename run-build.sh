@@ -1,5 +1,5 @@
 #!/bin/bash
-# GitStat build wrapper for Klar compiler
+# AirTower build wrapper for Klar compiler
 # Runs zig build and writes results to .build-results.json
 
 set -e

@@ -254,7 +254,7 @@ Requires [Zig](https://ziglang.org/) 0.15+ and LLVM 17+.
 brew install llvm
 
 # Build the compiler
-./build.sh
+./run-build.sh
 
 # Run tests
 ./run-tests.sh         # Unit tests

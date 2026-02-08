@@ -26,7 +26,7 @@ When contributing, ask: "Would this help an AI agent write correct code?"
 ```bash
 git clone https://github.com/PhilipLudington/Klar.git
 cd Klar
-./build.sh
+./run-build.sh
 ```
 
 ### Running Tests

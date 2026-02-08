@@ -1,5 +1,5 @@
 #!/bin/bash
-# GitStat test wrapper for Klar reference app tests
+# AirTower test wrapper for Klar reference app tests
 # Tests examples/apps/*.kl compile and run correctly
 
 set -e

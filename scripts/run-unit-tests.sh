@@ -1,5 +1,5 @@
 #!/bin/bash
-# GitStat test wrapper for Klar unit tests
+# AirTower test wrapper for Klar unit tests
 # Runs zig build test and writes results to .test-results.json
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -82,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Change `.len()` to return i32 for ergonomic loop counters
 - Unify comptime syntax to use `@` prefix consistently
 - Reorganize test scripts into `scripts/` directory
-- Add GitStat integration for build/test status tracking
+- Add AirTower integration for build/test status tracking
 
 ## [v0.2.0] - 2026-01-15
 

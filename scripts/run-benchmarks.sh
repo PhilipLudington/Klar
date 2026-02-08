@@ -10,7 +10,7 @@ cd "$SCRIPT_DIR"
 
 # Ensure compiler is built
 echo "Building Klar compiler..."
-./build.sh > /dev/null 2>&1
+./run-build.sh > /dev/null 2>&1
 
 KLAR="$SCRIPT_DIR/zig-out/bin/klar"
 BENCHMARK_DIR="$SCRIPT_DIR/benchmarks"

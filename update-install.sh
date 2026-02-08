@@ -7,7 +7,7 @@ BUILT_BINARY="./zig-out/bin/klar"
 INSTALL_PATH="/usr/local/bin/klar"
 
 echo "Building Klar..."
-./build.sh
+./run-build.sh
 
 echo "Updating $INSTALL_PATH..."
 sudo cp "$BUILT_BINARY" "$INSTALL_PATH"

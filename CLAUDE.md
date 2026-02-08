@@ -45,9 +45,9 @@ Comprehensive language documentation is available in the `docs/` directory:
 
 ```bash
 # Build the compiler (ALWAYS use wrapper script)
-./build.sh
+./run-build.sh
 
-# Run ALL tests (ALWAYS use this for GitStat integration)
+# Run ALL tests (ALWAYS use this for AirTower integration)
 ./run-tests.sh           # Runs all test suites (unit, native, app, module)
 
 # Run individual test suites (in scripts/ directory)
@@ -292,9 +292,9 @@ CarbideZig standards apply - see `carbide/CARBIDE.md` and `carbide/STANDARDS.md`
 - The VM has `--debug` flag for bytecode tracing
 - Tests in `test/native/` cover most language features
 
-### GitStat Integration
+### AirTower Integration
 
-Wrapper scripts write results to JSON files read by GitStat:
+Wrapper scripts write results to JSON files read by AirTower:
 - `.build-results.json` - Build status
 - `.test-results.json` - Unit test results
 - `.native-test-results.json` - Native compilation test results
