@@ -1,0 +1,11 @@
+// Expected: check-pass
+// Test that bool is Copy (Bug 13 fix)
+
+fn main() -> i32 {
+    let a: bool = true
+    let b: bool = a
+    if a and b {
+        return 0
+    }
+    return 1
+}

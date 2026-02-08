@@ -1,0 +1,8 @@
+// Test that subtraction overflow traps at runtime
+// Standard - operator must trap on i32 underflow (SIGILL)
+// This program should NOT return 0 — if it does, overflow checking is broken
+fn main() -> i32 {
+    let near_min: i32 = -2147483647
+    let result: i32 = near_min - 2
+    return 0
+}

@@ -38,6 +38,9 @@ pub const CompileError = struct {
         // Function errors
         too_many_parameters,
 
+        // Unsupported features (not yet implemented in VM)
+        unsupported_feature,
+
         // Internal errors
         internal_error,
     };
@@ -270,7 +273,7 @@ pub const Compiler = struct {
             .const_decl => |c| try self.compileConstDecl(c),
             .struct_decl => |s| try self.compileStructDecl(s),
             .enum_decl => |e| try self.compileEnumDecl(e),
-            // TODO: Implement remaining declarations
+            // VM limitation: traits, impls, imports not supported - use native compilation
             .trait_decl, .impl_decl, .type_alias, .import_decl, .module_decl => {},
             // Extern types and blocks are compile-time only (FFI not supported in VM)
             .extern_type_decl, .extern_block => {},
@@ -375,11 +378,11 @@ pub const Compiler = struct {
     }
 
     fn compileStructDecl(_: *Compiler, _: *ast.StructDecl) Error!void {
-        // TODO: Implement struct compilation
+        // Struct declarations are compile-time only; instances created via struct literals
     }
 
     fn compileEnumDecl(_: *Compiler, _: *ast.EnumDecl) Error!void {
-        // TODO: Implement enum compilation
+        // VM limitation: enum declarations not supported - use native compilation
     }
 
     // -------------------------------------------------------------------------
@@ -726,12 +729,12 @@ pub const Compiler = struct {
             .enum_literal => |e| {
                 // Enum literals are not yet supported in the bytecode VM.
                 // Use native compilation (klar build) for programs using enums.
-                try self.addError(.internal_error, e.span, "enum literals not yet supported in bytecode VM; use native compilation");
+                try self.addError(.unsupported_feature, e.span, "enum literals not yet supported in bytecode VM; use native compilation");
             },
             .comptime_block => {
                 // Comptime blocks are evaluated at compile time by the type checker
                 // The bytecode VM should never see them - they are replaced by their evaluated values
-                try self.addError(.internal_error, expr.span(), "comptime blocks not yet supported in bytecode VM");
+                try self.addError(.unsupported_feature, expr.span(), "comptime blocks not yet supported in bytecode VM");
             },
             .unsafe_block => |ub| {
                 // Unsafe blocks are safety-checked at compile time
@@ -798,13 +801,13 @@ pub const Compiler = struct {
                     try self.emitOp2(.op_array, @intCast(count), line);
                 } else {
                     // Other builtin calls are evaluated at compile time
-                    try self.addError(.internal_error, expr.span(), "builtin calls not yet supported in bytecode VM");
+                    try self.addError(.unsupported_feature, expr.span(), "builtin calls not yet supported in bytecode VM");
                 }
             },
             .out_arg => {
                 // Out arguments are only valid in extern function calls
                 // The bytecode VM doesn't support FFI, so this is an error
-                try self.addError(.internal_error, expr.span(), "out arguments not supported in bytecode VM (FFI not available)");
+                try self.addError(.unsupported_feature, expr.span(), "out arguments not supported in bytecode VM (FFI not available)");
             },
         }
     }

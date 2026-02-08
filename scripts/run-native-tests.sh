@@ -67,6 +67,12 @@ get_expected() {
         optional_propagate) echo 52 ;;  # ? on Optional: 42 + 10 = 52
         result_propagate) echo 52 ;;  # ? on Result: 42 + 10 = 52
         result_propagate_simple) echo 42 ;;  # Simpler ? on Result test
+        saturating_add) echo 0 ;;  # +| clamps at INT_MAX/INT_MIN
+        saturating_sub) echo 0 ;;  # -| clamps at INT_MAX/INT_MIN
+        saturating_mul) echo 0 ;;  # *| clamps at INT_MAX/INT_MIN
+        wrapping_add) echo 0 ;;  # +% wraps on overflow
+        wrapping_sub) echo 0 ;;  # -% wraps on overflow
+        wrapping_mul) echo 0 ;;  # *% wraps on overflow
         *) echo -1 ;;  # -1 means accept any result
     esac
 }

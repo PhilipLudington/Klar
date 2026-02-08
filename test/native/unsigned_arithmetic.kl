@@ -1,0 +1,95 @@
+// Test unsigned integer arithmetic codegen paths.
+// Verifies that unsigned operations use the correct LLVM instructions
+// (UDiv, URem, unsigned comparisons, logical shift, unsigned saturation).
+// expect: 0
+
+fn check(cond: bool, code: i32) -> i32 {
+    if cond {
+        return 0
+    }
+    return code
+}
+
+fn main() -> i32 {
+    let a: u32 = 200
+    let b: u32 = 50
+    let zero: u32 = 0
+    let one: u32 = 1
+    let two: u32 = 2
+    let max_u32: u32 = 4294967295
+
+    // Basic arithmetic
+    let sum: u32 = a + b
+    let expected_sum: u32 = 250
+    var r: i32 = check(sum == expected_sum, 1)
+    if r != 0 { return r }
+
+    let diff: u32 = a - b
+    let expected_diff: u32 = 150
+    r = check(diff == expected_diff, 2)
+    if r != 0 { return r }
+
+    let prod: u32 = a * b
+    let expected_prod: u32 = 10000
+    r = check(prod == expected_prod, 3)
+    if r != 0 { return r }
+
+    // Unsigned division (should use UDiv, not SDiv)
+    let quot: u32 = a / b
+    let expected_quot: u32 = 4
+    r = check(quot == expected_quot, 4)
+    if r != 0 { return r }
+
+    // Large unsigned values (above i32 max, tests that we don't treat as negative)
+    let big: u32 = 3000000000
+    let small: u32 = 1000000000
+
+    // Unsigned comparison: big > small should be true
+    // If treated as signed, big (> 2^31) would appear negative
+    r = check(big > small, 5)
+    if r != 0 { return r }
+
+    let big_diff: u32 = big - small
+    let expected_big_diff: u32 = 2000000000
+    r = check(big_diff == expected_big_diff, 6)
+    if r != 0 { return r }
+
+    // Unsigned division with large values
+    let big_quot: u32 = big / small
+    let expected_big_quot: u32 = 3
+    r = check(big_quot == expected_big_quot, 7)
+    if r != 0 { return r }
+
+    // Wrapping arithmetic on unsigned
+    let wrap_add: u32 = max_u32 +% one
+    r = check(wrap_add == zero, 8)
+    if r != 0 { return r }
+
+    let wrap_sub: u32 = zero -% one
+    r = check(wrap_sub == max_u32, 9)
+    if r != 0 { return r }
+
+    // Saturating arithmetic on unsigned
+    let sat_add: u32 = max_u32 +| one
+    r = check(sat_add == max_u32, 10)
+    if r != 0 { return r }
+
+    let sat_sub: u32 = zero -| one
+    r = check(sat_sub == zero, 11)
+    if r != 0 { return r }
+
+    // Saturating multiply on unsigned: max * 2 should saturate to max
+    let sat_mul: u32 = max_u32 *| two
+    r = check(sat_mul == max_u32, 12)
+    if r != 0 { return r }
+
+    // Non-overflowing saturating ops should behave normally
+    let six: u32 = 6
+    let seven: u32 = 7
+    let sat_normal: u32 = six *| seven
+    let expected_42: u32 = 42
+    r = check(sat_normal == expected_42, 13)
+    if r != 0 { return r }
+
+    return 0
+}

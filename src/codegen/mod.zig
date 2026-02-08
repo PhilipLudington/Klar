@@ -11,41 +11,27 @@
 //! | target.zig      | Target platform/ABI information                  |
 //! | layout.zig      | Struct layout calculation                        |
 //! | linker.zig      | Native linker invocation                         |
-//! | runtime.zig     | C library declarations, Rc/Arc runtime           |
-//! | generics.zig    | Monomorphization utilities                       |
-//! | types_emit.zig  | Type conversion documentation                    |
-//! | strings_emit.zig| String type utilities                            |
-//! | list.zig        | List[T] utilities                                |
-//! | map.zig         | Map[K,V] utilities                               |
-//! | set.zig         | Set[T] utilities                                 |
-//! | io.zig          | I/O type utilities                               |
-//! | optionals.zig   | Optional/Result utilities                        |
-//! | builtins.zig    | Built-in function utilities                      |
-//! | expressions.zig | Expression emission utilities                    |
-//! | statements.zig  | Statement emission utilities                     |
-//! | functions.zig   | Function emission utilities                      |
+//! | generics.zig    | Monomorphization documentation (doc-only)        |
+//! | types_emit.zig  | Type conversion documentation (doc-only)         |
+//! | strings_emit.zig| String type documentation (doc-only)             |
+//! | list.zig        | List[T] documentation (doc-only)                 |
+//! | map.zig         | Map[K,V] documentation (doc-only)                |
+//! | set.zig         | Set[T] documentation (doc-only)                  |
+//! | io.zig          | I/O type documentation (doc-only)                |
+//! | optionals.zig   | Optional/Result documentation (doc-only)         |
+//! | builtins.zig    | Built-in function documentation (doc-only)       |
+//! | expressions.zig | Expression emission documentation (doc-only)     |
+//! | statements.zig  | Statement emission documentation (doc-only)      |
+//! | functions.zig   | Function emission documentation (doc-only)       |
 
 pub const llvm = @import("llvm.zig");
 pub const target = @import("target.zig");
 pub const emit = @import("emit.zig");
 pub const linker = @import("linker.zig");
 pub const layout = @import("layout.zig");
-pub const runtime = @import("runtime.zig");
-
-// Supporting modules with utilities and documentation
-// These are re-exported from emit.zig for convenience
-pub const generics = emit.generics;
-pub const types_emit = emit.types_emit;
-pub const strings_emit = emit.strings_emit;
-pub const list = emit.list;
-pub const map = emit.map;
-pub const set = emit.set;
-pub const io = emit.io;
-pub const optionals = emit.optionals;
-pub const builtins = emit.builtins;
-pub const expressions = emit.expressions;
-pub const statements = emit.statements;
-pub const functions = emit.functions;
+// Documentation-only modules (no code, just doc comments for reference):
+// generics.zig, types_emit.zig, strings_emit.zig, list.zig, map.zig, set.zig,
+// io.zig, optionals.zig, builtins.zig, expressions.zig, statements.zig, functions.zig
 
 /// Errors that can occur during code generation.
 pub const CodegenError = error{

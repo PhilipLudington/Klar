@@ -1,0 +1,27 @@
+// Test wrapping addition (+%)
+// Wrapping operator should wrap on overflow instead of trapping
+fn main() -> i32 {
+    // Wrap at i32 max: 2147483647 +% 1 wraps to i32 min
+    let max: i32 = 2147483647
+    let a: i32 = max +% 1
+    // i32 min is -2147483648, but we can't write that literal directly
+    // Instead check: result should be negative and equal to -(max) - 1
+    let expected_min: i32 = 0 -% max -% 1
+    if a != expected_min {
+        return 1
+    }
+
+    // Normal case: no wrapping needed
+    let c: i32 = 10 +% 20
+    if c != 30 {
+        return 3
+    }
+
+    // Negative wrap: min +% -1 wraps to max
+    let d: i32 = expected_min +% -1
+    if d != max {
+        return 4
+    }
+
+    return 0
+}

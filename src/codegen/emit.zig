@@ -4,27 +4,10 @@
 //!
 //! ## Module Organization
 //!
-//! The codegen package is organized into focused modules:
-//!
-//! | Module          | Purpose                                          |
-//! |-----------------|--------------------------------------------------|
-//! | emit.zig        | Main Emitter struct and orchestration            |
-//! | runtime.zig     | C library declarations, Rc/Arc runtime           |
-//! | generics.zig    | Monomorphization utilities                       |
-//! | types_emit.zig  | Type conversion (Klar -> LLVM)                   |
-//! | strings_emit.zig| String type and operations                       |
-//! | list.zig        | List[T] type and operations                      |
-//! | map.zig         | Map[K,V] type and operations                     |
-//! | set.zig         | Set[T] type and operations                       |
-//! | io.zig          | File, Path, BufReader, BufWriter, Fs             |
-//! | optionals.zig   | Optional[T] and Result[T,E] types                |
-//! | builtins.zig    | Built-in functions (print, panic, assert, etc.)  |
-//! | expressions.zig | Expression emission                              |
-//! | statements.zig  | Statement and control flow emission              |
-//! | functions.zig   | Function and closure emission                    |
-//!
-//! The main Emitter struct and implementation remain in this file.
-//! The supporting modules provide documentation and utility functions.
+//! The main Emitter struct and all implementation code reside in this file.
+//! Documentation-only modules provide reference guides for specific subsystems:
+//! generics.zig, types_emit.zig, strings_emit.zig, list.zig, map.zig, set.zig,
+//! io.zig, optionals.zig, builtins.zig, expressions.zig, statements.zig, functions.zig
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -32,26 +15,24 @@ const version = @import("../version.zig");
 const Allocator = std.mem.Allocator;
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
-const checker_mod = @import("../checker.zig");
+const checker_mod = @import("../checker/mod.zig");
 const TypeChecker = checker_mod.TypeChecker;
+
+// Type definitions from checker submodules
+const MonomorphizedFunction = checker_mod.MonomorphizedFunction;
+const MonomorphizedStruct = checker_mod.MonomorphizedStruct;
+const MonomorphizedEnum = checker_mod.MonomorphizedEnum;
+const MonomorphizedMethod = checker_mod.MonomorphizedMethod;
+const StructMethod = checker_mod.StructMethod;
+const ComptimeValue = checker_mod.ComptimeValue;
+const RepeatInfo = checker_mod.RepeatInfo;
 const llvm = @import("llvm.zig");
 const target = @import("target.zig");
 const layout = @import("layout.zig");
 
-// Supporting modules with utilities and documentation
-const runtime = @import("runtime.zig");
-pub const generics = @import("generics.zig");
-pub const types_emit = @import("types_emit.zig");
-pub const strings_emit = @import("strings_emit.zig");
-pub const list = @import("list.zig");
-pub const map = @import("map.zig");
-pub const set = @import("set.zig");
-pub const io = @import("io.zig");
-pub const optionals = @import("optionals.zig");
-pub const builtins = @import("builtins.zig");
-pub const expressions = @import("expressions.zig");
-pub const statements = @import("statements.zig");
-pub const functions = @import("functions.zig");
+// Supporting documentation modules (pure doc comments, see each file for details):
+// generics.zig, types_emit.zig, strings_emit.zig, list.zig, map.zig, set.zig,
+// io.zig, optionals.zig, builtins.zig, expressions.zig, statements.zig, functions.zig
 
 // ==================== Platform-Specific Struct Offsets ====================
 // Use @cImport to get correct struct layouts from system headers.
@@ -390,17 +371,6 @@ pub const Emitter = struct {
             .sret_attr_kind = null,
             .sret_functions = std.StringHashMap(llvm.TypeRef).init(allocator),
             .extern_functions = std.StringHashMap(ExternFnInfo).init(allocator),
-        };
-    }
-
-    /// Create a RuntimeContext for calling runtime module functions.
-    /// The context references the emitter's LLVM state without owning it.
-    pub fn getRuntimeContext(self: *Emitter) runtime.RuntimeContext {
-        return .{
-            .ctx = self.ctx,
-            .module = self.module,
-            .builder = self.builder,
-            .platform = self.platform,
         };
     }
 
@@ -3363,6 +3333,34 @@ pub const Emitter = struct {
         return kind == llvm.c.LLVMIntegerTypeKind;
     }
 
+    /// Determine if an expression produces a signed integer type.
+    /// Used by overflow checking to select signed vs unsigned LLVM intrinsics.
+    /// Checks identifiers via named_values, type casts via target type,
+    /// and defaults to signed for literals and other expressions.
+    fn isExprSigned(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    return local.is_signed;
+                }
+                return true;
+            },
+            .type_cast => |tc| {
+                return self.isTypeSigned(tc.target_type);
+            },
+            .grouped => |g| {
+                return self.isExprSigned(g.expr);
+            },
+            .unary => |u| {
+                return self.isExprSigned(u.operand);
+            },
+            .binary => |b| {
+                return self.isExprSigned(b.left);
+            },
+            else => return true, // Literals and other expressions default to signed
+        }
+    }
+
     fn emitInfiniteLoop(self: *Emitter, loop: *ast.LoopStmt) EmitError!void {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
@@ -3637,6 +3635,9 @@ pub const Emitter = struct {
             rhs_str_ptr = self.extractStringPtr(rhs);
         }
 
+        // Determine signedness from the left operand's Klar type
+        const is_signed = self.isExprSigned(bin.left);
+
         return switch (bin.op) {
             // Standard arithmetic (with overflow checking for integers)
             .add => if (is_float)
@@ -3644,23 +3645,27 @@ pub const Emitter = struct {
             else if (is_string)
                 try self.emitStringConcatLiteral(lhs_str_ptr, rhs_str_ptr)
             else
-                self.emitCheckedAdd(lhs, rhs, true),
+                self.emitCheckedAdd(lhs, rhs, is_signed),
             .sub => if (is_float)
                 self.builder.buildFSub(lhs, rhs, "fsubtmp")
             else
-                self.emitCheckedSub(lhs, rhs, true),
+                self.emitCheckedSub(lhs, rhs, is_signed),
             .mul => if (is_float)
                 self.builder.buildFMul(lhs, rhs, "fmultmp")
             else
-                self.emitCheckedMul(lhs, rhs, true),
+                self.emitCheckedMul(lhs, rhs, is_signed),
             .div => if (is_float)
                 self.builder.buildFDiv(lhs, rhs, "fdivtmp")
+            else if (is_signed)
+                self.builder.buildSDiv(lhs, rhs, "divtmp")
             else
-                self.builder.buildSDiv(lhs, rhs, "divtmp"),
+                self.builder.buildUDiv(lhs, rhs, "udivtmp"),
             .mod => if (is_float)
                 self.builder.buildFRem(lhs, rhs, "fremtmp")
+            else if (is_signed)
+                self.builder.buildSRem(lhs, rhs, "modtmp")
             else
-                self.builder.buildSRem(lhs, rhs, "modtmp"),
+                self.builder.buildURem(lhs, rhs, "umodtmp"),
 
             // Wrapping arithmetic (no overflow check, wraps around)
             .add_wrap => self.builder.buildAdd(lhs, rhs, "addwrap"),
@@ -3668,9 +3673,9 @@ pub const Emitter = struct {
             .mul_wrap => self.builder.buildMul(lhs, rhs, "mulwrap"),
 
             // Saturating arithmetic
-            .add_sat => self.emitSaturatingAdd(lhs, rhs, true),
-            .sub_sat => self.emitSaturatingSub(lhs, rhs, true),
-            .mul_sat => self.emitSaturatingMul(lhs, rhs, true),
+            .add_sat => self.emitSaturatingAdd(lhs, rhs, is_signed),
+            .sub_sat => self.emitSaturatingSub(lhs, rhs, is_signed),
+            .mul_sat => self.emitSaturatingMul(lhs, rhs, is_signed),
 
             // Comparison - use appropriate type
             .eq => if (is_float)
@@ -3688,26 +3693,26 @@ pub const Emitter = struct {
             .lt => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOLT, lhs, rhs, "flttmp")
             else
-                self.builder.buildICmp(llvm.c.LLVMIntSLT, lhs, rhs, "lttmp"),
+                self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSLT else llvm.c.LLVMIntULT, lhs, rhs, "lttmp"),
             .gt => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOGT, lhs, rhs, "fgttmp")
             else
-                self.builder.buildICmp(llvm.c.LLVMIntSGT, lhs, rhs, "gttmp"),
+                self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSGT else llvm.c.LLVMIntUGT, lhs, rhs, "gttmp"),
             .lt_eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOLE, lhs, rhs, "fletmp")
             else
-                self.builder.buildICmp(llvm.c.LLVMIntSLE, lhs, rhs, "letmp"),
+                self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSLE else llvm.c.LLVMIntULE, lhs, rhs, "letmp"),
             .gt_eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOGE, lhs, rhs, "fgetmp")
             else
-                self.builder.buildICmp(llvm.c.LLVMIntSGE, lhs, rhs, "getmp"),
+                self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSGE else llvm.c.LLVMIntUGE, lhs, rhs, "getmp"),
 
             // Bitwise
             .bit_and => self.builder.buildAnd(lhs, rhs, "andtmp"),
             .bit_or => self.builder.buildOr(lhs, rhs, "ortmp"),
             .bit_xor => self.builder.buildXor(lhs, rhs, "xortmp"),
             .shl => self.builder.buildShl(lhs, rhs, "shltmp"),
-            .shr => self.builder.buildAShr(lhs, rhs, "shrtmp"),
+            .shr => if (is_signed) self.builder.buildAShr(lhs, rhs, "shrtmp") else self.builder.buildLShr(lhs, rhs, "lshrtmp"),
 
             else => llvm.Const.int32(self.ctx, 0), // Placeholder
         };
@@ -4509,21 +4514,8 @@ pub const Emitter = struct {
     }
 
     fn isSignedIntType(self: *Emitter, expr: ast.Expr) bool {
-        _ = self;
-        // Try to determine signedness from expression
-        // For literals, check if the value is negative
-        if (expr == .literal) {
-            const lit = expr.literal;
-            if (lit.kind == .int) {
-                // Negative values are definitely signed
-                if (lit.kind.int < 0) return true;
-                // Default: integers are signed (i32) in Klar
-                return true;
-            }
-        }
-        // For identifiers, we'd need type info from the checker
-        // Default to signed for safety (i32 is the default int type)
-        return true;
+        // Use isExprSigned which checks named_values for proper signedness
+        return self.isExprSigned(expr);
     }
 
     /// Infer the type that results from dereferencing an expression.
@@ -9192,7 +9184,7 @@ pub const Emitter = struct {
         self: *Emitter,
         lit: *ast.EnumLiteral,
         struct_name: []const u8,
-        _: TypeChecker.StructMethod, // struct_method - unused but kept for potential future use
+        _: StructMethod, // struct_method - unused but kept for potential future use
     ) EmitError!llvm.ValueRef {
         // Build the function name: StructName_methodName
         var fn_name_buf = std.ArrayListUnmanaged(u8){};
@@ -10632,9 +10624,7 @@ pub const Emitter = struct {
             }
         }
 
-        // For other methods, fall back to a placeholder for now
-        // (User-defined struct methods are checked earlier, before Cell methods)
-        // TODO: Implement remaining method types
+        // Fallback for unrecognized methods - type checker should have caught errors
         return llvm.Const.int32(self.ctx, 0);
     }
 
@@ -10683,7 +10673,7 @@ pub const Emitter = struct {
         method: *ast.MethodCall,
         object: llvm.ValueRef,
         struct_name: []const u8,
-        struct_method: TypeChecker.StructMethod,
+        struct_method: StructMethod,
     ) EmitError!llvm.ValueRef {
         // Determine the mangled function name
         // For generic structs, the struct_name already contains the monomorphization (e.g., "Pair$i32$i32")
@@ -11187,6 +11177,31 @@ pub const Emitter = struct {
         const lifted_fn = llvm.addFunction(self.module, fn_name, fn_type);
         llvm.setFunctionCallConv(lifted_fn, self.calling_convention.toLLVM());
 
+        // Compute capture metadata BEFORE switching named_values (while we have access
+        // to the original variable types and metadata). This ensures:
+        // 1. Consistency between the env struct built here and in createClosureEnvironment
+        // 2. Method resolution works correctly (is_string, struct_type_name, etc.)
+        var capture_local_values: [32]LocalValue = undefined;
+        var num_captures: usize = 0;
+        if (closure.captures) |captures| {
+            if (captures.len > 32) return EmitError.OutOfMemory;
+            num_captures = captures.len;
+            for (captures, 0..) |capture, i| {
+                if (self.named_values.get(capture.name)) |local| {
+                    // Copy the full LocalValue metadata (except value pointer which changes)
+                    capture_local_values[i] = local;
+                } else {
+                    // Fallback with minimal info
+                    capture_local_values[i] = .{
+                        .value = undefined, // Will be set later
+                        .is_alloca = true,
+                        .ty = try self.typeExprToLLVM(capture.type_expr),
+                        .is_signed = self.isTypeExprSigned(capture.type_expr),
+                    };
+                }
+            }
+        }
+
         // Save current state before emitting the lifted function body
         const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
         const saved_func = self.current_function;
@@ -11249,14 +11264,14 @@ pub const Emitter = struct {
 
         // Load captured variables from environment and add to named_values.
         // The environment is a heap-allocated struct with values stored directly (not pointers).
+        // Use the pre-computed LocalValue metadata (computed before named_values was switched).
         if (closure.captures) |captures| {
-            // Build the environment struct type (must match what createClosureEnvironment built).
-            // For now, assume all captures are i32. TODO: pass type info through AST.
+            // Build the environment struct type using pre-computed actual types
             var field_types: [32]llvm.TypeRef = undefined;
-            for (0..captures.len) |i| {
-                field_types[i] = llvm.Types.int32(self.ctx);
+            for (0..num_captures) |i| {
+                field_types[i] = capture_local_values[i].ty;
             }
-            const env_struct_type = llvm.Types.struct_(self.ctx, field_types[0..captures.len], false);
+            const env_struct_type = llvm.Types.struct_(self.ctx, field_types[0..num_captures], false);
 
             for (captures, 0..) |capture, i| {
                 // GEP to get pointer to the value field in the env struct
@@ -11272,18 +11287,17 @@ pub const Emitter = struct {
                 );
 
                 // Load the value from the env struct into a local alloca
-                const cap_ty = llvm.Types.int32(self.ctx);
+                const cap_ty = capture_local_values[i].ty;
                 const local_alloca = self.builder.buildAlloca(cap_ty, "cap.local");
                 const cap_value = self.builder.buildLoad(cap_ty, field_ptr, "cap.value");
                 _ = self.builder.buildStore(cap_value, local_alloca);
 
-                // Store the alloca as the named value (will be loaded when accessed)
-                self.named_values.put(capture.name, .{
-                    .value = local_alloca,
-                    .is_alloca = true,
-                    .ty = cap_ty,
-                    .is_signed = true,
-                }) catch return EmitError.OutOfMemory;
+                // Copy the full LocalValue with updated value pointer
+                var local_value = capture_local_values[i];
+                local_value.value = local_alloca;
+                local_value.is_alloca = true;
+
+                self.named_values.put(capture.name, local_value) catch return EmitError.OutOfMemory;
             }
         }
 
@@ -11365,27 +11379,32 @@ pub const Emitter = struct {
 
         // Build a struct type containing all captured values (by value, not by pointer).
         // This allows closures to be returned from functions without dangling pointers.
+        // Use the actual LLVM types from named_values (which may differ from type expressions
+        // due to internal type coercions like string -> struct).
         var field_types: [32]llvm.TypeRef = undefined;
         if (captures_list.len > 32) return EmitError.OutOfMemory;
 
+        // First pass: collect the actual LLVM types from named_values
         for (captures_list, 0..) |capture, i| {
             if (self.named_values.get(capture.name)) |local| {
                 field_types[i] = local.ty;
             } else {
-                // Fallback to i32 if not found
-                field_types[i] = llvm.Types.int32(self.ctx);
+                // Fallback to type expression if not found
+                field_types[i] = try self.typeExprToLLVM(capture.type_expr);
             }
         }
 
         const env_struct_type = llvm.Types.struct_(self.ctx, field_types[0..captures_list.len], false);
 
-        // Calculate size of the struct: each i32 is 4 bytes, no padding needed for homogeneous structs
-        // TODO: Use proper target data layout when capturing non-i32 types
-        const size_of_env: u64 = captures_list.len * 4;
+        // Get the size of the struct using LLVM (handles alignment and padding correctly)
+        const size_of_env = llvm.c.LLVMSizeOf(env_struct_type);
 
         // Allocate on the heap using malloc
         const malloc_fn = self.getOrDeclareMalloc();
-        var malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, @intCast(size_of_env))};
+        // Cast the size constant to i64 for malloc
+        const i64_type = llvm.Types.int64(self.ctx);
+        const size_val = llvm.c.LLVMBuildIntCast2(self.builder.ref, size_of_env, i64_type, 0, "env.size");
+        var malloc_args = [_]llvm.ValueRef{size_val};
         const env_ptr = llvm.c.LLVMBuildCall2(
             self.builder.ref,
             llvm.c.LLVMGlobalGetValueType(malloc_fn),
@@ -11397,14 +11416,15 @@ pub const Emitter = struct {
 
         // Copy each captured value into the heap-allocated struct
         for (captures_list, 0..) |capture, i| {
-            if (self.named_values.get(capture.name)) |local| {
-                // GEP to the i-th field in the environment struct
-                var indices = [_]llvm.ValueRef{
-                    llvm.Const.int32(self.ctx, 0),
-                    llvm.Const.int32(self.ctx, @intCast(i)),
-                };
-                const field_ptr = self.builder.buildGEP(env_struct_type, env_ptr, &indices, "env.field");
+            // GEP to the i-th field in the environment struct
+            var indices = [_]llvm.ValueRef{
+                llvm.Const.int32(self.ctx, 0),
+                llvm.Const.int32(self.ctx, @intCast(i)),
+            };
+            const field_ptr = self.builder.buildGEP(env_struct_type, env_ptr, &indices, "env.field");
 
+            // Get the value from named_values (should exist in the current scope)
+            if (self.named_values.get(capture.name)) |local| {
                 // Load the value from the local variable and store it in the env
                 const value = self.builder.buildLoad(local.ty, local.value, "cap.load");
                 _ = self.builder.buildStore(value, field_ptr);
@@ -11420,8 +11440,13 @@ pub const Emitter = struct {
         _ = self;
         return switch (type_expr) {
             .named => |n| {
-                // Unsigned types
-                if (std.mem.startsWith(u8, n.name, "u")) return false;
+                // Check for exact unsigned type names
+                if (std.mem.eql(u8, n.name, "u8")) return false;
+                if (std.mem.eql(u8, n.name, "u16")) return false;
+                if (std.mem.eql(u8, n.name, "u32")) return false;
+                if (std.mem.eql(u8, n.name, "u64")) return false;
+                if (std.mem.eql(u8, n.name, "u128")) return false;
+                if (std.mem.eql(u8, n.name, "usize")) return false;
                 return true;
             },
             else => true,
@@ -12388,7 +12413,7 @@ pub const Emitter = struct {
     }
 
     /// Emit @repeat(value, count) as an array with the value repeated count times.
-    fn emitRepeat(self: *Emitter, repeat_info: TypeChecker.RepeatInfo) EmitError!llvm.ValueRef {
+    fn emitRepeat(self: *Emitter, repeat_info: RepeatInfo) EmitError!llvm.ValueRef {
         const element_llvm_type = self.typeToLLVM(repeat_info.element_type);
         const array_type = llvm.Types.array(element_llvm_type, repeat_info.count);
 
@@ -12431,7 +12456,7 @@ pub const Emitter = struct {
 
     /// Emit @repeat directly into a destination pointer, avoiding intermediate load/store.
     /// This is used for large arrays to avoid stack overflow from loading entire arrays as values.
-    fn emitRepeatInto(self: *Emitter, repeat_info: TypeChecker.RepeatInfo, dest_ptr: llvm.ValueRef) EmitError!void {
+    fn emitRepeatInto(self: *Emitter, repeat_info: RepeatInfo, dest_ptr: llvm.ValueRef) EmitError!void {
         const element_llvm_type = self.typeToLLVM(repeat_info.element_type);
         const array_type = llvm.Types.array(element_llvm_type, repeat_info.count);
 
@@ -12468,7 +12493,7 @@ pub const Emitter = struct {
 
     /// Check if an expression is a large @repeat that should use direct initialization.
     /// Returns the RepeatInfo if it's a large array (> 4096 bytes for byte types), null otherwise.
-    fn tryGetLargeRepeatInfo(self: *Emitter, expr: ast.Expr) ?TypeChecker.RepeatInfo {
+    fn tryGetLargeRepeatInfo(self: *Emitter, expr: ast.Expr) ?RepeatInfo {
         // Check if it's a builtin call
         if (expr != .builtin_call) return null;
         const bc = expr.builtin_call;
@@ -12692,7 +12717,7 @@ pub const Emitter = struct {
     }
 
     /// Emit a ComptimeValue as an LLVM constant.
-    fn emitComptimeValue(self: *Emitter, comptime_value: TypeChecker.ComptimeValue) EmitError!llvm.ValueRef {
+    fn emitComptimeValue(self: *Emitter, comptime_value: ComptimeValue) EmitError!llvm.ValueRef {
         return switch (comptime_value) {
             .int => |i| if (i.is_i32)
                 llvm.Const.int32(self.ctx, @intCast(i.value))
@@ -24932,15 +24957,8 @@ pub const Emitter = struct {
             break :blk self.builder.buildLoad(elem_llvm_type, elem_ptr, "elem");
         };
 
-        // Compare with value
-        const is_eq = if (element_type.isInteger() or element_type == .primitive and element_type.primitive == .bool_)
-            self.builder.buildICmp(llvm.c.LLVMIntEQ, elem_val, value, "is_eq")
-        else if (element_type.isFloat())
-            self.builder.buildFCmp(llvm.c.LLVMRealOEQ, elem_val, value, "is_eq")
-        else
-            // For other types (strings, structs), use pointer comparison for now
-            // TODO: Use proper equality
-            self.builder.buildICmp(llvm.c.LLVMIntEQ, elem_val, value, "is_eq");
+        // Compare with value using proper equality for all types
+        const is_eq = try self.emitEqComparison(elem_val, value, element_type);
 
         _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_eq, found_bb, loop_inc_bb);
 
@@ -24962,8 +24980,8 @@ pub const Emitter = struct {
     }
 
     /// Declare or get the klar_string_chars runtime function.
-    /// This function treats each byte as a character (ASCII-only for now).
-    /// TODO: Implement proper UTF-8 decoding.
+    /// This function treats each byte as a character.
+    /// Note: ASCII-only; proper UTF-8 decoding is a future enhancement.
     fn getOrDeclareStringChars(self: *Emitter) llvm.ValueRef {
         const fn_name = "klar_string_chars";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
@@ -27650,9 +27668,8 @@ pub const Emitter = struct {
                     );
                 }
 
-                // Function not found, try to emit it
+                // Function not found - default methods emitted during trait impl processing
                 _ = default_method;
-                // TODO: emit the user-defined default method if not already emitted
             }
         }
 
@@ -28936,7 +28953,7 @@ pub const Emitter = struct {
     }
 
     /// Register a single monomorphized struct type.
-    fn registerMonomorphizedStruct(self: *Emitter, mono: TypeChecker.MonomorphizedStruct) EmitError!void {
+    fn registerMonomorphizedStruct(self: *Emitter, mono: MonomorphizedStruct) EmitError!void {
         // Skip if already registered
         if (self.struct_types.contains(mono.mangled_name)) {
             return;
@@ -28987,7 +29004,7 @@ pub const Emitter = struct {
 
     /// Register a single monomorphized enum type.
     /// Enums are represented as tagged unions: {tag: i8, payload_union}
-    fn registerMonomorphizedEnum(self: *Emitter, mono: TypeChecker.MonomorphizedEnum) EmitError!void {
+    fn registerMonomorphizedEnum(self: *Emitter, mono: MonomorphizedEnum) EmitError!void {
         // Skip if already registered (uses struct_types map since enum codegen
         // will reuse struct infrastructure for tagged unions)
         if (self.struct_types.contains(mono.mangled_name)) {
@@ -29237,7 +29254,7 @@ pub const Emitter = struct {
     }
 
     /// Declare a monomorphized function without emitting its body.
-    fn declareMonomorphizedFunction(self: *Emitter, mono: TypeChecker.MonomorphizedFunction) EmitError!void {
+    fn declareMonomorphizedFunction(self: *Emitter, mono: MonomorphizedFunction) EmitError!void {
         const func_type = mono.concrete_type.function;
 
         // Check if return type requires sret calling convention
@@ -29286,7 +29303,7 @@ pub const Emitter = struct {
     }
 
     /// Emit a monomorphized function body.
-    fn emitMonomorphizedFunction(self: *Emitter, mono: TypeChecker.MonomorphizedFunction) EmitError!void {
+    fn emitMonomorphizedFunction(self: *Emitter, mono: MonomorphizedFunction) EmitError!void {
         const func = mono.original_decl;
         const func_type = mono.concrete_type.function;
 
@@ -29444,7 +29461,7 @@ pub const Emitter = struct {
     }
 
     /// Declare a monomorphized method without emitting its body.
-    fn declareMonomorphizedMethod(self: *Emitter, mono: TypeChecker.MonomorphizedMethod) EmitError!void {
+    fn declareMonomorphizedMethod(self: *Emitter, mono: MonomorphizedMethod) EmitError!void {
         const func_type = mono.concrete_type.function;
 
         // Build parameter types from the concrete function type
@@ -29473,7 +29490,7 @@ pub const Emitter = struct {
     }
 
     /// Emit a monomorphized method body.
-    fn emitMonomorphizedMethod(self: *Emitter, mono: TypeChecker.MonomorphizedMethod) EmitError!void {
+    fn emitMonomorphizedMethod(self: *Emitter, mono: MonomorphizedMethod) EmitError!void {
         const func = mono.original_decl;
         const func_type = mono.concrete_type.function;
 
