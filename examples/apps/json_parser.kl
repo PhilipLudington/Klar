@@ -37,15 +37,23 @@ enum JsonError {
 }
 
 // ============================================================================
+// ASCII Reference
+// ============================================================================
+// Tab=9  LF=10  CR=13  Space=32  "=34  +=43  ,=44  -=45  .=46  /=47
+// 0=48  9=57  :=58  E=69  [=91  \=92  ]=93
+// a=97  b=98  e=101  f=102  l=108  n=110  r=114  s=115  t=116  u=117
+// {=123  }=125
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
 fn is_whitespace(code: i32) -> bool {
-    return code == 32 or code == 9 or code == 10 or code == 13
+    return code == 32 or code == 9 or code == 10 or code == 13  // space, tab, LF, CR
 }
 
 fn is_digit(code: i32) -> bool {
-    return code >= 48 and code <= 57
+    return code >= 48 and code <= 57  // '0'..'9'
 }
 
 fn skip_ws(chars: [char], pos: i32, len: i32) -> i32 {
@@ -92,33 +100,26 @@ fn parse_value(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), Js
     }
     
     let code: i32 = chars[p].as[i32]
-    
-    // null (n = 110)
-    if code == 110 {
+
+    if code == 110 {            // 'n' -> null
         return parse_null(chars, p, len)
     }
-    // true (t = 116)
-    if code == 116 {
+    if code == 116 {            // 't' -> true
         return parse_true(chars, p, len)
     }
-    // false (f = 102)
-    if code == 102 {
+    if code == 102 {            // 'f' -> false
         return parse_false(chars, p, len)
     }
-    // string (" = 34)
-    if code == 34 {
+    if code == 34 {             // '"' -> string
         return parse_string(chars, p, len)
     }
-    // array ([ = 91)
-    if code == 91 {
+    if code == 91 {             // '[' -> array
         return parse_array(chars, p, len)
     }
-    // object ({ = 123)
-    if code == 123 {
+    if code == 123 {            // '{' -> object
         return parse_object(chars, p, len)
     }
-    // number (- = 45 or digit)
-    if code == 45 or is_digit(code) {
+    if code == 45 or is_digit(code) {  // '-' or digit -> number
         return parse_number(chars, p, len)
     }
     
@@ -130,8 +131,8 @@ fn parse_null(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), Jso
     if pos + 4 > len {
         return Err(JsonError::UnexpectedEnd)
     }
-    // n=110, u=117, l=108, l=108
-    if chars[pos].as[i32] == 110 and chars[pos+1].as[i32] == 117 and 
+    // n=110, u=117, l=108
+    if chars[pos].as[i32] == 110 and chars[pos+1].as[i32] == 117 and
        chars[pos+2].as[i32] == 108 and chars[pos+3].as[i32] == 108 {
         return Ok((JsonValue::Null, pos + 4))
     }
@@ -179,34 +180,25 @@ fn parse_string_raw(chars: [char], pos: i32, len: i32) -> Result[(string, i32), 
     while p < len {
         let code: i32 = chars[p].as[i32]
         
-        // End of string (")
-        if code == 34 {
+        if code == 34 {             // '"' end of string
             return Ok((result.as_str(), p + 1))
         }
-        
-        // Escape sequence (\)
-        if code == 92 {
+
+        if code == 92 {             // '\' escape sequence
             p = p + 1
             if p >= len {
                 return Err(JsonError::UnexpectedEnd)
             }
             let esc: i32 = chars[p].as[i32]
-            // " = 34
-            if esc == 34 { result.push('"') }
-            // \ = 92
-            else if esc == 92 { result.push(92.as[char]) }
-            // / = 47
-            else if esc == 47 { result.push('/') }
-            // b = 98 -> backspace
-            else if esc == 98 { result.push(8.as[char]) }
-            // f = 102 -> form feed
-            else if esc == 102 { result.push(12.as[char]) }
-            // n = 110 -> newline
-            else if esc == 110 { result.push(10.as[char]) }
-            // r = 114 -> carriage return
-            else if esc == 114 { result.push(13.as[char]) }
-            // t = 116 -> tab
-            else if esc == 116 { result.push(9.as[char]) }
+            // Note: \uXXXX unicode escapes are not supported
+            if esc == 34 { result.push('"') }           // \"
+            else if esc == 92 { result.push(92.as[char]) }  // \\
+            else if esc == 47 { result.push('/') }       // \/
+            else if esc == 98 { result.push(8.as[char]) }   // \b -> backspace
+            else if esc == 102 { result.push(12.as[char]) } // \f -> form feed
+            else if esc == 110 { result.push(10.as[char]) } // \n -> newline
+            else if esc == 114 { result.push(13.as[char]) } // \r -> carriage return
+            else if esc == 116 { result.push(9.as[char]) }  // \t -> tab
             else { return Err(JsonError::InvalidEscape) }
             p = p + 1
         } else {
@@ -223,8 +215,7 @@ fn parse_number(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), J
     var p: i32 = pos
     var negative: bool = false
     
-    // Handle minus sign
-    if p < len and chars[p].as[i32] == 45 {
+    if p < len and chars[p].as[i32] == 45 {  // '-'
         negative = true
         p = p + 1
     }
@@ -313,24 +304,23 @@ fn parse_array(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), Js
     
     p = skip_ws(chars, p, len)
     
-    // Empty array
     if p < len and chars[p].as[i32] == 93 {  // ']'
         return Ok((JsonValue::Array(elements), p + 1))
     }
-    
+
     // Parse first element
     let first: (JsonValue, i32) = parse_value(chars, p, len)?
     elements.push(first.0)
     p = first.1
     p = skip_ws(chars, p, len)
-    
+
     // Parse remaining elements
     while p < len {
         let c: i32 = chars[p].as[i32]
-        if c == 93 {  // ']'
+        if c == 93 {            // ']'
             return Ok((JsonValue::Array(elements), p + 1))
         }
-        if c != 44 {  // not ','
+        if c != 44 {            // ','
             return Err(JsonError::ExpectedComma)
         }
         p = p + 1
@@ -351,36 +341,21 @@ fn parse_object(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), J
     
     p = skip_ws(chars, p, len)
     
-    // Empty object
     if p < len and chars[p].as[i32] == 125 {  // '}'
         return Ok((JsonValue::Object(entries), p + 1))
     }
-    
-    // Parse first key-value
-    let key1: (string, i32) = parse_string_raw(chars, p, len)?
-    p = key1.1
-    p = skip_ws(chars, p, len)
-    if p >= len or chars[p].as[i32] != 58 {  // ':'
-        return Err(JsonError::ExpectedColon)
-    }
-    p = p + 1
-    p = skip_ws(chars, p, len)
-    let val1: (JsonValue, i32) = parse_value(chars, p, len)?
-    entries.insert(key1.0, val1.0)
-    p = val1.1
-    p = skip_ws(chars, p, len)
-    
-    // Parse remaining pairs
+
+    var first: bool = true
     while p < len {
-        let c: i32 = chars[p].as[i32]
-        if c == 125 {  // '}'
-            return Ok((JsonValue::Object(entries), p + 1))
+        if not first {
+            if chars[p].as[i32] != 44 {  // ','
+                return Err(JsonError::ExpectedComma)
+            }
+            p = p + 1
+            p = skip_ws(chars, p, len)
         }
-        if c != 44 {  // not ','
-            return Err(JsonError::ExpectedComma)
-        }
-        p = p + 1
-        p = skip_ws(chars, p, len)
+        first = false
+
         let key: (string, i32) = parse_string_raw(chars, p, len)?
         p = key.1
         p = skip_ws(chars, p, len)
@@ -393,16 +368,20 @@ fn parse_object(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), J
         entries.insert(key.0, val.0)
         p = val.1
         p = skip_ws(chars, p, len)
+
+        if p < len and chars[p].as[i32] == 125 {  // '}'
+            return Ok((JsonValue::Object(entries), p + 1))
+        }
     }
-    
+
     return Err(JsonError::UnexpectedEnd)
 }
 
 // ============================================================================
-// Helper function to show parse result type
+// Display Helpers
 // ============================================================================
 
-fn describe_value(value: JsonValue) -> string {
+fn value_kind(value: JsonValue) -> string {
     var desc: string = ""
     match value {
         JsonValue.Null => { desc = "null" }
@@ -414,9 +393,9 @@ fn describe_value(value: JsonValue) -> string {
             }
         }
         JsonValue.Number(_) => { desc = "number" }
-        JsonValue.Str(s) => { desc = "string" }
-        JsonValue.Array(arr) => { desc = "array" }
-        JsonValue.Object(obj) => { desc = "object" }
+        JsonValue.Str(s) => { desc = "string(\"" + s + "\")" }
+        JsonValue.Array(_) => { desc = "array" }
+        JsonValue.Object(_) => { desc = "object" }
     }
     return desc
 }
@@ -457,7 +436,16 @@ fn main() -> i32 {
     println("4. Nested structures:")
     test_parse("{\"arr\": [1, 2]}")
     println("")
-    
+
+    // Test 5: Error cases
+    println("5. Error handling:")
+    test_parse("")
+    test_parse("[1,")
+    test_parse("{\"a\"}")
+    test_parse("nope")
+    test_parse("123abc")
+    println("")
+
     println("=== Features Demonstrated ===")
     println("- Recursive enum (JsonValue)")  
     println("- Generic collections (List[T], Map[K,V])")
@@ -469,19 +457,36 @@ fn main() -> i32 {
     return 0
 }
 
+fn error_name(err: JsonError) -> string {
+    var name: string = ""
+    match err {
+        JsonError.UnexpectedEnd => { name = "UnexpectedEnd" }
+        JsonError.UnexpectedChar => { name = "UnexpectedChar" }
+        JsonError.InvalidNumber => { name = "InvalidNumber" }
+        JsonError.InvalidEscape => { name = "InvalidEscape" }
+        JsonError.ExpectedColon => { name = "ExpectedColon" }
+        JsonError.ExpectedComma => { name = "ExpectedComma" }
+        JsonError.ExpectedValue => { name = "ExpectedValue" }
+        JsonError.TrailingContent => { name = "TrailingContent" }
+    }
+    return name
+}
+
 fn test_parse(input: string) {
     let result: Result[JsonValue, JsonError] = parse_json(input)
     match result {
         Ok(v) => {
-            let desc: string = describe_value(v)
+            let desc: string = value_kind(v)
             print("  '")
             print(input)
             print("' -> ")
             println(desc)
         }
-        Err(_) => {
-            print("  ERROR: ")
-            println(input)
+        Err(e) => {
+            print("  '")
+            print(input)
+            print("' -> ERROR: ")
+            println(error_name(e))
         }
     }
 }
