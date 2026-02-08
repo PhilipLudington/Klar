@@ -25,10 +25,10 @@ cd Klar
 ./run-tests.sh
 
 # Run native compilation tests
-./run-native-tests.sh
+./scripts/run-native-tests.sh
 
 # Run benchmarks
-./run-benchmarks.sh
+./scripts/run-benchmarks.sh
 ```
 
 ## How to Contribute
@@ -123,9 +123,15 @@ Klar/
 ### Compilation Pipeline
 
 ```
-Source (.kl) → Lexer → Parser → Type Checker → LLVM IR → Native Binary
+Source (.kl) → Lexer → Parser → Type Checker → [Backend]
                                      ↓
-                              Bytecode VM (alternative backend)
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+         Interpreter          Bytecode VM            LLVM Codegen
+         (--interpret)          (default)                  ↓
+              │                    │                 Native Binary
+              ↓                    ↓
+           Output               Output
 ```
 
 ### Key Source Files
@@ -137,7 +143,8 @@ Source (.kl) → Lexer → Parser → Type Checker → LLVM IR → Native Binary
 | `src/parser.zig` | Syntax parsing |
 | `src/checker.zig` | Type checking |
 | `src/codegen/` | Code generation (LLVM) |
-| `src/vm/` | Bytecode virtual machine |
+| `src/vm.zig` | Bytecode virtual machine |
+| `src/interpreter.zig` | Tree-walking interpreter |
 
 ## Documentation Contributions
 
