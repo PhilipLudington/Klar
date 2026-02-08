@@ -21,7 +21,7 @@ When contributing, ask: "Would this help an AI agent write correct code?"
 - **LLVM 17+** — Required for native code generation
 - **Git** — For version control
 
-### Building
+### Building from Source
 
 ```bash
 git clone https://github.com/PhilipLudington/Klar.git
@@ -40,7 +40,48 @@ cd Klar
 ./scripts/run-native-tests.sh    # Native compilation tests
 ./scripts/run-app-tests.sh       # Reference application tests
 ./scripts/run-module-tests.sh    # Module system tests
+
+# Run benchmarks
+./scripts/run-benchmarks.sh
 ```
+
+## How to Contribute
+
+### Reporting Bugs
+
+Before submitting a bug report:
+
+1. Check existing issues to avoid duplicates
+2. Use the latest version from `main`
+3. Create a minimal reproduction case
+
+When reporting:
+
+- Describe the expected vs actual behavior
+- Include the Klar code that triggers the bug
+- Provide compiler output/error messages
+- List your environment (OS, Zig version, LLVM version)
+
+See [BUG.md](BUG.md) for examples of well-documented bugs.
+
+### Suggesting Features
+
+Feature suggestions are welcome! Please:
+
+1. Check the [ROADMAP.md](ROADMAP.md) to see if it's already planned
+2. Explain the use case and motivation
+3. Consider how it fits Klar's design philosophy (see [DESIGN.md](DESIGN.md))
+
+### Code Contributions
+
+1. **Fork** the repository
+2. **Create a branch** for your changes:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+3. **Make your changes** following the code style below
+4. **Test** your changes thoroughly
+5. **Submit a pull request** against `main`
 
 ## Development Workflow
 
@@ -72,17 +113,19 @@ fix(codegen): correct tuple field access alignment
 docs(readme): update installation instructions
 ```
 
-### Pull Request Process
+### Pull Request Guidelines
 
-1. **Create a branch** from `main`
-2. **Make changes** following the coding standards below
-3. **Run all tests** with `./run-tests.sh`
-4. **Update documentation** if adding/changing features
-5. **Submit PR** with a clear description
+- **Never push directly to main** — always use pull requests
+- Keep PRs focused on a single change
+- Include tests for new functionality
+- Update documentation as needed
+- PR titles should follow the same format as commit messages
 
-**PR titles** should follow the same format as commit messages.
+### Understanding the Codebase
 
-**Never push directly to main** — always use pull requests.
+1. Read [DESIGN.md](DESIGN.md) for language philosophy
+2. Read [PLAN.md](PLAN.md) for implementation details
+3. Explore `src/` starting with `main.zig`
 
 ## Coding Standards
 
@@ -119,6 +162,16 @@ fn main() -> i32 {
 }
 ```
 
+For error tests (expected to fail compilation):
+```klar
+// ERROR: expected error message substring
+
+fn main() -> i32 {
+    // Code that should fail
+    return 0
+}
+```
+
 ## Architecture Overview
 
 ```
@@ -143,6 +196,7 @@ Source (.kl) → Lexer → Parser → AST → Type Checker → [Backend]
 | `src/checker.zig` | Type checking, trait resolution |
 | `src/codegen/emit.zig` | LLVM IR generation |
 | `src/vm.zig` | Bytecode virtual machine |
+| `src/interpreter.zig` | Tree-walking interpreter |
 
 ### Adding Language Features
 
@@ -155,7 +209,28 @@ When adding a new language feature:
 5. **Tests**: Add comprehensive tests in `test/native/`
 6. **Documentation**: Update relevant docs in `docs/`
 
-## Documentation
+## Project Structure
+
+```
+Klar/
+├── src/           # Compiler source code (Zig)
+├── std/           # Standard library (Klar)
+├── examples/      # Example programs
+├── test/          # Test files
+├── benchmarks/    # Performance benchmarks
+├── docs/          # Documentation
+├── scripts/       # Build and utility scripts
+└── carbide/       # Carbide integration
+```
+
+## Documentation Contributions
+
+Documentation improvements are always welcome:
+
+- Fix typos and clarify confusing sections
+- Add examples for underdocumented features
+- Keep examples simple and focused
+- Update the table of contents when adding sections
 
 ### Where to Document
 
@@ -164,87 +239,18 @@ When adding a new language feature:
 - **Advanced topics**: `docs/advanced/`
 - **Getting started**: `docs/getting-started/`
 
-### Documentation Style
+## Questions?
 
-- Use clear, concise language
-- Include code examples for every concept
-- Test all code examples to ensure they work
-- Link to related documentation
+If you have questions about contributing:
 
-## Testing
+1. Check the existing documentation
+2. Look at similar PRs for guidance
+3. Open an issue for discussion
 
-### Writing Tests
+## Code of Conduct
 
-Tests go in `test/native/` organized by feature:
-
-```
-test/native/
-├── arrays/
-│   ├── basic.kl
-│   └── bounds.kl
-├── structs/
-│   ├── basic.kl
-│   └── methods.kl
-└── ...
-```
-
-### Test Conventions
-
-```klar
-// EXPECTED: expected output
-// or for multi-line:
-// EXPECTED:
-// line 1
-// line 2
-// END_EXPECTED
-
-fn main() -> i32 {
-    // Test code
-    return 0
-}
-```
-
-For error tests (expected to fail compilation):
-```klar
-// ERROR: expected error message substring
-
-fn main() -> i32 {
-    // Code that should fail
-    return 0
-}
-```
-
-## Reporting Issues
-
-When reporting bugs, include:
-
-1. **Minimal reproduction** — Smallest code that demonstrates the issue
-2. **Expected behavior** — What should happen
-3. **Actual behavior** — What actually happens
-4. **Environment** — OS, Zig version, LLVM version
-
-Use the template in BUG.md as a guide for formatting bug reports.
-
-## Feature Requests
-
-For feature requests:
-
-1. **Check PLAN.md** — The feature might be planned already
-2. **Explain the use case** — Why is this needed?
-3. **Consider AI impact** — Does it help or hinder AI code generation?
-4. **Propose syntax** — What would it look like?
-
-## Community
-
-- Be respectful and constructive
-- Help others learn
-- Ask questions if unsure
-- Follow the code of conduct
+Be respectful, constructive, and professional. We're all here to build something useful together.
 
 ## License
 
 By contributing, you agree that your contributions will be licensed under the MIT License.
-
----
-
-Thank you for contributing to Klar!
