@@ -132,6 +132,9 @@ pub const Emitter = struct {
     /// Cache of allocated mangled enum names (for cleanup).
     mangled_enum_names: std.ArrayListUnmanaged([]const u8),
 
+    /// Heap-allocated type objects from resolveTypeExprDirect (for cleanup).
+    resolved_type_allocs: std.ArrayListUnmanaged(ResolvedTypeAlloc),
+
     /// Sret (struct return) pointer for the current function.
     /// Set when the function uses sret calling convention for returning aggregates.
     current_sret_ptr: ?llvm.ValueRef,
@@ -156,6 +159,14 @@ pub const Emitter = struct {
     entry_point: ?[]const u8 = null,
 
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
+
+    /// Tracks heap allocations made by resolveTypeExprDirect for cleanup.
+    const ResolvedTypeAlloc = union(enum) {
+        optional_type: *types.Type,
+        result_type: *types.ResultType,
+        cptr_type: *types.CptrType,
+        copt_ptr_type: *types.CoptPtrType,
+    };
 
     /// Info for ABI-lowered parameter (struct -> integer conversion)
     const AbiLoweredParam = struct {
@@ -346,6 +357,7 @@ pub const Emitter = struct {
             .expected_type = null,
             .current_return_klar_type = null,
             .mangled_enum_names = .{},
+            .resolved_type_allocs = .{},
             .current_sret_ptr = null,
             .sret_attr_kind = null,
             .sret_functions = std.StringHashMap(llvm.TypeRef).init(allocator),
@@ -471,6 +483,16 @@ pub const Emitter = struct {
             self.allocator.free(name);
         }
         self.mangled_enum_names.deinit(self.allocator);
+        // Free heap-allocated type objects from resolveTypeExprDirect
+        for (self.resolved_type_allocs.items) |alloc| {
+            switch (alloc) {
+                .optional_type => |ptr| self.allocator.destroy(ptr),
+                .result_type => |ptr| self.allocator.destroy(ptr),
+                .cptr_type => |ptr| self.allocator.destroy(ptr),
+                .copt_ptr_type => |ptr| self.allocator.destroy(ptr),
+            }
+        }
+        self.resolved_type_allocs.deinit(self.allocator);
         // Free sret function name allocations
         var sret_it = self.sret_functions.keyIterator();
         while (sret_it.next()) |key| {
@@ -5936,6 +5958,7 @@ pub const Emitter = struct {
                 const inner = self.resolveTypeExprDirect(opt.inner) orelse return null;
                 const inner_ptr = self.allocator.create(types.Type) catch return null;
                 inner_ptr.* = inner;
+                self.resolved_type_allocs.append(self.allocator, .{ .optional_type = inner_ptr }) catch {};
                 return .{ .optional = inner_ptr };
             },
             .generic_apply => |g| {
@@ -5947,6 +5970,7 @@ pub const Emitter = struct {
                         const err_type = self.resolveTypeExprDirect(g.args[1]) orelse return null;
                         const result_ptr = self.allocator.create(types.ResultType) catch return null;
                         result_ptr.* = .{ .ok_type = ok_type, .err_type = err_type };
+                        self.resolved_type_allocs.append(self.allocator, .{ .result_type = result_ptr }) catch {};
                         return .{ .result = result_ptr };
                     }
                     // Check for CPtr[T]
@@ -5954,6 +5978,7 @@ pub const Emitter = struct {
                         const inner = self.resolveTypeExprDirect(g.args[0]) orelse return null;
                         const cptr_type = self.allocator.create(types.CptrType) catch return null;
                         cptr_type.* = .{ .inner = inner };
+                        self.resolved_type_allocs.append(self.allocator, .{ .cptr_type = cptr_type }) catch {};
                         return .{ .cptr = cptr_type };
                     }
                     // Check for COptPtr[T]
@@ -5961,6 +5986,7 @@ pub const Emitter = struct {
                         const inner = self.resolveTypeExprDirect(g.args[0]) orelse return null;
                         const copt_ptr_type = self.allocator.create(types.CoptPtrType) catch return null;
                         copt_ptr_type.* = .{ .inner = inner };
+                        self.resolved_type_allocs.append(self.allocator, .{ .copt_ptr_type = copt_ptr_type }) catch {};
                         return .{ .copt_ptr = copt_ptr_type };
                     }
                 }
