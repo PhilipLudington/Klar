@@ -53,6 +53,18 @@ Reference counting for shared ownership.
 
 **Features:** `Rc.new()`, `Arc.new()`, `.clone()`, automatic drop
 
+### Real-World Examples
+
+#### JSON Parser (`json_parser.kl`)
+A complete JSON parser demonstrating Klar's advanced features.
+
+**Features:** Recursive enums (`JsonValue`), generic collections (`List[T]`, `Map[K,V]`), 
+Result type error handling, `?` operator for error propagation, pattern matching, 
+character-level string processing
+
+This example parses JSON primitives (null, booleans, numbers, strings), arrays, 
+objects, and nested structures—showcasing how Klar handles real-world parsing tasks.
+
 ### Work in Progress
 
 #### Sort Visualization (`sort_viz.kl`)
@@ -84,4 +96,5 @@ Bubble sort with step-by-step visualization.
 | optional_demo.kl | ✓ | ✓ | |
 | result_demo.kl | ✓ | ✓ | |
 | rc_demo.kl | ✓ | ✓ | |
+| json_parser.kl | ✓ | ✓ | Recursive enums, generics |
 | sort_viz.kl | ✓ | ✗ | Needs array mutation |

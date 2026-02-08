@@ -1,0 +1,48 @@
+// Test wrapping arithmetic operators (related to Bug 1 regression test)
+// Wrapping operators use two's complement wrap-around on overflow.
+// expect: 0
+
+fn main() -> i32 {
+    let max: i32 = 2147483647
+
+    // Wrapping addition: max + 1 wraps to min (-2147483648)
+    let wrap_add: i32 = max +% 1
+    // min is max + 1 in wrapping arithmetic
+    let min: i32 = wrap_add
+
+    // Verify min is negative (the sign bit is set)
+    if min > 0 {
+        return 1
+    }
+
+    // Wrapping subtraction: min - 1 wraps to max
+    let wrap_sub: i32 = min -% 1
+    if wrap_sub != max {
+        return 2
+    }
+
+    // Wrapping multiplication: max * 2 wraps
+    // max * 2 = 2 * 0x7FFFFFFF = 0xFFFFFFFE = -2 in two's complement
+    let wrap_mul: i32 = max *% 2
+    if wrap_mul != -2 {
+        return 3
+    }
+
+    // Non-overflowing wrapping ops should behave normally
+    let normal_add: i32 = 10 +% 20
+    if normal_add != 30 {
+        return 4
+    }
+
+    let normal_sub: i32 = 50 -% 20
+    if normal_sub != 30 {
+        return 5
+    }
+
+    let normal_mul: i32 = 6 *% 7
+    if normal_mul != 42 {
+        return 6
+    }
+
+    return 0
+}

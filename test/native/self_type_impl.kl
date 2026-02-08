@@ -1,0 +1,48 @@
+// Test Self type resolution in impl blocks (Bug 9 fix)
+// Self resolves to the concrete impl target type.
+// Tests ref Self and inout Self in method signatures.
+// expect: 42
+
+struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    // Self in ref self parameter
+    fn get(self: ref Self) -> i32 {
+        return self.value
+    }
+
+    // Self in inout self parameter
+    fn increment(self: inout Self) {
+        self.value = self.value + 1
+    }
+
+    // Self in ref self with arithmetic
+    fn add(self: ref Self, n: i32) -> i32 {
+        return self.value + n
+    }
+}
+
+fn main() -> i32 {
+    var c: Counter = Counter { value: 40 }
+
+    // Test ref Self: read value
+    if c.get() != 40 {
+        return 1
+    }
+
+    // Test inout Self: mutate value
+    c.increment()
+    c.increment()
+    if c.get() != 42 {
+        return 2
+    }
+
+    // Test ref Self with additional param
+    if c.add(8) != 50 {
+        return 3
+    }
+
+    return c.get()
+}

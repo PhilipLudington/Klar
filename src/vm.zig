@@ -703,7 +703,7 @@ pub const VM = struct {
                 },
                 .op_array_empty => {
                     const capacity = self.readU16();
-                    _ = capacity; // TODO: Use capacity hint
+                    _ = capacity; // Capacity hint ignored - VM uses dynamic growth
                     const arr = try ObjArray.createGC(&self.gc, &.{});
                     try self.push(.{ .array = arr });
                 },

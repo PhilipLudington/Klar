@@ -28,6 +28,7 @@ klar run hello.kl
 - [Hello World](getting-started/hello-world.md) - Your first Klar program
 - [CLI Reference](getting-started/cli-reference.md) - Command-line interface
 - [REPL Guide](getting-started/repl-guide.md) - Interactive development
+- [AI Agent's Guide](AI-GUIDE.md) - Guide for AI agents generating Klar code
 
 ### Language Guide
 

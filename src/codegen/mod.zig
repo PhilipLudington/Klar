@@ -1,12 +1,37 @@
 //! Native code generation module.
 //!
 //! Provides LLVM-based code generation for Klar programs.
+//!
+//! ## Module Organization
+//!
+//! | Module          | Purpose                                          |
+//! |-----------------|--------------------------------------------------|
+//! | emit.zig        | Main Emitter struct (AST -> LLVM IR)             |
+//! | llvm.zig        | LLVM C API bindings                              |
+//! | target.zig      | Target platform/ABI information                  |
+//! | layout.zig      | Struct layout calculation                        |
+//! | linker.zig      | Native linker invocation                         |
+//! | generics.zig    | Monomorphization documentation (doc-only)        |
+//! | types_emit.zig  | Type conversion documentation (doc-only)         |
+//! | strings_emit.zig| String type documentation (doc-only)             |
+//! | list.zig        | List[T] documentation (doc-only)                 |
+//! | map.zig         | Map[K,V] documentation (doc-only)                |
+//! | set.zig         | Set[T] documentation (doc-only)                  |
+//! | io.zig          | I/O type documentation (doc-only)                |
+//! | optionals.zig   | Optional/Result documentation (doc-only)         |
+//! | builtins.zig    | Built-in function documentation (doc-only)       |
+//! | expressions.zig | Expression emission documentation (doc-only)     |
+//! | statements.zig  | Statement emission documentation (doc-only)      |
+//! | functions.zig   | Function emission documentation (doc-only)       |
 
 pub const llvm = @import("llvm.zig");
 pub const target = @import("target.zig");
 pub const emit = @import("emit.zig");
 pub const linker = @import("linker.zig");
 pub const layout = @import("layout.zig");
+// Documentation-only modules (no code, just doc comments for reference):
+// generics.zig, types_emit.zig, strings_emit.zig, list.zig, map.zig, set.zig,
+// io.zig, optionals.zig, builtins.zig, expressions.zig, statements.zig, functions.zig
 
 /// Errors that can occur during code generation.
 pub const CodegenError = error{

@@ -14,8 +14,8 @@
 //! - `inst.zig` - IR instruction definitions and types
 //! - `builder.zig` - Fluent API for constructing IR
 //! - `printer.zig` - Text output for debugging
-//! - `lower.zig` - AST to IR lowering (TODO)
-//! - `validate.zig` - IR validation (TODO)
+//! - `lower.zig` - AST to IR lowering (experimental)
+//! - `validate.zig` - IR validation (not yet implemented)
 //!
 //! ## Example
 //!

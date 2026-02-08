@@ -1,0 +1,12 @@
+// Expected: build-error
+// Test that enum struct payload field types are validated (Bug 12 fix)
+// Passing a string where i32 expected should fail to compile.
+
+enum Shape {
+    Circle { radius: i32 },
+}
+
+fn main() -> i32 {
+    let c: Shape = Shape::Circle("wrong")
+    return 0
+}

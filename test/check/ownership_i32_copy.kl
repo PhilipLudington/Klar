@@ -1,0 +1,8 @@
+// Expected: check-pass
+// Test that i32 is Copy: assigning does not move (Bug 13 fix)
+
+fn main() -> i32 {
+    let n1: i32 = 42
+    let n2: i32 = n1
+    return n1 + n2
+}

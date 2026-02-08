@@ -1,0 +1,31 @@
+// Test saturating addition (+|)
+fn main() -> i32 {
+    // Saturate at i32 max: 2147483647 +| 1 = 2147483647
+    let max: i32 = 2147483647
+    let a: i32 = max +| 1
+    if a != max {
+        return 1
+    }
+
+    // Saturating add with large positive values stays at max
+    let b: i32 = max +| 100
+    if b != max {
+        return 2
+    }
+
+    // Normal case: no saturation
+    let c: i32 = 10 +| 20
+    if c != 30 {
+        return 3
+    }
+
+    // Negative saturation: -2147483647 +| -2 saturates at min
+    // Result should be less than -2147483647 (i.e., at min)
+    let near_min: i32 = -2147483647
+    let d: i32 = near_min +| -2
+    if d > near_min {
+        return 4
+    }
+
+    return 0
+}

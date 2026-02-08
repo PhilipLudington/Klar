@@ -494,6 +494,18 @@ pub const Const = struct {
         return c.LLVMGetUndef(ty);
     }
 
+    /// Create an integer constant of a specific bit width (unsigned).
+    pub fn intOfWidth(ctx: Context, bit_width: u32, value: u64) ValueRef {
+        const ty = c.LLVMIntTypeInContext(ctx.ref, bit_width);
+        return c.LLVMConstInt(ty, value, 0);
+    }
+
+    /// Create a signed integer constant of a specific bit width.
+    pub fn intOfWidthSigned(ctx: Context, bit_width: u32, value: i64) ValueRef {
+        const ty = c.LLVMIntTypeInContext(ctx.ref, bit_width);
+        return c.LLVMConstInt(ty, @bitCast(@as(u64, @bitCast(value))), 1);
+    }
+
     pub fn string(ctx: Context, str: []const u8, null_terminate: bool) ValueRef {
         return c.LLVMConstStringInContext(
             ctx.ref,

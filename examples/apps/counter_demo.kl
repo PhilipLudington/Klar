@@ -1,0 +1,120 @@
+// Counter Demo in Klar
+// Demonstrates: structs with methods, impl blocks, self parameters
+
+// A simple counter struct
+struct Counter {
+    value: i32,
+    step: i32,
+}
+
+impl Counter {
+    // Constructor - creates a new counter starting at 0 with step of 1
+    fn new() -> Counter {
+        return Counter { value: 0, step: 1 }
+    }
+    
+    // Constructor with custom step
+    fn with_step(step: i32) -> Counter {
+        return Counter { value: 0, step: step }
+    }
+    
+    // Get current value (immutable self)
+    fn get(self: Counter) -> i32 {
+        return self.value
+    }
+    
+    // Increment the counter (mutable self via inout)
+    fn increment(self: inout Counter) {
+        self.value = self.value + self.step
+    }
+    
+    // Decrement the counter
+    fn decrement(self: inout Counter) {
+        self.value = self.value - self.step
+    }
+    
+    // Reset to zero
+    fn reset(self: inout Counter) {
+        self.value = 0
+    }
+    
+    // Add a specific amount
+    fn add(self: inout Counter, amount: i32) {
+        self.value = self.value + amount
+    }
+    
+    // Check if positive
+    fn is_positive(self: Counter) -> bool {
+        return self.value > 0
+    }
+    
+    // Display the counter value
+    fn display(self: Counter) {
+        println("Counter value: {self.value}")
+    }
+}
+
+fn main() -> i32 {
+    println("=== Counter Demo ===")
+    println("")
+    
+    // Create a default counter
+    println("Creating default counter (step=1):")
+    var counter: Counter = Counter.new()
+    counter.display()
+    
+    // Increment a few times
+    println("")
+    println("Incrementing 3 times:")
+    counter.increment()
+    counter.display()
+    counter.increment()
+    counter.display()
+    counter.increment()
+    counter.display()
+    
+    // Decrement
+    println("")
+    println("Decrementing once:")
+    counter.decrement()
+    counter.display()
+    
+    // Add specific amount
+    println("")
+    println("Adding 10:")
+    counter.add(10)
+    counter.display()
+    
+    // Check if positive
+    println("")
+    if counter.is_positive() {
+        println("Counter is positive!")
+    } else {
+        println("Counter is not positive")
+    }
+    
+    // Reset
+    println("")
+    println("Resetting:")
+    counter.reset()
+    counter.display()
+    
+    // Create counter with custom step
+    println("")
+    println("Creating counter with step=5:")
+    var big_counter: Counter = Counter.with_step(5)
+    big_counter.display()
+    
+    println("")
+    println("Incrementing 3 times with step=5:")
+    big_counter.increment()
+    big_counter.display()
+    big_counter.increment()
+    big_counter.display()
+    big_counter.increment()
+    big_counter.display()
+    
+    println("")
+    println("=== Demo Complete ===")
+    return 0
+}

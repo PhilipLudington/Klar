@@ -1,0 +1,9 @@
+// Expected: check-error use_after_move
+// Test that strings are non-Copy: assigning moves ownership (Bug 13 fix)
+
+fn main() -> i32 {
+    let s1: string = "hello"
+    let s2: string = s1
+    println(s1)
+    return 0
+}

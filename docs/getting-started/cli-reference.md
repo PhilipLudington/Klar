@@ -10,6 +10,37 @@ klar <command> [options]
 
 ## Commands
 
+### init
+
+Create a new Klar project with the standard directory structure.
+
+```bash
+klar init [name] [options]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--lib` | Create a library project (with `src/lib.kl`) |
+
+**Examples:**
+
+```bash
+# Create project in current directory
+klar init
+
+# Create project with specific name
+klar init my-project
+
+# Create a library project
+klar init my-lib --lib
+```
+
+This creates:
+- `klar.json` — Project manifest
+- `src/main.kl` — Entry point (or `src/lib.kl` for libraries)
+
 ### run
 
 Run a Klar program. By default, compiles to native code and executes.
@@ -47,11 +78,13 @@ klar run hello.kl -- --verbose --count=5
 
 ### build
 
-Compile a Klar program to a native executable.
+Compile a Klar program or project to a native executable.
 
 ```bash
-klar build <file.kl> [options]
+klar build [file.kl] [options]
 ```
+
+If no file is specified, builds the project defined in `klar.json`.
 
 **Options:**
 
@@ -109,6 +142,23 @@ klar build hello.kl --target x86_64-linux-gnu
 | `x86_64-apple-macosx` | macOS on Intel |
 | `arm64-apple-macosx` | macOS on Apple Silicon |
 | `x86_64-windows-msvc` | Windows on x86_64 |
+| `aarch64-none-elf` | Bare-metal ARM64 (ELF) |
+| `aarch64-none-eabi` | Bare-metal ARM64 (EABI) |
+
+**Bare-Metal Options:**
+
+For embedded and OS development, Klar supports freestanding compilation:
+
+| Option | Description |
+|--------|-------------|
+| `--freestanding` | Compile without standard library (no libc) |
+| `--entry <symbol>` | Set entry point symbol (default: main) |
+| `-T <path>` | Use custom linker script |
+
+```bash
+# Build a freestanding kernel
+klar build kernel.kl --freestanding --target aarch64-none-elf -T linker.ld
+```
 
 ### check
 
@@ -144,6 +194,16 @@ klar repl
 
 See [REPL Guide](repl-guide.md) for detailed usage.
 
+### update
+
+Regenerate the lock file from the project manifest.
+
+```bash
+klar update
+```
+
+This reads `klar.json` and regenerates `klar.lock` with resolved dependency information.
+
 ### Other Commands
 
 | Command | Description |
@@ -153,6 +213,8 @@ See [REPL Guide](repl-guide.md) for detailed usage.
 | `disasm <file>` | Disassemble bytecode |
 | `help` | Show help message |
 | `version` | Show version |
+| `test` | Run tests (not yet implemented) |
+| `fmt` | Format source files (not yet implemented) |
 
 ## Exit Codes
 
