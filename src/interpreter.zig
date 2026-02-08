@@ -1282,7 +1282,24 @@ pub const Interpreter = struct {
 
         const start: i64 = @intCast(start_val.int.value);
         const end: i64 = @intCast(end_val.int.value);
-        const size: usize = @intCast(@max(0, end - start + @as(i64, if (range.inclusive) 1 else 0)));
+
+        // Calculate range size with overflow checking
+        const inclusive_offset: i64 = if (range.inclusive) 1 else 0;
+        const raw_size = std.math.sub(i64, end, start) catch return RuntimeError.IntegerOverflow;
+        const adjusted_size = std.math.add(i64, raw_size, inclusive_offset) catch return RuntimeError.IntegerOverflow;
+
+        // Empty range if end < start
+        if (adjusted_size <= 0) {
+            return self.builder.array(&.{});
+        }
+
+        // Prevent unreasonably large ranges that would exhaust memory
+        const max_range_size: i64 = 1_000_000;
+        if (adjusted_size > max_range_size) {
+            return RuntimeError.IntegerOverflow; // Range too large
+        }
+
+        const size: usize = @intCast(adjusted_size);
 
         var elements = std.ArrayListUnmanaged(Value){};
         elements.ensureTotalCapacity(self.allocator, size) catch return RuntimeError.OutOfMemory;

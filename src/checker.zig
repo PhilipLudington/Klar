@@ -211,19 +211,19 @@ pub const TypeChecker = struct {
     /// Each scope maps type parameter names to their TypeVar types.
     type_param_scopes: std.ArrayListUnmanaged(std.StringHashMapUnmanaged(types.TypeVar)),
     /// Cache of monomorphized function instances.
-    /// Maps (function_name, type_args hash) to MonomorphizedFunction info.
-    monomorphized_functions: std.ArrayListUnmanaged(MonomorphizedFunction),
+    /// Maps mangled_name to MonomorphizedFunction info for O(1) lookup.
+    monomorphized_functions: std.StringHashMapUnmanaged(MonomorphizedFunction),
     /// Storage for generic function declarations (needed for codegen monomorphization).
     generic_functions: std.StringHashMapUnmanaged(*ast.FunctionDecl),
     /// Maps call expression pointers to resolved mangled function names.
     /// Used by codegen to emit calls to monomorphized functions.
     call_resolutions: std.AutoHashMapUnmanaged(*ast.Call, []const u8),
     /// Cache of monomorphized struct instances.
-    /// Maps (struct_name, type_args) to MonomorphizedStruct info.
-    monomorphized_structs: std.ArrayListUnmanaged(MonomorphizedStruct),
+    /// Maps mangled_name to MonomorphizedStruct info for O(1) lookup.
+    monomorphized_structs: std.StringHashMapUnmanaged(MonomorphizedStruct),
     /// Cache of monomorphized enum instances.
-    /// Maps (enum_name, type_args) to MonomorphizedEnum info.
-    monomorphized_enums: std.ArrayListUnmanaged(MonomorphizedEnum),
+    /// Maps mangled_name to MonomorphizedEnum info for O(1) lookup.
+    monomorphized_enums: std.StringHashMapUnmanaged(MonomorphizedEnum),
     /// Track generic enum definitions for cleanup (created in checkEnum).
     generic_enum_types: std.ArrayListUnmanaged(*types.EnumType),
     /// Track generic struct definitions for cleanup (created in checkStruct).
@@ -232,8 +232,8 @@ pub const TypeChecker = struct {
     /// Maps struct name -> list of methods.
     struct_methods: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(StructMethod)),
     /// Cache of monomorphized method instances for generic structs.
-    /// Used by codegen to emit monomorphized methods.
-    monomorphized_methods: std.ArrayListUnmanaged(MonomorphizedMethod),
+    /// Maps mangled_name to MonomorphizedMethod info for O(1) lookup.
+    monomorphized_methods: std.StringHashMapUnmanaged(MonomorphizedMethod),
     /// Registry of trait definitions.
     /// Maps trait name -> TraitInfo.
     trait_registry: std.StringHashMapUnmanaged(TraitInfo),
@@ -618,7 +618,8 @@ pub const TypeChecker = struct {
         self.type_param_scopes.deinit(self.allocator);
 
         // Clean up monomorphized functions
-        for (self.monomorphized_functions.items) |func| {
+        var func_iter = self.monomorphized_functions.valueIterator();
+        while (func_iter.next()) |func| {
             self.allocator.free(func.mangled_name);
             self.allocator.free(func.type_args);
         }
@@ -628,7 +629,8 @@ pub const TypeChecker = struct {
         self.call_resolutions.deinit(self.allocator);
 
         // Clean up monomorphized structs
-        for (self.monomorphized_structs.items) |s| {
+        var struct_iter = self.monomorphized_structs.valueIterator();
+        while (struct_iter.next()) |s| {
             self.allocator.free(s.mangled_name);
             self.allocator.free(s.type_args);
             self.allocator.free(s.concrete_type.fields);
@@ -637,7 +639,8 @@ pub const TypeChecker = struct {
         self.monomorphized_structs.deinit(self.allocator);
 
         // Clean up monomorphized enums
-        for (self.monomorphized_enums.items) |e| {
+        var enum_iter = self.monomorphized_enums.valueIterator();
+        while (enum_iter.next()) |e| {
             self.allocator.free(e.mangled_name);
             self.allocator.free(e.type_args);
             // Free variant payloads
@@ -688,7 +691,8 @@ pub const TypeChecker = struct {
         self.struct_methods.deinit(self.allocator);
 
         // Clean up monomorphized methods
-        for (self.monomorphized_methods.items) |method| {
+        var method_iter = self.monomorphized_methods.valueIterator();
+        while (method_iter.next()) |method| {
             self.allocator.free(method.mangled_name);
             self.allocator.free(method.type_args);
         }
@@ -2185,35 +2189,27 @@ pub const TypeChecker = struct {
         type_args: []const Type,
         concrete_type: Type,
     ) ![]const u8 {
-        // Check if this instantiation already exists
-        for (self.monomorphized_functions.items) |existing| {
-            if (std.mem.eql(u8, existing.original_name, func_name) and
-                existing.type_args.len == type_args.len)
-            {
-                var matches = true;
-                for (existing.type_args, type_args) |e, t| {
-                    if (!e.eql(t)) {
-                        matches = false;
-                        break;
-                    }
-                }
-                if (matches) {
-                    return existing.mangled_name;
-                }
-            }
+        // Compute mangled name first for O(1) hash lookup
+        const mangled_name = try self.mangleFunctionName(func_name, type_args);
+
+        // O(1) lookup - check if this instantiation already exists
+        if (self.monomorphized_functions.get(mangled_name)) |existing| {
+            // Already recorded, free the duplicate mangled name and return existing
+            self.allocator.free(mangled_name);
+            return existing.mangled_name;
         }
 
         // Look up the original generic function declaration
         const original_decl = self.generic_functions.get(func_name) orelse {
             // This shouldn't happen for valid generic function calls
+            self.allocator.free(mangled_name);
             return error.OutOfMemory; // Function not found in generic registry
         };
 
         // Create new entry
-        const mangled_name = try self.mangleFunctionName(func_name, type_args);
         const type_args_copy = try self.allocator.dupe(Type, type_args);
 
-        try self.monomorphized_functions.append(self.allocator, .{
+        try self.monomorphized_functions.put(self.allocator, mangled_name, .{
             .original_name = func_name,
             .mangled_name = mangled_name,
             .type_args = type_args_copy,
@@ -2224,9 +2220,9 @@ pub const TypeChecker = struct {
         return mangled_name;
     }
 
-    /// Get all monomorphized function instances.
-    pub fn getMonomorphizedFunctions(self: *const TypeChecker) []const MonomorphizedFunction {
-        return self.monomorphized_functions.items;
+    /// Get iterator over all monomorphized function instances.
+    pub fn getMonomorphizedFunctions(self: *const TypeChecker) std.StringHashMapUnmanaged(MonomorphizedFunction).ValueIterator {
+        return self.monomorphized_functions.valueIterator();
     }
 
     /// Get the resolved mangled name for a call expression, if it's a generic call.
@@ -2235,14 +2231,14 @@ pub const TypeChecker = struct {
         return self.call_resolutions.get(call);
     }
 
-    /// Get all monomorphized struct instances.
-    pub fn getMonomorphizedStructs(self: *const TypeChecker) []const MonomorphizedStruct {
-        return self.monomorphized_structs.items;
+    /// Get iterator over all monomorphized struct instances.
+    pub fn getMonomorphizedStructs(self: *const TypeChecker) std.StringHashMapUnmanaged(MonomorphizedStruct).ValueIterator {
+        return self.monomorphized_structs.valueIterator();
     }
 
-    /// Get all monomorphized enum instances.
-    pub fn getMonomorphizedEnums(self: *const TypeChecker) []const MonomorphizedEnum {
-        return self.monomorphized_enums.items;
+    /// Get iterator over all monomorphized enum instances.
+    pub fn getMonomorphizedEnums(self: *const TypeChecker) std.StringHashMapUnmanaged(MonomorphizedEnum).ValueIterator {
+        return self.monomorphized_enums.valueIterator();
     }
 
     /// Get all enum types (both generic and non-generic).
@@ -2266,22 +2262,13 @@ pub const TypeChecker = struct {
         type_args: []const Type,
         span: Span,
     ) !*types.StructType {
-        // Check if this instantiation already exists
-        for (self.monomorphized_structs.items) |existing| {
-            if (std.mem.eql(u8, existing.original_name, struct_name) and
-                existing.type_args.len == type_args.len)
-            {
-                var matches = true;
-                for (existing.type_args, type_args) |e, t| {
-                    if (!e.eql(t)) {
-                        matches = false;
-                        break;
-                    }
-                }
-                if (matches) {
-                    return existing.concrete_type;
-                }
-            }
+        // Generate mangled name first for O(1) hash lookup
+        const mangled_name = try self.mangleStructName(struct_name, type_args);
+
+        // O(1) lookup - check if this instantiation already exists
+        if (self.monomorphized_structs.get(mangled_name)) |existing| {
+            self.allocator.free(mangled_name);
+            return existing.concrete_type;
         }
 
         // Create substitution map from type params to concrete types
@@ -2298,6 +2285,7 @@ pub const TypeChecker = struct {
         for (original_struct.type_params, 0..) |type_param, i| {
             if (i < type_args.len and type_param.bounds.len > 0) {
                 if (!self.typeSatisfiesBounds(type_args[i], type_param.bounds, span)) {
+                    self.allocator.free(mangled_name);
                     return error.TypeCheckError;
                 }
             }
@@ -2316,9 +2304,6 @@ pub const TypeChecker = struct {
             });
         }
 
-        // Generate mangled name
-        const mangled_name = try self.mangleStructName(struct_name, type_args);
-
         // Allocate and store the concrete struct type
         const concrete_struct = try self.allocator.create(types.StructType);
         concrete_struct.* = .{
@@ -2331,7 +2316,7 @@ pub const TypeChecker = struct {
 
         const type_args_copy = try self.allocator.dupe(Type, type_args);
 
-        try self.monomorphized_structs.append(self.allocator, .{
+        try self.monomorphized_structs.put(self.allocator, mangled_name, .{
             .original_name = struct_name,
             .mangled_name = mangled_name,
             .type_args = type_args_copy,
@@ -2365,22 +2350,13 @@ pub const TypeChecker = struct {
         original_enum: *types.EnumType,
         type_args: []const Type,
     ) !*types.EnumType {
-        // Check if this instantiation already exists
-        for (self.monomorphized_enums.items) |existing| {
-            if (std.mem.eql(u8, existing.original_name, enum_name) and
-                existing.type_args.len == type_args.len)
-            {
-                var matches = true;
-                for (existing.type_args, type_args) |e, t| {
-                    if (!e.eql(t)) {
-                        matches = false;
-                        break;
-                    }
-                }
-                if (matches) {
-                    return existing.concrete_type;
-                }
-            }
+        // Generate mangled name first for O(1) hash lookup
+        const mangled_name = try self.mangleStructName(enum_name, type_args);
+
+        // O(1) lookup - check if this instantiation already exists
+        if (self.monomorphized_enums.get(mangled_name)) |existing| {
+            self.allocator.free(mangled_name);
+            return existing.concrete_type;
         }
 
         // Create substitution map from type params to concrete types
@@ -2431,9 +2407,6 @@ pub const TypeChecker = struct {
             });
         }
 
-        // Generate mangled name (same pattern as structs)
-        const mangled_name = try self.mangleStructName(enum_name, type_args);
-
         // Allocate and store the concrete enum type
         const concrete_enum = try self.allocator.create(types.EnumType);
         concrete_enum.* = .{
@@ -2444,7 +2417,7 @@ pub const TypeChecker = struct {
 
         const type_args_copy = try self.allocator.dupe(Type, type_args);
 
-        try self.monomorphized_enums.append(self.allocator, .{
+        try self.monomorphized_enums.put(self.allocator, mangled_name, .{
             .original_name = enum_name,
             .mangled_name = mangled_name,
             .type_args = type_args_copy,
@@ -6968,7 +6941,8 @@ pub const TypeChecker = struct {
                     self.recordMethodMonomorphization(struct_type, struct_method) catch {};
 
                     // Find the monomorphized struct info to get the type substitutions
-                    for (self.monomorphized_structs.items) |mono| {
+                    var mono_iter = self.monomorphized_structs.valueIterator();
+                    while (mono_iter.next()) |mono| {
                         if (std.mem.eql(u8, mono.mangled_name, struct_type.name)) {
                             // Build substitution map from impl type params to concrete types
                             var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
@@ -7026,7 +7000,8 @@ pub const TypeChecker = struct {
                     // Note: enum method monomorphization tracking not yet implemented
                     // The return type substitution below handles the essential case
 
-                    for (self.monomorphized_enums.items) |mono| {
+                    var enum_iter = self.monomorphized_enums.valueIterator();
+                    while (enum_iter.next()) |mono| {
                         if (std.mem.eql(u8, mono.mangled_name, enum_type.name)) {
                             var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
                             defer substitutions.deinit(self.allocator);
@@ -7172,31 +7147,29 @@ pub const TypeChecker = struct {
 
     /// Record a monomorphized method instance for a generic struct.
     fn recordMethodMonomorphization(self: *TypeChecker, struct_type: *types.StructType, method: StructMethod) !void {
+        // Create mangled method name first for O(1) hash lookup: Pair$i32$string_get_first
+        var mangled_name_buf = std.ArrayListUnmanaged(u8){};
+        errdefer mangled_name_buf.deinit(self.allocator);
+        try mangled_name_buf.appendSlice(self.allocator, struct_type.name);
+        try mangled_name_buf.append(self.allocator, '_');
+        try mangled_name_buf.appendSlice(self.allocator, method.name);
+        const mangled_name = try mangled_name_buf.toOwnedSlice(self.allocator);
+
+        // O(1) lookup - check if this method instantiation already exists
+        if (self.monomorphized_methods.contains(mangled_name)) {
+            self.allocator.free(mangled_name);
+            return;
+        }
+
         // Find the corresponding monomorphized struct to get type args
         var type_args: []const Type = &.{};
-        for (self.monomorphized_structs.items) |ms| {
+        var iter = self.monomorphized_structs.valueIterator();
+        while (iter.next()) |ms| {
             if (std.mem.eql(u8, ms.mangled_name, struct_type.name)) {
                 type_args = ms.type_args;
                 break;
             }
         }
-
-        // Check if this method instantiation already exists
-        for (self.monomorphized_methods.items) |existing| {
-            if (std.mem.eql(u8, existing.mangled_name, struct_type.name) and
-                std.mem.eql(u8, existing.method_name, method.name))
-            {
-                // Already recorded
-                return;
-            }
-        }
-
-        // Create mangled method name: Pair$i32$string_get_first
-        var mangled_name = std.ArrayListUnmanaged(u8){};
-        errdefer mangled_name.deinit(self.allocator);
-        try mangled_name.appendSlice(self.allocator, struct_type.name);
-        try mangled_name.append(self.allocator, '_');
-        try mangled_name.appendSlice(self.allocator, method.name);
 
         // Substitute type params in the method's function type
         var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
@@ -7210,10 +7183,10 @@ pub const TypeChecker = struct {
 
         const concrete_func_type = try self.substituteTypeParams(method.func_type, substitutions);
 
-        try self.monomorphized_methods.append(self.allocator, .{
+        try self.monomorphized_methods.put(self.allocator, mangled_name, .{
             .struct_name = if (std.mem.indexOf(u8, struct_type.name, "$")) |idx| struct_type.name[0..idx] else struct_type.name,
             .method_name = method.name,
-            .mangled_name = try mangled_name.toOwnedSlice(self.allocator),
+            .mangled_name = mangled_name,
             .type_args = try self.allocator.dupe(Type, type_args),
             .concrete_type = concrete_func_type,
             .original_decl = method.decl,
@@ -7516,7 +7489,8 @@ pub const TypeChecker = struct {
                 if (std.mem.indexOf(u8, struct_type.name, "$")) |_| {
                     self.recordMethodMonomorphization(struct_type, struct_method) catch {};
 
-                    for (self.monomorphized_structs.items) |mono| {
+                    var mono_iter2 = self.monomorphized_structs.valueIterator();
+                    while (mono_iter2.next()) |mono| {
                         if (std.mem.eql(u8, mono.mangled_name, struct_type.name)) {
                             var substitutions = std.AutoHashMapUnmanaged(u32, Type){};
                             defer substitutions.deinit(self.allocator);
