@@ -1,6 +1,7 @@
-// JSON Parser Demo in Klar
-// Demonstrates: ?T optional types, Result[T, E], recursive data processing
-// This exercises codegen type resolution for optional and result types.
+// Type Resolution Demo in Klar
+// Demonstrates: ?T optional types, Result[T, E], force unwrap, null coalescing
+// Regression test for Bug 5: exercises codegen type resolution paths in
+// resolveTypeExprDirect that previously leaked heap-allocated type objects.
 
 fn parse_digit(c: i32) -> ?i32 {
     if c >= 0 and c <= 9 {
@@ -36,7 +37,7 @@ fn find_in_list(values: [i32; 5], target: i32) -> ?i32 {
 }
 
 fn main() -> i32 {
-    println("=== JSON Parser Demo ===")
+    println("=== Type Resolution Demo ===")
     println("")
 
     // Test optional returns with parse_digit

@@ -5958,7 +5958,7 @@ pub const Emitter = struct {
                 const inner = self.resolveTypeExprDirect(opt.inner) orelse return null;
                 const inner_ptr = self.allocator.create(types.Type) catch return null;
                 inner_ptr.* = inner;
-                self.resolved_type_allocs.append(self.allocator, .{ .optional_type = inner_ptr }) catch {};
+                self.resolved_type_allocs.append(self.allocator, .{ .optional_type = inner_ptr }) catch unreachable;
                 return .{ .optional = inner_ptr };
             },
             .generic_apply => |g| {
@@ -5970,7 +5970,7 @@ pub const Emitter = struct {
                         const err_type = self.resolveTypeExprDirect(g.args[1]) orelse return null;
                         const result_ptr = self.allocator.create(types.ResultType) catch return null;
                         result_ptr.* = .{ .ok_type = ok_type, .err_type = err_type };
-                        self.resolved_type_allocs.append(self.allocator, .{ .result_type = result_ptr }) catch {};
+                        self.resolved_type_allocs.append(self.allocator, .{ .result_type = result_ptr }) catch unreachable;
                         return .{ .result = result_ptr };
                     }
                     // Check for CPtr[T]
@@ -5978,7 +5978,7 @@ pub const Emitter = struct {
                         const inner = self.resolveTypeExprDirect(g.args[0]) orelse return null;
                         const cptr_type = self.allocator.create(types.CptrType) catch return null;
                         cptr_type.* = .{ .inner = inner };
-                        self.resolved_type_allocs.append(self.allocator, .{ .cptr_type = cptr_type }) catch {};
+                        self.resolved_type_allocs.append(self.allocator, .{ .cptr_type = cptr_type }) catch unreachable;
                         return .{ .cptr = cptr_type };
                     }
                     // Check for COptPtr[T]
@@ -5986,7 +5986,7 @@ pub const Emitter = struct {
                         const inner = self.resolveTypeExprDirect(g.args[0]) orelse return null;
                         const copt_ptr_type = self.allocator.create(types.CoptPtrType) catch return null;
                         copt_ptr_type.* = .{ .inner = inner };
-                        self.resolved_type_allocs.append(self.allocator, .{ .copt_ptr_type = copt_ptr_type }) catch {};
+                        self.resolved_type_allocs.append(self.allocator, .{ .copt_ptr_type = copt_ptr_type }) catch unreachable;
                         return .{ .copt_ptr = copt_ptr_type };
                     }
                 }

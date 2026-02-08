@@ -1,0 +1,62 @@
+// test_type_resolve_alloc.kl - Regression test for Bug 5
+// Tests: codegen resolveTypeExprDirect handles ?T, Result[T,E], and nested
+//        type combinations without leaking heap-allocated type objects.
+// Expected exit code: 0 (accept any via -1)
+
+fn maybe_value(flag: bool) -> ?i32 {
+    if flag {
+        return 42
+    }
+}
+
+fn validate(n: i32) -> Result[i32, i32] {
+    if n > 0 {
+        return Ok(n)
+    }
+    return Err(n)
+}
+
+fn nested_optional(flag: bool) -> ?i32 {
+    let inner: ?i32 = maybe_value(flag)
+    let val: i32 = inner ?? 0
+    if val > 0 {
+        return val
+    }
+}
+
+fn result_to_optional(n: i32) -> ?i32 {
+    let r: Result[i32, i32] = validate(n)
+    if r.is_ok() {
+        return r!
+    }
+}
+
+fn main() -> i32 {
+    // Exercise ?T resolution
+    let a: ?i32 = maybe_value(true)
+    let b: ?i32 = maybe_value(false)
+    let a_val: i32 = a!
+    let b_val: i32 = b ?? 0
+
+    // Exercise Result[T, E] resolution
+    let r1: Result[i32, i32] = validate(10)
+    let r2: Result[i32, i32] = validate(-5)
+
+    // Exercise nested optional paths
+    let c: ?i32 = nested_optional(true)
+    let d: ?i32 = nested_optional(false)
+
+    // Exercise Result -> Optional conversion path
+    let e: ?i32 = result_to_optional(7)
+    let f: ?i32 = result_to_optional(-3)
+
+    // Verify values
+    if a_val == 42 and b_val == 0 and r1.is_ok() and r2.is_ok() == false {
+        if (c ?? 0) == 42 and (d ?? 0) == 0 {
+            if (e ?? 0) == 7 and (f ?? 0) == 0 {
+                return 0
+            }
+        }
+    }
+    return 1
+}
