@@ -1,0 +1,11 @@
+fn foo() -> i32 {
+    // Comment before let
+    let x: i32 = 10
+    // Comment before return
+    return x
+}
+
+fn bar() -> i32 {
+    let y: i32 = 20  // trailing inside block
+    return y
+}

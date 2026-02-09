@@ -1,0 +1,5 @@
+// Comment with unicode: 日本語
+fn  greet()  ->  string  {
+    let  msg:  string  =  "Hello, 世界"
+    return  msg
+}

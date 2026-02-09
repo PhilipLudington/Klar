@@ -8,6 +8,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
+# Clean up temp files on exit
+trap "rm -f /tmp/klar_fmt_*.kl" EXIT
+
 KLAR="./zig-out/bin/klar"
 TEST_DIR="test/fmt"
 PASS=0

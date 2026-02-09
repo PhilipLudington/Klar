@@ -150,7 +150,6 @@ pub const Formatter = struct {
     output: std.ArrayListUnmanaged(u8),
     indent_level: u32,
     comment_cursor: usize,
-    current_column: u32,
     config: Config,
 
     pub const Error = Allocator.Error;
@@ -163,7 +162,6 @@ pub const Formatter = struct {
             .output = .{},
             .indent_level = 0,
             .comment_cursor = 0,
-            .current_column = 0,
             .config = config,
         };
     }
@@ -180,21 +178,10 @@ pub const Formatter = struct {
 
     fn write(self: *Formatter, s: []const u8) Error!void {
         try self.output.appendSlice(self.allocator, s);
-        // Track column: find last newline in s
-        if (std.mem.lastIndexOfScalar(u8, s, '\n')) |nl| {
-            self.current_column = @intCast(s.len - nl - 1);
-        } else {
-            self.current_column += @intCast(s.len);
-        }
     }
 
     fn writeByte(self: *Formatter, b: u8) Error!void {
         try self.output.append(self.allocator, b);
-        if (b == '\n') {
-            self.current_column = 0;
-        } else {
-            self.current_column += 1;
-        }
     }
 
     fn newline(self: *Formatter) Error!void {
@@ -248,6 +235,7 @@ pub const Formatter = struct {
             if (comment.is_trailing and comment.start >= after_pos) {
                 // Check it's on the same line: look for newline between after_pos and comment.start
                 const search_end = @min(comment.start, self.source.len);
+                if (after_pos > search_end) return;
                 const between = self.source[after_pos..search_end];
                 const has_newline = std.mem.indexOfScalar(u8, between, '\n') != null;
                 if (!has_newline) {
@@ -336,6 +324,9 @@ pub const Formatter = struct {
             try self.newline();
             self.comment_cursor += 1;
         }
+
+        // Verify all comments were consumed
+        std.debug.assert(self.comment_cursor == self.comments.len);
     }
 
     // --- Declarations ---
