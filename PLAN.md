@@ -27,7 +27,7 @@
 - [x] **Milestone 13: FFI Function Pointers** - C callbacks, `@fn_ptr`, `extern fn` types
 
 **In Progress:**
-- **Milestone 9: Tooling** - Not started (formatter, doc generator, LSP)
+- **Milestone 9: Tooling** - Formatter complete, doc generator and LSP not started
 
 > **Previous plans archived:** [Phase 4 History](docs/history/phase4-language-completion.md)
 
@@ -236,12 +236,20 @@ my-project/
 
 **Objective:** Developer tooling for productive Klar development.
 
-**Status:** Not started.
+**Status:** Formatter complete. Doc generator and LSP not started.
 
-### Code Formatter (klar fmt)
-- [ ] Parse source file into AST
-- [ ] Pretty-print AST with consistent formatting
-- [ ] Preserve/normalize comments
+### Code Formatter (klar fmt) ✅
+- [x] Parse source file into AST
+- [x] Pretty-print AST with consistent formatting
+- [x] Preserve/normalize comments
+- [x] Sort imports alphabetically
+- [x] Blank line preservation between declarations
+- [x] Atomic file writes (write to temp, then rename)
+- [x] Directory mode (recursively format `.kl` files)
+- [x] `--check` mode (exit non-zero if unformatted)
+- [x] Stdin support (`klar fmt --stdin`)
+- [x] Idempotent formatting (formatting twice produces identical output)
+- [x] 31 integration tests + 13 unit tests
 
 ### Documentation Generator (klar doc)
 - [ ] Extract `///` documentation comments
@@ -664,7 +672,7 @@ Phase 4 is complete when:
 **Tooling:**
 - [x] Package manager works for dependencies
 - [ ] IDE support via LSP
-- [ ] Code formatter available
+- [x] Code formatter available
 
 **Example Programs:**
 - [ ] JSON parser using generics
