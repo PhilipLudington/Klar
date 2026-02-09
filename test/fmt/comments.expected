@@ -1,0 +1,12 @@
+// Top-level comment
+// Comment before function
+fn add(a: i32, b: i32) -> i32 {
+    return a + b  // trailing comment
+}
+
+// Another top-level comment
+fn main() -> i32 {
+    // Comment inside function
+    let x: i32 = add(1, 2)
+    return x
+}

@@ -1,0 +1,15 @@
+enum  MyOption[T]  {
+    MySome(T),
+    MyNone,
+}
+
+fn  main()  ->  i32  {
+    let  val:  MyOption[i32]  =  MyOption[i32]::MySome(42)
+
+    var  result:  i32  =  0
+    match  val  {
+        MyOption.MySome(x)  =>  {  result  =  x  }
+        MyOption.MyNone  =>  {  result  =  0  }
+    }
+    return  result
+}

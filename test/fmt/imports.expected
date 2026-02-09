@@ -1,0 +1,7 @@
+import alpha.*
+import middle.{ bar, foo }
+import zebra.{ alpha, zap }
+
+fn main() -> i32 {
+    return 0
+}

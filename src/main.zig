@@ -21,6 +21,7 @@ const ModuleInfo = module_resolver.ModuleInfo;
 const Repl = @import("repl.zig").Repl;
 const manifest = @import("pkg/manifest.zig");
 const lockfile = @import("pkg/lockfile.zig");
+const formatter = @import("formatter.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -364,7 +365,7 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, command, "test")) {
         try getStdErr().writeAll("Test not yet implemented\n");
     } else if (std.mem.eql(u8, command, "fmt")) {
-        try getStdErr().writeAll("Format not yet implemented\n");
+        try fmtCommand(allocator, args);
     } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
         try printUsage();
     } else if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
@@ -1603,6 +1604,179 @@ fn printExpr(out: std.fs.File, source: []const u8, expr: ast.Expr, indent: usize
     }
 }
 
+fn fmtCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const stderr = getStdErr();
+    const stdout = getStdOut();
+
+    // Parse flags
+    var in_place = false;
+    var check_only = false;
+    var targets = std.ArrayListUnmanaged([]const u8){};
+    defer targets.deinit(allocator);
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "-i")) {
+            in_place = true;
+        } else if (std.mem.eql(u8, arg, "--check")) {
+            check_only = true;
+        } else {
+            try targets.append(allocator, arg);
+        }
+    }
+
+    if (targets.items.len == 0) {
+        try stderr.writeAll("Error: no input file or directory\nUsage: klar fmt [-i] [--check] <file.kl|dir>\n");
+        return;
+    }
+
+    var had_error = false;
+    var had_unformatted = false;
+
+    for (targets.items) |target| {
+        // Check if target is a directory
+        const stat = std.fs.cwd().statFile(target) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error: cannot access '{s}': {}\n", .{ target, err }) catch "Error accessing file\n";
+            try stderr.writeAll(msg);
+            had_error = true;
+            continue;
+        };
+
+        if (stat.kind == .directory) {
+            // Recursively format all .kl files
+            try fmtDirectory(allocator, target, in_place, check_only, &had_error, &had_unformatted);
+        } else {
+            try fmtFile(allocator, target, in_place, check_only, &had_error, &had_unformatted);
+        }
+    }
+
+    if (check_only and had_unformatted) {
+        std.process.exit(1);
+    }
+    if (had_error) {
+        std.process.exit(1);
+    }
+    _ = stdout;
+}
+
+fn fmtFile(allocator: std.mem.Allocator, path: []const u8, in_place: bool, check_only: bool, had_error: *bool, had_unformatted: *bool) !void {
+    const stderr = getStdErr();
+    const stdout = getStdOut();
+
+    const source = readSourceFile(allocator, path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error reading '{s}': {}\n", .{ path, err }) catch "Error reading file\n";
+        try stderr.writeAll(msg);
+        had_error.* = true;
+        return;
+    };
+    defer allocator.free(source);
+
+    const formatted = formatter.format(allocator, source) catch |err| {
+        switch (err) {
+            error.ParseError => {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error: parse error in '{s}', skipping\n", .{path}) catch "Parse error\n";
+                try stderr.writeAll(msg);
+                had_error.* = true;
+                return;
+            },
+            else => return err,
+        }
+    };
+    defer allocator.free(formatted);
+
+    if (check_only) {
+        if (!std.mem.eql(u8, source, formatted)) {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "{s}\n", .{path}) catch "unformatted file\n";
+            try stdout.writeAll(msg);
+            had_unformatted.* = true;
+        }
+        return;
+    }
+
+    if (in_place) {
+        if (!std.mem.eql(u8, source, formatted)) {
+            // Write to temp file then rename for atomic write
+            const dir = std.fs.cwd();
+            const file = dir.createFile(path, .{}) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error writing '{s}': {}\n", .{ path, err }) catch "Error writing\n";
+                try stderr.writeAll(msg);
+                had_error.* = true;
+                return;
+            };
+            defer file.close();
+            try file.writeAll(formatted);
+        }
+    } else {
+        // Print to stdout
+        try stdout.writeAll(formatted);
+    }
+}
+
+fn fmtDirectory(allocator: std.mem.Allocator, dir_path: []const u8, in_place: bool, check_only: bool, had_error: *bool, had_unformatted: *bool) !void {
+    const stderr = getStdErr();
+
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening directory '{s}': {}\n", .{ dir_path, err }) catch "Error opening directory\n";
+        try stderr.writeAll(msg);
+        had_error.* = true;
+        return;
+    };
+    defer dir.close();
+
+    var walker = dir.walk(allocator) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error walking directory '{s}': {}\n", .{ dir_path, err }) catch "Error walking directory\n";
+        try stderr.writeAll(msg);
+        had_error.* = true;
+        return;
+    };
+    defer walker.deinit();
+
+    while (walker.next() catch null) |entry| {
+        // Skip hidden directories and known non-source dirs
+        if (entry.kind == .directory) continue;
+
+        // Skip files in hidden directories, build/, zig-out/, scratch/
+        const path_str = entry.path;
+        if (shouldSkipPath(path_str)) continue;
+
+        // Only format .kl files
+        if (!std.mem.endsWith(u8, path_str, ".kl")) continue;
+
+        // Build full path
+        const full_path = std.fs.path.join(allocator, &.{ dir_path, path_str }) catch continue;
+        defer allocator.free(full_path);
+
+        try fmtFile(allocator, full_path, in_place or true, check_only, had_error, had_unformatted);
+    }
+}
+
+fn shouldSkipPath(path: []const u8) bool {
+    // Skip hidden directories
+    if (std.mem.startsWith(u8, path, ".")) return true;
+
+    // Skip known directories
+    const skip_dirs = [_][]const u8{ "build/", "zig-out/", "scratch/", "zig-cache/", ".zig-cache/" };
+    for (skip_dirs) |skip| {
+        if (std.mem.startsWith(u8, path, skip)) return true;
+    }
+
+    // Skip paths containing hidden directory segments
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |segment| {
+        if (segment.len > 0 and segment[0] == '.') return true;
+    }
+
+    return false;
+}
+
 fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag: bool) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
@@ -2523,7 +2697,9 @@ fn printUsage() !void {
         \\  check <file>         Type check a file
         \\  repl                 Interactive REPL (Read-Eval-Print Loop)
         \\  test                 Run tests (not implemented)
-        \\  fmt                  Format source files (not implemented)
+        \\  fmt [file|dir]       Format source files
+        \\    -i                  Format files in-place
+        \\    --check             Check formatting (exit 1 if unformatted)
         \\  help                 Show this help
         \\  version              Show version
         \\  tokenize <file>      Tokenize a file (debug)

@@ -1,0 +1,17 @@
+// This file is already formatted correctly.
+// Formatting should produce identical output.
+struct Point {
+    x: i32
+    y: i32
+}
+
+impl Point {
+    fn sum(self: Point) -> i32 {
+        return self.x + self.y
+    }
+}
+
+fn main() -> i32 {
+    let p: Point = Point { x: 10, y: 32 }
+    return p.sum()
+}
