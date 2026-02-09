@@ -40,13 +40,13 @@ for input in "$TEST_DIR"/*.kl; do
         continue
     fi
 
-    # Compare with expected (add trailing newline to actual since fmt output ends with newline)
-    if diff -q <(echo "$actual") "$expected" > /dev/null 2>&1; then
+    # Compare with expected (use printf to avoid echo adding extra newline)
+    if diff -q <(printf '%s\n' "$actual") "$expected" > /dev/null 2>&1; then
         echo -e "${GREEN}PASS${NC} $name"
         PASS=$((PASS + 1))
     else
         echo -e "${RED}FAIL${NC} $name (output differs)"
-        diff <(echo "$actual") "$expected" | head -10
+        diff <(printf '%s\n' "$actual") "$expected" | head -10
         FAIL=$((FAIL + 1))
     fi
 done

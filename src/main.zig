@@ -1606,7 +1606,6 @@ fn printExpr(out: std.fs.File, source: []const u8, expr: ast.Expr, indent: usize
 
 fn fmtCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const stderr = getStdErr();
-    const stdout = getStdOut();
 
     // Parse flags
     var in_place = false;
@@ -1621,6 +1620,11 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
             in_place = true;
         } else if (std.mem.eql(u8, arg, "--check")) {
             check_only = true;
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error: unknown flag '{s}'\nUsage: klar fmt [-i] [--check] <file.kl|dir>\n", .{arg}) catch "Error: unknown flag\n";
+            try stderr.writeAll(msg);
+            return;
         } else {
             try targets.append(allocator, arg);
         }
@@ -1658,7 +1662,6 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (had_error) {
         std.process.exit(1);
     }
-    _ = stdout;
 }
 
 fn fmtFile(allocator: std.mem.Allocator, path: []const u8, in_place: bool, check_only: bool, had_error: *bool, had_unformatted: *bool) !void {
@@ -1702,15 +1705,39 @@ fn fmtFile(allocator: std.mem.Allocator, path: []const u8, in_place: bool, check
         if (!std.mem.eql(u8, source, formatted)) {
             // Write to temp file then rename for atomic write
             const dir = std.fs.cwd();
-            const file = dir.createFile(path, .{}) catch |err| {
+            const tmp_path = std.fmt.allocPrint(allocator, "{s}.fmt-tmp", .{path}) catch {
+                try stderr.writeAll("Error: out of memory\n");
+                had_error.* = true;
+                return;
+            };
+            defer allocator.free(tmp_path);
+
+            const tmp_file = dir.createFile(tmp_path, .{}) catch |err| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error writing '{s}': {}\n", .{ path, err }) catch "Error writing\n";
                 try stderr.writeAll(msg);
                 had_error.* = true;
                 return;
             };
-            defer file.close();
-            try file.writeAll(formatted);
+            tmp_file.writeAll(formatted) catch |err| {
+                tmp_file.close();
+                dir.deleteFile(tmp_path) catch {};
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error writing '{s}': {}\n", .{ path, err }) catch "Error writing\n";
+                try stderr.writeAll(msg);
+                had_error.* = true;
+                return;
+            };
+            tmp_file.close();
+
+            dir.rename(tmp_path, path) catch |err| {
+                dir.deleteFile(tmp_path) catch {};
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error renaming '{s}': {}\n", .{ path, err }) catch "Error renaming\n";
+                try stderr.writeAll(msg);
+                had_error.* = true;
+                return;
+            };
         }
     } else {
         // Print to stdout
@@ -1754,7 +1781,7 @@ fn fmtDirectory(allocator: std.mem.Allocator, dir_path: []const u8, in_place: bo
         const full_path = std.fs.path.join(allocator, &.{ dir_path, path_str }) catch continue;
         defer allocator.free(full_path);
 
-        try fmtFile(allocator, full_path, in_place or true, check_only, had_error, had_unformatted);
+        try fmtFile(allocator, full_path, in_place, check_only, had_error, had_unformatted);
     }
 }
 

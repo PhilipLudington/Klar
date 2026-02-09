@@ -525,8 +525,7 @@ pub const Formatter = struct {
         try self.newline();
         self.indent();
 
-        for (e.variants, 0..) |variant, i| {
-            _ = i;
+        for (e.variants) |variant| {
             try self.flushCommentsBefore(variant.span.start);
             try self.writeIndent();
             try self.write(variant.name);
