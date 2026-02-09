@@ -1754,3 +1754,116 @@ test "binaryOpStr covers all variants" {
         try std.testing.expect(s.len > 0);
     }
 }
+
+test "extractComments: multiple comments at same line" {
+    const source = "let x: i32 = 42 // first\n// second\n// third\n";
+    const comments = try extractComments(std.testing.allocator, source);
+    defer std.testing.allocator.free(comments);
+
+    try std.testing.expectEqual(@as(usize, 3), comments.len);
+    try std.testing.expect(comments[0].is_trailing);
+    try std.testing.expect(!comments[1].is_trailing);
+    try std.testing.expect(!comments[2].is_trailing);
+    // Comments should be in source order
+    try std.testing.expect(comments[0].start < comments[1].start);
+    try std.testing.expect(comments[1].start < comments[2].start);
+}
+
+test "extractComments: comment inside char literal ignored" {
+    const source = "let c: char = '/' // real\n";
+    const comments = try extractComments(std.testing.allocator, source);
+    defer std.testing.allocator.free(comments);
+
+    try std.testing.expectEqual(@as(usize, 1), comments.len);
+    try std.testing.expectEqualStrings("// real", comments[0].text);
+}
+
+test "extractComments: consecutive block comments" {
+    const source = "/* a *//* b */";
+    const comments = try extractComments(std.testing.allocator, source);
+    defer std.testing.allocator.free(comments);
+
+    try std.testing.expectEqual(@as(usize, 2), comments.len);
+    try std.testing.expectEqualStrings("/* a */", comments[0].text);
+    try std.testing.expectEqualStrings("/* b */", comments[1].text);
+}
+
+test "extractComments: slash not followed by slash or star" {
+    const source = "let x: i32 = a / b\n";
+    const comments = try extractComments(std.testing.allocator, source);
+    defer std.testing.allocator.free(comments);
+
+    try std.testing.expectEqual(@as(usize, 0), comments.len);
+}
+
+test "extractComments: whitespace only source" {
+    const source = "   \t\n\n  \t  \n";
+    const comments = try extractComments(std.testing.allocator, source);
+    defer std.testing.allocator.free(comments);
+
+    try std.testing.expectEqual(@as(usize, 0), comments.len);
+}
+
+test "countBlankLinesBetween: no blank lines" {
+    const source = "abc\ndef\n";
+    try std.testing.expectEqual(@as(u32, 0), countBlankLinesBetween(source, 0, source.len));
+}
+
+test "countBlankLinesBetween: one blank line" {
+    const source = "abc\n\ndef\n";
+    try std.testing.expectEqual(@as(u32, 1), countBlankLinesBetween(source, 0, source.len));
+}
+
+test "countBlankLinesBetween: multiple blank lines" {
+    const source = "abc\n\n\n\ndef\n";
+    try std.testing.expectEqual(@as(u32, 3), countBlankLinesBetween(source, 0, source.len));
+}
+
+test "countBlankLinesBetween: start >= end returns 0" {
+    const source = "abc\n\ndef\n";
+    try std.testing.expectEqual(@as(u32, 0), countBlankLinesBetween(source, 5, 3));
+    try std.testing.expectEqual(@as(u32, 0), countBlankLinesBetween(source, 5, 5));
+}
+
+test "countBlankLinesBetween: start >= source.len returns 0" {
+    const source = "abc";
+    try std.testing.expectEqual(@as(u32, 0), countBlankLinesBetween(source, 100, 200));
+}
+
+test "countBlankLinesBetween: blank lines with whitespace" {
+    const source = "abc\n  \t  \ndef\n";
+    // Line with only whitespace between two newlines counts as blank
+    try std.testing.expectEqual(@as(u32, 1), countBlankLinesBetween(source, 0, source.len));
+}
+
+test "format: empty function body" {
+    const source = "fn noop() {}\n";
+    const result = try format(std.testing.allocator, source);
+    defer std.testing.allocator.free(result);
+
+    try std.testing.expectEqualStrings("fn noop() {}\n", result);
+}
+
+test "format: idempotence" {
+    const source = "fn add(a: i32, b: i32) -> i32 {\n    return a + b\n}\n";
+    const first = try format(std.testing.allocator, source);
+    defer std.testing.allocator.free(first);
+
+    const second = try format(std.testing.allocator, first);
+    defer std.testing.allocator.free(second);
+
+    try std.testing.expectEqualStrings(first, second);
+}
+
+test "format: trailing newline normalization" {
+    const source = "fn main() {}\n\n\n";
+    const result = try format(std.testing.allocator, source);
+    defer std.testing.allocator.free(result);
+
+    // Should end with exactly one newline
+    try std.testing.expect(result.len > 0);
+    try std.testing.expectEqual(@as(u8, '\n'), result[result.len - 1]);
+    if (result.len > 1) {
+        try std.testing.expect(result[result.len - 2] != '\n');
+    }
+}

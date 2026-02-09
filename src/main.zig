@@ -1721,8 +1721,8 @@ fn fmtFile(allocator: std.mem.Allocator, path: []const u8, in_place: bool, check
         if (!std.mem.eql(u8, source, formatted)) {
             // Write to temp file then rename for atomic write
             const dir = std.fs.cwd();
-            const nonce = @as(u64, @truncate(@as(u128, @bitCast(std.time.nanoTimestamp())))) % 1_000_000;
-            const tmp_path = std.fmt.allocPrint(allocator, "{s}.fmt-tmp.{d}", .{ path, nonce }) catch {
+            const nonce = std.crypto.random.int(u64);
+            const tmp_path = std.fmt.allocPrint(allocator, "{s}.fmt-tmp.{x}", .{ path, nonce }) catch {
                 try stderr.writeAll("Error: out of memory\n");
                 had_error.* = true;
                 return;
