@@ -17,6 +17,7 @@ zig-out/
 .freestanding-test-results.json
 .benchmark-results.json
 .check-test-results.json
+.fmt-test-results.json
 
 # LLVM IR output (when debugging)
 *.ll
