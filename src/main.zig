@@ -1616,7 +1616,23 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var i: usize = 2;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "-i")) {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            try getStdOut().writeAll(
+                \\Usage: klar fmt [options] <file.kl|dir> ...
+                \\
+                \\Format Klar source files to canonical style.
+                \\
+                \\Options:
+                \\  -i         Format files in-place (modify files)
+                \\  --check    Check if files are formatted (exit 1 if not)
+                \\  -h, --help Show this help message
+                \\
+                \\Without -i, formatted output is written to stdout.
+                \\When given a directory, recursively formats all .kl files.
+                \\
+            );
+            return;
+        } else if (std.mem.eql(u8, arg, "-i")) {
             in_place = true;
         } else if (std.mem.eql(u8, arg, "--check")) {
             check_only = true;

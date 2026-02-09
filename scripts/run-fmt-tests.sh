@@ -87,6 +87,49 @@ for input in "$TEST_DIR"/*.kl; do
     fi
 done
 
+# Test 3: --check mode
+echo ""
+echo "Running --check mode tests..."
+
+# --check on an already-formatted file should succeed (exit 0)
+TOTAL=$((TOTAL + 1))
+for input in "$TEST_DIR"/*.expected; do
+    name=$(basename "$input" .expected)
+    # Create a temp .kl copy of the expected file for --check
+    cp "$input" /tmp/klar_fmt_check.kl
+    if "$KLAR" fmt --check /tmp/klar_fmt_check.kl > /dev/null 2>&1; then
+        echo -e "${GREEN}PASS${NC} --check accepts formatted: $name"
+        PASS=$((PASS + 1))
+    else
+        echo -e "${RED}FAIL${NC} --check rejects formatted: $name"
+        FAIL=$((FAIL + 1))
+    fi
+    TOTAL=$((TOTAL + 1))
+    break  # Only need one test for this
+done
+TOTAL=$((TOTAL - 1))  # Adjust for the extra increment
+
+# --check on an unformatted file should fail (exit 1)
+TOTAL=$((TOTAL + 1))
+cp "$TEST_DIR/basic.kl" /tmp/klar_fmt_check_bad.kl
+if "$KLAR" fmt --check /tmp/klar_fmt_check_bad.kl > /dev/null 2>&1; then
+    echo -e "${RED}FAIL${NC} --check should reject unformatted file"
+    FAIL=$((FAIL + 1))
+else
+    echo -e "${GREEN}PASS${NC} --check rejects unformatted file"
+    PASS=$((PASS + 1))
+fi
+
+# Test 4: --help flag
+TOTAL=$((TOTAL + 1))
+if "$KLAR" fmt --help 2>&1 | grep -q "Usage:"; then
+    echo -e "${GREEN}PASS${NC} --help shows usage"
+    PASS=$((PASS + 1))
+else
+    echo -e "${RED}FAIL${NC} --help should show usage"
+    FAIL=$((FAIL + 1))
+fi
+
 # Summary
 echo ""
 echo "Formatter tests: $PASS/$TOTAL passed, $FAIL failed"

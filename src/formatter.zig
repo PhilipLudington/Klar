@@ -69,15 +69,21 @@ pub fn extractComments(allocator: Allocator, source: []const u8) ![]Comment {
                     const start = i;
                     const comment_line = line;
                     i += 2;
+                    var terminated = false;
                     while (i + 1 < source.len) {
                         if (source[i] == '*' and source[i + 1] == '/') {
                             i += 2;
+                            terminated = true;
                             break;
                         }
                         if (source[i] == '\n') {
                             line += 1;
                         }
                         i += 1;
+                    }
+                    if (!terminated) {
+                        // Consume remaining character if loop ended at last position
+                        if (i < source.len) i += 1;
                     }
                     try comments.append(allocator, .{
                         .kind = .block,
@@ -135,7 +141,6 @@ pub fn extractComments(allocator: Allocator, source: []const u8) ![]Comment {
 
 pub const Config = struct {
     indent_width: u32 = 4,
-    max_line_width: u32 = 100,
 };
 
 pub const Formatter = struct {
@@ -242,14 +247,9 @@ pub const Formatter = struct {
             const comment = self.comments[self.comment_cursor];
             if (comment.is_trailing and comment.start >= after_pos) {
                 // Check it's on the same line: look for newline between after_pos and comment.start
-                var has_newline = false;
-                var i = after_pos;
-                while (i < comment.start and i < self.source.len) : (i += 1) {
-                    if (self.source[i] == '\n') {
-                        has_newline = true;
-                        break;
-                    }
-                }
+                const search_end = @min(comment.start, self.source.len);
+                const between = self.source[after_pos..search_end];
+                const has_newline = std.mem.indexOfScalar(u8, between, '\n') != null;
                 if (!has_newline) {
                     try self.write("  ");
                     try self.write(comment.text);
@@ -262,6 +262,7 @@ pub const Formatter = struct {
     // --- Source span helper ---
 
     fn sourceSlice(self: *Formatter, s: Span) []const u8 {
+        std.debug.assert(s.start <= s.end and s.end <= self.source.len);
         return self.source[s.start..s.end];
     }
 
@@ -1622,6 +1623,7 @@ fn countBlankLinesBetween(source: []const u8, start: usize, end: usize) u32 {
 
 /// Format a Klar source file. Returns the formatted source as a string.
 /// Caller owns the returned memory.
+/// On parse errors, writes details to stderr before returning error.ParseError.
 pub fn format(allocator: Allocator, source: []const u8) ![]u8 {
     const Lexer = @import("lexer.zig").Lexer;
     const Parser = @import("parser.zig").Parser;
@@ -1638,6 +1640,17 @@ pub fn format(allocator: Allocator, source: []const u8) ![]u8 {
     var parser = Parser.init(arena.allocator(), &lexer, source);
 
     const module = parser.parseModule() catch {
+        // Write parse error details to stderr before returning
+        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        var buf: [512]u8 = undefined;
+        for (parser.errors.items) |parse_err| {
+            const msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            stderr.writeAll(msg) catch {};
+        }
         return error.ParseError;
     };
 
@@ -1685,6 +1698,32 @@ test "extractComments: block comments" {
 
     try std.testing.expectEqual(@as(usize, 1), comments.len);
     try std.testing.expectEqualStrings("/* inline */", comments[0].text);
+}
+
+test "extractComments: unterminated block comment" {
+    const source = "let x: i32 = /* unterminated";
+    const comments = try extractComments(std.testing.allocator, source);
+    defer std.testing.allocator.free(comments);
+
+    try std.testing.expectEqual(@as(usize, 1), comments.len);
+    try std.testing.expectEqualStrings("/* unterminated", comments[0].text);
+}
+
+test "extractComments: block comment at end of source" {
+    const source = "/**/";
+    const comments = try extractComments(std.testing.allocator, source);
+    defer std.testing.allocator.free(comments);
+
+    try std.testing.expectEqual(@as(usize, 1), comments.len);
+    try std.testing.expectEqualStrings("/**/", comments[0].text);
+}
+
+test "extractComments: empty source" {
+    const source = "";
+    const comments = try extractComments(std.testing.allocator, source);
+    defer std.testing.allocator.free(comments);
+
+    try std.testing.expectEqual(@as(usize, 0), comments.len);
 }
 
 test "extractComments: comments in strings are ignored" {
