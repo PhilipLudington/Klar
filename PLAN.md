@@ -1,685 +1,436 @@
-# Klar Phase 4: Language Completion
+# Klar Phase 5: Nanolang-Inspired Improvements
 
-> **Goal:** Complete the Klar language with generics, traits, modules, standard library, and FFI.
+> **Goal:** Strengthen Klar's AI-native story with inline tests, checked arithmetic, an LLM reference file, FFI sandboxing, and formal verification.
+>
+> **Inspiration:** [Nanolang](https://github.com/jordanhubbard/nanolang) by Jordan Hubbard. Both languages share the "AI-native, no ambiguity" philosophy. See [docs/design/nanolang-inspiration.md](docs/design/nanolang-inspiration.md) for full analysis.
 
-## Current State
+## Previous Phases
 
-**Completed (Phases 1-3):**
-- Full compilation pipeline (lexer → parser → checker → LLVM → native)
-- Ownership-based memory management (Rc/Arc, automatic drop)
-- Basic types, structs, enums, closures, optionals, results
-- Parser supports generics/traits/modules syntax
-- Three execution backends: interpreter, bytecode VM, native compilation
-- 252x speedup for native vs VM
+**Phase 4 (Language Completion):** All 13 milestones complete. Generics, traits, modules, stdlib (List, Map, Set, String, Option, Result), iterators, error handling (`?` operator), REPL, comptime, FFI (including function pointers), package manager, formatter, and doc generator all working.
 
-**Completed in Phase 4:**
-- [x] **Milestone 1: Generics** - Full generic type checking with monomorphization
-- [x] **Milestone 2: Traits** - Trait definitions, implementations, bounds, inheritance, associated types
-- [x] **Milestone 3: Modules** - Multi-file compilation with imports and visibility
-- [x] **Milestone 4: Stdlib Core** - Option, Result, List, String, Map, Set as builtins
-- [x] **Milestone 6: Iterators** - For-loops, Range, collection adapters
-- [x] **Milestone 7: Error Handling** - `?` operator, From/Into traits, error context
-- [x] **Milestone 10: REPL** - Interactive exploration with interpreter backend
-- [x] **Milestone 11: Comptime** - Compile-time evaluation, reflection, assertions
-- [x] **Milestone 12: FFI** - Foreign Function Interface for C interoperability
-- [x] **Milestone 5: Stdlib I/O** - File I/O, buffered I/O, Path type, filesystem operations
-- [x] **Milestone 8: Package Manager** - Project init, build, run, path dependencies, lock files
-- [x] **Milestone 13: FFI Function Pointers** - C callbacks, `@fn_ptr`, `extern fn` types
-
-**In Progress:**
-- **Milestone 9: Tooling** - Formatter and doc generator complete, LSP not started
-
-> **Previous plans archived:** [Phase 4 History](docs/history/phase4-language-completion.md)
+> **Phase 4 archive:** [docs/history/phase4-language-completion.md](docs/history/phase4-language-completion.md)
 
 ---
 
-## Milestone 1: Generic Type Checking ✅
-
-**Status:** Complete. Generic functions, structs, enums, and struct methods all working.
-
-See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-1-generic-type-checking) for full details.
-
----
-
-## Milestone 2: Trait System ✅
-
-**Status:** Complete. Core trait infrastructure complete (trait registry, definition validation, impl checking, bounds parsing, method resolution through bounds, trait inheritance, associated types).
-
-See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-2-trait-system) for full details.
-
----
-
-## Milestone 3: Module System ✅
-
-**Status:** Complete. Multi-file compilation works with selective imports, visibility enforcement, and topological ordering.
-
-See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-3-module-system) for full details.
-
----
-
-## Milestone 4: Standard Library - Core ✅
-
-**Status:** Complete. Optional, Result, builtin type methods, List[T], String, Map[K,V], and Set[T] all implemented as builtin types.
-
-See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-4-standard-library---core) for full details.
-
----
-
-## Milestone 5: Standard Library - I/O ✅
-
-**Objective:** Implement file and console I/O.
-
-**Status:** Complete. File I/O, buffered I/O, Path type, and filesystem operations all implemented.
-
-### Completed
-- [x] Mutable buffer allocation (`@repeat`, `ref T`, `inout T`, deref assignment)
-- [x] Read trait with File:Read implementation
-- [x] Write trait with File:Write, Stdout:Write, Stderr:Write implementations
-- [x] IoError enum as builtin type
-- [x] File type with open, read, write, close, flush, read_all, read_to_string
-- [x] Standard I/O (stdin, stdout, stderr)
-- [x] Platform-specific stdio access (macOS, Linux)
-- [x] Buffered I/O (BufReader, BufWriter with automatic flush on drop)
-- [x] Path type with path manipulation methods
-- [x] Directory operations (fs_exists, fs_is_file, fs_is_dir, fs_create_dir, fs_create_dir_all, fs_remove_file, fs_remove_dir, fs_read_dir)
-- [x] Convenience functions (fs_read_string, fs_write_string)
-
-### Path Type Methods
-- `Path.new(s: string) -> Path` - construct from string
-- `.to_string() -> string` - convert to string
-- `.join(other: string) -> Path` - join path components (handles trailing slashes)
-- `.parent() -> ?Path` - get parent directory (returns `None` for paths without `/`)
-- `.file_name() -> ?string` - get filename component
-- `.extension() -> ?string` - get file extension
-- `.exists() -> bool` - check if path exists
-- `.is_file() -> bool` - check if path is a file
-- `.is_dir() -> bool` - check if path is a directory
-
-> **Note on `.parent()` behavior:**
-> - `Path.new("/home/user").parent()` → `Some(Path("/home"))`
-> - `Path.new("/").parent()` → `Some(Path("/"))` (root is its own parent)
-> - `Path.new("file.txt").parent()` → `None` (no directory separator)
-> - `Path.new("dir/file.txt").parent()` → `Some(Path("dir"))`
-
-### Filesystem Functions
-- `fs_exists(path: string) -> bool`
-- `fs_is_file(path: string) -> bool`
-- `fs_is_dir(path: string) -> bool`
-- `fs_create_dir(path: string) -> Result[void, IoError]`
-- `fs_create_dir_all(path: string) -> Result[void, IoError]`
-- `fs_remove_file(path: string) -> Result[void, IoError]`
-- `fs_remove_dir(path: string) -> Result[void, IoError]`
-- `fs_read_string(path: string) -> Result[String, IoError]`
-- `fs_write_string(path: string, content: string) -> Result[void, IoError]`
-- `fs_read_dir(path: string) -> Result[List[String], IoError]`
-
-### Tests
-All filesystem tests in `test/native/fs/`:
-- fs_exists.kl, fs_create_remove.kl, fs_read_write.kl, fs_read_dir.kl
-- path_basic.kl, path_exists.kl
-
-### Platform Support
-> **Note:** File I/O and filesystem operations use POSIX syscalls (stat, mkdir, unlink, rmdir, opendir, readdir, etc.) and currently support **macOS and Linux only**. Windows is not implemented.
-
----
-
-## Milestone 6: Iterator Protocol ✅
-
-**Status:** Complete. For-loops work with Range[T], arrays, List[T], Set[T], and Map[K,V]. Iterator adapter methods implemented on collection types.
-
-See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-6-iterator-protocol) for full details.
-
----
-
-## Milestone 7: Error Handling Improvements ✅
-
-**Status:** Complete. `?` operator implemented for early return on Optional and Result types, with automatic error conversion via From trait. Error context via `.context()` method implemented.
-
-See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-7-error-handling-improvements) for full details.
-
----
-
-## Milestone 8: Package Manager ✅
-
-**Objective:** Implement basic package management.
-
-**Status:** Complete. Core functionality (Phases 1-4) implemented. Phase 5 (Git Dependencies) is a stretch goal for future work.
-
-> **Design Decision:** Using JSON format (`klar.json`) instead of TOML, as Zig stdlib provides `std.json` and this matches the project's existing JSON conventions for status files.
-
-### Phase 1: Project Structure & Manifest ✅
-- [x] Define `klar.json` schema (package metadata)
-- [x] Implement manifest parsing with `std.json`
-- [x] `klar init` - Create new project with klar.json
-- [x] `klar init --lib` - Create library project structure
-
-### Phase 2: Local Package Build ✅
-- [x] `klar build` (no args) - Build project from klar.json
-- [x] `klar run` (no args) - Build and run main entry point
-- [x] Support `src/main.kl` as default entry point
-- [x] Support `src/lib.kl` for library projects
-
-### Phase 3: Path Dependencies ✅
-- [x] Parse `dependencies` section with path dependencies
-- [x] Resolve local package paths relative to manifest
-- [x] Integrate with ModuleResolver search paths
-- [x] Build dependency graph with cycle detection (via existing ModuleResolver)
-
-### Phase 4: Lock File & Reproducibility ✅
-- [x] Generate `klar.lock` on first build
-- [x] Read lockfile for reproducible builds
-- [x] `klar update` - Regenerate lockfile
-
-### Phase 5: Git Dependencies (Stretch)
-- [ ] Support git URL with tag/branch/commit
-- [ ] Clone to cache directory (`.klar/cache/`)
-- [ ] Checkout specified ref
-
-### Manifest Schema (klar.json)
-```json
-{
-  "package": {
-    "name": "my-project",
-    "version": "0.1.0",
-    "authors": ["Author Name"],
-    "entry": "src/main.kl"
-  },
-  "dependencies": {
-    "utils": { "path": "../utils" }
-  },
-  "dev-dependencies": {
-    "testing": { "path": "../test-framework" }
-  }
-}
-```
-
-### Lock File Schema (klar.lock)
-```json
-{
-  "version": 1,
-  "dependencies": {
-    "utils": {
-      "source": "path",
-      "path": "../utils",
-      "resolved": "/absolute/path/to/utils",
-      "version": "0.2.0"
-    }
-  }
-}
-```
-
-The lock file is automatically generated on first build and records:
-- **version**: Lock file format version (currently 1)
-- **source**: Dependency type (`path` or `git`)
-- **path/git**: Original path or URL from manifest
-- **resolved**: Absolute path on disk
-- **version**: Version from dependency's klar.json (if available)
-- **commit**: Git commit hash (for git dependencies, future)
-
-### Project Directory Structure
-```
-my-project/
-├── klar.json
-├── klar.lock
-├── src/
-│   ├── main.kl      (binary entry)
-│   └── lib.kl       (library entry)
-├── tests/
-│   └── *.kl
-└── build/
-    └── (compiled output)
-```
-
----
-
-## Milestone 9: Tooling
-
-**Objective:** Developer tooling for productive Klar development.
-
-**Status:** Formatter and doc generator complete. LSP not started.
-
-### Code Formatter (klar fmt) ✅
-- [x] Parse source file into AST
-- [x] Pretty-print AST with consistent formatting
-- [x] Preserve/normalize comments
-- [x] Sort imports alphabetically
-- [x] Blank line preservation between declarations
-- [x] Atomic file writes (write to temp, then rename)
-- [x] Directory mode (recursively format `.kl` files)
-- [x] `--check` mode (exit non-zero if unformatted)
-- [x] Stdin support (`klar fmt --stdin`)
-- [x] Idempotent formatting (formatting twice produces identical output)
-- [x] 31 integration tests + 13 unit tests
-
-### Documentation Generator (klar doc) ✅
-- [x] Extract `///` documentation comments
-- [x] Generate HTML documentation with type signatures
-- [x] Module-level doc comments (separated by blank line from first declaration)
-- [x] Struct field, enum variant, trait method, and impl method docs
-- [x] Table of contents grouped by kind
-- [x] Directory mode with index page
-- [x] `--all` flag for private items
-- [x] 15 unit tests + 11 integration tests
-
-### Language Server Protocol (LSP)
-- [ ] Implement JSON-RPC server
-- [ ] textDocument/hover, definition, references, completion, diagnostics
-
-### VS Code Extension
-- [ ] Syntax highlighting grammar
-- [ ] LSP client integration
-
----
-
-## Milestone 10: REPL ✅
-
-**Status:** Complete. Basic REPL works with interpreter backend.
-
-See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-10-repl) for full details.
-
----
-
-## Milestone 11: Comptime ✅
-
-**Status:** Complete. Comptime blocks, functions, parameters, reflection, and assertions all working.
-
-See [Phase 4 History](docs/history/phase4-language-completion.md#milestone-11-comptime) for full details.
-
----
-
-## Milestone 12: FFI (Foreign Function Interface) ✅
-
-**Objective:** Enable Klar programs to call C functions, use C-compatible type layouts, work with raw pointers, and clearly mark unsafe operations.
-
-**Status:** Complete. All phases implemented.
-
-> **Full specification:** [klar-ffi-spec.md](klar-ffi-spec.md)
-> **Documentation:** [docs/advanced/ffi.md](docs/advanced/ffi.md)
-
-### Phase 1: Unsafe Blocks ✅
-- [x] `unsafe { ... }` blocks as expressions/statements
-- [x] `unsafe fn` declarations
-- [x] Track "unsafe context" during type checking
-- [x] Error when unsafe operations occur outside unsafe context
-
-### Phase 2: External Type Declarations ✅
-- [x] `extern type Name` (opaque, unknown size)
-- [x] `extern type(N) Name` (sized, N bytes)
-- [x] Generate LLVM pointer type for unsized, `[N x i8]` for sized
-
-### Phase 3: Pointer Types ✅
-- [x] `CPtr[T]` (non-null raw pointer)
-- [x] `COptPtr[T]` (nullable raw pointer)
-- [x] `CStr` (borrowed null-terminated string)
-- [x] Builtin functions: `is_null`, `unwrap_ptr`, `offset`, `read`, `write`, `ref_to_ptr`, `ptr_cast`
-
-### Phase 4: External Function Declarations ✅
-- [x] `extern { fn name(...) -> Type }` blocks
-- [x] `out` parameter modifier
-- [x] Variadic `...` in parameter lists
-- [x] C calling convention
-
-### Phase 5: C-Compatible Struct Layout ✅
-- [x] `extern struct Name { ... }` with C ABI layout
-- [x] `extern struct packed Name { ... }` for packed layout
-
-### Phase 6: C-Compatible Enum Layout ✅
-- [x] `extern enum Name: IntType { Variant = Value, ... }`
-- [x] Explicit integer repr type and variant values
-
-### Phase 7: String Conversions ✅
-- [x] `string.as_cstr() -> CStr` (borrow as C string)
-- [x] `CStr.to_string() -> String` (copy to Klar String)
-- [x] `CStr.len() -> usize`, `CStr.from_ptr()`
-
-### Phase 8: Integration & Linking ✅
-- [x] `-l` flag for linking additional system libraries
-- [x] `-L` flag for library search paths
-- [x] ABI-compliant struct passing and returns
-- [x] Tested on macOS and Linux
-
-### Phase 9: Deferred FFI Features ✅
-- [x] Extern type validation (unsized only behind pointers, sized by value)
-- [x] Out parameters at call sites
-- [x] `CStrOwned` type with automatic deallocation
-- [x] `ptr_cast[U](ptr)` builtin with explicit type argument syntax
-- [x] `unsafe trait` and `unsafe impl` declarations
-
-### Tests
-All FFI tests in `test/native/ffi/`:
-- unsafe_block.kl, unsafe_fn.kl, unsafe_error.kl
-- extern_type_opaque.kl, extern_type_sized.kl
-- cptr_basic.kl, ptr_functions.kl, ptr_cast.kl
-- extern_fn_*.kl, extern_struct*.kl, extern_enum.kl
-- string_to_cstr.kl, cstr_to_string.kl, cstr_owned.kl
-- unsafe_trait.kl, unsafe_trait_error.kl, unsafe_impl_error.kl
-- call_c_function.kl, sel4_bindings.kl
-
----
-
-## Milestone 13: FFI Function Pointers ✅
-
-**Objective:** Enable Klar to pass function pointers to C code (callbacks) and receive/call C function pointers, completing bidirectional FFI.
-
-**Status:** Complete. Phases 1-5 implemented. Phase 6 (Variadic) deferred.
-
-> **Depends on:** Milestone 12 (FFI) ✅
-
-### Background
-
-Milestone 12 implemented calling C functions from Klar, but many C APIs require passing function pointers as callbacks (e.g., qsort, signal handlers, event callbacks, plugin systems). This milestone adds:
-1. Passing Klar functions to C as callbacks
-2. Receiving C function pointers in Klar
-3. Calling C function pointers from Klar code
+## Milestone 1: LLM Reference File (MEMORY.md)
+
+**Objective:** Create a single-file, token-efficient language reference optimized for LLM context windows.
+
+**Status:** Not started
+
+**Effort:** Low | **Impact:** High | **Dependencies:** None
+
+### Why First
+
+Immediate value with zero code changes. Improves AI code generation for Klar today. Consolidates docs currently spread across `docs/`, `CLAUDE.md`, and code comments.
+
+### Tasks
+
+- [ ] **1.1** Create `MEMORY.md` at repo root
+  - Language version and feature list at top
+  - Quick reference: all types, operators, keywords (table format)
+  - Canonical patterns: one way to write each construct
+    - Variables and functions
+    - Structs, enums, traits
+    - Generics
+    - Error handling (Result, `?`, `??`)
+    - Collections (List, Map, Set)
+    - I/O and filesystem
+    - FFI
+    - Modules and packages
+  - Common errors and fixes (table format)
+  - Type conversion cheat sheet (`.as[T]`, `.to[T]`, `.trunc[T]`)
+  - Standard library quick reference (all builtins with signatures)
+  - Anti-patterns: what NOT to generate
+
+- [ ] **1.2** Create `spec.json` companion file
+  - All keywords and their roles
+  - Type system rules
+  - Operator precedence table
+  - Grammar in simplified BNF
+  - Built-in functions with signatures
 
 ### Design Principles
 
-1. **Safety First**: Function pointer operations require `unsafe` context
-2. **Explicit Types**: `extern fn` clearly distinguishes C function pointers from Klar closures
-3. **No Hidden Magic**: Closures with captures cannot become C callbacks (environment pointer incompatible)
-4. **Consistent Syntax**: Uses existing `extern` keyword (like `extern type`, `extern struct`)
-5. **Reuse Existing Features**: Nullable pointers use `?extern fn` (existing optional syntax)
-
-### Phase 1: Function Pointer Type Syntax ✅
-
-**Objective:** Add syntax for declaring function pointer types in FFI context.
-
-- [x] Add `extern fn(Args) -> Ret` type for C function pointers
-  - Represents a raw C function pointer (no environment)
-  - Can be received from C code
-  - Can be called from Klar (requires unsafe)
-- [x] Parse `extern fn` as a type expression (distinct from `extern { fn }` declarations)
-- [x] Add to type system (`extern_fn` variant in `Type` union)
-- [x] LLVM codegen: map to LLVM function pointer type (8 bytes, not 16-byte closure struct)
-
-**Example:**
-```klar
-// Receive a C function pointer
-extern {
-    fn get_callback() -> extern fn(i32) -> i32
-    fn set_callback(cb: extern fn(i32, i32) -> void)
-}
-```
-
-### Phase 2: Calling C Function Pointers ✅
-
-**Objective:** Enable calling received C function pointers from Klar code.
-
-- [x] Implement call syntax for `extern fn` values
-- [x] Type check arguments and return type
-- [x] Require unsafe context for calls (raw pointer dereference)
-- [x] LLVM codegen: emit indirect call instruction
-- [x] `extern fn` types accepted as FFI-compatible in extern function signatures
-
-**Example:**
-```klar
-fn use_callback() {
-    let cb: extern fn(i32) -> i32 = unsafe { get_callback() }
-
-    // Call the C function pointer (requires unsafe)
-    let result: i32 = unsafe { cb(42) }
-    println(result.to_string())
-}
-```
-
-### Phase 3: Creating C-Compatible Callbacks ✅
-
-**Objective:** Convert Klar functions to C function pointers for passing to C APIs.
-
-- [x] Add `@fn_ptr` builtin to get raw function pointer from:
-  - Named functions (always works)
-  - Closures with NO captures (stateless closures)
-- [x] Compile-time error for closures with captures (incompatible with C ABI)
-- [x] Return type is `extern fn(...) -> R`
-
-**Example:**
-```klar
-// Named function - can always get pointer
-fn my_compare(a: i32, b: i32) -> i32 {
-    return a - b
-}
-
-fn use_qsort() {
-    // Get function pointer from named function
-    let cmp: extern fn(i32, i32) -> i32 = @fn_ptr(my_compare)
-
-    unsafe {
-        // Pass to C qsort
-        c_qsort(arr_ptr, len, size, cmp)
-    }
-}
-
-// Stateless closure - works (no captures)
-let add_one: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x + 1 })
-
-// Closure with captures - COMPILE ERROR
-let offset: i32 = 10
-let bad: extern fn(i32) -> i32 = @fn_ptr(|x: i32| -> i32 { return x + offset })
-// Error: Cannot create C function pointer from closure with captures
-```
-
-### Phase 4: Function Pointer Parameters in Extern Functions ✅
-
-**Objective:** Declare extern functions that accept function pointer parameters.
-
-- [x] Support `extern fn` parameters in extern function declarations
-- [x] Support `extern fn` return types in extern function declarations
-- [x] Generate correct LLVM function signatures
-- [x] Pass function pointers with C calling convention
-
-**Example:**
-```klar
-extern {
-    // qsort callback
-    fn qsort(
-        base: CPtr[void],
-        nmemb: usize,
-        size: usize,
-        compar: extern fn(CPtr[void], CPtr[void]) -> i32
-    )
-
-    // Signal handler
-    fn signal(
-        signum: i32,
-        handler: extern fn(i32) -> void
-    ) -> extern fn(i32) -> void
-
-    // Callback with user data (common pattern)
-    fn register_callback(
-        callback: extern fn(CPtr[void]) -> void,
-        user_data: CPtr[void]
-    )
-}
-```
-
-### Phase 5: Optional Function Pointers ✅
-
-**Objective:** Support nullable function pointers for optional callbacks.
-
-- [x] Use `?extern fn(...) -> R` for nullable function pointers (existing optional syntax)
-- [x] Return None via implicit return in function (matches Klar's optional semantics)
-- [x] Unwrap with match pattern to extract function pointer
-- [x] Handle C's common pattern of NULL callback = no-op
-
-**Example:**
-```klar
-extern {
-    fn set_optional_callback(cb: ?extern fn(i32) -> void)
-}
-
-fn setup() {
-    // Pass None for no callback
-    unsafe { set_optional_callback(None) }
-
-    // Or pass a real callback wrapped in Some
-    let cb: ?extern fn(i32) -> void = Some(@fn_ptr(my_handler))
-    unsafe { set_optional_callback(cb) }
-}
-```
-
-### Phase 6: Variadic C Function Pointers (Deferred)
-
-**Objective:** Support function pointers to variadic C functions.
-
-- [ ] Parse variadic function pointer types: `extern fn(i32, ...) -> void`
-- [ ] Only usable with extern declarations (cannot create in Klar)
-- [ ] Example: printf-style callbacks
-
-**Note:** This phase may be deferred if use cases are rare.
-
-### Implementation Tasks
-
-#### Type System (src/types.zig)
-- [x] Add `extern_fn: *ExternFnType` variant to Type union
-- [x] `ExternFnType` contains function signature (params, return type)
-- [x] Equality and hash for extern function pointer types
-- [x] Optional extern fn uses existing optional type machinery
-- [x] `isCopyType()` returns true for extern_fn (just an address)
-- [x] `formatType()` formats as "extern fn(...) -> ..."
-- [x] `TypeBuilder.externFnType()` constructor
-
-#### Lexer/Parser (src/lexer.zig, src/parser.zig)
-- [x] Parse `extern fn(Args) -> Ret` as a type expression
-- [x] Distinguish from `extern { fn ... }` declaration blocks
-- [x] Parse `@fn_ptr(expr)` builtin call
-
-#### Type Checker (src/checker.zig)
-- [x] Validate `extern fn` type structure
-- [x] Resolve extern_function AST node to extern_fn Type
-- [x] Type substitution for generics with extern_fn
-- [x] containsTypeVar() for extern_fn
-- [x] unifyTypes() for extern_fn
-- [x] Type check extern function pointer calls (argument/return types)
-- [x] Require unsafe context for extern function pointer calls
-- [x] Accept extern_fn as FFI-compatible type
-- [x] Check `@fn_ptr` argument is function or stateless closure
-- [x] Error on closure with captures for `@fn_ptr`
-
-#### LLVM Codegen (src/codegen/emit.zig)
-- [x] Convert `extern fn` type to LLVM pointer type (ptr, not closure struct)
-- [x] Handle `?extern fn` as `{ i1, ptr }` optional struct
-- [x] Type mangling for extern_fn
-- [x] getSizeOfKlarType() returns 8 for extern_fn
-- [x] Emit indirect call for extern function pointer invocation
-- [x] Emit `@fn_ptr` as address-of for named functions
-- [x] Emit `@fn_ptr` for stateless closures (create C-compatible wrapper function)
-
-### Tests
-
-Create `test/native/ffi/fn_ptr/`:
-- [x] extern_fn_type.kl - Basic `extern fn` type declarations
-- [x] extern_fn_call.kl - Calling C function pointers
-- [x] extern_fn_create.kl - Creating function pointers with `@fn_ptr`
-- [x] extern_fn_closure.kl - Stateless closure to function pointer
-- [x] extern_fn_capture_error.kl - Error on closure with captures (negative test)
-- [x] extern_fn_param.kl - Function pointer parameters in extern functions (in scratch/)
-- [x] extern_fn_optional.kl - Nullable function pointers with `?extern fn`
-- [x] extern_fn_qsort.kl - Real-world qsort callback example
-- [x] extern_fn_signal.kl - Signal handler callback example
-
-### Documentation
-
-- [x] Add section to docs/advanced/ffi.md
-- [x] Update klar-ffi-spec.md with function pointer specification
-- [x] Add examples in docs/examples/ (inline in docs/advanced/ffi.md: qsort, signal handler)
+- Token-efficient: tables and code over prose
+- One canonical form per construct
+- Error-driven: include common mistakes (LLMs learn from negative examples)
+- Self-contained: an LLM reading only this file can generate valid Klar
+- Versioned: language version at top
 
 ### Success Criteria
 
-- [x] `extern fn` type parses and type-checks correctly
-- [x] Can pass Klar functions to C APIs expecting callbacks via `@fn_ptr`
-- [x] Can receive and call C function pointers (`extern fn` values)
-- [x] Compile-time error prevents capturing closures from becoming C callbacks
-- [x] `?extern fn` works for nullable function pointers
-- [x] qsort example works with custom comparator
-- [x] Signal handler example works
-- [x] All tests pass
+- [ ] An LLM given only MEMORY.md can generate syntactically valid Klar code
+- [ ] All language features are documented with exactly one canonical example
+- [ ] Common error patterns have explicit fixes
+- [ ] File fits comfortably in a single LLM context window (~1400 lines target)
 
 ---
 
-## Stretch Goals
+## Milestone 2: Checked Arithmetic (`+?`, `-?`, `*?`, `/?`)
 
-These are valuable but not required for Phase 4 completion:
+**Objective:** Add checked arithmetic operators that return `Result[T, OverflowError]`, completing Klar's four-mode overflow story.
 
-### Async/Await
-- [ ] Design async runtime model
-- [ ] Implement Future trait
-- [ ] Implement async fn transformation
-- [ ] Implement .await syntax
+**Status:** Not started
 
-### Self-Hosting
-- [ ] Port lexer to Klar
-- [ ] Port parser to Klar
-- [ ] Port checker to Klar
-- [ ] Full self-hosted compiler
+**Effort:** Low-Medium | **Impact:** Medium | **Dependencies:** None (Result type exists)
 
-### WebAssembly Target
-- [ ] Add WASM backend to codegen
-- [ ] Handle WASM-specific ABI
-- [ ] Test in browser/Node.js
+### Current Overflow Operators
 
-### REPL Enhancements
-- [ ] Multi-file import support
-- [ ] Tab completion for identifiers
-- [ ] History persistence across sessions
+| Operator | Behavior | Return Type | Status |
+|----------|----------|-------------|--------|
+| `+` | Panic (debug), wrap (release) | `T` | Exists |
+| `+%` | Wrapping (modular) | `T` | Exists |
+| `+|` | Saturating (clamp) | `T` | Exists |
+| `+?` | Checked (return Result) | `Result[T, OverflowError]` | **NEW** |
 
-### Windows Support
-- [ ] Windows target triple detection
-- [ ] Windows-specific stdio access
-- [ ] Windows CI testing
+Same pattern for `-`, `*`, `/`. `/?` also catches division by zero.
+
+### Implementation Tasks
+
+#### Phase 2A: Tokens and AST
+
+- [ ] **2A.1** Add tokens to `src/token.zig`
+  - `.plus_checked`, `.minus_checked`, `.star_checked`, `.slash_checked`
+  - Add display strings: `"+?"`, `"-?"`, `"*?"`, `"/?"`
+- [ ] **2A.2** Add lexer rules in `src/lexer.zig`
+  - In `handlePlus()` (~line 247): check for `?` after `+`, emit `.plus_checked`
+  - Same for `handleMinus()`, `handleStar()`, `handleSlash()`
+- [ ] **2A.3** Add AST binary op variants in `src/ast.zig`
+  - `add_checked`, `sub_checked`, `mul_checked`, `div_checked` in `BinaryOp` enum
+
+#### Phase 2B: Type Checker
+
+- [ ] **2B.1** Add `OverflowError` as a builtin enum type
+  - Variants: `Overflow`, `Underflow`, `DivisionByZero`
+  - Register in builtin type setup (similar to how `IoError` is registered)
+- [ ] **2B.2** Type-check checked operators in `src/checker.zig`
+  - Operands must be integer types (`i32`, `i64`, `u8`, etc.)
+  - Result type is `Result[T, OverflowError]` where `T` matches operand type
+  - `/?` also valid for integer division (catches division by zero)
+
+#### Phase 2C: LLVM Codegen
+
+- [ ] **2C.1** Emit checked arithmetic in `src/codegen/emit.zig`
+  - Use existing `llvm.sadd.with.overflow.*` intrinsics (already cached at ~line 114)
+  - Extract overflow bit from intrinsic result
+  - Branch: overflow → construct `Err(OverflowError.Overflow)`, no overflow → construct `Ok(value)`
+  - For `/?`: also check divisor == 0 → `Err(OverflowError.DivisionByZero)`
+  - Distinguish `Overflow` vs `Underflow` by checking operand signs
+
+#### Phase 2D: VM and Interpreter
+
+- [ ] **2D.1** Add checked opcodes to bytecode compiler (`src/compiler.zig`)
+- [ ] **2D.2** Add VM execution for checked opcodes (`src/vm.zig`)
+  - Runtime overflow check, construct Result value
+- [ ] **2D.3** Add interpreter handling (`src/interpreter.zig`)
+
+#### Phase 2E: Tests and Formatter
+
+- [ ] **2E.1** Create `test/native/checked_arithmetic/` directory
+  - `checked_add.kl` — basic `+?` with Ok and Err cases
+  - `checked_sub.kl` — `-?` with underflow
+  - `checked_mul.kl` — `*?` with overflow
+  - `checked_div.kl` — `/?` with division by zero
+  - `checked_propagation.kl` — `(x +? y)?` with `?` operator
+  - `checked_default.kl` — `(x +? y) ?? 0` with `??` operator
+  - `checked_match.kl` — match on checked result
+- [ ] **2E.2** Update formatter (`src/formatter.zig`) to handle `+?` operators
+- [ ] **2E.3** Update doc generator if needed
+
+### Success Criteria
+
+- [ ] `+?`, `-?`, `*?`, `/?` parse and type-check correctly
+- [ ] Overflow returns `Err(OverflowError.Overflow)`
+- [ ] Underflow returns `Err(OverflowError.Underflow)`
+- [ ] Division by zero returns `Err(OverflowError.DivisionByZero)`
+- [ ] Composes with `?` operator for propagation
+- [ ] Composes with `??` operator for default values
+- [ ] All three backends produce correct results
+- [ ] All tests pass
+
+---
+
+## Milestone 3: Inline Test Blocks (`test` keyword)
+
+**Objective:** Add `test <name> { ... }` blocks for inline testing, with a `klar test` command to discover and run them.
+
+**Status:** Not started (`klar test` command exists as stub in `src/main.zig` line ~365)
+
+**Effort:** Medium | **Impact:** High | **Dependencies:** Milestone 2 (for `OverflowError` test examples, but not blocking)
+
+### Design
+
+```klar
+fn gcd(a: i32, b: i32) -> i32 {
+    if b == 0 { return a }
+    return gcd(b, a % b)
+}
+
+test gcd {
+    assert_eq(gcd(12, 8), 4)
+    assert_eq(gcd(7, 0), 7)
+    assert_eq(gcd(0, 5), 5)
+}
+```
+
+### Implementation Tasks
+
+#### Phase 3A: Lexer and Parser
+
+- [ ] **3A.1** Add `test` keyword to lexer (`src/lexer.zig` ~line 441)
+  - Add to keyword table alongside `trait`, `impl`, etc.
+- [ ] **3A.2** Add `TestDecl` AST node (`src/ast.zig`)
+  - Fields: `name: []const u8`, `body: []const *Statement`, `location: Location`
+  - Add `test_decl: *TestDecl` variant to `Decl` union (~line 590)
+- [ ] **3A.3** Parse `test` blocks in `src/parser.zig`
+  - In `parseDeclaration()`: when token is `test`, parse name + block
+  - Test block body uses same statement parsing as function bodies
+  - Test blocks are top-level declarations, not nested inside functions
+
+#### Phase 3B: Additional Test Assertions
+
+- [ ] **3B.1** Add assertion builtins in `src/checker/builtins.zig`
+  - `assert_ne(left: T, right: T)` — requires T: Eq, shows values on failure
+  - `assert_err(result: Result[T, E])` — asserts Err variant
+  - `assert_ok(result: Result[T, E])` — asserts Ok variant
+  - `assert_some(opt: ?T)` — asserts Some variant
+  - `assert_none(opt: ?T)` — asserts None variant
+  - Note: `assert(bool)` and `assert_eq(T, T)` already exist
+
+- [ ] **3B.2** Implement assertion builtins in all three backends
+  - Interpreter: `src/interpreter.zig`
+  - VM: `src/compiler.zig` + `src/vm.zig`
+  - Native: `src/codegen/emit.zig`
+  - On failure: print assertion type, location, and values (for `assert_eq`/`assert_ne`)
+
+#### Phase 3C: Type Checker
+
+- [ ] **3C.1** Validate test blocks in `src/checker.zig`
+  - Test block name must reference an existing function in the same scope
+  - Type-check all statements in the test body
+  - Test blocks have access to all types and functions in scope
+  - Test blocks do NOT have access to function-local state
+- [ ] **3C.2** Add enforcement mode flags
+  - `--strict-tests`: warn for `pub fn` without a `test` block
+  - `--require-tests`: error for any `pub fn` without a `test` block
+  - Default: test blocks optional
+
+#### Phase 3D: Backend Support
+
+- [ ] **3D.1** Conditional compilation in all backends
+  - `klar run` / `klar build`: skip test blocks entirely (production mode)
+  - `klar test`: compile and execute test blocks
+- [ ] **3D.2** Native backend (`src/codegen/emit.zig`)
+  - Generate test runner entry point when in test mode
+  - Each test block becomes a callable function
+- [ ] **3D.3** VM backend (`src/compiler.zig` + `src/vm.zig`)
+  - Compile test blocks as separate callable units
+- [ ] **3D.4** Interpreter backend (`src/interpreter.zig`)
+  - Execute test blocks directly when in test mode
+
+#### Phase 3E: `klar test` Command
+
+- [ ] **3E.1** Implement `klar test` in `src/main.zig`
+  - `klar test file.kl` — run all test blocks in file
+  - `klar test file.kl --fn gcd` — run specific function's test block
+  - `klar test dir/` — discover and run all `.kl` files with test blocks
+- [ ] **3E.2** Test runner output format
+  - Report pass/fail per test block with source location
+  - Summary: N passed, M failed, K skipped
+  - Exit code: 0 if all pass, 1 if any fail
+- [ ] **3E.3** Integration with `run-tests.sh` and AirTower
+  - Write results to `.test-results.json`
+
+#### Phase 3F: Formatter and Tests
+
+- [ ] **3F.1** Update formatter (`src/formatter.zig`)
+  - Format `test` blocks with same indentation rules as function bodies
+  - Preserve blank line between function and its test block
+- [ ] **3F.2** Create test files
+  - `test/native/test_blocks/basic_test.kl` — simple test block
+  - `test/native/test_blocks/assertions.kl` — all assertion functions
+  - `test/native/test_blocks/multiple_tests.kl` — multiple test blocks in one file
+  - `test/native/test_blocks/test_failure.kl` — expected failure reporting
+  - `test/native/test_blocks/strict_mode.kl` — `--strict-tests` behavior
+  - `test/check/test_blocks/` — negative type-checking tests
+
+### Success Criteria
+
+- [ ] `test` keyword parses as top-level declaration
+- [ ] Test blocks type-check and validate against referenced function
+- [ ] `klar test file.kl` discovers and runs all test blocks
+- [ ] `klar test file.kl --fn name` runs specific test
+- [ ] `klar run` / `klar build` skip test blocks entirely
+- [ ] All assertion builtins work: `assert`, `assert_eq`, `assert_ne`, `assert_err`, `assert_ok`, `assert_some`, `assert_none`
+- [ ] `--strict-tests` warns, `--require-tests` errors on missing tests
+- [ ] Formatter handles test blocks correctly
+- [ ] All three backends support test execution
+
+---
+
+## Milestone 4: Process-Isolated FFI Sandbox
+
+**Objective:** Add `--sandbox` mode that isolates FFI calls in a child process via IPC, so crashing C code cannot take down the Klar runtime.
+
+**Status:** Not started
+
+**Effort:** High | **Impact:** Medium | **Dependencies:** Milestone 12-13 (FFI, complete)
+
+### Architecture
+
+```
+┌──────────────┐     IPC (pipes)          ┌──────────────┐
+│  Klar VM     │ ◄──────────────────────► │  FFI Worker  │
+│  (safe code) │   serialize args/results │  (C calls)   │
+└──────────────┘                          └──────────────┘
+       │                                         │
+  Continues on                              Crashes here
+  worker crash                              are contained
+```
+
+### Implementation Tasks
+
+#### Phase 4A: REPL Sandbox (Highest Value)
+
+- [ ] **4A.1** Design IPC protocol
+  - Serialize: function name, argument types and values
+  - Deserialize: return value or error (including crash signal)
+  - Use POSIX pipes for macOS/Linux
+- [ ] **4A.2** Implement FFI worker process
+  - Child process loads shared libraries
+  - Receives function call requests via pipe
+  - Executes C function, sends result back
+  - Parent detects SIGCHLD on crash, returns `FfiError`
+- [ ] **4A.3** Add `--sandbox` flag to REPL
+  - `klar repl --sandbox`
+  - Fork worker on startup, reconnect on crash
+- [ ] **4A.4** Add `FfiError` type
+  - `WorkerCrashed`, `SerializationError`, `Timeout`
+- [ ] **4A.5** Add `sandbox { expr }` syntax (optional sugar)
+  - Returns `Result[T, FfiError]` instead of `T`
+
+#### Phase 4B: Runtime Sandbox
+
+- [ ] **4B.1** Add `--sandbox` flag to `klar run`
+  - `klar run program.kl --sandbox`
+  - All `extern fn` calls routed through worker
+- [ ] **4B.2** Worker lifecycle management
+  - Automatic restart after crash
+  - Configurable timeout for FFI calls
+  - Graceful shutdown on program exit
+
+#### Phase 4C: Native Compilation (Stretch)
+
+- [ ] **4C.1** Sandbox wrapper for native builds
+  - Optional sandbox mode in compiled binaries
+  - Runtime flag or compile-time selection
+
+### Tests
+
+- [ ] `test/native/sandbox/basic_sandbox.kl` — sandbox FFI call that succeeds
+- [ ] `test/native/sandbox/crash_recovery.kl` — C function that crashes, recovered as error
+- [ ] `test/native/sandbox/timeout.kl` — FFI call that hangs, timeout triggered
+
+### Success Criteria
+
+- [ ] `klar repl --sandbox` isolates FFI crashes
+- [ ] Worker crash returns `FfiError` instead of killing session
+- [ ] Worker auto-restarts for next call
+- [ ] `klar run --sandbox` works for bytecode VM
+- [ ] Serialization handles all FFI-compatible types
+
+---
+
+## Milestone 5: Formal Verification (Long-Term)
+
+**Objective:** Formalize Klar's core type system in Lean 4 and prove type soundness, determinism, and exhaustiveness.
+
+**Status:** Not started
+
+**Effort:** Very High | **Impact:** Medium | **Dependencies:** Language stabilization
+
+### Verified Subset (KlarCore)
+
+- Primitive types: `i32`, `i64`, `f64`, `bool`, `string`
+- Variables: `let`, `var`, assignment
+- Functions: definition, calls, return
+- Control flow: `if`/`else`, `while`, `for`
+- Structs: definition, field access
+- Enums: definition, `match` exhaustiveness
+- Optionals: `?T`, `Some`, `None`, `??`
+- Results: `Result[T, E]`, `Ok`, `Err`, `?` operator
+
+### Properties to Prove
+
+| Property | Meaning |
+|----------|---------|
+| Type soundness (preservation) | Well-typed programs remain well-typed after evaluation |
+| Type soundness (progress) | Well-typed programs either produce a value or step forward |
+| Determinism | Same program + same input = same result |
+| Exhaustiveness correctness | Match expressions cover all variants |
+| Ownership soundness | No use-after-move in the formal model |
+
+### Implementation Tasks
+
+- [ ] **5.1** Define KlarCore syntax as inductive type in Lean 4
+- [ ] **5.2** Define typing rules as inductive relation
+- [ ] **5.3** Define operational semantics (small-step)
+- [ ] **5.4** Prove preservation theorem
+- [ ] **5.5** Prove progress theorem
+- [ ] **5.6** Prove determinism theorem
+- [ ] **5.7** Prove match exhaustiveness correctness
+- [ ] **5.8** Extract test oracle from formal model
+- [ ] **5.9** CI step to verify proofs on language changes
+
+### Deliverables
+
+- `proofs/` directory with Lean 4 source
+- `proofs/README.md` explaining what is proved and assumptions
+- CI integration
+
+### Success Criteria
+
+- [ ] Core type system formalized in Lean 4
+- [ ] Preservation and progress theorems proved
+- [ ] Test oracle generates test cases that pass against real compiler
+- [ ] Proofs checked in CI
 
 ---
 
 ## Implementation Order
 
-Based on dependencies:
+Based on effort, impact, and dependencies:
 
-1. **Milestone 1: Generics** (foundation for everything) ✅
-2. **Milestone 2: Traits** (needs generics) ✅
-3. **Milestone 3: Modules** (needed for stdlib) ✅
-4. **Milestone 10: REPL** (uses interpreter, enables AI workflow) ✅
-5. **Milestone 11: Comptime** (uses interpreter, enables metaprogramming) ✅
-6. **Milestone 6: Iterators** (for-loops, collection adapters) ✅
-7. **Milestone 4: Stdlib Core** (needs generics, traits, modules) ✅
-8. **Milestone 7: Error Handling** (`?` operator, From/Into traits) ✅
-9. **Milestone 12: FFI** (C interoperability) ✅
-10. **Milestone 5: Stdlib I/O** (filesystem operations) ✅
-11. **Milestone 13: FFI Function Pointers** (callbacks, completing FFI) ✅
-12. **Milestone 8: Package Manager** (needs modules) ✅
-13. **Milestone 9: Tooling** (needs stable language) ← **NEXT**
+```
+1. MEMORY.md            Low effort,  High impact,  No deps       ← START HERE
+2. Checked arithmetic   Low-Med,     Medium,       No deps
+3. Inline test blocks   Medium,      High,         No deps
+4. FFI sandbox          High,        Medium,       FFI complete
+5. Formal verification  Very High,   Medium,       Language stable
+```
+
+Milestones 1 and 2 can proceed in parallel. Milestone 3 is the largest code change and defines Klar's testing story. Milestones 4 and 5 are longer-term investments.
 
 ---
 
-## Success Criteria
+## Remaining Phase 4 Items
 
-Phase 4 is complete when:
+These items from Phase 4 are still open and may be addressed alongside Phase 5:
 
-**Language Completeness:**
-- [x] Generic functions and types work correctly
-- [x] Traits can be defined and implemented
-- [x] Multi-file projects compile
-- [x] Standard library provides core functionality (as builtins)
-- [x] Comptime enables compile-time metaprogramming
-- [x] For-loops work with Range, arrays, List, Set, Map
-- [x] `?` operator for error propagation
-- [x] FFI enables C interoperability
-- [x] FFI function pointers enable callbacks to C code
+| Item | Status |
+|------|--------|
+| LSP (Language Server Protocol) | Not started |
+| VS Code extension | Not started |
+| Async/Await | Stretch goal |
+| Self-hosting | Stretch goal |
+| WebAssembly target | Stretch goal |
+| Windows support | Stretch goal |
 
-**AI-Native Development:**
-- [x] REPL provides interactive code exploration
-- [x] AI assistants can verify code before presenting to users
-- [x] Fast feedback loop for iterative development
+---
 
-**Usability:**
-- [x] Can write non-trivial programs (CLI tools, utilities) - filesystem I/O complete
-- [ ] Error messages are helpful and actionable
-- [ ] Documentation exists for language and stdlib
+## References
 
-**Tooling:**
-- [x] Package manager works for dependencies
-- [ ] IDE support via LSP
-- [x] Code formatter available
-
-**Example Programs:**
-- [ ] JSON parser using generics
-- [x] File processing utility - now possible with fs_* functions
-- [ ] HTTP client (stretch goal with async)
+- [Nanolang GitHub](https://github.com/jordanhubbard/nanolang)
+- [Nanolang MEMORY.md](https://github.com/jordanhubbard/nanolang/blob/main/MEMORY.md)
+- [Design Analysis](docs/design/nanolang-inspiration.md)
