@@ -27,7 +27,7 @@
 - [x] **Milestone 13: FFI Function Pointers** - C callbacks, `@fn_ptr`, `extern fn` types
 
 **In Progress:**
-- **Milestone 9: Tooling** - Formatter complete, doc generator and LSP not started
+- **Milestone 9: Tooling** - Formatter and doc generator complete, LSP not started
 
 > **Previous plans archived:** [Phase 4 History](docs/history/phase4-language-completion.md)
 
@@ -236,7 +236,7 @@ my-project/
 
 **Objective:** Developer tooling for productive Klar development.
 
-**Status:** Formatter complete. Doc generator and LSP not started.
+**Status:** Formatter and doc generator complete. LSP not started.
 
 ### Code Formatter (klar fmt) ✅
 - [x] Parse source file into AST
@@ -251,10 +251,15 @@ my-project/
 - [x] Idempotent formatting (formatting twice produces identical output)
 - [x] 31 integration tests + 13 unit tests
 
-### Documentation Generator (klar doc)
-- [ ] Extract `///` documentation comments
-- [ ] Generate HTML documentation
-- [ ] Include type signatures and cross-references
+### Documentation Generator (klar doc) ✅
+- [x] Extract `///` documentation comments
+- [x] Generate HTML documentation with type signatures
+- [x] Module-level doc comments (separated by blank line from first declaration)
+- [x] Struct field, enum variant, trait method, and impl method docs
+- [x] Table of contents grouped by kind
+- [x] Directory mode with index page
+- [x] `--all` flag for private items
+- [x] 15 unit tests + 11 integration tests
 
 ### Language Server Protocol (LSP)
 - [ ] Implement JSON-RPC server
