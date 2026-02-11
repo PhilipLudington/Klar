@@ -15,6 +15,11 @@
 //! | `assert` | `fn(bool)` | Runtime assertion |
 //! | `panic` | `fn(string) -> !` | Panic with message |
 //! | `assert_eq` | `fn(T, T)` | Assert equality |
+//! | `assert_ne` | `fn(T, T)` | Assert inequality |
+//! | `assert_ok` | `fn(Result[T, E])` | Assert Result is Ok |
+//! | `assert_err` | `fn(Result[T, E])` | Assert Result is Err |
+//! | `assert_some` | `fn(?T)` | Assert Optional is Some |
+//! | `assert_none` | `fn(?T)` | Assert Optional is None |
 //! | `dbg` | `fn(T) -> T` | Debug print and return |
 //! | `debug` | `fn(T) -> string` | Debug string representation |
 //! | `type_name` | `fn(T) -> string` | Type name as string |

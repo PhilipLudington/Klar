@@ -131,6 +131,31 @@ pub fn assert_eq[T: Eq](a: T, b: T) -> void {
     // Built-in implementation
 }
 
+/// Assert that two values are not equal. Traps if equal.
+pub fn assert_ne[T: Eq](a: T, b: T) -> void {
+    // Built-in implementation
+}
+
+/// Assert that a Result is Ok. Traps if Err.
+pub fn assert_ok[T, E](r: Result[T, E]) -> void {
+    // Built-in implementation
+}
+
+/// Assert that a Result is Err. Traps if Ok.
+pub fn assert_err[T, E](r: Result[T, E]) -> void {
+    // Built-in implementation
+}
+
+/// Assert that an Optional is Some. Traps if None.
+pub fn assert_some[T](value: ?T) -> void {
+    // Built-in implementation
+}
+
+/// Assert that an Optional is None. Traps if Some.
+pub fn assert_none[T](value: ?T) -> void {
+    // Built-in implementation
+}
+
 /// Halt execution with an error message.
 pub fn panic(msg: string) -> ! {
     // Built-in implementation - never returns

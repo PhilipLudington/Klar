@@ -105,6 +105,21 @@ pub const Interpreter = struct {
         if (self.global_env.get("assert_eq")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
+        if (self.global_env.get("assert_ne")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("assert_ok")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("assert_err")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("assert_some")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("assert_none")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
         if (self.global_env.get("panic")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
@@ -155,6 +170,26 @@ pub const Interpreter = struct {
         const assert_eq_fn = try self.allocator.create(values.BuiltinFunction);
         assert_eq_fn.* = .{ .name = "assert_eq", .func = &builtinAssertEq };
         try self.global_env.define("assert_eq", .{ .builtin = assert_eq_fn }, false);
+
+        const assert_ne_fn = try self.allocator.create(values.BuiltinFunction);
+        assert_ne_fn.* = .{ .name = "assert_ne", .func = &builtinAssertNe };
+        try self.global_env.define("assert_ne", .{ .builtin = assert_ne_fn }, false);
+
+        const assert_ok_fn = try self.allocator.create(values.BuiltinFunction);
+        assert_ok_fn.* = .{ .name = "assert_ok", .func = &builtinAssertOk };
+        try self.global_env.define("assert_ok", .{ .builtin = assert_ok_fn }, false);
+
+        const assert_err_fn = try self.allocator.create(values.BuiltinFunction);
+        assert_err_fn.* = .{ .name = "assert_err", .func = &builtinAssertErr };
+        try self.global_env.define("assert_err", .{ .builtin = assert_err_fn }, false);
+
+        const assert_some_fn = try self.allocator.create(values.BuiltinFunction);
+        assert_some_fn.* = .{ .name = "assert_some", .func = &builtinAssertSome };
+        try self.global_env.define("assert_some", .{ .builtin = assert_some_fn }, false);
+
+        const assert_none_fn = try self.allocator.create(values.BuiltinFunction);
+        assert_none_fn.* = .{ .name = "assert_none", .func = &builtinAssertNone };
+        try self.global_env.define("assert_none", .{ .builtin = assert_none_fn }, false);
 
         const panic_fn = try self.allocator.create(values.BuiltinFunction);
         panic_fn.* = .{ .name = "panic", .func = &builtinPanic };
@@ -2121,6 +2156,65 @@ fn builtinAssertEq(allocator: Allocator, args: []const Value) RuntimeError!Value
     if (args.len != 2) return RuntimeError.InvalidOperation;
 
     if (!args[0].eql(args[1])) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn builtinAssertNe(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 2) return RuntimeError.InvalidOperation;
+
+    if (args[0].eql(args[1])) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn builtinAssertOk(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .result) return RuntimeError.TypeError;
+
+    if (!args[0].result.is_ok) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn builtinAssertErr(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .result) return RuntimeError.TypeError;
+
+    if (args[0].result.is_ok) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn builtinAssertSome(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .optional) return RuntimeError.TypeError;
+
+    if (args[0].optional.value == null) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn builtinAssertNone(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .optional) return RuntimeError.TypeError;
+
+    if (args[0].optional.value != null) {
         return RuntimeError.AssertionFailed;
     }
 

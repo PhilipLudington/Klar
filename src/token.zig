@@ -47,6 +47,7 @@ pub const Token = struct {
         packed_,
         import,
         module,
+        test_,
         as,
         in,
         is,
@@ -150,6 +151,7 @@ pub const Token = struct {
                 .extern_ => "extern",
                 .import => "import",
                 .module => "module",
+                .test_ => "test",
                 .as => "as",
                 .in => "in",
                 .is => "is",
@@ -226,7 +228,7 @@ pub const Token = struct {
 
         pub fn isKeyword(self: Kind) bool {
             return switch (self) {
-                .fn_, .let, .var_, .struct_, .enum_, .trait, .impl, .if_, .else_, .match, .for_, .while_, .loop, .return_, .break_, .continue_, .pub_, .mut, .async_, .await_, .unsafe_, .extern_, .packed_, .import, .module, .as, .in, .is, .and_, .or_, .not, .true_, .false_, .comptime_, .where, .dyn, .type_, .const_, .static, .self, .self_type, .ref, .inout => true,
+                .fn_, .let, .var_, .struct_, .enum_, .trait, .impl, .if_, .else_, .match, .for_, .while_, .loop, .return_, .break_, .continue_, .pub_, .mut, .async_, .await_, .unsafe_, .extern_, .packed_, .import, .module, .test_, .as, .in, .is, .and_, .or_, .not, .true_, .false_, .comptime_, .where, .dyn, .type_, .const_, .static, .self, .self_type, .ref, .inout => true,
                 else => false,
             };
         }

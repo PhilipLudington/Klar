@@ -39,6 +39,11 @@ pub const builtins = [_]NativeDesc{
     // Assertion functions
     .{ .name = "assert", .arity = 1, .function = nativeAssert },
     .{ .name = "assert_eq", .arity = 2, .function = nativeAssertEq },
+    .{ .name = "assert_ne", .arity = 2, .function = nativeAssertNe },
+    .{ .name = "assert_ok", .arity = 1, .function = nativeAssertOk },
+    .{ .name = "assert_err", .arity = 1, .function = nativeAssertErr },
+    .{ .name = "assert_some", .arity = 1, .function = nativeAssertSome },
+    .{ .name = "assert_none", .arity = 1, .function = nativeAssertNone },
     .{ .name = "panic", .arity = 1, .function = nativePanic },
 
     // Utility functions
@@ -138,6 +143,50 @@ fn nativeAssertEq(_: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 2) return RuntimeError.WrongArity;
 
     if (!args[0].eql(args[1])) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn nativeAssertNe(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 2) return RuntimeError.WrongArity;
+
+    if (args[0].eql(args[1])) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn nativeAssertOk(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    // VM runtime does not model Result as a dedicated value kind.
+    return RuntimeError.TypeError;
+}
+
+fn nativeAssertErr(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    // VM runtime does not model Result as a dedicated value kind.
+    return RuntimeError.TypeError;
+}
+
+fn nativeAssertSome(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    if (args[0] != .optional) return RuntimeError.TypeError;
+
+    if (args[0].optional.value == null) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn nativeAssertNone(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    if (args[0] != .optional) return RuntimeError.TypeError;
+
+    if (args[0].optional.value != null) {
         return RuntimeError.AssertionFailed;
     }
 

@@ -334,6 +334,7 @@ pub const Formatter = struct {
     fn formatDecl(self: *Formatter, decl: ast.Decl) Error!void {
         switch (decl) {
             .function => |f| try self.formatFunction(f, false),
+            .test_decl => |t| try self.formatTestDecl(t),
             .struct_decl => |s| try self.formatStruct(s),
             .enum_decl => |e| try self.formatEnum(e),
             .trait_decl => |t| try self.formatTrait(t),
@@ -345,6 +346,14 @@ pub const Formatter = struct {
             .extern_type_decl => |e| try self.formatExternType(e),
             .extern_block => |b| try self.formatExternBlock(b),
         }
+    }
+
+    fn formatTestDecl(self: *Formatter, test_decl: *const ast.TestDecl) Error!void {
+        try self.writeIndent();
+        try self.write("test ");
+        try self.write(test_decl.name);
+        try self.write(" ");
+        try self.formatBraceBlock(test_decl.body);
     }
 
     fn formatFunction(self: *Formatter, func: *const ast.FunctionDecl, in_trait: bool) Error!void {

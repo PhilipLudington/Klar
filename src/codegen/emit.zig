@@ -4730,6 +4730,16 @@ pub const Emitter = struct {
                 return self.emitAssert(call.args);
             } else if (std.mem.eql(u8, name, "assert_eq")) {
                 return self.emitAssertEq(call.args);
+            } else if (std.mem.eql(u8, name, "assert_ne")) {
+                return self.emitAssertNe(call.args);
+            } else if (std.mem.eql(u8, name, "assert_ok")) {
+                return self.emitAssertOk(call.args);
+            } else if (std.mem.eql(u8, name, "assert_err")) {
+                return self.emitAssertErr(call.args);
+            } else if (std.mem.eql(u8, name, "assert_some")) {
+                return self.emitAssertSome(call.args);
+            } else if (std.mem.eql(u8, name, "assert_none")) {
+                return self.emitAssertNone(call.args);
             } else if (std.mem.eql(u8, name, "dbg")) {
                 return self.emitDbg(call.args);
             } else if (std.mem.eql(u8, name, "debug")) {
@@ -13210,6 +13220,99 @@ pub const Emitter = struct {
         // Continue block - assertion passed
         self.builder.positionAtEnd(continue_bb);
 
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
+    fn emitAssertNe(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 2) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        const left = try self.emitExpr(args[0]);
+        const right = try self.emitExpr(args[1]);
+
+        const left_type = llvm.typeOf(left);
+        const type_kind = llvm.c.LLVMGetTypeKind(left_type);
+
+        const cond = switch (type_kind) {
+            llvm.c.LLVMIntegerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntNE, left, right, "assert_ne.cmp"),
+            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildFCmp(llvm.c.LLVMRealONE, left, right, "assert_ne.cmp"),
+            llvm.c.LLVMPointerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntNE, left, right, "assert_ne.cmp"),
+            else => self.builder.buildICmp(llvm.c.LLVMIntNE, left, right, "assert_ne.cmp"),
+        };
+
+        return self.emitAssertFromCondition(cond, "assertion failed: values are equal\n");
+    }
+
+    fn emitAssertOk(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 1) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        const value = try self.emitExpr(args[0]);
+        const value_type = llvm.typeOf(value);
+        const cond = try self.emitResultIsOk(value, value_type);
+        return self.emitAssertFromCondition(cond, "assertion failed: expected Ok(..)\n");
+    }
+
+    fn emitAssertErr(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 1) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        const value = try self.emitExpr(args[0]);
+        const value_type = llvm.typeOf(value);
+        const cond = try self.emitResultIsErr(value, value_type);
+        return self.emitAssertFromCondition(cond, "assertion failed: expected Err(..)\n");
+    }
+
+    fn emitAssertSome(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 1) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        const value = try self.emitExpr(args[0]);
+        const value_type = llvm.typeOf(value);
+        const cond = try self.emitOptionalIsSome(value, value_type);
+        return self.emitAssertFromCondition(cond, "assertion failed: expected Some(..)\n");
+    }
+
+    fn emitAssertNone(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
+        if (args.len != 1) {
+            return llvm.Const.int32(self.ctx, 0);
+        }
+
+        const value = try self.emitExpr(args[0]);
+        const value_type = llvm.typeOf(value);
+        const cond = try self.emitOptionalIsNone(value, value_type);
+        return self.emitAssertFromCondition(cond, "assertion failed: expected None\n");
+    }
+
+    fn emitAssertFromCondition(
+        self: *Emitter,
+        cond: llvm.ValueRef,
+        fail_message: [:0]const u8,
+    ) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const fail_bb = llvm.appendBasicBlock(self.ctx, func, "assert_ext.fail");
+        const continue_bb = llvm.appendBasicBlock(self.ctx, func, "assert_ext.continue");
+
+        _ = self.builder.buildCondBr(cond, continue_bb, fail_bb);
+
+        self.builder.positionAtEnd(fail_bb);
+
+        const fprintf_fn = self.getOrDeclareFprintf();
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr");
+        const fail_msg = self.builder.buildGlobalStringPtr(fail_message, "assert_ext_msg");
+        var fail_args = [_]llvm.ValueRef{ stderr, fail_msg };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fail_args, "");
+
+        const abort_fn = self.getOrDeclareAbort();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(abort_fn), abort_fn, &[_]llvm.ValueRef{}, "");
+        _ = self.builder.buildUnreachable();
+
+        self.builder.positionAtEnd(continue_bb);
         return llvm.Const.int32(self.ctx, 0);
     }
 

@@ -1,0 +1,9 @@
+// Test additional assertion helpers for Result/Optional and inequality
+fn main() -> i32 {
+    assert_ne(1, 2)
+    assert_ok(Ok(42))
+    assert_err(Err(7))
+    assert_some(Some(10))
+    assert_none(None())
+    return 0
+}

@@ -589,6 +589,7 @@ pub const MatchArmStmt = struct {
 
 pub const Decl = union(enum) {
     function: *FunctionDecl,
+    test_decl: *TestDecl,
     struct_decl: *StructDecl,
     enum_decl: *EnumDecl,
     trait_decl: *TraitDecl,
@@ -603,6 +604,7 @@ pub const Decl = union(enum) {
     pub fn span(self: Decl) Span {
         return switch (self) {
             .function => |f| f.span,
+            .test_decl => |t| t.span,
             .struct_decl => |s| s.span,
             .enum_decl => |e| e.span,
             .trait_decl => |t| t.span,
@@ -630,6 +632,12 @@ pub const FunctionDecl = struct {
     is_unsafe: bool, // true for `unsafe fn` (unsafe function)
     is_extern: bool, // true for extern fn (C FFI function)
     is_variadic: bool, // true for variadic fn (has ... in params)
+    span: Span,
+};
+
+pub const TestDecl = struct {
+    name: []const u8,
+    body: *Block,
     span: Span,
 };
 

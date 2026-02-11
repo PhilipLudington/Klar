@@ -14,7 +14,7 @@
 //! ## Built-in Functions (reference)
 //!
 //! Output: `print`, `println`, `debug`
-//! Assertions: `assert`, `assert_eq`, `assert_ne`
+//! Assertions: `assert`, `assert_eq`, `assert_ne`, `assert_ok`, `assert_err`, `assert_some`, `assert_none`
 //! Control: `panic`
 //! Introspection: `type_name`, `len`
 //! Comptime: `repeat`, `comptime_print`
@@ -30,6 +30,10 @@ pub const BuiltinName = struct {
     pub const assert_ = "assert";
     pub const assert_eq = "assert_eq";
     pub const assert_ne = "assert_ne";
+    pub const assert_ok = "assert_ok";
+    pub const assert_err = "assert_err";
+    pub const assert_some = "assert_some";
+    pub const assert_none = "assert_none";
     pub const panic = "panic";
     pub const type_name = "type_name";
     pub const len = "len";
@@ -45,6 +49,10 @@ pub fn isBuiltin(name: []const u8) bool {
         std.mem.eql(u8, name, BuiltinName.assert_) or
         std.mem.eql(u8, name, BuiltinName.assert_eq) or
         std.mem.eql(u8, name, BuiltinName.assert_ne) or
+        std.mem.eql(u8, name, BuiltinName.assert_ok) or
+        std.mem.eql(u8, name, BuiltinName.assert_err) or
+        std.mem.eql(u8, name, BuiltinName.assert_some) or
+        std.mem.eql(u8, name, BuiltinName.assert_none) or
         std.mem.eql(u8, name, BuiltinName.panic) or
         std.mem.eql(u8, name, BuiltinName.type_name) or
         std.mem.eql(u8, name, BuiltinName.len) or
@@ -62,7 +70,11 @@ pub fn isPrintBuiltin(name: []const u8) bool {
 pub fn isAssertBuiltin(name: []const u8) bool {
     return std.mem.eql(u8, name, BuiltinName.assert_) or
         std.mem.eql(u8, name, BuiltinName.assert_eq) or
-        std.mem.eql(u8, name, BuiltinName.assert_ne);
+        std.mem.eql(u8, name, BuiltinName.assert_ne) or
+        std.mem.eql(u8, name, BuiltinName.assert_ok) or
+        std.mem.eql(u8, name, BuiltinName.assert_err) or
+        std.mem.eql(u8, name, BuiltinName.assert_some) or
+        std.mem.eql(u8, name, BuiltinName.assert_none);
 }
 
 test "isBuiltin" {

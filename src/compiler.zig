@@ -273,6 +273,7 @@ pub const Compiler = struct {
             .const_decl => |c| try self.compileConstDecl(c),
             .struct_decl => |s| try self.compileStructDecl(s),
             .enum_decl => |e| try self.compileEnumDecl(e),
+            .test_decl => {}, // Test declarations are handled by `klar test`, not VM compilation
             // VM limitation: traits, impls, imports not supported - use native compilation
             .trait_decl, .impl_decl, .type_alias, .import_decl, .module_decl => {},
             // Extern types and blocks are compile-time only (FFI not supported in VM)

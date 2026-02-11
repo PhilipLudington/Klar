@@ -21,6 +21,7 @@ const StructMethod = traits_mod.StructMethod;
 pub fn checkDecl(tc: anytype, decl: ast.Decl) void {
     switch (decl) {
         .function => |f| checkFunction(tc, f),
+        .test_decl => {}, // Test declarations are checked by `klar test` flow
         .struct_decl => |s| checkStruct(tc, s),
         .enum_decl => |e| checkEnum(tc, e),
         .trait_decl => |t| checkTrait(tc, t),

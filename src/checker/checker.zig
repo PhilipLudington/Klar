@@ -781,6 +781,53 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
+        const assert_ne_type = try self.type_builder.functionType(&.{ self.type_builder.i32Type(), self.type_builder.i32Type() }, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_ne",
+            .type_ = assert_ne_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        const result_i32_i32 = try self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.i32Type());
+        const assert_ok_type = try self.type_builder.functionType(&.{result_i32_i32}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_ok",
+            .type_ = assert_ok_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        const assert_err_type = try self.type_builder.functionType(&.{result_i32_i32}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_err",
+            .type_ = assert_err_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        const optional_i32 = try self.type_builder.optionalType(self.type_builder.i32Type());
+        const assert_some_type = try self.type_builder.functionType(&.{optional_i32}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_some",
+            .type_ = assert_some_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        const assert_none_type = try self.type_builder.functionType(&.{optional_i32}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_none",
+            .type_ = assert_none_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
         // dbg(value: T) -> T - prints value with debug info and returns it
         const dbg_type = try self.type_builder.functionType(&.{self.type_builder.i32Type()}, self.type_builder.i32Type());
         try self.current_scope.define(.{
@@ -2439,6 +2486,54 @@ pub const TypeChecker = struct {
                 const is_string_data = arg_type == .string_data;
                 if (!is_string and !is_string_data) {
                     self.addError(.type_mismatch, call.args[0].span(), "print/println expects string or String", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // Special handling for assert_eq/assert_ne - accepts any two values of matching type
+            if (std.mem.eql(u8, func_name, "assert_eq") or std.mem.eql(u8, func_name, "assert_ne")) {
+                if (call.args.len != 2) {
+                    self.addError(.invalid_call, call.span, "{s} requires exactly 2 arguments, got {d}", .{ func_name, call.args.len });
+                    return self.type_builder.voidType();
+                }
+                const left_type = self.checkExpr(call.args[0]);
+                const right_type = self.checkExpr(call.args[1]);
+                if (!self.isTypeCompatible(left_type, right_type)) {
+                    const left_str = types.typeToString(self.allocator, left_type) catch "unknown";
+                    const right_str = types.typeToString(self.allocator, right_type) catch "unknown";
+                    self.addError(.type_mismatch, call.args[1].span(), "{s} arguments must have matching types, got {s} and {s}", .{
+                        func_name,
+                        left_str,
+                        right_str,
+                    });
+                }
+                return self.type_builder.voidType();
+            }
+
+            // Special handling for Result assertions
+            if (std.mem.eql(u8, func_name, "assert_ok") or std.mem.eql(u8, func_name, "assert_err")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "{s} requires exactly 1 argument, got {d}", .{ func_name, call.args.len });
+                    return self.type_builder.voidType();
+                }
+                const arg_type = self.checkExpr(call.args[0]);
+                if (arg_type != .result) {
+                    const arg_str = types.typeToString(self.allocator, arg_type) catch "unknown";
+                    self.addError(.type_mismatch, call.args[0].span(), "{s} expects Result[T, E], got {s}", .{ func_name, arg_str });
+                }
+                return self.type_builder.voidType();
+            }
+
+            // Special handling for Optional assertions
+            if (std.mem.eql(u8, func_name, "assert_some") or std.mem.eql(u8, func_name, "assert_none")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "{s} requires exactly 1 argument, got {d}", .{ func_name, call.args.len });
+                    return self.type_builder.voidType();
+                }
+                const arg_type = self.checkExpr(call.args[0]);
+                if (arg_type != .optional) {
+                    const arg_str = types.typeToString(self.allocator, arg_type) catch "unknown";
+                    self.addError(.type_mismatch, call.args[0].span(), "{s} expects Optional[T], got {s}", .{ func_name, arg_str });
                 }
                 return self.type_builder.voidType();
             }

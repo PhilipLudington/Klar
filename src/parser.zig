@@ -2343,6 +2343,21 @@ pub const Parser = struct {
                 }
                 break :blk self.parseFunctionDecl(is_pub, is_unsafe);
             },
+            .test_ => blk: {
+                if (is_pub) {
+                    try self.reportError("'pub' modifier is not allowed on test declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on test declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on test declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseTestDecl();
+            },
             .struct_ => blk: {
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on struct declarations");
@@ -2482,6 +2497,21 @@ pub const Parser = struct {
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .function = func };
+    }
+
+    fn parseTestDecl(self: *Parser) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'test'
+
+        const name = try self.consumeIdentifier();
+        const body = try self.parseBlock();
+
+        const test_decl = try self.create(ast.TestDecl, .{
+            .name = name,
+            .body = body,
+            .span = ast.Span.merge(start_span, body.span),
+        });
+        return .{ .test_decl = test_decl };
     }
 
     fn parseTypeParams(self: *Parser) ParseError![]const ast.TypeParam {
@@ -3612,6 +3642,16 @@ test "parse pub function" {
 
     try std.testing.expect(result.decl == .function);
     try std.testing.expect(result.decl.function.is_pub);
+}
+
+test "parse test declaration" {
+    var result = try testParseDecl("test gcd { assert_eq(gcd(12, 8), 4) }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .test_decl);
+    try std.testing.expectEqualStrings("gcd", result.decl.test_decl.name);
+    try std.testing.expectEqual(@as(usize, 0), result.decl.test_decl.body.statements.len);
+    try std.testing.expect(result.decl.test_decl.body.final_expr != null);
 }
 
 test "parse single-expression function" {
