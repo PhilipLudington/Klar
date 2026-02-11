@@ -184,6 +184,20 @@ else
     fail "test command: type-only specific import failed runtime setup"
 fi
 
+output=$($KLAR test "$TEST_DIR/test_command_filter.kl" --fn target_two 2>&1)
+if echo "$output" | grep -q "PASS target_two" && ! echo "$output" | grep -q "PASS target_one" && echo "$output" | grep -q "1 passed, 0 failed"; then
+    pass "test command: --fn filters tests by name"
+else
+    fail "test command: --fn filtering failed"
+fi
+
+output=$($KLAR test "$TEST_DIR/test_command_dir" 2>&1)
+if echo "$output" | grep -q "PASS dir_one" && echo "$output" | grep -q "PASS dir_two" && echo "$output" | grep -q "Directory test result: 2 file(s), 0 failed"; then
+    pass "test command: directory mode runs .kl files recursively"
+else
+    fail "test command: directory mode failed"
+fi
+
 if $KLAR test "$TEST_DIR/test_command_fail.kl" >/tmp/klar_test_command_fail.out 2>&1; then
     fail "test command: failing test should return non-zero"
 else

@@ -149,9 +149,7 @@ test gcd {
 - [x] **3.3** Type-check test blocks (validate referenced function exists, check body)
 - [x] **3.4** Conditional compilation: `klar run`/`build` skip tests, `klar test` runs them
 - [ ] **3.5** All three backend support
-- [ ] **3.6** `klar test` command: file, `--fn`, directory modes; pass/fail reporting
-  - File mode and pass/fail reporting are implemented
-  - Remaining: `--fn` filtering and directory mode
+- [x] **3.6** `klar test` command: file, `--fn`, directory modes; pass/fail reporting
 - [ ] **3.7** Enforcement flags: `--strict-tests` (warn), `--require-tests` (error)
 - [ ] **3.8** Formatter support, integration with AirTower
 - [ ] **3.9** Tests in `test/native/test_blocks/`

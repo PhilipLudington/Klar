@@ -32,6 +32,10 @@ fn getStdErr() std.fs.File {
     return .{ .handle = std.posix.STDERR_FILENO };
 }
 
+const TestRunOptions = struct {
+    fn_filter: ?[]const u8 = null,
+};
+
 /// Result of attempting to load a manifest with user-friendly error messages.
 const ManifestLoadResult = union(enum) {
     success: manifest.Manifest,
@@ -363,11 +367,37 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, command, "update")) {
         try updateLockfile(allocator);
     } else if (std.mem.eql(u8, command, "test")) {
-        if (args.len < 3) {
-            try getStdErr().writeAll("Error: no input file\n");
-            return;
+        var input_path: ?[]const u8 = null;
+        var fn_filter: ?[]const u8 = null;
+
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--fn")) {
+                if (i + 1 >= args.len) {
+                    try getStdErr().writeAll("Error: missing value for --fn\n");
+                    return;
+                }
+                fn_filter = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--fn=")) {
+                fn_filter = arg["--fn=".len..];
+            } else if (!std.mem.startsWith(u8, arg, "-") and input_path == null) {
+                input_path = arg;
+            } else {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error: unknown test option '{s}'\n", .{arg}) catch "Error: unknown test option\n";
+                try getStdErr().writeAll(msg);
+                return;
+            }
         }
-        runTestFile(allocator, args[2]) catch |err| switch (err) {
+
+        const final_path = input_path orelse {
+            try getStdErr().writeAll("Error: no input path\n");
+            return;
+        };
+
+        runTestPath(allocator, final_path, .{ .fn_filter = fn_filter }) catch |err| switch (err) {
             error.TestsFailed => std.process.exit(1),
             else => return err,
         };
@@ -2154,7 +2184,76 @@ fn bindRuntimeImportsForModule(
     }
 }
 
-fn runTestFile(allocator: std.mem.Allocator, path: []const u8) !void {
+fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunOptions) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+
+    const stat = std.fs.cwd().statFile(path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error accessing path '{s}': {}\n", .{ path, err }) catch "Error accessing path\n";
+        try stderr.writeAll(msg);
+        return error.TestsFailed;
+    };
+
+    switch (stat.kind) {
+        .file => return runTestFile(allocator, path, options),
+        .directory => {
+            var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error opening directory '{s}': {}\n", .{ path, err }) catch "Error opening directory\n";
+                try stderr.writeAll(msg);
+                return error.TestsFailed;
+            };
+            defer dir.close();
+
+            var walker = try dir.walk(allocator);
+            defer walker.deinit();
+
+            var files_run: usize = 0;
+            var files_failed: usize = 0;
+
+            while (try walker.next()) |entry| {
+                if (entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, entry.path, ".kl")) continue;
+
+                const full_path = try std.fs.path.join(allocator, &.{ path, entry.path });
+                defer allocator.free(full_path);
+
+                files_run += 1;
+                runTestFile(allocator, full_path, options) catch |err| {
+                    if (err == error.TestsFailed) {
+                        files_failed += 1;
+                        continue;
+                    }
+                    return err;
+                };
+            }
+
+            if (files_run == 0) {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "No .kl files found in '{s}'\n", .{path}) catch "No .kl files found\n";
+                try stdout.writeAll(msg);
+                return;
+            }
+
+            var buf: [512]u8 = undefined;
+            const summary = std.fmt.bufPrint(&buf, "Directory test result: {d} file(s), {d} failed\n", .{ files_run, files_failed }) catch "Directory test result\n";
+            try stdout.writeAll(summary);
+
+            if (files_failed > 0) {
+                return error.TestsFailed;
+            }
+        },
+        else => {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error: unsupported test path '{s}'\n", .{path}) catch "Error: unsupported test path\n";
+            try stderr.writeAll(msg);
+            return error.TestsFailed;
+        },
+    }
+}
+
+fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunOptions) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
@@ -2346,12 +2445,20 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8) !void {
 
         var total_tests: usize = 0;
         for (entry_ast.declarations) |decl| {
-            if (decl == .test_decl) total_tests += 1;
+            if (decl != .test_decl) continue;
+            const test_decl = decl.test_decl;
+            if (options.fn_filter) |fn_name| {
+                if (!std.mem.eql(u8, test_decl.name, fn_name)) continue;
+            }
+            total_tests += 1;
         }
 
         if (total_tests == 0) {
             var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
+            const msg = if (options.fn_filter) |fn_name|
+                std.fmt.bufPrint(&buf, "No tests matched '{s}' in '{s}'\n", .{ fn_name, path }) catch "No tests matched\n"
+            else
+                std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
             try stdout.writeAll(msg);
             return;
         }
@@ -2365,6 +2472,9 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8) !void {
         for (entry_ast.declarations) |decl| {
             if (decl != .test_decl) continue;
             const test_decl = decl.test_decl;
+            if (options.fn_filter) |fn_name| {
+                if (!std.mem.eql(u8, test_decl.name, fn_name)) continue;
+            }
 
             _ = entry_interp.evalBlock(test_decl.body) catch |err| {
                 const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
@@ -2416,12 +2526,20 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8) !void {
 
         var total_tests: usize = 0;
         for (module.declarations) |decl| {
-            if (decl == .test_decl) total_tests += 1;
+            if (decl != .test_decl) continue;
+            const test_decl = decl.test_decl;
+            if (options.fn_filter) |fn_name| {
+                if (!std.mem.eql(u8, test_decl.name, fn_name)) continue;
+            }
+            total_tests += 1;
         }
 
         if (total_tests == 0) {
             var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
+            const msg = if (options.fn_filter) |fn_name|
+                std.fmt.bufPrint(&buf, "No tests matched '{s}' in '{s}'\n", .{ fn_name, path }) catch "No tests matched\n"
+            else
+                std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
             try stdout.writeAll(msg);
             return;
         }
@@ -2436,6 +2554,9 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8) !void {
         for (module.declarations) |decl| {
             if (decl != .test_decl) continue;
             const test_decl = decl.test_decl;
+            if (options.fn_filter) |fn_name| {
+                if (!std.mem.eql(u8, test_decl.name, fn_name)) continue;
+            }
 
             _ = interp.evalBlock(test_decl.body) catch |err| {
                 const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
@@ -3182,7 +3303,8 @@ fn printUsage() !void {
         \\  update               Regenerate klar.lock from klar.json
         \\  check <file>         Type check a file
         \\  repl                 Interactive REPL (Read-Eval-Print Loop)
-        \\  test <file>          Run inline test blocks in a file
+        \\  test <path>          Run inline test blocks in a file or directory
+        \\    --fn <name>        Run only tests matching <name>
         \\  fmt [file|dir]       Format source files
         \\    -i                  Format files in-place
         \\    --check             Check formatting (exit 1 if unformatted)
