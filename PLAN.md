@@ -17,56 +17,44 @@
 
 ## Implementation Order
 
-14 milestones across 5 phases, ordered by effort, impact, and dependencies:
+5 milestones across 3 phases, ordered by effort, impact, and dependencies:
 
 ### Phase 5A: Foundation (no code changes)
 
 | # | Milestone | Effort | Impact | Source |
 |---|-----------|--------|--------|--------|
-| 1 | [MEMORY.md + grammar.json + spec.json](#milestone-1-llm-reference-files) | Low | **High** | Nanolang + MoonBit |
+| 1 | [MEMORY.md](#milestone-1-llm-reference-file) | Low | **High** | Nanolang |
 
 ### Phase 5B: Small Language Features
 
 | # | Milestone | Effort | Impact | Source |
 |---|-----------|--------|--------|--------|
 | 2 | [Mandatory return types](#milestone-2-mandatory-function-return-types) | Low | **High** | MoonBit |
-| 3 | [Checked arithmetic (`+?`)](#milestone-3-checked-arithmetic) | Low-Med | Medium | Nanolang |
-| 4 | [Pipeline operator (`\|>`)](#milestone-4-pipeline-operator) | Low | Medium | DSPy |
 
 ### Phase 5C: Testing Story
 
 | # | Milestone | Effort | Impact | Source |
 |---|-----------|--------|--------|--------|
-| 5 | [Inline test blocks (`test`)](#milestone-5-inline-test-blocks) | Medium | **High** | Nanolang |
-| 6 | [Comptime examples (`@example`)](#milestone-6-comptime-examples) | Low | Medium | DSPy |
-| 7 | [AI test feedback (`--ai-feedback`)](#milestone-7-ai-test-feedback) | Low | **High** | DSPy |
-| 8 | [Quality metrics in tests](#milestone-8-quality-metrics-in-tests) | Low | Medium | DSPy |
+| 3 | [Inline test blocks (`test`)](#milestone-3-inline-test-blocks) | Medium | **High** | Nanolang |
+| 4 | [Structured test output (`--json`)](#milestone-4-structured-test-output) | Low | **High** | DSPy |
 
 ### Phase 5D: Tooling
 
 | # | Milestone | Effort | Impact | Source |
 |---|-----------|--------|--------|--------|
-| 9 | [Type schema export (`klar schema`)](#milestone-9-type-schema-export) | Low-Med | Medium | DSPy |
-| 10 | [Semantic sampler (`klar assist`)](#milestone-10-semantic-sampler-server) | High | **High** | MoonBit |
-| 11 | [Incremental type checking](#milestone-11-incremental-type-checking) | High | **High** | MoonBit |
-
-### Phase 5E: Advanced (Long-Term)
-
-| # | Milestone | Effort | Impact | Source |
-|---|-----------|--------|--------|--------|
-| 12 | [Function contracts (`@doc`)](#milestone-12-function-contracts) | Medium | Medium | DSPy |
-| 13 | [FFI sandbox (`--sandbox`)](#milestone-13-ffi-sandbox) | High | Medium | Nanolang |
-| 14 | [Formal verification (Lean 4)](#milestone-14-formal-verification) | Very High | Medium | Nanolang |
+| 5 | [LSP and incremental type checking](#milestone-5-lsp-and-incremental-type-checking) | High | **High** | MoonBit |
 
 ---
 
-## Milestone 1: LLM Reference Files
+## Milestone 1: LLM Reference File
 
-**Objective:** Create documentation optimized for LLM consumption: a human-readable reference, a machine-readable grammar spec, and a structured language spec.
+**Objective:** Create a single consolidated reference document optimized for LLM consumption.
 
 **Status:** Not started
 
-**Effort:** Low | **Impact:** High | **Source:** Nanolang (MEMORY.md) + MoonBit (grammar.json)
+**Effort:** Low | **Impact:** High | **Source:** Nanolang (MEMORY.md)
+
+> **Deferred:** grammar.json and spec.json were originally planned but deferred. Constrained decoding is still niche — LLMs generate code from examples and docs, not formal grammars. The spec.json overlaps with MEMORY.md content. If the semantic sampler (Milestone 10) materializes, a machine-readable grammar can be revisited then.
 
 ### Tasks
 
@@ -78,21 +66,10 @@
   - Type conversion cheat sheet
   - Standard library quick reference (all builtins with signatures)
   - Anti-patterns: what NOT to generate
-- [ ] **1.2** Create `grammar.json` — machine-readable grammar for constrained decoding tools
-  - All keywords and operators with precedence
-  - Declaration patterns in simplified BNF
-  - Type syntax rules
-  - Loadable by grammar-constrained decoding libraries (`outlines`, `guidance`)
-- [ ] **1.3** Create `spec.json` — structured language specification
-  - All keywords and their roles
-  - Type system rules
-  - Operator precedence table
-  - Built-in functions with signatures
 
 ### Success Criteria
 
 - [ ] An LLM given only MEMORY.md can generate syntactically valid Klar code
-- [ ] grammar.json can be loaded by constrained decoding tools
 - [ ] All language features documented with exactly one canonical example
 
 ---
@@ -133,80 +110,7 @@ fn greet(name: string) -> void { println("Hello " + name) }
 
 ---
 
-## Milestone 3: Checked Arithmetic
-
-**Objective:** Add `+?`, `-?`, `*?`, `/?` operators returning `Result[T, OverflowError]`.
-
-**Status:** Not started
-
-**Effort:** Low-Medium | **Impact:** Medium | **Source:** Nanolang
-
-Completes Klar's four-mode overflow story:
-
-| Operator | Behavior | Return Type | Status |
-|----------|----------|-------------|--------|
-| `+` | Panic (debug), wrap (release) | `T` | Exists |
-| `+%` | Wrapping (modular) | `T` | Exists |
-| `+|` | Saturating (clamp) | `T` | Exists |
-| `+?` | Checked (return Result) | `Result[T, OverflowError]` | **NEW** |
-
-### Tasks
-
-- [ ] **3.1** Add tokens (`.plus_checked` etc.) and lexer rules (`src/token.zig`, `src/lexer.zig`)
-- [ ] **3.2** Add AST binary op variants (`add_checked` etc. in `src/ast.zig`)
-- [ ] **3.3** Add `OverflowError` builtin enum (Overflow, Underflow, DivisionByZero)
-- [ ] **3.4** Type-check: operands must be integer, result is `Result[T, OverflowError]`
-- [ ] **3.5** LLVM codegen: use existing `llvm.sadd.with.overflow.*` intrinsics
-- [ ] **3.6** VM and interpreter support
-- [ ] **3.7** Tests in `test/native/checked_arithmetic/`
-- [ ] **3.8** Update formatter
-
-### Success Criteria
-
-- [ ] All four checked operators work across all three backends
-- [ ] Composes with `?` and `??` operators
-- [ ] All tests pass
-
----
-
-## Milestone 4: Pipeline Operator
-
-**Objective:** Add `|>` operator for left-to-right function composition with compile-time type checking.
-
-**Status:** Not started
-
-**Effort:** Low | **Impact:** Medium | **Source:** DSPy
-
-```klar
-// Without pipeline: nested, read inside-out
-let result: string = format(validate(parse(input)))
-
-// With pipeline: linear, read left-to-right
-let result: string = input |> parse |> validate |> format
-```
-
-### Semantics
-
-`x |> f` is sugar for `f(x)`. Desugared before backends — no special codegen needed.
-
-### Tasks
-
-- [ ] **4.1** Add `|>` token to lexer (`src/token.zig`, `src/lexer.zig`)
-- [ ] **4.2** Parse as binary operator with lowest precedence (`src/parser.zig`)
-- [ ] **4.3** Desugar `x |> f` to `f(x)` in checker (`src/checker.zig`)
-- [ ] **4.4** Tests in `test/native/pipeline/`
-- [ ] **4.5** Update formatter
-
-### Success Criteria
-
-- [ ] `x |> f` type-checks as `f(x)`
-- [ ] Chains work: `x |> f |> g |> h`
-- [ ] Composes with `?`: `x |> parse? |> validate?`
-- [ ] Clear error messages on type mismatches
-
----
-
-## Milestone 5: Inline Test Blocks
+## Milestone 3: Inline Test Blocks
 
 **Objective:** Add `test <name> { ... }` blocks for inline testing with `klar test` command.
 
@@ -229,15 +133,15 @@ test gcd {
 
 ### Tasks
 
-- [ ] **5.1** Add `test` keyword to lexer, `TestDecl` AST node, parser support
-- [ ] **5.2** Add assertion builtins: `assert_ne`, `assert_err`, `assert_ok`, `assert_some`, `assert_none`
-- [ ] **5.3** Type-check test blocks (validate referenced function exists, check body)
-- [ ] **5.4** Conditional compilation: `klar run`/`build` skip tests, `klar test` runs them
-- [ ] **5.5** All three backend support
-- [ ] **5.6** `klar test` command: file, `--fn`, directory modes; pass/fail reporting
-- [ ] **5.7** Enforcement flags: `--strict-tests` (warn), `--require-tests` (error)
-- [ ] **5.8** Formatter support, integration with AirTower
-- [ ] **5.9** Tests in `test/native/test_blocks/`
+- [ ] **3.1** Add `test` keyword to lexer, `TestDecl` AST node, parser support
+- [ ] **3.2** Add assertion builtins: `assert_ne`, `assert_err`, `assert_ok`, `assert_some`, `assert_none`
+- [ ] **3.3** Type-check test blocks (validate referenced function exists, check body)
+- [ ] **3.4** Conditional compilation: `klar run`/`build` skip tests, `klar test` runs them
+- [ ] **3.5** All three backend support
+- [ ] **3.6** `klar test` command: file, `--fn`, directory modes; pass/fail reporting
+- [ ] **3.7** Enforcement flags: `--strict-tests` (warn), `--require-tests` (error)
+- [ ] **3.8** Formatter support, integration with AirTower
+- [ ] **3.9** Tests in `test/native/test_blocks/`
 
 ### Success Criteria
 
@@ -249,54 +153,16 @@ test gcd {
 
 ---
 
-## Milestone 6: Comptime Examples
+## Milestone 4: Structured Test Output
 
-**Objective:** Add `@example` annotations validated at compile time.
-
-**Status:** Not started
-
-**Effort:** Low | **Impact:** Medium | **Source:** DSPy
-
-```klar
-@example(celsius_to_fahrenheit(0.0) == 32.0)
-@example(celsius_to_fahrenheit(100.0) == 212.0)
-fn celsius_to_fahrenheit(c: f64) -> f64 {
-    return c * 1.8 + 32.0
-}
-```
-
-### Semantics
-
-- Evaluated at compile time using existing comptime infrastructure
-- Compilation fails if any example fails
-- Zero runtime cost — serve as docs, tests, AND compile checks simultaneously
-- Complementary to test blocks: `@example` for simple I/O, `test` for complex scenarios
-
-### Tasks
-
-- [ ] **6.1** Parse `@example(expr)` as function annotation
-- [ ] **6.2** Evaluate example expressions at compile time via comptime
-- [ ] **6.3** Report failing examples with expected vs actual
-- [ ] **6.4** Tests and formatter support
-
-### Success Criteria
-
-- [ ] `@example` expressions evaluated at compile time
-- [ ] Compilation fails with clear message on example failure
-- [ ] Works for pure functions with comptime-evaluable arguments
-
----
-
-## Milestone 7: AI Test Feedback
-
-**Objective:** Structured JSON test output enabling a DSPy-style assert → feedback → regenerate loop.
+**Objective:** Add `--json` flag to `klar test` for machine-readable test results.
 
 **Status:** Not started
 
-**Effort:** Low | **Impact:** High | **Source:** DSPy | **Dependencies:** Milestone 5 (test blocks)
+**Effort:** Low | **Impact:** High | **Source:** DSPy | **Dependencies:** Milestone 3 (inline test blocks)
 
 ```bash
-klar test math.kl --ai-feedback
+klar test math.kl --json
 ```
 
 ```json
@@ -307,239 +173,67 @@ klar test math.kl --ai-feedback
     "status": "FAIL",
     "assertions": [
       { "type": "assert_eq", "passed": false, "call": "gcd(12, 8)", "expected": 4, "actual": 6 }
-    ],
-    "function_source": "fn gcd(a: i32, b: i32) -> i32 { return a % b }"
+    ]
   }]
 }
 ```
 
-### The AI Regeneration Loop
+### Use Cases
 
-1. AI generates Klar code with test block
-2. `klar test --ai-feedback` runs tests, outputs structured JSON
-3. On failure: feed JSON back to AI as context
-4. AI regenerates with failure feedback (DSPy's backtrack → retry pattern)
-5. Repeat until all tests pass
+- **AI code generation:** Feed structured failures back to an LLM for automatic fix/retry loops
+- **CI integration:** Machine-parseable results for build systems and dashboards
+- **Tooling:** Any script or tool that needs to programmatically inspect test results
+
+Optionally include function source with `--include-source` for richer AI context.
 
 ### Tasks
 
-- [ ] **7.1** Add `--ai-feedback` flag to `klar test`
-- [ ] **7.2** JSON output: test name, assertion results, expected vs actual, function source
-- [ ] **7.3** Include compiler errors in same structured format
-- [ ] **7.4** Documentation for AI tool integration
+- [ ] **4.1** Add `--json` flag to `klar test`
+- [ ] **4.2** JSON output: test name, assertion results, expected vs actual
+- [ ] **4.3** Include compiler errors in same structured format
+- [ ] **4.4** `--include-source` flag to embed function source in JSON output
 
 ### Success Criteria
 
-- [ ] `klar test --ai-feedback` outputs valid JSON
-- [ ] JSON includes enough context for an LLM to fix failing code
+- [ ] `klar test --json` outputs valid JSON
+- [ ] JSON includes enough context for tooling to act on failures
 - [ ] Works with all assertion types
 
 ---
 
-## Milestone 8: Quality Metrics in Tests
+## Milestone 5: LSP and Incremental Type Checking
 
-**Objective:** Allow test blocks to report scored metrics (not just pass/fail).
-
-**Status:** Not started
-
-**Effort:** Low | **Impact:** Medium | **Source:** DSPy | **Dependencies:** Milestone 5 (test blocks)
-
-```klar
-test sort {
-    assert_eq(sort(List.from([3, 1, 2])), List.from([1, 2, 3]))
-
-    let large: List[i32] = List.range(0, 10000).reverse()
-    let start: i64 = time_ns()
-    let _sorted: List[i32] = sort(large)
-    let elapsed: i64 = time_ns() - start
-
-    metric("sort_10k_time", 1.0 - (elapsed.to_f64() / 1000000000.0))
-}
-```
-
-### Tasks
-
-- [ ] **8.1** Add `metric(name: string, score: f64)` builtin (test scope only)
-- [ ] **8.2** `klar test` collects and reports metrics alongside pass/fail
-- [ ] **8.3** `--ai-feedback` includes metrics in JSON output
-- [ ] **8.4** Metrics are informational — they don't cause test failure
-
-### Success Criteria
-
-- [ ] `metric()` reports scores in test output
-- [ ] AI tools can optimize code quality via metric scores
-
----
-
-## Milestone 9: Type Schema Export
-
-**Objective:** Export Klar types as JSON Schema for LLM structured output.
+**Objective:** Build a Language Server Protocol implementation for Klar, powered by an error-recovering parser and incremental type checker.
 
 **Status:** Not started
 
-**Effort:** Low-Medium | **Impact:** Medium | **Source:** DSPy
-
-```bash
-klar schema types.kl              # Export all public types
-klar schema types.kl --type Point  # Export specific type
-```
-
-Maps: `i32`/`i64` → integer, `f64` → number, `bool` → boolean, `string` → string, `?T` → nullable, `List[T]` → array, `enum` → string enum, `struct` → object.
+**Effort:** High | **Impact:** High | **Source:** MoonBit
 
 ### Tasks
 
-- [ ] **9.1** New `klar schema` CLI command in `src/main.zig`
-- [ ] **9.2** AST walker: extract public structs/enums, emit JSON Schema
-- [ ] **9.3** Handle nested types, optionals, collections
-- [ ] **9.4** Tests with representative Klar types
+**Compiler foundations:**
+- [ ] **5.1** Error-recovering parser: continue past first error, produce partial AST
+- [ ] **5.2** Scope extraction at cursor position (all in-scope bindings with types)
+- [ ] **5.3** Incremental type checking of partial declarations
+- [ ] **5.4** Expected-type inference at cursor (what type does context demand?)
 
-### Success Criteria
+**LSP server:**
+- [ ] **5.5** JSON-RPC transport layer (stdio)
+- [ ] **5.6** `textDocument/diagnostic` — real-time error reporting
+- [ ] **5.7** `textDocument/completion` — scope and type-aware completions
+- [ ] **5.8** `textDocument/hover` — type information on hover
+- [ ] **5.9** `textDocument/definition` — go to definition
 
-- [ ] LLMs with structured output (OpenAI, Anthropic) can use exported schemas
-- [ ] Schema stays in sync with Klar types (single source of truth)
-
----
-
-## Milestone 10: Semantic Sampler Server
-
-**Objective:** JSON-RPC server exposing Klar's parser and type checker for real-time constrained decoding.
-
-**Status:** Not started
-
-**Effort:** High | **Impact:** High | **Source:** MoonBit | **Dependencies:** Milestone 11 (incremental checking)
-
-```bash
-klar assist --port 9100    # TCP server
-klar assist --stdio        # Stdio for tool integration
-```
-
-### Protocol
-
-- `validate_token` — Is this next token syntactically valid? (local sampling)
-- `check_partial` — Type-check partial code up to cursor (global sampling)
-- `completions_at` — Valid completions with types at cursor position
-
-### Tasks
-
-- [ ] **10.1** JSON-RPC server infrastructure (shares with LSP)
-- [ ] **10.2** `validate_token`: expose parser state for syntactic validation
-- [ ] **10.3** `check_partial`: partial type checking (depends on Milestone 11)
-- [ ] **10.4** `completions_at`: scope + type-aware suggestions
-- [ ] **10.5** AI tool integration (VS Code, Claude Code, Cursor)
-
-### Success Criteria
-
-- [ ] Local sampling validates tokens with <1ms latency
-- [ ] Global sampling catches type errors in partial code
-- [ ] Integrates with at least one AI coding tool
-
----
-
-## Milestone 11: Incremental Type Checking
-
-**Objective:** Enable type checking of partial/incomplete code for the semantic sampler and LSP.
-
-**Status:** Not started
-
-**Effort:** High | **Impact:** High | **Source:** MoonBit | **Shares:** LSP infrastructure (Phase 4 M9)
-
-### Tasks
-
-- [ ] **11.1** Error-recovering parser: continue past first error, produce partial AST
-- [ ] **11.2** Scope extraction at cursor position (all in-scope bindings with types)
-- [ ] **11.3** Incremental type checking of partial declarations
-- [ ] **11.4** Expected-type inference at cursor (what type does context demand?)
+**Editor integration:**
+- [ ] **5.10** VS Code extension with syntax highlighting and LSP client
 
 ### Success Criteria
 
 - [ ] Parser produces useful AST even with syntax errors
 - [ ] Type checker reports errors found so far in partial code
 - [ ] Scope query returns correct bindings at any cursor position
-
----
-
-## Milestone 12: Function Contracts
-
-**Objective:** Machine-readable preconditions, postconditions, and examples on functions.
-
-**Status:** Not started
-
-**Effort:** Medium | **Impact:** Medium | **Source:** DSPy
-
-```klar
-/// Compute the greatest common divisor.
-/// @pre a >= 0 and b >= 0
-/// @post result divides a and result divides b
-/// @example gcd(12, 8) == 4
-fn gcd(a: i32, b: i32) -> i32 { ... }
-```
-
-### Tasks
-
-- [ ] **12.1** Parse structured doc comment tags (`@pre`, `@post`, `@example`)
-- [ ] **12.2** `klar doc` extracts contracts into documentation
-- [ ] **12.3** `klar schema` includes descriptions in JSON Schema
-- [ ] **12.4** Optional runtime checking of `@pre`/`@post` in debug mode
-
-### Success Criteria
-
-- [ ] Structured doc tags parsed and available to tooling
-- [ ] AI tools can read contracts to understand function behavior
-
----
-
-## Milestone 13: FFI Sandbox
-
-**Objective:** `--sandbox` mode isolating FFI calls in a child process via IPC.
-
-**Status:** Not started
-
-**Effort:** High | **Impact:** Medium | **Source:** Nanolang
-
-### Tasks
-
-- [ ] **13.1** IPC protocol design (serialize function name, args, results via pipes)
-- [ ] **13.2** FFI worker process (load libraries, execute C calls, return results)
-- [ ] **13.3** `klar repl --sandbox` (Phase 1: highest value)
-- [ ] **13.4** `klar run --sandbox` (Phase 2: runtime)
-- [ ] **13.5** `FfiError` type (WorkerCrashed, SerializationError, Timeout)
-- [ ] **13.6** Worker lifecycle (auto-restart on crash, timeout, graceful shutdown)
-
-### Success Criteria
-
-- [ ] `klar repl --sandbox` isolates FFI crashes
-- [ ] Worker crash returns `FfiError` instead of killing session
-- [ ] `klar run --sandbox` works for bytecode VM
-
----
-
-## Milestone 14: Formal Verification
-
-**Objective:** Formalize Klar's core type system in Lean 4 and prove type soundness.
-
-**Status:** Not started
-
-**Effort:** Very High | **Impact:** Medium | **Source:** Nanolang | **Dependencies:** Language stabilization
-
-### Tasks
-
-- [ ] **14.1** Define KlarCore syntax as inductive type in Lean 4
-- [ ] **14.2** Define typing rules and operational semantics
-- [ ] **14.3** Prove preservation and progress theorems
-- [ ] **14.4** Prove determinism and match exhaustiveness
-- [ ] **14.5** Extract test oracle, CI integration
-
-### Deliverables
-
-- `proofs/` directory with Lean 4 source
-- `proofs/README.md` explaining what is proved
-- CI step verifying proofs
-
-### Success Criteria
-
-- [ ] Core type system formalized
-- [ ] Preservation and progress proved
-- [ ] Proofs checked in CI
+- [ ] LSP provides diagnostics, completions, hover, and go-to-definition
+- [ ] VS Code extension works with the LSP
 
 ---
 
@@ -547,8 +241,6 @@ fn gcd(a: i32, b: i32) -> i32 { ... }
 
 | Item | Status | Notes |
 |------|--------|-------|
-| LSP | Not started | Shares infrastructure with Milestones 10-11 |
-| VS Code extension | Not started | Depends on LSP |
 | Async/Await | Stretch goal | |
 | Self-hosting | Stretch goal | |
 | WebAssembly target | Stretch goal | |
