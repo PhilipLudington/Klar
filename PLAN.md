@@ -46,6 +46,18 @@
 
 ---
 
+## Completed Out-of-Band Improvements
+
+- [x] **Explicit variable shadowing (`shadow`)**
+  - Added `shadow` keyword with parser/AST/formatter support (`shadow let`, `shadow var`)
+  - Type checker now rejects implicit shadowing and requires explicit `shadow`
+  - Added `check` regression tests for:
+    - explicit shadowing pass case
+    - shadowing without `shadow` (error)
+    - `shadow` with no outer binding (error)
+
+---
+
 ## Milestone 1: LLM Reference File
 
 **Objective:** Create a single consolidated reference document optimized for LLM consumption.
