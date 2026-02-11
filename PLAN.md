@@ -125,7 +125,7 @@ fn greet(name: string) -> void { println("Hello " + name) }
 
 **Objective:** Add `test <name> { ... }` blocks for inline testing with `klar test` command.
 
-**Status:** In progress (`klar test <file>` now executes inline test blocks)
+**Status:** In progress (`klar test <file>` now executes only entry-module test blocks with module import support)
 
 **Effort:** Medium | **Impact:** High | **Source:** Nanolang
 
@@ -150,15 +150,17 @@ test gcd {
 - [x] **3.4** Conditional compilation: `klar run`/`build` skip tests, `klar test` runs them
 - [ ] **3.5** All three backend support
 - [ ] **3.6** `klar test` command: file, `--fn`, directory modes; pass/fail reporting
+  - File mode and pass/fail reporting are implemented
+  - Remaining: `--fn` filtering and directory mode
 - [ ] **3.7** Enforcement flags: `--strict-tests` (warn), `--require-tests` (error)
 - [ ] **3.8** Formatter support, integration with AirTower
 - [ ] **3.9** Tests in `test/native/test_blocks/`
 
 ### Success Criteria
 
-- [ ] `test` keyword parses as top-level declaration
-- [ ] `klar test file.kl` discovers and runs all test blocks
-- [ ] `klar run` / `klar build` skip test blocks entirely
+- [x] `test` keyword parses as top-level declaration
+- [x] `klar test file.kl` discovers and runs all test blocks
+- [x] `klar run` / `klar build` skip test blocks entirely
 - [ ] All assertion builtins work across all three backends
 - [ ] `--strict-tests` and `--require-tests` flags work
 
