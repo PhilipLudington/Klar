@@ -441,6 +441,7 @@ pub const Lexer = struct {
     const keywords = std.StaticStringMap(Token.Kind).initComptime(.{
         .{ "fn", .fn_ },
         .{ "let", .let },
+        .{ "shadow", .shadow },
         .{ "var", .var_ },
         .{ "struct", .struct_ },
         .{ "enum", .enum_ },
@@ -560,10 +561,11 @@ test "lexer numbers" {
 }
 
 test "lexer keywords" {
-    var lexer = Lexer.init("fn let var struct enum if else match for while loop return test");
+    var lexer = Lexer.init("fn let shadow var struct enum if else match for while loop return test");
 
     try std.testing.expectEqual(Token.Kind.fn_, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.let, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.shadow, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.var_, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.struct_, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.enum_, lexer.next().kind);

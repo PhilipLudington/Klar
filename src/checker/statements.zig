@@ -110,6 +110,19 @@ pub fn checkLetDecl(tc: anytype, decl: *ast.LetDecl) void {
         return;
     }
 
+    const shadowed = lookupParentSymbol(tc.current_scope, decl.name);
+    if (decl.is_shadow) {
+        if (shadowed == null or !isShadowableSymbol(shadowed.?)) {
+            tc.addError(.invalid_operation, decl.span, "'shadow let {s}' requires an existing outer variable binding", .{decl.name});
+            return;
+        }
+    } else if (shadowed) |sym| {
+        if (isShadowableSymbol(sym)) {
+            tc.addError(.duplicate_definition, decl.span, "'{s}' shadows an outer binding; use 'shadow let' to make this explicit", .{decl.name});
+            return;
+        }
+    }
+
     tc.current_scope.define(.{
         .name = decl.name,
         .type_ = declared_type,
@@ -133,6 +146,19 @@ pub fn checkVarDecl(tc: anytype, decl: *ast.VarDecl) void {
     if (tc.current_scope.lookupLocal(decl.name) != null) {
         tc.addError(.duplicate_definition, decl.span, "'{s}' already defined in this scope", .{decl.name});
         return;
+    }
+
+    const shadowed = lookupParentSymbol(tc.current_scope, decl.name);
+    if (decl.is_shadow) {
+        if (shadowed == null or !isShadowableSymbol(shadowed.?)) {
+            tc.addError(.invalid_operation, decl.span, "'shadow var {s}' requires an existing outer variable binding", .{decl.name});
+            return;
+        }
+    } else if (shadowed) |sym| {
+        if (isShadowableSymbol(sym)) {
+            tc.addError(.duplicate_definition, decl.span, "'{s}' shadows an outer binding; use 'shadow var' to make this explicit", .{decl.name});
+            return;
+        }
     }
 
     tc.current_scope.define(.{
@@ -240,4 +266,22 @@ pub fn checkLoop(tc: anytype, loop: *ast.LoopStmt) void {
     defer tc.popScope();
 
     _ = tc.checkBlock(loop.body);
+}
+
+fn lookupParentSymbol(scope: *const checker_mod.Scope, name: []const u8) ?checker_mod.Symbol {
+    var cursor = scope.parent;
+    while (cursor) |s| {
+        if (s.lookupLocal(name)) |sym| {
+            return sym;
+        }
+        cursor = s.parent;
+    }
+    return null;
+}
+
+fn isShadowableSymbol(sym: checker_mod.Symbol) bool {
+    return switch (sym.kind) {
+        .variable, .parameter, .constant => true,
+        else => false,
+    };
 }

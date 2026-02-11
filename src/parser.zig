@@ -1138,7 +1138,7 @@ pub const Parser = struct {
 
     fn isStatementKeyword(self: *Parser) bool {
         return switch (self.current.kind) {
-            .let, .var_, .return_, .break_, .continue_, .for_, .while_, .loop, .if_, .match => true,
+            .let, .shadow, .var_, .return_, .break_, .continue_, .for_, .while_, .loop, .if_, .match => true,
             else => false,
         };
     }
@@ -1681,8 +1681,8 @@ pub const Parser = struct {
             return .{ .decl = decl };
         }
 
-        // Check for statement keywords (let, var, return, break, continue, loops, if, match)
-        if (self.check(.let) or self.check(.var_) or self.check(.return_) or
+        // Check for statement keywords (let, shadow, var, return, break, continue, loops, if, match)
+        if (self.check(.let) or self.check(.shadow) or self.check(.var_) or self.check(.return_) or
             self.check(.break_) or self.check(.continue_) or self.check(.for_) or
             self.check(.while_) or self.check(.loop) or self.check(.if_) or
             self.check(.match))
@@ -1730,6 +1730,7 @@ pub const Parser = struct {
     pub fn parseStatement(self: *Parser) ParseError!ast.Stmt {
         return switch (self.current.kind) {
             .let => self.parseLetDecl(),
+            .shadow => self.parseShadowDecl(),
             .var_ => self.parseVarDecl(),
             .return_ => self.parseReturnStmt(),
             .break_ => self.parseBreakStmt(),
@@ -1746,7 +1747,10 @@ pub const Parser = struct {
     fn parseLetDecl(self: *Parser) ParseError!ast.Stmt {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'let'
+        return self.parseLetDeclAfterKeyword(start_span, false);
+    }
 
+    fn parseLetDeclAfterKeyword(self: *Parser, start_span: ast.Span, is_shadow: bool) ParseError!ast.Stmt {
         const name = try self.consumeIdentifier();
 
         // Type annotation is required
@@ -1764,6 +1768,7 @@ pub const Parser = struct {
             .name = name,
             .type_ = type_,
             .value = value,
+            .is_shadow = is_shadow,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .let_decl = let_decl };
@@ -1772,7 +1777,10 @@ pub const Parser = struct {
     fn parseVarDecl(self: *Parser) ParseError!ast.Stmt {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'var'
+        return self.parseVarDeclAfterKeyword(start_span, false);
+    }
 
+    fn parseVarDeclAfterKeyword(self: *Parser, start_span: ast.Span, is_shadow: bool) ParseError!ast.Stmt {
         const name = try self.consumeIdentifier();
 
         // Type annotation is required
@@ -1790,9 +1798,30 @@ pub const Parser = struct {
             .name = name,
             .type_ = type_,
             .value = value,
+            .is_shadow = is_shadow,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .var_decl = var_decl };
+    }
+
+    fn parseShadowDecl(self: *Parser) ParseError!ast.Stmt {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'shadow'
+
+        return switch (self.current.kind) {
+            .let => blk: {
+                self.advance(); // consume 'let'
+                break :blk self.parseLetDeclAfterKeyword(start_span, true);
+            },
+            .var_ => blk: {
+                self.advance(); // consume 'var'
+                break :blk self.parseVarDeclAfterKeyword(start_span, true);
+            },
+            else => {
+                try self.reportError("expected 'let' or 'var' after 'shadow'");
+                return ParseError.UnexpectedToken;
+            },
+        };
     }
 
     fn parseReturnStmt(self: *Parser) ParseError!ast.Stmt {
@@ -3539,9 +3568,18 @@ test "parse let declaration with type" {
 
     try std.testing.expect(result.stmt == .let_decl);
     try std.testing.expectEqualStrings("x", result.stmt.let_decl.name);
+    try std.testing.expect(!result.stmt.let_decl.is_shadow);
     // Type is required and should be a named type "i32"
     try std.testing.expect(result.stmt.let_decl.type_ == .named);
     try std.testing.expectEqualStrings("i32", result.stmt.let_decl.type_.named.name);
+}
+
+test "parse shadow let declaration with type" {
+    var result = try testParseStmt("shadow let x: i32 = 42");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .let_decl);
+    try std.testing.expect(result.stmt.let_decl.is_shadow);
 }
 
 test "parse var declaration with type" {
@@ -3550,9 +3588,18 @@ test "parse var declaration with type" {
 
     try std.testing.expect(result.stmt == .var_decl);
     try std.testing.expectEqualStrings("count", result.stmt.var_decl.name);
+    try std.testing.expect(!result.stmt.var_decl.is_shadow);
     // Type is required
     try std.testing.expect(result.stmt.var_decl.type_ == .named);
     try std.testing.expectEqualStrings("i32", result.stmt.var_decl.type_.named.name);
+}
+
+test "parse shadow var declaration with type" {
+    var result = try testParseStmt("shadow var count: i32 = 0");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .var_decl);
+    try std.testing.expect(result.stmt.var_decl.is_shadow);
 }
 
 test "parse return statement" {

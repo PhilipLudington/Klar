@@ -504,6 +504,7 @@ pub const LetDecl = struct {
     name: []const u8,
     type_: TypeExpr,
     value: Expr,
+    is_shadow: bool,
     span: Span,
 };
 
@@ -511,6 +512,7 @@ pub const VarDecl = struct {
     name: []const u8,
     type_: TypeExpr,
     value: Expr,
+    is_shadow: bool,
     span: Span,
 };
 

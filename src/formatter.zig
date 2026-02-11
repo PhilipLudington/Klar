@@ -880,6 +880,7 @@ pub const Formatter = struct {
 
     fn formatLetDecl(self: *Formatter, l: *const ast.LetDecl) Error!void {
         try self.writeIndent();
+        if (l.is_shadow) try self.write("shadow ");
         try self.write("let ");
         try self.write(l.name);
         try self.write(": ");
@@ -890,6 +891,7 @@ pub const Formatter = struct {
 
     fn formatVarDecl(self: *Formatter, v: *const ast.VarDecl) Error!void {
         try self.writeIndent();
+        if (v.is_shadow) try self.write("shadow ");
         try self.write("var ");
         try self.write(v.name);
         try self.write(": ");

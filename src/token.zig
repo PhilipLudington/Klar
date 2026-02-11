@@ -24,6 +24,7 @@ pub const Token = struct {
         // Keywords
         fn_,
         let,
+        shadow,
         var_,
         struct_,
         enum_,
@@ -129,6 +130,7 @@ pub const Token = struct {
             return switch (self) {
                 .fn_ => "fn",
                 .let => "let",
+                .shadow => "shadow",
                 .var_ => "var",
                 .struct_ => "struct",
                 .enum_ => "enum",
@@ -228,7 +230,7 @@ pub const Token = struct {
 
         pub fn isKeyword(self: Kind) bool {
             return switch (self) {
-                .fn_, .let, .var_, .struct_, .enum_, .trait, .impl, .if_, .else_, .match, .for_, .while_, .loop, .return_, .break_, .continue_, .pub_, .mut, .async_, .await_, .unsafe_, .extern_, .packed_, .import, .module, .test_, .as, .in, .is, .and_, .or_, .not, .true_, .false_, .comptime_, .where, .dyn, .type_, .const_, .static, .self, .self_type, .ref, .inout => true,
+                .fn_, .let, .shadow, .var_, .struct_, .enum_, .trait, .impl, .if_, .else_, .match, .for_, .while_, .loop, .return_, .break_, .continue_, .pub_, .mut, .async_, .await_, .unsafe_, .extern_, .packed_, .import, .module, .test_, .as, .in, .is, .and_, .or_, .not, .true_, .false_, .comptime_, .where, .dyn, .type_, .const_, .static, .self, .self_type, .ref, .inout => true,
                 else => false,
             };
         }
