@@ -18,6 +18,7 @@ Klar is a Zig-based language implementation.
 - `./scripts/run-benchmarks.sh`: benchmark runs.
 
 Use wrapper scripts for normal development (`./run-build.sh`, `./run-tests.sh`); avoid raw `zig build`/`zig build test` so JSON result files remain consistent.
+For any testing task, always run `./run-tests.sh` (not individual suite scripts) so AirTower captures full repository health visibility.
 
 Run `./run-tests.sh` before opening a PR.
 
