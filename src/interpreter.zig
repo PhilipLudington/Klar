@@ -1226,6 +1226,22 @@ pub const Interpreter = struct {
             return object; // Type checking done by checker
         }
 
+        // Module namespace calls are represented as method calls on a synthetic struct:
+        // import math as m; m.add(...)
+        if (object == .struct_) {
+            if (object.struct_.fields.get(method.method_name)) |member| {
+                if (member == .builtin) {
+                    return member.builtin.func(self.stringAllocator(), args.items);
+                }
+                if (member == .function) {
+                    return self.callFunction(member.function, args.items);
+                }
+                if (member == .closure) {
+                    return self.callClosure(member.closure, args.items);
+                }
+            }
+        }
+
         return RuntimeError.InvalidOperation;
     }
 

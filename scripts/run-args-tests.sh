@@ -153,6 +153,49 @@ else
     fail "interpreter: -- separator failed"
 fi
 
+echo ""
+echo "--- Test: klar test command ---"
+
+output=$($KLAR test "$TEST_DIR/test_command_pass.kl" 2>&1)
+if echo "$output" | grep -q "PASS target" && echo "$output" | grep -q "1 passed, 0 failed"; then
+    pass "test command: passing test block"
+else
+    fail "test command: expected passing output"
+fi
+
+output=$($KLAR test "$TEST_DIR/test_command_alias_import.kl" 2>&1)
+if echo "$output" | grep -q "PASS target" && echo "$output" | grep -q "1 passed, 0 failed"; then
+    pass "test command: aliased import in test runtime"
+else
+    fail "test command: aliased import failed"
+fi
+
+output=$($KLAR test "$TEST_DIR/test_command_namespace_import.kl" 2>&1)
+if echo "$output" | grep -q "PASS target" && echo "$output" | grep -q "1 passed, 0 failed"; then
+    pass "test command: namespace import in test runtime"
+else
+    fail "test command: namespace import failed"
+fi
+
+output=$($KLAR test "$TEST_DIR/test_command_type_only_import.kl" 2>&1)
+if echo "$output" | grep -q "PASS target" && echo "$output" | grep -q "1 passed, 0 failed"; then
+    pass "test command: type-only specific import does not fail runtime setup"
+else
+    fail "test command: type-only specific import failed runtime setup"
+fi
+
+if $KLAR test "$TEST_DIR/test_command_fail.kl" >/tmp/klar_test_command_fail.out 2>&1; then
+    fail "test command: failing test should return non-zero"
+else
+    output=$(cat /tmp/klar_test_command_fail.out)
+    if echo "$output" | grep -q "FAIL target" && echo "$output" | grep -q "0 passed, 1 failed"; then
+        pass "test command: failing test block returns non-zero"
+    else
+        fail "test command: failing output mismatch"
+    fi
+fi
+rm -f /tmp/klar_test_command_fail.out
+
 # Write results JSON
 TOTAL=$((PASSED + FAILED))
 cat > "$RESULTS_FILE" << EOF

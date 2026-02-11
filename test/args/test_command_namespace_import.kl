@@ -1,0 +1,9 @@
+import test_command_namespace_import_helper as math
+
+fn target() -> i32 {
+    return math.add(20, 22)
+}
+
+test target {
+    assert_eq(target(), 42)
+}

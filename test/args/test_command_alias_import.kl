@@ -1,0 +1,9 @@
+import test_command_alias_import_helper.{ add as sum }
+
+fn target() -> i32 {
+    return sum(2, 3)
+}
+
+test target {
+    assert_eq(target(), 5)
+}

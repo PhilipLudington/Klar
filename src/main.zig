@@ -363,7 +363,14 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, command, "update")) {
         try updateLockfile(allocator);
     } else if (std.mem.eql(u8, command, "test")) {
-        try getStdErr().writeAll("Test not yet implemented\n");
+        if (args.len < 3) {
+            try getStdErr().writeAll("Error: no input file\n");
+            return;
+        }
+        runTestFile(allocator, args[2]) catch |err| switch (err) {
+            error.TestsFailed => std.process.exit(1),
+            else => return err,
+        };
     } else if (std.mem.eql(u8, command, "fmt")) {
         try fmtCommand(allocator, args);
     } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
@@ -1864,6 +1871,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
     // Type check the module
     var checker = TypeChecker.init(allocator);
     defer checker.deinit();
+    checker.setTestMode(true);
 
     // Track source strings for imported modules
     var module_sources = std.ArrayListUnmanaged([]const u8){};
@@ -2019,6 +2027,434 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
         const decl_count = module.declarations.len;
         const stats = std.fmt.bufPrint(&buf, "  {d} declaration(s)\n", .{decl_count}) catch "";
         try stdout.writeAll(stats);
+    }
+}
+
+fn bindRuntimeImportsForModule(
+    interp: *Interpreter,
+    mod: *ModuleInfo,
+    resolver: *ModuleResolver,
+    module_interpreters: *std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter),
+) !void {
+    const module_ast = mod.module_ast orelse return;
+
+    for (module_ast.imports) |import_decl| {
+        const dep = resolver.resolve(import_decl.path, mod) catch {
+            return error.ImportModuleResolveFailed;
+        };
+        const dep_ast = dep.module_ast orelse {
+            return error.ImportModuleResolveFailed;
+        };
+        const dep_interp = module_interpreters.get(dep) orelse {
+            return error.ImportInterpreterMissing;
+        };
+
+        if (import_decl.items) |items| {
+            switch (items) {
+                .all => {
+                    for (dep_ast.declarations) |decl| {
+                        const export_name = switch (decl) {
+                            .function => |f| if (f.is_pub) f.name else continue,
+                            .const_decl => |c| if (c.is_pub) c.name else continue,
+                            else => continue,
+                        };
+
+                        const export_value = dep_interp.global_env.get(export_name) orelse {
+                            return error.ImportValueMissing;
+                        };
+                        try interp.current_env.define(export_name, export_value, false);
+                    }
+                },
+                .specific => |specific_items| {
+                    for (specific_items) |item| {
+                        const SymbolKind = enum { runtime_value, type_only, missing };
+                        var symbol_kind: SymbolKind = .missing;
+                        for (dep_ast.declarations) |decl| {
+                            switch (decl) {
+                                .function => |f| {
+                                    if (f.is_pub and std.mem.eql(u8, f.name, item.name)) {
+                                        symbol_kind = .runtime_value;
+                                        break;
+                                    }
+                                },
+                                .const_decl => |c| {
+                                    if (c.is_pub and std.mem.eql(u8, c.name, item.name)) {
+                                        symbol_kind = .runtime_value;
+                                        break;
+                                    }
+                                },
+                                .struct_decl => |s| {
+                                    if (s.is_pub and std.mem.eql(u8, s.name, item.name)) {
+                                        symbol_kind = .type_only;
+                                        break;
+                                    }
+                                },
+                                .enum_decl => |e| {
+                                    if (e.is_pub and std.mem.eql(u8, e.name, item.name)) {
+                                        symbol_kind = .type_only;
+                                        break;
+                                    }
+                                },
+                                .trait_decl => |t| {
+                                    if (t.is_pub and std.mem.eql(u8, t.name, item.name)) {
+                                        symbol_kind = .type_only;
+                                        break;
+                                    }
+                                },
+                                .type_alias => |ta| {
+                                    if (ta.is_pub and std.mem.eql(u8, ta.name, item.name)) {
+                                        symbol_kind = .type_only;
+                                        break;
+                                    }
+                                },
+                                else => {},
+                            }
+                        }
+
+                        if (symbol_kind == .missing) {
+                            return error.ImportSymbolMissing;
+                        }
+                        if (symbol_kind == .type_only) {
+                            continue;
+                        }
+
+                        const export_value = dep_interp.global_env.get(item.name) orelse {
+                            return error.ImportValueMissing;
+                        };
+
+                        const local_name = item.alias orelse item.name;
+                        try interp.current_env.define(local_name, export_value, false);
+                    }
+                },
+            }
+        } else {
+            // Namespace import: import foo / import foo as bar
+            const namespace_name = import_decl.alias orelse import_decl.path[import_decl.path.len - 1];
+            const namespace_struct = try interp.allocator.create(values.StructValue);
+            namespace_struct.* = .{
+                .type_name = namespace_name,
+                .fields = .{},
+            };
+
+            for (dep_ast.declarations) |decl| {
+                const export_name = switch (decl) {
+                    .function => |f| if (f.is_pub) f.name else continue,
+                    .const_decl => |c| if (c.is_pub) c.name else continue,
+                    else => continue,
+                };
+
+                const export_value = dep_interp.global_env.get(export_name) orelse {
+                    return error.ImportValueMissing;
+                };
+                try namespace_struct.fields.put(interp.allocator, export_name, export_value);
+            }
+
+            try interp.current_env.define(namespace_name, .{ .struct_ = namespace_struct }, false);
+        }
+    }
+}
+
+fn runTestFile(allocator: std.mem.Allocator, path: []const u8) !void {
+    const source = readSourceFile(allocator, path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+        try getStdErr().writeAll(msg);
+        return error.TestsFailed;
+    };
+    defer allocator.free(source);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = parser.parseModule() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+        try stderr.writeAll(msg);
+
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return error.TestsFailed;
+    };
+
+    var checker = TypeChecker.init(allocator);
+    defer checker.deinit();
+    checker.setTestMode(true);
+
+    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (module_sources.items) |src| {
+            allocator.free(src);
+        }
+        module_sources.deinit(allocator);
+    }
+
+    if (module.imports.len > 0) {
+        var resolver = ModuleResolver.init(allocator);
+        defer resolver.deinit();
+
+        if (findStdLibPath(allocator)) |std_path| {
+            resolver.setStdLibPath(std_path);
+            defer allocator.free(std_path);
+        }
+
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+            resolver.addSearchPath(cwd_path) catch {};
+        } else |_| {}
+
+        const entry = resolver.resolveEntry(path) catch {
+            try stderr.writeAll("Error: could not resolve entry module\n");
+            return error.TestsFailed;
+        };
+        entry.module_ast = module;
+        entry.state = .parsed;
+
+        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+        defer modules_to_process.deinit(allocator);
+        try modules_to_process.append(allocator, entry);
+
+        var processed_idx: usize = 0;
+        while (processed_idx < modules_to_process.items.len) {
+            const mod = modules_to_process.items[processed_idx];
+            processed_idx += 1;
+
+            if (mod.state == .discovered) {
+                const src = parseModuleSource(allocator, arena.allocator(), mod) catch {
+                    return error.TestsFailed;
+                };
+                try module_sources.append(allocator, src);
+            }
+
+            if (mod.module_ast) |mod_ast| {
+                for (mod_ast.imports) |import_decl| {
+                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
+                    if (dep.state == .discovered) {
+                        try modules_to_process.append(allocator, dep);
+                    }
+                }
+            }
+        }
+
+        if (resolver.hasErrors()) {
+            var buf: [512]u8 = undefined;
+            for (resolver.errors.items) |err| {
+                const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return error.TestsFailed;
+        }
+
+        const compilation_order = resolver.getCompilationOrder() catch |err| {
+            if (err == error.CircularImport) {
+                try stderr.writeAll("Error: circular import detected\n");
+            }
+            return error.TestsFailed;
+        };
+        defer allocator.free(compilation_order);
+
+        checker.setModuleResolver(&resolver);
+
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |mod_ast| {
+                checker.prepareForNewModule();
+                checker.setCurrentModule(mod);
+                checker.checkModule(mod_ast);
+                checker.registerModuleExports(mod) catch {};
+            }
+        }
+
+        if (checker.hasErrors()) {
+            var buf: [512]u8 = undefined;
+            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
+            try stderr.writeAll(header);
+
+            for (checker.errors.items) |check_err| {
+                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                    check_err.span.line,
+                    check_err.span.column,
+                    check_err.message,
+                }) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return error.TestsFailed;
+        }
+
+        var module_interpreters = std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter){};
+        defer module_interpreters.deinit(allocator);
+
+        var owned_interpreters = std.ArrayListUnmanaged(*Interpreter){};
+        defer {
+            for (owned_interpreters.items) |interp_ptr| {
+                interp_ptr.deinit();
+                allocator.destroy(interp_ptr);
+            }
+            owned_interpreters.deinit(allocator);
+        }
+
+        // Build one interpreter per module in dependency order.
+        for (compilation_order) |mod| {
+            const mod_ast = mod.module_ast orelse continue;
+
+            const interp_ptr = try allocator.create(Interpreter);
+            interp_ptr.* = try Interpreter.init(allocator);
+            try owned_interpreters.append(allocator, interp_ptr);
+
+            bindRuntimeImportsForModule(interp_ptr, mod, &resolver, &module_interpreters) catch |err| {
+                var buf: [512]u8 = undefined;
+                const module_name = mod.canonicalName(allocator) catch "<module>";
+                defer if (!std.mem.eql(u8, module_name, "<module>")) allocator.free(module_name);
+                const msg = std.fmt.bufPrint(&buf, "Runtime setup error in module '{s}': {s}\n", .{ module_name, @errorName(err) }) catch "Runtime setup error\n";
+                try stderr.writeAll(msg);
+                return error.TestsFailed;
+            };
+
+            interp_ptr.executeModule(mod_ast) catch |err| {
+                var buf: [512]u8 = undefined;
+                const module_name = mod.canonicalName(allocator) catch "<module>";
+                defer if (!std.mem.eql(u8, module_name, "<module>")) allocator.free(module_name);
+                const msg = std.fmt.bufPrint(&buf, "Runtime setup error in module '{s}': {s}\n", .{ module_name, @errorName(err) }) catch "Runtime setup error\n";
+                try stderr.writeAll(msg);
+                return error.TestsFailed;
+            };
+
+            try module_interpreters.put(allocator, mod, interp_ptr);
+        }
+
+        const entry_mod = resolver.entry_module orelse {
+            try stderr.writeAll("Runtime setup error: missing entry module\n");
+            return error.TestsFailed;
+        };
+        const entry_ast = entry_mod.module_ast orelse {
+            try stderr.writeAll("Runtime setup error: missing entry module AST\n");
+            return error.TestsFailed;
+        };
+        const entry_interp = module_interpreters.get(entry_mod) orelse {
+            try stderr.writeAll("Runtime setup error: missing entry interpreter\n");
+            return error.TestsFailed;
+        };
+
+        var total_tests: usize = 0;
+        for (entry_ast.declarations) |decl| {
+            if (decl == .test_decl) total_tests += 1;
+        }
+
+        if (total_tests == 0) {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
+            try stdout.writeAll(msg);
+            return;
+        }
+
+        var passed: usize = 0;
+        var failed: usize = 0;
+        var buf: [512]u8 = undefined;
+        const start_msg = std.fmt.bufPrint(&buf, "Running {d} test(s)\n", .{total_tests}) catch "Running tests\n";
+        try stdout.writeAll(start_msg);
+
+        for (entry_ast.declarations) |decl| {
+            if (decl != .test_decl) continue;
+            const test_decl = decl.test_decl;
+
+            _ = entry_interp.evalBlock(test_decl.body) catch |err| {
+                const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
+                try stdout.writeAll(fail_msg);
+                failed += 1;
+                continue;
+            };
+
+            const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
+            try stdout.writeAll(pass_msg);
+            passed += 1;
+        }
+
+        const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
+        try stdout.writeAll(summary);
+
+        if (failed > 0) {
+            return error.TestsFailed;
+        }
+        return;
+    } else {
+        checker.checkModule(module);
+
+        if (checker.hasErrors()) {
+            var buf: [512]u8 = undefined;
+            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
+            try stderr.writeAll(header);
+
+            for (checker.errors.items) |check_err| {
+                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                    check_err.span.line,
+                    check_err.span.column,
+                    check_err.message,
+                }) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return error.TestsFailed;
+        }
+
+        var interp = try Interpreter.init(allocator);
+        defer interp.deinit();
+
+        interp.executeModule(module) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Runtime setup error: {s}\n", .{@errorName(err)}) catch "Runtime setup error\n";
+            try stderr.writeAll(msg);
+            return error.TestsFailed;
+        };
+
+        var total_tests: usize = 0;
+        for (module.declarations) |decl| {
+            if (decl == .test_decl) total_tests += 1;
+        }
+
+        if (total_tests == 0) {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
+            try stdout.writeAll(msg);
+            return;
+        }
+
+        var passed: usize = 0;
+        var failed: usize = 0;
+        var buf: [512]u8 = undefined;
+
+        const start_msg = std.fmt.bufPrint(&buf, "Running {d} test(s)\n", .{total_tests}) catch "Running tests\n";
+        try stdout.writeAll(start_msg);
+
+        for (module.declarations) |decl| {
+            if (decl != .test_decl) continue;
+            const test_decl = decl.test_decl;
+
+            _ = interp.evalBlock(test_decl.body) catch |err| {
+                const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
+                try stdout.writeAll(fail_msg);
+                failed += 1;
+                continue;
+            };
+
+            const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
+            try stdout.writeAll(pass_msg);
+            passed += 1;
+        }
+
+        const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
+        try stdout.writeAll(summary);
+
+        if (failed > 0) {
+            return error.TestsFailed;
+        }
     }
 }
 
@@ -2746,7 +3182,7 @@ fn printUsage() !void {
         \\  update               Regenerate klar.lock from klar.json
         \\  check <file>         Type check a file
         \\  repl                 Interactive REPL (Read-Eval-Print Loop)
-        \\  test                 Run tests (not implemented)
+        \\  test <file>          Run inline test blocks in a file
         \\  fmt [file|dir]       Format source files
         \\    -i                  Format files in-place
         \\    --check             Check formatting (exit 1 if unformatted)

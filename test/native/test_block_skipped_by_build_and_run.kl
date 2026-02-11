@@ -1,0 +1,10 @@
+// Test: run/build should ignore test block body errors
+// Expected: native-tests
+
+fn main() -> i32 {
+    return 42
+}
+
+test main {
+    assert(123)
+}

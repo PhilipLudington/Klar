@@ -125,7 +125,7 @@ fn greet(name: string) -> void { println("Hello " + name) }
 
 **Objective:** Add `test <name> { ... }` blocks for inline testing with `klar test` command.
 
-**Status:** In progress (`klar test` exists as stub in `src/main.zig`)
+**Status:** In progress (`klar test <file>` now executes inline test blocks)
 
 **Effort:** Medium | **Impact:** High | **Source:** Nanolang
 
@@ -147,7 +147,7 @@ test gcd {
 - [x] **3.1** Add `test` keyword to lexer, `TestDecl` AST node, parser support
 - [x] **3.2** Add assertion builtins: `assert_ne`, `assert_err`, `assert_ok`, `assert_some`, `assert_none`
 - [x] **3.3** Type-check test blocks (validate referenced function exists, check body)
-- [ ] **3.4** Conditional compilation: `klar run`/`build` skip tests, `klar test` runs them
+- [x] **3.4** Conditional compilation: `klar run`/`build` skip tests, `klar test` runs them
 - [ ] **3.5** All three backend support
 - [ ] **3.6** `klar test` command: file, `--fn`, directory modes; pass/fail reporting
 - [ ] **3.7** Enforcement flags: `--strict-tests` (warn), `--require-tests` (error)

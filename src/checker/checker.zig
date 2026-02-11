@@ -123,6 +123,8 @@ pub const Symbol = struct {
     /// For imported symbols with aliases, stores the original name.
     /// Used by codegen to find the correct LLVM function.
     original_name: ?[]const u8 = null,
+    /// For namespace imports, points to the imported module info.
+    module_ref: ?*ModuleInfo = null,
 
     pub const Kind = enum {
         variable,
@@ -380,6 +382,10 @@ pub const TypeChecker = struct {
     /// Used by codegen to emit type-specific formatting code.
     debug_call_types: std.AutoHashMapUnmanaged(*ast.Call, Type),
 
+    /// When true, check top-level test declarations in modules.
+    /// Disabled for normal run/build flows so test-only failures are skipped.
+    check_test_decls: bool,
+
     const CaptureInfo = struct {
         is_mutable: bool,
         type_: Type,
@@ -439,9 +445,14 @@ pub const TypeChecker = struct {
             .expected_type = null,
             .in_unsafe_context = false,
             .debug_call_types = .{},
+            .check_test_decls = false,
         };
         checker.initBuiltins() catch @panic("Failed to initialize builtin types");
         return checker;
+    }
+
+    pub fn setTestMode(self: *TypeChecker, enabled: bool) void {
+        self.check_test_decls = enabled;
     }
 
     pub fn deinit(self: *TypeChecker) void {
@@ -2907,6 +2918,65 @@ pub const TypeChecker = struct {
             return result;
         }
 
+        // Module namespace calls: import math; math.add(...)
+        if (method.object == .identifier) {
+            const obj_name = method.object.identifier.name;
+            if (self.current_scope.lookup(obj_name)) |namespace_sym| {
+                if (namespace_sym.kind == .module) {
+                    const mod_ref = namespace_sym.module_ref orelse {
+                        self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
+                        return self.type_builder.unknownType();
+                    };
+                    const module_name = mod_ref.canonicalName(self.allocator) catch {
+                        self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
+                        return self.type_builder.unknownType();
+                    };
+                    defer self.allocator.free(module_name);
+
+                    const mod_symbols = self.module_registry.get(module_name) orelse {
+                        self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
+                        return self.type_builder.unknownType();
+                    };
+
+                    const mod_sym = mod_symbols.symbols.get(method.method_name) orelse {
+                        self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
+                        return self.type_builder.unknownType();
+                    };
+
+                    if (mod_sym.kind != .function or mod_sym.type_ == null) {
+                        self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
+                        return self.type_builder.unknownType();
+                    }
+
+                    // Route through normal call checker so namespace calls share
+                    // generic inference and monomorphization behavior.
+                    _ = self.pushScope(.block) catch return self.type_builder.unknownType();
+                    defer self.popScope();
+
+                    self.current_scope.define(.{
+                        .name = method.method_name,
+                        .type_ = mod_sym.type_.?,
+                        .kind = .function,
+                        .mutable = false,
+                        .span = method.span,
+                    }) catch return self.type_builder.unknownType();
+
+                    const synthetic_ident = ast.Identifier{
+                        .name = method.method_name,
+                        .span = method.span,
+                    };
+                    var synthetic_call = ast.Call{
+                        .callee = .{ .identifier = synthetic_ident },
+                        .args = method.args,
+                        .type_args = method.type_args,
+                        .span = method.span,
+                    };
+
+                    return self.checkCallImpl(&synthetic_call);
+                }
+            }
+        }
+
         const object_type = self.checkExpr(method.object);
 
         // Check for builtin methods (len, clone, push, pop, etc.)
@@ -3558,8 +3628,10 @@ pub const TypeChecker = struct {
                 .kind = .module,
                 .mutable = false,
                 .span = import_decl.span,
-            }) catch {};
-        }
+                // Keep canonical module name for namespace method resolution.
+            .module_ref = mod_symbols.module_info,
+        }) catch {};
+    }
     }
 
     /// Import all public symbols from a module into current scope.
@@ -3777,7 +3849,11 @@ pub const TypeChecker = struct {
                         _ = self.checkBlock(body);
                     }
                 },
-                .test_decl => self.checkDecl(decl),
+                .test_decl => {
+                    if (self.check_test_decls) {
+                        self.checkDecl(decl);
+                    }
+                },
                 .impl_decl => self.checkDecl(decl),
                 else => {},
             }
