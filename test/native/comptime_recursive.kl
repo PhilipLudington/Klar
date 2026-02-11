@@ -19,7 +19,7 @@ fn @fib(n: i32) -> i32 {
     return @fib(n - 1) + @fib(n - 2)
 }
 
-fn main() {
+fn main() -> void {
     // Test factorial - use dbg to print values
     let fact5: i32 = dbg(@factorial(5))  // Expected: 120
 

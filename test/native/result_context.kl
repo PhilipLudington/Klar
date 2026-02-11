@@ -11,7 +11,7 @@ fn succeed_with_value(val: i32) -> Result[i32, string] {
 }
 
 // Test basic context wrapping on Err
-fn test_context_on_err() {
+fn test_context_on_err() -> void {
     let result: Result[i32, string] = Err("original error")
     let with_context: Result[i32, ContextError[string]] = result.context("failed to process")
 
@@ -42,7 +42,7 @@ fn test_context_on_err() {
 }
 
 // Test context wrapping on Ok (should preserve Ok)
-fn test_context_on_ok() {
+fn test_context_on_ok() -> void {
     let result: Result[i32, string] = Ok(42)
     let with_context: Result[i32, ContextError[string]] = result.context("should not matter")
 
@@ -63,7 +63,7 @@ fn test_context_on_ok() {
 }
 
 // Test chained context
-fn test_chained_context() {
+fn test_chained_context() -> void {
     let result: Result[i32, string] = Err("root cause")
     let first: Result[i32, ContextError[string]] = result.context("first context")
     let second: Result[i32, ContextError[ContextError[string]]] = first.context("second context")
@@ -97,7 +97,7 @@ fn test_chained_context() {
 }
 
 // Test with integer error type
-fn test_integer_error() {
+fn test_integer_error() -> void {
     let result: Result[string, i32] = Err(404)
     let with_context: Result[string, ContextError[i32]] = result.context("not found")
 
@@ -122,7 +122,7 @@ fn test_integer_error() {
     print("PASS: test_integer_error")
 }
 
-fn main() {
+fn main() -> void {
     test_context_on_err()
     test_context_on_ok()
     test_chained_context()

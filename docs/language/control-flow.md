@@ -282,7 +282,7 @@ for i: i32 in 0..10 {
 ## Example: FizzBuzz
 
 ```klar
-fn fizzbuzz(n: i32) {
+fn fizzbuzz(n: i32) -> void {
     let div3: bool = n % 3 == 0
     let div5: bool = n % 5 == 0
 

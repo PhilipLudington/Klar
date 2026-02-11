@@ -57,7 +57,7 @@ let bad: i32 = err!  // Runtime panic!
 The safest way to handle both cases:
 
 ```klar
-fn handle(result: Result[i32, string]) {
+fn handle(result: Result[i32, string]) -> void {
     match result {
         Ok(value) => {
             println("Success: {value}")

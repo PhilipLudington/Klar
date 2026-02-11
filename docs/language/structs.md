@@ -95,7 +95,7 @@ impl Point {
 
 ```klar
 impl Point {
-    fn scale(inout self: Point, factor: i32) {
+    fn scale(inout self: Point, factor: i32) -> void {
         self.x = self.x * factor
         self.y = self.y * factor
     }
@@ -227,7 +227,7 @@ impl Entity {
         }
     }
 
-    fn update(inout self: Entity, dt: f64) {
+    fn update(inout self: Entity, dt: f64) -> void {
         self.position.x = self.position.x + self.velocity.dx * dt
         self.position.y = self.position.y + self.velocity.dy * dt
     }

@@ -16,7 +16,7 @@ fn return_f64() -> f64 {
     return 3.14159
 }
 
-fn no_return() {
+fn no_return() -> void {
     // void function
 }
 

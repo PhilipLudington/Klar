@@ -7,7 +7,7 @@ References allow you to borrow values without taking ownership. Klar provides tw
 Use `ref` to borrow a value without being able to modify it:
 
 ```klar
-fn print_length(ref s: string) {
+fn print_length(ref s: string) -> void {
     println("Length: {s.len()}")
     // Cannot modify s here
 }
@@ -61,7 +61,7 @@ fn main() -> i32 {
 Use `inout` to borrow a value with the ability to modify it:
 
 ```klar
-fn double_in_place(inout n: i32) {
+fn double_in_place(inout n: i32) -> void {
     n = n * 2
 }
 
@@ -77,7 +77,7 @@ fn main() -> i32 {
 Use `inout` at both the call site and the function signature:
 
 ```klar
-fn sort_in_place(inout arr: [i32]) {
+fn sort_in_place(inout arr: [i32]) -> void {
     // Sort the array...
 }
 
@@ -94,7 +94,7 @@ fn main() -> i32 {
 You can only take an `inout` reference to a `var`:
 
 ```klar
-fn increment(inout n: i32) {
+fn increment(inout n: i32) -> void {
     n = n + 1
 }
 
@@ -113,7 +113,7 @@ fn main() -> i32 {
 Only one `inout` reference is allowed at a time:
 
 ```klar
-fn swap(inout a: i32, inout b: i32) {
+fn swap(inout a: i32, inout b: i32) -> void {
     let temp: i32 = a
     a = b
     b = temp
@@ -156,12 +156,12 @@ impl Point {
 
 ```klar
 impl Point {
-    fn scale(inout self: Point, factor: i32) {
+    fn scale(inout self: Point, factor: i32) -> void {
         self.x = self.x * factor
         self.y = self.y * factor
     }
 
-    fn reset(inout self: Point) {
+    fn reset(inout self: Point) -> void {
         self.x = 0
         self.y = 0
     }
@@ -227,7 +227,7 @@ fn contains(ref list: List[i32], target: i32) -> bool {
 - You want to avoid copying large values
 
 ```klar
-fn append_all(inout list: List[i32], items: [i32]) {
+fn append_all(inout list: List[i32], items: [i32]) -> void {
     for x: i32 in items {
         list.push(x)
     }
@@ -249,7 +249,7 @@ fn uppercase(s: string) -> string {
 ## Example: In-Place Algorithms
 
 ```klar
-fn reverse_in_place(inout arr: [i32]) {
+fn reverse_in_place(inout arr: [i32]) -> void {
     var left: i32 = 0
     var right: i32 = arr.len() - 1
 
@@ -285,7 +285,7 @@ impl Stats {
         return Stats { count: 0, sum: 0, min: None, max: None }
     }
 
-    fn add(inout self: Stats, value: i32) {
+    fn add(inout self: Stats, value: i32) -> void {
         self.count = self.count + 1
         self.sum = self.sum + value
 

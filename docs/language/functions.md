@@ -28,10 +28,10 @@ fn main() -> i32 {
 
 ### Void Functions
 
-Functions that don't return a value use implicit `void` return:
+Functions that don't return a value use explicit `-> void`:
 
 ```klar
-fn greet(name: string) {
+fn greet(name: string) -> void {
     println("Hello, {name}!")
 }
 
@@ -220,7 +220,7 @@ fn main(args: [String]) -> i32 {
 }
 
 // Void main (implicitly returns 0)
-fn main() {
+fn main() -> void {
     println("Hello!")
 }
 ```
@@ -252,7 +252,7 @@ fn length(ref arr: [i32]) -> i32 {
 Use `inout` for mutable references:
 
 ```klar
-fn double_in_place(inout n: i32) {
+fn double_in_place(inout n: i32) -> void {
     n = n * 2
 }
 

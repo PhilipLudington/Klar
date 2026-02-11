@@ -21,7 +21,7 @@ fn @is_even(n: i32) -> bool {
     return n % 2 == 0
 }
 
-fn main() {
+fn main() -> void {
     // All these calls should be evaluated at compile time
     let sum: i32 = @add(2, 3)
     assert_eq(sum, 5)

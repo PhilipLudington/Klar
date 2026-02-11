@@ -1447,7 +1447,7 @@ pub const Emitter = struct {
 
             // Handle return
             if (!self.has_terminator) {
-                if (method.return_type == null) {
+                if (self.current_return_klar_type == null or self.current_return_klar_type.? == .void_) {
                     self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
                 } else if (result) |val| {
@@ -1703,8 +1703,7 @@ pub const Emitter = struct {
             // If block has a value and we haven't terminated, return it
             if (!self.has_terminator) {
                 // Check if this is a void-returning function (either implicit or explicit -> void)
-                const is_void_return = func.return_type == null or
-                    (func.return_type.? == .named and std.mem.eql(u8, func.return_type.?.named.name, "void"));
+                const is_void_return = self.current_return_klar_type == null or self.current_return_klar_type.? == .void_;
                 if (is_void_return) {
                     // Void function - always emit void return, ignore any expression value
                     // (e.g., if-without-else returns a placeholder that we discard)
@@ -29426,7 +29425,7 @@ pub const Emitter = struct {
 
             // Handle return
             if (!self.has_terminator) {
-                if (func.return_type == null) {
+                if (func_type.return_type == .void_) {
                     self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
                 } else if (result) |val| {
@@ -29612,7 +29611,7 @@ pub const Emitter = struct {
 
             // Handle return
             if (!self.has_terminator) {
-                if (func.return_type == null) {
+                if (func_type.return_type == .void_) {
                     self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
                 } else if (result) |val| {

@@ -61,7 +61,7 @@ impl Box[T] {
         return self.value
     }
 
-    fn set(inout self: Box[T], new_value: T) {
+    fn set(inout self: Box[T], new_value: T) -> void {
         self.value = new_value
     }
 }
@@ -156,7 +156,7 @@ struct SortedList[T: Ordered] {
 }
 
 impl SortedList[T: Ordered] {
-    fn insert(inout self: SortedList[T], value: T) {
+    fn insert(inout self: SortedList[T], value: T) -> void {
         // Can use comparison operators because T: Ordered
         // ...
     }
@@ -232,7 +232,7 @@ impl Stack[T] {
         return Stack { items: List.new[T]() }
     }
 
-    fn push(inout self: Stack[T], value: T) {
+    fn push(inout self: Stack[T], value: T) -> void {
         self.items.push(value)
     }
 

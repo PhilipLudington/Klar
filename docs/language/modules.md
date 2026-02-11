@@ -157,7 +157,7 @@ pub struct User {
 ```klar
 // traits.kl
 pub trait Drawable {
-    fn draw(self: Self)
+    fn draw(self: Self) -> void
 }
 ```
 
@@ -278,13 +278,13 @@ Only expose what's needed:
 ```klar
 // Good - minimal public API
 pub fn connect() -> Connection { ... }
-fn internal_setup() { ... }
-fn validate_config() { ... }
+fn internal_setup() -> void { ... }
+fn validate_config() -> void { ... }
 
 // Bad - too much exposed
 pub fn connect() -> Connection { ... }
-pub fn internal_setup() { ... }  // Should be private
-pub fn validate_config() { ... } // Should be private
+pub fn internal_setup() -> void { ... }  // Should be private
+pub fn validate_config() -> void { ... } // Should be private
 ```
 
 ### Use Descriptive Module Names

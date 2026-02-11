@@ -29,7 +29,7 @@
 
 | # | Milestone | Effort | Impact | Source |
 |---|-----------|--------|--------|--------|
-| 2 | [Mandatory return types](#milestone-2-mandatory-function-return-types) | Low | **High** | MoonBit |
+| 2 | ~~[Mandatory return types](#milestone-2-mandatory-function-return-types)~~ | Low | **High** | MoonBit | **Done** |
 
 ### Phase 5C: Testing Story
 
@@ -78,29 +78,28 @@
 
 **Objective:** Require explicit `-> T` on all function declarations, including `-> void`.
 
-**Status:** Not started
+**Status:** Complete
 
 **Effort:** Low | **Impact:** High | **Source:** MoonBit
 
 ### Rationale
 
-Klar's return types are currently optional (`parser.zig:2446-2449`). MoonBit's paper shows mandatory top-level type signatures enable the semantic sampler to know expected types at every call site. This also aligns with Klar's "no ambiguity" philosophy — every function self-documents its contract.
+Klar's return types were previously optional (`parser.zig:2446-2449`). MoonBit's paper shows mandatory top-level type signatures enable the semantic sampler to know expected types at every call site. This also aligns with Klar's "no ambiguity" philosophy — every function self-documents its contract.
 
 ```klar
-// Before: both valid
-fn greet(name: string) { println("Hello " + name) }
-fn greet(name: string) -> void { println("Hello " + name) }
-
-// After: explicit return type always required
+// Explicit return type always required
 fn greet(name: string) -> void { println("Hello " + name) }
 ```
 
 ### Tasks
 
-- [ ] **2.1** Change parser (`src/parser.zig:2446`): require `-> Type` after parameter list
-  - Error if `->` missing: "return type annotation required for function declaration"
-- [ ] **2.2** Update test suite: add `-> void` to any functions missing return types
-- [ ] **2.3** Update MEMORY.md and docs to reflect requirement
+- [x] **2.1** Change parser (`src/parser.zig`): require `-> Type` after parameter list
+  - Error if `->` missing: "return type required for function (use '-> void' for functions that return nothing)"
+  - Also updated `parseExternFnDecl` for extern functions
+- [x] **2.2** Update test suite: add `-> void` to any functions missing return types
+  - Fixed codegen bug: explicit `-> void` on methods with `ref`/`inout` self caused LLVM verification failure
+  - Added negative test `test/native/missing_return_type.kl`
+- [x] **2.3** Update MEMORY.md, docs/, and CLAUDE.md to reflect requirement
 
 ### Success Criteria
 

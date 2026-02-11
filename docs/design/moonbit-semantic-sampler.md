@@ -70,7 +70,7 @@ Klar already has strong foundations: mandatory variable types, keyword-based ope
 
 ```klar
 // Current: both are valid
-fn greet(name: string) { println("Hello " + name) }
+fn greet(name: string) -> void { println("Hello " + name) }
 fn greet(name: string) -> void { println("Hello " + name) }
 ```
 

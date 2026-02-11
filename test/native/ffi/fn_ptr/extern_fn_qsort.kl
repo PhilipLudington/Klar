@@ -8,7 +8,7 @@
 // 4. qsort correctly sorts the array
 
 extern {
-    fn qsort(base: CPtr[void], nmemb: usize, size: usize, compar: extern fn(CPtr[void], CPtr[void]) -> i32)
+    fn qsort(base: CPtr[void], nmemb: usize, size: usize, compar: extern fn(CPtr[void], CPtr[void]) -> i32) -> void
 }
 
 // Compare function for ascending order sort of i32 values

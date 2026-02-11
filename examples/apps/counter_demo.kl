@@ -24,22 +24,22 @@ impl Counter {
     }
     
     // Increment the counter (mutable self via inout)
-    fn increment(self: inout Counter) {
+    fn increment(self: inout Counter) -> void {
         self.value = self.value + self.step
     }
     
     // Decrement the counter
-    fn decrement(self: inout Counter) {
+    fn decrement(self: inout Counter) -> void {
         self.value = self.value - self.step
     }
     
     // Reset to zero
-    fn reset(self: inout Counter) {
+    fn reset(self: inout Counter) -> void {
         self.value = 0
     }
     
     // Add a specific amount
-    fn add(self: inout Counter, amount: i32) {
+    fn add(self: inout Counter, amount: i32) -> void {
         self.value = self.value + amount
     }
     
@@ -49,7 +49,7 @@ impl Counter {
     }
     
     // Display the counter value
-    fn display(self: Counter) {
+    fn display(self: Counter) -> void {
         println("Counter value: {self.value}")
     }
 }

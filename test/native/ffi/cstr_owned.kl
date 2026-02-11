@@ -6,7 +6,7 @@ extern {
 }
 
 // Test primitive string.to_cstr() -> CStrOwned
-fn test_primitive_string_to_cstr() {
+fn test_primitive_string_to_cstr() -> void {
     let s: string = "hello from Klar"
     let owned: CStrOwned = s.to_cstr()
 
@@ -19,7 +19,7 @@ fn test_primitive_string_to_cstr() {
 }
 
 // Test String.to_cstr() -> CStrOwned
-fn test_string_data_to_cstr() {
+fn test_string_data_to_cstr() -> void {
     let s: String = String.from("heap allocated string")
     let owned: CStrOwned = s.to_cstr()
 
@@ -29,7 +29,7 @@ fn test_string_data_to_cstr() {
 }
 
 // Test CStrOwned lifetime (should be freed at end of scope)
-fn test_cstr_owned_drop() {
+fn test_cstr_owned_drop() -> void {
     {
         let owned: CStrOwned = "scoped string".to_cstr()
         unsafe {

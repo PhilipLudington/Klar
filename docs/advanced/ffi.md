@@ -458,7 +458,7 @@ fn get_some_callback() -> ?extern fn(i32) -> i32 {
     return @fn_ptr(my_func)  // Automatically wrapped in Some
 }
 
-fn use_callback() {
+fn use_callback() -> void {
     let cb: ?extern fn(i32) -> i32 = get_optional_callback()
 
     match cb {

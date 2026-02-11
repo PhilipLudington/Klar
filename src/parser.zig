@@ -2442,11 +2442,9 @@ pub const Parser = struct {
         const params = try self.parseFunctionParams();
         try self.consume(.r_paren, "expected ')' after parameters");
 
-        // Parse optional return type
-        var return_type: ?ast.TypeExpr = null;
-        if (self.match(.arrow)) {
-            return_type = try self.parseType();
-        }
+        // Parse return type (required)
+        try self.consume(.arrow, "return type required for function (use '-> void' for functions that return nothing)");
+        const return_type: ?ast.TypeExpr = try self.parseType();
 
         // Parse optional where clause
         const where_clause = try self.parseWhereClause();
@@ -3105,11 +3103,9 @@ pub const Parser = struct {
         const is_variadic = params_result.is_variadic;
         try self.consume(.r_paren, "expected ')' after parameters");
 
-        // Parse optional return type
-        var return_type: ?ast.TypeExpr = null;
-        if (self.match(.arrow)) {
-            return_type = try self.parseType();
-        }
+        // Parse return type (required)
+        try self.consume(.arrow, "return type required for extern function (use '-> void' for functions that return nothing)");
+        const return_type: ?ast.TypeExpr = try self.parseType();
 
         const end_span = if (return_type) |rt| rt.span() else self.spanFromToken(self.previous);
 
@@ -3611,7 +3607,7 @@ test "parse generic function" {
 }
 
 test "parse pub function" {
-    var result = try testParseDecl("pub fn hello() { }");
+    var result = try testParseDecl("pub fn hello() -> void { }");
     defer result.arena.deinit();
 
     try std.testing.expect(result.decl == .function);
@@ -3749,7 +3745,7 @@ test "parse complete module" {
         \\
         \\import std.io
         \\
-        \\fn main() {
+        \\fn main() -> void {
         \\    println("Hello")
         \\}
     ;

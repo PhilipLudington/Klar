@@ -104,7 +104,7 @@ let bad: i32 = err!  // Runtime panic
 ### Pattern Matching Results
 
 ```klar
-fn handle_result(r: Result[i32, string]) {
+fn handle_result(r: Result[i32, string]) -> void {
     match r {
         Ok(value) => {
             println("Success: {value}")

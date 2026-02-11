@@ -16,7 +16,7 @@ fn scale_by(@factor: i32, x: i32, y: i32) -> i32 {
     return (x + y) * factor
 }
 
-fn main() {
+fn main() -> void {
     // These should work - compile-time known arguments
     let doubled: i32 = double_comptime(5)
     assert_eq(doubled, 10)

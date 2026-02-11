@@ -9,7 +9,7 @@ impl[T] Box[T] {
         return self.value
     }
 
-    fn set(self: inout Box[T], v: T) {
+    fn set(self: inout Box[T], v: T) -> void {
         self.value = v
     }
 }

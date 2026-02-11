@@ -9,7 +9,7 @@ impl Counter {
         return self.value
     }
 
-    fn increment(self: inout Counter) {
+    fn increment(self: inout Counter) -> void {
         self.value = self.value + 1
     }
 }

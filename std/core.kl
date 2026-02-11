@@ -112,22 +112,22 @@ trait Printable {
 // ============================================================================
 
 /// Print to stdout without newline.
-pub fn print(msg: string) {
+pub fn print(msg: string) -> void {
     // Built-in implementation
 }
 
 /// Print to stdout with newline.
-pub fn println(msg: string) {
+pub fn println(msg: string) -> void {
     // Built-in implementation
 }
 
 /// Assert that a condition is true. Traps if false.
-pub fn assert(condition: bool) {
+pub fn assert(condition: bool) -> void {
     // Built-in implementation
 }
 
 /// Assert that two values are equal. Traps if not equal.
-pub fn assert_eq[T: Eq](a: T, b: T) {
+pub fn assert_eq[T: Eq](a: T, b: T) -> void {
     // Built-in implementation
 }
 

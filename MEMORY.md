@@ -287,8 +287,8 @@ fn add(a: i32, b: i32) -> i32 {
     return a + b
 }
 
-// Void function (no return type annotation needed, but -> void is also valid)
-fn greet(name: string) {
+// Void function (return type required — use -> void)
+fn greet(name: string) -> void {
     println("Hello, {name}!")
 }
 
@@ -342,7 +342,7 @@ fn main(args: [String]) -> i32 {
 }
 
 // Void main (implicitly returns 0)
-fn main() {
+fn main() -> void {
     println("Hello!")
 }
 ```
@@ -378,12 +378,12 @@ impl Point {
     }
 
     // Read-only borrow
-    fn display(ref self: Point) {
+    fn display(ref self: Point) -> void {
         println("({self.x}, {self.y})")
     }
 
     // Mutable borrow
-    fn translate(inout self: Point, dx: i32, dy: i32) {
+    fn translate(inout self: Point, dx: i32, dy: i32) -> void {
         self.x += dx
         self.y += dy
     }
@@ -466,19 +466,19 @@ match x {
 ```klar
 // Definition
 trait Drawable {
-    fn draw(self: Self)
+    fn draw(self: Self) -> void
 }
 
 // Implementation
 impl Circle: Drawable {
-    fn draw(self: Circle) {
+    fn draw(self: Circle) -> void {
         println("Drawing circle")
     }
 }
 
 // Trait with default implementation
 trait Printable {
-    fn print(self: Self) {
+    fn print(self: Self) -> void {
         println("default")
     }
 }
@@ -523,7 +523,7 @@ impl Point: Clone {
 
 // Drop - cleanup on destruction
 impl Connection: Drop {
-    fn drop(inout self: Connection) {
+    fn drop(inout self: Connection) -> void {
         // cleanup resources
     }
 }
@@ -712,12 +712,12 @@ alias.get().set(42)
 
 ```klar
 // Read-only reference parameter
-fn display(ref data: Data) {
+fn display(ref data: Data) -> void {
     println("{data.name}")
 }
 
 // Mutable reference parameter
-fn increment(inout counter: i32) {
+fn increment(inout counter: i32) -> void {
     counter += 1
 }
 
@@ -727,9 +727,9 @@ increment(inout my_counter)
 
 // Method self variants
 impl MyType {
-    fn consume(self: MyType) { }       // takes ownership
-    fn read(ref self: MyType) { }      // borrows read-only
-    fn mutate(inout self: MyType) { }  // borrows mutably
+    fn consume(self: MyType) -> void { }       // takes ownership
+    fn read(ref self: MyType) -> void { }      // borrows read-only
+    fn mutate(inout self: MyType) -> void { }  // borrows mutably
 }
 ```
 
@@ -812,7 +812,7 @@ let zeros: [i32; 10] = @repeat(0, 10)
 extern {
     fn puts(s: CStr) -> i32
     fn malloc(size: u64) -> COptPtr[u8]
-    fn free(ptr: CPtr[void])
+    fn free(ptr: CPtr[void]) -> void
 }
 
 // External type
@@ -1382,10 +1382,10 @@ impl Point {
 
 ```klar
 // WRONG
-fn double(n: i32) { n = n * 2 }
+fn double(n: i32) -> void { n = n * 2 }
 
 // CORRECT
-fn double(inout n: i32) { n = n * 2 }
+fn double(inout n: i32) -> void { n = n * 2 }
 ```
 
 ---
@@ -1461,7 +1461,7 @@ impl Person {
         return "Hi, I'm {self.name}, age {self.age}"
     }
 
-    fn birthday(inout self: Person) {
+    fn birthday(inout self: Person) -> void {
         self.age += 1
     }
 }

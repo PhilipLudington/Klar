@@ -6,7 +6,7 @@ struct Resource {
 }
 
 impl Resource: Drop {
-    fn drop(self: Resource) {
+    fn drop(self: Resource) -> void {
         // In a real implementation, this would release a resource
         // For testing, we just do nothing (the function signature requires void)
     }

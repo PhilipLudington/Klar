@@ -1,2 +1,2 @@
-fn   noop()   {
+fn   noop()  ->  void  {
 }

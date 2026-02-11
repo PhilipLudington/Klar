@@ -1,0 +1,13 @@
+// Expected: build-error
+// Test that functions without explicit return type annotations are rejected.
+// Since Milestone 2, all functions must declare their return type.
+// Use '-> void' for functions that return nothing.
+
+fn greet(name: string) {
+    println("Hello, " + name)
+}
+
+fn main() -> i32 {
+    greet("world")
+    return 0
+}

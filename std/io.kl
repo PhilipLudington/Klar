@@ -104,21 +104,21 @@ pub fn read_line() -> Result[string, IoError] {
 }
 
 /// Print formatted output to stdout.
-pub fn print(msg: string) {
+pub fn print(msg: string) -> void {
     // Built-in implementation
 }
 
 /// Print formatted output to stdout with newline.
-pub fn println(msg: string) {
+pub fn println(msg: string) -> void {
     // Built-in implementation
 }
 
 /// Print formatted output to stderr.
-pub fn eprint(msg: string) {
+pub fn eprint(msg: string) -> void {
     // Built-in implementation
 }
 
 /// Print formatted output to stderr with newline.
-pub fn eprintln(msg: string) {
+pub fn eprintln(msg: string) -> void {
     // Built-in implementation
 }

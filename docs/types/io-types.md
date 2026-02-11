@@ -107,7 +107,7 @@ fn main() -> i32 {
 Write to standard error:
 
 ```klar
-fn log_error(message: string) {
+fn log_error(message: string) -> void {
     Stderr.write("ERROR: ")
     Stderr.write(message)
     Stderr.write("\n")

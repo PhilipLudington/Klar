@@ -72,7 +72,7 @@ let m4: Message = Message::Empty
 Use pattern matching to extract data:
 
 ```klar
-fn process(msg: Message) {
+fn process(msg: Message) -> void {
     match msg {
         Message.Text(s) => {
             println("Text: {s}")

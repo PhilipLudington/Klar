@@ -42,7 +42,7 @@ fn main() -> i32 {
 Passing a value to a function transfers ownership:
 
 ```klar
-fn consume(s: string) {
+fn consume(s: string) -> void {
     println(s)
 }  // s is dropped here
 
@@ -147,7 +147,7 @@ struct Connection {
 }
 
 impl Connection: Drop {
-    fn drop(inout self: Connection) {
+    fn drop(inout self: Connection) -> void {
         println("Closing connection {self.id}")
     }
 }
@@ -232,7 +232,7 @@ struct FileHandle {
 }
 
 impl FileHandle: Drop {
-    fn drop(inout self: FileHandle) {
+    fn drop(inout self: FileHandle) -> void {
         println("Closing file: {self.path}")
         // Close the underlying handle
     }
@@ -242,7 +242,7 @@ fn open_file(path: string) -> FileHandle {
     return FileHandle { path: path.clone(), handle: 42 }
 }
 
-fn process_files() {
+fn process_files() -> void {
     let file1: FileHandle = open_file("data.txt")
     let file2: FileHandle = open_file("config.txt")
 

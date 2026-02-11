@@ -76,7 +76,7 @@ Reserved keywords in Klar that cannot be used as identifiers.
 | Keyword | Description | Example |
 |---------|-------------|---------|
 | `import` | Import module | `import utils.{ add }` |
-| `pub` | Public visibility | `pub fn api() { }` |
+| `pub` | Public visibility | `pub fn api() -> void { }` |
 | `as` | Alias | `import math.{ add as sum }` |
 
 ## FFI Keywords

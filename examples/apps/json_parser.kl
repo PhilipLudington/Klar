@@ -472,7 +472,7 @@ fn error_name(err: JsonError) -> string {
     return name
 }
 
-fn test_parse(input: string) {
+fn test_parse(input: string) -> void {
     let result: Result[JsonValue, JsonError] = parse_json(input)
     match result {
         Ok(v) => {
