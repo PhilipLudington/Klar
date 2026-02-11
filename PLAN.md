@@ -50,7 +50,7 @@
 
 **Objective:** Create a single consolidated reference document optimized for LLM consumption.
 
-**Status:** Not started
+**Status:** Complete
 
 **Effort:** Low | **Impact:** High | **Source:** Nanolang (MEMORY.md)
 
@@ -58,7 +58,7 @@
 
 ### Tasks
 
-- [ ] **1.1** Create `MEMORY.md` at repo root (~1400 lines target)
+- [x] **1.1** Create `MEMORY.md` at repo root (~1400 lines target)
   - Language version and feature list at top
   - Quick reference: all types, operators, keywords (table format)
   - Canonical patterns: one way to write each construct
@@ -69,8 +69,8 @@
 
 ### Success Criteria
 
-- [ ] An LLM given only MEMORY.md can generate syntactically valid Klar code
-- [ ] All language features documented with exactly one canonical example
+- [x] An LLM given only MEMORY.md can generate syntactically valid Klar code
+- [x] All language features documented with exactly one canonical example
 
 ---
 
