@@ -120,6 +120,18 @@ pub const Interpreter = struct {
         if (self.global_env.get("assert_none")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
+        if (self.global_env.get("Ok")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("Err")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("Some")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("None")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
         if (self.global_env.get("panic")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
@@ -190,6 +202,22 @@ pub const Interpreter = struct {
         const assert_none_fn = try self.allocator.create(values.BuiltinFunction);
         assert_none_fn.* = .{ .name = "assert_none", .func = &builtinAssertNone };
         try self.global_env.define("assert_none", .{ .builtin = assert_none_fn }, false);
+
+        const ok_fn = try self.allocator.create(values.BuiltinFunction);
+        ok_fn.* = .{ .name = "Ok", .func = &builtinOk };
+        try self.global_env.define("Ok", .{ .builtin = ok_fn }, false);
+
+        const err_fn = try self.allocator.create(values.BuiltinFunction);
+        err_fn.* = .{ .name = "Err", .func = &builtinErr };
+        try self.global_env.define("Err", .{ .builtin = err_fn }, false);
+
+        const some_fn = try self.allocator.create(values.BuiltinFunction);
+        some_fn.* = .{ .name = "Some", .func = &builtinSome };
+        try self.global_env.define("Some", .{ .builtin = some_fn }, false);
+
+        const none_fn = try self.allocator.create(values.BuiltinFunction);
+        none_fn.* = .{ .name = "None", .func = &builtinNone };
+        try self.global_env.define("None", .{ .builtin = none_fn }, false);
 
         const panic_fn = try self.allocator.create(values.BuiltinFunction);
         panic_fn.* = .{ .name = "panic", .func = &builtinPanic };
@@ -2235,6 +2263,44 @@ fn builtinAssertNone(allocator: Allocator, args: []const Value) RuntimeError!Val
     }
 
     return .void_;
+}
+
+fn builtinOk(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    const value_ptr = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    value_ptr.* = args[0];
+
+    const result_ptr = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    result_ptr.* = .{
+        .is_ok = true,
+        .value = value_ptr,
+    };
+    return .{ .result = result_ptr };
+}
+
+fn builtinErr(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    const value_ptr = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    value_ptr.* = args[0];
+
+    const result_ptr = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    result_ptr.* = .{
+        .is_ok = false,
+        .value = value_ptr,
+    };
+    return .{ .result = result_ptr };
+}
+
+fn builtinSome(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    var builder = values.ValueBuilder.init(allocator);
+    return builder.some(args[0]) catch return RuntimeError.OutOfMemory;
+}
+
+fn builtinNone(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 0) return RuntimeError.InvalidOperation;
+    var builder = values.ValueBuilder.init(allocator);
+    return builder.none() catch return RuntimeError.OutOfMemory;
 }
 
 fn builtinPanic(allocator: Allocator, args: []const Value) RuntimeError!Value {

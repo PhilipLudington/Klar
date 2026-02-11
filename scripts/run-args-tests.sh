@@ -154,6 +154,30 @@ else
 fi
 
 echo ""
+echo "--- Test: assertion helpers across all backends ---"
+
+output=$($KLAR run "$TEST_DIR/assert_helpers_backends.kl" 2>&1)
+if [ $? -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+    pass "assert helpers: native backend"
+else
+    fail "assert helpers: native backend failed"
+fi
+
+output=$($KLAR run "$TEST_DIR/assert_helpers_backends.kl" --vm 2>&1)
+if [ $? -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+    pass "assert helpers: vm backend"
+else
+    fail "assert helpers: vm backend failed"
+fi
+
+output=$($KLAR run "$TEST_DIR/assert_helpers_backends.kl" --interpret 2>&1)
+if [ $? -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+    pass "assert helpers: interpreter backend"
+else
+    fail "assert helpers: interpreter backend failed"
+fi
+
+echo ""
 echo "--- Test: klar test command ---"
 
 output=$($KLAR test "$TEST_DIR/test_command_pass.kl" 2>&1)

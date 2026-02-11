@@ -1053,6 +1053,8 @@ pub const VM = struct {
                     return RuntimeError.WrongArity;
                 }
                 const args = self.stack[self.stack_top - arg_count .. self.stack_top];
+                vm_builtins.setActiveGC(&self.gc);
+                defer vm_builtins.setActiveGC(null);
                 const result = try native.function(self.allocator, args);
                 self.stack_top -= arg_count + 1; // Pop args and callee
                 try self.push(result);

@@ -5,9 +5,17 @@ const Value = vm_value.Value;
 const ObjString = vm_value.ObjString;
 const ObjArray = vm_value.ObjArray;
 const ObjTuple = vm_value.ObjTuple;
+const ObjStruct = vm_value.ObjStruct;
 const ObjOptional = vm_value.ObjOptional;
 const ObjNative = vm_value.ObjNative;
 const RuntimeError = vm_value.RuntimeError;
+const GC = vm_value.GC;
+
+var active_gc: ?*GC = null;
+
+pub fn setActiveGC(gc: ?*GC) void {
+    active_gc = gc;
+}
 
 // ============================================================================
 // Native Function Type
@@ -44,6 +52,10 @@ pub const builtins = [_]NativeDesc{
     .{ .name = "assert_err", .arity = 1, .function = nativeAssertErr },
     .{ .name = "assert_some", .arity = 1, .function = nativeAssertSome },
     .{ .name = "assert_none", .arity = 1, .function = nativeAssertNone },
+    .{ .name = "Ok", .arity = 1, .function = nativeOk },
+    .{ .name = "Err", .arity = 1, .function = nativeErr },
+    .{ .name = "Some", .arity = 1, .function = nativeSome },
+    .{ .name = "None", .arity = 0, .function = nativeNone },
     .{ .name = "panic", .arity = 1, .function = nativePanic },
 
     // Utility functions
@@ -161,14 +173,24 @@ fn nativeAssertNe(_: Allocator, args: []const Value) RuntimeError!Value {
 
 fn nativeAssertOk(_: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 1) return RuntimeError.WrongArity;
-    // VM runtime does not model Result as a dedicated value kind.
-    return RuntimeError.TypeError;
+    if (args[0] != .struct_) return RuntimeError.TypeError;
+    const result_struct = args[0].struct_;
+    if (!std.mem.eql(u8, result_struct.type_name, "Result")) return RuntimeError.TypeError;
+    const ok_field = result_struct.getField("is_ok") orelse return RuntimeError.TypeError;
+    if (ok_field != .bool_) return RuntimeError.TypeError;
+    if (!ok_field.bool_) return RuntimeError.AssertionFailed;
+    return .void_;
 }
 
 fn nativeAssertErr(_: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 1) return RuntimeError.WrongArity;
-    // VM runtime does not model Result as a dedicated value kind.
-    return RuntimeError.TypeError;
+    if (args[0] != .struct_) return RuntimeError.TypeError;
+    const result_struct = args[0].struct_;
+    if (!std.mem.eql(u8, result_struct.type_name, "Result")) return RuntimeError.TypeError;
+    const ok_field = result_struct.getField("is_ok") orelse return RuntimeError.TypeError;
+    if (ok_field != .bool_) return RuntimeError.TypeError;
+    if (ok_field.bool_) return RuntimeError.AssertionFailed;
+    return .void_;
 }
 
 fn nativeAssertSome(_: Allocator, args: []const Value) RuntimeError!Value {
@@ -191,6 +213,40 @@ fn nativeAssertNone(_: Allocator, args: []const Value) RuntimeError!Value {
     }
 
     return .void_;
+}
+
+fn nativeOk(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = true }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", args[0]) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+fn nativeErr(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", args[0]) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+fn nativeSome(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.WrongArity;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const optional = ObjOptional.createSomeGC(gc, args[0]) catch return RuntimeError.OutOfMemory;
+    return .{ .optional = optional };
+}
+
+fn nativeNone(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 0) return RuntimeError.WrongArity;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const optional = ObjOptional.createNoneGC(gc) catch return RuntimeError.OutOfMemory;
+    return .{ .optional = optional };
 }
 
 fn nativePanic(_: Allocator, args: []const Value) RuntimeError!Value {
