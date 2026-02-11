@@ -1,0 +1,5 @@
+// Expected: check-error undefined_function
+
+test does_not_exist {
+    assert(true)
+}

@@ -21,7 +21,7 @@ const StructMethod = traits_mod.StructMethod;
 pub fn checkDecl(tc: anytype, decl: ast.Decl) void {
     switch (decl) {
         .function => |f| checkFunction(tc, f),
-        .test_decl => {}, // Test declarations are checked by `klar test` flow
+        .test_decl => |t| checkTestDecl(tc, t),
         .struct_decl => |s| checkStruct(tc, s),
         .enum_decl => |e| checkEnum(tc, e),
         .trait_decl => |t| checkTrait(tc, t),
@@ -33,6 +33,20 @@ pub fn checkDecl(tc: anytype, decl: ast.Decl) void {
         .extern_type_decl => |e| checkExternType(tc, e),
         .extern_block => |b| checkExternBlock(tc, b),
     }
+}
+
+fn checkTestDecl(tc: anytype, test_decl: *ast.TestDecl) void {
+    const referenced = tc.current_scope.lookup(test_decl.name) orelse {
+        tc.addError(.undefined_function, test_decl.span, "test '{s}' references missing function '{s}'", .{ test_decl.name, test_decl.name });
+        return;
+    };
+    if (referenced.kind != .function) {
+        tc.addError(.undefined_function, test_decl.span, "test '{s}' references '{s}', which is not a function", .{ test_decl.name, test_decl.name });
+        return;
+    }
+
+    // Check test body in its own block scope.
+    _ = tc.checkBlock(test_decl.body);
 }
 
 fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {

@@ -3777,6 +3777,7 @@ pub const TypeChecker = struct {
                         _ = self.checkBlock(body);
                     }
                 },
+                .test_decl => self.checkDecl(decl),
                 .impl_decl => self.checkDecl(decl),
                 else => {},
             }
