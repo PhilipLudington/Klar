@@ -4369,6 +4369,10 @@ pub const Emitter = struct {
                 const operand = try self.emitExpr(un.operand);
                 return self.builder.buildNot(operand, "nottmp");
             },
+            .await_ => {
+                // Async lowering not implemented yet.
+                return EmitError.UnsupportedFeature;
+            },
             .deref => {
                 // Dereference a pointer: load the value from the pointer
                 const operand = try self.emitExpr(un.operand);
@@ -7493,7 +7497,7 @@ pub const Emitter = struct {
             },
             .unary => |un| {
                 return switch (un.op) {
-                    .negate, .not => try self.inferExprType(un.operand),
+                    .negate, .not, .await_ => try self.inferExprType(un.operand),
                     .deref => {
                         // Dereference returns the inner type
                         return try self.inferDerefType(un.operand);

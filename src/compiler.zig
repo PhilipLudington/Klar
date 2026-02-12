@@ -978,6 +978,10 @@ pub const Compiler = struct {
         const op: OpCode = switch (unary.op) {
             .negate => .op_neg,
             .not => .op_not,
+            .await_ => {
+                try self.addError(.unsupported_feature, unary.span, "'await' is not yet supported in bytecode VM");
+                return;
+            },
             .ref => .op_nop, // TODO: implement references
             .ref_mut => .op_nop,
             .deref => .op_nop,

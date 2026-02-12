@@ -4344,6 +4344,11 @@ pub const TypeChecker = struct {
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
+                    if (f.is_async) {
+                        self.addError(.invalid_operation, f.span, "async functions are not yet supported", .{});
+                        continue;
+                    }
+
                     // Push type parameters for generic functions
                     const has_type_params = f.type_params.len > 0;
                     if (has_type_params) {
@@ -4424,6 +4429,8 @@ pub const TypeChecker = struct {
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
+                    if (f.is_async) continue;
+
                     if (f.body) |body| {
                         // Push type parameters for generic functions
                         const has_type_params = f.type_params.len > 0;

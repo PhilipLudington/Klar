@@ -50,6 +50,11 @@ fn checkTestDecl(tc: anytype, test_decl: *ast.TestDecl) void {
 }
 
 fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
+    if (func.is_async) {
+        tc.addError(.invalid_operation, func.span, "async functions are not yet supported", .{});
+        return;
+    }
+
     // Push type parameters into scope if this is a generic function
     const has_type_params = func.type_params.len > 0;
     if (has_type_params) {

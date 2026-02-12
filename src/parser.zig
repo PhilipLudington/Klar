@@ -296,6 +296,7 @@ pub const Parser = struct {
     fn isTopLevelDeclStart(kind: Token.Kind) bool {
         return switch (kind) {
             .pub_,
+            .async_,
             .unsafe_,
             .extern_,
             .fn_,
@@ -436,6 +437,7 @@ pub const Parser = struct {
             // Unary operators
             .minus => self.parseUnary(.negate),
             .not => self.parseUnary(.not),
+            .await_ => self.parseUnary(.await_),
             .ref => self.parseRefExpr(),
             .star => self.parseUnary(.deref),
 
@@ -2365,6 +2367,9 @@ pub const Parser = struct {
         // Handle visibility modifier
         const is_pub = self.match(.pub_);
 
+        // Handle async modifier (for async fn)
+        const is_async = self.match(.async_);
+
         // Handle unsafe modifier (for unsafe fn)
         const is_unsafe = self.match(.unsafe_);
 
@@ -2399,11 +2404,15 @@ pub const Parser = struct {
                     try self.reportError("extern functions must be declared inside 'extern { }' blocks");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseFunctionDecl(is_pub, is_unsafe);
+                break :blk self.parseFunctionDecl(is_pub, is_unsafe, is_async);
             },
             .test_ => blk: {
                 if (is_pub) {
                     try self.reportError("'pub' modifier is not allowed on test declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_async) {
+                    try self.reportError("'async' modifier is not allowed on test declarations");
                     return ParseError.UnexpectedToken;
                 }
                 if (is_unsafe) {
@@ -2417,6 +2426,10 @@ pub const Parser = struct {
                 break :blk self.parseTestDecl();
             },
             .struct_ => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on struct declarations");
                     return ParseError.UnexpectedToken;
@@ -2424,6 +2437,10 @@ pub const Parser = struct {
                 break :blk self.parseStructDecl(is_pub, is_extern);
             },
             .enum_ => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on enum declarations");
                     return ParseError.UnexpectedToken;
@@ -2431,6 +2448,10 @@ pub const Parser = struct {
                 break :blk self.parseEnumDecl(is_pub, is_extern);
             },
             .trait => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_extern) {
                     try self.reportError("'extern' modifier is not allowed on trait declarations");
                     return ParseError.UnexpectedToken;
@@ -2438,6 +2459,10 @@ pub const Parser = struct {
                 break :blk self.parseTraitDecl(is_pub, is_unsafe);
             },
             .impl => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_extern) {
                     try self.reportError("'extern' modifier is not allowed on impl declarations");
                     return ParseError.UnexpectedToken;
@@ -2445,6 +2470,10 @@ pub const Parser = struct {
                 break :blk self.parseImplDecl(is_unsafe);
             },
             .type_ => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on type aliases");
                     return ParseError.UnexpectedToken;
@@ -2453,6 +2482,10 @@ pub const Parser = struct {
                 break :blk self.parseTypeAlias(is_pub);
             },
             .const_ => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on const declarations");
                     return ParseError.UnexpectedToken;
@@ -2464,6 +2497,10 @@ pub const Parser = struct {
                 break :blk self.parseConstDecl(is_pub);
             },
             .import => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on import declarations");
                     return ParseError.UnexpectedToken;
@@ -2475,6 +2512,10 @@ pub const Parser = struct {
                 break :blk self.parseImportDecl();
             },
             .module => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on module declarations");
                     return ParseError.UnexpectedToken;
@@ -2488,6 +2529,8 @@ pub const Parser = struct {
             else => {
                 if (is_extern) {
                     try self.reportError("expected 'type', 'fn', 'struct', or 'enum' after 'extern'");
+                } else if (is_async) {
+                    try self.reportError("expected 'fn' after 'async'");
                 } else if (is_unsafe) {
                     try self.reportError("expected 'fn', 'trait', or 'impl' after 'unsafe'");
                 } else {
@@ -2498,7 +2541,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool) ParseError!ast.Decl {
+    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool, is_async: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'fn'
 
@@ -2547,7 +2590,7 @@ pub const Parser = struct {
             .where_clause = where_clause,
             .body = body,
             .is_pub = is_pub,
-            .is_async = false,
+            .is_async = is_async,
             .is_comptime = is_comptime,
             .is_unsafe = is_unsafe,
             .is_extern = false,
@@ -2935,7 +2978,8 @@ pub const Parser = struct {
             } else {
                 // Each method in trait is a function signature (potentially without body)
                 // Note: unsafe methods in traits not yet supported
-                const method_decl = try self.parseFunctionDecl(false, false);
+                const method_is_async = self.match(.async_);
+                const method_decl = try self.parseFunctionDecl(false, false, method_is_async);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -3027,8 +3071,9 @@ pub const Parser = struct {
                 try associated_types.append(self.allocator, assoc_binding);
             } else {
                 const is_pub = self.match(.pub_);
+                const method_is_async = self.match(.async_);
                 const method_is_unsafe = self.match(.unsafe_);
-                const method_decl = try self.parseFunctionDecl(is_pub, method_is_unsafe);
+                const method_decl = try self.parseFunctionDecl(is_pub, method_is_unsafe, method_is_async);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -3581,6 +3626,14 @@ test "parse unary" {
     try std.testing.expectEqual(ast.UnaryOp.negate, result.expr.unary.op);
 }
 
+test "parse await unary expression" {
+    var result = try testParse("await value");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.expr == .unary);
+    try std.testing.expectEqual(ast.UnaryOp.await_, result.expr.unary.op);
+}
+
 test "parse index" {
     var result = try testParse("arr[0]");
     defer result.arena.deinit();
@@ -3729,6 +3782,36 @@ test "parse function declaration" {
     try std.testing.expectEqualStrings("add", result.decl.function.name);
     try std.testing.expectEqual(@as(usize, 2), result.decl.function.params.len);
     try std.testing.expect(result.decl.function.return_type != null);
+}
+
+test "parse async function declaration" {
+    var result = try testParseDecl("async fn fetch() -> i32 { return 1 }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .function);
+    try std.testing.expect(result.decl.function.is_async);
+}
+
+test "reject async modifier on non-function declaration" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init("async struct Job { id: i32 }");
+    var parser = Parser.init(arena.allocator(), &lexer, "async struct Job { id: i32 }");
+
+    try std.testing.expectError(ParseError.UnexpectedToken, parser.parseDeclaration());
+    try std.testing.expect(parser.errors.items.len >= 1);
+}
+
+test "reject invalid modifier order for async function declaration" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init("unsafe async fn work() -> void { }");
+    var parser = Parser.init(arena.allocator(), &lexer, "unsafe async fn work() -> void { }");
+
+    try std.testing.expectError(ParseError.UnexpectedToken, parser.parseDeclaration());
+    try std.testing.expect(parser.errors.items.len >= 1);
 }
 
 test "parse generic function" {
