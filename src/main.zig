@@ -40,6 +40,7 @@ const TestRunOptions = struct {
     strict_tests: bool = false,
     require_tests: bool = false,
     json_output: bool = false,
+    include_source: bool = false,
     emit_output: bool = true,
 };
 
@@ -71,6 +72,7 @@ const JsonTestSummary = struct {
     passed: bool,
     error_name: ?[]const u8 = null,
     assertions: []JsonAssertionSummary = &.{},
+    source: ?[]const u8 = null,
 };
 
 const JsonFileSummary = struct {
@@ -115,6 +117,7 @@ fn freeJsonTestResults(allocator: std.mem.Allocator, test_results: []JsonTestSum
     for (test_results) |test_result| {
         allocator.free(test_result.name);
         if (test_result.error_name) |error_name| allocator.free(error_name);
+        if (test_result.source) |source| allocator.free(source);
         for (test_result.assertions) |assertion| {
             if (assertion.expected) |expected| allocator.free(expected);
             if (assertion.actual) |actual| allocator.free(actual);
@@ -187,6 +190,17 @@ fn duplicateAssertionRecords(
         initialized += 1;
     }
     return assertions;
+}
+
+fn findFunctionSource(module: ast.Module, source: []const u8, function_name: []const u8) ?[]const u8 {
+    for (module.declarations) |decl| {
+        if (decl != .function) continue;
+        const function = decl.function;
+        if (!std.mem.eql(u8, function.name, function_name)) continue;
+        if (function.span.end > source.len or function.span.start >= function.span.end) return null;
+        return source[function.span.start..function.span.end];
+    }
+    return null;
 }
 
 /// Result of attempting to load a manifest with user-friendly error messages.
@@ -525,6 +539,7 @@ pub fn main() !void {
         var strict_tests = false;
         var require_tests = false;
         var json_output = false;
+        var include_source = false;
 
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
@@ -544,6 +559,8 @@ pub fn main() !void {
                 require_tests = true;
             } else if (std.mem.eql(u8, arg, "--json")) {
                 json_output = true;
+            } else if (std.mem.eql(u8, arg, "--include-source")) {
+                include_source = true;
             } else if (!std.mem.startsWith(u8, arg, "-") and input_path == null) {
                 input_path = arg;
             } else {
@@ -564,6 +581,7 @@ pub fn main() !void {
             .strict_tests = strict_tests,
             .require_tests = require_tests,
             .json_output = json_output,
+            .include_source = include_source,
         }) catch |err| switch (err) {
             error.TestsFailed => std.process.exit(1),
             else => return err,
@@ -2541,6 +2559,10 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                             try stdout.writeAll(",\"error\":");
                             try writeJsonEscaped(stdout, error_name);
                         }
+                        if (test_result.source) |test_source| {
+                            try stdout.writeAll(",\"source\":");
+                            try writeJsonEscaped(stdout, test_source);
+                        }
                         try stdout.writeAll(",\"assertions\":[");
                         for (test_result.assertions, 0..) |assertion, assertion_idx| {
                             if (assertion_idx > 0) try stdout.writeAll(",");
@@ -3004,6 +3026,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 for (test_results.items) |test_result| {
                     allocator.free(test_result.name);
                     if (test_result.error_name) |error_name| allocator.free(error_name);
+                    if (test_result.source) |test_source| allocator.free(test_source);
                     for (test_result.assertions) |assertion| {
                         if (assertion.expected) |expected| allocator.free(expected);
                         if (assertion.actual) |actual| allocator.free(actual);
@@ -3028,6 +3051,13 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             }
 
             if (record_assertions) {
+                const test_source = if (options.include_source) blk: {
+                    if (findFunctionSource(entry_ast, source, test_decl.name)) |function_source| {
+                        break :blk try allocator.dupe(u8, function_source);
+                    }
+                    break :blk null;
+                } else null;
+                errdefer if (test_source) |owned_source| allocator.free(owned_source);
                 assertion_recorder.clear();
                 if (entry_interp.evalBlock(test_decl.body)) |_| {
                     const assertion_results = try duplicateAssertionRecords(allocator, assertion_recorder.records.items);
@@ -3039,6 +3069,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                         .name = try allocator.dupe(u8, test_decl.name),
                         .passed = true,
                         .assertions = assertion_results,
+                        .source = test_source,
                     });
                     passed += 1;
                 } else |err| {
@@ -3052,6 +3083,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                         .passed = false,
                         .error_name = try allocator.dupe(u8, @errorName(err)),
                         .assertions = assertion_results,
+                        .source = test_source,
                     });
                     failed += 1;
                 }
@@ -3091,6 +3123,10 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 if (test_result.error_name) |error_name| {
                     try stdout.writeAll(",\"error\":");
                     try writeJsonEscaped(stdout, error_name);
+                }
+                if (test_result.source) |test_source| {
+                    try stdout.writeAll(",\"source\":");
+                    try writeJsonEscaped(stdout, test_source);
                 }
                 try stdout.writeAll(",\"assertions\":[");
                 for (test_result.assertions, 0..) |assertion, assertion_idx| {
@@ -3250,6 +3286,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 for (test_results.items) |test_result| {
                     allocator.free(test_result.name);
                     if (test_result.error_name) |error_name| allocator.free(error_name);
+                    if (test_result.source) |test_source| allocator.free(test_source);
                     for (test_result.assertions) |assertion| {
                         if (assertion.expected) |expected| allocator.free(expected);
                         if (assertion.actual) |actual| allocator.free(actual);
@@ -3275,6 +3312,13 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             }
 
             if (record_assertions) {
+                const test_source = if (options.include_source) blk: {
+                    if (findFunctionSource(module, source, test_decl.name)) |function_source| {
+                        break :blk try allocator.dupe(u8, function_source);
+                    }
+                    break :blk null;
+                } else null;
+                errdefer if (test_source) |owned_source| allocator.free(owned_source);
                 assertion_recorder.clear();
                 if (interp.evalBlock(test_decl.body)) |_| {
                     const assertion_results = try duplicateAssertionRecords(allocator, assertion_recorder.records.items);
@@ -3286,6 +3330,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                         .name = try allocator.dupe(u8, test_decl.name),
                         .passed = true,
                         .assertions = assertion_results,
+                        .source = test_source,
                     });
                     passed += 1;
                 } else |err| {
@@ -3299,6 +3344,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                         .passed = false,
                         .error_name = try allocator.dupe(u8, @errorName(err)),
                         .assertions = assertion_results,
+                        .source = test_source,
                     });
                     failed += 1;
                 }
@@ -3338,6 +3384,10 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 if (test_result.error_name) |error_name| {
                     try stdout.writeAll(",\"error\":");
                     try writeJsonEscaped(stdout, error_name);
+                }
+                if (test_result.source) |test_source| {
+                    try stdout.writeAll(",\"source\":");
+                    try writeJsonEscaped(stdout, test_source);
                 }
                 try stdout.writeAll(",\"assertions\":[");
                 for (test_result.assertions, 0..) |assertion, assertion_idx| {
@@ -4108,6 +4158,7 @@ fn printUsage() !void {
         \\    --strict-tests     Warn when no tests are found
         \\    --require-tests    Fail when no tests are found
         \\    --json             Emit machine-readable JSON summary
+        \\    --include-source   Include matched function source in JSON test results
         \\  fmt [file|dir]       Format source files
         \\    -i                  Format files in-place
         \\    --check             Check formatting (exit 1 if unformatted)

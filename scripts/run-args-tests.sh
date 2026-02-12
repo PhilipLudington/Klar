@@ -237,6 +237,15 @@ else
     fail "test command: --json file summary failed"
 fi
 
+output=$($KLAR test "$TEST_DIR/test_command_pass.kl" --json --include-source 2>&1)
+if echo "$output" | grep -q '"source"' && \
+   echo "$output" | grep -q '"source":"fn target() -> i32 {' && \
+   echo "$output" | grep -q '"assertions"'; then
+    pass "test command: --include-source embeds function source in JSON results"
+else
+    fail "test command: --include-source JSON source embedding failed"
+fi
+
 output=$($KLAR test "$TEST_DIR/test_command_dir" --json 2>&1)
 if echo "$output" | grep -q '"path"' && echo "$output" | grep -q '"files"' && echo "$output" | grep -q '"summary"' && echo "$output" | grep -q '"tests"'; then
     pass "test command: --json emits machine-readable directory summary"

@@ -168,7 +168,7 @@ test gcd {
 
 **Objective:** Add `--json` flag to `klar test` for machine-readable test results.
 
-**Status:** In progress (`klar test --json` now includes per-test assertions and structured compiler/setup errors)
+**Status:** Complete
 
 **Effort:** Low | **Impact:** High | **Source:** DSPy | **Dependencies:** Milestone 3 (inline test blocks)
 
@@ -202,13 +202,13 @@ Optionally include function source with `--include-source` for richer AI context
 - [x] **4.1** Add `--json` flag to `klar test`
 - [x] **4.2** JSON output: test name, assertion results, expected vs actual
 - [x] **4.3** Include compiler errors in same structured format
-- [ ] **4.4** `--include-source` flag to embed function source in JSON output
+- [x] **4.4** `--include-source` flag to embed function source in JSON output
 
 ### Success Criteria
 
-- [ ] `klar test --json` outputs valid JSON
-- [ ] JSON includes enough context for tooling to act on failures
-- [ ] Works with all assertion types
+- [x] `klar test --json` outputs valid JSON
+- [x] JSON includes enough context for tooling to act on failures
+- [x] Works with all assertion types
 
 ---
 
