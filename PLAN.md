@@ -238,7 +238,10 @@ Optionally include function source with `--include-source` for richer AI context
   - Added args regression coverage for expected type inference at cursor
 
 **LSP server:**
-- [ ] **5.5** JSON-RPC transport layer (stdio)
+- [x] **5.5** JSON-RPC transport layer (stdio)
+  - Added `klar lsp` command with `Content-Length` framed JSON-RPC over stdio
+  - Handles `initialize`, `shutdown`, and `exit` lifecycle messages
+  - Added args smoke test for framed initialize/shutdown/exit handshake
 - [ ] **5.6** `textDocument/diagnostic` — real-time error reporting
 - [ ] **5.7** `textDocument/completion` — scope and type-aware completions
 - [ ] **5.8** `textDocument/hover` — type information on hover

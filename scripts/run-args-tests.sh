@@ -467,6 +467,87 @@ else
 fi
 rm -f "$expected_method_fixture"
 
+echo ""
+echo "--- Test: klar lsp transport ---"
+
+init_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+shutdown_payload='{"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}'
+exit_payload='{"jsonrpc":"2.0","method":"exit","params":null}'
+
+lsp_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#init_payload}" "$init_payload"
+        printf 'Content-Length: %d\r\n\r\n%s' "${#shutdown_payload}" "$shutdown_payload"
+        printf 'Content-Length: %d\r\n\r\n%s' "${#exit_payload}" "$exit_payload"
+    } | $KLAR lsp 2>&1
+)
+
+if echo "$lsp_output" | grep -q "Content-Length:" && \
+   echo "$lsp_output" | grep -q '"id":1' && \
+   echo "$lsp_output" | grep -q '"capabilities"' && \
+   echo "$lsp_output" | grep -q '"id":2' && \
+   echo "$lsp_output" | grep -q '"result":null'; then
+    pass "lsp command: stdio JSON-RPC initialize/shutdown/exit handshake"
+else
+    fail "lsp command: JSON-RPC transport handshake failed"
+fi
+
+invalid_json_payload='{not json'
+invalid_json_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#invalid_json_payload}" "$invalid_json_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$invalid_json_output" | grep -q '"code":-32700' && \
+   echo "$invalid_json_output" | grep -q '"id":null'; then
+    pass "lsp command: malformed JSON returns parse error"
+else
+    fail "lsp command: malformed JSON parse error handling failed"
+fi
+
+invalid_request_payload='{"jsonrpc":"2.0","id":7,"method":123}'
+invalid_request_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#invalid_request_payload}" "$invalid_request_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$invalid_request_output" | grep -q '"code":-32600' && \
+   echo "$invalid_request_output" | grep -q '"id":7'; then
+    pass "lsp command: invalid request shape returns -32600"
+else
+    fail "lsp command: invalid request shape handling failed"
+fi
+
+unknown_method_payload='{"jsonrpc":"2.0","id":8,"method":"klar/unknown"}'
+unknown_method_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#unknown_method_payload}" "$unknown_method_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$unknown_method_output" | grep -q '"code":-32601' && \
+   echo "$unknown_method_output" | grep -q '"id":8'; then
+    pass "lsp command: unknown method returns -32601"
+else
+    fail "lsp command: unknown method handling failed"
+fi
+
+if printf 'Content-Length: 99999999\r\n\r\n{}' | $KLAR lsp >/tmp/klar_lsp_oversize.out 2>&1; then
+    fail "lsp command: oversized content-length should fail"
+else
+    pass "lsp command: oversized content-length is rejected"
+fi
+rm -f /tmp/klar_lsp_oversize.out
+
+exit_only_payload='{"jsonrpc":"2.0","method":"exit","params":null}'
+if {
+    printf 'Content-Length: %d\r\n\r\n%s' "${#exit_only_payload}" "$exit_only_payload"
+} | $KLAR lsp >/tmp/klar_lsp_exit_only.out 2>&1; then
+    fail "lsp command: exit without shutdown should return non-zero"
+else
+    pass "lsp command: exit without shutdown returns non-zero"
+fi
+rm -f /tmp/klar_lsp_exit_only.out
+
 # Write results JSON
 TOTAL=$((PASSED + FAILED))
 cat > "$RESULTS_FILE" << EOF

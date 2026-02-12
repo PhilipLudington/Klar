@@ -26,6 +26,7 @@ const Repl = @import("repl.zig").Repl;
 const manifest = @import("pkg/manifest.zig");
 const lockfile = @import("pkg/lockfile.zig");
 const formatter = @import("formatter.zig");
+const lsp = @import("lsp.zig");
 
 // Zig 0.15 IO helpers
 fn getStdOut() std.fs.File {
@@ -728,6 +729,8 @@ pub fn main() !void {
         };
     } else if (std.mem.eql(u8, command, "fmt")) {
         try fmtCommand(allocator, args);
+    } else if (std.mem.eql(u8, command, "lsp")) {
+        try lsp.runStdio(allocator);
     } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
         try printUsage();
     } else if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
@@ -4439,6 +4442,7 @@ fn printUsage() !void {
         \\  fmt [file|dir]       Format source files
         \\    -i                  Format files in-place
         \\    --check             Check formatting (exit 1 if unformatted)
+        \\  lsp                  Run LSP JSON-RPC transport over stdio
         \\  help                 Show this help
         \\  version              Show version
         \\  tokenize <file>      Tokenize a file (debug)
@@ -4531,4 +4535,5 @@ test {
     _ = @import("ir/mod.zig");
     _ = @import("opt/mod.zig");
     _ = @import("repl.zig");
+    _ = @import("lsp.zig");
 }
