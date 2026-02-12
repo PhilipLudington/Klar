@@ -484,6 +484,7 @@ lsp_output=$(
 
 if echo "$lsp_output" | grep -q "Content-Length:" && \
    echo "$lsp_output" | grep -q '"id":1' && \
+   echo "$lsp_output" | grep -q '"diagnosticProvider"' && \
    echo "$lsp_output" | grep -q '"capabilities"' && \
    echo "$lsp_output" | grep -q '"id":2' && \
    echo "$lsp_output" | grep -q '"result":null'; then
@@ -547,6 +548,82 @@ else
     pass "lsp command: exit without shutdown returns non-zero"
 fi
 rm -f /tmp/klar_lsp_exit_only.out
+
+diag_fixture="/tmp/klar_lsp_diagnostic_fixture.kl"
+cat > "$diag_fixture" << 'EOF'
+fn main() -> i32 {
+    let value: i32 = "oops"
+    return value
+}
+EOF
+
+diag_uri="file://${diag_fixture}"
+diag_payload=$(printf '{"jsonrpc":"2.0","id":11,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"%s"}}}' "$diag_uri")
+diag_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#diag_payload}" "$diag_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$diag_output" | grep -q '"id":11' && \
+   echo "$diag_output" | grep -q '"kind":"full"' && \
+   echo "$diag_output" | grep -q '"source":"checker"' && \
+   echo "$diag_output" | grep -q '"severity":1'; then
+    pass "lsp command: textDocument/diagnostic returns checker diagnostics"
+else
+    fail "lsp command: textDocument/diagnostic handling failed"
+fi
+rm -f "$diag_fixture"
+
+diag_mem_uri='file:///tmp/klar%20lsp%20memory.kl'
+did_open_payload=$(printf '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"%s","languageId":"klar","version":1,"text":"fn main() -> i32 {\\n    let value: i32 = \\"bad\\"\\n    return value\\n}\\n"}}}' "$diag_mem_uri")
+diag_mem_bad_payload=$(printf '{"jsonrpc":"2.0","id":12,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"%s"}}}' "$diag_mem_uri")
+did_change_payload=$(printf '{"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":"%s","version":2},"contentChanges":[{"text":"fn main() -> i32 {\\n    let value: i32 = 1\\n    return value\\n}\\n"}]}}' "$diag_mem_uri")
+diag_mem_good_payload=$(printf '{"jsonrpc":"2.0","id":13,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"%s"}}}' "$diag_mem_uri")
+did_close_payload=$(printf '{"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":"%s"}}}' "$diag_mem_uri")
+diag_mem_closed_payload=$(printf '{"jsonrpc":"2.0","id":14,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"%s"}}}' "$diag_mem_uri")
+
+diag_mem_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#did_open_payload}" "$did_open_payload"
+        printf 'Content-Length: %d\r\n\r\n%s' "${#diag_mem_bad_payload}" "$diag_mem_bad_payload"
+        printf 'Content-Length: %d\r\n\r\n%s' "${#did_change_payload}" "$did_change_payload"
+        printf 'Content-Length: %d\r\n\r\n%s' "${#diag_mem_good_payload}" "$diag_mem_good_payload"
+        printf 'Content-Length: %d\r\n\r\n%s' "${#did_close_payload}" "$did_close_payload"
+        printf 'Content-Length: %d\r\n\r\n%s' "${#diag_mem_closed_payload}" "$diag_mem_closed_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$diag_mem_output" | grep -q '"id":12' && \
+   echo "$diag_mem_output" | grep -q '"source":"checker"' && \
+   echo "$diag_mem_output" | grep -q '"id":13' && \
+   echo "$diag_mem_output" | grep -F -q '"items":[]' && \
+   echo "$diag_mem_output" | grep -q '"id":14' && \
+   echo "$diag_mem_output" | grep -q '"code":-32603'; then
+    pass "lsp command: didOpen/didChange/didClose drive in-memory diagnostics"
+else
+    fail "lsp command: in-memory document diagnostics lifecycle failed"
+fi
+
+diag_uri_fixture="/tmp/klar lsp uri fixture.kl"
+cat > "$diag_uri_fixture" << 'EOF'
+fn main() -> i32 {
+    let value: i32 = "oops"
+    return value
+}
+EOF
+diag_uri_encoded='file:///tmp/klar%20lsp%20uri%20fixture.kl'
+diag_uri_payload=$(printf '{"jsonrpc":"2.0","id":15,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"%s"}}}' "$diag_uri_encoded")
+diag_uri_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#diag_uri_payload}" "$diag_uri_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$diag_uri_output" | grep -q '"id":15' && \
+   echo "$diag_uri_output" | grep -q '"source":"checker"'; then
+    pass "lsp command: percent-encoded file URI is decoded"
+else
+    fail "lsp command: percent-encoded URI decoding failed"
+fi
+rm -f "$diag_uri_fixture"
 
 # Write results JSON
 TOTAL=$((PASSED + FAILED))

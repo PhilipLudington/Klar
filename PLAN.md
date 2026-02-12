@@ -242,7 +242,11 @@ Optionally include function source with `--include-source` for richer AI context
   - Added `klar lsp` command with `Content-Length` framed JSON-RPC over stdio
   - Handles `initialize`, `shutdown`, and `exit` lifecycle messages
   - Added args smoke test for framed initialize/shutdown/exit handshake
-- [ ] **5.6** `textDocument/diagnostic` — real-time error reporting
+- [x] **5.6** `textDocument/diagnostic` — real-time error reporting
+  - Added pull diagnostics request handling for `textDocument/diagnostic`
+  - Returns parser and checker diagnostics in LSP `full` report format
+  - Advertises `diagnosticProvider` capability in initialize response
+  - Added args regression coverage for diagnostic response payloads
 - [ ] **5.7** `textDocument/completion` — scope and type-aware completions
 - [ ] **5.8** `textDocument/hover` — type information on hover
 - [ ] **5.9** `textDocument/definition` — go to definition
