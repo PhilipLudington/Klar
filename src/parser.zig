@@ -293,6 +293,35 @@ pub const Parser = struct {
         });
     }
 
+    fn isTopLevelDeclStart(kind: Token.Kind) bool {
+        return switch (kind) {
+            .pub_,
+            .unsafe_,
+            .extern_,
+            .fn_,
+            .test_,
+            .struct_,
+            .enum_,
+            .trait,
+            .impl,
+            .type_,
+            .const_,
+            .import,
+            .module,
+            => true,
+            else => false,
+        };
+    }
+
+    /// Recover to the next likely top-level declaration boundary.
+    /// This enables parsing a partial module after declaration-level errors.
+    fn synchronizeTopLevel(self: *Parser) void {
+        while (!self.check(.eof)) {
+            if (isTopLevelDeclStart(self.current.kind)) return;
+            self.advance();
+        }
+    }
+
     // ========================================================================
     // Allocation helpers
     // ========================================================================
@@ -3384,8 +3413,9 @@ pub const Parser = struct {
     // Top-level parsing
     // ========================================================================
 
-    /// Parse a complete module (file)
-    pub fn parseModule(self: *Parser) ParseError!ast.Module {
+    /// Parse a complete module (file) with top-level error recovery.
+    /// Returns a partial AST and records diagnostics in `errors`.
+    pub fn parseModuleRecovering(self: *Parser) ParseError!ast.Module {
         var module_decl: ?ast.ModuleDecl = null;
         var imports = std.ArrayListUnmanaged(ast.ImportDecl){};
         var declarations = std.ArrayListUnmanaged(ast.Decl){};
@@ -3395,8 +3425,19 @@ pub const Parser = struct {
 
         // Parse optional module declaration
         if (self.check(.module)) {
-            const decl = try self.parseDeclaration();
-            module_decl = decl.module_decl.*;
+            const decl = self.parseDeclaration() catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => blk: {
+                    self.synchronizeTopLevel();
+                    // Keep parsing remaining declarations even if module decl is malformed.
+                    break :blk @as(?ast.Decl, null);
+                },
+            };
+            if (decl) |parsed_decl| {
+                if (parsed_decl == .module_decl) {
+                    module_decl = parsed_decl.module_decl.*;
+                }
+            }
             _ = self.match(.newline);
         }
 
@@ -3406,7 +3447,13 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.eof)) break;
 
-            const decl = try self.parseDeclaration();
+            const decl = self.parseDeclaration() catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => {
+                    self.synchronizeTopLevel();
+                    continue;
+                },
+            };
 
             // Separate imports from other declarations
             if (decl == .import_decl) {
@@ -3423,6 +3470,16 @@ pub const Parser = struct {
             .imports = try self.dupeSlice(ast.ImportDecl, imports.items),
             .declarations = try self.dupeSlice(ast.Decl, declarations.items),
         };
+    }
+
+    /// Parse a complete module (file).
+    /// For compatibility with existing compiler flows, parse diagnostics are treated as fatal.
+    pub fn parseModule(self: *Parser) ParseError!ast.Module {
+        const module = try self.parseModuleRecovering();
+        if (self.errors.items.len > 0) {
+            return ParseError.UnexpectedToken;
+        }
+        return module;
     }
 };
 
@@ -3822,7 +3879,7 @@ fn testParseModule(source: []const u8) !struct { module: ast.Module, arena: std.
     var lexer = Lexer.init(source);
     var parser = Parser.init(arena.allocator(), &lexer, source);
 
-    const module = try parser.parseModule();
+    const module = try parser.parseModuleRecovering();
     return .{ .module = module, .arena = arena };
 }
 
@@ -3843,4 +3900,48 @@ test "parse complete module" {
     try std.testing.expect(result.module.module_decl != null);
     try std.testing.expectEqual(@as(usize, 1), result.module.imports.len);
     try std.testing.expectEqual(@as(usize, 1), result.module.declarations.len);
+}
+
+test "parse module recovers after invalid top-level declaration" {
+    const source =
+        \\fn first() -> i32 { 1 }
+        \\this_is_not_a_declaration
+        \\fn second() -> i32 { 2 }
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = try parser.parseModuleRecovering();
+    try std.testing.expect(parser.errors.items.len >= 1);
+    try std.testing.expectEqual(@as(usize, 2), module.declarations.len);
+    try std.testing.expect(module.declarations[0] == .function);
+    try std.testing.expect(module.declarations[1] == .function);
+    try std.testing.expectEqualStrings("first", module.declarations[0].function.name);
+    try std.testing.expectEqualStrings("second", module.declarations[1].function.name);
+}
+
+test "parse module recovers after malformed module declaration" {
+    const source =
+        \\module 123
+        \\import std.io
+        \\fn main() -> void { }
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = try parser.parseModuleRecovering();
+    try std.testing.expect(parser.errors.items.len >= 1);
+    try std.testing.expect(module.module_decl == null);
+    try std.testing.expectEqual(@as(usize, 1), module.imports.len);
+    try std.testing.expectEqual(@as(usize, 1), module.declarations.len);
+    try std.testing.expect(module.declarations[0] == .function);
+    try std.testing.expectEqualStrings("main", module.declarations[0].function.name);
 }

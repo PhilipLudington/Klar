@@ -216,14 +216,14 @@ Optionally include function source with `--include-source` for richer AI context
 
 **Objective:** Build a Language Server Protocol implementation for Klar, powered by an error-recovering parser and incremental type checker.
 
-**Status:** Not started
+**Status:** In progress
 
 **Effort:** High | **Impact:** High | **Source:** MoonBit
 
 ### Tasks
 
 **Compiler foundations:**
-- [ ] **5.1** Error-recovering parser: continue past first error, produce partial AST
+- [x] **5.1** Error-recovering parser: continue past first error, produce partial AST
 - [ ] **5.2** Scope extraction at cursor position (all in-scope bindings with types)
 - [ ] **5.3** Incremental type checking of partial declarations
 - [ ] **5.4** Expected-type inference at cursor (what type does context demand?)
