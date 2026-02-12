@@ -137,6 +137,15 @@ pub const Symbol = struct {
     };
 };
 
+/// A symbol visible at a specific cursor position.
+pub const ScopeEntry = struct {
+    name: []const u8,
+    type_: Type,
+    kind: Symbol.Kind,
+    mutable: bool,
+    span: Span,
+};
+
 pub const Scope = struct {
     symbols: std.StringHashMapUnmanaged(Symbol),
     parent: ?*Scope,
@@ -2362,6 +2371,273 @@ pub const TypeChecker = struct {
         return type_resolution.resolveTypeExpr(self, type_expr);
     }
 
+    fn spanContainsOffset(span: Span, offset: usize) bool {
+        return offset >= span.start and offset <= span.end;
+    }
+
+    fn appendFunctionParamsToLocalScope(self: *TypeChecker, params: []const ast.FunctionParam, out: *std.ArrayListUnmanaged(Symbol)) !void {
+        for (params) |param| {
+            const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
+            try out.append(self.allocator, .{
+                .name = param.name,
+                .type_ = param_type,
+                .kind = .parameter,
+                .mutable = false,
+                .span = param.span,
+            });
+        }
+    }
+
+    fn appendPatternBindingsToLocalScope(self: *TypeChecker, pattern: ast.Pattern, out: *std.ArrayListUnmanaged(Symbol)) !void {
+        switch (pattern) {
+            .binding => |binding| {
+                const binding_type = if (binding.type_annotation) |type_expr|
+                    self.resolveTypeExpr(type_expr) catch self.type_builder.unknownType()
+                else
+                    self.type_builder.unknownType();
+                try out.append(self.allocator, .{
+                    .name = binding.name,
+                    .type_ = binding_type,
+                    .kind = .variable,
+                    .mutable = binding.mutable,
+                    .span = binding.span,
+                });
+            },
+            .variant => |variant| {
+                if (variant.payload) |payload| {
+                    try self.appendPatternBindingsToLocalScope(payload, out);
+                }
+            },
+            .struct_pattern => |struct_pattern| {
+                for (struct_pattern.fields) |field| {
+                    if (field.pattern) |field_pattern| {
+                        try self.appendPatternBindingsToLocalScope(field_pattern, out);
+                    } else {
+                        try out.append(self.allocator, .{
+                            .name = field.name,
+                            .type_ = self.type_builder.unknownType(),
+                            .kind = .variable,
+                            .mutable = false,
+                            .span = field.span,
+                        });
+                    }
+                }
+            },
+            .tuple_pattern => |tuple_pattern| {
+                for (tuple_pattern.elements) |elem| {
+                    try self.appendPatternBindingsToLocalScope(elem, out);
+                }
+            },
+            .or_pattern => |or_pattern| {
+                // Any alternative introduces the same binding set; use the first one.
+                if (or_pattern.alternatives.len > 0) {
+                    try self.appendPatternBindingsToLocalScope(or_pattern.alternatives[0], out);
+                }
+            },
+            .guarded => |guarded| try self.appendPatternBindingsToLocalScope(guarded.pattern, out),
+            else => {},
+        }
+    }
+
+    fn collectBlockSymbolsAtCursor(self: *TypeChecker, block: *ast.Block, cursor_offset: usize, out: *std.ArrayListUnmanaged(Symbol)) !void {
+        if (!spanContainsOffset(block.span, cursor_offset)) return;
+
+        for (block.statements) |stmt| {
+            const stmt_span = stmt.span();
+
+            if (cursor_offset < stmt_span.start) break;
+
+            if (stmt == .let_decl) {
+                const let_decl = stmt.let_decl;
+                if (cursor_offset >= let_decl.span.end) {
+                    const binding_type = self.resolveTypeExpr(let_decl.type_) catch self.type_builder.unknownType();
+                    try out.append(self.allocator, .{
+                        .name = let_decl.name,
+                        .type_ = binding_type,
+                        .kind = .variable,
+                        .mutable = false,
+                        .span = let_decl.span,
+                    });
+                }
+            } else if (stmt == .var_decl) {
+                const var_decl = stmt.var_decl;
+                if (cursor_offset >= var_decl.span.end) {
+                    const binding_type = self.resolveTypeExpr(var_decl.type_) catch self.type_builder.unknownType();
+                    try out.append(self.allocator, .{
+                        .name = var_decl.name,
+                        .type_ = binding_type,
+                        .kind = .variable,
+                        .mutable = true,
+                        .span = var_decl.span,
+                    });
+                }
+            }
+
+            if (!spanContainsOffset(stmt_span, cursor_offset)) continue;
+
+            switch (stmt) {
+                .for_loop => |for_loop| {
+                    if (spanContainsOffset(for_loop.body.span, cursor_offset)) {
+                        try self.appendPatternBindingsToLocalScope(for_loop.pattern, out);
+                        try self.collectBlockSymbolsAtCursor(for_loop.body, cursor_offset, out);
+                    }
+                },
+                .while_loop => |while_loop| {
+                    if (spanContainsOffset(while_loop.body.span, cursor_offset)) {
+                        try self.collectBlockSymbolsAtCursor(while_loop.body, cursor_offset, out);
+                    }
+                },
+                .loop_stmt => |loop_stmt| {
+                    if (spanContainsOffset(loop_stmt.body.span, cursor_offset)) {
+                        try self.collectBlockSymbolsAtCursor(loop_stmt.body, cursor_offset, out);
+                    }
+                },
+                .if_stmt => |if_stmt| {
+                    if (spanContainsOffset(if_stmt.then_branch.span, cursor_offset)) {
+                        try self.collectBlockSymbolsAtCursor(if_stmt.then_branch, cursor_offset, out);
+                    } else if (if_stmt.else_branch) |else_branch| {
+                        switch (else_branch.*) {
+                            .block => |else_block| {
+                                if (spanContainsOffset(else_block.span, cursor_offset)) {
+                                    try self.collectBlockSymbolsAtCursor(else_block, cursor_offset, out);
+                                }
+                            },
+                            .if_stmt => |else_if_stmt| {
+                                const synthetic_stmt = ast.Stmt{ .if_stmt = else_if_stmt };
+                                if (spanContainsOffset(synthetic_stmt.span(), cursor_offset)) {
+                                    var nested = ast.Block{
+                                        .statements = &.{synthetic_stmt},
+                                        .final_expr = null,
+                                        .span = synthetic_stmt.span(),
+                                    };
+                                    try self.collectBlockSymbolsAtCursor(&nested, cursor_offset, out);
+                                }
+                            },
+                        }
+                    }
+                },
+                .match_stmt => |match_stmt| {
+                    for (match_stmt.arms) |arm| {
+                        if (!spanContainsOffset(arm.span, cursor_offset)) continue;
+                        try self.appendPatternBindingsToLocalScope(arm.pattern, out);
+                        if (spanContainsOffset(arm.body.span, cursor_offset)) {
+                            try self.collectBlockSymbolsAtCursor(arm.body, cursor_offset, out);
+                        }
+                        break;
+                    }
+                },
+                else => {},
+            }
+
+            // Cursor is inside this statement; later statements are out of scope.
+            return;
+        }
+    }
+
+    fn collectLocalSymbolsAtCursor(self: *TypeChecker, module: ast.Module, cursor_offset: usize, out: *std.ArrayListUnmanaged(Symbol)) !void {
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .function => |function_decl| {
+                    if (!spanContainsOffset(function_decl.span, cursor_offset)) continue;
+                    if (function_decl.body) |body| {
+                        if (!spanContainsOffset(body.span, cursor_offset)) return;
+                        try self.appendFunctionParamsToLocalScope(function_decl.params, out);
+                        try self.collectBlockSymbolsAtCursor(body, cursor_offset, out);
+                    }
+                    return;
+                },
+                .test_decl => |test_decl| {
+                    if (!spanContainsOffset(test_decl.span, cursor_offset)) continue;
+                    if (spanContainsOffset(test_decl.body.span, cursor_offset)) {
+                        try self.collectBlockSymbolsAtCursor(test_decl.body, cursor_offset, out);
+                    }
+                    return;
+                },
+                .impl_decl => |impl_decl| {
+                    if (!spanContainsOffset(impl_decl.span, cursor_offset)) continue;
+                    for (impl_decl.methods) |*method| {
+                        if (!spanContainsOffset(method.span, cursor_offset)) continue;
+                        if (method.body) |body| {
+                            if (!spanContainsOffset(body.span, cursor_offset)) return;
+                            try self.appendFunctionParamsToLocalScope(method.params, out);
+                            try self.collectBlockSymbolsAtCursor(body, cursor_offset, out);
+                        }
+                        return;
+                    }
+                    return;
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// Return all in-scope bindings at a byte offset in source using a specific scope chain.
+    /// Entries are deduplicated by name (nearest scope wins) and sorted by name.
+    pub fn extractScopeAtOffsetInScope(
+        self: *TypeChecker,
+        module: ast.Module,
+        cursor_offset: usize,
+        root_scope: *const Scope,
+    ) ![]ScopeEntry {
+        var local_symbols = std.ArrayListUnmanaged(Symbol){};
+        defer local_symbols.deinit(self.allocator);
+        try self.collectLocalSymbolsAtCursor(module, cursor_offset, &local_symbols);
+
+        var entries = std.ArrayListUnmanaged(ScopeEntry){};
+        errdefer entries.deinit(self.allocator);
+
+        var seen = std.StringHashMapUnmanaged(void){};
+        defer seen.deinit(self.allocator);
+
+        // Prefer innermost local binding when names shadow.
+        var i = local_symbols.items.len;
+        while (i > 0) {
+            i -= 1;
+            const symbol = local_symbols.items[i];
+            if (seen.get(symbol.name) != null) continue;
+            try seen.put(self.allocator, symbol.name, {});
+            try entries.append(self.allocator, .{
+                .name = symbol.name,
+                .type_ = symbol.type_,
+                .kind = symbol.kind,
+                .mutable = symbol.mutable,
+                .span = symbol.span,
+            });
+        }
+
+        // Merge provided scope chain (module scope + builtins).
+        var scope_cursor: ?*const Scope = root_scope;
+        while (scope_cursor) |scope| {
+            var iter = scope.symbols.valueIterator();
+            while (iter.next()) |symbol_ptr| {
+                const symbol = symbol_ptr.*;
+                if (seen.get(symbol.name) != null) continue;
+                try seen.put(self.allocator, symbol.name, {});
+                try entries.append(self.allocator, .{
+                    .name = symbol.name,
+                    .type_ = symbol.type_,
+                    .kind = symbol.kind,
+                    .mutable = symbol.mutable,
+                    .span = symbol.span,
+                });
+            }
+            scope_cursor = scope.parent;
+        }
+
+        std.sort.block(ScopeEntry, entries.items, {}, struct {
+            fn lessThan(_: void, a: ScopeEntry, b: ScopeEntry) bool {
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.lessThan);
+
+        return entries.toOwnedSlice(self.allocator);
+    }
+
+    /// Return all in-scope bindings at a byte offset in source using current scope chain.
+    pub fn extractScopeAtOffset(self: *TypeChecker, module: ast.Module, cursor_offset: usize) ![]ScopeEntry {
+        return self.extractScopeAtOffsetInScope(module, cursor_offset, self.current_scope);
+    }
+
     // NOTE: resolveTypeExpr implementation moved to type_resolution.zig
     // The old implementation (400+ lines) is now in type_resolution.zig
     // ========================================================================
@@ -3937,4 +4213,116 @@ test "Loop scope tracking" {
 
     checker.popScope();
     try testing.expect(!checker.current_scope.isInLoop());
+}
+
+fn testParseModuleForScope(source: []const u8) !struct { module: ast.Module, arena: std.heap.ArenaAllocator } {
+    const Lexer = @import("../lexer.zig").Lexer;
+    const Parser = @import("../parser.zig").Parser;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    errdefer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+    const module = try parser.parseModule();
+    return .{ .module = module, .arena = arena };
+}
+
+fn hasScopeEntry(entries: []const ScopeEntry, name: []const u8) bool {
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return true;
+    }
+    return false;
+}
+
+fn findScopeEntry(entries: []const ScopeEntry, name: []const u8) ?ScopeEntry {
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return entry;
+    }
+    return null;
+}
+
+test "extractScopeAtOffset includes params and prior local bindings" {
+    const testing = std.testing;
+    const source =
+        \\fn main() -> void {
+        \\    let a: i32 = 1
+        \\    if true {
+        \\        let b: i32 = a
+        \\        let c: string = "x"
+        \\        debug(b)
+        \\    }
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+    try testing.expect(!checker.hasErrors());
+
+    const cursor = std.mem.indexOf(u8, source, "debug(b)").?;
+    const entries = try checker.extractScopeAtOffset(parsed.module, cursor);
+    defer testing.allocator.free(entries);
+
+    try testing.expect(hasScopeEntry(entries, "a"));
+    try testing.expect(hasScopeEntry(entries, "b"));
+    try testing.expect(hasScopeEntry(entries, "c"));
+}
+
+test "extractScopeAtOffset excludes declarations after cursor" {
+    const testing = std.testing;
+    const source =
+        \\fn main() -> void {
+        \\    let before: i32 = 1
+        \\    debug(before)
+        \\    let after: i32 = 2
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+    try testing.expect(!checker.hasErrors());
+
+    const cursor = std.mem.indexOf(u8, source, "debug(before)").?;
+    const entries = try checker.extractScopeAtOffset(parsed.module, cursor);
+    defer testing.allocator.free(entries);
+
+    try testing.expect(hasScopeEntry(entries, "before"));
+    try testing.expect(!hasScopeEntry(entries, "after"));
+}
+
+test "extractScopeAtOffset prefers innermost shadowed binding" {
+    const testing = std.testing;
+    const source =
+        \\fn main() -> void {
+        \\    let x: string = "outer"
+        \\    if true {
+        \\        shadow let x: i32 = 42
+        \\        debug(x)
+        \\    }
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+    try testing.expect(!checker.hasErrors());
+
+    const cursor = std.mem.indexOf(u8, source, "debug(x)").?;
+    const entries = try checker.extractScopeAtOffset(parsed.module, cursor);
+    defer testing.allocator.free(entries);
+
+    const x_entry = findScopeEntry(entries, "x").?;
+    try testing.expect(x_entry.type_ == .primitive);
+    try testing.expect(x_entry.type_.primitive == .i32_);
 }

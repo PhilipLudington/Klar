@@ -224,7 +224,10 @@ Optionally include function source with `--include-source` for richer AI context
 
 **Compiler foundations:**
 - [x] **5.1** Error-recovering parser: continue past first error, produce partial AST
-- [ ] **5.2** Scope extraction at cursor position (all in-scope bindings with types)
+- [x] **5.2** Scope extraction at cursor position (all in-scope bindings with types)
+  - Added checker API `extractScopeAtOffset(module, cursor_offset)` with local-scope traversal
+  - Exposed via CLI: `klar check <file> --scope-at <line:col> [--scope-json]`
+  - Added checker unit tests for nested scopes, declaration ordering, and explicit shadowing behavior
 - [ ] **5.3** Incremental type checking of partial declarations
 - [ ] **5.4** Expected-type inference at cursor (what type does context demand?)
 

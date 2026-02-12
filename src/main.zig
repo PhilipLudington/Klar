@@ -4,6 +4,7 @@ const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("token.zig").Token;
 const Parser = @import("parser.zig").Parser;
 const ast = @import("ast.zig");
+const types = @import("types.zig");
 const checker_mod = @import("checker/mod.zig");
 const TypeChecker = checker_mod.TypeChecker;
 const interp_mod = @import("interpreter.zig");
@@ -42,6 +43,13 @@ const TestRunOptions = struct {
     json_output: bool = false,
     include_source: bool = false,
     emit_output: bool = true,
+};
+
+const CheckCommandOptions = struct {
+    dump_ownership: bool = false,
+    scope_line: ?usize = null,
+    scope_column: ?usize = null,
+    scope_json: bool = false,
 };
 
 const TestFileResult = struct {
@@ -111,6 +119,64 @@ fn writeJsonBool(out: std.fs.File, value: bool) !void {
     } else {
         try out.writeAll("false");
     }
+}
+
+const LineColumn = struct {
+    line: usize,
+    column: usize,
+};
+
+fn parseLineColumn(value: []const u8) !LineColumn {
+    const colon_idx = std.mem.indexOfScalar(u8, value, ':') orelse return error.InvalidScopePosition;
+    const line_text = value[0..colon_idx];
+    const col_text = value[colon_idx + 1 ..];
+    if (line_text.len == 0 or col_text.len == 0) return error.InvalidScopePosition;
+
+    const line = std.fmt.parseInt(usize, line_text, 10) catch return error.InvalidScopePosition;
+    const column = std.fmt.parseInt(usize, col_text, 10) catch return error.InvalidScopePosition;
+    if (line == 0 or column == 0) return error.InvalidScopePosition;
+
+    return .{ .line = line, .column = column };
+}
+
+fn sourceOffsetFromLineColumn(source: []const u8, line: usize, column: usize) ?usize {
+    var current_line: usize = 1;
+    var line_start: usize = 0;
+    var i: usize = 0;
+
+    while (i < source.len and current_line < line) : (i += 1) {
+        if (source[i] == '\n') {
+            current_line += 1;
+            line_start = i + 1;
+        }
+    }
+
+    if (current_line != line) return null;
+
+    var line_end = source.len;
+    i = line_start;
+    while (i < source.len) : (i += 1) {
+        if (source[i] == '\n') {
+            line_end = i;
+            break;
+        }
+    }
+
+    const offset = line_start + (column - 1);
+    if (offset > line_end) return null;
+    return offset;
+}
+
+fn symbolKindName(kind: checker_mod.Symbol.Kind) []const u8 {
+    return switch (kind) {
+        .variable => "variable",
+        .parameter => "parameter",
+        .function => "function",
+        .type_ => "type",
+        .trait_ => "trait",
+        .module => "module",
+        .constant => "constant",
+    };
 }
 
 fn freeJsonTestResults(allocator: std.mem.Allocator, test_results: []JsonTestSummary) void {
@@ -495,18 +561,60 @@ pub fn main() !void {
             .search_paths = search_paths,
         });
     } else if (std.mem.eql(u8, command, "check")) {
-        if (args.len < 3) {
-            try getStdErr().writeAll("Error: no input file\n");
-            return;
-        }
-        // Parse flags
-        var dump_ownership = false;
-        for (args) |arg| {
+        var options = CheckCommandOptions{};
+        var input_path: ?[]const u8 = null;
+
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
             if (std.mem.eql(u8, arg, "--dump-ownership")) {
-                dump_ownership = true;
+                options.dump_ownership = true;
+            } else if (std.mem.eql(u8, arg, "--scope-at")) {
+                if (i + 1 >= args.len) {
+                    try getStdErr().writeAll("Error: missing value for --scope-at (expected <line:col>)\n");
+                    return;
+                }
+                const parsed = parseLineColumn(args[i + 1]) catch {
+                    try getStdErr().writeAll("Error: invalid --scope-at value, expected <line:col>\n");
+                    return;
+                };
+                options.scope_line = parsed.line;
+                options.scope_column = parsed.column;
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--scope-at=")) {
+                const parsed = parseLineColumn(arg["--scope-at=".len..]) catch {
+                    try getStdErr().writeAll("Error: invalid --scope-at value, expected <line:col>\n");
+                    return;
+                };
+                options.scope_line = parsed.line;
+                options.scope_column = parsed.column;
+            } else if (std.mem.eql(u8, arg, "--scope-json")) {
+                options.scope_json = true;
+            } else if (!std.mem.startsWith(u8, arg, "-") and input_path == null) {
+                input_path = arg;
+            } else {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error: unknown check option '{s}'\n", .{arg}) catch "Error: unknown check option\n";
+                try getStdErr().writeAll(msg);
+                return;
             }
         }
-        try checkFile(allocator, args[2], dump_ownership);
+
+        const path = input_path orelse {
+            try getStdErr().writeAll("Error: no input file\n");
+            return;
+        };
+
+        if ((options.scope_line == null) != (options.scope_column == null)) {
+            try getStdErr().writeAll("Error: --scope-at requires both line and column\n");
+            return;
+        }
+        if (options.scope_json and options.scope_line == null) {
+            try getStdErr().writeAll("Error: --scope-json requires --scope-at <line:col>\n");
+            return;
+        }
+
+        try checkFile(allocator, path, options);
     } else if (std.mem.eql(u8, command, "disasm")) {
         if (args.len < 3) {
             try getStdErr().writeAll("Error: no input file\n");
@@ -2049,7 +2157,7 @@ fn shouldSkipPath(path: []const u8) bool {
     return false;
 }
 
-fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag: bool) !void {
+fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckCommandOptions) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
@@ -2087,6 +2195,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
     var checker = TypeChecker.init(allocator);
     defer checker.deinit();
     checker.setTestMode(true);
+    var scope_root: ?*const checker_mod.Scope = null;
 
     // Track source strings for imported modules
     var module_sources = std.ArrayListUnmanaged([]const u8){};
@@ -2178,12 +2287,16 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
                 checker.prepareForNewModule();
                 checker.setCurrentModule(mod);
                 checker.checkModule(mod_ast);
+                if (mod == entry) {
+                    scope_root = checker.current_scope;
+                }
                 checker.registerModuleExports(mod) catch {};
             }
         }
     } else {
         // Single-file compilation (no imports)
         checker.checkModule(module);
+        scope_root = checker.current_scope;
     }
 
     var buf: [512]u8 = undefined;
@@ -2204,6 +2317,67 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
         return; // Don't proceed to ownership check if type check fails
     }
 
+    if (options.scope_line) |scope_line| {
+        const scope_column = options.scope_column.?;
+        const cursor_offset = sourceOffsetFromLineColumn(source, scope_line, scope_column) orelse {
+            var out_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&out_buf, "Error: position {d}:{d} is outside file bounds\n", .{ scope_line, scope_column }) catch "Error: invalid scope position\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        const root_scope = scope_root orelse checker.current_scope;
+        const scope_entries = checker.extractScopeAtOffsetInScope(module, cursor_offset, root_scope) catch {
+            try stderr.writeAll("Error: failed to extract scope at cursor\n");
+            return;
+        };
+        defer allocator.free(scope_entries);
+
+        if (options.scope_json) {
+            try stdout.writeAll("{\"line\":");
+            try writeJsonUsize(stdout, scope_line);
+            try stdout.writeAll(",\"column\":");
+            try writeJsonUsize(stdout, scope_column);
+            try stdout.writeAll(",\"bindings\":[");
+            for (scope_entries, 0..) |entry, idx| {
+                if (idx > 0) try stdout.writeAll(",");
+                const type_text = types.typeToString(allocator, entry.type_) catch null;
+                try stdout.writeAll("{\"name\":");
+                try writeJsonEscaped(stdout, entry.name);
+                try stdout.writeAll(",\"type\":");
+                try writeJsonEscaped(stdout, type_text orelse "unknown");
+                try stdout.writeAll(",\"kind\":");
+                try writeJsonEscaped(stdout, symbolKindName(entry.kind));
+                try stdout.writeAll(",\"mutable\":");
+                try writeJsonBool(stdout, entry.mutable);
+                try stdout.writeAll("}");
+                if (type_text) |owned| allocator.free(owned);
+            }
+            try stdout.writeAll("]}\n");
+        } else {
+            var out_buf: [256]u8 = undefined;
+            const header = std.fmt.bufPrint(&out_buf, "Scope at {d}:{d} ({d} binding(s)):\n", .{
+                scope_line,
+                scope_column,
+                scope_entries.len,
+            }) catch "Scope:\n";
+            try stdout.writeAll(header);
+
+            for (scope_entries) |entry| {
+                const type_text = types.typeToString(allocator, entry.type_) catch null;
+                const line = std.fmt.bufPrint(&out_buf, "  {s}: {s} [{s}{s}]\n", .{
+                    entry.name,
+                    type_text orelse "unknown",
+                    symbolKindName(entry.kind),
+                    if (entry.mutable) ", mutable" else "",
+                }) catch continue;
+                try stdout.writeAll(line);
+                if (type_text) |owned| allocator.free(owned);
+            }
+        }
+        return;
+    }
+
     // Ownership analysis
     var ownership_checker = ownership.OwnershipChecker.init(allocator);
     defer ownership_checker.deinit();
@@ -2215,7 +2389,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
     };
 
     // Dump ownership state if requested
-    if (dump_ownership_flag) {
+    if (options.dump_ownership) {
         try stdout.writeAll("\n=== Ownership State ===\n");
         try stdout.writeAll("(No detailed state dumped in this version)\n\n");
     }
@@ -4152,6 +4326,9 @@ fn printUsage() !void {
         \\  run [file]           Build and run project or file
         \\  update               Regenerate klar.lock from klar.json
         \\  check <file>         Type check a file
+        \\    --dump-ownership   Include ownership analysis details
+        \\    --scope-at L:C     Print in-scope bindings at line/column
+        \\    --scope-json       Emit scope output as JSON (with --scope-at)
         \\  repl                 Interactive REPL (Read-Eval-Print Loop)
         \\  test <path>          Run inline test blocks in a file or directory
         \\    --fn <name>        Run only tests matching <name>
