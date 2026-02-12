@@ -51,6 +51,8 @@ const CheckCommandOptions = struct {
     scope_column: ?usize = null,
     scope_json: bool = false,
     partial_mode: bool = false,
+    expected_line: ?usize = null,
+    expected_column: ?usize = null,
 };
 
 const TestFileResult = struct {
@@ -593,6 +595,25 @@ pub fn main() !void {
                 options.scope_json = true;
             } else if (std.mem.eql(u8, arg, "--partial")) {
                 options.partial_mode = true;
+            } else if (std.mem.eql(u8, arg, "--expected-type-at")) {
+                if (i + 1 >= args.len) {
+                    try getStdErr().writeAll("Error: missing value for --expected-type-at (expected <line:col>)\n");
+                    return;
+                }
+                const parsed = parseLineColumn(args[i + 1]) catch {
+                    try getStdErr().writeAll("Error: invalid --expected-type-at value, expected <line:col>\n");
+                    return;
+                };
+                options.expected_line = parsed.line;
+                options.expected_column = parsed.column;
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--expected-type-at=")) {
+                const parsed = parseLineColumn(arg["--expected-type-at=".len..]) catch {
+                    try getStdErr().writeAll("Error: invalid --expected-type-at value, expected <line:col>\n");
+                    return;
+                };
+                options.expected_line = parsed.line;
+                options.expected_column = parsed.column;
             } else if (!std.mem.startsWith(u8, arg, "-") and input_path == null) {
                 input_path = arg;
             } else {
@@ -612,8 +633,16 @@ pub fn main() !void {
             try getStdErr().writeAll("Error: --scope-at requires both line and column\n");
             return;
         }
+        if ((options.expected_line == null) != (options.expected_column == null)) {
+            try getStdErr().writeAll("Error: --expected-type-at requires both line and column\n");
+            return;
+        }
         if (options.scope_json and options.scope_line == null) {
             try getStdErr().writeAll("Error: --scope-json requires --scope-at <line:col>\n");
+            return;
+        }
+        if (options.scope_line != null and options.expected_line != null) {
+            try getStdErr().writeAll("Error: --scope-at and --expected-type-at cannot be used together\n");
             return;
         }
 
@@ -2342,7 +2371,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
-        if (options.scope_line == null) return; // Scope query can still proceed for tooling.
+        if (options.scope_line == null and options.expected_line == null) return; // Query modes can proceed for tooling.
     }
 
     if (options.scope_line) |scope_line| {
@@ -2402,6 +2431,38 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
                 try stdout.writeAll(line);
                 if (type_text) |owned| allocator.free(owned);
             }
+        }
+        return;
+    }
+
+    if (options.expected_line) |expected_line| {
+        const expected_column = options.expected_column.?;
+        const cursor_offset = sourceOffsetFromLineColumn(source, expected_line, expected_column) orelse {
+            var out_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&out_buf, "Error: position {d}:{d} is outside file bounds\n", .{ expected_line, expected_column }) catch "Error: invalid expected-type position\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        const root_scope = scope_root orelse checker.current_scope;
+        const expected_type = checker.expectedTypeAtOffsetInScope(module, cursor_offset, root_scope);
+        if (expected_type) |typ| {
+            const type_text = types.typeToString(allocator, typ) catch null;
+            defer if (type_text) |owned| allocator.free(owned);
+            var out_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&out_buf, "Expected type at {d}:{d}: {s}\n", .{
+                expected_line,
+                expected_column,
+                type_text orelse "unknown",
+            }) catch "Expected type: unknown\n";
+            try stdout.writeAll(msg);
+        } else {
+            var out_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&out_buf, "Expected type at {d}:{d}: <unknown>\n", .{
+                expected_line,
+                expected_column,
+            }) catch "Expected type: <unknown>\n";
+            try stdout.writeAll(msg);
         }
         return;
     }
@@ -4366,6 +4427,7 @@ fn printUsage() !void {
         \\    --dump-ownership   Include ownership analysis details
         \\    --partial          Parse with recovery and type-check partial declarations
         \\    --scope-at L:C     Print in-scope bindings at line/column
+        \\    --expected-type-at L:C  Print expected type at line/column
         \\    --scope-json       Emit scope output as JSON (with --scope-at)
         \\  repl                 Interactive REPL (Read-Eval-Print Loop)
         \\  test <path>          Run inline test blocks in a file or directory

@@ -2571,6 +2571,351 @@ pub const TypeChecker = struct {
         }
     }
 
+    fn lookupSymbolFromScope(scope: *const Scope, name: []const u8) ?Symbol {
+        if (scope.symbols.get(name)) |sym| return sym;
+        if (scope.parent) |parent| return lookupSymbolFromScope(parent, name);
+        return null;
+    }
+
+    fn lookupSymbolAtCursor(local_symbols: []const Symbol, root_scope: *const Scope, name: []const u8) ?Symbol {
+        var i = local_symbols.len;
+        while (i > 0) {
+            i -= 1;
+            const symbol = local_symbols[i];
+            if (std.mem.eql(u8, symbol.name, name)) return symbol;
+        }
+        return lookupSymbolFromScope(root_scope, name);
+    }
+
+    fn inferAssignableTargetType(
+        self: *TypeChecker,
+        expr: ast.Expr,
+        local_symbols: []const Symbol,
+        root_scope: *const Scope,
+    ) ?Type {
+        switch (expr) {
+            .identifier => |identifier| {
+                if (lookupSymbolAtCursor(local_symbols, root_scope, identifier.name)) |symbol| {
+                    return symbol.type_;
+                }
+                return null;
+            },
+            .index => |index| {
+                const object_type = self.inferAssignableTargetType(index.object, local_symbols, root_scope) orelse return null;
+                return switch (object_type) {
+                    .array => |arr| arr.element,
+                    .slice => |slice| slice.element,
+                    else => null,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    fn inferExpectedTypeInExpr(
+        self: *TypeChecker,
+        expr: ast.Expr,
+        cursor_offset: usize,
+        inherited_expected: ?Type,
+        local_symbols: []const Symbol,
+        root_scope: *const Scope,
+    ) ?Type {
+        if (!spanContainsOffset(expr.span(), cursor_offset)) return null;
+
+        switch (expr) {
+            .grouped => |grouped| return self.inferExpectedTypeInExpr(grouped.expr, cursor_offset, inherited_expected, local_symbols, root_scope) orelse inherited_expected,
+            .unary => |unary| return self.inferExpectedTypeInExpr(unary.operand, cursor_offset, inherited_expected, local_symbols, root_scope) orelse inherited_expected,
+            .postfix => |postfix| return self.inferExpectedTypeInExpr(postfix.operand, cursor_offset, inherited_expected, local_symbols, root_scope) orelse inherited_expected,
+            .type_cast => |type_cast| {
+                const cast_type = self.resolveTypeExpr(type_cast.target_type) catch self.type_builder.unknownType();
+                return self.inferExpectedTypeInExpr(type_cast.expr, cursor_offset, cast_type, local_symbols, root_scope) orelse cast_type;
+            },
+            .binary => |binary| {
+                if (spanContainsOffset(binary.left.span(), cursor_offset)) {
+                    return self.inferExpectedTypeInExpr(binary.left, cursor_offset, null, local_symbols, root_scope);
+                }
+                if (spanContainsOffset(binary.right.span(), cursor_offset)) {
+                    const rhs_expected: ?Type = switch (binary.op) {
+                        .assign, .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign => self.inferAssignableTargetType(binary.left, local_symbols, root_scope),
+                        else => null,
+                    };
+                    return self.inferExpectedTypeInExpr(binary.right, cursor_offset, rhs_expected, local_symbols, root_scope) orelse rhs_expected orelse inherited_expected;
+                }
+                return inherited_expected;
+            },
+            .call => |call| {
+                var call_signature: ?*types.FunctionType = null;
+                if (call.callee == .identifier) {
+                    if (lookupSymbolAtCursor(local_symbols, root_scope, call.callee.identifier.name)) |symbol| {
+                        if (symbol.type_ == .function) {
+                            call_signature = symbol.type_.function;
+                        }
+                    }
+                }
+                for (call.args, 0..) |arg, i| {
+                    if (!spanContainsOffset(arg.span(), cursor_offset)) continue;
+                    const arg_expected: ?Type = if (call_signature) |sig|
+                        if (i < sig.params.len) sig.params[i] else null
+                    else
+                        null;
+                    return self.inferExpectedTypeInExpr(arg, cursor_offset, arg_expected, local_symbols, root_scope) orelse arg_expected orelse inherited_expected;
+                }
+                return inherited_expected;
+            },
+            .method_call => |method_call| {
+                var arg_expected: ?Type = null;
+                var object_type: ?Type = null;
+                if (method_call.object == .identifier) {
+                    if (lookupSymbolAtCursor(local_symbols, root_scope, method_call.object.identifier.name)) |sym| {
+                        object_type = sym.type_;
+                    }
+                }
+                if (object_type) |obj_type_raw| {
+                    const obj_type = if (obj_type_raw == .reference) obj_type_raw.reference.inner else obj_type_raw;
+                    switch (obj_type) {
+                        .struct_ => |struct_type| {
+                            if (self.lookupStructMethod(struct_type.name, method_call.method_name)) |method| {
+                                const param_start: usize = if (method.has_self) 1 else 0;
+                                for (method_call.args, 0..) |arg, i| {
+                                    if (!spanContainsOffset(arg.span(), cursor_offset)) continue;
+                                    const param_idx = param_start + i;
+                                    if (param_idx < method.func_type.function.params.len) {
+                                        arg_expected = method.func_type.function.params[param_idx];
+                                    }
+                                }
+                            }
+                        },
+                        .enum_ => |enum_type| {
+                            if (self.lookupStructMethod(enum_type.name, method_call.method_name)) |method| {
+                                const param_start: usize = if (method.has_self) 1 else 0;
+                                for (method_call.args, 0..) |arg, i| {
+                                    if (!spanContainsOffset(arg.span(), cursor_offset)) continue;
+                                    const param_idx = param_start + i;
+                                    if (param_idx < method.func_type.function.params.len) {
+                                        arg_expected = method.func_type.function.params[param_idx];
+                                    }
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+                for (method_call.args) |arg| {
+                    if (!spanContainsOffset(arg.span(), cursor_offset)) continue;
+                    return self.inferExpectedTypeInExpr(arg, cursor_offset, arg_expected, local_symbols, root_scope) orelse arg_expected orelse inherited_expected;
+                }
+                return inherited_expected;
+            },
+            .array_literal => |array_literal| {
+                const element_expected: ?Type = if (inherited_expected) |expected| switch (expected) {
+                    .array => |arr| arr.element,
+                    .slice => |slice| slice.element,
+                    else => null,
+                } else null;
+                for (array_literal.elements) |elem| {
+                    if (!spanContainsOffset(elem.span(), cursor_offset)) continue;
+                    return self.inferExpectedTypeInExpr(elem, cursor_offset, element_expected, local_symbols, root_scope) orelse element_expected orelse inherited_expected;
+                }
+                return inherited_expected;
+            },
+            .tuple_literal => |tuple_literal| {
+                for (tuple_literal.elements, 0..) |elem, i| {
+                    if (!spanContainsOffset(elem.span(), cursor_offset)) continue;
+                    const elem_expected: ?Type = if (inherited_expected) |expected| switch (expected) {
+                        .tuple => |tuple_type| if (i < tuple_type.elements.len) tuple_type.elements[i] else null,
+                        else => null,
+                    } else null;
+                    return self.inferExpectedTypeInExpr(elem, cursor_offset, elem_expected, local_symbols, root_scope) orelse elem_expected orelse inherited_expected;
+                }
+                return inherited_expected;
+            },
+            .closure => |closure| {
+                const return_type = self.resolveTypeExpr(closure.return_type) catch self.type_builder.unknownType();
+                return self.inferExpectedTypeInExpr(closure.body, cursor_offset, return_type, local_symbols, root_scope) orelse return_type;
+            },
+            .block => |block| {
+                return self.inferExpectedTypeInBlock(block, cursor_offset, inherited_expected, null, local_symbols, root_scope);
+            },
+            .comptime_block => |comptime_block| {
+                return self.inferExpectedTypeInBlock(comptime_block.body, cursor_offset, inherited_expected, null, local_symbols, root_scope);
+            },
+            .unsafe_block => |unsafe_block| {
+                return self.inferExpectedTypeInBlock(unsafe_block.body, cursor_offset, inherited_expected, null, local_symbols, root_scope);
+            },
+            .field, .index, .range, .builtin_call, .out_arg, .interpolated_string, .enum_literal, .struct_literal, .literal, .identifier => return inherited_expected,
+        }
+    }
+
+    fn inferExpectedTypeInStmt(
+        self: *TypeChecker,
+        stmt: ast.Stmt,
+        cursor_offset: usize,
+        current_return_type: ?Type,
+        local_symbols: []const Symbol,
+        root_scope: *const Scope,
+    ) ?Type {
+        if (!spanContainsOffset(stmt.span(), cursor_offset)) return null;
+
+        switch (stmt) {
+            .let_decl => |let_decl| {
+                if (!spanContainsOffset(let_decl.value.span(), cursor_offset)) return null;
+                const declared_type = self.resolveTypeExpr(let_decl.type_) catch self.type_builder.unknownType();
+                return self.inferExpectedTypeInExpr(let_decl.value, cursor_offset, declared_type, local_symbols, root_scope) orelse declared_type;
+            },
+            .var_decl => |var_decl| {
+                if (!spanContainsOffset(var_decl.value.span(), cursor_offset)) return null;
+                const declared_type = self.resolveTypeExpr(var_decl.type_) catch self.type_builder.unknownType();
+                return self.inferExpectedTypeInExpr(var_decl.value, cursor_offset, declared_type, local_symbols, root_scope) orelse declared_type;
+            },
+            .assignment => |assignment| {
+                if (!spanContainsOffset(assignment.value.span(), cursor_offset)) return null;
+                const target_type = self.inferAssignableTargetType(assignment.target, local_symbols, root_scope);
+                return self.inferExpectedTypeInExpr(assignment.value, cursor_offset, target_type, local_symbols, root_scope) orelse target_type;
+            },
+            .return_stmt => |ret| {
+                if (ret.value) |value_expr| {
+                    if (!spanContainsOffset(value_expr.span(), cursor_offset)) return current_return_type;
+                    return self.inferExpectedTypeInExpr(value_expr, cursor_offset, current_return_type, local_symbols, root_scope) orelse current_return_type;
+                }
+                return current_return_type;
+            },
+            .expr_stmt => |expr_stmt| {
+                return self.inferExpectedTypeInExpr(expr_stmt.expr, cursor_offset, null, local_symbols, root_scope);
+            },
+            .if_stmt => |if_stmt| {
+                if (spanContainsOffset(if_stmt.condition.span(), cursor_offset)) {
+                    return self.inferExpectedTypeInExpr(if_stmt.condition, cursor_offset, self.type_builder.boolType(), local_symbols, root_scope) orelse self.type_builder.boolType();
+                }
+                if (spanContainsOffset(if_stmt.then_branch.span, cursor_offset)) {
+                    return self.inferExpectedTypeInBlock(if_stmt.then_branch, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                }
+                if (if_stmt.else_branch) |else_branch| {
+                    switch (else_branch.*) {
+                        .block => |else_block| {
+                            if (spanContainsOffset(else_block.span, cursor_offset)) {
+                                return self.inferExpectedTypeInBlock(else_block, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                            }
+                        },
+                        .if_stmt => |nested_if| {
+                            const nested_stmt = ast.Stmt{ .if_stmt = nested_if };
+                            return self.inferExpectedTypeInStmt(nested_stmt, cursor_offset, current_return_type, local_symbols, root_scope);
+                        },
+                    }
+                }
+                return null;
+            },
+            .while_loop => |while_loop| {
+                if (spanContainsOffset(while_loop.condition.span(), cursor_offset)) {
+                    return self.inferExpectedTypeInExpr(while_loop.condition, cursor_offset, self.type_builder.boolType(), local_symbols, root_scope) orelse self.type_builder.boolType();
+                }
+                if (spanContainsOffset(while_loop.body.span, cursor_offset)) {
+                    return self.inferExpectedTypeInBlock(while_loop.body, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                }
+                return null;
+            },
+            .for_loop => |for_loop| {
+                if (spanContainsOffset(for_loop.iterable.span(), cursor_offset)) {
+                    return self.inferExpectedTypeInExpr(for_loop.iterable, cursor_offset, null, local_symbols, root_scope);
+                }
+                if (spanContainsOffset(for_loop.body.span, cursor_offset)) {
+                    return self.inferExpectedTypeInBlock(for_loop.body, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                }
+                return null;
+            },
+            .loop_stmt => |loop_stmt| {
+                if (spanContainsOffset(loop_stmt.body.span, cursor_offset)) {
+                    return self.inferExpectedTypeInBlock(loop_stmt.body, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                }
+                return null;
+            },
+            .match_stmt => |match_stmt| {
+                if (spanContainsOffset(match_stmt.subject.span(), cursor_offset)) {
+                    return self.inferExpectedTypeInExpr(match_stmt.subject, cursor_offset, null, local_symbols, root_scope);
+                }
+                for (match_stmt.arms) |arm| {
+                    if (!spanContainsOffset(arm.body.span, cursor_offset)) continue;
+                    return self.inferExpectedTypeInBlock(arm.body, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    fn inferExpectedTypeInBlock(
+        self: *TypeChecker,
+        block: *ast.Block,
+        cursor_offset: usize,
+        final_expr_expected: ?Type,
+        current_return_type: ?Type,
+        local_symbols: []const Symbol,
+        root_scope: *const Scope,
+    ) ?Type {
+        if (!spanContainsOffset(block.span, cursor_offset)) return null;
+
+        for (block.statements) |stmt| {
+            if (!spanContainsOffset(stmt.span(), cursor_offset)) continue;
+            return self.inferExpectedTypeInStmt(stmt, cursor_offset, current_return_type, local_symbols, root_scope);
+        }
+
+        if (block.final_expr) |final_expr| {
+            if (spanContainsOffset(final_expr.span(), cursor_offset)) {
+                return self.inferExpectedTypeInExpr(final_expr, cursor_offset, final_expr_expected, local_symbols, root_scope) orelse final_expr_expected;
+            }
+        }
+
+        return null;
+    }
+
+    /// Infer the expected type at a byte offset in source, using a specific module scope chain.
+    pub fn expectedTypeAtOffsetInScope(
+        self: *TypeChecker,
+        module: ast.Module,
+        cursor_offset: usize,
+        root_scope: *const Scope,
+    ) ?Type {
+        var local_symbols = std.ArrayListUnmanaged(Symbol){};
+        defer local_symbols.deinit(self.allocator);
+        self.collectLocalSymbolsAtCursor(module, cursor_offset, &local_symbols) catch {};
+
+        for (module.declarations) |decl| {
+            if (!spanContainsOffset(decl.span(), cursor_offset)) continue;
+            switch (decl) {
+                .function => |function_decl| {
+                    if (function_decl.body) |body| {
+                        const return_type = if (function_decl.return_type) |type_expr|
+                            self.resolveTypeExpr(type_expr) catch self.type_builder.unknownType()
+                        else
+                            self.type_builder.voidType();
+                        return self.inferExpectedTypeInBlock(body, cursor_offset, null, return_type, local_symbols.items, root_scope);
+                    }
+                    return null;
+                },
+                .test_decl => |test_decl| return self.inferExpectedTypeInBlock(test_decl.body, cursor_offset, null, null, local_symbols.items, root_scope),
+                .impl_decl => |impl_decl| {
+                    for (impl_decl.methods) |method| {
+                        if (!spanContainsOffset(method.span, cursor_offset)) continue;
+                        if (method.body) |body| {
+                            const return_type = if (method.return_type) |type_expr|
+                                self.resolveTypeExpr(type_expr) catch self.type_builder.unknownType()
+                            else
+                                self.type_builder.voidType();
+                            return self.inferExpectedTypeInBlock(body, cursor_offset, null, return_type, local_symbols.items, root_scope);
+                        }
+                    }
+                    return null;
+                },
+                else => return null,
+            }
+        }
+        return null;
+    }
+
+    /// Infer the expected type at a byte offset using current scope chain.
+    pub fn expectedTypeAtOffset(self: *TypeChecker, module: ast.Module, cursor_offset: usize) ?Type {
+        return self.expectedTypeAtOffsetInScope(module, cursor_offset, self.current_scope);
+    }
+
     /// Return all in-scope bindings at a byte offset in source using a specific scope chain.
     /// Entries are deduplicated by name (nearest scope wins) and sorted by name.
     pub fn extractScopeAtOffsetInScope(

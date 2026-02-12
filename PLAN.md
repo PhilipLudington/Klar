@@ -232,7 +232,10 @@ Optionally include function source with `--include-source` for richer AI context
   - Added `klar check --partial` mode using parser recovery (`parseModuleRecovering`)
   - Partial mode reports parse diagnostics and still type-checks recoverable declarations
   - Scope queries (`--scope-at`) now work with partial mode and type-error states for tooling workflows
-- [ ] **5.4** Expected-type inference at cursor (what type does context demand?)
+- [x] **5.4** Expected-type inference at cursor (what type does context demand?)
+  - Added checker expected-type inference for cursor-positioned expressions in declaration/function contexts
+  - Exposed via CLI: `klar check <file> --expected-type-at <line:col>`
+  - Added args regression coverage for expected type inference at cursor
 
 **LSP server:**
 - [ ] **5.5** JSON-RPC transport layer (stdio)

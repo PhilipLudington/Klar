@@ -389,6 +389,84 @@ else
     fail "check command: --scope-json dependency validation failed"
 fi
 
+expected_fixture="/tmp/klar_check_expected_type_fixture.kl"
+cat > "$expected_fixture" << 'EOF'
+fn main() -> void {
+    let x: i32 = 1 + 2
+}
+EOF
+
+output=$($KLAR check "$expected_fixture" --expected-type-at 2:18 2>&1)
+if echo "$output" | grep -q "Expected type at 2:18: i32"; then
+    pass "check command: --expected-type-at infers let initializer type"
+else
+    fail "check command: --expected-type-at inference output mismatch"
+fi
+rm -f "$expected_fixture"
+
+expected_assign_fixture="/tmp/klar_check_expected_type_assign.kl"
+cat > "$expected_assign_fixture" << 'EOF'
+fn main() -> void {
+    var x: i32 = 0
+    x = 1 + 2
+}
+EOF
+
+assign_line=$(grep -n "x = 1 + 2" "$expected_assign_fixture" | cut -d: -f1)
+assign_col=$(awk '/x = 1 \+ 2/ { print index($0, "1 + 2") }' "$expected_assign_fixture")
+output=$($KLAR check "$expected_assign_fixture" --expected-type-at "${assign_line}:${assign_col}" 2>&1)
+if echo "$output" | grep -q "Expected type at ${assign_line}:${assign_col}: i32"; then
+    pass "check command: --expected-type-at infers assignment RHS type from local binding"
+else
+    fail "check command: --expected-type-at assignment inference output mismatch"
+fi
+rm -f "$expected_assign_fixture"
+
+expected_return_fixture="/tmp/klar_check_expected_type_return.kl"
+cat > "$expected_return_fixture" << 'EOF'
+fn f() -> i32 {
+    return 1 + 2
+}
+EOF
+
+ret_line=$(grep -n "return 1 + 2" "$expected_return_fixture" | cut -d: -f1)
+ret_col=$(awk '/return 1 \+ 2/ { print index($0, "1 + 2") }' "$expected_return_fixture")
+output=$($KLAR check "$expected_return_fixture" --expected-type-at "${ret_line}:${ret_col}" 2>&1)
+if echo "$output" | grep -q "Expected type at ${ret_line}:${ret_col}: i32"; then
+    pass "check command: --expected-type-at infers return expression type"
+else
+    fail "check command: --expected-type-at return inference output mismatch"
+fi
+rm -f "$expected_return_fixture"
+
+expected_method_fixture="/tmp/klar_check_expected_type_method.kl"
+cat > "$expected_method_fixture" << 'EOF'
+struct Counter {
+    value: i32
+}
+
+impl Counter {
+    fn add(self: inout Counter, amount: i32) -> void {
+        self.value = self.value + amount
+    }
+}
+
+fn main() -> void {
+    var c: Counter = Counter { value: 0 }
+    c.add(1 + 2)
+}
+EOF
+
+method_line=$(grep -n "c.add(1 + 2)" "$expected_method_fixture" | cut -d: -f1)
+method_col=$(awk '/c.add\(1 \+ 2\)/ { print index($0, "1 + 2") }' "$expected_method_fixture")
+output=$($KLAR check "$expected_method_fixture" --expected-type-at "${method_line}:${method_col}" 2>&1)
+if echo "$output" | grep -q "Expected type at ${method_line}:${method_col}: i32"; then
+    pass "check command: --expected-type-at infers method argument type"
+else
+    fail "check command: --expected-type-at method argument inference output mismatch"
+fi
+rm -f "$expected_method_fixture"
+
 # Write results JSON
 TOTAL=$((PASSED + FAILED))
 cat > "$RESULTS_FILE" << EOF
