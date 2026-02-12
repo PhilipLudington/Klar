@@ -151,7 +151,7 @@ test gcd {
 - [x] **3.5** All three backend support
 - [x] **3.6** `klar test` command: file, `--fn`, directory modes; pass/fail reporting
 - [x] **3.7** Enforcement flags: `--strict-tests` (warn), `--require-tests` (error)
-- [ ] **3.8** Formatter support, integration with AirTower
+- [x] **3.8** Formatter support, integration with AirTower
 - [ ] **3.9** Tests in `test/native/test_blocks/`
 
 ### Success Criteria
