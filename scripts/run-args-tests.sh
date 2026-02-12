@@ -223,18 +223,38 @@ else
 fi
 
 output=$($KLAR test "$TEST_DIR/test_command_pass.kl" --json 2>&1)
-if echo "$output" | grep -q '"file"' && echo "$output" | grep -q '"total":1' && echo "$output" | grep -q '"passed":1' && echo "$output" | grep -q '"failed":0'; then
-    pass "test command: --json emits machine-readable file summary"
+if echo "$output" | grep -q '"file"' && \
+   echo "$output" | grep -q '"total":1' && \
+   echo "$output" | grep -q '"passed":1' && \
+   echo "$output" | grep -q '"failed":0' && \
+   echo "$output" | grep -q '"tests"' && \
+   echo "$output" | grep -q '"assertions"' && \
+   echo "$output" | grep -q '"type":"assert_eq"' && \
+   echo "$output" | grep -q '"expected":"7"' && \
+   echo "$output" | grep -q '"actual":"7"'; then
+    pass "test command: --json emits per-test assertion details"
 else
     fail "test command: --json file summary failed"
 fi
 
 output=$($KLAR test "$TEST_DIR/test_command_dir" --json 2>&1)
-if echo "$output" | grep -q '"path"' && echo "$output" | grep -q '"files"' && echo "$output" | grep -q '"summary"'; then
+if echo "$output" | grep -q '"path"' && echo "$output" | grep -q '"files"' && echo "$output" | grep -q '"summary"' && echo "$output" | grep -q '"tests"'; then
     pass "test command: --json emits machine-readable directory summary"
 else
     fail "test command: --json directory summary failed"
 fi
+
+if $KLAR test "$TEST_DIR/test_command_fail.kl" --json >/tmp/klar_test_command_json_fail.out 2>&1; then
+    fail "test command: --json should fail when assertion fails"
+else
+    output=$(cat /tmp/klar_test_command_json_fail.out)
+    if echo "$output" | grep -q '"status":"FAIL"' && echo "$output" | grep -q '"type":"assert_eq"' && echo "$output" | grep -q '"expected":"8"' && echo "$output" | grep -q '"actual":"7"'; then
+        pass "test command: --json includes expected vs actual for failing assertions"
+    else
+        fail "test command: --json missing expected/actual on assertion failure"
+    fi
+fi
+rm -f /tmp/klar_test_command_json_fail.out
 
 output=$($KLAR test "$TEST_DIR/test_command_empty_dir" --json 2>&1)
 if echo "$output" | grep -q '"path"' && echo "$output" | grep -q '"files":\[\]' && echo "$output" | grep -q '"summary"'; then

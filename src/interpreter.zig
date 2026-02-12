@@ -19,6 +19,68 @@ fn getStdIn() std.fs.File {
     return .{ .handle = std.posix.STDIN_FILENO };
 }
 
+pub const AssertionRecord = struct {
+    assertion_type: []const u8,
+    passed: bool,
+    expected: ?[]const u8 = null,
+    actual: ?[]const u8 = null,
+};
+
+pub const AssertionRecorder = struct {
+    allocator: Allocator,
+    records: std.ArrayListUnmanaged(AssertionRecord) = .{},
+
+    pub fn init(allocator: Allocator) AssertionRecorder {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *AssertionRecorder) void {
+        self.clear();
+        self.records.deinit(self.allocator);
+    }
+
+    pub fn clear(self: *AssertionRecorder) void {
+        for (self.records.items) |assert_record| {
+            if (assert_record.expected) |expected| self.allocator.free(expected);
+            if (assert_record.actual) |actual| self.allocator.free(actual);
+        }
+        self.records.clearRetainingCapacity();
+    }
+
+    fn record(self: *AssertionRecorder, assertion_type: []const u8, passed: bool, expected_value: ?Value, actual_value: ?Value) RuntimeError!void {
+        var expected: ?[]const u8 = null;
+        var actual: ?[]const u8 = null;
+        errdefer if (expected) |value| self.allocator.free(value);
+        errdefer if (actual) |value| self.allocator.free(value);
+
+        if (expected_value) |value| {
+            expected = values.valueToString(self.allocator, value) catch return RuntimeError.OutOfMemory;
+        }
+        if (actual_value) |value| {
+            actual = values.valueToString(self.allocator, value) catch return RuntimeError.OutOfMemory;
+        }
+
+        self.records.append(self.allocator, .{
+            .assertion_type = assertion_type,
+            .passed = passed,
+            .expected = expected,
+            .actual = actual,
+        }) catch return RuntimeError.OutOfMemory;
+    }
+};
+
+var active_assertion_recorder: ?*AssertionRecorder = null;
+
+pub fn setAssertionRecorder(recorder: ?*AssertionRecorder) void {
+    active_assertion_recorder = recorder;
+}
+
+fn maybeRecordAssertion(assertion_type: []const u8, passed: bool, expected_value: ?Value, actual_value: ?Value) RuntimeError!void {
+    if (active_assertion_recorder) |recorder| {
+        try recorder.record(assertion_type, passed, expected_value, actual_value);
+    }
+}
+
 // ============================================================================
 // Interpreter
 // ============================================================================
@@ -2188,7 +2250,9 @@ fn builtinAssert(allocator: Allocator, args: []const Value) RuntimeError!Value {
 
     if (args[0] != .bool_) return RuntimeError.TypeError;
 
-    if (!args[0].bool_) {
+    const passed = args[0].bool_;
+    try maybeRecordAssertion("assert", passed, .{ .bool_ = true }, args[0]);
+    if (!passed) {
         return RuntimeError.AssertionFailed;
     }
 
@@ -2199,7 +2263,9 @@ fn builtinAssertEq(allocator: Allocator, args: []const Value) RuntimeError!Value
     _ = allocator;
     if (args.len != 2) return RuntimeError.InvalidOperation;
 
-    if (!args[0].eql(args[1])) {
+    const passed = args[0].eql(args[1]);
+    try maybeRecordAssertion("assert_eq", passed, args[1], args[0]);
+    if (!passed) {
         return RuntimeError.AssertionFailed;
     }
 
@@ -2210,7 +2276,9 @@ fn builtinAssertNe(allocator: Allocator, args: []const Value) RuntimeError!Value
     _ = allocator;
     if (args.len != 2) return RuntimeError.InvalidOperation;
 
-    if (args[0].eql(args[1])) {
+    const passed = !args[0].eql(args[1]);
+    try maybeRecordAssertion("assert_ne", passed, args[1], args[0]);
+    if (!passed) {
         return RuntimeError.AssertionFailed;
     }
 
@@ -2222,7 +2290,9 @@ fn builtinAssertOk(allocator: Allocator, args: []const Value) RuntimeError!Value
     if (args.len != 1) return RuntimeError.InvalidOperation;
     if (args[0] != .result) return RuntimeError.TypeError;
 
-    if (!args[0].result.is_ok) {
+    const passed = args[0].result.is_ok;
+    try maybeRecordAssertion("assert_ok", passed, null, args[0]);
+    if (!passed) {
         return RuntimeError.AssertionFailed;
     }
 
@@ -2234,7 +2304,9 @@ fn builtinAssertErr(allocator: Allocator, args: []const Value) RuntimeError!Valu
     if (args.len != 1) return RuntimeError.InvalidOperation;
     if (args[0] != .result) return RuntimeError.TypeError;
 
-    if (args[0].result.is_ok) {
+    const passed = !args[0].result.is_ok;
+    try maybeRecordAssertion("assert_err", passed, null, args[0]);
+    if (!passed) {
         return RuntimeError.AssertionFailed;
     }
 
@@ -2246,7 +2318,9 @@ fn builtinAssertSome(allocator: Allocator, args: []const Value) RuntimeError!Val
     if (args.len != 1) return RuntimeError.InvalidOperation;
     if (args[0] != .optional) return RuntimeError.TypeError;
 
-    if (args[0].optional.value == null) {
+    const passed = args[0].optional.value != null;
+    try maybeRecordAssertion("assert_some", passed, null, args[0]);
+    if (!passed) {
         return RuntimeError.AssertionFailed;
     }
 
@@ -2258,7 +2332,9 @@ fn builtinAssertNone(allocator: Allocator, args: []const Value) RuntimeError!Val
     if (args.len != 1) return RuntimeError.InvalidOperation;
     if (args[0] != .optional) return RuntimeError.TypeError;
 
-    if (args[0].optional.value != null) {
+    const passed = args[0].optional.value == null;
+    try maybeRecordAssertion("assert_none", passed, null, args[0]);
+    if (!passed) {
         return RuntimeError.AssertionFailed;
     }
 

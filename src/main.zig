@@ -6,7 +6,10 @@ const Parser = @import("parser.zig").Parser;
 const ast = @import("ast.zig");
 const checker_mod = @import("checker/mod.zig");
 const TypeChecker = checker_mod.TypeChecker;
-const Interpreter = @import("interpreter.zig").Interpreter;
+const interp_mod = @import("interpreter.zig");
+const Interpreter = interp_mod.Interpreter;
+const AssertionRecorder = interp_mod.AssertionRecorder;
+const AssertionRecord = interp_mod.AssertionRecord;
 const values = @import("values.zig");
 const Compiler = @import("compiler.zig").Compiler;
 const Disassembler = @import("disasm.zig").Disassembler;
@@ -44,6 +47,21 @@ const TestFileResult = struct {
     tests_discovered: usize,
     tests_passed: usize,
     tests_failed: usize,
+    test_results: []JsonTestSummary = &.{},
+};
+
+const JsonAssertionSummary = struct {
+    assertion_type: []const u8,
+    passed: bool,
+    expected: ?[]const u8 = null,
+    actual: ?[]const u8 = null,
+};
+
+const JsonTestSummary = struct {
+    name: []const u8,
+    passed: bool,
+    error_name: ?[]const u8 = null,
+    assertions: []JsonAssertionSummary = &.{},
 };
 
 const JsonFileSummary = struct {
@@ -51,6 +69,7 @@ const JsonFileSummary = struct {
     total: usize,
     passed: usize,
     failed: usize,
+    test_results: []JsonTestSummary = &.{},
 };
 
 fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
@@ -72,6 +91,58 @@ fn writeJsonUsize(out: std.fs.File, value: usize) !void {
     var buf: [32]u8 = undefined;
     const n = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
     try out.writeAll(n);
+}
+
+fn writeJsonBool(out: std.fs.File, value: bool) !void {
+    if (value) {
+        try out.writeAll("true");
+    } else {
+        try out.writeAll("false");
+    }
+}
+
+fn freeJsonTestResults(allocator: std.mem.Allocator, test_results: []JsonTestSummary) void {
+    for (test_results) |test_result| {
+        allocator.free(test_result.name);
+        if (test_result.error_name) |error_name| allocator.free(error_name);
+        for (test_result.assertions) |assertion| {
+            if (assertion.expected) |expected| allocator.free(expected);
+            if (assertion.actual) |actual| allocator.free(actual);
+        }
+        allocator.free(test_result.assertions);
+    }
+    allocator.free(test_results);
+}
+
+fn duplicateAssertionRecords(
+    allocator: std.mem.Allocator,
+    assertion_records: []const AssertionRecord,
+) ![]JsonAssertionSummary {
+    const assertions = try allocator.alloc(JsonAssertionSummary, assertion_records.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (assertions[0..initialized]) |assertion| {
+            if (assertion.expected) |expected| allocator.free(expected);
+            if (assertion.actual) |actual| allocator.free(actual);
+        }
+        allocator.free(assertions);
+    }
+
+    for (assertion_records, 0..) |record, i| {
+        const expected = if (record.expected) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (expected) |value| allocator.free(value);
+        const actual = if (record.actual) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (actual) |value| allocator.free(value);
+
+        assertions[i] = .{
+            .assertion_type = record.assertion_type,
+            .passed = record.passed,
+            .expected = expected,
+            .actual = actual,
+        };
+        initialized += 1;
+    }
+    return assertions;
 }
 
 /// Result of attempting to load a manifest with user-friendly error messages.
@@ -2253,10 +2324,11 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 if (err == error.TestsFailed and options.json_output) {
                     try stdout.writeAll("{\"file\":");
                     try writeJsonEscaped(stdout, path);
-                    try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0}\n");
+                    try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0,\"tests\":[]}\n");
                 }
                 return err;
             };
+            defer freeJsonTestResults(allocator, result.test_results);
             if (result.tests_failed > 0) return error.TestsFailed;
             return;
         },
@@ -2283,6 +2355,7 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             defer {
                 for (json_file_results.items) |item| {
                     allocator.free(item.path);
+                    freeJsonTestResults(allocator, item.test_results);
                 }
                 json_file_results.deinit(allocator);
             }
@@ -2306,6 +2379,7 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                                 .passed = 0,
                                 // Compile/setup errors are file failures, not failed test assertions.
                                 .failed = 0,
+                                .test_results = try allocator.alloc(JsonTestSummary, 0),
                             });
                         }
                         continue;
@@ -2323,7 +2397,10 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                         .total = file_result.tests_discovered,
                         .passed = file_result.tests_passed,
                         .failed = file_result.tests_failed,
+                        .test_results = file_result.test_results,
                     });
+                } else {
+                    freeJsonTestResults(allocator, file_result.test_results);
                 }
             }
 
@@ -2371,6 +2448,37 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                     try writeJsonUsize(stdout, item.passed);
                     try stdout.writeAll(",\"failed\":");
                     try writeJsonUsize(stdout, item.failed);
+                    try stdout.writeAll(",\"tests\":[");
+                    for (item.test_results, 0..) |test_result, test_idx| {
+                        if (test_idx > 0) try stdout.writeAll(",");
+                        try stdout.writeAll("{\"name\":");
+                        try writeJsonEscaped(stdout, test_result.name);
+                        try stdout.writeAll(",\"status\":");
+                        try writeJsonEscaped(stdout, if (test_result.passed) "PASS" else "FAIL");
+                        if (test_result.error_name) |error_name| {
+                            try stdout.writeAll(",\"error\":");
+                            try writeJsonEscaped(stdout, error_name);
+                        }
+                        try stdout.writeAll(",\"assertions\":[");
+                        for (test_result.assertions, 0..) |assertion, assertion_idx| {
+                            if (assertion_idx > 0) try stdout.writeAll(",");
+                            try stdout.writeAll("{\"type\":");
+                            try writeJsonEscaped(stdout, assertion.assertion_type);
+                            try stdout.writeAll(",\"passed\":");
+                            try writeJsonBool(stdout, assertion.passed);
+                            if (assertion.expected) |expected| {
+                                try stdout.writeAll(",\"expected\":");
+                                try writeJsonEscaped(stdout, expected);
+                            }
+                            if (assertion.actual) |actual| {
+                                try stdout.writeAll(",\"actual\":");
+                                try writeJsonEscaped(stdout, actual);
+                            }
+                            try stdout.writeAll("}");
+                        }
+                        try stdout.writeAll("]}");
+                    }
+                    try stdout.writeAll("]");
                     try stdout.writeAll("}");
                 }
                 try stdout.writeAll("],\"summary\":{\"files\":");
@@ -2635,13 +2743,43 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             if (options.emit_output and options.json_output) {
                 try stdout.writeAll("{\"file\":");
                 try writeJsonEscaped(stdout, path);
-                try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0}\n");
+                try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0,\"tests\":[]}\n");
             }
-            return .{ .tests_discovered = 0, .tests_passed = 0, .tests_failed = 0 };
+            return .{
+                .tests_discovered = 0,
+                .tests_passed = 0,
+                .tests_failed = 0,
+                .test_results = try allocator.alloc(JsonTestSummary, 0),
+            };
         }
 
         var passed: usize = 0;
         var failed: usize = 0;
+        var assertion_recorder = AssertionRecorder.init(allocator);
+        defer assertion_recorder.deinit();
+        const record_assertions = options.json_output;
+        if (record_assertions) {
+            interp_mod.setAssertionRecorder(&assertion_recorder);
+        }
+        defer if (record_assertions) interp_mod.setAssertionRecorder(null);
+
+        var test_results = std.ArrayListUnmanaged(JsonTestSummary){};
+        var test_results_transferred = false;
+        defer {
+            if (!test_results_transferred) {
+                for (test_results.items) |test_result| {
+                    allocator.free(test_result.name);
+                    if (test_result.error_name) |error_name| allocator.free(error_name);
+                    for (test_result.assertions) |assertion| {
+                        if (assertion.expected) |expected| allocator.free(expected);
+                        if (assertion.actual) |actual| allocator.free(actual);
+                    }
+                    allocator.free(test_result.assertions);
+                }
+            }
+            test_results.deinit(allocator);
+        }
+
         var buf: [512]u8 = undefined;
         if (options.emit_output and !options.json_output) {
             const start_msg = std.fmt.bufPrint(&buf, "Running {d} test(s)\n", .{total_tests}) catch "Running tests\n";
@@ -2655,20 +2793,49 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 if (!std.mem.eql(u8, test_decl.name, fn_name)) continue;
             }
 
-            _ = entry_interp.evalBlock(test_decl.body) catch |err| {
-                const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
-                if (options.emit_output and !options.json_output) {
-                    try stdout.writeAll(fail_msg);
+            if (record_assertions) {
+                assertion_recorder.clear();
+                if (entry_interp.evalBlock(test_decl.body)) |_| {
+                    const assertion_results = try duplicateAssertionRecords(allocator, assertion_recorder.records.items);
+                    const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
+                    if (options.emit_output and !options.json_output) {
+                        try stdout.writeAll(pass_msg);
+                    }
+                    try test_results.append(allocator, .{
+                        .name = try allocator.dupe(u8, test_decl.name),
+                        .passed = true,
+                        .assertions = assertion_results,
+                    });
+                    passed += 1;
+                } else |err| {
+                    const assertion_results = try duplicateAssertionRecords(allocator, assertion_recorder.records.items);
+                    const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
+                    if (options.emit_output and !options.json_output) {
+                        try stdout.writeAll(fail_msg);
+                    }
+                    try test_results.append(allocator, .{
+                        .name = try allocator.dupe(u8, test_decl.name),
+                        .passed = false,
+                        .error_name = try allocator.dupe(u8, @errorName(err)),
+                        .assertions = assertion_results,
+                    });
+                    failed += 1;
                 }
-                failed += 1;
-                continue;
-            };
-
-            const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
-            if (options.emit_output and !options.json_output) {
-                try stdout.writeAll(pass_msg);
+            } else {
+                if (entry_interp.evalBlock(test_decl.body)) |_| {
+                    const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
+                    if (options.emit_output) {
+                        try stdout.writeAll(pass_msg);
+                    }
+                    passed += 1;
+                } else |err| {
+                    const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
+                    if (options.emit_output) {
+                        try stdout.writeAll(fail_msg);
+                    }
+                    failed += 1;
+                }
             }
-            passed += 1;
         }
 
         if (options.emit_output and options.json_output) {
@@ -2680,13 +2847,53 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             try writeJsonUsize(stdout, passed);
             try stdout.writeAll(",\"failed\":");
             try writeJsonUsize(stdout, failed);
-            try stdout.writeAll("}\n");
+            try stdout.writeAll(",\"tests\":[");
+            for (test_results.items, 0..) |test_result, idx| {
+                if (idx > 0) try stdout.writeAll(",");
+                try stdout.writeAll("{\"name\":");
+                try writeJsonEscaped(stdout, test_result.name);
+                try stdout.writeAll(",\"status\":");
+                try writeJsonEscaped(stdout, if (test_result.passed) "PASS" else "FAIL");
+                if (test_result.error_name) |error_name| {
+                    try stdout.writeAll(",\"error\":");
+                    try writeJsonEscaped(stdout, error_name);
+                }
+                try stdout.writeAll(",\"assertions\":[");
+                for (test_result.assertions, 0..) |assertion, assertion_idx| {
+                    if (assertion_idx > 0) try stdout.writeAll(",");
+                    try stdout.writeAll("{\"type\":");
+                    try writeJsonEscaped(stdout, assertion.assertion_type);
+                    try stdout.writeAll(",\"passed\":");
+                    try writeJsonBool(stdout, assertion.passed);
+                    if (assertion.expected) |expected| {
+                        try stdout.writeAll(",\"expected\":");
+                        try writeJsonEscaped(stdout, expected);
+                    }
+                    if (assertion.actual) |actual| {
+                        try stdout.writeAll(",\"actual\":");
+                        try writeJsonEscaped(stdout, actual);
+                    }
+                    try stdout.writeAll("}");
+                }
+                try stdout.writeAll("]}");
+            }
+            try stdout.writeAll("]}\n");
         } else if (options.emit_output) {
             const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
             try stdout.writeAll(summary);
         }
 
-        return .{ .tests_discovered = total_tests, .tests_passed = passed, .tests_failed = failed };
+        test_results_transferred = true;
+        const owned_test_results = if (record_assertions)
+            try test_results.toOwnedSlice(allocator)
+        else
+            try allocator.alloc(JsonTestSummary, 0);
+        return .{
+            .tests_discovered = total_tests,
+            .tests_passed = passed,
+            .tests_failed = failed,
+            .test_results = owned_test_results,
+        };
     } else {
         checker.checkModule(module);
 
@@ -2747,13 +2954,43 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             if (options.emit_output and options.json_output) {
                 try stdout.writeAll("{\"file\":");
                 try writeJsonEscaped(stdout, path);
-                try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0}\n");
+                try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0,\"tests\":[]}\n");
             }
-            return .{ .tests_discovered = 0, .tests_passed = 0, .tests_failed = 0 };
+            return .{
+                .tests_discovered = 0,
+                .tests_passed = 0,
+                .tests_failed = 0,
+                .test_results = try allocator.alloc(JsonTestSummary, 0),
+            };
         }
 
         var passed: usize = 0;
         var failed: usize = 0;
+        var assertion_recorder = AssertionRecorder.init(allocator);
+        defer assertion_recorder.deinit();
+        const record_assertions = options.json_output;
+        if (record_assertions) {
+            interp_mod.setAssertionRecorder(&assertion_recorder);
+        }
+        defer if (record_assertions) interp_mod.setAssertionRecorder(null);
+
+        var test_results = std.ArrayListUnmanaged(JsonTestSummary){};
+        var test_results_transferred = false;
+        defer {
+            if (!test_results_transferred) {
+                for (test_results.items) |test_result| {
+                    allocator.free(test_result.name);
+                    if (test_result.error_name) |error_name| allocator.free(error_name);
+                    for (test_result.assertions) |assertion| {
+                        if (assertion.expected) |expected| allocator.free(expected);
+                        if (assertion.actual) |actual| allocator.free(actual);
+                    }
+                    allocator.free(test_result.assertions);
+                }
+            }
+            test_results.deinit(allocator);
+        }
+
         var buf: [512]u8 = undefined;
 
         if (options.emit_output and !options.json_output) {
@@ -2768,20 +3005,49 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 if (!std.mem.eql(u8, test_decl.name, fn_name)) continue;
             }
 
-            _ = interp.evalBlock(test_decl.body) catch |err| {
-                const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
-                if (options.emit_output and !options.json_output) {
-                    try stdout.writeAll(fail_msg);
+            if (record_assertions) {
+                assertion_recorder.clear();
+                if (interp.evalBlock(test_decl.body)) |_| {
+                    const assertion_results = try duplicateAssertionRecords(allocator, assertion_recorder.records.items);
+                    const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
+                    if (options.emit_output and !options.json_output) {
+                        try stdout.writeAll(pass_msg);
+                    }
+                    try test_results.append(allocator, .{
+                        .name = try allocator.dupe(u8, test_decl.name),
+                        .passed = true,
+                        .assertions = assertion_results,
+                    });
+                    passed += 1;
+                } else |err| {
+                    const assertion_results = try duplicateAssertionRecords(allocator, assertion_recorder.records.items);
+                    const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
+                    if (options.emit_output and !options.json_output) {
+                        try stdout.writeAll(fail_msg);
+                    }
+                    try test_results.append(allocator, .{
+                        .name = try allocator.dupe(u8, test_decl.name),
+                        .passed = false,
+                        .error_name = try allocator.dupe(u8, @errorName(err)),
+                        .assertions = assertion_results,
+                    });
+                    failed += 1;
                 }
-                failed += 1;
-                continue;
-            };
-
-            const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
-            if (options.emit_output and !options.json_output) {
-                try stdout.writeAll(pass_msg);
+            } else {
+                if (interp.evalBlock(test_decl.body)) |_| {
+                    const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
+                    if (options.emit_output) {
+                        try stdout.writeAll(pass_msg);
+                    }
+                    passed += 1;
+                } else |err| {
+                    const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
+                    if (options.emit_output) {
+                        try stdout.writeAll(fail_msg);
+                    }
+                    failed += 1;
+                }
             }
-            passed += 1;
         }
 
         if (options.emit_output and options.json_output) {
@@ -2793,13 +3059,53 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             try writeJsonUsize(stdout, passed);
             try stdout.writeAll(",\"failed\":");
             try writeJsonUsize(stdout, failed);
-            try stdout.writeAll("}\n");
+            try stdout.writeAll(",\"tests\":[");
+            for (test_results.items, 0..) |test_result, idx| {
+                if (idx > 0) try stdout.writeAll(",");
+                try stdout.writeAll("{\"name\":");
+                try writeJsonEscaped(stdout, test_result.name);
+                try stdout.writeAll(",\"status\":");
+                try writeJsonEscaped(stdout, if (test_result.passed) "PASS" else "FAIL");
+                if (test_result.error_name) |error_name| {
+                    try stdout.writeAll(",\"error\":");
+                    try writeJsonEscaped(stdout, error_name);
+                }
+                try stdout.writeAll(",\"assertions\":[");
+                for (test_result.assertions, 0..) |assertion, assertion_idx| {
+                    if (assertion_idx > 0) try stdout.writeAll(",");
+                    try stdout.writeAll("{\"type\":");
+                    try writeJsonEscaped(stdout, assertion.assertion_type);
+                    try stdout.writeAll(",\"passed\":");
+                    try writeJsonBool(stdout, assertion.passed);
+                    if (assertion.expected) |expected| {
+                        try stdout.writeAll(",\"expected\":");
+                        try writeJsonEscaped(stdout, expected);
+                    }
+                    if (assertion.actual) |actual| {
+                        try stdout.writeAll(",\"actual\":");
+                        try writeJsonEscaped(stdout, actual);
+                    }
+                    try stdout.writeAll("}");
+                }
+                try stdout.writeAll("]}");
+            }
+            try stdout.writeAll("]}\n");
         } else if (options.emit_output) {
             const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
             try stdout.writeAll(summary);
         }
 
-        return .{ .tests_discovered = total_tests, .tests_passed = passed, .tests_failed = failed };
+        test_results_transferred = true;
+        const owned_test_results = if (record_assertions)
+            try test_results.toOwnedSlice(allocator)
+        else
+            try allocator.alloc(JsonTestSummary, 0);
+        return .{
+            .tests_discovered = total_tests,
+            .tests_passed = passed,
+            .tests_failed = failed,
+            .test_results = owned_test_results,
+        };
     }
 }
 
