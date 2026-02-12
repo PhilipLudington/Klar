@@ -355,6 +355,40 @@ else
 fi
 rm -f /tmp/klar_test_command_fail.out
 
+echo ""
+echo "--- Test: klar check partial mode ---"
+
+partial_fixture="/tmp/klar_check_partial_fixture.kl"
+cat > "$partial_fixture" << 'EOF'
+fn ok() -> i32 {
+    return 1
+}
+
+fn broken( -> i32 {
+    return 2
+}
+
+fn mismatch() -> i32 {
+    let s: string = "oops"
+    return s
+}
+EOF
+
+output=$($KLAR check "$partial_fixture" --partial 2>&1)
+if echo "$output" | grep -q "Parse diagnostics" && echo "$output" | grep -q "Type check failed"; then
+    pass "check command: --partial reports parse and type diagnostics in one run"
+else
+    fail "check command: --partial diagnostics output mismatch"
+fi
+rm -f "$partial_fixture"
+
+output=$($KLAR check "$TEST_DIR/no_args.kl" --scope-json 2>&1)
+if echo "$output" | grep -q "Error: --scope-json requires --scope-at"; then
+    pass "check command: --scope-json requires --scope-at"
+else
+    fail "check command: --scope-json dependency validation failed"
+fi
+
 # Write results JSON
 TOTAL=$((PASSED + FAILED))
 cat > "$RESULTS_FILE" << EOF

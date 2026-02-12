@@ -50,6 +50,7 @@ const CheckCommandOptions = struct {
     scope_line: ?usize = null,
     scope_column: ?usize = null,
     scope_json: bool = false,
+    partial_mode: bool = false,
 };
 
 const TestFileResult = struct {
@@ -590,6 +591,8 @@ pub fn main() !void {
                 options.scope_column = parsed.column;
             } else if (std.mem.eql(u8, arg, "--scope-json")) {
                 options.scope_json = true;
+            } else if (std.mem.eql(u8, arg, "--partial")) {
+                options.partial_mode = true;
             } else if (!std.mem.startsWith(u8, arg, "-") and input_path == null) {
                 input_path = arg;
             } else {
@@ -2173,9 +2176,19 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     const stderr = getStdErr();
     var lexer = Lexer.init(source);
     var parser = Parser.init(arena.allocator(), &lexer, source);
+    var parse_had_errors = false;
 
     // Parse the module
-    const module = parser.parseModule() catch |err| {
+    const module = if (options.partial_mode) blk: {
+        const parsed = parser.parseModuleRecovering() catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+        parse_had_errors = parser.errors.items.len > 0;
+        break :blk parsed;
+    } else parser.parseModule() catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
         try stderr.writeAll(msg);
@@ -2190,6 +2203,20 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         }
         return;
     };
+
+    if (options.partial_mode and parser.errors.items.len > 0) {
+        var buf: [512]u8 = undefined;
+        const header = std.fmt.bufPrint(&buf, "Parse diagnostics ({d}):\n", .{parser.errors.items.len}) catch "Parse diagnostics:\n";
+        try stderr.writeAll(header);
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+    }
 
     // Type check the module
     var checker = TypeChecker.init(allocator);
@@ -2301,7 +2328,8 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
 
     var buf: [512]u8 = undefined;
 
-    if (checker.hasErrors()) {
+    const has_type_errors = checker.hasErrors();
+    if (has_type_errors) {
         const header = std.fmt.bufPrint(&buf, "Type check failed with {d} error(s):\n", .{checker.errors.items.len}) catch "Type check failed:\n";
         try stderr.writeAll(header);
 
@@ -2314,7 +2342,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
-        return; // Don't proceed to ownership check if type check fails
+        if (options.scope_line == null) return; // Scope query can still proceed for tooling.
     }
 
     if (options.scope_line) |scope_line| {
@@ -2377,6 +2405,15 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         }
         return;
     }
+
+    if (options.partial_mode) {
+        if (!parse_had_errors and !has_type_errors) {
+            try stdout.writeAll("Partial check completed with no diagnostics\n");
+        }
+        return;
+    }
+
+    if (has_type_errors) return;
 
     // Ownership analysis
     var ownership_checker = ownership.OwnershipChecker.init(allocator);
@@ -4327,6 +4364,7 @@ fn printUsage() !void {
         \\  update               Regenerate klar.lock from klar.json
         \\  check <file>         Type check a file
         \\    --dump-ownership   Include ownership analysis details
+        \\    --partial          Parse with recovery and type-check partial declarations
         \\    --scope-at L:C     Print in-scope bindings at line/column
         \\    --scope-json       Emit scope output as JSON (with --scope-at)
         \\  repl                 Interactive REPL (Read-Eval-Print Loop)

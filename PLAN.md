@@ -228,7 +228,10 @@ Optionally include function source with `--include-source` for richer AI context
   - Added checker API `extractScopeAtOffset(module, cursor_offset)` with local-scope traversal
   - Exposed via CLI: `klar check <file> --scope-at <line:col> [--scope-json]`
   - Added checker unit tests for nested scopes, declaration ordering, and explicit shadowing behavior
-- [ ] **5.3** Incremental type checking of partial declarations
+- [x] **5.3** Incremental type checking of partial declarations
+  - Added `klar check --partial` mode using parser recovery (`parseModuleRecovering`)
+  - Partial mode reports parse diagnostics and still type-checks recoverable declarations
+  - Scope queries (`--scope-at`) now work with partial mode and type-error states for tooling workflows
 - [ ] **5.4** Expected-type inference at cursor (what type does context demand?)
 
 **LSP server:**
@@ -243,9 +246,9 @@ Optionally include function source with `--include-source` for richer AI context
 
 ### Success Criteria
 
-- [ ] Parser produces useful AST even with syntax errors
-- [ ] Type checker reports errors found so far in partial code
-- [ ] Scope query returns correct bindings at any cursor position
+- [x] Parser produces useful AST even with syntax errors
+- [x] Type checker reports errors found so far in partial code
+- [x] Scope query returns correct bindings at any cursor position
 - [ ] LSP provides diagnostics, completions, hover, and go-to-definition
 - [ ] VS Code extension works with the LSP
 
