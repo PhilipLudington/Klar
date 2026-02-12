@@ -486,6 +486,8 @@ if echo "$lsp_output" | grep -q "Content-Length:" && \
    echo "$lsp_output" | grep -q '"id":1' && \
    echo "$lsp_output" | grep -q '"diagnosticProvider"' && \
    echo "$lsp_output" | grep -q '"completionProvider"' && \
+   echo "$lsp_output" | grep -q '"hoverProvider"' && \
+   echo "$lsp_output" | grep -q '"definitionProvider"' && \
    echo "$lsp_output" | grep -q '"capabilities"' && \
    echo "$lsp_output" | grep -q '"id":2' && \
    echo "$lsp_output" | grep -q '"result":null'; then
@@ -653,6 +655,53 @@ else
     fail "lsp command: textDocument/completion handling failed"
 fi
 rm -f "$completion_fixture"
+
+hover_fixture="/tmp/klar_lsp_hover_fixture.kl"
+cat > "$hover_fixture" << 'EOF'
+fn main() -> i32 {
+    let number: i32 = 1
+    return number
+}
+EOF
+hover_uri="file://${hover_fixture}"
+hover_payload=$(printf '{"jsonrpc":"2.0","id":17,"method":"textDocument/hover","params":{"textDocument":{"uri":"%s"},"position":{"line":2,"character":11}}}' "$hover_uri")
+hover_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#hover_payload}" "$hover_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$hover_output" | grep -q '"id":17' && \
+   echo "$hover_output" | grep -q '"kind":"markdown"' && \
+   echo "$hover_output" | grep -q '"value":"`number`: `i32` (variable)"'; then
+    pass "lsp command: textDocument/hover returns type information"
+else
+    fail "lsp command: textDocument/hover handling failed"
+fi
+rm -f "$hover_fixture"
+
+definition_fixture="/tmp/klar_lsp_definition_fixture.kl"
+cat > "$definition_fixture" << 'EOF'
+fn main() -> i32 {
+    let number: i32 = 1
+    return number
+}
+EOF
+definition_uri="file://${definition_fixture}"
+definition_payload=$(printf '{"jsonrpc":"2.0","id":18,"method":"textDocument/definition","params":{"textDocument":{"uri":"%s"},"position":{"line":2,"character":11}}}' "$definition_uri")
+definition_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#definition_payload}" "$definition_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$definition_output" | grep -q '"id":18' && \
+   echo "$definition_output" | grep -q "\"uri\":\"${definition_uri}\"" && \
+   echo "$definition_output" | grep -q '"start":{"line":1,"character":8}' && \
+   echo "$definition_output" | grep -q '"end":{"line":1,"character":14}'; then
+    pass "lsp command: textDocument/definition returns declaration location"
+else
+    fail "lsp command: textDocument/definition handling failed"
+fi
+rm -f "$definition_fixture"
 
 # Write results JSON
 TOTAL=$((PASSED + FAILED))

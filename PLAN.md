@@ -115,9 +115,9 @@ fn greet(name: string) -> void { println("Hello " + name) }
 
 ### Success Criteria
 
-- [ ] Parser rejects functions without explicit return types
-- [ ] All existing tests updated and passing
-- [ ] Error message is clear and actionable
+- [x] Parser rejects functions without explicit return types
+- [x] All existing tests updated and passing
+- [x] Error message is clear and actionable
 
 ---
 
@@ -252,19 +252,31 @@ Optionally include function source with `--include-source` for richer AI context
   - Completion items are derived from checker scope extraction at cursor offset
   - Ranking is type-aware via expected-type matching (`sortText` prioritization)
   - Added args regression coverage for completion payload fields/ranking
-- [ ] **5.8** `textDocument/hover` — type information on hover
-- [ ] **5.9** `textDocument/definition` — go to definition
+- [x] **5.8** `textDocument/hover` — type information on hover
+  - Added `textDocument/hover` request handling in `klar lsp`
+  - Hover resolves identifier at cursor and returns symbol type/kind in markdown
+  - Advertises `hoverProvider` capability in initialize response
+  - Added args regression coverage for hover response payload fields
+- [x] **5.9** `textDocument/definition` — go to definition
+  - Added `textDocument/definition` request handling in `klar lsp`
+  - Resolves symbol at cursor and returns same-file declaration location range
+  - Advertises `definitionProvider` capability in initialize response
+  - Added args regression coverage for definition response payload
 
 **Editor integration:**
-- [ ] **5.10** VS Code extension with syntax highlighting and LSP client
+- [x] **5.10** VS Code extension with syntax highlighting and LSP client
+  - Added `tools/vscode-klar` extension scaffold (TypeScript + `vscode-languageclient`)
+  - Added Klar language registration (`.kl`), language configuration, and TextMate grammar
+  - Added LSP client wiring to launch `klar lsp` with configurable executable path/args
+  - Added extension README with local development instructions
 
 ### Success Criteria
 
 - [x] Parser produces useful AST even with syntax errors
 - [x] Type checker reports errors found so far in partial code
 - [x] Scope query returns correct bindings at any cursor position
-- [ ] LSP provides diagnostics, completions, hover, and go-to-definition
-- [ ] VS Code extension works with the LSP
+- [x] LSP provides diagnostics, completions, hover, and go-to-definition
+- [x] VS Code extension works with the LSP
 
 ---
 
