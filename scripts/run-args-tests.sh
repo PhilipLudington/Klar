@@ -222,6 +222,51 @@ else
     fail "test command: directory mode failed"
 fi
 
+output=$($KLAR test "$TEST_DIR/test_command_pass.kl" --json 2>&1)
+if echo "$output" | grep -q '"file"' && echo "$output" | grep -q '"total":1' && echo "$output" | grep -q '"passed":1' && echo "$output" | grep -q '"failed":0'; then
+    pass "test command: --json emits machine-readable file summary"
+else
+    fail "test command: --json file summary failed"
+fi
+
+output=$($KLAR test "$TEST_DIR/test_command_dir" --json 2>&1)
+if echo "$output" | grep -q '"path"' && echo "$output" | grep -q '"files"' && echo "$output" | grep -q '"summary"'; then
+    pass "test command: --json emits machine-readable directory summary"
+else
+    fail "test command: --json directory summary failed"
+fi
+
+output=$($KLAR test "$TEST_DIR/test_command_empty_dir" --json 2>&1)
+if echo "$output" | grep -q '"path"' && echo "$output" | grep -q '"files":\[\]' && echo "$output" | grep -q '"summary"'; then
+    pass "test command: --json empty directory remains machine-readable"
+else
+    fail "test command: --json empty directory summary failed"
+fi
+
+if $KLAR test "$TEST_DIR/test_command_dir_error/file_parse_error.kl" --json >/tmp/klar_test_command_json_file_error.out 2>&1; then
+    fail "test command: --json should fail for parse-error file"
+else
+    output=$(cat /tmp/klar_test_command_json_file_error.out)
+    if echo "$output" | grep -q '"file"' && echo "$output" | grep -q 'file_parse_error.kl' && echo "$output" | grep -q '"failed":0'; then
+        pass "test command: --json file parse errors still emit machine-readable summary"
+    else
+        fail "test command: --json file parse error summary missing"
+    fi
+fi
+rm -f /tmp/klar_test_command_json_file_error.out
+
+if $KLAR test "$TEST_DIR/test_command_dir_error" --json >/tmp/klar_test_command_json_dir_error.out 2>&1; then
+    fail "test command: --json should still fail when a directory file errors"
+else
+    output=$(cat /tmp/klar_test_command_json_dir_error.out)
+    if echo "$output" | grep -q '"failed_files":1' && echo "$output" | grep -q '"failed":0' && echo "$output" | grep -q 'file_parse_error.kl'; then
+        pass "test command: --json directory summary includes errored files without failed test inflation"
+    else
+        fail "test command: --json directory error summary accounting mismatch"
+    fi
+fi
+rm -f /tmp/klar_test_command_json_dir_error.out
+
 output=$($KLAR test "$TEST_DIR/test_command_no_tests.kl" --strict-tests 2>&1)
 if [ $? -eq 0 ] && echo "$output" | grep -q "No tests found" && echo "$output" | grep -q "Warning: no tests found"; then
     pass "test command: --strict-tests warns when no tests found"

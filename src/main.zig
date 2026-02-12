@@ -36,12 +36,43 @@ const TestRunOptions = struct {
     fn_filter: ?[]const u8 = null,
     strict_tests: bool = false,
     require_tests: bool = false,
+    json_output: bool = false,
+    emit_output: bool = true,
 };
 
 const TestFileResult = struct {
     tests_discovered: usize,
+    tests_passed: usize,
     tests_failed: usize,
 };
+
+const JsonFileSummary = struct {
+    path: []const u8,
+    total: usize,
+    passed: usize,
+    failed: usize,
+};
+
+fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
+    try out.writeAll("\"");
+    for (s) |c| {
+        switch (c) {
+            '"' => try out.writeAll("\\\""),
+            '\\' => try out.writeAll("\\\\"),
+            '\n' => try out.writeAll("\\n"),
+            '\r' => try out.writeAll("\\r"),
+            '\t' => try out.writeAll("\\t"),
+            else => try out.writeAll(&[_]u8{c}),
+        }
+    }
+    try out.writeAll("\"");
+}
+
+fn writeJsonUsize(out: std.fs.File, value: usize) !void {
+    var buf: [32]u8 = undefined;
+    const n = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
+    try out.writeAll(n);
+}
 
 /// Result of attempting to load a manifest with user-friendly error messages.
 const ManifestLoadResult = union(enum) {
@@ -378,6 +409,7 @@ pub fn main() !void {
         var fn_filter: ?[]const u8 = null;
         var strict_tests = false;
         var require_tests = false;
+        var json_output = false;
 
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
@@ -395,6 +427,8 @@ pub fn main() !void {
                 strict_tests = true;
             } else if (std.mem.eql(u8, arg, "--require-tests")) {
                 require_tests = true;
+            } else if (std.mem.eql(u8, arg, "--json")) {
+                json_output = true;
             } else if (!std.mem.startsWith(u8, arg, "-") and input_path == null) {
                 input_path = arg;
             } else {
@@ -414,6 +448,7 @@ pub fn main() !void {
             .fn_filter = fn_filter,
             .strict_tests = strict_tests,
             .require_tests = require_tests,
+            .json_output = json_output,
         }) catch |err| switch (err) {
             error.TestsFailed => std.process.exit(1),
             else => return err,
@@ -2214,7 +2249,14 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
     switch (stat.kind) {
         .file => {
-            const result = try runTestFile(allocator, path, options);
+            const result = runTestFile(allocator, path, options) catch |err| {
+                if (err == error.TestsFailed and options.json_output) {
+                    try stdout.writeAll("{\"file\":");
+                    try writeJsonEscaped(stdout, path);
+                    try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0}\n");
+                }
+                return err;
+            };
             if (result.tests_failed > 0) return error.TestsFailed;
             return;
         },
@@ -2235,6 +2277,15 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             var tests_run: usize = 0;
             var per_file_options = options;
             per_file_options.require_tests = false;
+            per_file_options.emit_output = !options.json_output;
+
+            var json_file_results = std.ArrayListUnmanaged(JsonFileSummary){};
+            defer {
+                for (json_file_results.items) |item| {
+                    allocator.free(item.path);
+                }
+                json_file_results.deinit(allocator);
+            }
 
             while (try walker.next()) |entry| {
                 if (entry.kind != .file) continue;
@@ -2247,6 +2298,16 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 const file_result = runTestFile(allocator, full_path, per_file_options) catch |err| {
                     if (err == error.TestsFailed) {
                         files_failed += 1;
+                        if (options.json_output) {
+                            const owned_path = try allocator.dupe(u8, full_path);
+                            try json_file_results.append(allocator, .{
+                                .path = owned_path,
+                                .total = 0,
+                                .passed = 0,
+                                // Compile/setup errors are file failures, not failed test assertions.
+                                .failed = 0,
+                            });
+                        }
                         continue;
                     }
                     return err;
@@ -2255,12 +2316,27 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 if (file_result.tests_failed > 0) {
                     files_failed += 1;
                 }
+                if (options.json_output) {
+                    const owned_path = try allocator.dupe(u8, full_path);
+                    try json_file_results.append(allocator, .{
+                        .path = owned_path,
+                        .total = file_result.tests_discovered,
+                        .passed = file_result.tests_passed,
+                        .failed = file_result.tests_failed,
+                    });
+                }
             }
 
             if (files_run == 0) {
                 var buf: [512]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "No .kl files found in '{s}'\n", .{path}) catch "No .kl files found\n";
-                try stdout.writeAll(msg);
+                if (options.json_output) {
+                    try stdout.writeAll("{\"path\":");
+                    try writeJsonEscaped(stdout, path);
+                    try stdout.writeAll(",\"files\":[],\"summary\":{\"files\":0,\"failed_files\":0,\"tests\":0,\"passed\":0,\"failed\":0}}\n");
+                } else {
+                    const msg = std.fmt.bufPrint(&buf, "No .kl files found in '{s}'\n", .{path}) catch "No .kl files found\n";
+                    try stdout.writeAll(msg);
+                }
                 if (options.require_tests) {
                     const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
                     try stderr.writeAll(err_msg);
@@ -2274,8 +2350,44 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             }
 
             var buf: [512]u8 = undefined;
-            const summary = std.fmt.bufPrint(&buf, "Directory test result: {d} file(s), {d} failed\n", .{ files_run, files_failed }) catch "Directory test result\n";
-            try stdout.writeAll(summary);
+            if (options.json_output) {
+                var total_passed: usize = 0;
+                var total_failed: usize = 0;
+                for (json_file_results.items) |item| {
+                    total_passed += item.passed;
+                    total_failed += item.failed;
+                }
+
+                try stdout.writeAll("{\"path\":");
+                try writeJsonEscaped(stdout, path);
+                try stdout.writeAll(",\"files\":[");
+                for (json_file_results.items, 0..) |item, idx| {
+                    if (idx > 0) try stdout.writeAll(",");
+                    try stdout.writeAll("{\"file\":");
+                    try writeJsonEscaped(stdout, item.path);
+                    try stdout.writeAll(",\"total\":");
+                    try writeJsonUsize(stdout, item.total);
+                    try stdout.writeAll(",\"passed\":");
+                    try writeJsonUsize(stdout, item.passed);
+                    try stdout.writeAll(",\"failed\":");
+                    try writeJsonUsize(stdout, item.failed);
+                    try stdout.writeAll("}");
+                }
+                try stdout.writeAll("],\"summary\":{\"files\":");
+                try writeJsonUsize(stdout, files_run);
+                try stdout.writeAll(",\"failed_files\":");
+                try writeJsonUsize(stdout, files_failed);
+                try stdout.writeAll(",\"tests\":");
+                try writeJsonUsize(stdout, tests_run);
+                try stdout.writeAll(",\"passed\":");
+                try writeJsonUsize(stdout, total_passed);
+                try stdout.writeAll(",\"failed\":");
+                try writeJsonUsize(stdout, total_failed);
+                try stdout.writeAll("}}\n");
+            } else {
+                const summary = std.fmt.bufPrint(&buf, "Directory test result: {d} file(s), {d} failed\n", .{ files_run, files_failed }) catch "Directory test result\n";
+                try stdout.writeAll(summary);
+            }
 
             if (tests_run == 0 and files_failed == 0) {
                 if (options.require_tests) {
@@ -2508,7 +2620,9 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 std.fmt.bufPrint(&buf, "No tests matched '{s}' in '{s}'\n", .{ fn_name, path }) catch "No tests matched\n"
             else
                 std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
-            try stdout.writeAll(msg);
+            if (options.emit_output and !options.json_output) {
+                try stdout.writeAll(msg);
+            }
             if (options.require_tests) {
                 const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
                 try stderr.writeAll(err_msg);
@@ -2518,14 +2632,21 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
                 try stderr.writeAll(warn_msg);
             }
-            return .{ .tests_discovered = 0, .tests_failed = 0 };
+            if (options.emit_output and options.json_output) {
+                try stdout.writeAll("{\"file\":");
+                try writeJsonEscaped(stdout, path);
+                try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0}\n");
+            }
+            return .{ .tests_discovered = 0, .tests_passed = 0, .tests_failed = 0 };
         }
 
         var passed: usize = 0;
         var failed: usize = 0;
         var buf: [512]u8 = undefined;
-        const start_msg = std.fmt.bufPrint(&buf, "Running {d} test(s)\n", .{total_tests}) catch "Running tests\n";
-        try stdout.writeAll(start_msg);
+        if (options.emit_output and !options.json_output) {
+            const start_msg = std.fmt.bufPrint(&buf, "Running {d} test(s)\n", .{total_tests}) catch "Running tests\n";
+            try stdout.writeAll(start_msg);
+        }
 
         for (entry_ast.declarations) |decl| {
             if (decl != .test_decl) continue;
@@ -2536,20 +2657,36 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
             _ = entry_interp.evalBlock(test_decl.body) catch |err| {
                 const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
-                try stdout.writeAll(fail_msg);
+                if (options.emit_output and !options.json_output) {
+                    try stdout.writeAll(fail_msg);
+                }
                 failed += 1;
                 continue;
             };
 
             const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
-            try stdout.writeAll(pass_msg);
+            if (options.emit_output and !options.json_output) {
+                try stdout.writeAll(pass_msg);
+            }
             passed += 1;
         }
 
-        const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
-        try stdout.writeAll(summary);
+        if (options.emit_output and options.json_output) {
+            try stdout.writeAll("{\"file\":");
+            try writeJsonEscaped(stdout, path);
+            try stdout.writeAll(",\"total\":");
+            try writeJsonUsize(stdout, total_tests);
+            try stdout.writeAll(",\"passed\":");
+            try writeJsonUsize(stdout, passed);
+            try stdout.writeAll(",\"failed\":");
+            try writeJsonUsize(stdout, failed);
+            try stdout.writeAll("}\n");
+        } else if (options.emit_output) {
+            const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
+            try stdout.writeAll(summary);
+        }
 
-        return .{ .tests_discovered = total_tests, .tests_failed = failed };
+        return .{ .tests_discovered = total_tests, .tests_passed = passed, .tests_failed = failed };
     } else {
         checker.checkModule(module);
 
@@ -2595,7 +2732,9 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 std.fmt.bufPrint(&buf, "No tests matched '{s}' in '{s}'\n", .{ fn_name, path }) catch "No tests matched\n"
             else
                 std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
-            try stdout.writeAll(msg);
+            if (options.emit_output and !options.json_output) {
+                try stdout.writeAll(msg);
+            }
             if (options.require_tests) {
                 const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
                 try stderr.writeAll(err_msg);
@@ -2605,15 +2744,22 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
                 try stderr.writeAll(warn_msg);
             }
-            return .{ .tests_discovered = 0, .tests_failed = 0 };
+            if (options.emit_output and options.json_output) {
+                try stdout.writeAll("{\"file\":");
+                try writeJsonEscaped(stdout, path);
+                try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0}\n");
+            }
+            return .{ .tests_discovered = 0, .tests_passed = 0, .tests_failed = 0 };
         }
 
         var passed: usize = 0;
         var failed: usize = 0;
         var buf: [512]u8 = undefined;
 
-        const start_msg = std.fmt.bufPrint(&buf, "Running {d} test(s)\n", .{total_tests}) catch "Running tests\n";
-        try stdout.writeAll(start_msg);
+        if (options.emit_output and !options.json_output) {
+            const start_msg = std.fmt.bufPrint(&buf, "Running {d} test(s)\n", .{total_tests}) catch "Running tests\n";
+            try stdout.writeAll(start_msg);
+        }
 
         for (module.declarations) |decl| {
             if (decl != .test_decl) continue;
@@ -2624,20 +2770,36 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
             _ = interp.evalBlock(test_decl.body) catch |err| {
                 const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
-                try stdout.writeAll(fail_msg);
+                if (options.emit_output and !options.json_output) {
+                    try stdout.writeAll(fail_msg);
+                }
                 failed += 1;
                 continue;
             };
 
             const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
-            try stdout.writeAll(pass_msg);
+            if (options.emit_output and !options.json_output) {
+                try stdout.writeAll(pass_msg);
+            }
             passed += 1;
         }
 
-        const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
-        try stdout.writeAll(summary);
+        if (options.emit_output and options.json_output) {
+            try stdout.writeAll("{\"file\":");
+            try writeJsonEscaped(stdout, path);
+            try stdout.writeAll(",\"total\":");
+            try writeJsonUsize(stdout, total_tests);
+            try stdout.writeAll(",\"passed\":");
+            try writeJsonUsize(stdout, passed);
+            try stdout.writeAll(",\"failed\":");
+            try writeJsonUsize(stdout, failed);
+            try stdout.writeAll("}\n");
+        } else if (options.emit_output) {
+            const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
+            try stdout.writeAll(summary);
+        }
 
-        return .{ .tests_discovered = total_tests, .tests_failed = failed };
+        return .{ .tests_discovered = total_tests, .tests_passed = passed, .tests_failed = failed };
     }
 }
 
@@ -3369,6 +3531,7 @@ fn printUsage() !void {
         \\    --fn <name>        Run only tests matching <name>
         \\    --strict-tests     Warn when no tests are found
         \\    --require-tests    Fail when no tests are found
+        \\    --json             Emit machine-readable JSON summary
         \\  fmt [file|dir]       Format source files
         \\    -i                  Format files in-place
         \\    --check             Check formatting (exit 1 if unformatted)
