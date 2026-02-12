@@ -3,6 +3,7 @@ const version = @import("version.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
 const TypeChecker = @import("checker/mod.zig").TypeChecker;
+const types = @import("types.zig");
 
 const LspAction = enum {
     continue_running,
@@ -11,37 +12,111 @@ const LspAction = enum {
 
 const max_payload_bytes: usize = 8 * 1024 * 1024;
 const max_source_bytes: usize = 8 * 1024 * 1024;
+const max_open_documents: usize = 256;
+const max_total_document_bytes: usize = 32 * 1024 * 1024;
+
+const DocumentEntry = struct {
+    text: []u8,
+    generation: u64,
+};
+
+const CompletionCacheEntry = struct {
+    generation: u64,
+    line: usize,
+    character: usize,
+    result_json: []u8,
+};
 
 const ServerState = struct {
-    documents: std.StringHashMapUnmanaged([]u8) = .{},
+    documents: std.StringHashMapUnmanaged(DocumentEntry) = .{},
+    completion_cache: std.StringHashMapUnmanaged(CompletionCacheEntry) = .{},
+    total_document_bytes: usize = 0,
 
     fn deinit(self: *ServerState, allocator: std.mem.Allocator) void {
         var it = self.documents.iterator();
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
+            allocator.free(entry.value_ptr.*.text);
         }
         self.documents.deinit(allocator);
+
+        var cache_it = self.completion_cache.iterator();
+        while (cache_it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*.result_json);
+        }
+        self.completion_cache.deinit(allocator);
     }
 
     fn upsertDocument(self: *ServerState, allocator: std.mem.Allocator, uri: []const u8, text: []const u8) !void {
+        if (text.len > max_source_bytes) return error.DocumentTooLarge;
+
         if (self.documents.getEntry(uri)) |entry| {
-            allocator.free(entry.value_ptr.*);
-            entry.value_ptr.* = try allocator.dupe(u8, text);
+            const old_len = entry.value_ptr.*.text.len;
+            const new_total = self.total_document_bytes - old_len + text.len;
+            if (new_total > max_total_document_bytes) return error.DocumentStoreFull;
+
+            allocator.free(entry.value_ptr.*.text);
+            entry.value_ptr.* = .{
+                .text = try allocator.dupe(u8, text),
+                .generation = entry.value_ptr.*.generation + 1,
+            };
+            self.total_document_bytes = new_total;
+            self.clearCompletionCacheForUri(allocator, uri);
             return;
         }
+
+        if (self.documents.count() >= max_open_documents) return error.DocumentLimitReached;
+        if (self.total_document_bytes + text.len > max_total_document_bytes) return error.DocumentStoreFull;
+
         const owned_uri = try allocator.dupe(u8, uri);
         errdefer allocator.free(owned_uri);
-        const owned_text = try allocator.dupe(u8, text);
-        errdefer allocator.free(owned_text);
-        try self.documents.put(allocator, owned_uri, owned_text);
+        const entry = DocumentEntry{
+            .text = try allocator.dupe(u8, text),
+            .generation = 1,
+        };
+        errdefer allocator.free(entry.text);
+        try self.documents.put(allocator, owned_uri, entry);
+        self.total_document_bytes += text.len;
+    }
+
+    fn clearCompletionCacheForUri(self: *ServerState, allocator: std.mem.Allocator, uri: []const u8) void {
+        if (self.completion_cache.fetchRemove(uri)) |entry| {
+            allocator.free(entry.key);
+            allocator.free(entry.value.result_json);
+        }
+    }
+
+    fn getCompletionCache(self: *const ServerState, uri: []const u8) ?CompletionCacheEntry {
+        return self.completion_cache.get(uri);
+    }
+
+    fn upsertCompletionCache(
+        self: *ServerState,
+        allocator: std.mem.Allocator,
+        uri: []const u8,
+        cache: CompletionCacheEntry,
+    ) !void {
+        self.clearCompletionCacheForUri(allocator, uri);
+        const owned_uri = try allocator.dupe(u8, uri);
+        errdefer allocator.free(owned_uri);
+        const owned_json = try allocator.dupe(u8, cache.result_json);
+        errdefer allocator.free(owned_json);
+        try self.completion_cache.put(allocator, owned_uri, .{
+            .generation = cache.generation,
+            .line = cache.line,
+            .character = cache.character,
+            .result_json = owned_json,
+        });
     }
 
     fn removeDocument(self: *ServerState, allocator: std.mem.Allocator, uri: []const u8) void {
         if (self.documents.fetchRemove(uri)) |entry| {
+            self.total_document_bytes -= entry.value.text.len;
             allocator.free(entry.key);
-            allocator.free(entry.value);
+            allocator.free(entry.value.text);
         }
+        self.clearCompletionCacheForUri(allocator, uri);
     }
 };
 
@@ -55,6 +130,22 @@ const Diagnostic = struct {
 fn freeDiagnostics(allocator: std.mem.Allocator, diagnostics: []Diagnostic) void {
     for (diagnostics) |diag| allocator.free(diag.message);
     allocator.free(diagnostics);
+}
+
+const CompletionItem = struct {
+    label: []u8,
+    detail: []u8,
+    kind: usize,
+    sort_text: []u8,
+};
+
+fn freeCompletionItems(allocator: std.mem.Allocator, items: []CompletionItem) void {
+    for (items) |item| {
+        allocator.free(item.label);
+        allocator.free(item.detail);
+        allocator.free(item.sort_text);
+    }
+    allocator.free(items);
 }
 
 fn readContentLength(reader: *std.Io.Reader) !?usize {
@@ -193,6 +284,34 @@ fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return try file.readToEndAlloc(allocator, max_source_bytes);
 }
 
+fn sourceOffsetFromZeroBasedLineColumn(source: []const u8, line: usize, column: usize) ?usize {
+    var current_line: usize = 0;
+    var line_start: usize = 0;
+    var i: usize = 0;
+
+    while (i < source.len and current_line < line) : (i += 1) {
+        if (source[i] == '\n') {
+            current_line += 1;
+            line_start = i + 1;
+        }
+    }
+
+    if (current_line != line) return null;
+
+    var line_end = source.len;
+    i = line_start;
+    while (i < source.len) : (i += 1) {
+        if (source[i] == '\n') {
+            line_end = i;
+            break;
+        }
+    }
+
+    const offset = line_start + column;
+    if (offset > line_end) return null;
+    return offset;
+}
+
 fn collectDiagnosticsFromSource(allocator: std.mem.Allocator, source: []const u8) ![]Diagnostic {
     var diagnostics = std.ArrayListUnmanaged(Diagnostic){};
     errdefer {
@@ -268,6 +387,187 @@ fn getDiagnosticUri(params: std.json.Value) ?[]const u8 {
     return uri.string;
 }
 
+fn parseJsonUsize(value: std.json.Value) ?usize {
+    return switch (value) {
+        .integer => |v| if (v >= 0) @as(usize, @intCast(v)) else null,
+        .number_string => |s| std.fmt.parseInt(usize, s, 10) catch null,
+        else => null,
+    };
+}
+
+const CompletionRequest = struct {
+    uri: []const u8,
+    line: usize,
+    character: usize,
+};
+
+fn parseCompletionRequest(params: std.json.Value) ?CompletionRequest {
+    if (params != .object) return null;
+    const uri = getTextDocumentUri(params) orelse return null;
+    const pos_val = params.object.get("position") orelse return null;
+    if (pos_val != .object) return null;
+    const line = parseJsonUsize(pos_val.object.get("line") orelse return null) orelse return null;
+    const character = parseJsonUsize(pos_val.object.get("character") orelse return null) orelse return null;
+    return .{ .uri = uri, .line = line, .character = character };
+}
+
+fn completionItemKind(kind: @import("checker/mod.zig").Symbol.Kind) usize {
+    return switch (kind) {
+        .function => 3,
+        .type_, .trait_ => 7,
+        .module => 9,
+        .variable, .parameter, .constant => 6,
+    };
+}
+
+fn isRuntimeCompletionKind(kind: @import("checker/mod.zig").Symbol.Kind) bool {
+    return switch (kind) {
+        .variable, .parameter, .constant, .function => true,
+        .type_, .trait_, .module => false,
+    };
+}
+
+fn collectCompletionsFromSource(allocator: std.mem.Allocator, source: []const u8, line: usize, character: usize) ![]CompletionItem {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+    defer parser.deinit();
+
+    const module = parser.parseModuleRecovering() catch {
+        return try allocator.alloc(CompletionItem, 0);
+    };
+
+    var checker = TypeChecker.init(allocator);
+    defer checker.deinit();
+    checker.setTestMode(true);
+    checker.checkModule(module);
+
+    const cursor_offset = sourceOffsetFromZeroBasedLineColumn(source, line, character) orelse {
+        return try allocator.alloc(CompletionItem, 0);
+    };
+
+    const expected_type = checker.expectedTypeAtOffset(module, cursor_offset);
+    const scope_entries = checker.extractScopeAtOffset(module, cursor_offset) catch {
+        return try allocator.alloc(CompletionItem, 0);
+    };
+    defer allocator.free(scope_entries);
+
+    var items = std.ArrayListUnmanaged(CompletionItem){};
+    errdefer {
+        for (items.items) |item| {
+            allocator.free(item.label);
+            allocator.free(item.detail);
+            allocator.free(item.sort_text);
+        }
+        items.deinit(allocator);
+    }
+
+    for (scope_entries) |entry| {
+        const detail = types.typeToString(allocator, entry.type_) catch try allocator.dupe(u8, "unknown");
+        errdefer allocator.free(detail);
+        const label = try allocator.dupe(u8, entry.name);
+        errdefer allocator.free(label);
+
+        const rank: u8 = if (expected_type != null and isRuntimeCompletionKind(entry.kind) and entry.type_.eql(expected_type.?)) '0' else '1';
+        const sort_text = try std.fmt.allocPrint(allocator, "{c}_{s}", .{ rank, entry.name });
+        errdefer allocator.free(sort_text);
+
+        try items.append(allocator, .{
+            .label = label,
+            .detail = detail,
+            .kind = completionItemKind(entry.kind),
+            .sort_text = sort_text,
+        });
+    }
+
+    return items.toOwnedSlice(allocator);
+}
+
+fn writeCompletionResultJson(allocator: std.mem.Allocator, items: []const CompletionItem) ![]u8 {
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(allocator);
+    const writer = out.writer(allocator);
+
+    try writer.writeAll("{\"isIncomplete\":false,\"items\":[");
+    for (items, 0..) |item, idx| {
+        if (idx > 0) try writer.writeAll(",");
+        try writer.writeAll("{\"label\":");
+        try writeJsonString(writer, item.label);
+        try writer.print(",\"kind\":{d},\"detail\":", .{item.kind});
+        try writeJsonString(writer, item.detail);
+        try writer.writeAll(",\"sortText\":");
+        try writeJsonString(writer, item.sort_text);
+        try writer.writeAll("}");
+    }
+    try writer.writeAll("]}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn handleCompletionRequest(
+    allocator: std.mem.Allocator,
+    state: *ServerState,
+    out: std.fs.File,
+    id: std.json.Value,
+    params_opt: ?std.json.Value,
+) !void {
+    const params = params_opt orelse {
+        try sendError(allocator, out, id, -32602, "Missing params");
+        return;
+    };
+    const req = parseCompletionRequest(params) orelse {
+        try sendError(allocator, out, id, -32602, "Missing textDocument/position");
+        return;
+    };
+
+    const path = uriToPath(allocator, req.uri) catch {
+        try sendError(allocator, out, id, -32603, "Failed to parse URI");
+        return;
+    } orelse {
+        try sendError(allocator, out, id, -32602, "Only file:// URIs are supported");
+        return;
+    };
+    defer allocator.free(path);
+
+    const doc_generation = if (state.documents.get(req.uri)) |doc| doc.generation else 0;
+    if (state.getCompletionCache(req.uri)) |cached| {
+        if (cached.generation == doc_generation and cached.line == req.line and cached.character == req.character) {
+            try sendResult(allocator, out, id, cached.result_json);
+            return;
+        }
+    }
+
+    const source = if (state.documents.get(req.uri)) |doc| blk: {
+        break :blk try allocator.dupe(u8, doc.text);
+    } else readSourceFile(allocator, path) catch {
+        try sendError(allocator, out, id, -32603, "Failed to read source file");
+        return;
+    };
+    defer allocator.free(source);
+
+    const items = collectCompletionsFromSource(allocator, source, req.line, req.character) catch {
+        try sendError(allocator, out, id, -32603, "Failed to compute completions");
+        return;
+    };
+    defer freeCompletionItems(allocator, items);
+
+    const result_json = writeCompletionResultJson(allocator, items) catch {
+        try sendError(allocator, out, id, -32603, "Failed to encode completions");
+        return;
+    };
+    defer allocator.free(result_json);
+
+    state.upsertCompletionCache(allocator, req.uri, .{
+        .generation = doc_generation,
+        .line = req.line,
+        .character = req.character,
+        .result_json = result_json,
+    }) catch {};
+
+    try sendResult(allocator, out, id, result_json);
+}
+
 fn handleDiagnosticRequest(
     allocator: std.mem.Allocator,
     state: *ServerState,
@@ -293,8 +593,8 @@ fn handleDiagnosticRequest(
     };
     defer allocator.free(path);
 
-    const source = if (state.documents.get(uri)) |text| blk: {
-        break :blk try allocator.dupe(u8, text);
+    const source = if (state.documents.get(uri)) |doc| blk: {
+        break :blk try allocator.dupe(u8, doc.text);
     } else readSourceFile(allocator, path) catch {
         try sendError(allocator, out, id, -32603, "Failed to read source file");
         return;
@@ -329,7 +629,7 @@ fn handleDidOpen(
     allocator: std.mem.Allocator,
     state: *ServerState,
     params_opt: ?std.json.Value,
-) !void {
+) void {
     const params = params_opt orelse return;
     if (params != .object) return;
     const text_document = params.object.get("textDocument") orelse return;
@@ -339,14 +639,14 @@ fn handleDidOpen(
     const text_val = text_document.object.get("text") orelse return;
     if (uri_val != .string or text_val != .string) return;
 
-    try state.upsertDocument(allocator, uri_val.string, text_val.string);
+    state.upsertDocument(allocator, uri_val.string, text_val.string) catch {};
 }
 
 fn handleDidChange(
     allocator: std.mem.Allocator,
     state: *ServerState,
     params_opt: ?std.json.Value,
-) !void {
+) void {
     const params = params_opt orelse return;
     if (params != .object) return;
     const uri = getTextDocumentUri(params) orelse return;
@@ -358,7 +658,7 @@ fn handleDidChange(
     const text_val = first_change.object.get("text") orelse return;
     if (text_val != .string) return;
 
-    try state.upsertDocument(allocator, uri, text_val.string);
+    state.upsertDocument(allocator, uri, text_val.string) catch {};
 }
 
 fn handleDidClose(
@@ -411,19 +711,19 @@ fn handleMessage(
                 allocator,
                 out,
                 id,
-                "{\"capabilities\":{\"textDocumentSync\":{\"openClose\":true,\"change\":1},\"diagnosticProvider\":{\"interFileDependencies\":false,\"workspaceDiagnostics\":false}},\"serverInfo\":{\"name\":\"klar-lsp\",\"version\":\"" ++ version.display ++ "\"}}",
+                "{\"capabilities\":{\"textDocumentSync\":{\"openClose\":true,\"change\":1},\"diagnosticProvider\":{\"interFileDependencies\":false,\"workspaceDiagnostics\":false},\"completionProvider\":{\"resolveProvider\":false}},\"serverInfo\":{\"name\":\"klar-lsp\",\"version\":\"" ++ version.display ++ "\"}}",
             );
         }
         return .continue_running;
     }
 
     if (std.mem.eql(u8, method, "textDocument/didOpen")) {
-        try handleDidOpen(allocator, state, params_opt);
+        handleDidOpen(allocator, state, params_opt);
         return .continue_running;
     }
 
     if (std.mem.eql(u8, method, "textDocument/didChange")) {
-        try handleDidChange(allocator, state, params_opt);
+        handleDidChange(allocator, state, params_opt);
         return .continue_running;
     }
 
@@ -435,6 +735,13 @@ fn handleMessage(
     if (std.mem.eql(u8, method, "textDocument/diagnostic")) {
         if (id_opt) |id| {
             try handleDiagnosticRequest(allocator, state, out, id, params_opt);
+        }
+        return .continue_running;
+    }
+
+    if (std.mem.eql(u8, method, "textDocument/completion")) {
+        if (id_opt) |id| {
+            try handleCompletionRequest(allocator, state, out, id, params_opt);
         }
         return .continue_running;
     }

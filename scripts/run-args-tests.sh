@@ -485,6 +485,7 @@ lsp_output=$(
 if echo "$lsp_output" | grep -q "Content-Length:" && \
    echo "$lsp_output" | grep -q '"id":1' && \
    echo "$lsp_output" | grep -q '"diagnosticProvider"' && \
+   echo "$lsp_output" | grep -q '"completionProvider"' && \
    echo "$lsp_output" | grep -q '"capabilities"' && \
    echo "$lsp_output" | grep -q '"id":2' && \
    echo "$lsp_output" | grep -q '"result":null'; then
@@ -624,6 +625,34 @@ else
     fail "lsp command: percent-encoded URI decoding failed"
 fi
 rm -f "$diag_uri_fixture"
+
+completion_fixture="/tmp/klar_lsp_completion_fixture.kl"
+cat > "$completion_fixture" << 'EOF'
+fn main() -> i32 {
+    let number: i32 = 1
+    let text: string = "x"
+    return nu
+}
+EOF
+completion_uri="file://${completion_fixture}"
+completion_payload=$(printf '{"jsonrpc":"2.0","id":16,"method":"textDocument/completion","params":{"textDocument":{"uri":"%s"},"position":{"line":3,"character":11}}}' "$completion_uri")
+completion_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#completion_payload}" "$completion_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$completion_output" | grep -q '"id":16' && \
+   echo "$completion_output" | grep -q '"isIncomplete":false' && \
+   echo "$completion_output" | grep -q '"label":"number"' && \
+   echo "$completion_output" | grep -q '"detail":"i32"' && \
+   echo "$completion_output" | grep -q '"sortText":"0_number"' && \
+   echo "$completion_output" | grep -q '"label":"text"' && \
+   echo "$completion_output" | grep -q '"sortText":"1_text"'; then
+    pass "lsp command: textDocument/completion returns scope/type-aware items"
+else
+    fail "lsp command: textDocument/completion handling failed"
+fi
+rm -f "$completion_fixture"
 
 # Write results JSON
 TOTAL=$((PASSED + FAILED))

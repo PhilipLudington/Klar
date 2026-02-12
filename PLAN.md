@@ -247,7 +247,11 @@ Optionally include function source with `--include-source` for richer AI context
   - Returns parser and checker diagnostics in LSP `full` report format
   - Advertises `diagnosticProvider` capability in initialize response
   - Added args regression coverage for diagnostic response payloads
-- [ ] **5.7** `textDocument/completion` — scope and type-aware completions
+- [x] **5.7** `textDocument/completion` — scope and type-aware completions
+  - Added `textDocument/completion` request handling in `klar lsp`
+  - Completion items are derived from checker scope extraction at cursor offset
+  - Ranking is type-aware via expected-type matching (`sortText` prioritization)
+  - Added args regression coverage for completion payload fields/ranking
 - [ ] **5.8** `textDocument/hover` — type information on hover
 - [ ] **5.9** `textDocument/definition` — go to definition
 
