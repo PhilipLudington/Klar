@@ -1,0 +1,11 @@
+// Test: test blocks are excluded from native build/run execution
+// Expected: native-tests
+
+fn main() -> i32 {
+    return 78
+}
+
+test main {
+    assert_eq(1, 2)
+    panic("this should never execute in native run/build")
+}

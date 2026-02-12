@@ -73,6 +73,8 @@ get_expected() {
         wrapping_add) echo 0 ;;  # +% wraps on overflow
         wrapping_sub) echo 0 ;;  # -% wraps on overflow
         wrapping_mul) echo 0 ;;  # *% wraps on overflow
+        test_blocks_ignore_type_errors) echo 77 ;;
+        test_blocks_ignore_runtime_failures) echo 78 ;;
         *) echo -1 ;;  # -1 means accept any result
     esac
 }
