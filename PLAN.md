@@ -150,7 +150,7 @@ test gcd {
 - [x] **3.4** Conditional compilation: `klar run`/`build` skip tests, `klar test` runs them
 - [x] **3.5** All three backend support
 - [x] **3.6** `klar test` command: file, `--fn`, directory modes; pass/fail reporting
-- [ ] **3.7** Enforcement flags: `--strict-tests` (warn), `--require-tests` (error)
+- [x] **3.7** Enforcement flags: `--strict-tests` (warn), `--require-tests` (error)
 - [ ] **3.8** Formatter support, integration with AirTower
 - [ ] **3.9** Tests in `test/native/test_blocks/`
 
@@ -160,7 +160,7 @@ test gcd {
 - [x] `klar test file.kl` discovers and runs all test blocks
 - [x] `klar run` / `klar build` skip test blocks entirely
 - [x] All assertion builtins work across all three backends
-- [ ] `--strict-tests` and `--require-tests` flags work
+- [x] `--strict-tests` and `--require-tests` flags work
 
 ---
 

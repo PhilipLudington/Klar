@@ -34,6 +34,13 @@ fn getStdErr() std.fs.File {
 
 const TestRunOptions = struct {
     fn_filter: ?[]const u8 = null,
+    strict_tests: bool = false,
+    require_tests: bool = false,
+};
+
+const TestFileResult = struct {
+    tests_discovered: usize,
+    tests_failed: usize,
 };
 
 /// Result of attempting to load a manifest with user-friendly error messages.
@@ -369,6 +376,8 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, command, "test")) {
         var input_path: ?[]const u8 = null;
         var fn_filter: ?[]const u8 = null;
+        var strict_tests = false;
+        var require_tests = false;
 
         var i: usize = 2;
         while (i < args.len) : (i += 1) {
@@ -382,6 +391,10 @@ pub fn main() !void {
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "--fn=")) {
                 fn_filter = arg["--fn=".len..];
+            } else if (std.mem.eql(u8, arg, "--strict-tests")) {
+                strict_tests = true;
+            } else if (std.mem.eql(u8, arg, "--require-tests")) {
+                require_tests = true;
             } else if (!std.mem.startsWith(u8, arg, "-") and input_path == null) {
                 input_path = arg;
             } else {
@@ -397,7 +410,11 @@ pub fn main() !void {
             return;
         };
 
-        runTestPath(allocator, final_path, .{ .fn_filter = fn_filter }) catch |err| switch (err) {
+        runTestPath(allocator, final_path, .{
+            .fn_filter = fn_filter,
+            .strict_tests = strict_tests,
+            .require_tests = require_tests,
+        }) catch |err| switch (err) {
             error.TestsFailed => std.process.exit(1),
             else => return err,
         };
@@ -2196,7 +2213,11 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
     };
 
     switch (stat.kind) {
-        .file => return runTestFile(allocator, path, options),
+        .file => {
+            const result = try runTestFile(allocator, path, options);
+            if (result.tests_failed > 0) return error.TestsFailed;
+            return;
+        },
         .directory => {
             var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
                 var buf: [512]u8 = undefined;
@@ -2211,6 +2232,9 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
             var files_run: usize = 0;
             var files_failed: usize = 0;
+            var tests_run: usize = 0;
+            var per_file_options = options;
+            per_file_options.require_tests = false;
 
             while (try walker.next()) |entry| {
                 if (entry.kind != .file) continue;
@@ -2220,25 +2244,50 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 defer allocator.free(full_path);
 
                 files_run += 1;
-                runTestFile(allocator, full_path, options) catch |err| {
+                const file_result = runTestFile(allocator, full_path, per_file_options) catch |err| {
                     if (err == error.TestsFailed) {
                         files_failed += 1;
                         continue;
                     }
                     return err;
                 };
+                tests_run += file_result.tests_discovered;
+                if (file_result.tests_failed > 0) {
+                    files_failed += 1;
+                }
             }
 
             if (files_run == 0) {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "No .kl files found in '{s}'\n", .{path}) catch "No .kl files found\n";
                 try stdout.writeAll(msg);
+                if (options.require_tests) {
+                    const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
+                    try stderr.writeAll(err_msg);
+                    return error.TestsFailed;
+                }
+                if (options.strict_tests) {
+                    const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
+                    try stderr.writeAll(warn_msg);
+                }
                 return;
             }
 
             var buf: [512]u8 = undefined;
             const summary = std.fmt.bufPrint(&buf, "Directory test result: {d} file(s), {d} failed\n", .{ files_run, files_failed }) catch "Directory test result\n";
             try stdout.writeAll(summary);
+
+            if (tests_run == 0 and files_failed == 0) {
+                if (options.require_tests) {
+                    const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
+                    try stderr.writeAll(err_msg);
+                    return error.TestsFailed;
+                }
+                if (options.strict_tests) {
+                    const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
+                    try stderr.writeAll(warn_msg);
+                }
+            }
 
             if (files_failed > 0) {
                 return error.TestsFailed;
@@ -2253,7 +2302,7 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
     }
 }
 
-fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunOptions) !void {
+fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunOptions) !TestFileResult {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
@@ -2460,7 +2509,16 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             else
                 std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
             try stdout.writeAll(msg);
-            return;
+            if (options.require_tests) {
+                const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
+                try stderr.writeAll(err_msg);
+                return error.TestsFailed;
+            }
+            if (options.strict_tests) {
+                const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
+                try stderr.writeAll(warn_msg);
+            }
+            return .{ .tests_discovered = 0, .tests_failed = 0 };
         }
 
         var passed: usize = 0;
@@ -2491,10 +2549,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
         try stdout.writeAll(summary);
 
-        if (failed > 0) {
-            return error.TestsFailed;
-        }
-        return;
+        return .{ .tests_discovered = total_tests, .tests_failed = failed };
     } else {
         checker.checkModule(module);
 
@@ -2541,7 +2596,16 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             else
                 std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
             try stdout.writeAll(msg);
-            return;
+            if (options.require_tests) {
+                const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
+                try stderr.writeAll(err_msg);
+                return error.TestsFailed;
+            }
+            if (options.strict_tests) {
+                const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
+                try stderr.writeAll(warn_msg);
+            }
+            return .{ .tests_discovered = 0, .tests_failed = 0 };
         }
 
         var passed: usize = 0;
@@ -2573,9 +2637,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
         try stdout.writeAll(summary);
 
-        if (failed > 0) {
-            return error.TestsFailed;
-        }
+        return .{ .tests_discovered = total_tests, .tests_failed = failed };
     }
 }
 
@@ -3305,6 +3367,8 @@ fn printUsage() !void {
         \\  repl                 Interactive REPL (Read-Eval-Print Loop)
         \\  test <path>          Run inline test blocks in a file or directory
         \\    --fn <name>        Run only tests matching <name>
+        \\    --strict-tests     Warn when no tests are found
+        \\    --require-tests    Fail when no tests are found
         \\  fmt [file|dir]       Format source files
         \\    -i                  Format files in-place
         \\    --check             Check formatting (exit 1 if unformatted)

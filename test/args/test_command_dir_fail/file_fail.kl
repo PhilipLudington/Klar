@@ -1,0 +1,7 @@
+fn target() -> i32 {
+    return 1
+}
+
+test target {
+    assert_eq(target(), 2)
+}

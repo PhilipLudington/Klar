@@ -222,6 +222,49 @@ else
     fail "test command: directory mode failed"
 fi
 
+output=$($KLAR test "$TEST_DIR/test_command_no_tests.kl" --strict-tests 2>&1)
+if [ $? -eq 0 ] && echo "$output" | grep -q "No tests found" && echo "$output" | grep -q "Warning: no tests found"; then
+    pass "test command: --strict-tests warns when no tests found"
+else
+    fail "test command: --strict-tests warning behavior failed"
+fi
+
+if $KLAR test "$TEST_DIR/test_command_no_tests.kl" --require-tests >/tmp/klar_test_command_require.out 2>&1; then
+    fail "test command: --require-tests should fail when no tests found"
+else
+    output=$(cat /tmp/klar_test_command_require.out)
+    if echo "$output" | grep -q "No tests found" && echo "$output" | grep -q "Error: --require-tests enabled"; then
+        pass "test command: --require-tests fails when no tests found"
+    else
+        fail "test command: --require-tests output mismatch"
+    fi
+fi
+rm -f /tmp/klar_test_command_require.out
+
+if $KLAR test "$TEST_DIR/test_command_empty_dir" --require-tests >/tmp/klar_test_command_require_empty_dir.out 2>&1; then
+    fail "test command: --require-tests should fail on empty directory"
+else
+    output=$(cat /tmp/klar_test_command_require_empty_dir.out)
+    if echo "$output" | grep -q "No .kl files found" && echo "$output" | grep -q "Error: --require-tests enabled"; then
+        pass "test command: --require-tests fails on empty directory"
+    else
+        fail "test command: --require-tests empty directory output mismatch"
+    fi
+fi
+rm -f /tmp/klar_test_command_require_empty_dir.out
+
+if $KLAR test "$TEST_DIR/test_command_dir_fail" --require-tests >/tmp/klar_test_command_require_fail_dir.out 2>&1; then
+    fail "test command: failing test dir should return non-zero with --require-tests"
+else
+    output=$(cat /tmp/klar_test_command_require_fail_dir.out)
+    if echo "$output" | grep -q "FAIL target" && ! echo "$output" | grep -qi "no tests found"; then
+        pass "test command: --require-tests does not misreport no-tests for failing test dir"
+    else
+        fail "test command: --require-tests failing dir output mismatch"
+    fi
+fi
+rm -f /tmp/klar_test_command_require_fail_dir.out
+
 if $KLAR test "$TEST_DIR/test_command_fail.kl" >/tmp/klar_test_command_fail.out 2>&1; then
     fail "test command: failing test should return non-zero"
 else
