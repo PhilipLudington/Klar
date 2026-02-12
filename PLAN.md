@@ -125,7 +125,7 @@ fn greet(name: string) -> void { println("Hello " + name) }
 
 **Objective:** Add `test <name> { ... }` blocks for inline testing with `klar test` command.
 
-**Status:** In progress (`klar test <file>` now executes only entry-module test blocks with module import support)
+**Status:** Complete
 
 **Effort:** Medium | **Impact:** High | **Source:** Nanolang
 
@@ -216,7 +216,7 @@ Optionally include function source with `--include-source` for richer AI context
 
 **Objective:** Build a Language Server Protocol implementation for Klar, powered by an error-recovering parser and incremental type checker.
 
-**Status:** In progress
+**Status:** Complete
 
 **Effort:** High | **Impact:** High | **Source:** MoonBit
 
@@ -288,6 +288,162 @@ Optionally include function source with `--include-source` for richer AI context
 | Self-hosting | Stretch goal | |
 | WebAssembly target | Stretch goal | |
 | Windows support | Stretch goal | |
+
+### Suggested Next Execution Order
+
+1. Async/Await
+2. WebAssembly target
+3. Windows support
+4. Self-hosting
+
+---
+
+## Milestone 6: Async/Await
+
+**Objective:** Add first-class async functions with explicit `async fn` declarations and `await` expressions.
+
+**Status:** Planned
+
+**Effort:** High | **Impact:** High | **Dependencies:** Milestones 2, 3
+
+### Tasks
+
+- [ ] **6.1** Syntax and AST support
+  - Add lexer/parser support for `async` and `await`
+  - Extend AST for async function declarations and await expressions
+  - Enforce explicit return annotations for async functions (`-> Future[T]` or equivalent canonical form)
+- [ ] **6.2** Type-checking semantics
+  - Validate await operand type constraints
+  - Enforce await usage contexts (e.g., only in async functions unless explicitly allowed)
+  - Add checker diagnostics for invalid async/await usage
+- [ ] **6.3** Runtime/backend execution model
+  - Implement minimal task/future representation in VM and interpreter
+  - Define scheduling strategy (single-thread cooperative executor as baseline)
+  - Ensure deterministic behavior and clear cancellation/error propagation semantics
+- [ ] **6.4** Tooling integration
+  - Update formatter for async/await constructs
+  - Add LSP completion/hover/diagnostic support for new syntax
+- [ ] **6.5** Tests and docs
+  - Add parser/checker/runtime tests for success and failure paths
+  - Add examples showing sequential and concurrent async flows
+  - Update MEMORY.md and docs language guide
+
+### Success Criteria
+
+- [ ] Async functions parse/type-check with explicit, unambiguous signatures
+- [ ] Await works correctly across interpreter, VM, and native build paths
+- [ ] Async misuse surfaces actionable diagnostics
+- [ ] Test suite includes regression coverage for async/await semantics
+
+---
+
+## Milestone 7: WebAssembly Target
+
+**Objective:** Add a WebAssembly compilation target for sandboxed execution and browser/edge integration.
+
+**Status:** Planned
+
+**Effort:** High | **Impact:** High | **Dependencies:** Milestone 6 (optional), Milestone 5
+
+### Tasks
+
+- [ ] **7.1** Target and CLI surface
+  - Add target selection for wasm output in `klar build`
+  - Define output conventions (`.wasm`, optional host shim artifacts)
+- [ ] **7.2** Codegen pipeline
+  - Add/extend backend lowering for wasm-compatible IR
+  - Map Klar primitives, control flow, and memory model to wasm constraints
+  - Define ABI conventions for function exports/imports
+- [ ] **7.3** Runtime and stdlib compatibility
+  - Audit stdlib/runtime APIs for wasm-safe behavior
+  - Gate unsupported APIs with clear compile-time errors
+  - Provide minimal wasm runtime bindings for I/O-adjacent operations
+- [ ] **7.4** Testing and fixtures
+  - Add wasm smoke tests and golden fixtures
+  - Add host-run integration tests (Node or wasmtime path)
+- [ ] **7.5** Documentation and examples
+  - Document wasm build/run workflows
+  - Add browser and CLI host examples
+
+### Success Criteria
+
+- [ ] `klar build` can emit valid wasm modules for representative programs
+- [ ] Core language features execute correctly under wasm target constraints
+- [ ] Unsupported features fail with clear diagnostics
+- [ ] CI includes wasm-target regression coverage
+
+---
+
+## Milestone 8: Windows Support
+
+**Objective:** Provide first-class Windows developer and runtime support across build, test, and tooling workflows.
+
+**Status:** Planned
+
+**Effort:** Medium-High | **Impact:** High | **Dependencies:** Milestones 4, 5
+
+### Tasks
+
+- [ ] **8.1** Build and toolchain compatibility
+  - Validate Zig/LLVM build scripts and wrappers on Windows
+  - Ensure path handling and file operations are platform-safe
+- [ ] **8.2** Runtime/platform abstraction fixes
+  - Audit process, filesystem, and stdio code paths for Windows behavior differences
+  - Address line-ending and path separator assumptions
+- [ ] **8.3** CLI and LSP transport reliability
+  - Validate JSON-RPC stdio framing behavior under Windows terminals/editors
+  - Add explicit tests for URI/path translation edge cases on Windows
+- [ ] **8.4** Tests and CI
+  - Add Windows matrix jobs for `./run-tests.sh`
+  - Stabilize flaky platform-specific tests and expected outputs
+- [ ] **8.5** Documentation and onboarding
+  - Add Windows setup/install docs
+  - Document known limitations and troubleshooting paths
+
+### Success Criteria
+
+- [ ] Repository builds and full test suite pass on supported Windows environments
+- [ ] CLI and LSP workflows behave consistently with macOS/Linux
+- [ ] Windows-specific path/stdio regressions are covered by tests
+- [ ] Contributor docs include complete Windows development setup
+
+---
+
+## Milestone 9: Self-hosting
+
+**Objective:** Move Klar toward self-hosting by enabling the compiler front-end and selected tooling components to be implemented in Klar.
+
+**Status:** Planned
+
+**Effort:** Very High | **Impact:** Very High | **Dependencies:** Milestones 6, 7, 8
+
+### Tasks
+
+- [ ] **9.1** Self-hosting scope definition
+  - Define phased target (bootstrap compiler subset vs full compiler)
+  - Freeze minimal language/runtime requirements for compiler implementation in Klar
+- [ ] **9.2** Bootstrap architecture
+  - Design two-stage bootstrap flow (`zig-hosted klar` -> `klar-hosted klar`)
+  - Define artifact compatibility and reproducibility checks between stages
+- [ ] **9.3** Core compiler libraries in Klar
+  - Port reusable front-end components (token stream utilities, AST helpers, diagnostics formatting)
+  - Establish stable internal APIs for parser/checker/codegen layers
+- [ ] **9.4** Incremental compiler porting
+  - Port parser and semantic analysis modules in prioritized order
+  - Keep feature parity gates and fallback paths during transition
+- [ ] **9.5** Validation and parity testing
+  - Add cross-compiler parity tests (output equivalence and diagnostic equivalence)
+  - Add performance tracking for bootstrap stages
+- [ ] **9.6** Tooling/docs/release strategy
+  - Document bootstrap process and contributor workflow
+  - Define transition criteria for when Klar-hosted compiler becomes default
+
+### Success Criteria
+
+- [ ] Klar can build a functional Klar compiler artifact through a documented bootstrap path
+- [ ] Compiler behavior parity is validated against the Zig-hosted baseline
+- [ ] Bootstrap process is reproducible in CI with deterministic outputs where feasible
+- [ ] Documentation clearly defines maintenance model for self-hosted compiler evolution
 
 ---
 
