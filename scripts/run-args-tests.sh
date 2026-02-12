@@ -267,7 +267,11 @@ if $KLAR test "$TEST_DIR/test_command_dir_error/file_parse_error.kl" --json >/tm
     fail "test command: --json should fail for parse-error file"
 else
     output=$(cat /tmp/klar_test_command_json_file_error.out)
-    if echo "$output" | grep -q '"file"' && echo "$output" | grep -q 'file_parse_error.kl' && echo "$output" | grep -q '"failed":0'; then
+    if echo "$output" | grep -q '"file"' && \
+       echo "$output" | grep -q 'file_parse_error.kl' && \
+       echo "$output" | grep -q '"failed":0' && \
+       echo "$output" | grep -q '"errors"' && \
+       echo "$output" | grep -q '"stage":"parse"'; then
         pass "test command: --json file parse errors still emit machine-readable summary"
     else
         fail "test command: --json file parse error summary missing"

@@ -48,6 +48,15 @@ const TestFileResult = struct {
     tests_passed: usize,
     tests_failed: usize,
     test_results: []JsonTestSummary = &.{},
+    compile_errors: []JsonCompileError = &.{},
+    file_failed: bool = false,
+};
+
+const JsonCompileError = struct {
+    stage: []const u8,
+    message: []const u8,
+    line: ?usize = null,
+    column: ?usize = null,
 };
 
 const JsonAssertionSummary = struct {
@@ -70,6 +79,7 @@ const JsonFileSummary = struct {
     passed: usize,
     failed: usize,
     test_results: []JsonTestSummary = &.{},
+    compile_errors: []JsonCompileError = &.{},
 };
 
 fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
@@ -112,6 +122,40 @@ fn freeJsonTestResults(allocator: std.mem.Allocator, test_results: []JsonTestSum
         allocator.free(test_result.assertions);
     }
     allocator.free(test_results);
+}
+
+fn freeJsonCompilerErrors(allocator: std.mem.Allocator, compile_errors: []JsonCompileError) void {
+    for (compile_errors) |compile_error| {
+        allocator.free(compile_error.message);
+    }
+    allocator.free(compile_errors);
+}
+
+fn makeSingleCompileErrorResult(
+    allocator: std.mem.Allocator,
+    stage: []const u8,
+    message: []const u8,
+    line: ?usize,
+    column: ?usize,
+) !TestFileResult {
+    const compile_errors = try allocator.alloc(JsonCompileError, 1);
+    errdefer allocator.free(compile_errors);
+    compile_errors[0] = .{
+        .stage = stage,
+        .message = try allocator.dupe(u8, message),
+        .line = line,
+        .column = column,
+    };
+    errdefer allocator.free(compile_errors[0].message);
+    const empty_test_results = try allocator.alloc(JsonTestSummary, 0);
+    return .{
+        .tests_discovered = 0,
+        .tests_passed = 0,
+        .tests_failed = 0,
+        .test_results = empty_test_results,
+        .compile_errors = compile_errors,
+        .file_failed = true,
+    };
 }
 
 fn duplicateAssertionRecords(
@@ -2329,7 +2373,36 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 return err;
             };
             defer freeJsonTestResults(allocator, result.test_results);
-            if (result.tests_failed > 0) return error.TestsFailed;
+            defer freeJsonCompilerErrors(allocator, result.compile_errors);
+            if (options.json_output and result.file_failed) {
+                try stdout.writeAll("{\"file\":");
+                try writeJsonEscaped(stdout, path);
+                try stdout.writeAll(",\"total\":");
+                try writeJsonUsize(stdout, result.tests_discovered);
+                try stdout.writeAll(",\"passed\":");
+                try writeJsonUsize(stdout, result.tests_passed);
+                try stdout.writeAll(",\"failed\":");
+                try writeJsonUsize(stdout, result.tests_failed);
+                try stdout.writeAll(",\"tests\":[],\"errors\":[");
+                for (result.compile_errors, 0..) |compile_error, idx| {
+                    if (idx > 0) try stdout.writeAll(",");
+                    try stdout.writeAll("{\"stage\":");
+                    try writeJsonEscaped(stdout, compile_error.stage);
+                    try stdout.writeAll(",\"message\":");
+                    try writeJsonEscaped(stdout, compile_error.message);
+                    if (compile_error.line) |line| {
+                        try stdout.writeAll(",\"line\":");
+                        try writeJsonUsize(stdout, line);
+                    }
+                    if (compile_error.column) |column| {
+                        try stdout.writeAll(",\"column\":");
+                        try writeJsonUsize(stdout, column);
+                    }
+                    try stdout.writeAll("}");
+                }
+                try stdout.writeAll("]}\n");
+            }
+            if (result.tests_failed > 0 or result.file_failed) return error.TestsFailed;
             return;
         },
         .directory => {
@@ -2356,6 +2429,7 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 for (json_file_results.items) |item| {
                     allocator.free(item.path);
                     freeJsonTestResults(allocator, item.test_results);
+                    freeJsonCompilerErrors(allocator, item.compile_errors);
                 }
                 json_file_results.deinit(allocator);
             }
@@ -2373,6 +2447,11 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                         files_failed += 1;
                         if (options.json_output) {
                             const owned_path = try allocator.dupe(u8, full_path);
+                            const compile_errors = try allocator.alloc(JsonCompileError, 1);
+                            compile_errors[0] = .{
+                                .stage = "runtime_setup",
+                                .message = try allocator.dupe(u8, @errorName(err)),
+                            };
                             try json_file_results.append(allocator, .{
                                 .path = owned_path,
                                 .total = 0,
@@ -2380,6 +2459,7 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                                 // Compile/setup errors are file failures, not failed test assertions.
                                 .failed = 0,
                                 .test_results = try allocator.alloc(JsonTestSummary, 0),
+                                .compile_errors = compile_errors,
                             });
                         }
                         continue;
@@ -2387,7 +2467,7 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                     return err;
                 };
                 tests_run += file_result.tests_discovered;
-                if (file_result.tests_failed > 0) {
+                if (file_result.tests_failed > 0 or file_result.file_failed) {
                     files_failed += 1;
                 }
                 if (options.json_output) {
@@ -2398,9 +2478,11 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                         .passed = file_result.tests_passed,
                         .failed = file_result.tests_failed,
                         .test_results = file_result.test_results,
+                        .compile_errors = file_result.compile_errors,
                     });
                 } else {
                     freeJsonTestResults(allocator, file_result.test_results);
+                    freeJsonCompilerErrors(allocator, file_result.compile_errors);
                 }
             }
 
@@ -2479,6 +2561,24 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                         try stdout.writeAll("]}");
                     }
                     try stdout.writeAll("]");
+                    try stdout.writeAll(",\"errors\":[");
+                    for (item.compile_errors, 0..) |compile_error, err_idx| {
+                        if (err_idx > 0) try stdout.writeAll(",");
+                        try stdout.writeAll("{\"stage\":");
+                        try writeJsonEscaped(stdout, compile_error.stage);
+                        try stdout.writeAll(",\"message\":");
+                        try writeJsonEscaped(stdout, compile_error.message);
+                        if (compile_error.line) |line| {
+                            try stdout.writeAll(",\"line\":");
+                            try writeJsonUsize(stdout, line);
+                        }
+                        if (compile_error.column) |column| {
+                            try stdout.writeAll(",\"column\":");
+                            try writeJsonUsize(stdout, column);
+                        }
+                        try stdout.writeAll("}");
+                    }
+                    try stdout.writeAll("]");
                     try stdout.writeAll("}");
                 }
                 try stdout.writeAll("],\"summary\":{\"files\":");
@@ -2524,6 +2624,11 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
 fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunOptions) !TestFileResult {
     const source = readSourceFile(allocator, path) catch |err| {
+        if (options.json_output) {
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "Error opening file '{s}': {}", .{ path, err }) catch "Error opening file";
+            return makeSingleCompileErrorResult(allocator, "io", msg, null, null);
+        }
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
         try getStdErr().writeAll(msg);
@@ -2540,6 +2645,41 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
     var parser = Parser.init(arena.allocator(), &lexer, source);
 
     const module = parser.parseModule() catch |err| {
+        if (options.json_output) {
+            const compile_errors = try allocator.alloc(JsonCompileError, parser.errors.items.len + 1);
+            var compile_errors_initialized: usize = 0;
+            errdefer {
+                for (compile_errors[0..compile_errors_initialized]) |compile_error| {
+                    allocator.free(compile_error.message);
+                }
+                allocator.free(compile_errors);
+            }
+            var header_buf: [256]u8 = undefined;
+            const header = std.fmt.bufPrint(&header_buf, "Parse error: {}", .{err}) catch "Parse error";
+            compile_errors[0] = .{
+                .stage = "parse",
+                .message = try allocator.dupe(u8, header),
+            };
+            compile_errors_initialized = 1;
+            for (parser.errors.items, 0..) |parse_err, idx| {
+                compile_errors[idx + 1] = .{
+                    .stage = "parse",
+                    .message = try allocator.dupe(u8, parse_err.message),
+                    .line = parse_err.span.line,
+                    .column = parse_err.span.column,
+                };
+                compile_errors_initialized += 1;
+            }
+            const empty_test_results = try allocator.alloc(JsonTestSummary, 0);
+            return .{
+                .tests_discovered = 0,
+                .tests_passed = 0,
+                .tests_failed = 0,
+                .test_results = empty_test_results,
+                .compile_errors = compile_errors,
+                .file_failed = true,
+            };
+        }
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
         try stderr.writeAll(msg);
@@ -2582,6 +2722,9 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         } else |_| {}
 
         const entry = resolver.resolveEntry(path) catch {
+            if (options.json_output) {
+                return makeSingleCompileErrorResult(allocator, "module_resolve", "could not resolve entry module", null, null);
+            }
             try stderr.writeAll("Error: could not resolve entry module\n");
             return error.TestsFailed;
         };
@@ -2598,7 +2741,12 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             processed_idx += 1;
 
             if (mod.state == .discovered) {
-                const src = parseModuleSource(allocator, arena.allocator(), mod) catch {
+                const src = parseModuleSource(allocator, arena.allocator(), mod) catch |err| {
+                    if (options.json_output) {
+                        var msg_buf: [256]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "failed to parse module '{s}': {s}", .{ mod.file_path, @errorName(err) }) catch "failed to parse module";
+                        return makeSingleCompileErrorResult(allocator, "module_parse", msg, null, null);
+                    }
                     return error.TestsFailed;
                 };
                 try module_sources.append(allocator, src);
@@ -2615,6 +2763,32 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         }
 
         if (resolver.hasErrors()) {
+            if (options.json_output) {
+                const compile_errors = try allocator.alloc(JsonCompileError, resolver.errors.items.len);
+                var compile_errors_initialized: usize = 0;
+                errdefer {
+                    for (compile_errors[0..compile_errors_initialized]) |compile_error| {
+                        allocator.free(compile_error.message);
+                    }
+                    allocator.free(compile_errors);
+                }
+                for (resolver.errors.items, 0..) |resolve_err, idx| {
+                    compile_errors[idx] = .{
+                        .stage = "module_resolve",
+                        .message = try allocator.dupe(u8, resolve_err.message),
+                    };
+                    compile_errors_initialized += 1;
+                }
+                const empty_test_results = try allocator.alloc(JsonTestSummary, 0);
+                return .{
+                    .tests_discovered = 0,
+                    .tests_passed = 0,
+                    .tests_failed = 0,
+                    .test_results = empty_test_results,
+                    .compile_errors = compile_errors,
+                    .file_failed = true,
+                };
+            }
             var buf: [512]u8 = undefined;
             for (resolver.errors.items) |err| {
                 const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
@@ -2624,6 +2798,14 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         }
 
         const compilation_order = resolver.getCompilationOrder() catch |err| {
+            if (options.json_output) {
+                if (err == error.CircularImport) {
+                    return makeSingleCompileErrorResult(allocator, "module_resolve", "circular import detected", null, null);
+                }
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "failed to compute compilation order: {s}", .{@errorName(err)}) catch "failed to compute compilation order";
+                return makeSingleCompileErrorResult(allocator, "module_resolve", msg, null, null);
+            }
             if (err == error.CircularImport) {
                 try stderr.writeAll("Error: circular import detected\n");
             }
@@ -2643,6 +2825,34 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         }
 
         if (checker.hasErrors()) {
+            if (options.json_output) {
+                const compile_errors = try allocator.alloc(JsonCompileError, checker.errors.items.len);
+                var compile_errors_initialized: usize = 0;
+                errdefer {
+                    for (compile_errors[0..compile_errors_initialized]) |compile_error| {
+                        allocator.free(compile_error.message);
+                    }
+                    allocator.free(compile_errors);
+                }
+                for (checker.errors.items, 0..) |check_err, idx| {
+                    compile_errors[idx] = .{
+                        .stage = "type_check",
+                        .message = try allocator.dupe(u8, check_err.message),
+                        .line = check_err.span.line,
+                        .column = check_err.span.column,
+                    };
+                    compile_errors_initialized += 1;
+                }
+                const empty_test_results = try allocator.alloc(JsonTestSummary, 0);
+                return .{
+                    .tests_discovered = 0,
+                    .tests_passed = 0,
+                    .tests_failed = 0,
+                    .test_results = empty_test_results,
+                    .compile_errors = compile_errors,
+                    .file_failed = true,
+                };
+            }
             var buf: [512]u8 = undefined;
             const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
             try stderr.writeAll(header);
@@ -2679,6 +2889,13 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             try owned_interpreters.append(allocator, interp_ptr);
 
             bindRuntimeImportsForModule(interp_ptr, mod, &resolver, &module_interpreters) catch |err| {
+                if (options.json_output) {
+                    var msg_buf: [256]u8 = undefined;
+                    const module_name = mod.canonicalName(allocator) catch "<module>";
+                    defer if (!std.mem.eql(u8, module_name, "<module>")) allocator.free(module_name);
+                    const msg = std.fmt.bufPrint(&msg_buf, "Runtime setup error in module '{s}': {s}", .{ module_name, @errorName(err) }) catch "Runtime setup error";
+                    return makeSingleCompileErrorResult(allocator, "runtime_setup", msg, null, null);
+                }
                 var buf: [512]u8 = undefined;
                 const module_name = mod.canonicalName(allocator) catch "<module>";
                 defer if (!std.mem.eql(u8, module_name, "<module>")) allocator.free(module_name);
@@ -2688,6 +2905,13 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             };
 
             interp_ptr.executeModule(mod_ast) catch |err| {
+                if (options.json_output) {
+                    var msg_buf: [256]u8 = undefined;
+                    const module_name = mod.canonicalName(allocator) catch "<module>";
+                    defer if (!std.mem.eql(u8, module_name, "<module>")) allocator.free(module_name);
+                    const msg = std.fmt.bufPrint(&msg_buf, "Runtime setup error in module '{s}': {s}", .{ module_name, @errorName(err) }) catch "Runtime setup error";
+                    return makeSingleCompileErrorResult(allocator, "runtime_setup", msg, null, null);
+                }
                 var buf: [512]u8 = undefined;
                 const module_name = mod.canonicalName(allocator) catch "<module>";
                 defer if (!std.mem.eql(u8, module_name, "<module>")) allocator.free(module_name);
@@ -2700,14 +2924,23 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         }
 
         const entry_mod = resolver.entry_module orelse {
+            if (options.json_output) {
+                return makeSingleCompileErrorResult(allocator, "runtime_setup", "missing entry module", null, null);
+            }
             try stderr.writeAll("Runtime setup error: missing entry module\n");
             return error.TestsFailed;
         };
         const entry_ast = entry_mod.module_ast orelse {
+            if (options.json_output) {
+                return makeSingleCompileErrorResult(allocator, "runtime_setup", "missing entry module AST", null, null);
+            }
             try stderr.writeAll("Runtime setup error: missing entry module AST\n");
             return error.TestsFailed;
         };
         const entry_interp = module_interpreters.get(entry_mod) orelse {
+            if (options.json_output) {
+                return makeSingleCompileErrorResult(allocator, "runtime_setup", "missing entry interpreter", null, null);
+            }
             try stderr.writeAll("Runtime setup error: missing entry interpreter\n");
             return error.TestsFailed;
         };
@@ -2750,6 +2983,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 .tests_passed = 0,
                 .tests_failed = 0,
                 .test_results = try allocator.alloc(JsonTestSummary, 0),
+                .compile_errors = try allocator.alloc(JsonCompileError, 0),
             };
         }
 
@@ -2877,7 +3111,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 }
                 try stdout.writeAll("]}");
             }
-            try stdout.writeAll("]}\n");
+            try stdout.writeAll("],\"errors\":[]}\n");
         } else if (options.emit_output) {
             const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
             try stdout.writeAll(summary);
@@ -2893,11 +3127,40 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             .tests_passed = passed,
             .tests_failed = failed,
             .test_results = owned_test_results,
+            .compile_errors = try allocator.alloc(JsonCompileError, 0),
         };
     } else {
         checker.checkModule(module);
 
         if (checker.hasErrors()) {
+            if (options.json_output) {
+                const compile_errors = try allocator.alloc(JsonCompileError, checker.errors.items.len);
+                var compile_errors_initialized: usize = 0;
+                errdefer {
+                    for (compile_errors[0..compile_errors_initialized]) |compile_error| {
+                        allocator.free(compile_error.message);
+                    }
+                    allocator.free(compile_errors);
+                }
+                for (checker.errors.items, 0..) |check_err, idx| {
+                    compile_errors[idx] = .{
+                        .stage = "type_check",
+                        .message = try allocator.dupe(u8, check_err.message),
+                        .line = check_err.span.line,
+                        .column = check_err.span.column,
+                    };
+                    compile_errors_initialized += 1;
+                }
+                const empty_test_results = try allocator.alloc(JsonTestSummary, 0);
+                return .{
+                    .tests_discovered = 0,
+                    .tests_passed = 0,
+                    .tests_failed = 0,
+                    .test_results = empty_test_results,
+                    .compile_errors = compile_errors,
+                    .file_failed = true,
+                };
+            }
             var buf: [512]u8 = undefined;
             const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
             try stderr.writeAll(header);
@@ -2917,6 +3180,11 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         defer interp.deinit();
 
         interp.executeModule(module) catch |err| {
+            if (options.json_output) {
+                var msg_buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Runtime setup error: {s}", .{@errorName(err)}) catch "Runtime setup error";
+                return makeSingleCompileErrorResult(allocator, "runtime_setup", msg, null, null);
+            }
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Runtime setup error: {s}\n", .{@errorName(err)}) catch "Runtime setup error\n";
             try stderr.writeAll(msg);
@@ -2961,6 +3229,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 .tests_passed = 0,
                 .tests_failed = 0,
                 .test_results = try allocator.alloc(JsonTestSummary, 0),
+                .compile_errors = try allocator.alloc(JsonCompileError, 0),
             };
         }
 
@@ -3089,7 +3358,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 }
                 try stdout.writeAll("]}");
             }
-            try stdout.writeAll("]}\n");
+                try stdout.writeAll("],\"errors\":[]}\n");
         } else if (options.emit_output) {
             const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
             try stdout.writeAll(summary);
@@ -3105,6 +3374,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             .tests_passed = passed,
             .tests_failed = failed,
             .test_results = owned_test_results,
+            .compile_errors = try allocator.alloc(JsonCompileError, 0),
         };
     }
 }
