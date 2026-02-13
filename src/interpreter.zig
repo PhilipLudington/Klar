@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const types = @import("types.zig");
 const values = @import("values.zig");
+const async_executor = @import("runtime/async_executor.zig");
 const Value = values.Value;
 const Integer = values.Integer;
 const Float = values.Float;
@@ -109,6 +110,9 @@ pub const Interpreter = struct {
     // Track allocated functions for cleanup
     allocated_functions: std.ArrayListUnmanaged(*values.FunctionValue),
 
+    // Cooperative executor scaffold for upcoming async runtime support.
+    executor: async_executor.CooperativeExecutor,
+
     pub fn init(allocator: Allocator) !Interpreter {
         const global_env = try allocator.create(Environment);
         global_env.* = Environment.init(allocator, null);
@@ -126,6 +130,7 @@ pub const Interpreter = struct {
             .is_continuing = false,
             .output = .{},
             .allocated_functions = .{},
+            .executor = async_executor.CooperativeExecutor.init(allocator),
         };
 
         try interp.initBuiltins();
@@ -153,6 +158,7 @@ pub const Interpreter = struct {
             self.allocator.destroy(func);
         }
         self.allocated_functions.deinit(self.allocator);
+        self.executor.deinit();
 
         // Free builtin functions
         if (self.global_env.get("print")) |v| {

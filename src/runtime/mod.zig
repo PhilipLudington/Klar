@@ -14,6 +14,7 @@ pub const string = @import("string.zig");
 pub const string_heap = @import("string_heap.zig");
 pub const list = @import("list.zig");
 pub const args = @import("args.zig");
+pub const async_executor = @import("async_executor.zig");
 
 // Re-export commonly used functions for C-compatible FFI
 
@@ -88,4 +89,5 @@ test {
     _ = string_heap;
     _ = list;
     _ = args;
+    _ = async_executor;
 }

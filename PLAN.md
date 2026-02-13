@@ -322,7 +322,8 @@ Optionally include function source with `--include-source` for richer AI context
   - Added checker unit coverage for await operand validation and async-call await behavior
 - [ ] **6.3** Runtime/backend execution model
   - Implement minimal task/future representation in VM and interpreter
-  - Define scheduling strategy (single-thread cooperative executor as baseline)
+  - Added runtime cooperative executor scaffold (`src/runtime/async_executor.zig`) with deterministic FIFO scheduling, cancellation, and failure isolation semantics
+  - Wired interpreter runtime state to include cooperative executor scaffold for future async integration
   - Ensure deterministic behavior and clear cancellation/error propagation semantics
 - [ ] **6.4** Tooling integration
   - Update formatter for async/await constructs
