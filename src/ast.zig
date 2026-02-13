@@ -200,6 +200,7 @@ pub const Unary = struct {
 pub const UnaryOp = enum {
     negate,
     not,
+    await_,
     ref,
     ref_mut,
     deref,
@@ -208,6 +209,7 @@ pub const UnaryOp = enum {
         return switch (kind) {
             .minus => .negate,
             .not => .not,
+            .await_ => .await_,
             .amp => .ref,
             .star => .deref,
             else => null,
@@ -930,5 +932,6 @@ test "BinaryOp fromToken" {
 test "UnaryOp fromToken" {
     try std.testing.expectEqual(UnaryOp.negate, UnaryOp.fromToken(.minus).?);
     try std.testing.expectEqual(UnaryOp.not, UnaryOp.fromToken(.not).?);
+    try std.testing.expectEqual(UnaryOp.await_, UnaryOp.fromToken(.await_).?);
     try std.testing.expect(UnaryOp.fromToken(.plus) == null);
 }

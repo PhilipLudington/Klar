@@ -386,6 +386,8 @@ pub const TypeChecker = struct {
     /// Tracks whether we're inside an unsafe context (unsafe block or unsafe fn body).
     /// When true, unsafe operations like calling extern functions are allowed.
     in_unsafe_context: bool,
+    /// Tracks whether we're currently type-checking inside an async function body.
+    current_async_context: bool,
 
     /// Maps debug() call AST nodes to the argument type.
     /// Used by codegen to emit type-specific formatting code.
@@ -453,6 +455,7 @@ pub const TypeChecker = struct {
             .error_conversions = .{},
             .expected_type = null,
             .in_unsafe_context = false,
+            .current_async_context = false,
             .debug_call_types = .{},
             .check_test_decls = false,
         };
@@ -4346,7 +4349,6 @@ pub const TypeChecker = struct {
                 .function => |f| {
                     if (f.is_async) {
                         self.addError(.invalid_operation, f.span, "async functions are not yet supported", .{});
-                        continue;
                     }
 
                     // Push type parameters for generic functions
@@ -4429,8 +4431,6 @@ pub const TypeChecker = struct {
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
-                    if (f.is_async) continue;
-
                     if (f.body) |body| {
                         // Push type parameters for generic functions
                         const has_type_params = f.type_params.len > 0;
@@ -4473,6 +4473,10 @@ pub const TypeChecker = struct {
                             self.in_unsafe_context = true;
                         }
                         defer self.in_unsafe_context = was_unsafe;
+
+                        const was_async_context = self.current_async_context;
+                        self.current_async_context = f.is_async;
+                        defer self.current_async_context = was_async_context;
 
                         _ = self.checkBlock(body);
                     }

@@ -414,6 +414,9 @@ pub const OwnershipChecker = struct {
         const operand_state = try self.analyzeExpr(unary.operand);
 
         switch (unary.op) {
+            .await_ => {
+                // Await does not introduce ownership effects in current parser-only support.
+            },
             .ref => {
                 // Creating immutable borrow
                 if (operand_state) |vs| {

@@ -327,6 +327,7 @@ pub fn evaluateComptimeExpr(tc: anytype, expr: ast.Expr) ?Value {
                     if (operand == .bool_) return .{ .bool_ = !operand.bool_ };
                     return null;
                 },
+                .await_ => return null,
                 else => return null,
             }
         },

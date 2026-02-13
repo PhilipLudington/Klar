@@ -1148,6 +1148,10 @@ pub const Formatter = struct {
                 try self.write("not ");
                 try self.formatExpr(u.operand);
             },
+            .await_ => {
+                try self.write("await ");
+                try self.formatExpr(u.operand);
+            },
             .ref => {
                 try self.write("ref ");
                 try self.formatExpr(u.operand);

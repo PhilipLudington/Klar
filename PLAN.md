@@ -302,20 +302,23 @@ Optionally include function source with `--include-source` for richer AI context
 
 **Objective:** Add first-class async functions with explicit `async fn` declarations and `await` expressions.
 
-**Status:** Planned
+**Status:** In progress
 
 **Effort:** High | **Impact:** High | **Dependencies:** Milestones 2, 3
 
 ### Tasks
 
-- [ ] **6.1** Syntax and AST support
+- [x] **6.1** Syntax and AST support
   - Add lexer/parser support for `async` and `await`
-  - Extend AST for async function declarations and await expressions
+  - Extended AST unary ops with `await` and parser support for `await <expr>`
+  - Added parser support for `async fn` declarations (top-level and trait/impl methods)
+  - Added parser/lexer regression tests for `async`/`await` syntax
   - Enforce explicit return annotations for async functions (`-> Future[T]` or equivalent canonical form)
 - [ ] **6.2** Type-checking semantics
   - Validate await operand type constraints
-  - Enforce await usage contexts (e.g., only in async functions unless explicitly allowed)
-  - Add checker diagnostics for invalid async/await usage
+  - Enforced await usage context with checker diagnostics (`await` only permitted in async function context)
+  - Added explicit checker diagnostics for unsupported async declarations and methods (`async fn`, async trait/impl methods)
+  - Added check-suite regression coverage for invalid async method declarations
 - [ ] **6.3** Runtime/backend execution model
   - Implement minimal task/future representation in VM and interpreter
   - Define scheduling strategy (single-thread cooperative executor as baseline)

@@ -744,6 +744,10 @@ pub const Interpreter = struct {
                 }
                 return RuntimeError.TypeError;
             },
+            .await_ => {
+                // Async runtime support is not implemented yet.
+                return RuntimeError.TypeError;
+            },
             .ref => {
                 const ref = try self.allocator.create(values.ReferenceValue);
                 const target = try self.allocator.create(Value);

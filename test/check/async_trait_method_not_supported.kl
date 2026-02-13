@@ -1,0 +1,9 @@
+// Expected: check-error invalid_operation
+
+trait Runner {
+    async fn run(self: Self) -> i32
+}
+
+fn main() -> i32 {
+    return 0
+}

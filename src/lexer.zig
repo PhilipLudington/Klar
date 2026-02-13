@@ -561,7 +561,7 @@ test "lexer numbers" {
 }
 
 test "lexer keywords" {
-    var lexer = Lexer.init("fn let shadow var struct enum if else match for while loop return test");
+    var lexer = Lexer.init("fn let shadow var struct enum if else match for while loop return async await test");
 
     try std.testing.expectEqual(Token.Kind.fn_, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.let, lexer.next().kind);
@@ -576,6 +576,8 @@ test "lexer keywords" {
     try std.testing.expectEqual(Token.Kind.while_, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.loop, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.return_, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.async_, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.await_, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.test_, lexer.next().kind);
 }
 

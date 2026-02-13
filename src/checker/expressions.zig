@@ -463,6 +463,14 @@ fn checkUnary(tc: anytype, un: *ast.Unary) Type {
             }
             return tc.type_builder.boolType();
         },
+        .await_ => {
+            if (!tc.current_async_context) {
+                tc.addError(.invalid_operation, un.span, "'await' can only be used inside async functions", .{});
+                return tc.type_builder.unknownType();
+            }
+            tc.addError(.invalid_operation, un.span, "'await' is not yet supported", .{});
+            return tc.type_builder.unknownType();
+        },
         .ref => {
             // With new syntax, mutability is determined by whether the operand is mutable
             // `ref x` where x is `var` -> inout T (mutable reference)
@@ -627,6 +635,10 @@ fn checkClosure(tc: anytype, closure: *ast.Closure) Type {
     const old_return_type = tc.current_return_type;
     tc.current_return_type = return_type;
     defer tc.current_return_type = old_return_type;
+
+    const old_async_context = tc.current_async_context;
+    tc.current_async_context = false;
+    defer tc.current_async_context = old_async_context;
 
     _ = checkExpr(tc, closure.body);
 

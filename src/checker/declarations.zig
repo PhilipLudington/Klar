@@ -493,6 +493,11 @@ fn checkTrait(tc: anytype, trait_decl: *ast.TraitDecl) void {
     defer methods.deinit(tc.allocator);
 
     for (trait_decl.methods) |method| {
+        if (method.is_async) {
+            tc.addError(.invalid_operation, method.span, "async trait methods are not yet supported", .{});
+            continue;
+        }
+
         // Build parameter types for signature
         var sig_params: std.ArrayListUnmanaged(Type) = .{};
         defer sig_params.deinit(tc.allocator);
@@ -685,6 +690,11 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
     for (impl_decl.methods) |*method_decl_const| {
         // Need to cast to mutable pointer for registration
         const method_decl = @constCast(method_decl_const);
+
+        if (method_decl.is_async) {
+            tc.addError(.invalid_operation, method_decl.span, "async methods are not yet supported", .{});
+            continue;
+        }
 
         // Determine if this method has 'self' as first parameter
         var has_self = false;
