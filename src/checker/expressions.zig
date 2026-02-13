@@ -468,6 +468,10 @@ fn checkUnary(tc: anytype, un: *ast.Unary) Type {
                 tc.addError(.invalid_operation, un.span, "'await' can only be used inside async functions", .{});
                 return tc.type_builder.unknownType();
             }
+            if (!isValidAwaitOperand(tc, un.operand)) {
+                tc.addError(.invalid_operation, un.span, "'await' operand must be a call to an async function", .{});
+                return tc.type_builder.unknownType();
+            }
             tc.addError(.invalid_operation, un.span, "'await' is not yet supported", .{});
             return tc.type_builder.unknownType();
         },
@@ -496,6 +500,24 @@ fn checkUnary(tc: anytype, un: *ast.Unary) Type {
             }
         },
     }
+}
+
+fn isValidAwaitOperand(tc: anytype, operand: ast.Expr) bool {
+    if (operand != .call) return false;
+
+    const callee = operand.call.callee;
+    if (callee == .identifier) {
+        const sym = tc.lookupSymbol(callee.identifier.name) orelse return false;
+        if (sym.kind != .function) return false;
+
+        const canonical_name = sym.original_name orelse sym.name;
+        return tc.async_function_names.contains(canonical_name);
+    }
+
+    // Non-identifier callees (e.g., closure values, qualified calls) are not
+    // fully classified for async-ness yet. Avoid shape-based false negatives
+    // and defer to the generic unsupported async diagnostic for now.
+    return true;
 }
 
 // ============================================================================

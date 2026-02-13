@@ -268,6 +268,9 @@ pub const TypeChecker = struct {
     monomorphized_functions: std.StringHashMapUnmanaged(MonomorphizedFunction),
     /// Storage for generic function declarations (needed for codegen monomorphization).
     generic_functions: std.StringHashMapUnmanaged(*ast.FunctionDecl),
+    /// Set of async function names discovered during signature checking.
+    /// Used for await operand validation.
+    async_function_names: std.StringHashMapUnmanaged(void),
     /// Maps call expression pointers to resolved mangled function names.
     /// Used by codegen to emit calls to monomorphized functions.
     call_resolutions: std.AutoHashMapUnmanaged(*ast.Call, []const u8),
@@ -420,6 +423,7 @@ pub const TypeChecker = struct {
             .type_param_scopes = .{},
             .monomorphized_functions = .{},
             .generic_functions = .{},
+            .async_function_names = .{},
             .call_resolutions = .{},
             .monomorphized_structs = .{},
             .monomorphized_enums = .{},
@@ -496,6 +500,7 @@ pub const TypeChecker = struct {
         self.monomorphized_functions.deinit(self.allocator);
 
         self.generic_functions.deinit(self.allocator);
+        self.async_function_names.deinit(self.allocator);
         self.call_resolutions.deinit(self.allocator);
 
         // Clean up monomorphized structs
@@ -4332,6 +4337,8 @@ pub const TypeChecker = struct {
     // ========================================================================
 
     pub fn checkModule(self: *TypeChecker, module: ast.Module) void {
+        self.async_function_names.clearRetainingCapacity();
+
         // Process imports first (for multi-file compilation)
         self.processImports(module);
 
@@ -4349,6 +4356,7 @@ pub const TypeChecker = struct {
                 .function => |f| {
                     if (f.is_async) {
                         self.addError(.invalid_operation, f.span, "async functions are not yet supported", .{});
+                        self.async_function_names.put(self.allocator, f.name, {}) catch {};
                     }
 
                     // Push type parameters for generic functions
@@ -4598,6 +4606,13 @@ fn findScopeEntry(entries: []const ScopeEntry, name: []const u8) ?ScopeEntry {
     return null;
 }
 
+fn hasErrorMessage(errors: []const CheckError, needle: []const u8) bool {
+    for (errors) |err| {
+        if (std.mem.indexOf(u8, err.message, needle) != null) return true;
+    }
+    return false;
+}
+
 test "extractScopeAtOffset includes params and prior local bindings" {
     const testing = std.testing;
     const source =
@@ -4681,4 +4696,92 @@ test "extractScopeAtOffset prefers innermost shadowed binding" {
     const x_entry = findScopeEntry(entries, "x").?;
     try testing.expect(x_entry.type_ == .primitive);
     try testing.expect(x_entry.type_.primitive == .i32_);
+}
+
+test "await validates operand is async call" {
+    const testing = std.testing;
+    const source =
+        \\async fn task() -> i32 {
+        \\    let value: i32 = 1
+        \\    return await value
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+
+    try testing.expect(checker.hasErrors());
+    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be a call to an async function"));
+}
+
+test "await on async call reports unsupported lowering path" {
+    const testing = std.testing;
+    const source =
+        \\async fn fetch() -> i32 {
+        \\    return 1
+        \\}
+        \\
+        \\async fn worker() -> i32 {
+        \\    return await fetch()
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+
+    try testing.expect(checker.hasErrors());
+    try testing.expect(hasErrorMessage(checker.errors.items, "'await' is not yet supported"));
+    try testing.expect(!hasErrorMessage(checker.errors.items, "'await' operand must be a call to an async function"));
+}
+
+test "await uses symbol kind, not just function name" {
+    const testing = std.testing;
+    const source =
+        \\async fn fetch() -> i32 {
+        \\    return 1
+        \\}
+        \\
+        \\async fn worker() -> i32 {
+        \\    let fetch: i32 = 7
+        \\    return await fetch()
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+
+    try testing.expect(checker.hasErrors());
+    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be a call to an async function"));
+}
+
+test "await on non-identifier callee avoids shape-only operand rejection" {
+    const testing = std.testing;
+    const source =
+        \\async fn worker() -> i32 {
+        \\    return await (|x: i32| -> i32 { x })(1)
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+
+    try testing.expect(checker.hasErrors());
+    try testing.expect(hasErrorMessage(checker.errors.items, "'await' is not yet supported"));
+    try testing.expect(!hasErrorMessage(checker.errors.items, "'await' operand must be a call to an async function"));
 }
