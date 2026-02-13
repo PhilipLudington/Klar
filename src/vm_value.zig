@@ -33,6 +33,7 @@ pub const Value = union(enum) {
     upvalue: *ObjUpvalue,
     optional: *ObjOptional,
     range: *ObjRange,
+    future: FutureValue,
 
     // -------------------------------------------------------------------------
     // Value predicates
@@ -49,6 +50,7 @@ pub const Value = union(enum) {
         return switch (self) {
             .bool_ => |b| b,
             .optional => |opt| opt.value != null,
+            .future => |future| future.state == .completed,
             .int => |i| i != 0,
             .void_ => false,
             else => true,
@@ -124,6 +126,7 @@ pub const Value = union(enum) {
             .native => |n| n == other.native,
             .upvalue => |u| u == other.upvalue,
             .range => |r| r.start == other.range.start and r.end == other.range.end and r.inclusive == other.range.inclusive,
+            .future => |f| f.task_id == other.future.task_id and f.state == other.future.state,
         };
     }
 
@@ -639,6 +642,20 @@ pub const ObjRange = struct {
     }
 };
 
+pub const TaskId = u64;
+
+pub const FutureState = enum {
+    pending,
+    completed,
+    failed,
+    cancelled,
+};
+
+pub const FutureValue = struct {
+    task_id: TaskId,
+    state: FutureState,
+};
+
 // ============================================================================
 // Runtime Errors
 // ============================================================================
@@ -877,4 +894,18 @@ test "Range iteration" {
         count += 1;
     }
     try testing.expectEqual(@as(usize, 4), count);
+}
+
+test "Future value semantics" {
+    const testing = std.testing;
+
+    const pending = Value{ .future = .{ .task_id = 10, .state = .pending } };
+    const completed = Value{ .future = .{ .task_id = 10, .state = .completed } };
+    const cancelled = Value{ .future = .{ .task_id = 11, .state = .cancelled } };
+
+    try testing.expect(!pending.isTruthy());
+    try testing.expect(completed.isTruthy());
+    try testing.expect(!cancelled.isTruthy());
+    try testing.expect(!pending.eql(completed));
+    try testing.expect(completed.eql(Value{ .future = .{ .task_id = 10, .state = .completed } }));
 }

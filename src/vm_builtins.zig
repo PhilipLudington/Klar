@@ -298,6 +298,7 @@ fn nativeTypeOf(allocator: Allocator, args: []const Value) RuntimeError!Value {
         .optional => "optional",
         .range => "range",
         .upvalue => "upvalue",
+        .future => "future",
     };
 
     // Create a string object with the type name
@@ -523,6 +524,17 @@ fn debugValueToString(allocator: Allocator, value: Value, depth: usize) RuntimeE
             break :blk std.fmt.allocPrint(allocator, "{d}{s}{d}", .{ r.start, op, r.end }) catch return RuntimeError.OutOfMemory;
         },
         .upvalue => allocator.dupe(u8, "<upvalue>") catch return RuntimeError.OutOfMemory,
+        .future => |future| blk: {
+            break :blk std.fmt.allocPrint(allocator, "Future(task={d}, state={s})", .{
+                future.task_id,
+                switch (future.state) {
+                    .pending => "pending",
+                    .completed => "completed",
+                    .failed => "failed",
+                    .cancelled => "cancelled",
+                },
+            }) catch return RuntimeError.OutOfMemory;
+        },
     };
 }
 
@@ -550,6 +562,7 @@ fn valueToString(allocator: Allocator, value: Value) RuntimeError![]const u8 {
         .native => |n| n.name,
         .range => "<range>",
         .upvalue => "<upvalue>",
+        .future => "<future>",
     };
 }
 

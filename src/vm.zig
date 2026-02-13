@@ -1637,6 +1637,18 @@ pub const VM = struct {
             },
             .void_ => .{ .str = "void", .needs_free = false },
             .string => |s| .{ .str = s.chars, .needs_free = false },
+            .future => |future| blk: {
+                const str = try std.fmt.allocPrint(self.allocator, "Future(task={d}, state={s})", .{
+                    future.task_id,
+                    switch (future.state) {
+                        .pending => "pending",
+                        .completed => "completed",
+                        .failed => "failed",
+                        .cancelled => "cancelled",
+                    },
+                });
+                break :blk .{ .str = str, .needs_free = true };
+            },
             else => .{ .str = "<object>", .needs_free = false },
         };
     }
@@ -1656,6 +1668,7 @@ pub const VM = struct {
             .optional => "optional",
             .range => "range",
             .upvalue => "upvalue",
+            .future => "future",
         };
     }
 
@@ -1711,6 +1724,20 @@ pub const VM = struct {
                 } else {
                     self.write("None");
                 }
+            },
+            .future => |future| {
+                self.write("Future(task=");
+                var id_buf: [32]u8 = undefined;
+                const id_text = std.fmt.bufPrint(&id_buf, "{d}", .{future.task_id}) catch "?";
+                self.write(id_text);
+                self.write(", state=");
+                self.write(switch (future.state) {
+                    .pending => "pending",
+                    .completed => "completed",
+                    .failed => "failed",
+                    .cancelled => "cancelled",
+                });
+                self.write(")");
             },
             .closure => self.write("<closure>"),
             .function => self.write("<function>"),

@@ -751,8 +751,16 @@ pub const Interpreter = struct {
                 return RuntimeError.TypeError;
             },
             .await_ => {
-                // Async runtime support is not implemented yet.
-                return RuntimeError.TypeError;
+                if (operand != .future) {
+                    return RuntimeError.TypeError;
+                }
+
+                const future = operand.future;
+                return switch (future.state) {
+                    .pending => RuntimeError.InvalidOperation,
+                    .completed => if (future.value) |value| value.* else self.builder.voidVal(),
+                    .failed, .cancelled => RuntimeError.InvalidOperation,
+                };
             },
             .ref => {
                 const ref = try self.allocator.create(values.ReferenceValue);
@@ -2453,6 +2461,7 @@ fn builtinTypeOf(allocator: Allocator, args: []const Value) RuntimeError!Value {
         .optional => "?T",
         .result => "Result[T, E]",
         .context_error => "ContextError[E]",
+        .future => "Future[T]",
         .reference => "&T",
         .function => "fn",
         .closure => "closure",
@@ -2633,4 +2642,55 @@ test "Saturating arithmetic" {
     const max_i32 = interp.builder.int(std.math.maxInt(i32), .i32_);
     const result = try interp.intArithmetic(max_i32, interp.builder.i32Val(1), .add, .saturate);
     try testing.expectEqual(@as(i128, std.math.maxInt(i32)), result.int.value);
+}
+
+test "await returns completed future value in interpreter runtime" {
+    const testing = std.testing;
+    var interp = try Interpreter.init(testing.allocator);
+    defer interp.deinit();
+
+    const ready = try interp.builder.futureCompleted(1, interp.builder.i32Val(42));
+    try interp.current_env.define("ready", ready, false);
+
+    const unary = try testing.allocator.create(ast.Unary);
+    defer testing.allocator.destroy(unary);
+    unary.* = .{
+        .op = .await_,
+        .operand = .{
+            .identifier = .{
+                .name = "ready",
+                .span = .{ .start = 0, .end = 0, .line = 1, .column = 7 },
+            },
+        },
+        .span = .{ .start = 0, .end = 0, .line = 1, .column = 1 },
+    };
+    const expr = ast.Expr{ .unary = unary };
+
+    const awaited = try interp.evaluate(expr);
+    try testing.expect(awaited.eql(interp.builder.i32Val(42)));
+}
+
+test "await on pending future returns invalid operation" {
+    const testing = std.testing;
+    var interp = try Interpreter.init(testing.allocator);
+    defer interp.deinit();
+
+    const pending = try interp.builder.futurePending(2);
+    try interp.current_env.define("pending", pending, false);
+
+    const unary = try testing.allocator.create(ast.Unary);
+    defer testing.allocator.destroy(unary);
+    unary.* = .{
+        .op = .await_,
+        .operand = .{
+            .identifier = .{
+                .name = "pending",
+                .span = .{ .start = 0, .end = 0, .line = 1, .column = 7 },
+            },
+        },
+        .span = .{ .start = 0, .end = 0, .line = 1, .column = 1 },
+    };
+    const expr = ast.Expr{ .unary = unary };
+
+    try testing.expectError(RuntimeError.InvalidOperation, interp.evaluate(expr));
 }

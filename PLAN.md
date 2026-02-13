@@ -324,6 +324,8 @@ Optionally include function source with `--include-source` for richer AI context
   - Implement minimal task/future representation in VM and interpreter
   - Added runtime cooperative executor scaffold (`src/runtime/async_executor.zig`) with deterministic FIFO scheduling, cancellation, and failure isolation semantics
   - Wired interpreter runtime state to include cooperative executor scaffold for future async integration
+  - Added minimal `Future` runtime value representation in interpreter (`src/values.zig`) and VM value model (`src/vm_value.zig`) with task ids and lifecycle states (`pending/completed/failed/cancelled`)
+  - Added interpreter `await` runtime behavior for futures: completed futures yield values, pending/failed/cancelled futures return deterministic runtime errors
   - Ensure deterministic behavior and clear cancellation/error propagation semantics
 - [ ] **6.4** Tooling integration
   - Update formatter for async/await constructs

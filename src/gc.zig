@@ -371,7 +371,7 @@ pub const GC = struct {
             .optional => |o| self.markObject(&o.header),
             .range => |r| self.markObject(&r.header),
             // Primitive values don't need marking
-            .int, .float, .bool_, .char_, .void_ => {},
+            .int, .float, .bool_, .char_, .void_, .future => {},
         }
     }
 
