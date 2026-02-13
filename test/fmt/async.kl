@@ -1,0 +1,10 @@
+pub async fn fetch_data ( ) -> i32{let value:i32=await compute( )
+return value}
+
+trait Worker{
+async fn run(self:Self)->i32
+}
+
+impl JobRunner:Worker{
+pub async unsafe fn run(self:Self)->i32{return await compute()}
+}

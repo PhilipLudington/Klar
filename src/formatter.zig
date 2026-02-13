@@ -359,6 +359,7 @@ pub const Formatter = struct {
     fn formatFunction(self: *Formatter, func: *const ast.FunctionDecl, in_trait: bool) Error!void {
         try self.writeIndent();
         if (func.is_pub) try self.write("pub ");
+        if (func.is_async) try self.write("async ");
         if (func.is_unsafe) try self.write("unsafe ");
         if (func.is_extern) try self.write("extern ");
         if (func.is_comptime) {

@@ -329,6 +329,8 @@ Optionally include function source with `--include-source` for richer AI context
   - Ensure deterministic behavior and clear cancellation/error propagation semantics
 - [ ] **6.4** Tooling integration
   - Update formatter for async/await constructs
+  - Added formatter emission for `async fn` modifiers across top-level, trait, and impl method declarations
+  - Added formatter regression fixture `test/fmt/async.kl` covering `async fn`, `await` expressions, and async trait/impl methods
   - Add LSP completion/hover/diagnostic support for new syntax
 - [ ] **6.5** Tests and docs
   - Add parser/checker/runtime tests for success and failure paths
