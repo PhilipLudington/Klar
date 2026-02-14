@@ -112,6 +112,7 @@ pub const Interpreter = struct {
 
     // Cooperative executor scaffold for upcoming async runtime support.
     executor: async_executor.CooperativeExecutor,
+    next_future_task_id: values.TaskId,
 
     pub fn init(allocator: Allocator) !Interpreter {
         const global_env = try allocator.create(Environment);
@@ -131,6 +132,7 @@ pub const Interpreter = struct {
             .output = .{},
             .allocated_functions = .{},
             .executor = async_executor.CooperativeExecutor.init(allocator),
+            .next_future_task_id = 1,
         };
 
         try interp.initBuiltins();
@@ -752,7 +754,7 @@ pub const Interpreter = struct {
             },
             .await_ => {
                 if (operand != .future) {
-                    return RuntimeError.TypeError;
+                    return operand;
                 }
 
                 const future = operand.future;
@@ -884,11 +886,17 @@ pub const Interpreter = struct {
         if (self.return_value) |ret| {
             const result = ret;
             self.return_value = null;
-            return result;
+            if (!func.is_async) return result;
+            const task_id = self.next_future_task_id;
+            self.next_future_task_id += 1;
+            return self.builder.futureCompleted(task_id, result) catch RuntimeError.OutOfMemory;
         }
 
         // Otherwise use the block's final expression value
-        return block_result;
+        if (!func.is_async) return block_result;
+        const task_id = self.next_future_task_id;
+        self.next_future_task_id += 1;
+        return self.builder.futureCompleted(task_id, block_result) catch RuntimeError.OutOfMemory;
     }
 
     fn callClosure(self: *Interpreter, closure: *values.ClosureValue, args: []const Value) RuntimeError!Value {
@@ -1954,6 +1962,7 @@ pub const Interpreter = struct {
                 .params = params_slice,
                 .body = body,
                 .closure_env = self.current_env,
+                .is_async = func.is_async,
             };
 
             // Track for cleanup
@@ -2693,4 +2702,29 @@ test "await on pending future returns invalid operation" {
     const expr = ast.Expr{ .unary = unary };
 
     try testing.expectError(RuntimeError.InvalidOperation, interp.evaluate(expr));
+}
+
+test "await on non-future value is passthrough" {
+    const testing = std.testing;
+    var interp = try Interpreter.init(testing.allocator);
+    defer interp.deinit();
+
+    try interp.current_env.define("value", interp.builder.i32Val(9), false);
+
+    const unary = try testing.allocator.create(ast.Unary);
+    defer testing.allocator.destroy(unary);
+    unary.* = .{
+        .op = .await_,
+        .operand = .{
+            .identifier = .{
+                .name = "value",
+                .span = .{ .start = 0, .end = 0, .line = 1, .column = 7 },
+            },
+        },
+        .span = .{ .start = 0, .end = 0, .line = 1, .column = 1 },
+    };
+    const expr = ast.Expr{ .unary = unary };
+
+    const awaited = try interp.evaluate(expr);
+    try testing.expect(awaited.eql(interp.builder.i32Val(9)));
 }

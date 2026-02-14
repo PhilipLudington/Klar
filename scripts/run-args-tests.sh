@@ -178,6 +178,30 @@ else
 fi
 
 echo ""
+echo "--- Test: async/await flow across all backends ---"
+
+output=$($KLAR run "$TEST_DIR/async_await_backends.kl" 2>&1)
+if [ $? -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+    pass "async/await: native backend"
+else
+    fail "async/await: native backend failed"
+fi
+
+output=$($KLAR run "$TEST_DIR/async_await_backends.kl" --vm 2>&1)
+if [ $? -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+    pass "async/await: vm backend"
+else
+    fail "async/await: vm backend failed"
+fi
+
+output=$($KLAR run "$TEST_DIR/async_await_backends.kl" --interpret 2>&1)
+if [ $? -eq 0 ] && ! echo "$output" | grep -qi "error"; then
+    pass "async/await: interpreter backend"
+else
+    fail "async/await: interpreter backend failed"
+fi
+
+echo ""
 echo "--- Test: klar test command ---"
 
 output=$($KLAR test "$TEST_DIR/test_command_pass.kl" 2>&1)

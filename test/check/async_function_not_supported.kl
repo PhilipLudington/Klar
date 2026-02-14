@@ -1,9 +1,11 @@
-// Expected: check-error invalid_operation
+// Expected: check-pass
 
-async fn fetch() -> i32 {
+async fn fetch() -> Future[i32] {
     return 1
 }
 
-fn main() -> i32 {
-    return fetch()
+async fn worker() -> Future[i32] {
+    return await fetch()
 }
+
+fn main() -> i32 { return 0 }

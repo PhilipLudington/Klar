@@ -101,6 +101,12 @@ pub const VM = struct {
     /// Last error context (for detailed error reporting).
     last_error: ?ErrorContext,
 
+    /// Monotonic task id generator for runtime Future objects.
+    next_future_task_id: vm_value.TaskId,
+
+    /// Heap boxes used for completed Future payloads.
+    future_payloads: std.ArrayListUnmanaged(*Value),
+
     // -------------------------------------------------------------------------
     // Initialization
     // -------------------------------------------------------------------------
@@ -120,6 +126,8 @@ pub const VM = struct {
             .debug_gc = false,
             .stress_gc = false,
             .last_error = null,
+            .next_future_task_id = 1,
+            .future_payloads = .{},
         };
 
         // Initialize stack with void values
@@ -163,6 +171,10 @@ pub const VM = struct {
     }
 
     pub fn deinit(self: *VM) void {
+        for (self.future_payloads.items) |payload| {
+            self.allocator.destroy(payload);
+        }
+        self.future_payloads.deinit(self.allocator);
         self.gc.deinit();
         self.globals.deinit(self.allocator);
     }
@@ -373,6 +385,22 @@ pub const VM = struct {
                     const value = try self.pop();
                     try self.push(Value.fromBool(value.isFalsey()));
                 },
+                .op_await => {
+                    const value = try self.pop();
+                    switch (value) {
+                        .future => |future| switch (future.state) {
+                            .completed => {
+                                if (future.value) |resolved| {
+                                    try self.push(resolved.*);
+                                } else {
+                                    try self.push(Value.void_val);
+                                }
+                            },
+                            .pending, .failed, .cancelled => return RuntimeError.InvalidOperation,
+                        },
+                        else => try self.push(value),
+                    }
+                },
                 .op_and => {
                     const offset = self.readU16();
                     const value = try self.peek(0);
@@ -526,7 +554,24 @@ pub const VM = struct {
                     try self.callValue(callee, arg_count);
                 },
                 .op_return => {
-                    const result = try self.pop();
+                    var result = try self.pop();
+
+                    if (self.currentFrame().closure.function.is_async) {
+                        const payload = try self.allocator.create(Value);
+                        payload.* = result;
+                        self.future_payloads.append(self.allocator, payload) catch {
+                            self.allocator.destroy(payload);
+                            return RuntimeError.OutOfMemory;
+                        };
+                        result = .{
+                            .future = .{
+                                .task_id = self.next_future_task_id,
+                                .state = .completed,
+                                .value = payload,
+                            },
+                        };
+                        self.next_future_task_id += 1;
+                    }
 
                     // Close any open upvalues in the returning function's scope.
                     try self.closeUpvalues(self.currentFrame().slots_base);
@@ -541,17 +586,29 @@ pub const VM = struct {
                     try self.push(result);
                 },
                 .op_return_void => {
+                    var result: Value = .void_;
+                    if (self.currentFrame().closure.function.is_async) {
+                        result = .{
+                            .future = .{
+                                .task_id = self.next_future_task_id,
+                                .state = .completed,
+                                .value = null,
+                            },
+                        };
+                        self.next_future_task_id += 1;
+                    }
+
                     // Close any open upvalues.
                     try self.closeUpvalues(self.currentFrame().slots_base);
 
                     self.frame_count -= 1;
                     if (self.frame_count == 0) {
                         _ = try self.pop();
-                        return .void_;
+                        return result;
                     }
 
                     self.stack_top = self.frames[self.frame_count].slots_base;
-                    try self.push(.void_);
+                    try self.push(result);
                 },
                 .op_closure => {
                     const func_idx = self.readU16();

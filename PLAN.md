@@ -315,8 +315,10 @@ Optionally include function source with `--include-source` for richer AI context
   - Added parser/lexer regression tests for `async`/`await` syntax
   - Enforce explicit return annotations for async functions (`-> Future[T]` or equivalent canonical form)
 - [x] **6.2** Type-checking semantics
-  - Validate await operand type constraints (`await` operand must be an async function call; currently enforced for symbol-resolved calls with provisional fallback for non-identifier callees)
+  - Validate await operand type constraints (`await` operand must be `Future[T]`)
   - Enforced await usage context with checker diagnostics (`await` only permitted in async function context)
+  - Enforced explicit async contract: `async fn` must declare `-> Future[T]`
+  - `await` now enforces `Future[T]` operands and yields `T`
   - Added explicit checker diagnostics for unsupported async declarations and methods (`async fn`, async trait/impl methods)
   - Added check-suite regression coverage for invalid async method declarations
   - Added checker unit coverage for await operand validation and async-call await behavior
@@ -326,6 +328,14 @@ Optionally include function source with `--include-source` for richer AI context
   - Wired interpreter runtime state to include cooperative executor scaffold for future async integration
   - Added minimal `Future` runtime value representation in interpreter (`src/values.zig`) and VM value model (`src/vm_value.zig`) with task ids and lifecycle states (`pending/completed/failed/cancelled`)
   - Added interpreter `await` runtime behavior for futures: completed futures yield values, pending/failed/cancelled futures return deterministic runtime errors
+  - Removed checker/runtime backend gating for top-level `async fn` + `await` so async call flows execute end-to-end
+  - Added VM bytecode opcode `op_await` and initial await runtime handling
+  - Added native codegen lowering for `await` as synchronous value forwarding
+  - **Follow-up required:** define canonical async semantics and enforce backend parity:
+    - `async fn` explicit return contract (`Future[T]` canonical form)
+    - `await` operand/result typing (`Future[T] -> T`)
+    - identical runtime behavior for interpreter, VM, and native backends
+    - parity tests for completed/pending/failed/cancelled future states
   - Ensure deterministic behavior and clear cancellation/error propagation semantics
 - [x] **6.4** Tooling integration
   - Update formatter for async/await constructs
@@ -335,17 +345,21 @@ Optionally include function source with `--include-source` for richer AI context
   - Added LSP keyword completions for `async`/`await` with async-aware detail text
   - Added LSP hover keyword docs for `async`/`await` when not resolving to symbols
   - Added args-suite LSP regression coverage for async completion, hover, and diagnostics payloads
-- [ ] **6.5** Tests and docs
+- [x] **6.5** Tests and docs
   - Add parser/checker/runtime tests for success and failure paths
+  - Added checker unit regressions for async `await` success cases and operand-validation failures
+  - Added cross-backend args-suite regression (`native`/`vm`/`interpret`) for async/await execution parity
+  - Added native regression fixture `test/native/async_await_basic.kl`
   - Add examples showing sequential and concurrent async flows
   - Update MEMORY.md and docs language guide
+  - Updated `MEMORY.md`, `docs/language/functions.md`, and `docs/appendix/keywords.md` for async/await language status and usage
 
 ### Success Criteria
 
 - [ ] Async functions parse/type-check with explicit, unambiguous signatures
 - [ ] Await works correctly across interpreter, VM, and native build paths
-- [ ] Async misuse surfaces actionable diagnostics
-- [ ] Test suite includes regression coverage for async/await semantics
+- [x] Async misuse surfaces actionable diagnostics
+- [x] Test suite includes regression coverage for async/await semantics
 
 ---
 

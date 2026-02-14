@@ -67,6 +67,26 @@ fn absolute(n: i32) -> i32 {
 }
 ```
 
+## Async Functions
+
+Use `async fn` to declare asynchronous functions. `await` is only valid inside `async fn` bodies and requires a `Future[T]` value.
+
+```klar
+async fn fetch() -> Future[i32] {
+    return 21
+}
+
+async fn compute() -> Future[i32] {
+    return await fetch() + await fetch()
+}
+
+fn main() -> i32 {
+    let task: Future[i32] = compute()
+    let _unused: Future[i32] = task
+    return 0
+}
+```
+
 ## Generic Functions
 
 Functions can be generic over types using `[T]` syntax:

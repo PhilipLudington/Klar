@@ -81,6 +81,10 @@ pub const OpCode = enum(u8) {
     /// Unary negation (pop value, push negated)
     op_neg,
 
+    /// Await async result. If the value is a Future, resolve completed values
+    /// and fail on pending/failed/cancelled states; non-Future values pass through.
+    op_await,
+
     // ------------------------------------------------------------------------
     // Comparison Operations (1.4)
     // ------------------------------------------------------------------------
@@ -414,6 +418,7 @@ pub const OpCode = enum(u8) {
             .op_sub_sat,
             .op_mul_sat,
             .op_neg,
+            .op_await,
             .op_eq,
             .op_ne,
             .op_lt,

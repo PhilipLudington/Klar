@@ -1,0 +1,14 @@
+// Expected: check-error invalid_operation
+
+async fn fetch() -> Future[i32] {
+    return 1
+}
+
+fn main() -> i32 {
+    let a: Future[i32] = fetch()
+    let b: Future[i32] = fetch()
+    if a == b {
+        return 1
+    }
+    return 0
+}

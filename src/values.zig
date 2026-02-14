@@ -355,6 +355,7 @@ pub const FunctionValue = struct {
     params: []const FunctionParam,
     body: *ast.Block,
     closure_env: ?*Environment,
+    is_async: bool,
 
     pub const FunctionParam = struct {
         name: []const u8,

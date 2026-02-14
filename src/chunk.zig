@@ -43,6 +43,9 @@ pub const Function = struct {
     /// Number of upvalues this function captures
     upvalue_count: u8,
 
+    /// Whether this function was declared as `async fn`.
+    is_async: bool,
+
     /// The function's bytecode chunk
     chunk: Chunk,
 
@@ -51,6 +54,7 @@ pub const Function = struct {
             .name = name,
             .arity = arity,
             .upvalue_count = 0,
+            .is_async = false,
             .chunk = Chunk.init(allocator),
         };
     }

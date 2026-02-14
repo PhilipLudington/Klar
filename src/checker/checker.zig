@@ -4080,6 +4080,28 @@ pub const TypeChecker = struct {
         return type_utils.isTypeCompatible(self, target, value);
     }
 
+    /// Returns the inner type if `t` is Future[T], otherwise null.
+    pub fn futureInnerType(self: *TypeChecker, t: Type) ?Type {
+        _ = self;
+        if (t != .applied) return null;
+        const applied = t.applied;
+        if (applied.base != .extern_type) return null;
+        if (!std.mem.eql(u8, applied.base.extern_type.name, "Future")) return null;
+        if (applied.args.len != 1) return null;
+        return applied.args[0];
+    }
+
+    /// Parses async return type annotation and returns the inner T for Future[T].
+    pub fn asyncReturnInnerTypeExpr(self: *TypeChecker, return_type_expr: ast.TypeExpr) ?ast.TypeExpr {
+        _ = self;
+        if (return_type_expr != .generic_apply) return null;
+        const generic = return_type_expr.generic_apply;
+        if (generic.base != .named) return null;
+        if (!std.mem.eql(u8, generic.base.named.name, "Future")) return null;
+        if (generic.args.len != 1) return null;
+        return generic.args[0];
+    }
+
     // ========================================================================
     // Module System Support
     // ========================================================================
@@ -4355,7 +4377,6 @@ pub const TypeChecker = struct {
             switch (decl) {
                 .function => |f| {
                     if (f.is_async) {
-                        self.addError(.invalid_operation, f.span, "async functions are not yet supported", .{});
                         self.async_function_names.put(self.allocator, f.name, {}) catch {};
                     }
 
@@ -4382,10 +4403,21 @@ pub const TypeChecker = struct {
                         }
                     }
 
-                    const return_type = if (f.return_type) |rt|
-                        self.resolveTypeExpr(rt) catch self.type_builder.unknownType()
-                    else
-                        self.type_builder.voidType();
+                    var return_type: Type = self.type_builder.voidType();
+                    if (f.return_type) |rt| {
+                        return_type = self.resolveTypeExpr(rt) catch self.type_builder.unknownType();
+                    }
+                    if (f.is_async) {
+                        if (f.return_type) |rt| {
+                            if (self.asyncReturnInnerTypeExpr(rt) == null) {
+                                self.addError(.invalid_operation, rt.span(), "async function return type must be Future[T]", .{});
+                                return_type = self.type_builder.unknownType();
+                            }
+                        } else {
+                            self.addError(.invalid_operation, f.span, "async function return type must be Future[T]", .{});
+                            return_type = self.type_builder.unknownType();
+                        }
+                    }
 
                     const func_type = self.type_builder.functionTypeWithFlags(param_types.items, return_type, comptime_params, f.is_unsafe) catch continue;
 
@@ -4461,10 +4493,20 @@ pub const TypeChecker = struct {
                             }) catch {};
                         }
 
-                        self.current_return_type = if (f.return_type) |rt|
-                            self.resolveTypeExpr(rt) catch self.type_builder.voidType()
-                        else
-                            self.type_builder.voidType();
+                        self.current_return_type = blk: {
+                            if (f.is_async) {
+                                if (f.return_type) |rt| {
+                                    if (self.asyncReturnInnerTypeExpr(rt)) |inner_expr| {
+                                        break :blk self.resolveTypeExpr(inner_expr) catch self.type_builder.unknownType();
+                                    }
+                                }
+                                break :blk self.type_builder.unknownType();
+                            }
+                            if (f.return_type) |rt| {
+                                break :blk self.resolveTypeExpr(rt) catch self.type_builder.voidType();
+                            }
+                            break :blk self.type_builder.voidType();
+                        };
                         defer self.current_return_type = null;
 
                         // For comptime functions, set the flag so nested comptime calls
@@ -4701,7 +4743,7 @@ test "extractScopeAtOffset prefers innermost shadowed binding" {
 test "await validates operand is async call" {
     const testing = std.testing;
     const source =
-        \\async fn task() -> i32 {
+        \\async fn task() -> Future[i32] {
         \\    let value: i32 = 1
         \\    return await value
         \\}
@@ -4715,17 +4757,17 @@ test "await validates operand is async call" {
     checker.checkModule(parsed.module);
 
     try testing.expect(checker.hasErrors());
-    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be a call to an async function"));
+    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be Future[T]"));
 }
 
-test "await on async call reports unsupported lowering path" {
+test "await on async call type-checks successfully" {
     const testing = std.testing;
     const source =
-        \\async fn fetch() -> i32 {
+        \\async fn fetch() -> Future[i32] {
         \\    return 1
         \\}
         \\
-        \\async fn worker() -> i32 {
+        \\async fn worker() -> Future[i32] {
         \\    return await fetch()
         \\}
     ;
@@ -4737,19 +4779,17 @@ test "await on async call reports unsupported lowering path" {
     defer checker.deinit();
     checker.checkModule(parsed.module);
 
-    try testing.expect(checker.hasErrors());
-    try testing.expect(hasErrorMessage(checker.errors.items, "'await' is not yet supported"));
-    try testing.expect(!hasErrorMessage(checker.errors.items, "'await' operand must be a call to an async function"));
+    try testing.expect(!checker.hasErrors());
 }
 
 test "await uses symbol kind, not just function name" {
     const testing = std.testing;
     const source =
-        \\async fn fetch() -> i32 {
+        \\async fn fetch() -> Future[i32] {
         \\    return 1
         \\}
         \\
-        \\async fn worker() -> i32 {
+        \\async fn worker() -> Future[i32] {
         \\    let fetch: i32 = 7
         \\    return await fetch()
         \\}
@@ -4763,14 +4803,19 @@ test "await uses symbol kind, not just function name" {
     checker.checkModule(parsed.module);
 
     try testing.expect(checker.hasErrors());
-    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be a call to an async function"));
+    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be Future[T]"));
 }
 
-test "await on non-identifier callee avoids shape-only operand rejection" {
+test "await accepts future-typed local values" {
     const testing = std.testing;
     const source =
-        \\async fn worker() -> i32 {
-        \\    return await (|x: i32| -> i32 { x })(1)
+        \\async fn fetch() -> Future[i32] {
+        \\    return 1
+        \\}
+        \\
+        \\async fn worker() -> Future[i32] {
+        \\    let pending: Future[i32] = fetch()
+        \\    return await pending
         \\}
     ;
 
@@ -4781,7 +4826,5 @@ test "await on non-identifier callee avoids shape-only operand rejection" {
     defer checker.deinit();
     checker.checkModule(parsed.module);
 
-    try testing.expect(checker.hasErrors());
-    try testing.expect(hasErrorMessage(checker.errors.items, "'await' is not yet supported"));
-    try testing.expect(!hasErrorMessage(checker.errors.items, "'await' operand must be a call to an async function"));
+    try testing.expect(!checker.hasErrors());
 }

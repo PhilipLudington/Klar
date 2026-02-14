@@ -1,0 +1,14 @@
+async fn value() -> Future[i32] {
+    return 42
+}
+
+async fn compute() -> Future[i32] {
+    return await value()
+}
+
+fn main() -> i32 {
+    let pending: Future[i32] = compute()
+    let also_pending: Future[i32] = pending
+    let _unused: Future[i32] = also_pending
+    return 0
+}

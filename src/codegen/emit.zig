@@ -1710,15 +1710,27 @@ pub const Emitter = struct {
                     self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
                 } else if (result) |val| {
+                    var final_val = val;
                     // Handle sret: store to sret pointer and return void
                     if (self.current_sret_ptr) |sret_ptr| {
+                        if (self.current_return_klar_type) |klar_ret| {
+                            if (klar_ret == .applied and klar_ret.applied.base == .extern_type and std.mem.eql(u8, klar_ret.applied.base.extern_type.name, "Future") and klar_ret.applied.args.len == 1) {
+                                const future_ty = self.typeToLLVM(klar_ret);
+                                var wrapped = llvm.Const.null_(future_ty);
+                                wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, llvm.Const.int8(self.ctx, 1), 0, "future.state.completed");
+                                if (llvm.c.LLVMCountStructElementTypes(future_ty) >= 2) {
+                                    wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, final_val, 1, "future.value");
+                                }
+                                final_val = wrapped;
+                            }
+                        }
                         self.emitDropsForReturn();
-                        _ = self.builder.buildStore(val, sret_ptr);
+                        _ = self.builder.buildStore(final_val, sret_ptr);
                         _ = self.builder.buildRetVoid();
                     } else if (self.current_return_type) |rt_info| {
                         // If return type is optional and value isn't already optional, wrap in Some
                         if (rt_info.is_optional) {
-                            const val_type = llvm.typeOf(val);
+                            const val_type = llvm.typeOf(final_val);
                             const val_kind = llvm.getTypeKind(val_type);
                             // Check if value is already an optional (struct with our layout)
                             if (val_kind != llvm.c.LLVMStructTypeKind or
@@ -1726,18 +1738,40 @@ pub const Emitter = struct {
                             {
                                 // Not an optional, wrap in Some
                                 self.emitDropsForReturn();
-                                const some_val = self.emitSome(val, rt_info.inner_type.?);
+                                const some_val = self.emitSome(final_val, rt_info.inner_type.?);
                                 _ = self.builder.buildRet(some_val);
                                 self.popScope();
                                 self.current_function = null;
                                 return;
                             }
                         }
+                        if (self.current_return_klar_type) |klar_ret| {
+                            if (klar_ret == .applied and klar_ret.applied.base == .extern_type and std.mem.eql(u8, klar_ret.applied.base.extern_type.name, "Future") and klar_ret.applied.args.len == 1) {
+                                const future_ty = self.typeToLLVM(klar_ret);
+                                var wrapped = llvm.Const.null_(future_ty);
+                                wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, llvm.Const.int8(self.ctx, 1), 0, "future.state.completed");
+                                if (llvm.c.LLVMCountStructElementTypes(future_ty) >= 2) {
+                                    wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, final_val, 1, "future.value");
+                                }
+                                final_val = wrapped;
+                            }
+                        }
                         self.emitDropsForReturn();
-                        _ = self.builder.buildRet(val);
+                        _ = self.builder.buildRet(final_val);
                     } else {
+                        if (self.current_return_klar_type) |klar_ret| {
+                            if (klar_ret == .applied and klar_ret.applied.base == .extern_type and std.mem.eql(u8, klar_ret.applied.base.extern_type.name, "Future") and klar_ret.applied.args.len == 1) {
+                                const future_ty = self.typeToLLVM(klar_ret);
+                                var wrapped = llvm.Const.null_(future_ty);
+                                wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, llvm.Const.int8(self.ctx, 1), 0, "future.state.completed");
+                                if (llvm.c.LLVMCountStructElementTypes(future_ty) >= 2) {
+                                    wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, final_val, 1, "future.value");
+                                }
+                                final_val = wrapped;
+                            }
+                        }
                         self.emitDropsForReturn();
-                        _ = self.builder.buildRet(val);
+                        _ = self.builder.buildRet(final_val);
                     }
                 } else if (self.current_return_type) |rt_info| {
                     if (rt_info.is_optional) {
@@ -2117,6 +2151,17 @@ pub const Emitter = struct {
                                 // Not an optional, wrap in Some
                                 result = self.emitSome(result, rt_info.inner_type.?);
                             }
+                        }
+                    }
+                    if (self.current_return_klar_type) |klar_ret| {
+                        if (klar_ret == .applied and klar_ret.applied.base == .extern_type and std.mem.eql(u8, klar_ret.applied.base.extern_type.name, "Future") and klar_ret.applied.args.len == 1) {
+                            const future_ty = self.typeToLLVM(klar_ret);
+                            var wrapped = llvm.Const.null_(future_ty);
+                            wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, llvm.Const.int8(self.ctx, 1), 0, "future.state.completed");
+                            if (llvm.c.LLVMCountStructElementTypes(future_ty) >= 2) {
+                                wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, result, 1, "future.value");
+                            }
+                            result = wrapped;
                         }
                     }
                     // If using sret, store to sret pointer and return void
@@ -4370,8 +4415,32 @@ pub const Emitter = struct {
                 return self.builder.buildNot(operand, "nottmp");
             },
             .await_ => {
-                // Async lowering not implemented yet.
-                return EmitError.UnsupportedFeature;
+                const operand = try self.emitExpr(un.operand);
+                const operand_ty = llvm.typeOf(operand);
+                if (llvm.getTypeKind(operand_ty) != llvm.c.LLVMStructTypeKind) {
+                    return operand;
+                }
+                if (llvm.c.LLVMCountStructElementTypes(operand_ty) < 2) {
+                    return operand;
+                }
+
+                const state_val = self.builder.buildExtractValue(operand, 0, "future.state");
+                const completed = llvm.Const.int8(self.ctx, 1);
+                const is_completed = self.builder.buildICmp(llvm.c.LLVMIntEQ, state_val, completed, "future.is_completed");
+
+                const current_fn = self.current_function orelse return EmitError.InvalidAST;
+                const ok_block = llvm.appendBasicBlock(self.ctx, current_fn, "await.ok");
+                const fail_block = llvm.appendBasicBlock(self.ctx, current_fn, "await.fail");
+
+                _ = self.builder.buildCondBr(is_completed, ok_block, fail_block);
+
+                self.builder.positionAtEnd(fail_block);
+                const abort_fn = self.getOrDeclareAbort();
+                _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(abort_fn), abort_fn, &[_]llvm.ValueRef{}, "");
+                _ = self.builder.buildUnreachable();
+
+                self.builder.positionAtEnd(ok_block);
+                return self.builder.buildExtractValue(operand, 1, "await.value");
             },
             .deref => {
                 // Dereference a pointer: load the value from the pointer
@@ -5962,6 +6031,20 @@ pub const Emitter = struct {
                         };
                         return llvm.Types.struct_(self.ctx, &context_err_fields, false);
                     }
+                    if (std.mem.eql(u8, base_name, "Future") and g.args.len == 1) {
+                        const inner_type = try self.typeExprToLLVM(g.args[0]);
+                        if (llvm.getTypeKind(inner_type) == llvm.c.LLVMVoidTypeKind) {
+                            var void_future_fields = [_]llvm.TypeRef{
+                                llvm.Types.int8(self.ctx),
+                            };
+                            return llvm.Types.struct_(self.ctx, &void_future_fields, false);
+                        }
+                        var future_fields = [_]llvm.TypeRef{
+                            llvm.Types.int8(self.ctx), // state
+                            inner_type, // resolved value
+                        };
+                        return llvm.Types.struct_(self.ctx, &future_fields, false);
+                    }
                     // List[T] is { ptr, len: i32, capacity: i32 }
                     if (std.mem.eql(u8, base_name, "List") and g.args.len == 1) {
                         return self.getListStructType();
@@ -7497,7 +7580,13 @@ pub const Emitter = struct {
             },
             .unary => |un| {
                 return switch (un.op) {
-                    .negate, .not, .await_ => try self.inferExprType(un.operand),
+                    .negate, .not => try self.inferExprType(un.operand),
+                    .await_ => blk: {
+                        const operand_ty = try self.inferExprType(un.operand);
+                        if (llvm.getTypeKind(operand_ty) != llvm.c.LLVMStructTypeKind) break :blk operand_ty;
+                        if (llvm.c.LLVMCountStructElementTypes(operand_ty) < 2) break :blk operand_ty;
+                        break :blk llvm.c.LLVMStructGetTypeAtIndex(operand_ty, 1);
+                    },
                     .deref => {
                         // Dereference returns the inner type
                         return try self.inferDerefType(un.operand);
@@ -28870,6 +28959,20 @@ pub const Emitter = struct {
                 return llvm.Types.pointer(self.ctx);
             },
             .applied => |a| {
+                if (a.base == .extern_type and std.mem.eql(u8, a.base.extern_type.name, "Future") and a.args.len == 1) {
+                    const inner_ty = self.typeToLLVM(a.args[0]);
+                    if (llvm.getTypeKind(inner_ty) == llvm.c.LLVMVoidTypeKind) {
+                        var void_future_fields = [_]llvm.TypeRef{
+                            llvm.Types.int8(self.ctx),
+                        };
+                        return llvm.Types.struct_(self.ctx, &void_future_fields, false);
+                    }
+                    var future_fields = [_]llvm.TypeRef{
+                        llvm.Types.int8(self.ctx),
+                        inner_ty,
+                    };
+                    return llvm.Types.struct_(self.ctx, &future_fields, false);
+                }
                 // For applied types (e.g., Pair[i32]), construct mangled name and look up
                 var name_buf = std.ArrayListUnmanaged(u8){};
                 defer name_buf.deinit(self.allocator);

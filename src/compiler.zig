@@ -288,6 +288,7 @@ pub const Compiler = struct {
         // Create the function object.
         const new_func = try self.allocator.create(Function);
         new_func.* = Function.init(self.allocator, func.name, @intCast(func.params.len));
+        new_func.is_async = func.is_async;
         errdefer {
             new_func.deinit();
             self.allocator.destroy(new_func);
@@ -978,10 +979,7 @@ pub const Compiler = struct {
         const op: OpCode = switch (unary.op) {
             .negate => .op_neg,
             .not => .op_not,
-            .await_ => {
-                try self.addError(.unsupported_feature, unary.span, "'await' is not yet supported in bytecode VM");
-                return;
-            },
+            .await_ => .op_await,
             .ref => .op_nop, // TODO: implement references
             .ref_mut => .op_nop,
             .deref => .op_nop,

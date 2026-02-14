@@ -172,6 +172,7 @@ pub fn registerComptimeFunctionsInInterpreter(tc: anytype, interp: *Interpreter)
                 .params = params_slice,
                 .body = body,
                 .closure_env = interp.global_env,
+                .is_async = false,
             };
 
             // Track for cleanup

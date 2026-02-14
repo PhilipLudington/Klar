@@ -50,11 +50,6 @@ fn checkTestDecl(tc: anytype, test_decl: *ast.TestDecl) void {
 }
 
 fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
-    if (func.is_async) {
-        tc.addError(.invalid_operation, func.span, "async functions are not yet supported", .{});
-        return;
-    }
-
     // Push type parameters into scope if this is a generic function
     const has_type_params = func.type_params.len > 0;
     if (has_type_params) {
@@ -81,7 +76,26 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
     else
         tc.type_builder.voidType();
 
-    const func_type = tc.type_builder.functionTypeWithFlags(param_types.items, return_type, comptime_params, func.is_unsafe) catch {
+    var signature_return_type = return_type;
+    var body_return_type = return_type;
+    if (func.is_async) {
+        if (func.return_type) |rt| {
+            if (tc.asyncReturnInnerTypeExpr(rt)) |inner_expr| {
+                signature_return_type = tc.resolveTypeExpr(rt) catch tc.type_builder.unknownType();
+                body_return_type = tc.resolveTypeExpr(inner_expr) catch tc.type_builder.unknownType();
+            } else {
+                tc.addError(.invalid_operation, rt.span(), "async function return type must be Future[T]", .{});
+                signature_return_type = tc.type_builder.unknownType();
+                body_return_type = tc.type_builder.unknownType();
+            }
+        } else {
+            tc.addError(.invalid_operation, func.span, "async function return type must be Future[T]", .{});
+            signature_return_type = tc.type_builder.unknownType();
+            body_return_type = tc.type_builder.unknownType();
+        }
+    }
+
+    const func_type = tc.type_builder.functionTypeWithFlags(param_types.items, signature_return_type, comptime_params, func.is_unsafe) catch {
         return;
     };
 
@@ -104,8 +118,8 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
             }
         }
         // Return type must be i32 or void
-        const is_i32 = return_type == .primitive and return_type.primitive == .i32_;
-        const is_void = return_type == .void_;
+        const is_i32 = signature_return_type == .primitive and signature_return_type.primitive == .i32_;
+        const is_void = signature_return_type == .void_;
         if (!is_i32 and !is_void) {
             const error_span = if (func.return_type) |rt| rt.span() else func.span;
             tc.addError(.type_mismatch, error_span, "main() must return i32 or void", .{});
@@ -143,7 +157,7 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
             }) catch {};
         }
 
-        tc.current_return_type = return_type;
+        tc.current_return_type = body_return_type;
         defer tc.current_return_type = null;
 
         // For comptime functions, set the flag so nested comptime calls
@@ -160,6 +174,10 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
             tc.in_unsafe_context = true;
         }
         defer tc.in_unsafe_context = was_unsafe;
+
+        const was_async_context = tc.current_async_context;
+        tc.current_async_context = func.is_async;
+        defer tc.current_async_context = was_async_context;
 
         _ = tc.checkBlock(body);
     }

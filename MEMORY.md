@@ -251,11 +251,11 @@
 
 ### Other
 
-`comptime`
+`comptime`, `async`, `await`
 
 ### Reserved (future)
 
-`async`, `await`, `yield`, `macro`, `where`, `dyn`, `move`, `mut`, `static`, `union`
+`yield`, `macro`, `where`, `dyn`, `move`, `mut`, `static`, `union`
 
 ---
 
