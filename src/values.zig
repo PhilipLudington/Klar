@@ -909,6 +909,14 @@ test "Value formatting" {
     try testing.expectEqualStrings("Future(task=7, state=completed, value=42)", future_str);
 }
 
+test "FutureState tags are stable internal mapping" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(u8, 0), @intFromEnum(FutureState.pending));
+    try testing.expectEqual(@as(u8, 1), @intFromEnum(FutureState.completed));
+    try testing.expectEqual(@as(u8, 2), @intFromEnum(FutureState.failed));
+    try testing.expectEqual(@as(u8, 3), @intFromEnum(FutureState.cancelled));
+}
+
 test "Integer type properties" {
     const testing = std.testing;
 

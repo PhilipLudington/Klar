@@ -208,6 +208,7 @@ When adding a new language feature:
 4. **All backends**: Update interpreter, VM, and native codegen
 5. **Tests**: Add comprehensive tests in `test/native/`
 6. **Documentation**: Update relevant docs in `docs/`
+   - Async runtime changes must update `docs/design/async-runtime-internal.md` when Future state mapping or await runtime semantics change.
 
 ## Project Structure
 

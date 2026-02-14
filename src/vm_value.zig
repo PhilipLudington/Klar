@@ -918,3 +918,11 @@ test "Future value semantics" {
     try testing.expect(!pending.eql(completed));
     try testing.expect(completed.eql(Value{ .future = .{ .task_id = 10, .state = .completed, .value = null } }));
 }
+
+test "VM FutureState tags are stable internal mapping" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(u8, 0), @intFromEnum(FutureState.pending));
+    try testing.expectEqual(@as(u8, 1), @intFromEnum(FutureState.completed));
+    try testing.expectEqual(@as(u8, 2), @intFromEnum(FutureState.failed));
+    try testing.expectEqual(@as(u8, 3), @intFromEnum(FutureState.cancelled));
+}

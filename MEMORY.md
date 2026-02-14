@@ -253,6 +253,8 @@
 
 `comptime`, `async`, `await`
 
+Async runtime internals (state tags/layout conventions): `docs/design/async-runtime-internal.md`
+
 ### Reserved (future)
 
 `yield`, `macro`, `where`, `dyn`, `move`, `mut`, `static`, `union`
