@@ -1,0 +1,17 @@
+struct RawFuture {
+    state: i8,
+    value: i32,
+}
+
+async fn crash() -> Future[i32] {
+    let raw: RawFuture = RawFuture { state: 3.as[i8], value: 7 }
+    let raw_ptr: CPtr[RawFuture] = unsafe { ref_to_ptr(ref raw) }
+    let future_ptr: CPtr[Future[i32]] = unsafe { ptr_cast[Future[i32]](raw_ptr) }
+    let cancelled: Future[i32] = unsafe { read(future_ptr) }
+    return await cancelled
+}
+
+fn main() -> i32 {
+    let _future: Future[i32] = crash()
+    return 0
+}

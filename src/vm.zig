@@ -263,6 +263,26 @@ pub const VM = struct {
         }
     }
 
+    fn resolveAwaitValue(self: *VM, value: Value) RuntimeError!Value {
+        switch (value) {
+            .future => |future| switch (future.state) {
+                .completed => {
+                    if (future.value) |resolved| {
+                        return resolved.*;
+                    }
+                    return Value.void_val;
+                },
+                .pending, .failed, .cancelled => {
+                    return self.recordErrorWithMessage(
+                        RuntimeError.InvalidOperation,
+                        "runtime error: await on non-completed Future",
+                    );
+                },
+            },
+            else => return value,
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Execution
     // -------------------------------------------------------------------------
@@ -387,22 +407,8 @@ pub const VM = struct {
                 },
                 .op_await => {
                     const value = try self.pop();
-                    switch (value) {
-                        .future => |future| switch (future.state) {
-                            .completed => {
-                                if (future.value) |resolved| {
-                                    try self.push(resolved.*);
-                                } else {
-                                    try self.push(Value.void_val);
-                                }
-                            },
-                            .pending, .failed, .cancelled => return self.recordErrorWithMessage(
-                                RuntimeError.InvalidOperation,
-                                "runtime error: await on non-completed Future",
-                            ),
-                        },
-                        else => try self.push(value),
-                    }
+                    const awaited = try self.resolveAwaitValue(value);
+                    try self.push(awaited);
                 },
                 .op_and => {
                     const offset = self.readU16();
@@ -1939,4 +1945,61 @@ test "VM comparison" {
     try vm.comparisonOp(.gt);
     const gt_result = try vm.pop();
     try testing.expect(gt_result.eql(Value.true_val));
+}
+
+test "VM await resolve semantics" {
+    const testing = std.testing;
+
+    var vm = try VM.init(testing.allocator);
+    defer vm.deinit();
+
+    var completed_payload = Value.fromInt(42);
+    const completed = Value{
+        .future = .{
+            .task_id = 1,
+            .state = .completed,
+            .value = &completed_payload,
+        },
+    };
+    const completed_result = try vm.resolveAwaitValue(completed);
+    try testing.expect(completed_result.eql(Value.fromInt(42)));
+
+    const completed_void = Value{
+        .future = .{
+            .task_id = 2,
+            .state = .completed,
+            .value = null,
+        },
+    };
+    const void_result = try vm.resolveAwaitValue(completed_void);
+    try testing.expect(void_result.eql(Value.void_val));
+
+    const passthrough = try vm.resolveAwaitValue(Value.fromInt(7));
+    try testing.expect(passthrough.eql(Value.fromInt(7)));
+}
+
+test "VM await rejects non-completed futures with stable message" {
+    const testing = std.testing;
+
+    var vm = try VM.init(testing.allocator);
+    defer vm.deinit();
+
+    const states = [_]vm_value.FutureState{ .pending, .failed, .cancelled };
+    for (states, 0..) |state, i| {
+        vm.last_error = null;
+        const fut = Value{
+            .future = .{
+                .task_id = @intCast(i + 1),
+                .state = state,
+                .value = null,
+            },
+        };
+        try testing.expectError(RuntimeError.InvalidOperation, vm.resolveAwaitValue(fut));
+        try testing.expect(vm.getLastError() != null);
+        const ctx = vm.getLastError().?;
+        try testing.expectEqualStrings(
+            "runtime error: await on non-completed Future",
+            ctx.message orelse "",
+        );
+    }
 }

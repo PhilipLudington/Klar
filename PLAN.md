@@ -322,7 +322,7 @@ Optionally include function source with `--include-source` for richer AI context
   - Added explicit checker diagnostics for unsupported async declarations and methods (`async fn`, async trait/impl methods)
   - Added check-suite regression coverage for invalid async method declarations
   - Added checker unit coverage for await operand validation and async-call await behavior
-- [ ] **6.3** Runtime/backend execution model
+- [x] **6.3** Runtime/backend execution model
   - Implement minimal task/future representation in VM and interpreter
   - Added runtime cooperative executor scaffold (`src/runtime/async_executor.zig`) with deterministic FIFO scheduling, cancellation, and failure isolation semantics
   - Wired interpreter runtime state to include cooperative executor scaffold for future async integration
@@ -331,11 +331,12 @@ Optionally include function source with `--include-source` for richer AI context
   - Removed checker/runtime backend gating for top-level `async fn` + `await` so async call flows execute end-to-end
   - Added VM bytecode opcode `op_await` and initial await runtime handling
   - Added native codegen lowering for `await` as synchronous value forwarding
-  - **Follow-up required:** define canonical async semantics and enforce backend parity:
-    - `async fn` explicit return contract (`Future[T]` canonical form)
-    - `await` operand/result typing (`Future[T] -> T`)
-    - identical runtime behavior for interpreter, VM, and native backends
-    - parity tests for completed/pending/failed/cancelled future states
+  - Aligned runtime error termination semantics across backends (`exit(1)` on runtime errors in CLI paths)
+  - Added parity coverage for non-completed Future states (`pending`/`failed`/`cancelled`) in runtime/unit/native tests
+  - **Follow-up required:** define long-term async execution semantics beyond current synchronous-completion model:
+    - scheduler/task lifecycle semantics for real concurrent async execution
+    - cancellation propagation policy for task trees
+    - failure propagation model for awaited task failures
   - Ensure deterministic behavior and clear cancellation/error propagation semantics
 - [x] **6.4** Tooling integration
   - Update formatter for async/await constructs
@@ -357,7 +358,7 @@ Optionally include function source with `--include-source` for richer AI context
 ### Success Criteria
 
 - [ ] Async functions parse/type-check with explicit, unambiguous signatures
-- [ ] Await works correctly across interpreter, VM, and native build paths
+- [x] Await works correctly across interpreter, VM, and native build paths
 - [x] Async misuse surfaces actionable diagnostics
 - [x] Test suite includes regression coverage for async/await semantics
 

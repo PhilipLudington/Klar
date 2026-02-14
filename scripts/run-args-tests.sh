@@ -207,9 +207,25 @@ echo "--- Test: await runtime failure messaging ---"
 output=$($KLAR run "$TEST_DIR/async_await_pending_error.kl" 2>&1)
 status=$?
 if [ $status -eq 1 ] && echo "$output" | grep -q "runtime error: await on non-completed Future"; then
-    pass "await failure: native backend prints message and exits non-zero"
+    pass "await failure (pending): native backend prints message and exits non-zero"
 else
-    fail "await failure: native backend runtime error behavior mismatch"
+    fail "await failure (pending): native backend runtime error behavior mismatch"
+fi
+
+output=$($KLAR run "$TEST_DIR/async_await_failed_error.kl" 2>&1)
+status=$?
+if [ $status -eq 1 ] && echo "$output" | grep -q "runtime error: await on non-completed Future"; then
+    pass "await failure (failed): native backend prints message and exits non-zero"
+else
+    fail "await failure (failed): native backend runtime error behavior mismatch"
+fi
+
+output=$($KLAR run "$TEST_DIR/async_await_cancelled_error.kl" 2>&1)
+status=$?
+if [ $status -eq 1 ] && echo "$output" | grep -q "runtime error: await on non-completed Future"; then
+    pass "await failure (cancelled): native backend prints message and exits non-zero"
+else
+    fail "await failure (cancelled): native backend runtime error behavior mismatch"
 fi
 
 echo ""

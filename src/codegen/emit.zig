@@ -82,6 +82,10 @@ pub const EmitError = error{
 
 /// LLVM IR emitter.
 pub const Emitter = struct {
+    // Internal Future runtime state tag used by native codegen await/wrapping paths.
+    // Full mapping is documented in docs/design/async-runtime-internal.md.
+    const future_state_completed: u8 = 1;
+
     allocator: Allocator,
     ctx: llvm.Context,
     module: llvm.Module,
@@ -1491,7 +1495,13 @@ pub const Emitter = struct {
 
     fn wrapCompletedFuture(self: *Emitter, future_ty: llvm.TypeRef, payload: ?llvm.ValueRef) EmitError!llvm.ValueRef {
         var wrapped = llvm.Const.null_(future_ty);
-        wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, llvm.Const.int8(self.ctx, 1), 0, "future.state.completed");
+        wrapped = llvm.c.LLVMBuildInsertValue(
+            self.builder.ref,
+            wrapped,
+            llvm.Const.int8(self.ctx, future_state_completed),
+            0,
+            "future.state.completed",
+        );
         if (llvm.c.LLVMCountStructElementTypes(future_ty) >= 2) {
             const payload_ty = llvm.c.LLVMStructGetTypeAtIndex(future_ty, 1);
             const payload_val = if (payload) |value| blk: {
@@ -4462,7 +4472,7 @@ pub const Emitter = struct {
                 }
 
                 const state_val = self.builder.buildExtractValue(operand, 0, "future.state");
-                const completed = llvm.Const.int8(self.ctx, 1);
+                const completed = llvm.Const.int8(self.ctx, future_state_completed);
                 const is_completed = self.builder.buildICmp(llvm.c.LLVMIntEQ, state_val, completed, "future.is_completed");
 
                 const current_fn = self.current_function orelse return EmitError.InvalidAST;

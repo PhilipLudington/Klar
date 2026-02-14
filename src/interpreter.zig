@@ -2724,6 +2724,64 @@ test "await on pending future returns invalid operation" {
     try testing.expect(interp.consumeLastErrorMessage() == null);
 }
 
+test "await on failed future returns invalid operation with runtime message" {
+    const testing = std.testing;
+    var interp = try Interpreter.init(testing.allocator);
+    defer interp.deinit();
+
+    const failed = try interp.builder.futureFailed(3, interp.builder.i32Val(9));
+    try interp.current_env.define("failed", failed, false);
+
+    const unary = try testing.allocator.create(ast.Unary);
+    defer testing.allocator.destroy(unary);
+    unary.* = .{
+        .op = .await_,
+        .operand = .{
+            .identifier = .{
+                .name = "failed",
+                .span = .{ .start = 0, .end = 0, .line = 1, .column = 7 },
+            },
+        },
+        .span = .{ .start = 0, .end = 0, .line = 1, .column = 1 },
+    };
+    const expr = ast.Expr{ .unary = unary };
+
+    try testing.expectError(RuntimeError.InvalidOperation, interp.evaluate(expr));
+    try testing.expectEqualStrings(
+        "runtime error: await on non-completed Future",
+        interp.consumeLastErrorMessage() orelse "",
+    );
+}
+
+test "await on cancelled future returns invalid operation with runtime message" {
+    const testing = std.testing;
+    var interp = try Interpreter.init(testing.allocator);
+    defer interp.deinit();
+
+    const cancelled = try interp.builder.futureCancelled(4);
+    try interp.current_env.define("cancelled", cancelled, false);
+
+    const unary = try testing.allocator.create(ast.Unary);
+    defer testing.allocator.destroy(unary);
+    unary.* = .{
+        .op = .await_,
+        .operand = .{
+            .identifier = .{
+                .name = "cancelled",
+                .span = .{ .start = 0, .end = 0, .line = 1, .column = 10 },
+            },
+        },
+        .span = .{ .start = 0, .end = 0, .line = 1, .column = 1 },
+    };
+    const expr = ast.Expr{ .unary = unary };
+
+    try testing.expectError(RuntimeError.InvalidOperation, interp.evaluate(expr));
+    try testing.expectEqualStrings(
+        "runtime error: await on non-completed Future",
+        interp.consumeLastErrorMessage() orelse "",
+    );
+}
+
 test "await on non-future value is passthrough" {
     const testing = std.testing;
     var interp = try Interpreter.init(testing.allocator);
