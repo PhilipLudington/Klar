@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const chunk_mod = @import("chunk.zig");
 const Function = chunk_mod.Function;
 const gc_mod = @import("gc.zig");
+const async_state = @import("runtime/async_state.zig");
 pub const ObjHeader = gc_mod.ObjHeader;
 pub const ObjType = gc_mod.ObjType;
 pub const GC = gc_mod.GC;
@@ -650,11 +651,11 @@ pub const ObjRange = struct {
 
 pub const TaskId = u64;
 
-pub const FutureState = enum {
-    pending,
-    completed,
-    failed,
-    cancelled,
+pub const FutureState = enum(u8) {
+    pending = async_state.pending_tag,
+    completed = async_state.completed_tag,
+    failed = async_state.failed_tag,
+    cancelled = async_state.cancelled_tag,
 };
 
 pub const FutureValue = struct {

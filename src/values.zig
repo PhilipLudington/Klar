@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const types = @import("types.zig");
+const async_state = @import("runtime/async_state.zig");
 
 // ============================================================================
 // Runtime Values
@@ -323,11 +324,11 @@ pub const ResultValue = struct {
 
 pub const TaskId = u64;
 
-pub const FutureState = enum {
-    pending,
-    completed,
-    failed,
-    cancelled,
+pub const FutureState = enum(u8) {
+    pending = async_state.pending_tag,
+    completed = async_state.completed_tag,
+    failed = async_state.failed_tag,
+    cancelled = async_state.cancelled_tag,
 };
 
 pub const FutureValue = struct {

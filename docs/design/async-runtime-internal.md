@@ -10,7 +10,7 @@ This document defines internal async runtime conventions used by current Klar ba
 
 ## Future State Tags
 
-Current numeric mapping used by native runtime layout tests and codegen:
+Current numeric mapping used by runtime enums and native codegen:
 
 - `0` = `pending`
 - `1` = `completed`
@@ -33,4 +33,5 @@ When changing async runtime behavior, keep these in sync:
 - `src/interpreter.zig`
 - `src/vm.zig`
 - `src/codegen/emit.zig`
-- regression tests in `test/native` and `test/args`
+- runtime unit tests in `src/interpreter.zig` and `src/vm.zig`
+- native raw-layout smoke test in `test/native/async_await_pending_error.kl`

@@ -332,7 +332,7 @@ Optionally include function source with `--include-source` for richer AI context
   - Added VM bytecode opcode `op_await` and initial await runtime handling
   - Added native codegen lowering for `await` as synchronous value forwarding
   - Aligned runtime error termination semantics across backends (`exit(1)` on runtime errors in CLI paths)
-  - Added parity coverage for non-completed Future states (`pending`/`failed`/`cancelled`) in runtime/unit/native tests
+  - Added parity coverage for non-completed Future states (`pending`/`failed`/`cancelled`) in runtime unit tests plus native raw-layout smoke coverage
   - **Follow-up required:** define long-term async execution semantics beyond current synchronous-completion model:
     - scheduler/task lifecycle semantics for real concurrent async execution
     - cancellation propagation policy for task trees

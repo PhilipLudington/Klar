@@ -17,6 +17,7 @@ const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const checker_mod = @import("../checker/mod.zig");
 const TypeChecker = checker_mod.TypeChecker;
+const async_state = @import("../runtime/async_state.zig");
 
 // Type definitions from checker submodules
 const MonomorphizedFunction = checker_mod.MonomorphizedFunction;
@@ -83,8 +84,7 @@ pub const EmitError = error{
 /// LLVM IR emitter.
 pub const Emitter = struct {
     // Internal Future runtime state tag used by native codegen await/wrapping paths.
-    // Full mapping is documented in docs/design/async-runtime-internal.md.
-    const future_state_completed: u8 = 1;
+    const future_state_completed: u8 = async_state.completed_tag;
 
     allocator: Allocator,
     ctx: llvm.Context,
