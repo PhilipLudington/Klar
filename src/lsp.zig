@@ -227,6 +227,16 @@ const CompletionItem = struct {
     sort_text: []u8,
 };
 
+const KeywordCompletionSpec = struct {
+    keyword: []const u8,
+    detail: []const u8,
+};
+
+const keyword_completion_specs = [_]KeywordCompletionSpec{
+    .{ .keyword = "async", .detail = "keyword: async function modifier" },
+    .{ .keyword = "await", .detail = "keyword: await async result" },
+};
+
 fn freeCompletionItems(allocator: std.mem.Allocator, items: []CompletionItem) void {
     for (items) |item| {
         allocator.free(item.label);
@@ -580,6 +590,74 @@ fn identifierAtOffset(source: []const u8, offset: usize) ?[]const u8 {
     return source[start..end];
 }
 
+fn identifierPrefixBeforeOffset(source: []const u8, offset: usize) []const u8 {
+    if (source.len == 0) return "";
+
+    const clamped_offset = @min(offset, source.len);
+    var start = clamped_offset;
+    while (start > 0 and isIdentifierChar(source[start - 1])) : (start -= 1) {}
+    return source[start..clamped_offset];
+}
+
+fn sliceStartsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
+    if (prefix.len > haystack.len) return false;
+    return std.ascii.eqlIgnoreCase(haystack[0..prefix.len], prefix);
+}
+
+fn hasCompletionLabel(items: []const CompletionItem, label: []const u8) bool {
+    for (items) |item| {
+        if (std.mem.eql(u8, item.label, label)) return true;
+    }
+    return false;
+}
+
+fn appendKeywordCompletions(
+    allocator: std.mem.Allocator,
+    items: *std.ArrayListUnmanaged(CompletionItem),
+    source: []const u8,
+    cursor_offset: usize,
+) !void {
+    const prefix = identifierPrefixBeforeOffset(source, cursor_offset);
+    for (keyword_completion_specs) |spec| {
+        if (prefix.len > 0 and !sliceStartsWithIgnoreCase(spec.keyword, prefix)) continue;
+        if (hasCompletionLabel(items.items, spec.keyword)) continue;
+
+        try items.append(allocator, .{
+            .label = try allocator.dupe(u8, spec.keyword),
+            .detail = try allocator.dupe(u8, spec.detail),
+            .kind = 14, // CompletionItemKind.Keyword
+            .sort_text = try std.fmt.allocPrint(allocator, "2_{s}", .{spec.keyword}),
+        });
+    }
+}
+
+fn keywordHoverDescription(keyword: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, keyword, "async")) {
+        return "Marks a function as asynchronous. Use with `fn` declarations.";
+    }
+    if (std.mem.eql(u8, keyword, "await")) {
+        return "Waits for an async computation result. Valid only inside async functions.";
+    }
+    return null;
+}
+
+fn keywordHoverResultJson(allocator: std.mem.Allocator, keyword: []const u8, description: []const u8) ![]u8 {
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(allocator);
+    const writer = out.writer(allocator);
+
+    const value = try std.fmt.allocPrint(allocator, "`{s}`: `keyword`\n\n{s}", .{
+        keyword,
+        description,
+    });
+    defer allocator.free(value);
+
+    try writer.writeAll("{\"contents\":{\"kind\":\"markdown\",\"value\":");
+    try writeJsonString(writer, value);
+    try writer.writeAll("}}");
+    return out.toOwnedSlice(allocator);
+}
+
 fn findScopeEntryByName(scope_entries: []const checker_mod.ScopeEntry, name: []const u8) ?checker_mod.ScopeEntry {
     var i = scope_entries.len;
     while (i > 0) {
@@ -645,6 +723,8 @@ fn collectCompletionsFromSource(allocator: std.mem.Allocator, source: []const u8
         });
     }
 
+    try appendKeywordCompletions(allocator, &items, source, cursor_offset);
+
     return items.toOwnedSlice(allocator);
 }
 
@@ -697,11 +777,17 @@ fn collectHoverFromSource(
     const scope_entries = checker.extractScopeAtOffset(module, cursor_offset) catch return null;
     defer allocator.free(scope_entries);
 
-    const scope_entry = findScopeEntryByName(scope_entries, ident) orelse return null;
-    const type_name = types.typeToString(allocator, scope_entry.type_) catch try allocator.dupe(u8, "unknown");
-    defer allocator.free(type_name);
+    if (findScopeEntryByName(scope_entries, ident)) |scope_entry| {
+        const type_name = types.typeToString(allocator, scope_entry.type_) catch try allocator.dupe(u8, "unknown");
+        defer allocator.free(type_name);
+        return try hoverResultJson(allocator, scope_entry.name, type_name, scope_entry.kind);
+    }
 
-    return try hoverResultJson(allocator, scope_entry.name, type_name, scope_entry.kind);
+    if (keywordHoverDescription(ident)) |description| {
+        return try keywordHoverResultJson(allocator, ident, description);
+    }
+
+    return null;
 }
 
 const OffsetRange = struct {

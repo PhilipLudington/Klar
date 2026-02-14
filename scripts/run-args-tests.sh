@@ -656,6 +656,29 @@ else
 fi
 rm -f "$completion_fixture"
 
+completion_async_fixture="/tmp/klar_lsp_completion_async_fixture.kl"
+cat > "$completion_async_fixture" << 'EOF'
+fn main() -> i32 {
+    aw
+    return 0
+}
+EOF
+completion_async_uri="file://${completion_async_fixture}"
+completion_async_payload=$(printf '{"jsonrpc":"2.0","id":160,"method":"textDocument/completion","params":{"textDocument":{"uri":"%s"},"position":{"line":1,"character":6}}}' "$completion_async_uri")
+completion_async_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#completion_async_payload}" "$completion_async_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$completion_async_output" | grep -q '"id":160' && \
+   echo "$completion_async_output" | grep -q '"label":"await"' && \
+   echo "$completion_async_output" | grep -q '"detail":"keyword: await async result"'; then
+    pass "lsp command: completion includes async/await keyword items"
+else
+    fail "lsp command: async keyword completion handling failed"
+fi
+rm -f "$completion_async_fixture"
+
 hover_fixture="/tmp/klar_lsp_hover_fixture.kl"
 cat > "$hover_fixture" << 'EOF'
 fn main() -> i32 {
@@ -678,6 +701,51 @@ else
     fail "lsp command: textDocument/hover handling failed"
 fi
 rm -f "$hover_fixture"
+
+hover_async_fixture="/tmp/klar_lsp_hover_async_fixture.kl"
+cat > "$hover_async_fixture" << 'EOF'
+async fn fetch() -> i32 {
+    return 1
+}
+EOF
+hover_async_uri="file://${hover_async_fixture}"
+hover_async_payload=$(printf '{"jsonrpc":"2.0","id":170,"method":"textDocument/hover","params":{"textDocument":{"uri":"%s"},"position":{"line":0,"character":2}}}' "$hover_async_uri")
+hover_async_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#hover_async_payload}" "$hover_async_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$hover_async_output" | grep -q '"id":170' && \
+   echo "$hover_async_output" | grep -q '"kind":"markdown"' && \
+   echo "$hover_async_output" | grep -q '`async`: `keyword`'; then
+    pass "lsp command: hover includes async keyword documentation"
+else
+    fail "lsp command: async keyword hover handling failed"
+fi
+rm -f "$hover_async_fixture"
+
+diag_async_fixture="/tmp/klar_lsp_diag_async_fixture.kl"
+cat > "$diag_async_fixture" << 'EOF'
+fn main() -> i32 {
+    let value: i32 = await 1
+    return value
+}
+EOF
+diag_async_uri="file://${diag_async_fixture}"
+diag_async_payload=$(printf '{"jsonrpc":"2.0","id":175,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"%s"}}}' "$diag_async_uri")
+diag_async_output=$(
+    {
+        printf 'Content-Length: %d\r\n\r\n%s' "${#diag_async_payload}" "$diag_async_payload"
+    } | $KLAR lsp 2>&1
+)
+if echo "$diag_async_output" | grep -q '"id":175' && \
+   echo "$diag_async_output" | grep -q '"source":"checker"' && \
+   echo "$diag_async_output" | grep -q "can only be used inside async functions"; then
+    pass "lsp command: diagnostics report async/await misuse"
+else
+    fail "lsp command: async diagnostics handling failed"
+fi
+rm -f "$diag_async_fixture"
 
 definition_fixture="/tmp/klar_lsp_definition_fixture.kl"
 cat > "$definition_fixture" << 'EOF'

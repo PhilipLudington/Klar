@@ -327,11 +327,14 @@ Optionally include function source with `--include-source` for richer AI context
   - Added minimal `Future` runtime value representation in interpreter (`src/values.zig`) and VM value model (`src/vm_value.zig`) with task ids and lifecycle states (`pending/completed/failed/cancelled`)
   - Added interpreter `await` runtime behavior for futures: completed futures yield values, pending/failed/cancelled futures return deterministic runtime errors
   - Ensure deterministic behavior and clear cancellation/error propagation semantics
-- [ ] **6.4** Tooling integration
+- [x] **6.4** Tooling integration
   - Update formatter for async/await constructs
   - Added formatter emission for `async fn` modifiers across top-level, trait, and impl method declarations
   - Added formatter regression fixture `test/fmt/async.kl` covering `async fn`, `await` expressions, and async trait/impl methods
   - Add LSP completion/hover/diagnostic support for new syntax
+  - Added LSP keyword completions for `async`/`await` with async-aware detail text
+  - Added LSP hover keyword docs for `async`/`await` when not resolving to symbols
+  - Added args-suite LSP regression coverage for async completion, hover, and diagnostics payloads
 - [ ] **6.5** Tests and docs
   - Add parser/checker/runtime tests for success and failure paths
   - Add examples showing sequential and concurrent async flows
