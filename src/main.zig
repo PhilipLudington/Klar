@@ -904,9 +904,14 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
     interp.executeModule(module) catch |err| {
         var buf: [512]u8 = undefined;
+        if (interp.consumeLastErrorMessage()) |msg_text| {
+            const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
+            try stderr.writeAll(msg);
+            std.process.exit(1);
+        }
         const msg = std.fmt.bufPrint(&buf, "Runtime error: {s}\n", .{@errorName(err)}) catch "Runtime error\n";
         try stderr.writeAll(msg);
-        return;
+        std.process.exit(1);
     };
 
     // Look for main function and call it
@@ -946,15 +951,27 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
                 _ = interp.callFunction(func, &.{args_value}) catch |err| {
                     var buf: [512]u8 = undefined;
+                    if (interp.consumeLastErrorMessage()) |msg_text| {
+                        const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
+                        try stderr.writeAll(msg);
+                        std.process.exit(1);
+                    }
                     const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
                     try stderr.writeAll(msg);
+                    std.process.exit(1);
                 };
             } else {
                 // main() with no args
                 _ = interp.callFunction(func, &.{}) catch |err| {
                     var buf: [512]u8 = undefined;
+                    if (interp.consumeLastErrorMessage()) |msg_text| {
+                        const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
+                        try stderr.writeAll(msg);
+                        std.process.exit(1);
+                    }
                     const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
                     try stderr.writeAll(msg);
+                    std.process.exit(1);
                 };
             }
         }
@@ -3908,7 +3925,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             const msg = std.fmt.bufPrint(&buf, "Runtime error: {s}\n", .{@errorName(err)}) catch "Runtime error\n";
             try stderr.writeAll(msg);
         }
-        return;
+        std.process.exit(1);
     };
 
     // Look for main function and call it
@@ -3938,6 +3955,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
                     const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
                     try stderr.writeAll(msg);
                 }
+                std.process.exit(1);
             };
         }
     }

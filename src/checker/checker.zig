@@ -4417,6 +4417,10 @@ pub const TypeChecker = struct {
                             self.addError(.invalid_operation, f.span, "async function return type must be Future[T]", .{});
                             return_type = self.type_builder.unknownType();
                         }
+                    } else if (self.futureInnerType(return_type) != null) {
+                        const error_span = if (f.return_type) |rt| rt.span() else f.span;
+                        self.addError(.invalid_operation, error_span, "non-async function return type cannot be Future[T]; declare function as async", .{});
+                        return_type = self.type_builder.unknownType();
                     }
 
                     const func_type = self.type_builder.functionTypeWithFlags(param_types.items, return_type, comptime_params, f.is_unsafe) catch continue;

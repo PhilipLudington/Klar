@@ -149,6 +149,8 @@ pub const Emitter = struct {
 
     /// Current function's return type as Klar type (for expected_type in returns).
     current_return_klar_type: ?types.Type,
+    /// True when emitting body of an async function declaration.
+    current_function_is_async: bool,
 
     /// Cache of allocated mangled enum names (for cleanup).
     mangled_enum_names: std.ArrayListUnmanaged([]const u8),
@@ -377,6 +379,7 @@ pub const Emitter = struct {
             .type_checker = null,
             .expected_type = null,
             .current_return_klar_type = null,
+            .current_function_is_async = false,
             .mangled_enum_names = .{},
             .resolved_type_allocs = .{},
             .current_sret_ptr = null,
@@ -1486,6 +1489,20 @@ pub const Emitter = struct {
         self.current_function = null;
     }
 
+    fn wrapCompletedFuture(self: *Emitter, future_ty: llvm.TypeRef, payload: ?llvm.ValueRef) EmitError!llvm.ValueRef {
+        var wrapped = llvm.Const.null_(future_ty);
+        wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, llvm.Const.int8(self.ctx, 1), 0, "future.state.completed");
+        if (llvm.c.LLVMCountStructElementTypes(future_ty) >= 2) {
+            const payload_ty = llvm.c.LLVMStructGetTypeAtIndex(future_ty, 1);
+            const payload_val = if (payload) |value| blk: {
+                if (llvm.typeOf(value) != payload_ty) return EmitError.InvalidAST;
+                break :blk value;
+            } else llvm.Const.null_(payload_ty);
+            wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, payload_val, 1, "future.value");
+        }
+        return wrapped;
+    }
+
     fn emitFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
         // Skip generic functions - they are handled via monomorphization
         if (func.type_params.len > 0) {
@@ -1505,6 +1522,9 @@ pub const Emitter = struct {
         // Get or create function
         const function = self.module.getNamedFunction(name) orelse return EmitError.InvalidAST;
         self.current_function = function;
+        const was_async_function = self.current_function_is_async;
+        self.current_function_is_async = func.is_async;
+        defer self.current_function_is_async = was_async_function;
 
         // Set up return type info
         if (func.return_type) |rt| {
@@ -1713,15 +1733,9 @@ pub const Emitter = struct {
                     var final_val = val;
                     // Handle sret: store to sret pointer and return void
                     if (self.current_sret_ptr) |sret_ptr| {
-                        if (self.current_return_klar_type) |klar_ret| {
-                            if (klar_ret == .applied and klar_ret.applied.base == .extern_type and std.mem.eql(u8, klar_ret.applied.base.extern_type.name, "Future") and klar_ret.applied.args.len == 1) {
-                                const future_ty = self.typeToLLVM(klar_ret);
-                                var wrapped = llvm.Const.null_(future_ty);
-                                wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, llvm.Const.int8(self.ctx, 1), 0, "future.state.completed");
-                                if (llvm.c.LLVMCountStructElementTypes(future_ty) >= 2) {
-                                    wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, final_val, 1, "future.value");
-                                }
-                                final_val = wrapped;
+                        if (self.current_function_is_async) {
+                            if (self.current_return_type) |rt_info| {
+                                final_val = try self.wrapCompletedFuture(rt_info.llvm_type, final_val);
                             }
                         }
                         self.emitDropsForReturn();
@@ -1745,35 +1759,36 @@ pub const Emitter = struct {
                                 return;
                             }
                         }
-                        if (self.current_return_klar_type) |klar_ret| {
-                            if (klar_ret == .applied and klar_ret.applied.base == .extern_type and std.mem.eql(u8, klar_ret.applied.base.extern_type.name, "Future") and klar_ret.applied.args.len == 1) {
-                                const future_ty = self.typeToLLVM(klar_ret);
-                                var wrapped = llvm.Const.null_(future_ty);
-                                wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, llvm.Const.int8(self.ctx, 1), 0, "future.state.completed");
-                                if (llvm.c.LLVMCountStructElementTypes(future_ty) >= 2) {
-                                    wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, final_val, 1, "future.value");
-                                }
-                                final_val = wrapped;
+                        if (self.current_function_is_async) {
+                            if (self.current_return_type) |rt_info2| {
+                                final_val = try self.wrapCompletedFuture(rt_info2.llvm_type, final_val);
                             }
                         }
                         self.emitDropsForReturn();
                         _ = self.builder.buildRet(final_val);
                     } else {
-                        if (self.current_return_klar_type) |klar_ret| {
-                            if (klar_ret == .applied and klar_ret.applied.base == .extern_type and std.mem.eql(u8, klar_ret.applied.base.extern_type.name, "Future") and klar_ret.applied.args.len == 1) {
-                                const future_ty = self.typeToLLVM(klar_ret);
-                                var wrapped = llvm.Const.null_(future_ty);
-                                wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, llvm.Const.int8(self.ctx, 1), 0, "future.state.completed");
-                                if (llvm.c.LLVMCountStructElementTypes(future_ty) >= 2) {
-                                    wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, final_val, 1, "future.value");
-                                }
-                                final_val = wrapped;
+                        if (self.current_function_is_async) {
+                            if (self.current_return_type) |rt_info3| {
+                                final_val = try self.wrapCompletedFuture(rt_info3.llvm_type, final_val);
                             }
                         }
                         self.emitDropsForReturn();
                         _ = self.builder.buildRet(final_val);
                     }
                 } else if (self.current_return_type) |rt_info| {
+                    if (self.current_function_is_async) {
+                        self.emitDropsForReturn();
+                        const wrapped = try self.wrapCompletedFuture(rt_info.llvm_type, null);
+                        if (self.current_sret_ptr) |sret_ptr| {
+                            _ = self.builder.buildStore(wrapped, sret_ptr);
+                            _ = self.builder.buildRetVoid();
+                        } else {
+                            _ = self.builder.buildRet(wrapped);
+                        }
+                        self.popScope();
+                        self.current_function = null;
+                        return;
+                    }
                     if (rt_info.is_optional) {
                         // Return None for optional type with no value
                         self.emitDropsForReturn();
@@ -1789,6 +1804,21 @@ pub const Emitter = struct {
                         _ = self.builder.buildRetVoid();
                     }
                 } else {
+                    if (self.current_function_is_async) {
+                        if (self.current_return_type) |rt_info4| {
+                            self.emitDropsForReturn();
+                            const wrapped = try self.wrapCompletedFuture(rt_info4.llvm_type, null);
+                            if (self.current_sret_ptr) |sret_ptr| {
+                                _ = self.builder.buildStore(wrapped, sret_ptr);
+                                _ = self.builder.buildRetVoid();
+                            } else {
+                                _ = self.builder.buildRet(wrapped);
+                            }
+                            self.popScope();
+                            self.current_function = null;
+                            return;
+                        }
+                    }
                     // Return type specified but no value - emit void return
                     self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
@@ -2153,15 +2183,9 @@ pub const Emitter = struct {
                             }
                         }
                     }
-                    if (self.current_return_klar_type) |klar_ret| {
-                        if (klar_ret == .applied and klar_ret.applied.base == .extern_type and std.mem.eql(u8, klar_ret.applied.base.extern_type.name, "Future") and klar_ret.applied.args.len == 1) {
-                            const future_ty = self.typeToLLVM(klar_ret);
-                            var wrapped = llvm.Const.null_(future_ty);
-                            wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, llvm.Const.int8(self.ctx, 1), 0, "future.state.completed");
-                            if (llvm.c.LLVMCountStructElementTypes(future_ty) >= 2) {
-                                wrapped = llvm.c.LLVMBuildInsertValue(self.builder.ref, wrapped, result, 1, "future.value");
-                            }
-                            result = wrapped;
+                    if (self.current_function_is_async) {
+                        if (self.current_return_type) |rt_info| {
+                            result = try self.wrapCompletedFuture(rt_info.llvm_type, result);
                         }
                     }
                     // If using sret, store to sret pointer and return void
@@ -2173,6 +2197,19 @@ pub const Emitter = struct {
                     }
                 } else {
                     // Return with no value
+                    if (self.current_function_is_async) {
+                        if (self.current_return_type) |rt_info2| {
+                            const wrapped = try self.wrapCompletedFuture(rt_info2.llvm_type, null);
+                            if (self.current_sret_ptr) |sret_ptr| {
+                                _ = self.builder.buildStore(wrapped, sret_ptr);
+                                _ = self.builder.buildRetVoid();
+                            } else {
+                                _ = self.builder.buildRet(wrapped);
+                            }
+                            self.has_terminator = true;
+                            return;
+                        }
+                    }
                     if (self.current_return_type) |rt_info| {
                         if (rt_info.is_optional) {
                             // Return None for optional type
@@ -4435,8 +4472,16 @@ pub const Emitter = struct {
                 _ = self.builder.buildCondBr(is_completed, ok_block, fail_block);
 
                 self.builder.positionAtEnd(fail_block);
-                const abort_fn = self.getOrDeclareAbort();
-                _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(abort_fn), abort_fn, &[_]llvm.ValueRef{}, "");
+                const fprintf_fn = self.getOrDeclareFprintf();
+                const stderr_fn = self.getOrDeclareStderr();
+                const stderr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr");
+                const msg = self.builder.buildGlobalStringPtr("runtime error: await on non-completed Future\n", "await_err_msg");
+                var err_args = [_]llvm.ValueRef{ stderr, msg };
+                _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &err_args, "");
+                const exit_fn = self.getOrDeclareExit();
+                const exit_code = llvm.Const.int32(self.ctx, 1);
+                var exit_args = [_]llvm.ValueRef{exit_code};
+                _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(exit_fn), exit_fn, &exit_args, "");
                 _ = self.builder.buildUnreachable();
 
                 self.builder.positionAtEnd(ok_block);
@@ -6032,13 +6077,15 @@ pub const Emitter = struct {
                         return llvm.Types.struct_(self.ctx, &context_err_fields, false);
                     }
                     if (std.mem.eql(u8, base_name, "Future") and g.args.len == 1) {
-                        const inner_type = try self.typeExprToLLVM(g.args[0]);
-                        if (llvm.getTypeKind(inner_type) == llvm.c.LLVMVoidTypeKind) {
-                            var void_future_fields = [_]llvm.TypeRef{
-                                llvm.Types.int8(self.ctx),
-                            };
-                            return llvm.Types.struct_(self.ctx, &void_future_fields, false);
-                        }
+                        const inner_type = if (isVoidTypeExpr(g.args[0]))
+                            llvm.Types.int8(self.ctx)
+                        else blk: {
+                            const resolved_inner = try self.typeExprToLLVM(g.args[0]);
+                            break :blk if (llvm.getTypeKind(resolved_inner) == llvm.c.LLVMVoidTypeKind)
+                                llvm.Types.int8(self.ctx)
+                            else
+                                resolved_inner;
+                        };
                         var future_fields = [_]llvm.TypeRef{
                             llvm.Types.int8(self.ctx), // state
                             inner_type, // resolved value
@@ -11335,11 +11382,14 @@ pub const Emitter = struct {
         const saved_func = self.current_function;
         const saved_named_values = self.named_values;
         const saved_return_type = self.current_return_type;
+        const saved_return_klar_type = self.current_return_klar_type;
+        const saved_is_async = self.current_function_is_async;
         const saved_terminator = self.has_terminator;
 
         // Set up new context for lifted function
         self.named_values = std.StringHashMap(LocalValue).init(self.allocator);
         self.current_function = lifted_fn;
+        self.current_function_is_async = false;
         self.has_terminator = false;
 
         // Set up return type info
@@ -11462,6 +11512,8 @@ pub const Emitter = struct {
         self.named_values = saved_named_values;
         self.current_function = saved_func;
         self.current_return_type = saved_return_type;
+        self.current_return_klar_type = saved_return_klar_type;
+        self.current_function_is_async = saved_is_async;
         self.has_terminator = saved_terminator;
         if (saved_bb) |bb| {
             self.builder.positionAtEnd(bb);
@@ -12732,6 +12784,8 @@ pub const Emitter = struct {
             const saved_func = self.current_function;
             const saved_named_values = self.named_values;
             const saved_return_type = self.current_return_type;
+            const saved_return_klar_type = self.current_return_klar_type;
+            const saved_is_async = self.current_function_is_async;
             const saved_terminator = self.has_terminator;
 
             // Set up new context for wrapper function
@@ -12742,12 +12796,15 @@ pub const Emitter = struct {
                 self.named_values = saved_named_values;
                 self.current_function = saved_func;
                 self.current_return_type = saved_return_type;
+                self.current_return_klar_type = saved_return_klar_type;
+                self.current_function_is_async = saved_is_async;
                 self.has_terminator = saved_terminator;
                 if (saved_bb) |bb| {
                     self.builder.positionAtEnd(bb);
                 }
             }
             self.current_function = wrapper_fn;
+            self.current_function_is_async = false;
             self.has_terminator = false;
 
             // Set up return type info
@@ -12831,6 +12888,8 @@ pub const Emitter = struct {
             self.named_values = saved_named_values;
             self.current_function = saved_func;
             self.current_return_type = saved_return_type;
+            self.current_return_klar_type = saved_return_klar_type;
+            self.current_function_is_async = saved_is_async;
             self.has_terminator = saved_terminator;
             if (saved_bb) |bb| {
                 self.builder.positionAtEnd(bb);
@@ -28470,6 +28529,19 @@ pub const Emitter = struct {
         return func;
     }
 
+    fn getOrDeclareExit(self: *Emitter) llvm.ValueRef {
+        const fn_name = "exit";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // void exit(int status)
+        const void_type = llvm.Types.void_(self.ctx);
+        const arg_types = [_]llvm.TypeRef{llvm.Types.int32(self.ctx)};
+        const fn_type = llvm.c.LLVMFunctionType(void_type, @constCast(&arg_types), arg_types.len, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
     // ==================== Scope Management for Automatic Drop ====================
 
     /// Push a new scope onto the scope stack.
@@ -28960,13 +29032,11 @@ pub const Emitter = struct {
             },
             .applied => |a| {
                 if (a.base == .extern_type and std.mem.eql(u8, a.base.extern_type.name, "Future") and a.args.len == 1) {
-                    const inner_ty = self.typeToLLVM(a.args[0]);
-                    if (llvm.getTypeKind(inner_ty) == llvm.c.LLVMVoidTypeKind) {
-                        var void_future_fields = [_]llvm.TypeRef{
-                            llvm.Types.int8(self.ctx),
-                        };
-                        return llvm.Types.struct_(self.ctx, &void_future_fields, false);
-                    }
+                    const resolved_inner = self.typeToLLVM(a.args[0]);
+                    const inner_ty = if (llvm.getTypeKind(resolved_inner) == llvm.c.LLVMVoidTypeKind)
+                        llvm.Types.int8(self.ctx)
+                    else
+                        resolved_inner;
                     var future_fields = [_]llvm.TypeRef{
                         llvm.Types.int8(self.ctx),
                         inner_ty,
@@ -29548,6 +29618,9 @@ pub const Emitter = struct {
 
         const function = self.module.getNamedFunction(mangled_name) orelse return EmitError.InvalidAST;
         self.current_function = function;
+        const was_async_function = self.current_function_is_async;
+        self.current_function_is_async = func.is_async;
+        defer self.current_function_is_async = was_async_function;
 
         // Check if return type requires sret calling convention
         const needs_sret = self.requiresSret(func_type.return_type);
@@ -29635,31 +29708,53 @@ pub const Emitter = struct {
 
             // Handle return
             if (!self.has_terminator) {
-                if (func_type.return_type == .void_) {
+                if (func_type.return_type == .void_ and !self.current_function_is_async) {
                     self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
                 } else if (result) |val| {
+                    var final_val = val;
+                    if (self.current_function_is_async) {
+                        if (self.current_return_type) |rt_info_async| {
+                            final_val = try self.wrapCompletedFuture(rt_info_async.llvm_type, final_val);
+                        }
+                    }
                     if (self.current_sret_ptr) |sret_ptr| {
                         // Store result to sret pointer and return void
                         self.emitDropsForReturn();
-                        _ = self.builder.buildStore(val, sret_ptr);
+                        _ = self.builder.buildStore(final_val, sret_ptr);
                         _ = self.builder.buildRetVoid();
                     } else if (self.current_return_type) |rt_info| {
                         if (rt_info.is_optional) {
                             self.emitDropsForReturn();
-                            const wrapped = self.emitSome(val, rt_info.inner_type.?);
+                            const wrapped = self.emitSome(final_val, rt_info.inner_type.?);
                             _ = self.builder.buildRet(wrapped);
                         } else {
                             self.emitDropsForReturn();
-                            _ = self.builder.buildRet(val);
+                            _ = self.builder.buildRet(final_val);
                         }
                     } else {
                         self.emitDropsForReturn();
-                        _ = self.builder.buildRet(val);
+                        _ = self.builder.buildRet(final_val);
                     }
                 } else {
-                    self.emitDropsForReturn();
-                    _ = self.builder.buildRetVoid();
+                    if (self.current_function_is_async) {
+                        if (self.current_return_type) |rt_info_async2| {
+                            self.emitDropsForReturn();
+                            const wrapped = try self.wrapCompletedFuture(rt_info_async2.llvm_type, null);
+                            if (self.current_sret_ptr) |sret_ptr| {
+                                _ = self.builder.buildStore(wrapped, sret_ptr);
+                                _ = self.builder.buildRetVoid();
+                            } else {
+                                _ = self.builder.buildRet(wrapped);
+                            }
+                        } else {
+                            self.emitDropsForReturn();
+                            _ = self.builder.buildRetVoid();
+                        }
+                    } else {
+                        self.emitDropsForReturn();
+                        _ = self.builder.buildRetVoid();
+                    }
                 }
             }
 
@@ -29737,6 +29832,9 @@ pub const Emitter = struct {
             return EmitError.InvalidAST;
         };
         self.current_function = function;
+        const was_async_function = self.current_function_is_async;
+        self.current_function_is_async = func.is_async;
+        defer self.current_function_is_async = was_async_function;
 
         // Set up return type info
         const return_llvm_type = self.typeToLLVM(func_type.return_type);
@@ -29821,26 +29919,43 @@ pub const Emitter = struct {
 
             // Handle return
             if (!self.has_terminator) {
-                if (func_type.return_type == .void_) {
+                if (func_type.return_type == .void_ and !self.current_function_is_async) {
                     self.emitDropsForReturn();
                     _ = self.builder.buildRetVoid();
                 } else if (result) |val| {
+                    var final_val = val;
+                    if (self.current_function_is_async) {
+                        if (self.current_return_type) |rt_info_async| {
+                            final_val = try self.wrapCompletedFuture(rt_info_async.llvm_type, final_val);
+                        }
+                    }
                     if (self.current_return_type) |rt_info| {
                         if (rt_info.is_optional) {
                             self.emitDropsForReturn();
-                            const wrapped = self.emitSome(val, rt_info.inner_type.?);
+                            const wrapped = self.emitSome(final_val, rt_info.inner_type.?);
                             _ = self.builder.buildRet(wrapped);
                         } else {
                             self.emitDropsForReturn();
-                            _ = self.builder.buildRet(val);
+                            _ = self.builder.buildRet(final_val);
                         }
                     } else {
                         self.emitDropsForReturn();
-                        _ = self.builder.buildRet(val);
+                        _ = self.builder.buildRet(final_val);
                     }
                 } else {
-                    self.emitDropsForReturn();
-                    _ = self.builder.buildRetVoid();
+                    if (self.current_function_is_async) {
+                        if (self.current_return_type) |rt_info_async2| {
+                            self.emitDropsForReturn();
+                            const wrapped = try self.wrapCompletedFuture(rt_info_async2.llvm_type, null);
+                            _ = self.builder.buildRet(wrapped);
+                        } else {
+                            self.emitDropsForReturn();
+                            _ = self.builder.buildRetVoid();
+                        }
+                    } else {
+                        self.emitDropsForReturn();
+                        _ = self.builder.buildRetVoid();
+                    }
                 }
             }
 

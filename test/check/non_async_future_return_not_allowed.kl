@@ -1,0 +1,13 @@
+// Expected: check-error invalid_operation
+
+async fn fetch() -> Future[i32] {
+    return 1
+}
+
+fn relay() -> Future[i32] {
+    return fetch()
+}
+
+fn main() -> i32 {
+    return 0
+}

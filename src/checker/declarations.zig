@@ -93,6 +93,11 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
             signature_return_type = tc.type_builder.unknownType();
             body_return_type = tc.type_builder.unknownType();
         }
+    } else if (tc.futureInnerType(return_type) != null) {
+        const error_span = if (func.return_type) |rt| rt.span() else func.span;
+        tc.addError(.invalid_operation, error_span, "non-async function return type cannot be Future[T]; declare function as async", .{});
+        signature_return_type = tc.type_builder.unknownType();
+        body_return_type = tc.type_builder.unknownType();
     }
 
     const func_type = tc.type_builder.functionTypeWithFlags(param_types.items, signature_return_type, comptime_params, func.is_unsafe) catch {

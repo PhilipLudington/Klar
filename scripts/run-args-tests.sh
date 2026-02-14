@@ -202,6 +202,36 @@ else
 fi
 
 echo ""
+echo "--- Test: await runtime failure messaging ---"
+
+output=$($KLAR run "$TEST_DIR/async_await_pending_error.kl" 2>&1)
+status=$?
+if [ $status -eq 1 ] && echo "$output" | grep -q "runtime error: await on non-completed Future"; then
+    pass "await failure: native backend prints message and exits non-zero"
+else
+    fail "await failure: native backend runtime error behavior mismatch"
+fi
+
+echo ""
+echo "--- Test: runtime errors exit non-zero in VM/interpreter ---"
+
+output=$($KLAR run "$TEST_DIR/runtime_division_by_zero.kl" --vm 2>&1)
+status=$?
+if [ $status -eq 1 ] && echo "$output" | grep -q "Runtime error in main: DivisionByZero"; then
+    pass "runtime errors: vm backend exits non-zero"
+else
+    fail "runtime errors: vm backend exit behavior mismatch"
+fi
+
+output=$($KLAR run "$TEST_DIR/runtime_division_by_zero.kl" --interpret 2>&1)
+status=$?
+if [ $status -eq 1 ] && echo "$output" | grep -q "Runtime error in main: DivisionByZero"; then
+    pass "runtime errors: interpreter backend exits non-zero"
+else
+    fail "runtime errors: interpreter backend exit behavior mismatch"
+fi
+
+echo ""
 echo "--- Test: klar test command ---"
 
 output=$($KLAR test "$TEST_DIR/test_command_pass.kl" 2>&1)

@@ -396,7 +396,10 @@ pub const VM = struct {
                                     try self.push(Value.void_val);
                                 }
                             },
-                            .pending, .failed, .cancelled => return RuntimeError.InvalidOperation,
+                            .pending, .failed, .cancelled => return self.recordErrorWithMessage(
+                                RuntimeError.InvalidOperation,
+                                "runtime error: await on non-completed Future",
+                            ),
                         },
                         else => try self.push(value),
                     }

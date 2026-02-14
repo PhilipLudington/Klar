@@ -113,6 +113,7 @@ pub const Interpreter = struct {
     // Cooperative executor scaffold for upcoming async runtime support.
     executor: async_executor.CooperativeExecutor,
     next_future_task_id: values.TaskId,
+    last_error_message: ?[]const u8,
 
     pub fn init(allocator: Allocator) !Interpreter {
         const global_env = try allocator.create(Environment);
@@ -133,6 +134,7 @@ pub const Interpreter = struct {
             .allocated_functions = .{},
             .executor = async_executor.CooperativeExecutor.init(allocator),
             .next_future_task_id = 1,
+            .last_error_message = null,
         };
 
         try interp.initBuiltins();
@@ -219,6 +221,12 @@ pub const Interpreter = struct {
         }
         self.global_env.deinit();
         self.allocator.destroy(self.global_env);
+    }
+
+    pub fn consumeLastErrorMessage(self: *Interpreter) ?[]const u8 {
+        const msg = self.last_error_message;
+        self.last_error_message = null;
+        return msg;
     }
 
     /// Get the allocator for runtime allocations (strings and temporary values, uses arena)
@@ -753,15 +761,22 @@ pub const Interpreter = struct {
                 return RuntimeError.TypeError;
             },
             .await_ => {
+                self.last_error_message = null;
                 if (operand != .future) {
                     return operand;
                 }
 
                 const future = operand.future;
                 return switch (future.state) {
-                    .pending => RuntimeError.InvalidOperation,
+                    .pending => blk: {
+                        self.last_error_message = "runtime error: await on non-completed Future";
+                        break :blk RuntimeError.InvalidOperation;
+                    },
                     .completed => if (future.value) |value| value.* else self.builder.voidVal(),
-                    .failed, .cancelled => RuntimeError.InvalidOperation,
+                    .failed, .cancelled => blk: {
+                        self.last_error_message = "runtime error: await on non-completed Future";
+                        break :blk RuntimeError.InvalidOperation;
+                    },
                 };
             },
             .ref => {
@@ -2702,6 +2717,11 @@ test "await on pending future returns invalid operation" {
     const expr = ast.Expr{ .unary = unary };
 
     try testing.expectError(RuntimeError.InvalidOperation, interp.evaluate(expr));
+    try testing.expectEqualStrings(
+        "runtime error: await on non-completed Future",
+        interp.consumeLastErrorMessage() orelse "",
+    );
+    try testing.expect(interp.consumeLastErrorMessage() == null);
 }
 
 test "await on non-future value is passthrough" {

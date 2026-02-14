@@ -70,6 +70,7 @@ fn absolute(n: i32) -> i32 {
 ## Async Functions
 
 Use `async fn` to declare asynchronous functions. `await` is only valid inside `async fn` bodies and requires a `Future[T]` value.
+`Future[T]` is a runtime-internal type: its memory layout is not a stable ABI and should not be used for FFI signatures or unsafe layout assumptions.
 
 ```klar
 async fn fetch() -> Future[i32] {
