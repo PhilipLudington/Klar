@@ -42,8 +42,12 @@ const ServerState = struct {
     hover_cache: std.StringHashMapUnmanaged(RequestResultCacheEntry) = .{},
     definition_cache: std.StringHashMapUnmanaged(RequestResultCacheEntry) = .{},
     total_document_bytes: usize = 0,
+    /// Workspace root path extracted from initialize rootUri.
+    /// Used to restrict file reads to the workspace directory.
+    workspace_root: ?[]u8 = null,
 
     fn deinit(self: *ServerState, allocator: std.mem.Allocator) void {
+        if (self.workspace_root) |root| allocator.free(root);
         var it = self.documents.iterator();
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
@@ -386,7 +390,31 @@ fn uriToPath(allocator: std.mem.Allocator, uri: []const u8) !?[]u8 {
     return try allocator.dupe(u8, uri);
 }
 
-fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+/// Returns true if path contains ".." directory traversal components.
+fn containsPathTraversal(path: []const u8) bool {
+    var start: usize = 0;
+    for (path, 0..) |c, i| {
+        if (c == '/' or c == '\\') {
+            if (std.mem.eql(u8, path[start..i], "..")) return true;
+            start = i + 1;
+        }
+    }
+    // Check final component
+    if (path.len > start and std.mem.eql(u8, path[start..], "..")) return true;
+    return false;
+}
+
+fn readSourceFile(allocator: std.mem.Allocator, path: []const u8, workspace_root: ?[]const u8) ![]u8 {
+    // Reject paths with directory traversal components
+    if (containsPathTraversal(path)) return error.AccessDenied;
+
+    // If workspace root is set, ensure the resolved path is within it
+    if (workspace_root) |root| {
+        const real_path = std.fs.cwd().realpathAlloc(allocator, path) catch return error.FileNotFound;
+        defer allocator.free(real_path);
+        if (!std.mem.startsWith(u8, real_path, root)) return error.AccessDenied;
+    }
+
     const file = std.fs.cwd().openFile(path, .{}) catch return error.FileNotFound;
     defer file.close();
     return try file.readToEndAlloc(allocator, max_source_bytes);
@@ -939,8 +967,9 @@ fn handleCompletionRequest(
 
     const source = if (state.documents.get(req.uri)) |doc| blk: {
         break :blk try allocator.dupe(u8, doc.text);
-    } else readSourceFile(allocator, path) catch {
-        try sendError(allocator, out, id, -32603, "Failed to read source file");
+    } else readSourceFile(allocator, path, state.workspace_root) catch |err| {
+        const msg = if (err == error.AccessDenied) "Access denied: path outside workspace" else "Failed to read source file";
+        try sendError(allocator, out, id, -32603, msg);
         return;
     };
     defer allocator.free(source);
@@ -1002,8 +1031,9 @@ fn handleHoverRequest(
 
     const source = if (state.documents.get(req.uri)) |doc| blk: {
         break :blk try allocator.dupe(u8, doc.text);
-    } else readSourceFile(allocator, path) catch {
-        try sendError(allocator, out, id, -32603, "Failed to read source file");
+    } else readSourceFile(allocator, path, state.workspace_root) catch |err| {
+        const msg = if (err == error.AccessDenied) "Access denied: path outside workspace" else "Failed to read source file";
+        try sendError(allocator, out, id, -32603, msg);
         return;
     };
     defer allocator.free(source);
@@ -1053,8 +1083,9 @@ fn handleDiagnosticRequest(
 
     const source = if (state.documents.get(uri)) |doc| blk: {
         break :blk try allocator.dupe(u8, doc.text);
-    } else readSourceFile(allocator, path) catch {
-        try sendError(allocator, out, id, -32603, "Failed to read source file");
+    } else readSourceFile(allocator, path, state.workspace_root) catch |err| {
+        const msg = if (err == error.AccessDenied) "Access denied: path outside workspace" else "Failed to read source file";
+        try sendError(allocator, out, id, -32603, msg);
         return;
     };
     defer allocator.free(source);
@@ -1109,8 +1140,9 @@ fn handleDefinitionRequest(
 
     const source = if (state.documents.get(req.uri)) |doc| blk: {
         break :blk try allocator.dupe(u8, doc.text);
-    } else readSourceFile(allocator, path) catch {
-        try sendError(allocator, out, id, -32603, "Failed to read source file");
+    } else readSourceFile(allocator, path, state.workspace_root) catch |err| {
+        const msg = if (err == error.AccessDenied) "Access denied: path outside workspace" else "Failed to read source file";
+        try sendError(allocator, out, id, -32603, msg);
         return;
     };
     defer allocator.free(source);
@@ -1223,6 +1255,25 @@ fn handleMessage(
     const params_opt = object.get("params");
 
     if (std.mem.eql(u8, method, "initialize")) {
+        // Extract workspace root from rootUri for path validation
+        if (params_opt) |params| {
+            if (params == .object) {
+                if (params.object.get("rootUri")) |root_uri_val| {
+                    if (root_uri_val == .string) {
+                        if (uriToPath(allocator, root_uri_val.string) catch null) |root_path| {
+                            const resolved = std.fs.cwd().realpathAlloc(allocator, root_path) catch null;
+                            if (state.workspace_root) |old| allocator.free(old);
+                            if (resolved) |r| {
+                                allocator.free(root_path);
+                                state.workspace_root = r;
+                            } else {
+                                state.workspace_root = root_path;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (id_opt) |id| {
             try sendResult(
                 allocator,
