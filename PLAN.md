@@ -292,8 +292,8 @@ Optionally include function source with `--include-source` for richer AI context
 ### Suggested Next Execution Order
 
 1. ~~Async/Await~~ (Complete)
-2. WebAssembly target
-3. Windows support
+2. Windows support
+3. WebAssembly target
 4. Self-hosting
 
 ---
@@ -366,44 +366,7 @@ Optionally include function source with `--include-source` for richer AI context
 
 ---
 
-## Milestone 7: WebAssembly Target
-
-**Objective:** Add a WebAssembly compilation target for sandboxed execution and browser/edge integration.
-
-**Status:** Planned
-
-**Effort:** High | **Impact:** High | **Dependencies:** Milestone 6 (optional), Milestone 5
-
-### Tasks
-
-- [ ] **7.1** Target and CLI surface
-  - Add target selection for wasm output in `klar build`
-  - Define output conventions (`.wasm`, optional host shim artifacts)
-- [ ] **7.2** Codegen pipeline
-  - Add/extend backend lowering for wasm-compatible IR
-  - Map Klar primitives, control flow, and memory model to wasm constraints
-  - Define ABI conventions for function exports/imports
-- [ ] **7.3** Runtime and stdlib compatibility
-  - Audit stdlib/runtime APIs for wasm-safe behavior
-  - Gate unsupported APIs with clear compile-time errors
-  - Provide minimal wasm runtime bindings for I/O-adjacent operations
-- [ ] **7.4** Testing and fixtures
-  - Add wasm smoke tests and golden fixtures
-  - Add host-run integration tests (Node or wasmtime path)
-- [ ] **7.5** Documentation and examples
-  - Document wasm build/run workflows
-  - Add browser and CLI host examples
-
-### Success Criteria
-
-- [ ] `klar build` can emit valid wasm modules for representative programs
-- [ ] Core language features execute correctly under wasm target constraints
-- [ ] Unsupported features fail with clear diagnostics
-- [ ] CI includes wasm-target regression coverage
-
----
-
-## Milestone 8: Windows Support
+## Milestone 7: Windows Support
 
 **Objective:** Provide first-class Windows developer and runtime support across build, test, and tooling workflows.
 
@@ -411,21 +374,25 @@ Optionally include function source with `--include-source` for richer AI context
 
 **Effort:** Medium-High | **Impact:** High | **Dependencies:** Milestones 4, 5
 
+### Rationale for ordering
+
+Windows before WebAssembly: lower effort builds momentum, fixes platform assumptions (paths, line endings, stdio) that would otherwise complicate the WebAssembly target, and expands the contributor base before tackling the harder milestone.
+
 ### Tasks
 
-- [ ] **8.1** Build and toolchain compatibility
+- [ ] **7.1** Build and toolchain compatibility
   - Validate Zig/LLVM build scripts and wrappers on Windows
   - Ensure path handling and file operations are platform-safe
-- [ ] **8.2** Runtime/platform abstraction fixes
+- [ ] **7.2** Runtime/platform abstraction fixes
   - Audit process, filesystem, and stdio code paths for Windows behavior differences
   - Address line-ending and path separator assumptions
-- [ ] **8.3** CLI and LSP transport reliability
+- [ ] **7.3** CLI and LSP transport reliability
   - Validate JSON-RPC stdio framing behavior under Windows terminals/editors
   - Add explicit tests for URI/path translation edge cases on Windows
-- [ ] **8.4** Tests and CI
+- [ ] **7.4** Tests and CI
   - Add Windows matrix jobs for `./run-tests.sh`
   - Stabilize flaky platform-specific tests and expected outputs
-- [ ] **8.5** Documentation and onboarding
+- [ ] **7.5** Documentation and onboarding
   - Add Windows setup/install docs
   - Document known limitations and troubleshooting paths
 
@@ -435,6 +402,43 @@ Optionally include function source with `--include-source` for richer AI context
 - [ ] CLI and LSP workflows behave consistently with macOS/Linux
 - [ ] Windows-specific path/stdio regressions are covered by tests
 - [ ] Contributor docs include complete Windows development setup
+
+---
+
+## Milestone 8: WebAssembly Target
+
+**Objective:** Add a WebAssembly compilation target for sandboxed execution and browser/edge integration.
+
+**Status:** Planned
+
+**Effort:** High | **Impact:** High | **Dependencies:** Milestone 5, Milestone 7 (platform abstractions)
+
+### Tasks
+
+- [ ] **8.1** Target and CLI surface
+  - Add target selection for wasm output in `klar build`
+  - Define output conventions (`.wasm`, optional host shim artifacts)
+- [ ] **8.2** Codegen pipeline
+  - Add/extend backend lowering for wasm-compatible IR
+  - Map Klar primitives, control flow, and memory model to wasm constraints
+  - Define ABI conventions for function exports/imports
+- [ ] **8.3** Runtime and stdlib compatibility
+  - Audit stdlib/runtime APIs for wasm-safe behavior
+  - Gate unsupported APIs with clear compile-time errors
+  - Provide minimal wasm runtime bindings for I/O-adjacent operations
+- [ ] **8.4** Testing and fixtures
+  - Add wasm smoke tests and golden fixtures
+  - Add host-run integration tests (Node or wasmtime path)
+- [ ] **8.5** Documentation and examples
+  - Document wasm build/run workflows
+  - Add browser and CLI host examples
+
+### Success Criteria
+
+- [ ] `klar build` can emit valid wasm modules for representative programs
+- [ ] Core language features execute correctly under wasm target constraints
+- [ ] Unsupported features fail with clear diagnostics
+- [ ] CI includes wasm-target regression coverage
 
 ---
 
