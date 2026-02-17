@@ -6,6 +6,7 @@
 //! 2. Format pass: Walk AST, interleave comments by byte position
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const Span = ast.Span;
@@ -1648,7 +1649,10 @@ pub fn format(allocator: Allocator, source: []const u8) ![]u8 {
 
     const module = parser.parseModule() catch {
         // Write parse error details to stderr before returning
-        const stderr: std.fs.File = .{ .handle = std.posix.STDERR_FILENO };
+        const stderr: std.fs.File = if (comptime builtin.os.tag == .windows)
+            .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) }
+        else
+            .{ .handle = std.posix.STDERR_FILENO };
         var buf: [512]u8 = undefined;
         for (parser.errors.items) |parse_err| {
             const msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{

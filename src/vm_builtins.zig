@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const vm_value = @import("vm_value.zig");
 const Value = vm_value.Value;
@@ -252,7 +253,7 @@ fn nativeNone(allocator: Allocator, args: []const Value) RuntimeError!Value {
 fn nativePanic(_: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 1) return RuntimeError.WrongArity;
 
-    const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+    const stderr = getStdErr();
     stderr.writeAll("panic: ") catch {};
 
     switch (args[0]) {
@@ -571,11 +572,27 @@ fn valueToString(allocator: Allocator, value: Value) RuntimeError![]const u8 {
 // ============================================================================
 
 fn getStdOut() std.fs.File {
-    return .{ .handle = std.posix.STDOUT_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDOUT_FILENO };
+    }
 }
 
 fn getStdIn() std.fs.File {
-    return .{ .handle = std.posix.STDIN_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDIN_FILENO };
+    }
+}
+
+fn getStdErr() std.fs.File {
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDERR_FILENO };
+    }
 }
 
 // ============================================================================

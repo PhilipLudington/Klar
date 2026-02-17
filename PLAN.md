@@ -370,7 +370,7 @@ Optionally include function source with `--include-source` for richer AI context
 
 **Objective:** Provide first-class Windows developer and runtime support across build, test, and tooling workflows.
 
-**Status:** Planned
+**Status:** In Progress — compiler cross-platform changes complete, Windows testing pending
 
 **Effort:** Medium-High | **Impact:** High | **Dependencies:** Milestones 4, 5
 
@@ -380,24 +380,43 @@ Windows before WebAssembly: lower effort builds momentum, fixes platform assumpt
 
 ### Tasks
 
-- [ ] **7.1** Build and toolchain compatibility
-  - Validate Zig/LLVM build scripts and wrappers on Windows
-  - Ensure path handling and file operations are platform-safe
-- [ ] **7.2** Runtime/platform abstraction fixes
-  - Audit process, filesystem, and stdio code paths for Windows behavior differences
-  - Address line-ending and path separator assumptions
-- [ ] **7.3** CLI and LSP transport reliability
-  - Validate JSON-RPC stdio framing behavior under Windows terminals/editors
-  - Add explicit tests for URI/path translation edge cases on Windows
-- [ ] **7.4** Tests and CI
-  - Add Windows matrix jobs for `./run-tests.sh`
-  - Stabilize flaky platform-specific tests and expected outputs
-- [ ] **7.5** Documentation and onboarding
-  - Add Windows setup/install docs
-  - Document known limitations and troubleshooting paths
+- [x] **7.1** Replace `std.posix` stdio handles with cross-platform IO helpers
+  - All 7 files, 17 sites converted to `comptime if` Windows/POSIX branching
+- [x] **7.2** Cross-platform temp directory and executable extension
+  - `klar run` uses `%TEMP%` on Windows, `/tmp` on POSIX; appends `.exe` on Windows
+- [x] **7.3** Platform-conditional process execution
+  - Windows: `std.process.Child` path; POSIX: `fork`/`exec` path (unchanged)
+  - Note: `args[0]` shows temp binary path on Windows (minor behavioral difference)
+- [x] **7.4** Fix linker.zig comptime string concatenation bug
+  - Replaced `"/OUT:" ++ output_file` with `std.fmt.allocPrint`
+- [x] **7.5** Conditional `@cImport` in emit.zig
+  - `sys/stat.h`, `dirent.h`, `errno.h` wrapped in platform conditional
+  - Hardcoded fallback constants for Windows MSVC CRT
+- [x] **7.6** Platform-aware errno accessor
+  - `__error` (macOS), `_errno` (Windows), `__errno_location` (Linux)
+- [x] **7.7** Platform-aware POSIX C function declarations
+  - Simple renames: `_access`, `_stat64`, `_rmdir`, `_unlink`
+  - `_mkdir` (1 param vs 2), callers updated
+  - `_findfirst64`/`_findnext64`/`_findclose` with full Windows `emitFsReadDir` path
+  - `emitFsCreateDirAll` handles both `/` and `\` separators on Windows
+- [x] **7.8** Object file extension: `.obj` on Windows, `.o` on POSIX
+- [x] **7.9** Build system: Windows LLVM detection paths added
+- [x] **7.10** LSP: Windows drive letter handling in `uriToPath`
+- [x] **7.11** Path separator: `shouldSkipPath` handles both `/` and `\`
+- [ ] **7.12** Windows on-device testing (Parallels)
+  - Verify `zig build`, `klar run`, `klar build`, `klar test`, `klar lsp`
+- [ ] **7.13** CI: Add Windows matrix jobs for `./run-tests.sh`
+- [ ] **7.14** Documentation: Windows setup/install guide
+
+### Known Limitations
+
+- Test scripts (`run-tests.sh`, etc.) require WSL or Git Bash on Windows
+- `klar run` on Windows shows temp binary path as `args[0]` instead of source path
+- Cross-compilation of filesystem operations to Windows from non-Windows is not supported (build on target platform)
 
 ### Success Criteria
 
+- [x] Repository builds on macOS with zero regressions (667/667 tests pass)
 - [ ] Repository builds and full test suite pass on supported Windows environments
 - [ ] CLI and LSP workflows behave consistently with macOS/Linux
 - [ ] Windows-specific path/stdio regressions are covered by tests

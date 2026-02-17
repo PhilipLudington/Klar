@@ -87,6 +87,15 @@ fn linkForPlatform(
     var args = std.ArrayListUnmanaged([]const u8){};
     defer args.deinit(allocator);
 
+    // Track allocated strings so we can free them after linking
+    var allocated_strings = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (allocated_strings.items) |s| {
+            allocator.free(s);
+        }
+        allocated_strings.deinit(allocator);
+    }
+
     // Bare-metal/freestanding targets use a different linking approach
     if (platform.isFreestanding() or options.freestanding) {
         return linkBareMetalTarget(allocator, object_file, output_file, target_info_opt, options);
@@ -173,25 +182,18 @@ fn linkForPlatform(
                     object_file,
                 }) catch return LinkerError.OutOfMemory;
             } else {
-                // Native Windows linking
+                // Native Windows linking with MSVC link.exe
+                const out_arg = std.fmt.allocPrint(allocator, "/OUT:{s}", .{output_file}) catch return LinkerError.OutOfMemory;
+                allocated_strings.append(allocator, out_arg) catch return LinkerError.OutOfMemory;
                 args.appendSlice(allocator, &.{
                     "link.exe",
-                    "/OUT:" ++ output_file,
+                    out_arg,
                     object_file,
                     "/SUBSYSTEM:CONSOLE",
                 }) catch return LinkerError.OutOfMemory;
             }
         },
         else => return LinkerError.LinkerNotFound,
-    }
-
-    // Track allocated strings so we can free them after linking
-    var allocated_strings = std.ArrayListUnmanaged([]const u8){};
-    defer {
-        for (allocated_strings.items) |s| {
-            allocator.free(s);
-        }
-        allocated_strings.deinit(allocator);
     }
 
     // Add library search paths (-L flags)

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const version = @import("version.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("token.zig").Token;
@@ -28,13 +29,23 @@ const lockfile = @import("pkg/lockfile.zig");
 const formatter = @import("formatter.zig");
 const lsp = @import("lsp.zig");
 
-// Zig 0.15 IO helpers
+// Cross-platform IO helpers
 fn getStdOut() std.fs.File {
-    return .{ .handle = std.posix.STDOUT_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE);
+        return .{ .handle = handle };
+    } else {
+        return .{ .handle = std.posix.STDOUT_FILENO };
+    }
 }
 
 fn getStdErr() std.fs.File {
-    return .{ .handle = std.posix.STDERR_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE);
+        return .{ .handle = handle };
+    } else {
+        return .{ .handle = std.posix.STDERR_FILENO };
+    }
 }
 
 const TestRunOptions = struct {
@@ -1581,8 +1592,9 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try stdout.writeAll(msg);
     }
 
-    // Generate object file
-    const obj_path_str = std.fmt.allocPrint(allocator, "{s}.o", .{base_name}) catch {
+    // Generate object file (use platform-aware extension)
+    const obj_ext = codegen.target.Platform.current().getObjectExtension();
+    const obj_path_str = std.fmt.allocPrint(allocator, "{s}{s}", .{ base_name, obj_ext }) catch {
         try stderr.writeAll("Out of memory\n");
         return;
     };
@@ -1703,10 +1715,22 @@ fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: [
 }
 
 fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8) !void {
-    // Generate a unique temp path for the executable
+    // Generate a unique temp path for the executable (cross-platform)
     const timestamp = std.time.timestamp();
-    var temp_path_buf: [256]u8 = undefined;
-    const temp_path = std.fmt.bufPrint(&temp_path_buf, "/tmp/klar-run-{d}", .{timestamp}) catch {
+    const exe_ext = comptime if (builtin.os.tag == .windows) ".exe" else "";
+    var temp_path_buf: [512]u8 = undefined;
+    const temp_path = if (builtin.os.tag == .windows) blk: {
+        // On Windows, use %TEMP% or %TMP% or fall back to C:\Temp
+        const temp_dir = std.process.getEnvVarOwned(allocator, "TEMP") catch
+            std.process.getEnvVarOwned(allocator, "TMP") catch
+            null;
+        defer if (temp_dir) |d| allocator.free(d);
+        const dir = temp_dir orelse "C:\\Temp";
+        break :blk std.fmt.bufPrint(&temp_path_buf, "{s}\\klar-run-{d}{s}", .{ dir, timestamp, exe_ext }) catch {
+            try getStdErr().writeAll("Failed to create temp path\n");
+            return;
+        };
+    } else std.fmt.bufPrint(&temp_path_buf, "/tmp/klar-run-{d}{s}", .{ timestamp, exe_ext }) catch {
         try getStdErr().writeAll("Failed to create temp path\n");
         return;
     };
@@ -1725,112 +1749,151 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
         return;
     };
 
-    // Execute the compiled binary with args
-    // We need argv = [source_path, arg1, arg2, ...] but execute temp_path.
-    // The Klar runtime includes all of argv, so program sees [source_path, arg1, arg2, ...].
-    // For standalone binaries, argv = [binary_path, arg1, ...] from the OS.
-    // This keeps args[0] as the "program identifier" (source or binary path).
-    //
-    // Since std.process.Child uses argv[0] as the executable, we need to use
-    // fork/exec directly to have a different executable path and argv[0].
-    var argv_list = std.ArrayListUnmanaged(?[*:0]const u8){};
-    defer argv_list.deinit(allocator);
+    // Execute the compiled binary with args.
+    // On POSIX, we use fork/exec to set argv[0] to the source path while
+    // executing the temp binary. On Windows, we use std.process.Child
+    // (argv[0] will be the temp binary path — minor behavioral difference).
+    if (builtin.os.tag == .windows) {
+        // Windows: use std.process.Child
+        var child_argv = std.ArrayListUnmanaged([]const u8){};
+        defer child_argv.deinit(allocator);
 
-    // Convert source path to null-terminated
-    const path_z = allocator.dupeZ(u8, path) catch {
-        try getStdErr().writeAll("Failed to allocate argv\n");
-        std.fs.cwd().deleteFile(temp_path) catch {};
-        return;
-    };
-    defer allocator.free(path_z);
-    argv_list.append(allocator, path_z) catch {
-        try getStdErr().writeAll("Failed to allocate argv\n");
-        std.fs.cwd().deleteFile(temp_path) catch {};
-        return;
-    };
-
-    // Convert user-provided arguments to null-terminated
-    var arg_bufs = std.ArrayListUnmanaged([:0]const u8){};
-    defer {
-        for (arg_bufs.items) |buf| allocator.free(buf);
-        arg_bufs.deinit(allocator);
-    }
-    for (program_args) |arg| {
-        const arg_z = allocator.dupeZ(u8, arg) catch {
+        child_argv.append(allocator, temp_path) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
             std.fs.cwd().deleteFile(temp_path) catch {};
             return;
         };
-        arg_bufs.append(allocator, arg_z) catch {
-            allocator.free(arg_z);
+        for (program_args) |arg| {
+            child_argv.append(allocator, arg) catch {
+                try getStdErr().writeAll("Failed to allocate argv\n");
+                std.fs.cwd().deleteFile(temp_path) catch {};
+                return;
+            };
+        }
+
+        var child = std.process.Child.init(child_argv.items, allocator);
+        const term = child.spawnAndWait() catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to execute: {s}\n", .{@errorName(err)}) catch "Failed to execute\n";
+            getStdErr().writeAll(msg) catch {};
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+
+        // Clean up temp file
+        std.fs.cwd().deleteFile(temp_path) catch {};
+
+        switch (term) {
+            .exited => |code| std.process.exit(code),
+            .signal => |sig| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
+                getStdErr().writeAll(msg) catch {};
+                std.process.exit(128 +| @as(u8, @truncate(sig)));
+            },
+            else => std.process.exit(1),
+        }
+    } else {
+        // POSIX: use fork/exec to set argv[0] to source path
+        var argv_list = std.ArrayListUnmanaged(?[*:0]const u8){};
+        defer argv_list.deinit(allocator);
+
+        // Convert source path to null-terminated
+        const path_z = allocator.dupeZ(u8, path) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
             std.fs.cwd().deleteFile(temp_path) catch {};
             return;
         };
-        argv_list.append(allocator, arg_z) catch {
+        defer allocator.free(path_z);
+        argv_list.append(allocator, path_z) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
             std.fs.cwd().deleteFile(temp_path) catch {};
             return;
         };
-    }
-    // Null terminator for argv array
-    argv_list.append(allocator, null) catch {
-        try getStdErr().writeAll("Failed to allocate argv\n");
+
+        // Convert user-provided arguments to null-terminated
+        var arg_bufs = std.ArrayListUnmanaged([:0]const u8){};
+        defer {
+            for (arg_bufs.items) |buf| allocator.free(buf);
+            arg_bufs.deinit(allocator);
+        }
+        for (program_args) |arg| {
+            const arg_z = allocator.dupeZ(u8, arg) catch {
+                try getStdErr().writeAll("Failed to allocate argv\n");
+                std.fs.cwd().deleteFile(temp_path) catch {};
+                return;
+            };
+            arg_bufs.append(allocator, arg_z) catch {
+                allocator.free(arg_z);
+                try getStdErr().writeAll("Failed to allocate argv\n");
+                std.fs.cwd().deleteFile(temp_path) catch {};
+                return;
+            };
+            argv_list.append(allocator, arg_z) catch {
+                try getStdErr().writeAll("Failed to allocate argv\n");
+                std.fs.cwd().deleteFile(temp_path) catch {};
+                return;
+            };
+        }
+        // Null terminator for argv array
+        argv_list.append(allocator, null) catch {
+            try getStdErr().writeAll("Failed to allocate argv\n");
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+
+        // Convert temp_path to null-terminated for execve
+        const temp_path_z = allocator.dupeZ(u8, temp_path) catch {
+            try getStdErr().writeAll("Failed to allocate temp path\n");
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+        defer allocator.free(temp_path_z);
+
+        // Fork and exec
+        const pid = std.posix.fork() catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to fork: {s}\n", .{@errorName(err)}) catch "Failed to fork\n";
+            try getStdErr().writeAll(msg);
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+
+        if (pid == 0) {
+            // Child process - exec the binary
+            const argv_ptr: [*:null]const ?[*:0]const u8 = @ptrCast(argv_list.items.ptr);
+            const envp = std.c.environ;
+            // execveZ doesn't return on success - if it does, it's an error
+            std.posix.execveZ(temp_path_z, argv_ptr, envp) catch {};
+            std.posix.exit(127);
+        }
+
+        // Parent process - wait for child
+        const result = std.posix.waitpid(pid, 0);
+
+        // Clean up temp file
         std.fs.cwd().deleteFile(temp_path) catch {};
-        return;
-    };
 
-    // Convert temp_path to null-terminated for execve
-    const temp_path_z = allocator.dupeZ(u8, temp_path) catch {
-        try getStdErr().writeAll("Failed to allocate temp path\n");
-        std.fs.cwd().deleteFile(temp_path) catch {};
-        return;
-    };
-    defer allocator.free(temp_path_z);
-
-    // Fork and exec
-    const pid = std.posix.fork() catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Failed to fork: {s}\n", .{@errorName(err)}) catch "Failed to fork\n";
-        try getStdErr().writeAll(msg);
-        std.fs.cwd().deleteFile(temp_path) catch {};
-        return;
-    };
-
-    if (pid == 0) {
-        // Child process - exec the binary
-        const argv_ptr: [*:null]const ?[*:0]const u8 = @ptrCast(argv_list.items.ptr);
-        const envp = std.c.environ;
-        // execveZ doesn't return on success - if it does, it's an error
-        std.posix.execveZ(temp_path_z, argv_ptr, envp) catch {};
-        std.posix.exit(127);
+        // Decode the wait status using POSIX macros
+        const status = result.status;
+        // WIFEXITED: (status & 0x7F) == 0
+        if ((status & 0x7F) == 0) {
+            // Exited normally - WEXITSTATUS: (status >> 8) & 0xFF
+            const exit_code: u8 = @truncate((status >> 8) & 0xFF);
+            std.posix.exit(exit_code);
+        }
+        // WIFSIGNALED: ((status & 0x7F) + 1) >> 1 > 0
+        if (((status & 0x7F) + 1) >> 1 > 0) {
+            // Killed by signal - WTERMSIG: status & 0x7F
+            const sig: u8 = @truncate(status & 0x7F);
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
+            getStdErr().writeAll(msg) catch {};
+            std.posix.exit(128 +| sig);
+        }
+        // Unknown status
+        std.posix.exit(1);
     }
-
-    // Parent process - wait for child
-    const result = std.posix.waitpid(pid, 0);
-
-    // Clean up temp file
-    std.fs.cwd().deleteFile(temp_path) catch {};
-
-    // Decode the wait status using POSIX macros
-    const status = result.status;
-    // WIFEXITED: (status & 0x7F) == 0
-    if ((status & 0x7F) == 0) {
-        // Exited normally - WEXITSTATUS: (status >> 8) & 0xFF
-        const exit_code: u8 = @truncate((status >> 8) & 0xFF);
-        std.posix.exit(exit_code);
-    }
-    // WIFSIGNALED: ((status & 0x7F) + 1) >> 1 > 0
-    if (((status & 0x7F) + 1) >> 1 > 0) {
-        // Killed by signal - WTERMSIG: status & 0x7F
-        const sig: u8 = @truncate(status & 0x7F);
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
-        getStdErr().writeAll(msg) catch {};
-        std.posix.exit(128 +| sig);
-    }
-    // Unknown status
-    std.posix.exit(1);
 }
 
 
@@ -2200,8 +2263,8 @@ fn shouldSkipPath(path: []const u8) bool {
         if (std.mem.startsWith(u8, path, skip)) return true;
     }
 
-    // Skip paths containing hidden directory segments
-    var it = std.mem.splitScalar(u8, path, '/');
+    // Skip paths containing hidden directory segments (handle both / and \ separators)
+    var it = std.mem.tokenizeAny(u8, path, "/\\");
     while (it.next()) |segment| {
         if (segment.len > 0 and segment[0] == '.') return true;
     }

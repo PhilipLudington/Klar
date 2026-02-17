@@ -1,4 +1,5 @@
 const std = @import("std");
+const zig_builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const types = @import("types.zig");
@@ -11,13 +12,29 @@ const Environment = values.Environment;
 const RuntimeError = values.RuntimeError;
 const ValueBuilder = values.ValueBuilder;
 
-// Zig 0.15 IO helpers
+// Cross-platform IO helpers
 fn getStdOut() std.fs.File {
-    return .{ .handle = std.posix.STDOUT_FILENO };
+    if (comptime zig_builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDOUT_FILENO };
+    }
 }
 
 fn getStdIn() std.fs.File {
-    return .{ .handle = std.posix.STDIN_FILENO };
+    if (comptime zig_builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDIN_FILENO };
+    }
+}
+
+fn getStdErr() std.fs.File {
+    if (comptime zig_builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDERR_FILENO };
+    }
 }
 
 pub const AssertionRecord = struct {
@@ -1245,7 +1262,7 @@ pub const Interpreter = struct {
                 }
                 // Print error message and panic
                 if (args.items.len == 1 and args.items[0] == .string) {
-                    const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+                    const stderr = getStdErr();
                     stderr.writeAll("panic: ") catch {};
                     stderr.writeAll(args.items[0].string) catch {};
                     stderr.writeAll("\n") catch {};
@@ -2426,7 +2443,7 @@ fn builtinPanic(allocator: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 1) return RuntimeError.InvalidOperation;
 
     // Print panic message to stderr
-    const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+    const stderr = getStdErr();
     stderr.writeAll("panic: ") catch {};
 
     switch (args[0]) {

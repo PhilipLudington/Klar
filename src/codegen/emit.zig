@@ -45,33 +45,40 @@ const layout = @import("layout.zig");
 // LIMITATION: These offsets are computed for the HOST platform at Zig compile time.
 // Cross-compilation of filesystem operations to different OS/arch is NOT supported.
 // To cross-compile filesystem code, build the Klar compiler on the target platform.
+//
+// On Windows, sys/stat.h and dirent.h are not available. We use hardcoded
+// fallback values for the MSVC CRT struct layouts.
 
-const posix = @cImport({
+const has_posix_headers = (builtin.os.tag != .windows);
+
+const posix = if (has_posix_headers) @cImport({
     @cInclude("sys/stat.h");
     @cInclude("dirent.h");
     @cInclude("errno.h");
-});
+}) else struct {};
 
 /// Offset of st_mode field within struct stat (in bytes).
-const stat_mode_offset: u32 = @offsetOf(posix.struct_stat, "st_mode");
+/// On Windows, _stat64 has st_mode at offset 4 (after st_dev:u32).
+const stat_mode_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_mode") else 4;
 
-/// Size of st_mode field in bits (16 on macOS, 32 on Linux typically).
-const stat_mode_bits: u32 = @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_mode));
+/// Size of st_mode field in bits (16 on macOS, 32 on Linux typically, 16 on Windows MSVC).
+const stat_mode_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_mode)) else 16;
 
 /// Offset of d_name field within struct dirent (in bytes).
-const dirent_name_offset: u32 = @offsetOf(posix.struct_dirent, "d_name");
+/// On Windows with MSVC CRT, _finddata_t has name at offset 0 (we use _findfirst/_findnext).
+const dirent_name_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_dirent, "d_name") else 0;
 
 /// File type mask and constants from POSIX (these are standardized).
 const S_IFMT: u32 = 0o170000; // File type mask
 const S_IFREG: u32 = 0o100000; // Regular file
 const S_IFDIR: u32 = 0o040000; // Directory
 
-/// POSIX errno values from system headers.
-/// These are used to map C library errors to Klar's IoError enum.
-const ENOENT: i32 = posix.ENOENT; // No such file or directory
-const EACCES: i32 = posix.EACCES; // Permission denied
-const EEXIST: i32 = posix.EEXIST; // File exists
-const EINVAL: i32 = posix.EINVAL; // Invalid argument
+/// Errno values used to map C library errors to Klar's IoError enum.
+/// Values 2/13/17/22 are standard across POSIX and MSVC CRT.
+const ENOENT: i32 = if (has_posix_headers) posix.ENOENT else 2; // No such file or directory
+const EACCES: i32 = if (has_posix_headers) posix.EACCES else 13; // Permission denied
+const EEXIST: i32 = if (has_posix_headers) posix.EEXIST else 17; // File exists
+const EINVAL: i32 = if (has_posix_headers) posix.EINVAL else 22; // Invalid argument
 
 /// Errors that can occur during IR emission.
 pub const EmitError = error{
@@ -22883,10 +22890,14 @@ pub const Emitter = struct {
 
         const path_val = try self.emitExpr(call.args[0]);
 
-        // Call mkdir(path, 0755)
+        // Call mkdir: Windows _mkdir(path), POSIX mkdir(path, 0755)
         const mkdir_fn = self.getOrDeclareMkdir();
-        var mkdir_args = [_]llvm.ValueRef{ path_val, llvm.Const.int32(self.ctx, 0o755) };
-        const result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &mkdir_args, "mkdir.result");
+        var mkdir_args_win = [_]llvm.ValueRef{path_val};
+        var mkdir_args_posix = [_]llvm.ValueRef{ path_val, llvm.Const.int32(self.ctx, 0o755) };
+        const result = if (self.platform.os == .windows)
+            self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &mkdir_args_win, "mkdir.result")
+        else
+            self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &mkdir_args_posix, "mkdir.result");
 
         // Build Result[void, IoError]
         const result_type = self.getVoidResultType();
@@ -22978,12 +22989,16 @@ pub const Emitter = struct {
         const at_end = self.builder.buildICmp(llvm.c.LLVMIntUGE, i, path_len, "dirall.at_end");
         _ = self.builder.buildCondBr(at_end, done_bb, check_char_bb);
 
-        // Check character
+        // Check character for path separator (/ on POSIX, / or \ on Windows)
         self.builder.positionAtEnd(check_char_bb);
         var char_idx = [_]llvm.ValueRef{i};
         const char_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, path_copy, &char_idx, 1, "dirall.char_ptr");
         const char_val = self.builder.buildLoad(i8_type, char_ptr, "dirall.char");
-        const is_slash = self.builder.buildICmp(llvm.c.LLVMIntEQ, char_val, llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), "dirall.is_slash");
+        const is_fwd_slash = self.builder.buildICmp(llvm.c.LLVMIntEQ, char_val, llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), "dirall.is_fwd_slash");
+        const is_slash = if (self.platform.os == .windows) blk: {
+            const is_back_slash = self.builder.buildICmp(llvm.c.LLVMIntEQ, char_val, llvm.Const.int(i8_type, @as(c_ulonglong, '\\'), false), "dirall.is_back_slash");
+            break :blk llvm.c.LLVMBuildOr(self.builder.ref, is_fwd_slash, is_back_slash, "dirall.is_slash");
+        } else is_fwd_slash;
         _ = self.builder.buildCondBr(is_slash, mkdir_bb, next_bb);
 
         // Create directory at this point
@@ -22991,8 +23006,12 @@ pub const Emitter = struct {
         // Temporarily null-terminate at the slash
         _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), char_ptr);
         const mkdir_fn = self.getOrDeclareMkdir();
-        var mkdir_args = [_]llvm.ValueRef{ path_copy, llvm.Const.int32(self.ctx, 0o755) };
-        const mkdir_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &mkdir_args, "dirall.mkdir");
+        var mkdir_args_win = [_]llvm.ValueRef{path_copy};
+        var mkdir_args_posix = [_]llvm.ValueRef{ path_copy, llvm.Const.int32(self.ctx, 0o755) };
+        const mkdir_result = if (self.platform.os == .windows)
+            self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &mkdir_args_win, "dirall.mkdir")
+        else
+            self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &mkdir_args_posix, "dirall.mkdir");
         // Restore the slash
         _ = self.builder.buildStore(llvm.Const.int(i8_type, @as(c_ulonglong, '/'), false), char_ptr);
         // Check result (ignore EEXIST)
@@ -23326,11 +23345,6 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
-        // Call opendir
-        const opendir_fn = self.getOrDeclareOpendir();
-        var opendir_args = [_]llvm.ValueRef{path_val};
-        const dir_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(opendir_fn), opendir_fn, &opendir_args, "readdir.dir");
-
         // Build Result[List[String], IoError]
         const result_type = self.getListStringResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "readdir.result");
@@ -23339,173 +23353,345 @@ pub const Emitter = struct {
         const list_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "readdir.list_ptr");
         const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "readdir.err_ptr");
 
-        // Check if opendir failed
-        const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
-        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, dir_ptr, null_ptr, "readdir.is_null");
-
         const func = self.current_function orelse return EmitError.InvalidAST;
-        const open_ok_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.open_ok");
-        const open_err_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.open_err");
-        const loop_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.loop");
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.cont");
 
-        _ = self.builder.buildCondBr(is_null, open_err_bb, open_ok_bb);
-
-        // Open error
-        self.builder.positionAtEnd(open_err_bb);
-        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
-        self.emitErrnoToIoError(err_field_ptr);
-        _ = self.builder.buildBr(cont_bb);
-
-        // Open OK - initialize list
-        self.builder.positionAtEnd(open_ok_bb);
-
-        // Initialize List { ptr, len, capacity }
+        // Shared types
         const list_type = self.getListStructType();
         const initial_cap: u32 = 16;
         const string_struct_type = self.getStringStructType();
         const string_size = 16; // { ptr, len, capacity } = 8 + 4 + 4 = 16 bytes
-
-        // Allocate initial array
         const malloc_fn = self.getOrDeclareMalloc();
-        var malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, initial_cap * string_size)};
-        const arr_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "readdir.arr");
 
-        // Store initial list state
-        const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readdir.list_ptr_field");
-        _ = self.builder.buildStore(arr_ptr, list_ptr_field);
-        const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 1, "readdir.list_len_field");
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), list_len_field);
-        const list_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 2, "readdir.list_cap_field");
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, initial_cap), list_cap_field);
+        if (self.platform.os == .windows) {
+            // Windows: use _findfirst64/_findnext64/_findclose
+            // Step 1: Build wildcard pattern by appending "\\*" to the path
+            const strlen_fn = self.getOrDeclareStrlen();
+            var strlen_args = [_]llvm.ValueRef{path_val};
+            const path_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "readdir.pathlen");
+            const pattern_size = llvm.c.LLVMBuildAdd(self.builder.ref, path_len, llvm.Const.int64(self.ctx, 3), "readdir.patsize"); // +3 for "\\*\0"
+            var pat_malloc_args = [_]llvm.ValueRef{pattern_size};
+            const pattern = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &pat_malloc_args, "readdir.pattern");
 
-        _ = self.builder.buildBr(loop_bb);
+            // memcpy path, then append "\\*\0"
+            const memcpy_fn = self.getOrDeclareMemcpy();
+            var mc_args = [_]llvm.ValueRef{ pattern, path_val, path_len };
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &mc_args, "");
 
-        // Loop - read directory entries
-        self.builder.positionAtEnd(loop_bb);
+            // Store '\\' at path_len
+            const i8_type = llvm.Types.int8(self.ctx);
+            var bs_idx = [_]llvm.ValueRef{path_len};
+            const bs_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, pattern, &bs_idx, 1, "readdir.bs_ptr");
+            _ = self.builder.buildStore(llvm.Const.int(i8_type, '\\', false), bs_ptr);
 
-        // Call readdir
-        const readdir_fn = self.getOrDeclareReaddir();
-        var readdir_args = [_]llvm.ValueRef{dir_ptr};
-        const entry_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(readdir_fn), readdir_fn, &readdir_args, "readdir.entry");
+            // Store '*' at path_len+1
+            const plus1 = llvm.c.LLVMBuildAdd(self.builder.ref, path_len, llvm.Const.int64(self.ctx, 1), "readdir.p1");
+            var star_idx = [_]llvm.ValueRef{plus1};
+            const star_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, pattern, &star_idx, 1, "readdir.star_ptr");
+            _ = self.builder.buildStore(llvm.Const.int(i8_type, '*', false), star_ptr);
 
-        // Check if entry is null (end of directory)
-        const entry_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, entry_ptr, null_ptr, "readdir.entry_null");
+            // Store '\0' at path_len+2
+            const plus2 = llvm.c.LLVMBuildAdd(self.builder.ref, path_len, llvm.Const.int64(self.ctx, 2), "readdir.p2");
+            var nul_idx = [_]llvm.ValueRef{plus2};
+            const nul_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, pattern, &nul_idx, 1, "readdir.nul_ptr");
+            _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), nul_ptr);
 
-        const process_entry_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.process");
-        const done_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.done");
+            // Step 2: Allocate _finddata64_t on stack (320 bytes is sufficient)
+            const finddata_size: u32 = 320;
+            const finddata_type = llvm.c.LLVMArrayType2(i8_type, finddata_size);
+            const finddata = self.builder.buildAlloca(finddata_type, "readdir.finddata");
 
-        _ = self.builder.buildCondBr(entry_null, done_bb, process_entry_bb);
+            // Step 3: Call _findfirst64(pattern, &finddata) - returns intptr_t, -1 on error
+            const findfirst_fn = self.getOrDeclareOpendir();
+            var ff_args = [_]llvm.ValueRef{ pattern, finddata };
+            const handle = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(findfirst_fn), findfirst_fn, &ff_args, "readdir.handle");
 
-        // Process entry
-        self.builder.positionAtEnd(process_entry_bb);
+            // Free pattern
+            const free_fn = self.getOrDeclareFree();
+            var free_args = [_]llvm.ValueRef{pattern};
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
 
-        // Get d_name pointer - offset computed from system headers via @cImport (see top of file)
-        var d_name_indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, dirent_name_offset)};
-        const d_name_ptr = llvm.c.LLVMBuildGEP2(
-            self.builder.ref,
-            llvm.Types.int8(self.ctx),
-            entry_ptr,
-            &d_name_indices,
-            1,
-            "readdir.d_name",
-        );
+            // Check if _findfirst64 failed (returns -1)
+            const neg_one = llvm.Const.int(i64_type, @as(c_ulonglong, @bitCast(@as(i64, -1))), false);
+            const ff_failed = self.builder.buildICmp(llvm.c.LLVMIntEQ, handle, neg_one, "readdir.ff_failed");
 
-        // Skip . and .. entries
-        const dot_str = self.builder.buildGlobalStringPtr(".", "dot");
-        const dotdot_str = self.builder.buildGlobalStringPtr("..", "dotdot");
-        const strcmp_fn = self.getOrDeclareStrcmp();
-        var cmp_dot_args = [_]llvm.ValueRef{ d_name_ptr, dot_str };
-        const is_dot = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &cmp_dot_args, "is_dot");
-        const is_dot_eq = self.builder.buildICmp(llvm.c.LLVMIntEQ, is_dot, llvm.Const.int32(self.ctx, 0), "is_dot_eq");
+            const ff_ok_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.ff_ok");
+            const ff_err_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.ff_err");
+            _ = self.builder.buildCondBr(ff_failed, ff_err_bb, ff_ok_bb);
 
-        const check_dotdot_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.check_dotdot");
-        _ = self.builder.buildCondBr(is_dot_eq, loop_bb, check_dotdot_bb);
+            // Error path
+            self.builder.positionAtEnd(ff_err_bb);
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+            self.emitErrnoToIoError(err_field_ptr);
+            _ = self.builder.buildBr(cont_bb);
 
-        self.builder.positionAtEnd(check_dotdot_bb);
-        var cmp_dotdot_args = [_]llvm.ValueRef{ d_name_ptr, dotdot_str };
-        const is_dotdot = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &cmp_dotdot_args, "is_dotdot");
-        const is_dotdot_eq = self.builder.buildICmp(llvm.c.LLVMIntEQ, is_dotdot, llvm.Const.int32(self.ctx, 0), "is_dotdot_eq");
+            // OK path - process first entry and loop
+            self.builder.positionAtEnd(ff_ok_bb);
 
-        const add_entry_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.add_entry");
-        _ = self.builder.buildCondBr(is_dotdot_eq, loop_bb, add_entry_bb);
+            // Initialize list
+            var init_malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, initial_cap * string_size)};
+            const arr_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &init_malloc_args, "readdir.arr");
+            const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readdir.list_ptr_field");
+            _ = self.builder.buildStore(arr_ptr, list_ptr_field);
+            const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 1, "readdir.list_len_field");
+            _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), list_len_field);
+            const list_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 2, "readdir.list_cap_field");
+            _ = self.builder.buildStore(llvm.Const.int32(self.ctx, initial_cap), list_cap_field);
 
-        // Add entry to list
-        self.builder.positionAtEnd(add_entry_bb);
+            // Process entries loop (first entry already in finddata from _findfirst64)
+            const process_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.process");
+            _ = self.builder.buildBr(process_bb);
+            self.builder.positionAtEnd(process_bb);
 
-        // Get current list length and capacity
-        const cur_len = self.builder.buildLoad(i32_type, list_len_field, "readdir.cur_len");
-        const cur_cap = self.builder.buildLoad(i32_type, list_cap_field, "readdir.cur_cap");
+            // Get name pointer at offset 40 in _finddata64_t
+            // Layout: attrib(4) + pad(4) + time_create(8) + time_access(8) + time_write(8) + size(8) = 40
+            const win_finddata_name_offset: u32 = 40;
+            var fd_name_idx = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, win_finddata_name_offset)};
+            const d_name_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, finddata, &fd_name_idx, 1, "readdir.d_name");
 
-        // Check if we need to grow
-        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_len, cur_cap, "readdir.need_grow");
+            // Skip . and .. entries
+            const dot_str = self.builder.buildGlobalStringPtr(".", "dot");
+            const dotdot_str = self.builder.buildGlobalStringPtr("..", "dotdot");
+            const strcmp_fn = self.getOrDeclareStrcmp();
+            var cmp_dot_args = [_]llvm.ValueRef{ d_name_ptr, dot_str };
+            const is_dot = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &cmp_dot_args, "is_dot");
+            const is_dot_eq = self.builder.buildICmp(llvm.c.LLVMIntEQ, is_dot, llvm.Const.int32(self.ctx, 0), "is_dot_eq");
 
-        const grow_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.grow");
-        const add_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.add");
-        _ = self.builder.buildCondBr(need_grow, grow_bb, add_bb);
+            const check_dotdot_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.check_dotdot");
+            const next_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.next");
+            _ = self.builder.buildCondBr(is_dot_eq, next_bb, check_dotdot_bb);
 
-        // Grow list
-        self.builder.positionAtEnd(grow_bb);
-        const new_cap = llvm.c.LLVMBuildMul(self.builder.ref, cur_cap, llvm.Const.int32(self.ctx, 2), "readdir.new_cap");
-        const new_cap_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, new_cap, i64_type, "readdir.new_cap_i64");
-        const new_size = llvm.c.LLVMBuildMul(self.builder.ref, new_cap_i64, llvm.Const.int64(self.ctx, string_size), "readdir.new_size");
-        const cur_arr = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr");
-        const realloc_fn = self.getOrDeclareRealloc();
-        var realloc_args = [_]llvm.ValueRef{ cur_arr, new_size };
-        const new_arr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "readdir.new_arr");
-        _ = self.builder.buildStore(new_arr, list_ptr_field);
-        _ = self.builder.buildStore(new_cap, list_cap_field);
-        _ = self.builder.buildBr(add_bb);
+            self.builder.positionAtEnd(check_dotdot_bb);
+            var cmp_dotdot_args = [_]llvm.ValueRef{ d_name_ptr, dotdot_str };
+            const is_dotdot = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &cmp_dotdot_args, "is_dotdot");
+            const is_dotdot_eq = self.builder.buildICmp(llvm.c.LLVMIntEQ, is_dotdot, llvm.Const.int32(self.ctx, 0), "is_dotdot_eq");
 
-        // Add string to list
-        self.builder.positionAtEnd(add_bb);
+            const add_entry_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.add_entry");
+            _ = self.builder.buildCondBr(is_dotdot_eq, next_bb, add_entry_bb);
 
-        // Get string length
-        const strlen_fn = self.getOrDeclareStrlen();
-        var strlen_args = [_]llvm.ValueRef{d_name_ptr};
-        const str_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "readdir.str_len");
-        const str_len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, str_len, i32_type, "readdir.str_len_i32");
+            // Add entry to list (same logic as POSIX path)
+            self.builder.positionAtEnd(add_entry_bb);
+            const cur_len = self.builder.buildLoad(i32_type, list_len_field, "readdir.cur_len");
+            const cur_cap = self.builder.buildLoad(i32_type, list_cap_field, "readdir.cur_cap");
+            const need_grow = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_len, cur_cap, "readdir.need_grow");
 
-        // Allocate and copy string
-        const str_size_plus_one = llvm.c.LLVMBuildAdd(self.builder.ref, str_len, llvm.Const.int64(self.ctx, 1), "readdir.str_size");
-        var str_malloc_args = [_]llvm.ValueRef{str_size_plus_one};
-        const str_copy = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &str_malloc_args, "readdir.str_copy");
-        const memcpy_fn = self.getOrDeclareMemcpy();
-        var memcpy_args = [_]llvm.ValueRef{ str_copy, d_name_ptr, str_size_plus_one };
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+            const grow_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.grow");
+            const add_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.add");
+            _ = self.builder.buildCondBr(need_grow, grow_bb, add_bb);
 
-        // Get pointer to next slot in list
-        const cur_len2 = self.builder.buildLoad(i32_type, list_len_field, "readdir.cur_len2");
-        const cur_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, cur_len2, i64_type, "readdir.cur_len_i64");
-        const slot_offset = llvm.c.LLVMBuildMul(self.builder.ref, cur_len_i64, llvm.Const.int64(self.ctx, string_size), "readdir.slot_offset");
-        const cur_arr2 = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr2");
-        var slot_idx = [_]llvm.ValueRef{slot_offset};
-        const slot_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), cur_arr2, &slot_idx, 1, "readdir.slot_ptr");
+            self.builder.positionAtEnd(grow_bb);
+            const new_cap = llvm.c.LLVMBuildMul(self.builder.ref, cur_cap, llvm.Const.int32(self.ctx, 2), "readdir.new_cap");
+            const new_cap_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, new_cap, i64_type, "readdir.new_cap_i64");
+            const new_size = llvm.c.LLVMBuildMul(self.builder.ref, new_cap_i64, llvm.Const.int64(self.ctx, string_size), "readdir.new_size");
+            const cur_arr = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr");
+            const realloc_fn = self.getOrDeclareRealloc();
+            var realloc_args = [_]llvm.ValueRef{ cur_arr, new_size };
+            const new_arr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "readdir.new_arr");
+            _ = self.builder.buildStore(new_arr, list_ptr_field);
+            _ = self.builder.buildStore(new_cap, list_cap_field);
+            _ = self.builder.buildBr(add_bb);
 
-        // Store String struct { ptr, len, capacity }
-        const slot_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, slot_ptr, llvm.Types.pointer(self.ctx), "readdir.slot_cast");
-        const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 0, "readdir.str_ptr_field");
-        _ = self.builder.buildStore(str_copy, str_ptr_field);
-        const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 1, "readdir.str_len_field");
-        _ = self.builder.buildStore(str_len_i32, str_len_field);
-        const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 2, "readdir.str_cap_field");
-        _ = self.builder.buildStore(str_len_i32, str_cap_field);
+            self.builder.positionAtEnd(add_bb);
+            var sl_args = [_]llvm.ValueRef{d_name_ptr};
+            const str_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &sl_args, "readdir.str_len");
+            const str_len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, str_len, i32_type, "readdir.str_len_i32");
 
-        // Increment length
-        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, cur_len2, llvm.Const.int32(self.ctx, 1), "readdir.new_len");
-        _ = self.builder.buildStore(new_len, list_len_field);
+            const str_size_plus_one = llvm.c.LLVMBuildAdd(self.builder.ref, str_len, llvm.Const.int64(self.ctx, 1), "readdir.str_size");
+            var sm_args = [_]llvm.ValueRef{str_size_plus_one};
+            const str_copy = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &sm_args, "readdir.str_copy");
+            var mc2_args = [_]llvm.ValueRef{ str_copy, d_name_ptr, str_size_plus_one };
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &mc2_args, "");
 
-        _ = self.builder.buildBr(loop_bb);
+            const cur_len2 = self.builder.buildLoad(i32_type, list_len_field, "readdir.cur_len2");
+            const cur_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, cur_len2, i64_type, "readdir.cur_len_i64");
+            const slot_offset = llvm.c.LLVMBuildMul(self.builder.ref, cur_len_i64, llvm.Const.int64(self.ctx, string_size), "readdir.slot_offset");
+            const cur_arr2 = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr2");
+            var slot_idx = [_]llvm.ValueRef{slot_offset};
+            const slot_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cur_arr2, &slot_idx, 1, "readdir.slot_ptr");
 
-        // Done - close directory
-        self.builder.positionAtEnd(done_bb);
-        const closedir_fn = self.getOrDeclareClosedir();
-        var closedir_args = [_]llvm.ValueRef{dir_ptr};
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(closedir_fn), closedir_fn, &closedir_args, "readdir.closedir");
+            const slot_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, slot_ptr, ptr_type, "readdir.slot_cast");
+            const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 0, "readdir.str_ptr_field");
+            _ = self.builder.buildStore(str_copy, str_ptr_field);
+            const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 1, "readdir.str_len_field");
+            _ = self.builder.buildStore(str_len_i32, str_len_field);
+            const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 2, "readdir.str_cap_field");
+            _ = self.builder.buildStore(str_len_i32, str_cap_field);
 
-        // Set success
-        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
-        _ = self.builder.buildBr(cont_bb);
+            const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, cur_len2, llvm.Const.int32(self.ctx, 1), "readdir.new_len");
+            _ = self.builder.buildStore(new_len, list_len_field);
+            _ = self.builder.buildBr(next_bb);
+
+            // Call _findnext64 to advance to next entry
+            self.builder.positionAtEnd(next_bb);
+            const findnext_fn = self.getOrDeclareReaddir();
+            var fn_args = [_]llvm.ValueRef{ handle, finddata };
+            const fn_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(findnext_fn), findnext_fn, &fn_args, "readdir.fn_result");
+            const has_more = self.builder.buildICmp(llvm.c.LLVMIntEQ, fn_result, llvm.Const.int32(self.ctx, 0), "readdir.has_more");
+
+            const done_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.done");
+            _ = self.builder.buildCondBr(has_more, process_bb, done_bb);
+
+            // Done - close handle
+            self.builder.positionAtEnd(done_bb);
+            const findclose_fn = self.getOrDeclareClosedir();
+            var fc_args = [_]llvm.ValueRef{handle};
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(findclose_fn), findclose_fn, &fc_args, "readdir.findclose");
+
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+            _ = self.builder.buildBr(cont_bb);
+        } else {
+            // POSIX: use opendir/readdir/closedir
+            const opendir_fn = self.getOrDeclareOpendir();
+            var opendir_args = [_]llvm.ValueRef{path_val};
+            const dir_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(opendir_fn), opendir_fn, &opendir_args, "readdir.dir");
+
+            // Check if opendir failed
+            const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
+            const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, dir_ptr, null_ptr, "readdir.is_null");
+
+            const open_ok_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.open_ok");
+            const open_err_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.open_err");
+            const loop_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.loop");
+
+            _ = self.builder.buildCondBr(is_null, open_err_bb, open_ok_bb);
+
+            // Open error
+            self.builder.positionAtEnd(open_err_bb);
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+            self.emitErrnoToIoError(err_field_ptr);
+            _ = self.builder.buildBr(cont_bb);
+
+            // Open OK - initialize list
+            self.builder.positionAtEnd(open_ok_bb);
+
+            var init_malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, initial_cap * string_size)};
+            const arr_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &init_malloc_args, "readdir.arr");
+
+            const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readdir.list_ptr_field");
+            _ = self.builder.buildStore(arr_ptr, list_ptr_field);
+            const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 1, "readdir.list_len_field");
+            _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), list_len_field);
+            const list_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 2, "readdir.list_cap_field");
+            _ = self.builder.buildStore(llvm.Const.int32(self.ctx, initial_cap), list_cap_field);
+
+            _ = self.builder.buildBr(loop_bb);
+
+            // Loop - read directory entries
+            self.builder.positionAtEnd(loop_bb);
+
+            const readdir_fn = self.getOrDeclareReaddir();
+            var readdir_args = [_]llvm.ValueRef{dir_ptr};
+            const entry_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(readdir_fn), readdir_fn, &readdir_args, "readdir.entry");
+
+            const entry_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, entry_ptr, llvm.c.LLVMConstPointerNull(ptr_type), "readdir.entry_null");
+
+            const process_entry_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.process");
+            const done_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.done");
+
+            _ = self.builder.buildCondBr(entry_null, done_bb, process_entry_bb);
+
+            // Process entry
+            self.builder.positionAtEnd(process_entry_bb);
+
+            // Get d_name pointer - offset computed from system headers via @cImport (see top of file)
+            var d_name_indices = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, dirent_name_offset)};
+            const d_name_ptr = llvm.c.LLVMBuildGEP2(
+                self.builder.ref,
+                llvm.Types.int8(self.ctx),
+                entry_ptr,
+                &d_name_indices,
+                1,
+                "readdir.d_name",
+            );
+
+            // Skip . and .. entries
+            const dot_str = self.builder.buildGlobalStringPtr(".", "dot");
+            const dotdot_str = self.builder.buildGlobalStringPtr("..", "dotdot");
+            const strcmp_fn = self.getOrDeclareStrcmp();
+            var cmp_dot_args = [_]llvm.ValueRef{ d_name_ptr, dot_str };
+            const is_dot = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &cmp_dot_args, "is_dot");
+            const is_dot_eq = self.builder.buildICmp(llvm.c.LLVMIntEQ, is_dot, llvm.Const.int32(self.ctx, 0), "is_dot_eq");
+
+            const check_dotdot_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.check_dotdot");
+            _ = self.builder.buildCondBr(is_dot_eq, loop_bb, check_dotdot_bb);
+
+            self.builder.positionAtEnd(check_dotdot_bb);
+            var cmp_dotdot_args = [_]llvm.ValueRef{ d_name_ptr, dotdot_str };
+            const is_dotdot = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &cmp_dotdot_args, "is_dotdot");
+            const is_dotdot_eq = self.builder.buildICmp(llvm.c.LLVMIntEQ, is_dotdot, llvm.Const.int32(self.ctx, 0), "is_dotdot_eq");
+
+            const add_entry_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.add_entry");
+            _ = self.builder.buildCondBr(is_dotdot_eq, loop_bb, add_entry_bb);
+
+            // Add entry to list
+            self.builder.positionAtEnd(add_entry_bb);
+
+            const cur_len = self.builder.buildLoad(i32_type, list_len_field, "readdir.cur_len");
+            const cur_cap = self.builder.buildLoad(i32_type, list_cap_field, "readdir.cur_cap");
+
+            const need_grow = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_len, cur_cap, "readdir.need_grow");
+
+            const grow_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.grow");
+            const add_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.add");
+            _ = self.builder.buildCondBr(need_grow, grow_bb, add_bb);
+
+            // Grow list
+            self.builder.positionAtEnd(grow_bb);
+            const new_cap = llvm.c.LLVMBuildMul(self.builder.ref, cur_cap, llvm.Const.int32(self.ctx, 2), "readdir.new_cap");
+            const new_cap_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, new_cap, i64_type, "readdir.new_cap_i64");
+            const new_size = llvm.c.LLVMBuildMul(self.builder.ref, new_cap_i64, llvm.Const.int64(self.ctx, string_size), "readdir.new_size");
+            const cur_arr = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr");
+            const realloc_fn = self.getOrDeclareRealloc();
+            var realloc_args = [_]llvm.ValueRef{ cur_arr, new_size };
+            const new_arr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "readdir.new_arr");
+            _ = self.builder.buildStore(new_arr, list_ptr_field);
+            _ = self.builder.buildStore(new_cap, list_cap_field);
+            _ = self.builder.buildBr(add_bb);
+
+            // Add string to list
+            self.builder.positionAtEnd(add_bb);
+
+            const strlen_fn = self.getOrDeclareStrlen();
+            var strlen_args = [_]llvm.ValueRef{d_name_ptr};
+            const str_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "readdir.str_len");
+            const str_len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, str_len, i32_type, "readdir.str_len_i32");
+
+            const str_size_plus_one = llvm.c.LLVMBuildAdd(self.builder.ref, str_len, llvm.Const.int64(self.ctx, 1), "readdir.str_size");
+            var str_malloc_args = [_]llvm.ValueRef{str_size_plus_one};
+            const str_copy = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &str_malloc_args, "readdir.str_copy");
+            const memcpy_fn = self.getOrDeclareMemcpy();
+            var memcpy_args = [_]llvm.ValueRef{ str_copy, d_name_ptr, str_size_plus_one };
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+            const cur_len2 = self.builder.buildLoad(i32_type, list_len_field, "readdir.cur_len2");
+            const cur_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, cur_len2, i64_type, "readdir.cur_len_i64");
+            const slot_offset = llvm.c.LLVMBuildMul(self.builder.ref, cur_len_i64, llvm.Const.int64(self.ctx, string_size), "readdir.slot_offset");
+            const cur_arr2 = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr2");
+            var slot_idx = [_]llvm.ValueRef{slot_offset};
+            const slot_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), cur_arr2, &slot_idx, 1, "readdir.slot_ptr");
+
+            const slot_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, slot_ptr, llvm.Types.pointer(self.ctx), "readdir.slot_cast");
+            const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 0, "readdir.str_ptr_field");
+            _ = self.builder.buildStore(str_copy, str_ptr_field);
+            const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 1, "readdir.str_len_field");
+            _ = self.builder.buildStore(str_len_i32, str_len_field);
+            const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 2, "readdir.str_cap_field");
+            _ = self.builder.buildStore(str_len_i32, str_cap_field);
+
+            const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, cur_len2, llvm.Const.int32(self.ctx, 1), "readdir.new_len");
+            _ = self.builder.buildStore(new_len, list_len_field);
+
+            _ = self.builder.buildBr(loop_bb);
+
+            // Done - close directory
+            self.builder.positionAtEnd(done_bb);
+            const closedir_fn = self.getOrDeclareClosedir();
+            var closedir_args = [_]llvm.ValueRef{dir_ptr};
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(closedir_fn), closedir_fn, &closedir_args, "readdir.closedir");
+
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+            _ = self.builder.buildBr(cont_bb);
+        }
 
         // Continue
         self.builder.positionAtEnd(cont_bb);
@@ -23515,7 +23701,8 @@ pub const Emitter = struct {
     // ==================== C Function Declarations for Filesystem ====================
 
     fn getOrDeclareAccess(self: *Emitter) llvm.ValueRef {
-        const fn_name = "access";
+        // Windows MSVC CRT: _access, POSIX: access (same signature)
+        const fn_name = if (self.platform.os == .windows) "_access" else "access";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
@@ -23526,7 +23713,8 @@ pub const Emitter = struct {
     }
 
     fn getOrDeclareStat(self: *Emitter) llvm.ValueRef {
-        const fn_name = "stat";
+        // Windows MSVC CRT: _stat64, POSIX: stat (same pointer-based signature)
+        const fn_name = if (self.platform.os == .windows) "_stat64" else "stat";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
@@ -23537,18 +23725,27 @@ pub const Emitter = struct {
     }
 
     fn getOrDeclareMkdir(self: *Emitter) llvm.ValueRef {
-        const fn_name = "mkdir";
+        // Windows MSVC CRT: _mkdir takes 1 param (no mode), POSIX: mkdir takes 2 params
+        const fn_name = if (self.platform.os == .windows) "_mkdir" else "mkdir";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
-        // int mkdir(const char *pathname, mode_t mode)
-        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx) };
-        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
-        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        if (self.platform.os == .windows) {
+            // int _mkdir(const char *dirname)
+            var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+            const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+            return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        } else {
+            // int mkdir(const char *pathname, mode_t mode)
+            var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx) };
+            const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+            return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        }
     }
 
     fn getOrDeclareRmdir(self: *Emitter) llvm.ValueRef {
-        const fn_name = "rmdir";
+        // Windows MSVC CRT: _rmdir, POSIX: rmdir (same signature)
+        const fn_name = if (self.platform.os == .windows) "_rmdir" else "rmdir";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
@@ -23559,7 +23756,8 @@ pub const Emitter = struct {
     }
 
     fn getOrDeclareUnlink(self: *Emitter) llvm.ValueRef {
-        const fn_name = "unlink";
+        // Windows MSVC CRT: _unlink, POSIX: unlink (same signature)
+        const fn_name = if (self.platform.os == .windows) "_unlink" else "unlink";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
@@ -23570,41 +23768,82 @@ pub const Emitter = struct {
     }
 
     fn getOrDeclareOpendir(self: *Emitter) llvm.ValueRef {
-        const fn_name = "opendir";
-        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
-            return func;
+        if (self.platform.os == .windows) {
+            // Windows: intptr_t _findfirst64(const char *filespec, struct _finddata64_t *fileinfo)
+            const fn_name = "_findfirst64";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+            var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.pointer(self.ctx) };
+            const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int64(self.ctx), &param_types, 2, 0);
+            return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        } else {
+            const fn_name = "opendir";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+            // DIR *opendir(const char *name)
+            var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+            const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 1, 0);
+            return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
         }
-        // DIR *opendir(const char *name)
-        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
-        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 1, 0);
-        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
     fn getOrDeclareReaddir(self: *Emitter) llvm.ValueRef {
-        const fn_name = "readdir";
-        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
-            return func;
+        if (self.platform.os == .windows) {
+            // Windows: int _findnext64(intptr_t handle, struct _finddata64_t *fileinfo)
+            const fn_name = "_findnext64";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+            var param_types = [_]llvm.TypeRef{ llvm.Types.int64(self.ctx), llvm.Types.pointer(self.ctx) };
+            const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 2, 0);
+            return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        } else {
+            const fn_name = "readdir";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+            // struct dirent *readdir(DIR *dirp)
+            var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+            const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 1, 0);
+            return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
         }
-        // struct dirent *readdir(DIR *dirp)
-        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
-        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.pointer(self.ctx), &param_types, 1, 0);
-        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
     fn getOrDeclareClosedir(self: *Emitter) llvm.ValueRef {
-        const fn_name = "closedir";
-        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
-            return func;
+        if (self.platform.os == .windows) {
+            // Windows: int _findclose(intptr_t handle)
+            const fn_name = "_findclose";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+            var param_types = [_]llvm.TypeRef{llvm.Types.int64(self.ctx)};
+            const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+            return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        } else {
+            const fn_name = "closedir";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+            // int closedir(DIR *dirp)
+            var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
+            const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
+            return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
         }
-        // int closedir(DIR *dirp)
-        var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
-        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 1, 0);
-        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
     fn getOrDeclareErrno(self: *Emitter) llvm.ValueRef {
-        // On most systems, errno is accessed via __errno_location() (Linux) or __error() (macOS)
-        const errno_fn_name = if (builtin.os.tag == .macos) "__error" else "__errno_location";
+        // errno accessor varies by platform:
+        // - macOS: __error()
+        // - Windows (MSVC CRT): _errno()
+        // - Linux/others: __errno_location()
+        // Use target platform (not host) for correct cross-compilation.
+        const errno_fn_name = switch (self.platform.os) {
+            .macos => "__error",
+            .windows => "_errno",
+            else => "__errno_location",
+        };
         const errno_fn = blk: {
             if (llvm.c.LLVMGetNamedFunction(self.module.ref, errno_fn_name)) |func| {
                 break :blk func;

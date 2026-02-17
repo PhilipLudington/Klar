@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const version = @import("version.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Parser = @import("parser.zig").Parser;
@@ -369,7 +370,16 @@ fn uriToPath(allocator: std.mem.Allocator, uri: []const u8) !?[]u8 {
                 try decoded.append(allocator, path_slice[i]);
             }
         }
-        const decoded_path = try decoded.toOwnedSlice(allocator);
+        var decoded_path = try decoded.toOwnedSlice(allocator);
+
+        // Windows: file:///C:/foo decodes to /C:/foo — strip the leading /
+        if (builtin.os.tag == .windows and decoded_path.len >= 3 and
+            decoded_path[0] == '/' and std.ascii.isAlphabetic(decoded_path[1]) and decoded_path[2] == ':')
+        {
+            std.mem.copyForwards(u8, decoded_path[0 .. decoded_path.len - 1], decoded_path[1..]);
+            decoded_path = try allocator.realloc(decoded_path, decoded_path.len - 1);
+        }
+
         return decoded_path;
     }
     if (std.mem.indexOf(u8, uri, "://") != null) return null;
@@ -1286,8 +1296,14 @@ fn handleMessage(
 }
 
 pub fn runStdio(allocator: std.mem.Allocator) !void {
-    const stdin_file: std.fs.File = .{ .handle = std.posix.STDIN_FILENO };
-    const stdout_file: std.fs.File = .{ .handle = std.posix.STDOUT_FILENO };
+    const stdin_file: std.fs.File = if (comptime builtin.os.tag == .windows)
+        .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) }
+    else
+        .{ .handle = std.posix.STDIN_FILENO };
+    const stdout_file: std.fs.File = if (comptime builtin.os.tag == .windows)
+        .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) }
+    else
+        .{ .handle = std.posix.STDOUT_FILENO };
 
     var read_buffer: [4096]u8 = undefined;
     var reader = stdin_file.reader(&read_buffer);

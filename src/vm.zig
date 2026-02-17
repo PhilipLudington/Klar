@@ -26,9 +26,23 @@ const vm_builtins = @import("vm_builtins.zig");
 const gc_mod = @import("gc.zig");
 const GC = gc_mod.GC;
 
-// Zig 0.15 IO helpers
+const zig_builtin = @import("builtin");
+
+// Cross-platform IO helpers
 fn getStdOut() std.fs.File {
-    return .{ .handle = std.posix.STDOUT_FILENO };
+    if (comptime zig_builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDOUT_FILENO };
+    }
+}
+
+fn getStdErr() std.fs.File {
+    if (comptime zig_builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDERR_FILENO };
+    }
 }
 
 // ============================================================================
@@ -262,7 +276,7 @@ pub const VM = struct {
         if (self.last_error) |ctx| {
             var buf: [2048]u8 = undefined;
             const msg = ctx.format(&buf);
-            const stderr = std.io.getStdErr();
+            const stderr = getStdErr();
             stderr.writeAll(msg) catch {};
         }
     }
@@ -1630,7 +1644,7 @@ pub const VM = struct {
                 try self.push(v.*);
             } else {
                 // Print error message and panic
-                const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+                const stderr = getStdErr();
                 stderr.writeAll("expect failed: ") catch {};
                 if (msg == .string) {
                     stderr.writeAll(msg.string.chars) catch {};
