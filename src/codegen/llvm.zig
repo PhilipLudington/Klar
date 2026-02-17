@@ -57,6 +57,13 @@ pub fn initializeAllTargets() void {
     c.LLVMInitializeAArch64TargetMC();
     c.LLVMInitializeAArch64AsmPrinter();
     c.LLVMInitializeAArch64AsmParser();
+
+    // Initialize WebAssembly target
+    c.LLVMInitializeWebAssemblyTargetInfo();
+    c.LLVMInitializeWebAssemblyTarget();
+    c.LLVMInitializeWebAssemblyTargetMC();
+    c.LLVMInitializeWebAssemblyAsmPrinter();
+    c.LLVMInitializeWebAssemblyAsmParser();
 }
 
 /// LLVM Context wrapper.

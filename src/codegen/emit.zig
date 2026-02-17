@@ -607,6 +607,65 @@ pub const Emitter = struct {
         self.entry_point = entry_point;
     }
 
+    /// Set the target platform for cross-compilation.
+    /// Updates the module's target triple, data layout, and platform-specific settings.
+    pub fn setTargetPlatform(self: *Emitter, platform: target.Platform, triple: [:0]const u8) void {
+        self.platform = platform;
+        self.abi = target.ABI.init(platform);
+        self.calling_convention = target.CallingConvention.forPlatform(platform);
+        self.module.setTarget(triple);
+        const data_layout = platform.getDataLayout();
+        if (data_layout.len > 0) {
+            self.module.setDataLayout(data_layout);
+        }
+    }
+
+    /// Get the LLVM type for isize (pointer-width signed integer).
+    fn isizeType(self: *Emitter) llvm.TypeRef {
+        return if (self.platform.getPointerSize() == 4)
+            llvm.Types.int32(self.ctx)
+        else
+            llvm.Types.int64(self.ctx);
+    }
+
+    /// Get the LLVM type for usize (pointer-width unsigned integer).
+    fn usizeType(self: *Emitter) llvm.TypeRef {
+        return self.isizeType(); // Same bit width, just different signedness
+    }
+
+    /// Create an isize constant.
+    fn isizeConst(self: *Emitter, value: i64) llvm.ValueRef {
+        if (self.platform.getPointerSize() == 4) {
+            return llvm.Const.int32(self.ctx, @intCast(value));
+        }
+        return llvm.Const.int64(self.ctx, value);
+    }
+
+    /// Create a usize constant.
+    fn usizeConstUnsigned(self: *Emitter, value: u64) llvm.ValueRef {
+        if (self.platform.getPointerSize() == 4) {
+            return llvm.Const.int(llvm.Types.int32(self.ctx), value, false);
+        }
+        return llvm.Const.int(llvm.Types.int64(self.ctx), value, false);
+    }
+
+    /// Emit a wasm trap for unsupported operations (filesystem, stdin, etc.).
+    /// Prints an error message and calls __builtin_trap / unreachable.
+    fn emitWasmUnsupportedTrap(self: *Emitter, feature_name: [:0]const u8) llvm.ValueRef {
+        // Print error message via puts (which becomes a wasm import)
+        const msg = self.builder.buildGlobalStringPtr(feature_name, "wasm.unsupported.msg");
+        const puts_fn = self.getOrDeclarePuts();
+        var call_args = [_]llvm.ValueRef{msg};
+        const fn_type = llvm.c.LLVMGlobalGetValueType(puts_fn);
+        _ = self.builder.buildCall(fn_type, puts_fn, &call_args, "");
+
+        // Emit unreachable (becomes wasm trap)
+        _ = self.builder.buildUnreachable();
+
+        // Return a dummy value (code won't reach here)
+        return llvm.Const.int32(self.ctx, 0);
+    }
+
     /// Generate a C-style main(argc, argv) wrapper that converts args to [String].
     fn emitMainArgsWrapper(self: *Emitter) EmitError!void {
         const i32_type = llvm.Types.int32(self.ctx);
@@ -3602,13 +3661,13 @@ pub const Emitter = struct {
                             .i32_ => break :blk llvm.Const.int32(self.ctx, @intCast(v)),
                             .i64_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
                             .i128_ => break :blk llvm.Const.int(llvm.Types.int128(self.ctx), @intCast(v), true),
-                            .isize_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
+                            .isize_ => break :blk self.isizeConst(@intCast(v)),
                             .u8_ => break :blk llvm.Const.int(llvm.Types.int8(self.ctx), @intCast(v), false),
                             .u16_ => break :blk llvm.Const.int(llvm.Types.int16(self.ctx), @intCast(v), false),
                             .u32_ => break :blk llvm.Const.int(llvm.Types.int32(self.ctx), @intCast(v), false),
                             .u64_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
                             .u128_ => break :blk llvm.Const.int(llvm.Types.int128(self.ctx), @intCast(v), false),
-                            .usize_ => break :blk llvm.Const.int64(self.ctx, @intCast(v)),
+                            .usize_ => break :blk self.usizeConstUnsigned(@intCast(v)),
                             else => {},
                         }
                     }
@@ -4651,13 +4710,13 @@ pub const Emitter = struct {
         if (std.mem.eql(u8, name, "i32")) return llvm.Types.int32(self.ctx);
         if (std.mem.eql(u8, name, "i64")) return llvm.Types.int64(self.ctx);
         if (std.mem.eql(u8, name, "i128")) return llvm.Types.int128(self.ctx);
-        if (std.mem.eql(u8, name, "isize")) return llvm.Types.int64(self.ctx); // Assume 64-bit
+        if (std.mem.eql(u8, name, "isize")) return self.isizeType();
         if (std.mem.eql(u8, name, "u8")) return llvm.Types.int8(self.ctx);
         if (std.mem.eql(u8, name, "u16")) return llvm.Types.int16(self.ctx);
         if (std.mem.eql(u8, name, "u32")) return llvm.Types.int32(self.ctx);
         if (std.mem.eql(u8, name, "u64")) return llvm.Types.int64(self.ctx);
         if (std.mem.eql(u8, name, "u128")) return llvm.Types.int128(self.ctx);
-        if (std.mem.eql(u8, name, "usize")) return llvm.Types.int64(self.ctx); // Assume 64-bit
+        if (std.mem.eql(u8, name, "usize")) return self.usizeType();
         if (std.mem.eql(u8, name, "f32")) return llvm.Types.float32(self.ctx);
         if (std.mem.eql(u8, name, "f64")) return llvm.Types.float64(self.ctx);
         if (std.mem.eql(u8, name, "bool")) return llvm.Types.int1(self.ctx);
@@ -6026,7 +6085,7 @@ pub const Emitter = struct {
                 _ = elem_type; // Element type is for the pointed-to data
                 var slice_fields = [_]llvm.TypeRef{
                     llvm.Types.pointer(self.ctx), // data pointer
-                    llvm.Types.int64(self.ctx), // length (usize)
+                    self.usizeType(), // length (usize)
                 };
                 return llvm.Types.struct_(self.ctx, &slice_fields, false);
             },
@@ -6168,8 +6227,8 @@ pub const Emitter = struct {
         if (std.mem.eql(u8, name, "bool")) return llvm.Types.int1(self.ctx);
         if (std.mem.eql(u8, name, "string")) return llvm.Types.pointer(self.ctx);
         if (std.mem.eql(u8, name, "char")) return llvm.Types.int32(self.ctx); // Unicode codepoint
-        if (std.mem.eql(u8, name, "isize")) return llvm.Types.int64(self.ctx);
-        if (std.mem.eql(u8, name, "usize")) return llvm.Types.int64(self.ctx);
+        if (std.mem.eql(u8, name, "isize")) return self.isizeType();
+        if (std.mem.eql(u8, name, "usize")) return self.usizeType();
 
         // Check if it's a registered struct type
         if (self.struct_types.get(name)) |struct_info| {
@@ -6572,13 +6631,13 @@ pub const Emitter = struct {
                                 .i32_ => llvm.Types.int32(self.ctx),
                                 .i64_ => llvm.Types.int64(self.ctx),
                                 .i128_ => llvm.Types.int128(self.ctx),
-                                .isize_ => llvm.Types.int64(self.ctx),
+                                .isize_ => self.isizeType(),
                                 .u8_ => llvm.Types.int8(self.ctx),
                                 .u16_ => llvm.Types.int16(self.ctx),
                                 .u32_ => llvm.Types.int32(self.ctx),
                                 .u64_ => llvm.Types.int64(self.ctx),
                                 .u128_ => llvm.Types.int128(self.ctx),
-                                .usize_ => llvm.Types.int64(self.ctx),
+                                .usize_ => self.usizeType(),
                                 else => llvm.Types.int32(self.ctx),
                             };
                         }
@@ -7151,9 +7210,9 @@ pub const Emitter = struct {
 
                 // CStr methods
                 if (self.isCstrExpr(m.object)) {
-                    // len() returns usize (i64)
+                    // len() returns usize
                     if (std.mem.eql(u8, m.method_name, "len")) {
-                        return llvm.Types.int64(self.ctx);
+                        return self.usizeType();
                     }
                     // to_string() returns String
                     if (std.mem.eql(u8, m.method_name, "to_string")) {
@@ -7167,9 +7226,9 @@ pub const Emitter = struct {
                     if (std.mem.eql(u8, m.method_name, "as_cstr")) {
                         return llvm.Types.pointer(self.ctx);
                     }
-                    // len() returns usize (i64)
+                    // len() returns usize
                     if (std.mem.eql(u8, m.method_name, "len")) {
-                        return llvm.Types.int64(self.ctx);
+                        return self.usizeType();
                     }
                     // to_string() returns String
                     if (std.mem.eql(u8, m.method_name, "to_string")) {
@@ -7539,13 +7598,13 @@ pub const Emitter = struct {
                         if (std.mem.eql(u8, type_name, "i32")) return llvm.Types.int32(self.ctx);
                         if (std.mem.eql(u8, type_name, "i64")) return llvm.Types.int64(self.ctx);
                         if (std.mem.eql(u8, type_name, "i128")) return llvm.Types.int128(self.ctx);
-                        if (std.mem.eql(u8, type_name, "isize")) return llvm.Types.int64(self.ctx);
+                        if (std.mem.eql(u8, type_name, "isize")) return self.isizeType();
                         if (std.mem.eql(u8, type_name, "u8")) return llvm.Types.int8(self.ctx);
                         if (std.mem.eql(u8, type_name, "u16")) return llvm.Types.int16(self.ctx);
                         if (std.mem.eql(u8, type_name, "u32")) return llvm.Types.int32(self.ctx);
                         if (std.mem.eql(u8, type_name, "u64")) return llvm.Types.int64(self.ctx);
                         if (std.mem.eql(u8, type_name, "u128")) return llvm.Types.int128(self.ctx);
-                        if (std.mem.eql(u8, type_name, "usize")) return llvm.Types.int64(self.ctx);
+                        if (std.mem.eql(u8, type_name, "usize")) return self.usizeType();
                         if (std.mem.eql(u8, type_name, "f32")) return llvm.Types.float32(self.ctx);
                         if (std.mem.eql(u8, type_name, "f64")) return llvm.Types.float64(self.ctx);
                         if (std.mem.eql(u8, type_name, "bool")) return llvm.Types.int1(self.ctx);
@@ -13127,6 +13186,7 @@ pub const Emitter = struct {
 
     /// Emit a readline call that reads a line from stdin
     fn emitReadline(self: *Emitter) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: readline is not supported on WebAssembly targets");
         // Allocate buffer on stack for fgets
         const buffer_size: u32 = 4096;
         const i8_type = llvm.Types.int8(self.ctx);
@@ -22780,6 +22840,7 @@ pub const Emitter = struct {
 
     /// Emit fs_exists(path: string) -> bool
     fn emitFsExists(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_exists is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         const path_val = try self.emitExpr(call.args[0]);
@@ -22794,6 +22855,7 @@ pub const Emitter = struct {
 
     /// Emit fs_is_file(path: string) -> bool
     fn emitFsIsFile(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_is_file is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
         const path_val = try self.emitExpr(call.args[0]);
         return self.emitStatIsFile(path_val);
@@ -22801,6 +22863,7 @@ pub const Emitter = struct {
 
     /// Emit fs_is_dir(path: string) -> bool
     fn emitFsIsDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_is_dir is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
         const path_val = try self.emitExpr(call.args[0]);
         return self.emitStatIsDir(path_val);
@@ -22886,6 +22949,7 @@ pub const Emitter = struct {
 
     /// Emit fs_create_dir(path: string) -> Result[void, IoError]
     fn emitFsCreateDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_create_dir is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         const path_val = try self.emitExpr(call.args[0]);
@@ -22934,6 +22998,7 @@ pub const Emitter = struct {
 
     /// Emit fs_create_dir_all(path: string) -> Result[void, IoError]
     fn emitFsCreateDirAll(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_create_dir_all is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         const path_val = try self.emitExpr(call.args[0]);
@@ -23068,6 +23133,7 @@ pub const Emitter = struct {
 
     /// Emit fs_remove_file(path: string) -> Result[void, IoError]
     fn emitFsRemoveFile(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_remove_file is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         const path_val = try self.emitExpr(call.args[0]);
@@ -23111,6 +23177,7 @@ pub const Emitter = struct {
 
     /// Emit fs_remove_dir(path: string) -> Result[void, IoError]
     fn emitFsRemoveDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_remove_dir is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         const path_val = try self.emitExpr(call.args[0]);
@@ -23154,6 +23221,7 @@ pub const Emitter = struct {
 
     /// Emit fs_read_string(path: string) -> Result[String, IoError]
     fn emitFsReadString(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_read_string is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         // Delegate to the existing File.read_to_string implementation
@@ -23258,6 +23326,7 @@ pub const Emitter = struct {
 
     /// Emit fs_write_string(path: string, content: string) -> Result[void, IoError]
     fn emitFsWriteString(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_write_string is not supported on WebAssembly targets");
         if (call.args.len != 2) return EmitError.InvalidAST;
 
         const path_val = try self.emitExpr(call.args[0]);
@@ -23338,6 +23407,7 @@ pub const Emitter = struct {
 
     /// Emit fs_read_dir(path: string) -> Result[List[String], IoError]
     fn emitFsReadDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_read_dir is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
 
         const path_val = try self.emitExpr(call.args[0]);

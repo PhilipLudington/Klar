@@ -96,6 +96,11 @@ fn linkForPlatform(
         allocated_strings.deinit(allocator);
     }
 
+    // WebAssembly targets use wasm-ld
+    if (platform.isWasm()) {
+        return linkWasmTarget(allocator, object_file, output_file, target_info_opt);
+    }
+
     // Bare-metal/freestanding targets use a different linking approach
     if (platform.isFreestanding() or options.freestanding) {
         return linkBareMetalTarget(allocator, object_file, output_file, target_info_opt, options);
@@ -150,6 +155,7 @@ fn linkForPlatform(
                     break :blk switch (ti.arch) {
                         .x86_64 => "x86_64-linux-gnu-gcc",
                         .aarch64 => "aarch64-linux-gnu-gcc",
+                        .wasm32 => return LinkerError.CrossCompilationNotSupported,
                         .unknown => return LinkerError.CrossCompilationNotSupported,
                     };
                 }
@@ -172,6 +178,7 @@ fn linkForPlatform(
                 const mingw_gcc = if (target_info_opt) |ti| switch (ti.arch) {
                     .x86_64 => "x86_64-w64-mingw32-gcc",
                     .aarch64 => "aarch64-w64-mingw32-gcc",
+                    .wasm32 => return LinkerError.CrossCompilationNotSupported,
                     .unknown => return LinkerError.CrossCompilationNotSupported,
                 } else "x86_64-w64-mingw32-gcc";
 
@@ -350,6 +357,7 @@ fn linkBareMetalTarget(
     const linker_names: []const []const u8 = if (target_info_opt) |ti| switch (ti.arch) {
         .aarch64 => &.{ "aarch64-elf-ld", "aarch64-none-elf-ld", "ld" },
         .x86_64 => &.{ "x86_64-elf-ld", "ld" },
+        .wasm32 => &.{"wasm-ld"}, // handled by linkWasmTarget, shouldn't reach here
         .unknown => &.{"ld"},
     } else &.{"ld"};
 
@@ -435,10 +443,79 @@ fn tryLinkBareMetal(
         return LinkerError.LinkerFailed;
     };
 
-    // Wait for completion and get result
-    const result = child.wait() catch return LinkerError.LinkerFailed;
+    // Wait for completion
+    const bare_metal_result = child.wait() catch return LinkerError.LinkerFailed;
 
-    switch (result) {
+    switch (bare_metal_result) {
+        .Exited => |code| {
+            if (code != 0) {
+                return LinkerError.LinkerFailed;
+            }
+        },
+        else => return LinkerError.LinkerFailed,
+    }
+}
+
+/// Link for WebAssembly targets using wasm-ld.
+fn linkWasmTarget(
+    allocator: std.mem.Allocator,
+    object_file: []const u8,
+    output_file: []const u8,
+    target_info_opt: ?target.TargetInfo,
+) LinkerError!void {
+    const is_wasi = if (target_info_opt) |ti| ti.os == .wasi else false;
+
+    var args = std.ArrayListUnmanaged([]const u8){};
+    defer args.deinit(allocator);
+
+    // Try known wasm-ld locations
+    const wasm_ld_paths = [_][]const u8{
+        "/opt/homebrew/bin/wasm-ld",
+        "wasm-ld",
+    };
+
+    var ld_path: []const u8 = "wasm-ld";
+    for (wasm_ld_paths) |path| {
+        if (std.fs.accessAbsolute(path, .{})) |_| {
+            ld_path = path;
+            break;
+        } else |_| {}
+    }
+
+    args.append(allocator, ld_path) catch return LinkerError.OutOfMemory;
+
+    if (is_wasi) {
+        args.appendSlice(allocator, &.{
+            "--entry", "_start",
+        }) catch return LinkerError.OutOfMemory;
+    } else {
+        args.append(allocator, "--no-entry") catch return LinkerError.OutOfMemory;
+    }
+
+    args.append(allocator, "--allow-undefined") catch return LinkerError.OutOfMemory;
+    args.append(allocator, "--export-all") catch return LinkerError.OutOfMemory;
+
+    args.appendSlice(allocator, &.{
+        "-o",
+        output_file,
+        object_file,
+    }) catch return LinkerError.OutOfMemory;
+
+    var wasm_child = std.process.Child.init(args.items, allocator);
+    wasm_child.stderr_behavior = .Inherit;
+    wasm_child.stdout_behavior = .Inherit;
+
+    wasm_child.spawn() catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("wasm-ld not found. Install LLVM/LLD to get wasm-ld.\n", .{});
+            return LinkerError.LinkerNotFound;
+        }
+        return LinkerError.LinkerFailed;
+    };
+
+    const wasm_result = wasm_child.wait() catch return LinkerError.LinkerFailed;
+
+    switch (wasm_result) {
         .Exited => |code| {
             if (code != 0) {
                 return LinkerError.LinkerFailed;

@@ -466,10 +466,25 @@ pub fn main() !void {
             } else if (std.mem.eql(u8, arg, "-g")) {
                 debug_info = true;
             } else if (std.mem.eql(u8, arg, "--target") and i + 1 < args.len) {
-                target_triple = args[i + 1];
+                const raw = args[i + 1];
+                // Expand shorthand target names
+                if (std.mem.eql(u8, raw, "wasm")) {
+                    target_triple = "wasm32-unknown-unknown";
+                } else if (std.mem.eql(u8, raw, "wasi")) {
+                    target_triple = "wasm32-unknown-wasi";
+                } else {
+                    target_triple = raw;
+                }
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "--target=")) {
-                target_triple = arg["--target=".len..];
+                const raw = arg["--target=".len..];
+                if (std.mem.eql(u8, raw, "wasm")) {
+                    target_triple = "wasm32-unknown-unknown";
+                } else if (std.mem.eql(u8, raw, "wasi")) {
+                    target_triple = "wasm32-unknown-wasi";
+                } else {
+                    target_triple = raw;
+                }
             } else if (std.mem.eql(u8, arg, "-l") and i + 1 < args.len) {
                 // -l libname (separate argument)
                 try link_libs.append(allocator, args[i + 1]);
@@ -1394,6 +1409,12 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     var emitter = codegen.Emitter.init(allocator, module_name);
     defer emitter.deinit();
 
+    // Set target platform for cross-compilation
+    if (target_info) |ti| {
+        const target_platform = ti.toPlatform();
+        emitter.setTargetPlatform(target_platform, ti.triple);
+    }
+
     // Set freestanding mode if requested
     if (options.freestanding) {
         emitter.setFreestanding(true);
@@ -1592,8 +1613,9 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try stdout.writeAll(msg);
     }
 
-    // Generate object file (use platform-aware extension)
-    const obj_ext = codegen.target.Platform.current().getObjectExtension();
+    // Generate object file (use target platform extension, not host)
+    const target_platform = if (target_info) |ti| ti.toPlatform() else codegen.target.Platform.current();
+    const obj_ext = target_platform.getObjectExtension();
     const obj_path_str = std.fmt.allocPrint(allocator, "{s}{s}", .{ base_name, obj_ext }) catch {
         try stderr.writeAll("Out of memory\n");
         return;
@@ -1644,7 +1666,8 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     }
 
-    // Link to create executable (default: build/<base_name>)
+    // Link to create executable (default: build/<base_name>[.wasm])
+    const exe_ext = target_platform.getExecutableExtension();
     const exe_path = options.output_path orelse blk: {
         // Create build directory if it doesn't exist
         std.fs.cwd().makePath("build") catch |err| {
@@ -1653,7 +1676,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             try stderr.writeAll(msg);
             return;
         };
-        break :blk std.fmt.allocPrint(allocator, "build/{s}", .{base_name}) catch {
+        break :blk std.fmt.allocPrint(allocator, "build/{s}{s}", .{ base_name, exe_ext }) catch {
             try stderr.writeAll("Out of memory\n");
             return;
         };
