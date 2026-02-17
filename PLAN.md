@@ -13,356 +13,23 @@
 
 > **Phase 4 archive:** [docs/history/phase4-language-completion.md](docs/history/phase4-language-completion.md)
 
----
+**Phase 5A–5D + Async/Await + WebAssembly:** Milestones 1-6 and 8 complete. LLM reference, mandatory return types, inline tests, structured test output, LSP server, async/await, and WebAssembly target all working.
 
-## Implementation Order
-
-5 milestones across 3 phases, ordered by effort, impact, and dependencies:
-
-### Phase 5A: Foundation (no code changes)
-
-| # | Milestone | Effort | Impact | Source |
-|---|-----------|--------|--------|--------|
-| 1 | [MEMORY.md](#milestone-1-llm-reference-file) | Low | **High** | Nanolang |
-
-### Phase 5B: Small Language Features
-
-| # | Milestone | Effort | Impact | Source |
-|---|-----------|--------|--------|--------|
-| 2 | ~~[Mandatory return types](#milestone-2-mandatory-function-return-types)~~ | Low | **High** | MoonBit | **Done** |
-
-### Phase 5C: Testing Story
-
-| # | Milestone | Effort | Impact | Source |
-|---|-----------|--------|--------|--------|
-| 3 | [Inline test blocks (`test`)](#milestone-3-inline-test-blocks) | Medium | **High** | Nanolang |
-| 4 | [Structured test output (`--json`)](#milestone-4-structured-test-output) | Low | **High** | DSPy |
-
-### Phase 5D: Tooling
-
-| # | Milestone | Effort | Impact | Source |
-|---|-----------|--------|--------|--------|
-| 5 | [LSP and incremental type checking](#milestone-5-lsp-and-incremental-type-checking) | High | **High** | MoonBit |
+> **Phase 5 archive:** [docs/history/phase5-milestones.md](docs/history/phase5-milestones.md)
 
 ---
 
-## Completed Out-of-Band Improvements
-
-- [x] **Explicit variable shadowing (`shadow`)**
-  - Added `shadow` keyword with parser/AST/formatter support (`shadow let`, `shadow var`)
-  - Type checker now rejects implicit shadowing and requires explicit `shadow`
-  - Added `check` regression tests for:
-    - explicit shadowing pass case
-    - shadowing without `shadow` (error)
-    - `shadow` with no outer binding (error)
-
----
-
-## Milestone 1: LLM Reference File
-
-**Objective:** Create a single consolidated reference document optimized for LLM consumption.
-
-**Status:** Complete
-
-**Effort:** Low | **Impact:** High | **Source:** Nanolang (MEMORY.md)
-
-> **Deferred:** grammar.json and spec.json were originally planned but deferred. Constrained decoding is still niche — LLMs generate code from examples and docs, not formal grammars. The spec.json overlaps with MEMORY.md content. If the semantic sampler (Milestone 10) materializes, a machine-readable grammar can be revisited then.
-
-### Tasks
-
-- [x] **1.1** Create `MEMORY.md` at repo root (~1400 lines target)
-  - Language version and feature list at top
-  - Quick reference: all types, operators, keywords (table format)
-  - Canonical patterns: one way to write each construct
-  - Common errors and fixes (table format)
-  - Type conversion cheat sheet
-  - Standard library quick reference (all builtins with signatures)
-  - Anti-patterns: what NOT to generate
-
-### Success Criteria
-
-- [x] An LLM given only MEMORY.md can generate syntactically valid Klar code
-- [x] All language features documented with exactly one canonical example
-
----
-
-## Milestone 2: Mandatory Function Return Types
-
-**Objective:** Require explicit `-> T` on all function declarations, including `-> void`.
-
-**Status:** Complete
-
-**Effort:** Low | **Impact:** High | **Source:** MoonBit
-
-### Rationale
-
-Klar's return types were previously optional (`parser.zig:2446-2449`). MoonBit's paper shows mandatory top-level type signatures enable the semantic sampler to know expected types at every call site. This also aligns with Klar's "no ambiguity" philosophy — every function self-documents its contract.
-
-```klar
-// Explicit return type always required
-fn greet(name: string) -> void { println("Hello " + name) }
-```
-
-### Tasks
-
-- [x] **2.1** Change parser (`src/parser.zig`): require `-> Type` after parameter list
-  - Error if `->` missing: "return type required for function (use '-> void' for functions that return nothing)"
-  - Also updated `parseExternFnDecl` for extern functions
-- [x] **2.2** Update test suite: add `-> void` to any functions missing return types
-  - Fixed codegen bug: explicit `-> void` on methods with `ref`/`inout` self caused LLVM verification failure
-  - Added negative test `test/native/missing_return_type.kl`
-- [x] **2.3** Update MEMORY.md, docs/, and CLAUDE.md to reflect requirement
-
-### Success Criteria
-
-- [x] Parser rejects functions without explicit return types
-- [x] All existing tests updated and passing
-- [x] Error message is clear and actionable
-
----
-
-## Milestone 3: Inline Test Blocks
-
-**Objective:** Add `test <name> { ... }` blocks for inline testing with `klar test` command.
-
-**Status:** Complete
-
-**Effort:** Medium | **Impact:** High | **Source:** Nanolang
-
-```klar
-fn gcd(a: i32, b: i32) -> i32 {
-    if b == 0 { return a }
-    return gcd(b, a % b)
-}
-
-test gcd {
-    assert_eq(gcd(12, 8), 4)
-    assert_eq(gcd(7, 0), 7)
-    assert_eq(gcd(0, 5), 5)
-}
-```
-
-### Tasks
-
-- [x] **3.1** Add `test` keyword to lexer, `TestDecl` AST node, parser support
-- [x] **3.2** Add assertion builtins: `assert_ne`, `assert_err`, `assert_ok`, `assert_some`, `assert_none`
-- [x] **3.3** Type-check test blocks (validate referenced function exists, check body)
-- [x] **3.4** Conditional compilation: `klar run`/`build` skip tests, `klar test` runs them
-- [x] **3.5** All three backend support
-- [x] **3.6** `klar test` command: file, `--fn`, directory modes; pass/fail reporting
-- [x] **3.7** Enforcement flags: `--strict-tests` (warn), `--require-tests` (error)
-- [x] **3.8** Formatter support, integration with AirTower
-- [x] **3.9** Tests in `test/native/test_blocks/`
-
-### Success Criteria
-
-- [x] `test` keyword parses as top-level declaration
-- [x] `klar test file.kl` discovers and runs all test blocks
-- [x] `klar run` / `klar build` skip test blocks entirely
-- [x] All assertion builtins work across all three backends
-- [x] `--strict-tests` and `--require-tests` flags work
-
----
-
-## Milestone 4: Structured Test Output
-
-**Objective:** Add `--json` flag to `klar test` for machine-readable test results.
-
-**Status:** Complete
-
-**Effort:** Low | **Impact:** High | **Source:** DSPy | **Dependencies:** Milestone 3 (inline test blocks)
-
-```bash
-klar test math.kl --json
-```
-
-```json
-{
-  "file": "math.kl",
-  "tests": [{
-    "name": "gcd",
-    "status": "FAIL",
-    "assertions": [
-      { "type": "assert_eq", "passed": false, "call": "gcd(12, 8)", "expected": 4, "actual": 6 }
-    ]
-  }]
-}
-```
-
-### Use Cases
-
-- **AI code generation:** Feed structured failures back to an LLM for automatic fix/retry loops
-- **CI integration:** Machine-parseable results for build systems and dashboards
-- **Tooling:** Any script or tool that needs to programmatically inspect test results
-
-Optionally include function source with `--include-source` for richer AI context.
-
-### Tasks
-
-- [x] **4.1** Add `--json` flag to `klar test`
-- [x] **4.2** JSON output: test name, assertion results, expected vs actual
-- [x] **4.3** Include compiler errors in same structured format
-- [x] **4.4** `--include-source` flag to embed function source in JSON output
-
-### Success Criteria
-
-- [x] `klar test --json` outputs valid JSON
-- [x] JSON includes enough context for tooling to act on failures
-- [x] Works with all assertion types
-
----
-
-## Milestone 5: LSP and Incremental Type Checking
-
-**Objective:** Build a Language Server Protocol implementation for Klar, powered by an error-recovering parser and incremental type checker.
-
-**Status:** Complete
-
-**Effort:** High | **Impact:** High | **Source:** MoonBit
-
-### Tasks
-
-**Compiler foundations:**
-- [x] **5.1** Error-recovering parser: continue past first error, produce partial AST
-- [x] **5.2** Scope extraction at cursor position (all in-scope bindings with types)
-  - Added checker API `extractScopeAtOffset(module, cursor_offset)` with local-scope traversal
-  - Exposed via CLI: `klar check <file> --scope-at <line:col> [--scope-json]`
-  - Added checker unit tests for nested scopes, declaration ordering, and explicit shadowing behavior
-- [x] **5.3** Incremental type checking of partial declarations
-  - Added `klar check --partial` mode using parser recovery (`parseModuleRecovering`)
-  - Partial mode reports parse diagnostics and still type-checks recoverable declarations
-  - Scope queries (`--scope-at`) now work with partial mode and type-error states for tooling workflows
-- [x] **5.4** Expected-type inference at cursor (what type does context demand?)
-  - Added checker expected-type inference for cursor-positioned expressions in declaration/function contexts
-  - Exposed via CLI: `klar check <file> --expected-type-at <line:col>`
-  - Added args regression coverage for expected type inference at cursor
-
-**LSP server:**
-- [x] **5.5** JSON-RPC transport layer (stdio)
-  - Added `klar lsp` command with `Content-Length` framed JSON-RPC over stdio
-  - Handles `initialize`, `shutdown`, and `exit` lifecycle messages
-  - Added args smoke test for framed initialize/shutdown/exit handshake
-- [x] **5.6** `textDocument/diagnostic` — real-time error reporting
-  - Added pull diagnostics request handling for `textDocument/diagnostic`
-  - Returns parser and checker diagnostics in LSP `full` report format
-  - Advertises `diagnosticProvider` capability in initialize response
-  - Added args regression coverage for diagnostic response payloads
-- [x] **5.7** `textDocument/completion` — scope and type-aware completions
-  - Added `textDocument/completion` request handling in `klar lsp`
-  - Completion items are derived from checker scope extraction at cursor offset
-  - Ranking is type-aware via expected-type matching (`sortText` prioritization)
-  - Added args regression coverage for completion payload fields/ranking
-- [x] **5.8** `textDocument/hover` — type information on hover
-  - Added `textDocument/hover` request handling in `klar lsp`
-  - Hover resolves identifier at cursor and returns symbol type/kind in markdown
-  - Advertises `hoverProvider` capability in initialize response
-  - Added args regression coverage for hover response payload fields
-- [x] **5.9** `textDocument/definition` — go to definition
-  - Added `textDocument/definition` request handling in `klar lsp`
-  - Resolves symbol at cursor and returns same-file declaration location range
-  - Advertises `definitionProvider` capability in initialize response
-  - Added args regression coverage for definition response payload
-
-**Editor integration:**
-- [x] **5.10** VS Code extension with syntax highlighting and LSP client
-  - Added `tools/vscode-klar` extension scaffold (TypeScript + `vscode-languageclient`)
-  - Added Klar language registration (`.kl`), language configuration, and TextMate grammar
-  - Added LSP client wiring to launch `klar lsp` with configurable executable path/args
-  - Added extension README with local development instructions
-
-### Success Criteria
-
-- [x] Parser produces useful AST even with syntax errors
-- [x] Type checker reports errors found so far in partial code
-- [x] Scope query returns correct bindings at any cursor position
-- [x] LSP provides diagnostics, completions, hover, and go-to-definition
-- [x] VS Code extension works with the LSP
-
----
-
-## Remaining Phase 4 Items
-
-| Item | Status | Notes |
-|------|--------|-------|
-| Async/Await | **Done** (Milestone 6) | |
-| Self-hosting | Stretch goal | |
-| WebAssembly target | Stretch goal | |
-| Windows support | Stretch goal | |
-
-### Suggested Next Execution Order
-
-1. ~~Async/Await~~ (Complete)
-2. Windows support
-3. WebAssembly target
-4. Self-hosting
-
----
-
-## Milestone 6: Async/Await
-
-**Objective:** Add first-class async functions with explicit `async fn` declarations and `await` expressions.
-
-**Status:** Complete
-
-**Effort:** High | **Impact:** High | **Dependencies:** Milestones 2, 3
-
-### Tasks
-
-- [x] **6.1** Syntax and AST support
-  - Add lexer/parser support for `async` and `await`
-  - Extended AST unary ops with `await` and parser support for `await <expr>`
-  - Added parser support for `async fn` declarations (top-level and trait/impl methods)
-  - Added parser/lexer regression tests for `async`/`await` syntax
-  - Enforce explicit return annotations for async functions (`-> Future[T]` or equivalent canonical form)
-- [x] **6.2** Type-checking semantics
-  - Validate await operand type constraints (`await` operand must be `Future[T]`)
-  - Enforced await usage context with checker diagnostics (`await` only permitted in async function context)
-  - Enforced explicit async contract: `async fn` must declare `-> Future[T]`
-  - `await` now enforces `Future[T]` operands and yields `T`
-  - Added explicit checker diagnostics for unsupported async declarations and methods (`async fn`, async trait/impl methods)
-  - Added check-suite regression coverage for invalid async method declarations
-  - Added checker unit coverage for await operand validation and async-call await behavior
-- [x] **6.3** Runtime/backend execution model
-  - Implement minimal task/future representation in VM and interpreter
-  - Added runtime cooperative executor scaffold (`src/runtime/async_executor.zig`) with deterministic FIFO scheduling, cancellation, and failure isolation semantics
-  - Wired interpreter runtime state to include cooperative executor scaffold for future async integration
-  - Added minimal `Future` runtime value representation in interpreter (`src/values.zig`) and VM value model (`src/vm_value.zig`) with task ids and lifecycle states (`pending/completed/failed/cancelled`)
-  - Added interpreter `await` runtime behavior for futures: completed futures yield values, pending/failed/cancelled futures return deterministic runtime errors
-  - Removed checker/runtime backend gating for top-level `async fn` + `await` so async call flows execute end-to-end
-  - Added VM bytecode opcode `op_await` and initial await runtime handling
-  - Added native codegen lowering for `await` as synchronous value forwarding
-  - Aligned runtime error termination semantics across backends (`exit(1)` on runtime errors in CLI paths)
-  - Added parity coverage for non-completed Future states (`pending`/`failed`/`cancelled`) in runtime unit tests plus native raw-layout smoke coverage
-  - **Follow-up required:** define long-term async execution semantics beyond current synchronous-completion model:
-    - scheduler/task lifecycle semantics for real concurrent async execution
-    - cancellation propagation policy for task trees
-    - failure propagation model for awaited task failures
-  - Ensure deterministic behavior and clear cancellation/error propagation semantics
-- [x] **6.4** Tooling integration
-  - Update formatter for async/await constructs
-  - Added formatter emission for `async fn` modifiers across top-level, trait, and impl method declarations
-  - Updated formatter regression fixture `test/fmt/async.kl` to use semantically valid async patterns (`Future[T]` returns)
-  - Add LSP completion/hover/diagnostic support for new syntax
-  - Added LSP keyword completions for `async`/`await` with async-aware detail text
-  - Added LSP hover keyword docs for `async`/`await` when not resolving to symbols
-  - Added args-suite LSP regression coverage for async completion, hover, and diagnostics payloads
-- [x] **6.5** Tests and docs
-  - Add parser/checker/runtime tests for success and failure paths
-  - Added checker unit regressions for async `await` success cases and operand-validation failures
-  - Added cross-backend args-suite regression (`native`/`vm`/`interpret`) for async/await execution parity
-  - Added native regression fixture `test/native/async_await_basic.kl`
-  - Add examples showing sequential async flows (concurrent execution deferred to future work)
-  - Update MEMORY.md and docs language guide
-  - Updated `MEMORY.md`, `docs/language/functions.md`, and `docs/appendix/keywords.md` for async/await language status and usage
-  - Added canonical async patterns and anti-patterns to `MEMORY.md` (Future[T] return, await usage, common mistakes)
-  - Renamed misleading check test `async_function_not_supported.kl` → `async_function_pass.kl`
-
-### Success Criteria
-
-- [x] Async functions parse/type-check with explicit, unambiguous signatures
-- [x] Await works correctly across interpreter, VM, and native build paths
-- [x] Async misuse surfaces actionable diagnostics
-- [x] Test suite includes regression coverage for async/await semantics
+## Completed Milestones Summary
+
+| # | Milestone | Status | Source |
+|---|-----------|--------|--------|
+| 1 | LLM Reference File (MEMORY.md) | Complete | Nanolang |
+| 2 | Mandatory Function Return Types | Complete | MoonBit |
+| 3 | Inline Test Blocks (`test`) | Complete | Nanolang |
+| 4 | Structured Test Output (`--json`) | Complete | DSPy |
+| 5 | LSP and Incremental Type Checking | Complete | MoonBit |
+| 6 | Async/Await | Complete | — |
+| 8 | WebAssembly Target | Complete | — |
 
 ---
 
@@ -370,39 +37,16 @@ Optionally include function source with `--include-source` for richer AI context
 
 **Objective:** Provide first-class Windows developer and runtime support across build, test, and tooling workflows.
 
-**Status:** In Progress — compiler cross-platform changes complete, Windows testing pending
+**Status:** In Progress — compiler cross-platform changes complete (tasks 7.1–7.11), Windows testing pending
 
-**Effort:** Medium-High | **Impact:** High | **Dependencies:** Milestones 4, 5
+**Effort:** Medium-High | **Impact:** High
 
-### Rationale for ordering
+### Rationale
 
 Windows before WebAssembly: lower effort builds momentum, fixes platform assumptions (paths, line endings, stdio) that would otherwise complicate the WebAssembly target, and expands the contributor base before tackling the harder milestone.
 
-### Tasks
+### Remaining Tasks
 
-- [x] **7.1** Replace `std.posix` stdio handles with cross-platform IO helpers
-  - All 7 files, 17 sites converted to `comptime if` Windows/POSIX branching
-- [x] **7.2** Cross-platform temp directory and executable extension
-  - `klar run` uses `%TEMP%` on Windows, `/tmp` on POSIX; appends `.exe` on Windows
-- [x] **7.3** Platform-conditional process execution
-  - Windows: `std.process.Child` path; POSIX: `fork`/`exec` path (unchanged)
-  - Note: `args[0]` shows temp binary path on Windows (minor behavioral difference)
-- [x] **7.4** Fix linker.zig comptime string concatenation bug
-  - Replaced `"/OUT:" ++ output_file` with `std.fmt.allocPrint`
-- [x] **7.5** Conditional `@cImport` in emit.zig
-  - `sys/stat.h`, `dirent.h`, `errno.h` wrapped in platform conditional
-  - Hardcoded fallback constants for Windows MSVC CRT
-- [x] **7.6** Platform-aware errno accessor
-  - `__error` (macOS), `_errno` (Windows), `__errno_location` (Linux)
-- [x] **7.7** Platform-aware POSIX C function declarations
-  - Simple renames: `_access`, `_stat64`, `_rmdir`, `_unlink`
-  - `_mkdir` (1 param vs 2), callers updated
-  - `_findfirst64`/`_findnext64`/`_findclose` with full Windows `emitFsReadDir` path
-  - `emitFsCreateDirAll` handles both `/` and `\` separators on Windows
-- [x] **7.8** Object file extension: `.obj` on Windows, `.o` on POSIX
-- [x] **7.9** Build system: Windows LLVM detection paths added
-- [x] **7.10** LSP: Windows drive letter handling in `uriToPath`
-- [x] **7.11** Path separator: `shouldSkipPath` handles both `/` and `\`
 - [ ] **7.12** Windows on-device testing (Parallels)
   - Verify `zig build`, `klar run`, `klar build`, `klar test`, `klar lsp`
 - [ ] **7.13** CI: Add Windows matrix jobs for `./run-tests.sh`
@@ -424,78 +68,281 @@ Windows before WebAssembly: lower effort builds momentum, fixes platform assumpt
 
 ---
 
-## Milestone 8: WebAssembly Target
+## Milestone 8: WebAssembly Target (Complete)
 
-**Objective:** Add a WebAssembly compilation target for sandboxed execution and browser/edge integration.
+WebAssembly compilation target is fully working for wasm32 freestanding. `klar build --target wasm` emits valid `.wasm` modules; 6 smoke tests cover hello, arithmetic, structs, closures, generics, and control flow. Filesystem/readline builtins are gated with runtime traps. See [archive](docs/history/phase5-milestones.md#milestone-8-webassembly-target) for full detail.
 
-**Status:** Planned
-
-**Effort:** High | **Impact:** High | **Dependencies:** Milestone 5, Milestone 7 (platform abstractions)
-
-### Tasks
-
-- [ ] **8.1** Target and CLI surface
-  - Add target selection for wasm output in `klar build`
-  - Define output conventions (`.wasm`, optional host shim artifacts)
-- [ ] **8.2** Codegen pipeline
-  - Add/extend backend lowering for wasm-compatible IR
-  - Map Klar primitives, control flow, and memory model to wasm constraints
-  - Define ABI conventions for function exports/imports
-- [ ] **8.3** Runtime and stdlib compatibility
-  - Audit stdlib/runtime APIs for wasm-safe behavior
-  - Gate unsupported APIs with clear compile-time errors
-  - Provide minimal wasm runtime bindings for I/O-adjacent operations
-- [ ] **8.4** Testing and fixtures
-  - Add wasm smoke tests and golden fixtures
-  - Add host-run integration tests (Node or wasmtime path)
-- [ ] **8.5** Documentation and examples
-  - Document wasm build/run workflows
-  - Add browser and CLI host examples
-
-### Success Criteria
-
-- [ ] `klar build` can emit valid wasm modules for representative programs
-- [ ] Core language features execute correctly under wasm target constraints
-- [ ] Unsupported features fail with clear diagnostics
-- [ ] CI includes wasm-target regression coverage
+**Remaining:** CI wasm-target regression coverage (deferred to Milestone 7.13 CI work).
 
 ---
 
-## Milestone 9: Self-hosting
+## Milestone 9: Self-Hosting
 
-**Objective:** Move Klar toward self-hosting by enabling the compiler front-end and selected tooling components to be implemented in Klar.
+**Objective:** Implement the Klar compiler front-end (lexer through type checker) in Klar itself, enabling the language to compile its own compiler.
 
 **Status:** Planned
 
 **Effort:** Very High | **Impact:** Very High | **Dependencies:** Milestones 6, 7, 8
 
-### Tasks
+### Scope Boundary
 
-- [ ] **9.1** Self-hosting scope definition
-  - Define phased target (bootstrap compiler subset vs full compiler)
-  - Freeze minimal language/runtime requirements for compiler implementation in Klar
-- [ ] **9.2** Bootstrap architecture
-  - Design two-stage bootstrap flow (`zig-hosted klar` -> `klar-hosted klar`)
-  - Define artifact compatibility and reproducibility checks between stages
-- [ ] **9.3** Core compiler libraries in Klar
-  - Port reusable front-end components (token stream utilities, AST helpers, diagnostics formatting)
-  - Establish stable internal APIs for parser/checker/codegen layers
-- [ ] **9.4** Incremental compiler porting
-  - Port parser and semantic analysis modules in prioritized order
-  - Keep feature parity gates and fallback paths during transition
-- [ ] **9.5** Validation and parity testing
-  - Add cross-compiler parity tests (output equivalence and diagnostic equivalence)
-  - Add performance tracking for bootstrap stages
-- [ ] **9.6** Tooling/docs/release strategy
-  - Document bootstrap process and contributor workflow
-  - Define transition criteria for when Klar-hosted compiler becomes default
+Self-hosting means **frontend only** (lexer through type checker). The 33K-line LLVM codegen stays in Zig. The self-hosted frontend serializes AST/typed-AST for the Zig backend to consume. This is the standard bootstrap strategy (Go, Rust, etc.).
 
-### Success Criteria
+### Estimated Total: ~11,000–16,000 lines of Klar
 
-- [ ] Klar can build a functional Klar compiler artifact through a documented bootstrap path
-- [ ] Compiler behavior parity is validated against the Zig-hosted baseline
-- [ ] Bootstrap process is reproducible in CI with deterministic outputs where feasible
-- [ ] Documentation clearly defines maintenance model for self-hosted compiler evolution
+### Dependency Chain
+
+```
+9.1 → 9.2 → 9.3 → 9.4 → 9.6 → 9.7 → 9.9 → 9.10 → 9.11 → 9.12
+                    9.5 ↗      ↗       9.8 ↗                   9.13 ↗
+```
+
+---
+
+### Phase 9A: Language Prerequisites
+
+Language features needed in the Zig compiler before porting can begin.
+
+#### 9.1 — String and Collection Primitives
+
+**Effort:** Medium
+
+Wire up low-level string operations and numeric parsing needed by a lexer/parser.
+
+- [ ] **9.1.1** `string.byte_at(i) -> u8` — access individual byte by index
+- [ ] **9.1.2** `string.byte_len() -> i32` — byte length (distinct from `len()` if char-aware)
+- [ ] **9.1.3** `string.substring(start, end) -> string` — byte-range substring
+- [ ] **9.1.4** `string.index_of(sub) -> ?i32` — find first occurrence of substring
+- [ ] **9.1.5** `string.from_byte(b: u8) -> string` — single-byte string construction
+- [ ] **9.1.6** Wire `parse_int(s) -> ?i64` and `parse_float(s) -> ?f64` to native backend
+
+**Success Criteria:**
+- [ ] All six string primitives work across native backend
+- [ ] `parse_int` / `parse_float` return `None` on invalid input (no panics)
+
+#### 9.2 — Data Structure Foundations
+
+**Effort:** Medium
+
+Fix known collection gaps that would block self-hosting data structures.
+
+- [ ] **9.2.1** Fix `List[String]` drop — free individual string buffers before freeing list storage
+- [ ] **9.2.2** `List.set(i, v)` / `list[i] = v` assignment in native codegen
+- [ ] **9.2.3** `List.last() -> ?T` and `List.pop() -> ?T` in native codegen
+- [ ] **9.2.4** Validate deeply nested structures: `List[List[String]]`, `Map[String, List[Rc[Node]]]`
+
+**Success Criteria:**
+- [ ] `List[String]` can be created, mutated, and dropped without leaks
+- [ ] Index assignment compiles and executes correctly
+- [ ] Nested generic structures pass valgrind/ASAN (if available)
+
+---
+
+### Phase 9B: Bootstrap Infrastructure
+
+#### 9.3 — Bootstrap Architecture
+
+**Effort:** Low-Medium
+
+Set up the directory structure, testing harness, and diagnostic commands for parity testing.
+
+- [ ] **9.3.1** Create `selfhost/` directory with stub files (`lexer.kl`, `parser.kl`, `ast.kl`, `types.kl`, `checker.kl`, `main.kl`)
+- [ ] **9.3.2** Add `klar dump-tokens <file>` command — output token stream as JSON for parity testing
+- [ ] **9.3.3** Add `klar dump-ast <file>` command — output AST as JSON for parity testing
+- [ ] **9.3.4** Create `scripts/run-selfhost-tests.sh` — runs parity tests between Zig and Klar frontends
+- [ ] **9.3.5** Document bootstrap process (Stage 0/1/2) in `docs/guides/self-hosting.md`
+
+**Success Criteria:**
+- [ ] `klar dump-tokens` produces deterministic JSON for any valid `.kl` file
+- [ ] `klar dump-ast` produces deterministic JSON for any valid `.kl` file
+- [ ] `selfhost/` directory compiles (even if stubs produce no useful output yet)
+
+---
+
+### Phase 9C: Compiler Frontend Port
+
+#### 9.4 — Self-Hosted Lexer
+
+**Effort:** Medium (~500–700 lines Klar)
+
+Port token definitions and lexer logic from `src/token.zig` + `src/lexer.zig`.
+
+- [ ] **9.4.1** Define `TokenKind` enum with all token variants
+- [ ] **9.4.2** Define `Token` struct with kind, lexeme, line, column
+- [ ] **9.4.3** Implement `Lexer` struct with `next_token() -> Token` method
+- [ ] **9.4.4** Keyword lookup via `Map[string, TokenKind]`
+- [ ] **9.4.5** All operators, string/number/char literals, comments, location tracking
+- [ ] **9.4.6** Inline `test` blocks for lexer edge cases
+- [ ] **9.4.7** Parity tests: `selfhost/lexer.kl` output matches `klar dump-tokens` on test corpus
+
+**Success Criteria:**
+- [ ] Lexer tokenizes all files in `test/native/` identically to Zig lexer
+- [ ] Lexer can tokenize its own source file
+
+#### 9.5 — AST Definitions
+
+**Effort:** Medium (~800–1000 lines Klar)
+
+Define the full AST type hierarchy needed by the parser.
+
+- [ ] **9.5.1** Define `Expr` enum (literal, binary, unary, call, field access, index, closure, etc.)
+- [ ] **9.5.2** Define `Stmt` enum (let/var, return, if/else, while, for, loop, match, assignment, expression)
+- [ ] **9.5.3** Define `Decl` enum (function, struct, enum, trait, impl, import, test)
+- [ ] **9.5.4** Define `TypeExpr` enum (named, generic, optional, array, function, reference)
+- [ ] **9.5.5** Use `Rc[T]` for recursive node indirection (no raw pointers in Klar)
+- [ ] **9.5.6** Construction helpers and `to_string()` methods for debugging
+- [ ] **9.5.7** Inline tests for AST construction and equality
+
+**Success Criteria:**
+- [ ] AST types can represent every construct in the Klar language
+- [ ] All recursive structures use `Rc[T]` — no raw pointers
+
+#### 9.6 — Parser (Core Subset)
+
+**Effort:** High (~1500–2000 lines Klar)
+
+Implement a recursive descent parser for the core language without generics or traits.
+
+- [ ] **9.6.1** Pratt precedence expression parsing (all operators, grouping, calls, field access)
+- [ ] **9.6.2** Statements: `let`/`var`, `return`, `if`/`else`, `while`, `for`, `loop`, `match`, assignment
+- [ ] **9.6.3** Function declarations (with parameter types and return types)
+- [ ] **9.6.4** Struct and enum declarations (no generics yet)
+- [ ] **9.6.5** Type annotation parsing (named types, optionals, arrays, function types)
+- [ ] **9.6.6** Parity tests: parser AST output matches `klar dump-ast` on non-generic test files
+
+**Success Criteria:**
+- [ ] Parser handles all `test/native/` files that don't use generics, traits, or imports
+- [ ] Error recovery produces partial AST (continue past first error)
+
+#### 9.7 — Parser (Full Language)
+
+**Effort:** High (~1500–2000 lines Klar)
+
+Extend the parser to cover the complete Klar language.
+
+- [ ] **9.7.1** Generic type parameters on functions, structs, enums (`[T]`, `[T: Bound]`)
+- [ ] **9.7.2** Trait definitions and impl blocks (including trait bounds, associated types)
+- [ ] **9.7.3** Closures with explicit types and return
+- [ ] **9.7.4** Full pattern matching (enum variants, wildcards, nested patterns)
+- [ ] **9.7.5** Comptime blocks, comptime functions, comptime parameters
+- [ ] **9.7.6** FFI syntax (`extern fn`), test blocks, `shadow` keyword
+- [ ] **9.7.7** Import statements (all variants: selective, glob, aliased)
+- [ ] **9.7.8** Full parity: identical AST output on entire `test/native/` suite
+- [ ] **9.7.9** Self-parse: parser can parse its own source files
+
+**Success Criteria:**
+- [ ] 100% parity with Zig parser on all test files
+- [ ] Parser can parse `selfhost/*.kl` — i.e., it can parse itself
+
+---
+
+### Phase 9D: Type System Port
+
+#### 9.8 — Type System Definitions
+
+**Effort:** Medium (~600–800 lines Klar)
+
+Port the type representation from `src/types.zig`.
+
+- [ ] **9.8.1** Define `KlarType` enum with 40+ variants mirroring `src/types.zig`
+- [ ] **9.8.2** Type equality checks (`eq(other) -> bool`)
+- [ ] **9.8.3** Type compatibility/coercion checks
+- [ ] **9.8.4** Type printing (`to_string() -> string`) for diagnostics
+- [ ] **9.8.5** Type substitution for generic instantiation
+
+**Success Criteria:**
+- [ ] `KlarType` can represent every type the Zig checker produces
+- [ ] Type equality matches Zig checker behavior on all test cases
+
+#### 9.9 — Type Checker (Foundation)
+
+**Effort:** Very High (~2000–3000 lines Klar)
+
+Port the core type checking logic from `src/checker.zig`.
+
+- [ ] **9.9.1** Scope management via `List[Map[string, KlarType]]` stack
+- [ ] **9.9.2** Expression typing (literals, binary ops, unary ops, calls, field access, indexing)
+- [ ] **9.9.3** Function call type checking (argument count, parameter types, return type)
+- [ ] **9.9.4** Declaration checking (let/var type annotation matching)
+- [ ] **9.9.5** Control flow checking (if/else arm types, loop/while body, match exhaustiveness)
+- [ ] **9.9.6** Struct and method resolution (field access, method calls, `self` types)
+- [ ] **9.9.7** Error reporting with source spans (file, line, column)
+
+**Success Criteria:**
+- [ ] Checker accepts all valid non-generic `test/native/` files
+- [ ] Checker rejects all `test/check/` negative test files with correct error messages
+- [ ] Diagnostics include file:line:column spans
+
+#### 9.10 — Type Checker (Advanced)
+
+**Effort:** Very High (~2000–3000 lines Klar)
+
+Port the advanced type system features.
+
+- [ ] **9.10.1** Generic monomorphization (type parameter inference, substitution, caching)
+- [ ] **9.10.2** Trait resolution (trait bounds checking, method dispatch through bounds)
+- [ ] **9.10.3** Optional/Result type checking, `?` propagation operator
+- [ ] **9.10.4** Module import resolution (multi-file type checking)
+- [ ] **9.10.5** Builtin function and method type checking (all 100+ builtins)
+- [ ] **9.10.6** Full diagnostic parity with Zig checker
+
+**Success Criteria:**
+- [ ] Checker produces identical accept/reject decisions on entire test suite
+- [ ] Error messages match Zig checker output (content, not necessarily formatting)
+- [ ] Monomorphization produces identical instantiation sets
+
+---
+
+### Phase 9E: Integration and Bootstrap
+
+#### 9.11 — Frontend Integration
+
+**Effort:** Medium
+
+Wire the self-hosted frontend components together and connect to the Zig backend.
+
+- [ ] **9.11.1** Wire lexer → parser → checker pipeline in `selfhost/main.kl`
+- [ ] **9.11.2** AST serialization to JSON for Zig backend consumption
+- [ ] **9.11.3** Add `klar build --ast-input <file>` to Zig compiler (read serialized AST, skip Zig frontend)
+- [ ] **9.11.4** End-to-end test: Klar frontend + Zig backend produces correct binaries
+- [ ] **9.11.5** Performance comparison: Klar frontend vs Zig frontend on representative files
+
+**Success Criteria:**
+- [ ] `selfhost/main.kl` can process any `.kl` file and produce JSON AST
+- [ ] Zig backend consumes serialized AST and produces identical binaries
+- [ ] End-to-end pipeline passes full test suite
+
+#### 9.12 — Bootstrap Validation (Stage 2)
+
+**Effort:** High
+
+Prove the self-hosted compiler can compile itself.
+
+- [ ] **9.12.1** Stage 1: Zig-compiled Klar frontend compiles `selfhost/*.kl` source
+- [ ] **9.12.2** Stage 2: Stage-1 binary compiles same `selfhost/*.kl` source again
+- [ ] **9.12.3** Verify functional equivalence: Stage-1 and Stage-2 outputs are identical
+- [ ] **9.12.4** Add CI job for bootstrap validation (Stage 0 → 1 → 2)
+- [ ] **9.12.5** Document the bootstrap process and contributor workflow
+
+**Success Criteria:**
+- [ ] Stage-2 binary produces bit-identical AST output as Stage-1 binary
+- [ ] Bootstrap is reproducible in CI with deterministic outputs
+- [ ] Documentation clearly explains the three stages
+
+#### 9.13 — Tooling Self-Hosting (Stretch)
+
+**Effort:** Medium
+
+Port selected tooling components to Klar.
+
+- [ ] **9.13.1** Port formatter to Klar (AST pretty-printer)
+- [ ] **9.13.2** Port diagnostics renderer to Klar (error message formatting)
+- [ ] **9.13.3** Port test runner to Klar (test discovery and execution)
+- [ ] **9.13.4** Parity tests against Zig implementations
+
+**Success Criteria:**
+- [ ] Self-hosted formatter produces identical output to Zig formatter
+- [ ] Self-hosted test runner passes its own tests
 
 ---
 
