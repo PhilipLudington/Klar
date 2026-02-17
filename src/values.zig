@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const types = @import("types.zig");
+const async_state = @import("runtime/async_state.zig");
 
 // ============================================================================
 // Runtime Values
@@ -27,6 +28,7 @@ pub const Value = union(enum) {
     optional: *OptionalValue,
     result: *ResultValue,
     context_error: *ContextErrorValue,
+    future: *FutureValue,
 
     // References
     reference: *ReferenceValue,
@@ -51,6 +53,7 @@ pub const Value = union(enum) {
         return switch (self) {
             .bool_ => |b| b,
             .optional => |opt| opt.value != null,
+            .future => |f| f.state == .completed,
             .int => |i| i.value != 0,
             else => true,
         };
@@ -110,6 +113,14 @@ pub const Value = union(enum) {
                 if (e.payload == null or other_e.payload == null) break :blk false;
                 break :blk e.payload.?.eql(other_e.payload.?.*);
             },
+            .future => |f| blk: {
+                const other_f = other.future;
+                if (f.task_id != other_f.task_id) break :blk false;
+                if (f.state != other_f.state) break :blk false;
+                if (f.value == null and other_f.value == null) break :blk true;
+                if (f.value == null or other_f.value == null) break :blk false;
+                break :blk f.value.?.eql(other_f.value.?.*);
+            },
             else => false,
         };
     }
@@ -148,6 +159,24 @@ pub const Value = union(enum) {
                     new_opt.* = .{ .value = null };
                 }
                 break :blk .{ .optional = new_opt };
+            },
+            .future => |future| blk: {
+                const new_future = try allocator.create(FutureValue);
+                errdefer allocator.destroy(new_future);
+                var cloned_value: ?*Value = null;
+                errdefer if (cloned_value) |v| allocator.destroy(v);
+
+                if (future.value) |value| {
+                    cloned_value = try allocator.create(Value);
+                    cloned_value.?.* = try value.clone(allocator);
+                }
+
+                new_future.* = .{
+                    .task_id = future.task_id,
+                    .state = future.state,
+                    .value = cloned_value,
+                };
+                break :blk .{ .future = new_future };
             },
             else => self, // References and functions are not deeply cloned
         };
@@ -293,6 +322,21 @@ pub const ResultValue = struct {
     value: *Value,
 };
 
+pub const TaskId = u64;
+
+pub const FutureState = enum(u8) {
+    pending = async_state.pending_tag,
+    completed = async_state.completed_tag,
+    failed = async_state.failed_tag,
+    cancelled = async_state.cancelled_tag,
+};
+
+pub const FutureValue = struct {
+    task_id: TaskId,
+    state: FutureState,
+    value: ?*Value,
+};
+
 pub const ContextErrorValue = struct {
     message: []const u8,
     cause: *Value,
@@ -312,6 +356,7 @@ pub const FunctionValue = struct {
     params: []const FunctionParam,
     body: *ast.Block,
     closure_env: ?*Environment,
+    is_async: bool,
 
     pub const FunctionParam = struct {
         name: []const u8,
@@ -552,6 +597,52 @@ pub const ValueBuilder = struct {
         };
         return .{ .enum_ = e };
     }
+
+    pub fn futurePending(self: *ValueBuilder, task_id: TaskId) !Value {
+        const future = try self.allocator.create(FutureValue);
+        future.* = .{
+            .task_id = task_id,
+            .state = .pending,
+            .value = null,
+        };
+        return .{ .future = future };
+    }
+
+    pub fn futureCompleted(self: *ValueBuilder, task_id: TaskId, value: Value) !Value {
+        const future = try self.allocator.create(FutureValue);
+        errdefer self.allocator.destroy(future);
+        const value_ptr = try self.allocator.create(Value);
+        value_ptr.* = value;
+        future.* = .{
+            .task_id = task_id,
+            .state = .completed,
+            .value = value_ptr,
+        };
+        return .{ .future = future };
+    }
+
+    pub fn futureFailed(self: *ValueBuilder, task_id: TaskId, failure: Value) !Value {
+        const future = try self.allocator.create(FutureValue);
+        errdefer self.allocator.destroy(future);
+        const value_ptr = try self.allocator.create(Value);
+        value_ptr.* = failure;
+        future.* = .{
+            .task_id = task_id,
+            .state = .failed,
+            .value = value_ptr,
+        };
+        return .{ .future = future };
+    }
+
+    pub fn futureCancelled(self: *ValueBuilder, task_id: TaskId) !Value {
+        const future = try self.allocator.create(FutureValue);
+        future.* = .{
+            .task_id = task_id,
+            .state = .cancelled,
+            .value = null,
+        };
+        return .{ .future = future };
+    }
 };
 
 // ============================================================================
@@ -631,6 +722,20 @@ pub fn formatValue(writer: anytype, value: Value) !void {
             try writer.writeAll("\", cause: ");
             try formatValue(writer, ce.cause.*);
             try writer.writeAll(" }");
+        },
+        .future => |future| {
+            try writer.print("Future(task={d}, state=", .{future.task_id});
+            try writer.writeAll(switch (future.state) {
+                .pending => "pending",
+                .completed => "completed",
+                .failed => "failed",
+                .cancelled => "cancelled",
+            });
+            if (future.value) |future_value| {
+                try writer.writeAll(", value=");
+                try formatValue(writer, future_value.*);
+            }
+            try writer.writeAll(")");
         },
         .reference => |r| {
             if (r.mutable) {
@@ -793,6 +898,23 @@ test "Value formatting" {
     const str_str = try valueToString(testing.allocator, str_val);
     defer testing.allocator.free(str_str);
     try testing.expectEqualStrings("\"hello\"", str_str);
+
+    const future_val = try builder.futureCompleted(7, builder.i32Val(42));
+    defer {
+        testing.allocator.destroy(future_val.future.value.?);
+        testing.allocator.destroy(future_val.future);
+    }
+    const future_str = try valueToString(testing.allocator, future_val);
+    defer testing.allocator.free(future_str);
+    try testing.expectEqualStrings("Future(task=7, state=completed, value=42)", future_str);
+}
+
+test "FutureState tags are stable internal mapping" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(u8, 0), @intFromEnum(FutureState.pending));
+    try testing.expectEqual(@as(u8, 1), @intFromEnum(FutureState.completed));
+    try testing.expectEqual(@as(u8, 2), @intFromEnum(FutureState.failed));
+    try testing.expectEqual(@as(u8, 3), @intFromEnum(FutureState.cancelled));
 }
 
 test "Integer type properties" {

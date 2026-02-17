@@ -24,6 +24,21 @@
       "name": "Args Tests",
       "resultsFile": ".args-test-results.json",
       "command": "./scripts/run-args-tests.sh"
+    },
+    {
+      "name": "Freestanding Tests",
+      "resultsFile": ".freestanding-test-results.json",
+      "command": "./scripts/run-freestanding-tests.sh"
+    },
+    {
+      "name": "Check Tests",
+      "resultsFile": ".check-test-results.json",
+      "command": "./scripts/run-check-tests.sh"
+    },
+    {
+      "name": "Fmt Tests",
+      "resultsFile": ".fmt-test-results.json",
+      "command": "./scripts/run-fmt-tests.sh"
     }
   ],
   "builds": [

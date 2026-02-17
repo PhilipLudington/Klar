@@ -7,7 +7,7 @@ fn @countdown(n: i32) -> i32 {
     return @countdown(n - 1)
 }
 
-fn main() {
+fn main() -> void {
     let x: i32 = @countdown(3)
     // countdown(3) -> countdown(2) -> countdown(1) -> countdown(0) -> 0
     // x should be 0, use dbg to verify

@@ -59,6 +59,9 @@ get_expected() {
         recursive_deep) echo 42 ;;
         return_types) echo 42 ;;
         tuple) echo 42 ;;  # 10 + 32 = 42
+        async_await_basic) echo 0 ;;
+        async_await_failed_error) echo 1 ;;
+        async_await_pending_error) echo 1 ;;
         array) echo 42 ;;  # 10 + 20 + 12 = 42
         optional_some) echo 42 ;;  # Force unwrap Some(42)
         optional_unwrap) echo 42 ;;  # Force unwrap Some(42)
@@ -73,6 +76,8 @@ get_expected() {
         wrapping_add) echo 0 ;;  # +% wraps on overflow
         wrapping_sub) echo 0 ;;  # -% wraps on overflow
         wrapping_mul) echo 0 ;;  # *% wraps on overflow
+        test_blocks_ignore_type_errors) echo 77 ;;
+        test_blocks_ignore_runtime_failures) echo 78 ;;
         *) echo -1 ;;  # -1 means accept any result
     esac
 }

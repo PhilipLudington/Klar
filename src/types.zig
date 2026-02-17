@@ -859,6 +859,17 @@ pub const TypeBuilder = struct {
         return .{ .applied = applied };
     }
 
+    /// Future[T] marker type used by async function signatures.
+    /// This is represented as an applied type whose base is an extern-type marker "Future".
+    pub fn futureType(self: *TypeBuilder, inner: Type) !Type {
+        const future_marker = try self.arena.allocator().create(ExternType);
+        future_marker.* = .{
+            .name = "Future",
+            .size = null,
+        };
+        return self.appliedType(.{ .extern_type = future_marker }, &.{inner});
+    }
+
     // Associated type reference constructor
     pub fn associatedTypeRefType(self: *TypeBuilder, type_var: TypeVar, assoc_name: []const u8, trait: *TraitType) !Type {
         const ref = try self.arena.allocator().create(AssociatedTypeRef);

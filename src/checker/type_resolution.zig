@@ -756,6 +756,16 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.resultType(ok_type, err_type);
                 }
 
+                // Future[T] - async function return contract
+                if (std.mem.eql(u8, base_name, "Future")) {
+                    if (g.args.len != 1) {
+                        tc.addError(.type_mismatch, g.span, "Future expects exactly 1 type argument", .{});
+                        return tc.type_builder.unknownType();
+                    }
+                    const inner = try resolveTypeExpr(tc, g.args[0]);
+                    return try tc.type_builder.futureType(inner);
+                }
+
                 // ContextError[E] - error wrapper with context message
                 if (std.mem.eql(u8, base_name, "ContextError")) {
                     if (g.args.len != 1) {

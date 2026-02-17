@@ -76,7 +76,7 @@ Reserved keywords in Klar that cannot be used as identifiers.
 | Keyword | Description | Example |
 |---------|-------------|---------|
 | `import` | Import module | `import utils.{ add }` |
-| `pub` | Public visibility | `pub fn api() { }` |
+| `pub` | Public visibility | `pub fn api() -> void { }` |
 | `as` | Alias | `import math.{ add as sum }` |
 
 ## FFI Keywords
@@ -126,14 +126,19 @@ Reserved keywords in Klar that cannot be used as identifiers.
 | `Result` | Result type | `Result[T, E]` |
 | `?` | Optional type | `?T` (same as `Option[T]`) |
 
+## Async Keywords
+
+| Keyword | Description | Example |
+|---------|-------------|---------|
+| `async` | Asynchronous function modifier | `async fn fetch() -> Future[i32] { ... }` |
+| `await` | Await async result inside async functions | `let x: i32 = await task` |
+
 ## Reserved for Future Use
 
 The following keywords are reserved and may be used in future versions:
 
 | Keyword | Potential Use |
 |---------|---------------|
-| `async` | Asynchronous functions |
-| `await` | Await asynchronous result |
 | `yield` | Generator functions |
 | `macro` | Macro definitions |
 | `where` | Additional trait bounds |

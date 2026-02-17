@@ -1,12 +1,17 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const version = @import("version.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("token.zig").Token;
 const Parser = @import("parser.zig").Parser;
 const ast = @import("ast.zig");
+const types = @import("types.zig");
 const checker_mod = @import("checker/mod.zig");
 const TypeChecker = checker_mod.TypeChecker;
-const Interpreter = @import("interpreter.zig").Interpreter;
+const interp_mod = @import("interpreter.zig");
+const Interpreter = interp_mod.Interpreter;
+const AssertionRecorder = interp_mod.AssertionRecorder;
+const AssertionRecord = interp_mod.AssertionRecord;
 const values = @import("values.zig");
 const Compiler = @import("compiler.zig").Compiler;
 const Disassembler = @import("disasm.zig").Disassembler;
@@ -22,14 +27,261 @@ const Repl = @import("repl.zig").Repl;
 const manifest = @import("pkg/manifest.zig");
 const lockfile = @import("pkg/lockfile.zig");
 const formatter = @import("formatter.zig");
+const lsp = @import("lsp.zig");
 
-// Zig 0.15 IO helpers
+// Cross-platform IO helpers
 fn getStdOut() std.fs.File {
-    return .{ .handle = std.posix.STDOUT_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE);
+        return .{ .handle = handle };
+    } else {
+        return .{ .handle = std.posix.STDOUT_FILENO };
+    }
 }
 
 fn getStdErr() std.fs.File {
-    return .{ .handle = std.posix.STDERR_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE);
+        return .{ .handle = handle };
+    } else {
+        return .{ .handle = std.posix.STDERR_FILENO };
+    }
+}
+
+const TestRunOptions = struct {
+    fn_filter: ?[]const u8 = null,
+    strict_tests: bool = false,
+    require_tests: bool = false,
+    json_output: bool = false,
+    include_source: bool = false,
+    emit_output: bool = true,
+};
+
+const CheckCommandOptions = struct {
+    dump_ownership: bool = false,
+    scope_line: ?usize = null,
+    scope_column: ?usize = null,
+    scope_json: bool = false,
+    partial_mode: bool = false,
+    expected_line: ?usize = null,
+    expected_column: ?usize = null,
+};
+
+const TestFileResult = struct {
+    tests_discovered: usize,
+    tests_passed: usize,
+    tests_failed: usize,
+    test_results: []JsonTestSummary = &.{},
+    compile_errors: []JsonCompileError = &.{},
+    file_failed: bool = false,
+};
+
+const JsonCompileError = struct {
+    stage: []const u8,
+    message: []const u8,
+    line: ?usize = null,
+    column: ?usize = null,
+};
+
+const JsonAssertionSummary = struct {
+    assertion_type: []const u8,
+    passed: bool,
+    expected: ?[]const u8 = null,
+    actual: ?[]const u8 = null,
+};
+
+const JsonTestSummary = struct {
+    name: []const u8,
+    passed: bool,
+    error_name: ?[]const u8 = null,
+    assertions: []JsonAssertionSummary = &.{},
+    source: ?[]const u8 = null,
+};
+
+const JsonFileSummary = struct {
+    path: []const u8,
+    total: usize,
+    passed: usize,
+    failed: usize,
+    test_results: []JsonTestSummary = &.{},
+    compile_errors: []JsonCompileError = &.{},
+};
+
+fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
+    try out.writeAll("\"");
+    for (s) |c| {
+        switch (c) {
+            '"' => try out.writeAll("\\\""),
+            '\\' => try out.writeAll("\\\\"),
+            '\n' => try out.writeAll("\\n"),
+            '\r' => try out.writeAll("\\r"),
+            '\t' => try out.writeAll("\\t"),
+            else => try out.writeAll(&[_]u8{c}),
+        }
+    }
+    try out.writeAll("\"");
+}
+
+fn writeJsonUsize(out: std.fs.File, value: usize) !void {
+    var buf: [32]u8 = undefined;
+    const n = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
+    try out.writeAll(n);
+}
+
+fn writeJsonBool(out: std.fs.File, value: bool) !void {
+    if (value) {
+        try out.writeAll("true");
+    } else {
+        try out.writeAll("false");
+    }
+}
+
+const LineColumn = struct {
+    line: usize,
+    column: usize,
+};
+
+fn parseLineColumn(value: []const u8) !LineColumn {
+    const colon_idx = std.mem.indexOfScalar(u8, value, ':') orelse return error.InvalidScopePosition;
+    const line_text = value[0..colon_idx];
+    const col_text = value[colon_idx + 1 ..];
+    if (line_text.len == 0 or col_text.len == 0) return error.InvalidScopePosition;
+
+    const line = std.fmt.parseInt(usize, line_text, 10) catch return error.InvalidScopePosition;
+    const column = std.fmt.parseInt(usize, col_text, 10) catch return error.InvalidScopePosition;
+    if (line == 0 or column == 0) return error.InvalidScopePosition;
+
+    return .{ .line = line, .column = column };
+}
+
+fn sourceOffsetFromLineColumn(source: []const u8, line: usize, column: usize) ?usize {
+    var current_line: usize = 1;
+    var line_start: usize = 0;
+    var i: usize = 0;
+
+    while (i < source.len and current_line < line) : (i += 1) {
+        if (source[i] == '\n') {
+            current_line += 1;
+            line_start = i + 1;
+        }
+    }
+
+    if (current_line != line) return null;
+
+    var line_end = source.len;
+    i = line_start;
+    while (i < source.len) : (i += 1) {
+        if (source[i] == '\n') {
+            line_end = i;
+            break;
+        }
+    }
+
+    const offset = line_start + (column - 1);
+    if (offset > line_end) return null;
+    return offset;
+}
+
+fn symbolKindName(kind: checker_mod.Symbol.Kind) []const u8 {
+    return switch (kind) {
+        .variable => "variable",
+        .parameter => "parameter",
+        .function => "function",
+        .type_ => "type",
+        .trait_ => "trait",
+        .module => "module",
+        .constant => "constant",
+    };
+}
+
+fn freeJsonTestResults(allocator: std.mem.Allocator, test_results: []JsonTestSummary) void {
+    for (test_results) |test_result| {
+        allocator.free(test_result.name);
+        if (test_result.error_name) |error_name| allocator.free(error_name);
+        if (test_result.source) |source| allocator.free(source);
+        for (test_result.assertions) |assertion| {
+            if (assertion.expected) |expected| allocator.free(expected);
+            if (assertion.actual) |actual| allocator.free(actual);
+        }
+        allocator.free(test_result.assertions);
+    }
+    allocator.free(test_results);
+}
+
+fn freeJsonCompilerErrors(allocator: std.mem.Allocator, compile_errors: []JsonCompileError) void {
+    for (compile_errors) |compile_error| {
+        allocator.free(compile_error.message);
+    }
+    allocator.free(compile_errors);
+}
+
+fn makeSingleCompileErrorResult(
+    allocator: std.mem.Allocator,
+    stage: []const u8,
+    message: []const u8,
+    line: ?usize,
+    column: ?usize,
+) !TestFileResult {
+    const compile_errors = try allocator.alloc(JsonCompileError, 1);
+    errdefer allocator.free(compile_errors);
+    compile_errors[0] = .{
+        .stage = stage,
+        .message = try allocator.dupe(u8, message),
+        .line = line,
+        .column = column,
+    };
+    errdefer allocator.free(compile_errors[0].message);
+    const empty_test_results = try allocator.alloc(JsonTestSummary, 0);
+    return .{
+        .tests_discovered = 0,
+        .tests_passed = 0,
+        .tests_failed = 0,
+        .test_results = empty_test_results,
+        .compile_errors = compile_errors,
+        .file_failed = true,
+    };
+}
+
+fn duplicateAssertionRecords(
+    allocator: std.mem.Allocator,
+    assertion_records: []const AssertionRecord,
+) ![]JsonAssertionSummary {
+    const assertions = try allocator.alloc(JsonAssertionSummary, assertion_records.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (assertions[0..initialized]) |assertion| {
+            if (assertion.expected) |expected| allocator.free(expected);
+            if (assertion.actual) |actual| allocator.free(actual);
+        }
+        allocator.free(assertions);
+    }
+
+    for (assertion_records, 0..) |record, i| {
+        const expected = if (record.expected) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (expected) |value| allocator.free(value);
+        const actual = if (record.actual) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (actual) |value| allocator.free(value);
+
+        assertions[i] = .{
+            .assertion_type = record.assertion_type,
+            .passed = record.passed,
+            .expected = expected,
+            .actual = actual,
+        };
+        initialized += 1;
+    }
+    return assertions;
+}
+
+fn findFunctionSource(module: ast.Module, source: []const u8, function_name: []const u8) ?[]const u8 {
+    for (module.declarations) |decl| {
+        if (decl != .function) continue;
+        const function = decl.function;
+        if (!std.mem.eql(u8, function.name, function_name)) continue;
+        if (function.span.end > source.len or function.span.start >= function.span.end) return null;
+        return source[function.span.start..function.span.end];
+    }
+    return null;
 }
 
 /// Result of attempting to load a manifest with user-friendly error messages.
@@ -214,10 +466,25 @@ pub fn main() !void {
             } else if (std.mem.eql(u8, arg, "-g")) {
                 debug_info = true;
             } else if (std.mem.eql(u8, arg, "--target") and i + 1 < args.len) {
-                target_triple = args[i + 1];
+                const raw = args[i + 1];
+                // Expand shorthand target names
+                if (std.mem.eql(u8, raw, "wasm")) {
+                    target_triple = "wasm32-unknown-unknown";
+                } else if (std.mem.eql(u8, raw, "wasi")) {
+                    target_triple = "wasm32-unknown-wasi";
+                } else {
+                    target_triple = raw;
+                }
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "--target=")) {
-                target_triple = arg["--target=".len..];
+                const raw = arg["--target=".len..];
+                if (std.mem.eql(u8, raw, "wasm")) {
+                    target_triple = "wasm32-unknown-unknown";
+                } else if (std.mem.eql(u8, raw, "wasi")) {
+                    target_triple = "wasm32-unknown-wasi";
+                } else {
+                    target_triple = raw;
+                }
             } else if (std.mem.eql(u8, arg, "-l") and i + 1 < args.len) {
                 // -l libname (separate argument)
                 try link_libs.append(allocator, args[i + 1]);
@@ -324,18 +591,89 @@ pub fn main() !void {
             .search_paths = search_paths,
         });
     } else if (std.mem.eql(u8, command, "check")) {
-        if (args.len < 3) {
-            try getStdErr().writeAll("Error: no input file\n");
-            return;
-        }
-        // Parse flags
-        var dump_ownership = false;
-        for (args) |arg| {
+        var options = CheckCommandOptions{};
+        var input_path: ?[]const u8 = null;
+
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
             if (std.mem.eql(u8, arg, "--dump-ownership")) {
-                dump_ownership = true;
+                options.dump_ownership = true;
+            } else if (std.mem.eql(u8, arg, "--scope-at")) {
+                if (i + 1 >= args.len) {
+                    try getStdErr().writeAll("Error: missing value for --scope-at (expected <line:col>)\n");
+                    return;
+                }
+                const parsed = parseLineColumn(args[i + 1]) catch {
+                    try getStdErr().writeAll("Error: invalid --scope-at value, expected <line:col>\n");
+                    return;
+                };
+                options.scope_line = parsed.line;
+                options.scope_column = parsed.column;
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--scope-at=")) {
+                const parsed = parseLineColumn(arg["--scope-at=".len..]) catch {
+                    try getStdErr().writeAll("Error: invalid --scope-at value, expected <line:col>\n");
+                    return;
+                };
+                options.scope_line = parsed.line;
+                options.scope_column = parsed.column;
+            } else if (std.mem.eql(u8, arg, "--scope-json")) {
+                options.scope_json = true;
+            } else if (std.mem.eql(u8, arg, "--partial")) {
+                options.partial_mode = true;
+            } else if (std.mem.eql(u8, arg, "--expected-type-at")) {
+                if (i + 1 >= args.len) {
+                    try getStdErr().writeAll("Error: missing value for --expected-type-at (expected <line:col>)\n");
+                    return;
+                }
+                const parsed = parseLineColumn(args[i + 1]) catch {
+                    try getStdErr().writeAll("Error: invalid --expected-type-at value, expected <line:col>\n");
+                    return;
+                };
+                options.expected_line = parsed.line;
+                options.expected_column = parsed.column;
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--expected-type-at=")) {
+                const parsed = parseLineColumn(arg["--expected-type-at=".len..]) catch {
+                    try getStdErr().writeAll("Error: invalid --expected-type-at value, expected <line:col>\n");
+                    return;
+                };
+                options.expected_line = parsed.line;
+                options.expected_column = parsed.column;
+            } else if (!std.mem.startsWith(u8, arg, "-") and input_path == null) {
+                input_path = arg;
+            } else {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error: unknown check option '{s}'\n", .{arg}) catch "Error: unknown check option\n";
+                try getStdErr().writeAll(msg);
+                return;
             }
         }
-        try checkFile(allocator, args[2], dump_ownership);
+
+        const path = input_path orelse {
+            try getStdErr().writeAll("Error: no input file\n");
+            return;
+        };
+
+        if ((options.scope_line == null) != (options.scope_column == null)) {
+            try getStdErr().writeAll("Error: --scope-at requires both line and column\n");
+            return;
+        }
+        if ((options.expected_line == null) != (options.expected_column == null)) {
+            try getStdErr().writeAll("Error: --expected-type-at requires both line and column\n");
+            return;
+        }
+        if (options.scope_json and options.scope_line == null) {
+            try getStdErr().writeAll("Error: --scope-json requires --scope-at <line:col>\n");
+            return;
+        }
+        if (options.scope_line != null and options.expected_line != null) {
+            try getStdErr().writeAll("Error: --scope-at and --expected-type-at cannot be used together\n");
+            return;
+        }
+
+        try checkFile(allocator, path, options);
     } else if (std.mem.eql(u8, command, "disasm")) {
         if (args.len < 3) {
             try getStdErr().writeAll("Error: no input file\n");
@@ -363,9 +701,62 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, command, "update")) {
         try updateLockfile(allocator);
     } else if (std.mem.eql(u8, command, "test")) {
-        try getStdErr().writeAll("Test not yet implemented\n");
+        var input_path: ?[]const u8 = null;
+        var fn_filter: ?[]const u8 = null;
+        var strict_tests = false;
+        var require_tests = false;
+        var json_output = false;
+        var include_source = false;
+
+        var i: usize = 2;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--fn")) {
+                if (i + 1 >= args.len) {
+                    try getStdErr().writeAll("Error: missing value for --fn\n");
+                    return;
+                }
+                fn_filter = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--fn=")) {
+                fn_filter = arg["--fn=".len..];
+            } else if (std.mem.eql(u8, arg, "--strict-tests")) {
+                strict_tests = true;
+            } else if (std.mem.eql(u8, arg, "--require-tests")) {
+                require_tests = true;
+            } else if (std.mem.eql(u8, arg, "--json")) {
+                json_output = true;
+            } else if (std.mem.eql(u8, arg, "--include-source")) {
+                include_source = true;
+            } else if (!std.mem.startsWith(u8, arg, "-") and input_path == null) {
+                input_path = arg;
+            } else {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error: unknown test option '{s}'\n", .{arg}) catch "Error: unknown test option\n";
+                try getStdErr().writeAll(msg);
+                return;
+            }
+        }
+
+        const final_path = input_path orelse {
+            try getStdErr().writeAll("Error: no input path\n");
+            return;
+        };
+
+        runTestPath(allocator, final_path, .{
+            .fn_filter = fn_filter,
+            .strict_tests = strict_tests,
+            .require_tests = require_tests,
+            .json_output = json_output,
+            .include_source = include_source,
+        }) catch |err| switch (err) {
+            error.TestsFailed => std.process.exit(1),
+            else => return err,
+        };
     } else if (std.mem.eql(u8, command, "fmt")) {
         try fmtCommand(allocator, args);
+    } else if (std.mem.eql(u8, command, "lsp")) {
+        try lsp.runStdio(allocator);
     } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
         try printUsage();
     } else if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
@@ -539,9 +930,14 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
     interp.executeModule(module) catch |err| {
         var buf: [512]u8 = undefined;
+        if (interp.consumeLastErrorMessage()) |msg_text| {
+            const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
+            try stderr.writeAll(msg);
+            std.process.exit(1);
+        }
         const msg = std.fmt.bufPrint(&buf, "Runtime error: {s}\n", .{@errorName(err)}) catch "Runtime error\n";
         try stderr.writeAll(msg);
-        return;
+        std.process.exit(1);
     };
 
     // Look for main function and call it
@@ -581,15 +977,27 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
 
                 _ = interp.callFunction(func, &.{args_value}) catch |err| {
                     var buf: [512]u8 = undefined;
+                    if (interp.consumeLastErrorMessage()) |msg_text| {
+                        const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
+                        try stderr.writeAll(msg);
+                        std.process.exit(1);
+                    }
                     const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
                     try stderr.writeAll(msg);
+                    std.process.exit(1);
                 };
             } else {
                 // main() with no args
                 _ = interp.callFunction(func, &.{}) catch |err| {
                     var buf: [512]u8 = undefined;
+                    if (interp.consumeLastErrorMessage()) |msg_text| {
+                        const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
+                        try stderr.writeAll(msg);
+                        std.process.exit(1);
+                    }
                     const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
                     try stderr.writeAll(msg);
+                    std.process.exit(1);
                 };
             }
         }
@@ -1001,6 +1409,12 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     var emitter = codegen.Emitter.init(allocator, module_name);
     defer emitter.deinit();
 
+    // Set target platform for cross-compilation
+    if (target_info) |ti| {
+        const target_platform = ti.toPlatform();
+        emitter.setTargetPlatform(target_platform, ti.triple);
+    }
+
     // Set freestanding mode if requested
     if (options.freestanding) {
         emitter.setFreestanding(true);
@@ -1199,8 +1613,10 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try stdout.writeAll(msg);
     }
 
-    // Generate object file
-    const obj_path_str = std.fmt.allocPrint(allocator, "{s}.o", .{base_name}) catch {
+    // Generate object file (use target platform extension, not host)
+    const target_platform = if (target_info) |ti| ti.toPlatform() else codegen.target.Platform.current();
+    const obj_ext = target_platform.getObjectExtension();
+    const obj_path_str = std.fmt.allocPrint(allocator, "{s}{s}", .{ base_name, obj_ext }) catch {
         try stderr.writeAll("Out of memory\n");
         return;
     };
@@ -1250,7 +1666,8 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         return;
     }
 
-    // Link to create executable (default: build/<base_name>)
+    // Link to create executable (default: build/<base_name>[.wasm])
+    const exe_ext = target_platform.getExecutableExtension();
     const exe_path = options.output_path orelse blk: {
         // Create build directory if it doesn't exist
         std.fs.cwd().makePath("build") catch |err| {
@@ -1259,7 +1676,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             try stderr.writeAll(msg);
             return;
         };
-        break :blk std.fmt.allocPrint(allocator, "build/{s}", .{base_name}) catch {
+        break :blk std.fmt.allocPrint(allocator, "build/{s}{s}", .{ base_name, exe_ext }) catch {
             try stderr.writeAll("Out of memory\n");
             return;
         };
@@ -1321,10 +1738,22 @@ fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: [
 }
 
 fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8) !void {
-    // Generate a unique temp path for the executable
+    // Generate a unique temp path for the executable (cross-platform)
     const timestamp = std.time.timestamp();
-    var temp_path_buf: [256]u8 = undefined;
-    const temp_path = std.fmt.bufPrint(&temp_path_buf, "/tmp/klar-run-{d}", .{timestamp}) catch {
+    const exe_ext = comptime if (builtin.os.tag == .windows) ".exe" else "";
+    var temp_path_buf: [512]u8 = undefined;
+    const temp_path = if (builtin.os.tag == .windows) blk: {
+        // On Windows, use %TEMP% or %TMP% or fall back to C:\Temp
+        const temp_dir = std.process.getEnvVarOwned(allocator, "TEMP") catch
+            std.process.getEnvVarOwned(allocator, "TMP") catch
+            null;
+        defer if (temp_dir) |d| allocator.free(d);
+        const dir = temp_dir orelse "C:\\Temp";
+        break :blk std.fmt.bufPrint(&temp_path_buf, "{s}\\klar-run-{d}{s}", .{ dir, timestamp, exe_ext }) catch {
+            try getStdErr().writeAll("Failed to create temp path\n");
+            return;
+        };
+    } else std.fmt.bufPrint(&temp_path_buf, "/tmp/klar-run-{d}{s}", .{ timestamp, exe_ext }) catch {
         try getStdErr().writeAll("Failed to create temp path\n");
         return;
     };
@@ -1343,112 +1772,151 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
         return;
     };
 
-    // Execute the compiled binary with args
-    // We need argv = [source_path, arg1, arg2, ...] but execute temp_path.
-    // The Klar runtime includes all of argv, so program sees [source_path, arg1, arg2, ...].
-    // For standalone binaries, argv = [binary_path, arg1, ...] from the OS.
-    // This keeps args[0] as the "program identifier" (source or binary path).
-    //
-    // Since std.process.Child uses argv[0] as the executable, we need to use
-    // fork/exec directly to have a different executable path and argv[0].
-    var argv_list = std.ArrayListUnmanaged(?[*:0]const u8){};
-    defer argv_list.deinit(allocator);
+    // Execute the compiled binary with args.
+    // On POSIX, we use fork/exec to set argv[0] to the source path while
+    // executing the temp binary. On Windows, we use std.process.Child
+    // (argv[0] will be the temp binary path — minor behavioral difference).
+    if (builtin.os.tag == .windows) {
+        // Windows: use std.process.Child
+        var child_argv = std.ArrayListUnmanaged([]const u8){};
+        defer child_argv.deinit(allocator);
 
-    // Convert source path to null-terminated
-    const path_z = allocator.dupeZ(u8, path) catch {
-        try getStdErr().writeAll("Failed to allocate argv\n");
-        std.fs.cwd().deleteFile(temp_path) catch {};
-        return;
-    };
-    defer allocator.free(path_z);
-    argv_list.append(allocator, path_z) catch {
-        try getStdErr().writeAll("Failed to allocate argv\n");
-        std.fs.cwd().deleteFile(temp_path) catch {};
-        return;
-    };
-
-    // Convert user-provided arguments to null-terminated
-    var arg_bufs = std.ArrayListUnmanaged([:0]const u8){};
-    defer {
-        for (arg_bufs.items) |buf| allocator.free(buf);
-        arg_bufs.deinit(allocator);
-    }
-    for (program_args) |arg| {
-        const arg_z = allocator.dupeZ(u8, arg) catch {
+        child_argv.append(allocator, temp_path) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
             std.fs.cwd().deleteFile(temp_path) catch {};
             return;
         };
-        arg_bufs.append(allocator, arg_z) catch {
-            allocator.free(arg_z);
+        for (program_args) |arg| {
+            child_argv.append(allocator, arg) catch {
+                try getStdErr().writeAll("Failed to allocate argv\n");
+                std.fs.cwd().deleteFile(temp_path) catch {};
+                return;
+            };
+        }
+
+        var child = std.process.Child.init(child_argv.items, allocator);
+        const term = child.spawnAndWait() catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to execute: {s}\n", .{@errorName(err)}) catch "Failed to execute\n";
+            getStdErr().writeAll(msg) catch {};
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+
+        // Clean up temp file
+        std.fs.cwd().deleteFile(temp_path) catch {};
+
+        switch (term) {
+            .exited => |code| std.process.exit(code),
+            .signal => |sig| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
+                getStdErr().writeAll(msg) catch {};
+                std.process.exit(128 +| @as(u8, @truncate(sig)));
+            },
+            else => std.process.exit(1),
+        }
+    } else {
+        // POSIX: use fork/exec to set argv[0] to source path
+        var argv_list = std.ArrayListUnmanaged(?[*:0]const u8){};
+        defer argv_list.deinit(allocator);
+
+        // Convert source path to null-terminated
+        const path_z = allocator.dupeZ(u8, path) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
             std.fs.cwd().deleteFile(temp_path) catch {};
             return;
         };
-        argv_list.append(allocator, arg_z) catch {
+        defer allocator.free(path_z);
+        argv_list.append(allocator, path_z) catch {
             try getStdErr().writeAll("Failed to allocate argv\n");
             std.fs.cwd().deleteFile(temp_path) catch {};
             return;
         };
-    }
-    // Null terminator for argv array
-    argv_list.append(allocator, null) catch {
-        try getStdErr().writeAll("Failed to allocate argv\n");
+
+        // Convert user-provided arguments to null-terminated
+        var arg_bufs = std.ArrayListUnmanaged([:0]const u8){};
+        defer {
+            for (arg_bufs.items) |buf| allocator.free(buf);
+            arg_bufs.deinit(allocator);
+        }
+        for (program_args) |arg| {
+            const arg_z = allocator.dupeZ(u8, arg) catch {
+                try getStdErr().writeAll("Failed to allocate argv\n");
+                std.fs.cwd().deleteFile(temp_path) catch {};
+                return;
+            };
+            arg_bufs.append(allocator, arg_z) catch {
+                allocator.free(arg_z);
+                try getStdErr().writeAll("Failed to allocate argv\n");
+                std.fs.cwd().deleteFile(temp_path) catch {};
+                return;
+            };
+            argv_list.append(allocator, arg_z) catch {
+                try getStdErr().writeAll("Failed to allocate argv\n");
+                std.fs.cwd().deleteFile(temp_path) catch {};
+                return;
+            };
+        }
+        // Null terminator for argv array
+        argv_list.append(allocator, null) catch {
+            try getStdErr().writeAll("Failed to allocate argv\n");
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+
+        // Convert temp_path to null-terminated for execve
+        const temp_path_z = allocator.dupeZ(u8, temp_path) catch {
+            try getStdErr().writeAll("Failed to allocate temp path\n");
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+        defer allocator.free(temp_path_z);
+
+        // Fork and exec
+        const pid = std.posix.fork() catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to fork: {s}\n", .{@errorName(err)}) catch "Failed to fork\n";
+            try getStdErr().writeAll(msg);
+            std.fs.cwd().deleteFile(temp_path) catch {};
+            return;
+        };
+
+        if (pid == 0) {
+            // Child process - exec the binary
+            const argv_ptr: [*:null]const ?[*:0]const u8 = @ptrCast(argv_list.items.ptr);
+            const envp = std.c.environ;
+            // execveZ doesn't return on success - if it does, it's an error
+            std.posix.execveZ(temp_path_z, argv_ptr, envp) catch {};
+            std.posix.exit(127);
+        }
+
+        // Parent process - wait for child
+        const result = std.posix.waitpid(pid, 0);
+
+        // Clean up temp file
         std.fs.cwd().deleteFile(temp_path) catch {};
-        return;
-    };
 
-    // Convert temp_path to null-terminated for execve
-    const temp_path_z = allocator.dupeZ(u8, temp_path) catch {
-        try getStdErr().writeAll("Failed to allocate temp path\n");
-        std.fs.cwd().deleteFile(temp_path) catch {};
-        return;
-    };
-    defer allocator.free(temp_path_z);
-
-    // Fork and exec
-    const pid = std.posix.fork() catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Failed to fork: {s}\n", .{@errorName(err)}) catch "Failed to fork\n";
-        try getStdErr().writeAll(msg);
-        std.fs.cwd().deleteFile(temp_path) catch {};
-        return;
-    };
-
-    if (pid == 0) {
-        // Child process - exec the binary
-        const argv_ptr: [*:null]const ?[*:0]const u8 = @ptrCast(argv_list.items.ptr);
-        const envp = std.c.environ;
-        // execveZ doesn't return on success - if it does, it's an error
-        std.posix.execveZ(temp_path_z, argv_ptr, envp) catch {};
-        std.posix.exit(127);
+        // Decode the wait status using POSIX macros
+        const status = result.status;
+        // WIFEXITED: (status & 0x7F) == 0
+        if ((status & 0x7F) == 0) {
+            // Exited normally - WEXITSTATUS: (status >> 8) & 0xFF
+            const exit_code: u8 = @truncate((status >> 8) & 0xFF);
+            std.posix.exit(exit_code);
+        }
+        // WIFSIGNALED: ((status & 0x7F) + 1) >> 1 > 0
+        if (((status & 0x7F) + 1) >> 1 > 0) {
+            // Killed by signal - WTERMSIG: status & 0x7F
+            const sig: u8 = @truncate(status & 0x7F);
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
+            getStdErr().writeAll(msg) catch {};
+            std.posix.exit(128 +| sig);
+        }
+        // Unknown status
+        std.posix.exit(1);
     }
-
-    // Parent process - wait for child
-    const result = std.posix.waitpid(pid, 0);
-
-    // Clean up temp file
-    std.fs.cwd().deleteFile(temp_path) catch {};
-
-    // Decode the wait status using POSIX macros
-    const status = result.status;
-    // WIFEXITED: (status & 0x7F) == 0
-    if ((status & 0x7F) == 0) {
-        // Exited normally - WEXITSTATUS: (status >> 8) & 0xFF
-        const exit_code: u8 = @truncate((status >> 8) & 0xFF);
-        std.posix.exit(exit_code);
-    }
-    // WIFSIGNALED: ((status & 0x7F) + 1) >> 1 > 0
-    if (((status & 0x7F) + 1) >> 1 > 0) {
-        // Killed by signal - WTERMSIG: status & 0x7F
-        const sig: u8 = @truncate(status & 0x7F);
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
-        getStdErr().writeAll(msg) catch {};
-        std.posix.exit(128 +| sig);
-    }
-    // Unknown status
-    std.posix.exit(1);
 }
 
 
@@ -1818,8 +2286,8 @@ fn shouldSkipPath(path: []const u8) bool {
         if (std.mem.startsWith(u8, path, skip)) return true;
     }
 
-    // Skip paths containing hidden directory segments
-    var it = std.mem.splitScalar(u8, path, '/');
+    // Skip paths containing hidden directory segments (handle both / and \ separators)
+    var it = std.mem.tokenizeAny(u8, path, "/\\");
     while (it.next()) |segment| {
         if (segment.len > 0 and segment[0] == '.') return true;
     }
@@ -1827,7 +2295,7 @@ fn shouldSkipPath(path: []const u8) bool {
     return false;
 }
 
-fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag: bool) !void {
+fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckCommandOptions) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
@@ -1843,9 +2311,19 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
     const stderr = getStdErr();
     var lexer = Lexer.init(source);
     var parser = Parser.init(arena.allocator(), &lexer, source);
+    var parse_had_errors = false;
 
     // Parse the module
-    const module = parser.parseModule() catch |err| {
+    const module = if (options.partial_mode) blk: {
+        const parsed = parser.parseModuleRecovering() catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+        parse_had_errors = parser.errors.items.len > 0;
+        break :blk parsed;
+    } else parser.parseModule() catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
         try stderr.writeAll(msg);
@@ -1861,9 +2339,25 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
         return;
     };
 
+    if (options.partial_mode and parser.errors.items.len > 0) {
+        var buf: [512]u8 = undefined;
+        const header = std.fmt.bufPrint(&buf, "Parse diagnostics ({d}):\n", .{parser.errors.items.len}) catch "Parse diagnostics:\n";
+        try stderr.writeAll(header);
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+    }
+
     // Type check the module
     var checker = TypeChecker.init(allocator);
     defer checker.deinit();
+    checker.setTestMode(true);
+    var scope_root: ?*const checker_mod.Scope = null;
 
     // Track source strings for imported modules
     var module_sources = std.ArrayListUnmanaged([]const u8){};
@@ -1955,17 +2449,22 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
                 checker.prepareForNewModule();
                 checker.setCurrentModule(mod);
                 checker.checkModule(mod_ast);
+                if (mod == entry) {
+                    scope_root = checker.current_scope;
+                }
                 checker.registerModuleExports(mod) catch {};
             }
         }
     } else {
         // Single-file compilation (no imports)
         checker.checkModule(module);
+        scope_root = checker.current_scope;
     }
 
     var buf: [512]u8 = undefined;
 
-    if (checker.hasErrors()) {
+    const has_type_errors = checker.hasErrors();
+    if (has_type_errors) {
         const header = std.fmt.bufPrint(&buf, "Type check failed with {d} error(s):\n", .{checker.errors.items.len}) catch "Type check failed:\n";
         try stderr.writeAll(header);
 
@@ -1978,8 +2477,110 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
-        return; // Don't proceed to ownership check if type check fails
+        if (options.scope_line == null and options.expected_line == null) return; // Query modes can proceed for tooling.
     }
+
+    if (options.scope_line) |scope_line| {
+        const scope_column = options.scope_column.?;
+        const cursor_offset = sourceOffsetFromLineColumn(source, scope_line, scope_column) orelse {
+            var out_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&out_buf, "Error: position {d}:{d} is outside file bounds\n", .{ scope_line, scope_column }) catch "Error: invalid scope position\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        const root_scope = scope_root orelse checker.current_scope;
+        const scope_entries = checker.extractScopeAtOffsetInScope(module, cursor_offset, root_scope) catch {
+            try stderr.writeAll("Error: failed to extract scope at cursor\n");
+            return;
+        };
+        defer allocator.free(scope_entries);
+
+        if (options.scope_json) {
+            try stdout.writeAll("{\"line\":");
+            try writeJsonUsize(stdout, scope_line);
+            try stdout.writeAll(",\"column\":");
+            try writeJsonUsize(stdout, scope_column);
+            try stdout.writeAll(",\"bindings\":[");
+            for (scope_entries, 0..) |entry, idx| {
+                if (idx > 0) try stdout.writeAll(",");
+                const type_text = types.typeToString(allocator, entry.type_) catch null;
+                try stdout.writeAll("{\"name\":");
+                try writeJsonEscaped(stdout, entry.name);
+                try stdout.writeAll(",\"type\":");
+                try writeJsonEscaped(stdout, type_text orelse "unknown");
+                try stdout.writeAll(",\"kind\":");
+                try writeJsonEscaped(stdout, symbolKindName(entry.kind));
+                try stdout.writeAll(",\"mutable\":");
+                try writeJsonBool(stdout, entry.mutable);
+                try stdout.writeAll("}");
+                if (type_text) |owned| allocator.free(owned);
+            }
+            try stdout.writeAll("]}\n");
+        } else {
+            var out_buf: [256]u8 = undefined;
+            const header = std.fmt.bufPrint(&out_buf, "Scope at {d}:{d} ({d} binding(s)):\n", .{
+                scope_line,
+                scope_column,
+                scope_entries.len,
+            }) catch "Scope:\n";
+            try stdout.writeAll(header);
+
+            for (scope_entries) |entry| {
+                const type_text = types.typeToString(allocator, entry.type_) catch null;
+                const line = std.fmt.bufPrint(&out_buf, "  {s}: {s} [{s}{s}]\n", .{
+                    entry.name,
+                    type_text orelse "unknown",
+                    symbolKindName(entry.kind),
+                    if (entry.mutable) ", mutable" else "",
+                }) catch continue;
+                try stdout.writeAll(line);
+                if (type_text) |owned| allocator.free(owned);
+            }
+        }
+        return;
+    }
+
+    if (options.expected_line) |expected_line| {
+        const expected_column = options.expected_column.?;
+        const cursor_offset = sourceOffsetFromLineColumn(source, expected_line, expected_column) orelse {
+            var out_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&out_buf, "Error: position {d}:{d} is outside file bounds\n", .{ expected_line, expected_column }) catch "Error: invalid expected-type position\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+
+        const root_scope = scope_root orelse checker.current_scope;
+        const expected_type = checker.expectedTypeAtOffsetInScope(module, cursor_offset, root_scope);
+        if (expected_type) |typ| {
+            const type_text = types.typeToString(allocator, typ) catch null;
+            defer if (type_text) |owned| allocator.free(owned);
+            var out_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&out_buf, "Expected type at {d}:{d}: {s}\n", .{
+                expected_line,
+                expected_column,
+                type_text orelse "unknown",
+            }) catch "Expected type: unknown\n";
+            try stdout.writeAll(msg);
+        } else {
+            var out_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&out_buf, "Expected type at {d}:{d}: <unknown>\n", .{
+                expected_line,
+                expected_column,
+            }) catch "Expected type: <unknown>\n";
+            try stdout.writeAll(msg);
+        }
+        return;
+    }
+
+    if (options.partial_mode) {
+        if (!parse_had_errors and !has_type_errors) {
+            try stdout.writeAll("Partial check completed with no diagnostics\n");
+        }
+        return;
+    }
+
+    if (has_type_errors) return;
 
     // Ownership analysis
     var ownership_checker = ownership.OwnershipChecker.init(allocator);
@@ -1992,7 +2593,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
     };
 
     // Dump ownership state if requested
-    if (dump_ownership_flag) {
+    if (options.dump_ownership) {
         try stdout.writeAll("\n=== Ownership State ===\n");
         try stdout.writeAll("(No detailed state dumped in this version)\n\n");
     }
@@ -2019,6 +2620,1190 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, dump_ownership_flag
         const decl_count = module.declarations.len;
         const stats = std.fmt.bufPrint(&buf, "  {d} declaration(s)\n", .{decl_count}) catch "";
         try stdout.writeAll(stats);
+    }
+}
+
+fn bindRuntimeImportsForModule(
+    interp: *Interpreter,
+    mod: *ModuleInfo,
+    resolver: *ModuleResolver,
+    module_interpreters: *std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter),
+) !void {
+    const module_ast = mod.module_ast orelse return;
+
+    for (module_ast.imports) |import_decl| {
+        const dep = resolver.resolve(import_decl.path, mod) catch {
+            return error.ImportModuleResolveFailed;
+        };
+        const dep_ast = dep.module_ast orelse {
+            return error.ImportModuleResolveFailed;
+        };
+        const dep_interp = module_interpreters.get(dep) orelse {
+            return error.ImportInterpreterMissing;
+        };
+
+        if (import_decl.items) |items| {
+            switch (items) {
+                .all => {
+                    for (dep_ast.declarations) |decl| {
+                        const export_name = switch (decl) {
+                            .function => |f| if (f.is_pub) f.name else continue,
+                            .const_decl => |c| if (c.is_pub) c.name else continue,
+                            else => continue,
+                        };
+
+                        const export_value = dep_interp.global_env.get(export_name) orelse {
+                            return error.ImportValueMissing;
+                        };
+                        try interp.current_env.define(export_name, export_value, false);
+                    }
+                },
+                .specific => |specific_items| {
+                    for (specific_items) |item| {
+                        const SymbolKind = enum { runtime_value, type_only, missing };
+                        var symbol_kind: SymbolKind = .missing;
+                        for (dep_ast.declarations) |decl| {
+                            switch (decl) {
+                                .function => |f| {
+                                    if (f.is_pub and std.mem.eql(u8, f.name, item.name)) {
+                                        symbol_kind = .runtime_value;
+                                        break;
+                                    }
+                                },
+                                .const_decl => |c| {
+                                    if (c.is_pub and std.mem.eql(u8, c.name, item.name)) {
+                                        symbol_kind = .runtime_value;
+                                        break;
+                                    }
+                                },
+                                .struct_decl => |s| {
+                                    if (s.is_pub and std.mem.eql(u8, s.name, item.name)) {
+                                        symbol_kind = .type_only;
+                                        break;
+                                    }
+                                },
+                                .enum_decl => |e| {
+                                    if (e.is_pub and std.mem.eql(u8, e.name, item.name)) {
+                                        symbol_kind = .type_only;
+                                        break;
+                                    }
+                                },
+                                .trait_decl => |t| {
+                                    if (t.is_pub and std.mem.eql(u8, t.name, item.name)) {
+                                        symbol_kind = .type_only;
+                                        break;
+                                    }
+                                },
+                                .type_alias => |ta| {
+                                    if (ta.is_pub and std.mem.eql(u8, ta.name, item.name)) {
+                                        symbol_kind = .type_only;
+                                        break;
+                                    }
+                                },
+                                else => {},
+                            }
+                        }
+
+                        if (symbol_kind == .missing) {
+                            return error.ImportSymbolMissing;
+                        }
+                        if (symbol_kind == .type_only) {
+                            continue;
+                        }
+
+                        const export_value = dep_interp.global_env.get(item.name) orelse {
+                            return error.ImportValueMissing;
+                        };
+
+                        const local_name = item.alias orelse item.name;
+                        try interp.current_env.define(local_name, export_value, false);
+                    }
+                },
+            }
+        } else {
+            // Namespace import: import foo / import foo as bar
+            const namespace_name = import_decl.alias orelse import_decl.path[import_decl.path.len - 1];
+            const namespace_struct = try interp.allocator.create(values.StructValue);
+            namespace_struct.* = .{
+                .type_name = namespace_name,
+                .fields = .{},
+            };
+
+            for (dep_ast.declarations) |decl| {
+                const export_name = switch (decl) {
+                    .function => |f| if (f.is_pub) f.name else continue,
+                    .const_decl => |c| if (c.is_pub) c.name else continue,
+                    else => continue,
+                };
+
+                const export_value = dep_interp.global_env.get(export_name) orelse {
+                    return error.ImportValueMissing;
+                };
+                try namespace_struct.fields.put(interp.allocator, export_name, export_value);
+            }
+
+            try interp.current_env.define(namespace_name, .{ .struct_ = namespace_struct }, false);
+        }
+    }
+}
+
+fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunOptions) !void {
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+
+    const stat = std.fs.cwd().statFile(path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error accessing path '{s}': {}\n", .{ path, err }) catch "Error accessing path\n";
+        try stderr.writeAll(msg);
+        return error.TestsFailed;
+    };
+
+    switch (stat.kind) {
+        .file => {
+            const result = runTestFile(allocator, path, options) catch |err| {
+                if (err == error.TestsFailed and options.json_output) {
+                    try stdout.writeAll("{\"file\":");
+                    try writeJsonEscaped(stdout, path);
+                    try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0,\"tests\":[]}\n");
+                }
+                return err;
+            };
+            defer freeJsonTestResults(allocator, result.test_results);
+            defer freeJsonCompilerErrors(allocator, result.compile_errors);
+            if (options.json_output and result.file_failed) {
+                try stdout.writeAll("{\"file\":");
+                try writeJsonEscaped(stdout, path);
+                try stdout.writeAll(",\"total\":");
+                try writeJsonUsize(stdout, result.tests_discovered);
+                try stdout.writeAll(",\"passed\":");
+                try writeJsonUsize(stdout, result.tests_passed);
+                try stdout.writeAll(",\"failed\":");
+                try writeJsonUsize(stdout, result.tests_failed);
+                try stdout.writeAll(",\"tests\":[],\"errors\":[");
+                for (result.compile_errors, 0..) |compile_error, idx| {
+                    if (idx > 0) try stdout.writeAll(",");
+                    try stdout.writeAll("{\"stage\":");
+                    try writeJsonEscaped(stdout, compile_error.stage);
+                    try stdout.writeAll(",\"message\":");
+                    try writeJsonEscaped(stdout, compile_error.message);
+                    if (compile_error.line) |line| {
+                        try stdout.writeAll(",\"line\":");
+                        try writeJsonUsize(stdout, line);
+                    }
+                    if (compile_error.column) |column| {
+                        try stdout.writeAll(",\"column\":");
+                        try writeJsonUsize(stdout, column);
+                    }
+                    try stdout.writeAll("}");
+                }
+                try stdout.writeAll("]}\n");
+            }
+            if (result.tests_failed > 0 or result.file_failed) return error.TestsFailed;
+            return;
+        },
+        .directory => {
+            var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error opening directory '{s}': {}\n", .{ path, err }) catch "Error opening directory\n";
+                try stderr.writeAll(msg);
+                return error.TestsFailed;
+            };
+            defer dir.close();
+
+            var walker = try dir.walk(allocator);
+            defer walker.deinit();
+
+            var files_run: usize = 0;
+            var files_failed: usize = 0;
+            var tests_run: usize = 0;
+            var per_file_options = options;
+            per_file_options.require_tests = false;
+            per_file_options.emit_output = !options.json_output;
+
+            var json_file_results = std.ArrayListUnmanaged(JsonFileSummary){};
+            defer {
+                for (json_file_results.items) |item| {
+                    allocator.free(item.path);
+                    freeJsonTestResults(allocator, item.test_results);
+                    freeJsonCompilerErrors(allocator, item.compile_errors);
+                }
+                json_file_results.deinit(allocator);
+            }
+
+            while (try walker.next()) |entry| {
+                if (entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, entry.path, ".kl")) continue;
+
+                const full_path = try std.fs.path.join(allocator, &.{ path, entry.path });
+                defer allocator.free(full_path);
+
+                files_run += 1;
+                const file_result = runTestFile(allocator, full_path, per_file_options) catch |err| {
+                    if (err == error.TestsFailed) {
+                        files_failed += 1;
+                        if (options.json_output) {
+                            const owned_path = try allocator.dupe(u8, full_path);
+                            const compile_errors = try allocator.alloc(JsonCompileError, 1);
+                            compile_errors[0] = .{
+                                .stage = "runtime_setup",
+                                .message = try allocator.dupe(u8, @errorName(err)),
+                            };
+                            try json_file_results.append(allocator, .{
+                                .path = owned_path,
+                                .total = 0,
+                                .passed = 0,
+                                // Compile/setup errors are file failures, not failed test assertions.
+                                .failed = 0,
+                                .test_results = try allocator.alloc(JsonTestSummary, 0),
+                                .compile_errors = compile_errors,
+                            });
+                        }
+                        continue;
+                    }
+                    return err;
+                };
+                tests_run += file_result.tests_discovered;
+                if (file_result.tests_failed > 0 or file_result.file_failed) {
+                    files_failed += 1;
+                }
+                if (options.json_output) {
+                    const owned_path = try allocator.dupe(u8, full_path);
+                    try json_file_results.append(allocator, .{
+                        .path = owned_path,
+                        .total = file_result.tests_discovered,
+                        .passed = file_result.tests_passed,
+                        .failed = file_result.tests_failed,
+                        .test_results = file_result.test_results,
+                        .compile_errors = file_result.compile_errors,
+                    });
+                } else {
+                    freeJsonTestResults(allocator, file_result.test_results);
+                    freeJsonCompilerErrors(allocator, file_result.compile_errors);
+                }
+            }
+
+            if (files_run == 0) {
+                var buf: [512]u8 = undefined;
+                if (options.json_output) {
+                    try stdout.writeAll("{\"path\":");
+                    try writeJsonEscaped(stdout, path);
+                    try stdout.writeAll(",\"files\":[],\"summary\":{\"files\":0,\"failed_files\":0,\"tests\":0,\"passed\":0,\"failed\":0}}\n");
+                } else {
+                    const msg = std.fmt.bufPrint(&buf, "No .kl files found in '{s}'\n", .{path}) catch "No .kl files found\n";
+                    try stdout.writeAll(msg);
+                }
+                if (options.require_tests) {
+                    const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
+                    try stderr.writeAll(err_msg);
+                    return error.TestsFailed;
+                }
+                if (options.strict_tests) {
+                    const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
+                    try stderr.writeAll(warn_msg);
+                }
+                return;
+            }
+
+            var buf: [512]u8 = undefined;
+            if (options.json_output) {
+                var total_passed: usize = 0;
+                var total_failed: usize = 0;
+                for (json_file_results.items) |item| {
+                    total_passed += item.passed;
+                    total_failed += item.failed;
+                }
+
+                try stdout.writeAll("{\"path\":");
+                try writeJsonEscaped(stdout, path);
+                try stdout.writeAll(",\"files\":[");
+                for (json_file_results.items, 0..) |item, idx| {
+                    if (idx > 0) try stdout.writeAll(",");
+                    try stdout.writeAll("{\"file\":");
+                    try writeJsonEscaped(stdout, item.path);
+                    try stdout.writeAll(",\"total\":");
+                    try writeJsonUsize(stdout, item.total);
+                    try stdout.writeAll(",\"passed\":");
+                    try writeJsonUsize(stdout, item.passed);
+                    try stdout.writeAll(",\"failed\":");
+                    try writeJsonUsize(stdout, item.failed);
+                    try stdout.writeAll(",\"tests\":[");
+                    for (item.test_results, 0..) |test_result, test_idx| {
+                        if (test_idx > 0) try stdout.writeAll(",");
+                        try stdout.writeAll("{\"name\":");
+                        try writeJsonEscaped(stdout, test_result.name);
+                        try stdout.writeAll(",\"status\":");
+                        try writeJsonEscaped(stdout, if (test_result.passed) "PASS" else "FAIL");
+                        if (test_result.error_name) |error_name| {
+                            try stdout.writeAll(",\"error\":");
+                            try writeJsonEscaped(stdout, error_name);
+                        }
+                        if (test_result.source) |test_source| {
+                            try stdout.writeAll(",\"source\":");
+                            try writeJsonEscaped(stdout, test_source);
+                        }
+                        try stdout.writeAll(",\"assertions\":[");
+                        for (test_result.assertions, 0..) |assertion, assertion_idx| {
+                            if (assertion_idx > 0) try stdout.writeAll(",");
+                            try stdout.writeAll("{\"type\":");
+                            try writeJsonEscaped(stdout, assertion.assertion_type);
+                            try stdout.writeAll(",\"passed\":");
+                            try writeJsonBool(stdout, assertion.passed);
+                            if (assertion.expected) |expected| {
+                                try stdout.writeAll(",\"expected\":");
+                                try writeJsonEscaped(stdout, expected);
+                            }
+                            if (assertion.actual) |actual| {
+                                try stdout.writeAll(",\"actual\":");
+                                try writeJsonEscaped(stdout, actual);
+                            }
+                            try stdout.writeAll("}");
+                        }
+                        try stdout.writeAll("]}");
+                    }
+                    try stdout.writeAll("]");
+                    try stdout.writeAll(",\"errors\":[");
+                    for (item.compile_errors, 0..) |compile_error, err_idx| {
+                        if (err_idx > 0) try stdout.writeAll(",");
+                        try stdout.writeAll("{\"stage\":");
+                        try writeJsonEscaped(stdout, compile_error.stage);
+                        try stdout.writeAll(",\"message\":");
+                        try writeJsonEscaped(stdout, compile_error.message);
+                        if (compile_error.line) |line| {
+                            try stdout.writeAll(",\"line\":");
+                            try writeJsonUsize(stdout, line);
+                        }
+                        if (compile_error.column) |column| {
+                            try stdout.writeAll(",\"column\":");
+                            try writeJsonUsize(stdout, column);
+                        }
+                        try stdout.writeAll("}");
+                    }
+                    try stdout.writeAll("]");
+                    try stdout.writeAll("}");
+                }
+                try stdout.writeAll("],\"summary\":{\"files\":");
+                try writeJsonUsize(stdout, files_run);
+                try stdout.writeAll(",\"failed_files\":");
+                try writeJsonUsize(stdout, files_failed);
+                try stdout.writeAll(",\"tests\":");
+                try writeJsonUsize(stdout, tests_run);
+                try stdout.writeAll(",\"passed\":");
+                try writeJsonUsize(stdout, total_passed);
+                try stdout.writeAll(",\"failed\":");
+                try writeJsonUsize(stdout, total_failed);
+                try stdout.writeAll("}}\n");
+            } else {
+                const summary = std.fmt.bufPrint(&buf, "Directory test result: {d} file(s), {d} failed\n", .{ files_run, files_failed }) catch "Directory test result\n";
+                try stdout.writeAll(summary);
+            }
+
+            if (tests_run == 0 and files_failed == 0) {
+                if (options.require_tests) {
+                    const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
+                    try stderr.writeAll(err_msg);
+                    return error.TestsFailed;
+                }
+                if (options.strict_tests) {
+                    const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
+                    try stderr.writeAll(warn_msg);
+                }
+            }
+
+            if (files_failed > 0) {
+                return error.TestsFailed;
+            }
+        },
+        else => {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error: unsupported test path '{s}'\n", .{path}) catch "Error: unsupported test path\n";
+            try stderr.writeAll(msg);
+            return error.TestsFailed;
+        },
+    }
+}
+
+fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunOptions) !TestFileResult {
+    const source = readSourceFile(allocator, path) catch |err| {
+        if (options.json_output) {
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "Error opening file '{s}': {}", .{ path, err }) catch "Error opening file";
+            return makeSingleCompileErrorResult(allocator, "io", msg, null, null);
+        }
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+        try getStdErr().writeAll(msg);
+        return error.TestsFailed;
+    };
+    defer allocator.free(source);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const stdout = getStdOut();
+    const stderr = getStdErr();
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = parser.parseModule() catch |err| {
+        if (options.json_output) {
+            const compile_errors = try allocator.alloc(JsonCompileError, parser.errors.items.len + 1);
+            var compile_errors_initialized: usize = 0;
+            errdefer {
+                for (compile_errors[0..compile_errors_initialized]) |compile_error| {
+                    allocator.free(compile_error.message);
+                }
+                allocator.free(compile_errors);
+            }
+            var header_buf: [256]u8 = undefined;
+            const header = std.fmt.bufPrint(&header_buf, "Parse error: {}", .{err}) catch "Parse error";
+            compile_errors[0] = .{
+                .stage = "parse",
+                .message = try allocator.dupe(u8, header),
+            };
+            compile_errors_initialized = 1;
+            for (parser.errors.items, 0..) |parse_err, idx| {
+                compile_errors[idx + 1] = .{
+                    .stage = "parse",
+                    .message = try allocator.dupe(u8, parse_err.message),
+                    .line = parse_err.span.line,
+                    .column = parse_err.span.column,
+                };
+                compile_errors_initialized += 1;
+            }
+            const empty_test_results = try allocator.alloc(JsonTestSummary, 0);
+            return .{
+                .tests_discovered = 0,
+                .tests_passed = 0,
+                .tests_failed = 0,
+                .test_results = empty_test_results,
+                .compile_errors = compile_errors,
+                .file_failed = true,
+            };
+        }
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+        try stderr.writeAll(msg);
+
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try stderr.writeAll(err_msg);
+        }
+        return error.TestsFailed;
+    };
+
+    var checker = TypeChecker.init(allocator);
+    defer checker.deinit();
+    checker.setTestMode(true);
+
+    var module_sources = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (module_sources.items) |src| {
+            allocator.free(src);
+        }
+        module_sources.deinit(allocator);
+    }
+
+    if (module.imports.len > 0) {
+        var resolver = ModuleResolver.init(allocator);
+        defer resolver.deinit();
+
+        if (findStdLibPath(allocator)) |std_path| {
+            resolver.setStdLibPath(std_path);
+            defer allocator.free(std_path);
+        }
+
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+            resolver.addSearchPath(cwd_path) catch {};
+        } else |_| {}
+
+        const entry = resolver.resolveEntry(path) catch {
+            if (options.json_output) {
+                return makeSingleCompileErrorResult(allocator, "module_resolve", "could not resolve entry module", null, null);
+            }
+            try stderr.writeAll("Error: could not resolve entry module\n");
+            return error.TestsFailed;
+        };
+        entry.module_ast = module;
+        entry.state = .parsed;
+
+        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+        defer modules_to_process.deinit(allocator);
+        try modules_to_process.append(allocator, entry);
+
+        var processed_idx: usize = 0;
+        while (processed_idx < modules_to_process.items.len) {
+            const mod = modules_to_process.items[processed_idx];
+            processed_idx += 1;
+
+            if (mod.state == .discovered) {
+                const src = parseModuleSource(allocator, arena.allocator(), mod) catch |err| {
+                    if (options.json_output) {
+                        var msg_buf: [256]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "failed to parse module '{s}': {s}", .{ mod.file_path, @errorName(err) }) catch "failed to parse module";
+                        return makeSingleCompileErrorResult(allocator, "module_parse", msg, null, null);
+                    }
+                    return error.TestsFailed;
+                };
+                try module_sources.append(allocator, src);
+            }
+
+            if (mod.module_ast) |mod_ast| {
+                for (mod_ast.imports) |import_decl| {
+                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
+                    if (dep.state == .discovered) {
+                        try modules_to_process.append(allocator, dep);
+                    }
+                }
+            }
+        }
+
+        if (resolver.hasErrors()) {
+            if (options.json_output) {
+                const compile_errors = try allocator.alloc(JsonCompileError, resolver.errors.items.len);
+                var compile_errors_initialized: usize = 0;
+                errdefer {
+                    for (compile_errors[0..compile_errors_initialized]) |compile_error| {
+                        allocator.free(compile_error.message);
+                    }
+                    allocator.free(compile_errors);
+                }
+                for (resolver.errors.items, 0..) |resolve_err, idx| {
+                    compile_errors[idx] = .{
+                        .stage = "module_resolve",
+                        .message = try allocator.dupe(u8, resolve_err.message),
+                    };
+                    compile_errors_initialized += 1;
+                }
+                const empty_test_results = try allocator.alloc(JsonTestSummary, 0);
+                return .{
+                    .tests_discovered = 0,
+                    .tests_passed = 0,
+                    .tests_failed = 0,
+                    .test_results = empty_test_results,
+                    .compile_errors = compile_errors,
+                    .file_failed = true,
+                };
+            }
+            var buf: [512]u8 = undefined;
+            for (resolver.errors.items) |err| {
+                const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return error.TestsFailed;
+        }
+
+        const compilation_order = resolver.getCompilationOrder() catch |err| {
+            if (options.json_output) {
+                if (err == error.CircularImport) {
+                    return makeSingleCompileErrorResult(allocator, "module_resolve", "circular import detected", null, null);
+                }
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "failed to compute compilation order: {s}", .{@errorName(err)}) catch "failed to compute compilation order";
+                return makeSingleCompileErrorResult(allocator, "module_resolve", msg, null, null);
+            }
+            if (err == error.CircularImport) {
+                try stderr.writeAll("Error: circular import detected\n");
+            }
+            return error.TestsFailed;
+        };
+        defer allocator.free(compilation_order);
+
+        checker.setModuleResolver(&resolver);
+
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |mod_ast| {
+                checker.prepareForNewModule();
+                checker.setCurrentModule(mod);
+                checker.checkModule(mod_ast);
+                checker.registerModuleExports(mod) catch {};
+            }
+        }
+
+        if (checker.hasErrors()) {
+            if (options.json_output) {
+                const compile_errors = try allocator.alloc(JsonCompileError, checker.errors.items.len);
+                var compile_errors_initialized: usize = 0;
+                errdefer {
+                    for (compile_errors[0..compile_errors_initialized]) |compile_error| {
+                        allocator.free(compile_error.message);
+                    }
+                    allocator.free(compile_errors);
+                }
+                for (checker.errors.items, 0..) |check_err, idx| {
+                    compile_errors[idx] = .{
+                        .stage = "type_check",
+                        .message = try allocator.dupe(u8, check_err.message),
+                        .line = check_err.span.line,
+                        .column = check_err.span.column,
+                    };
+                    compile_errors_initialized += 1;
+                }
+                const empty_test_results = try allocator.alloc(JsonTestSummary, 0);
+                return .{
+                    .tests_discovered = 0,
+                    .tests_passed = 0,
+                    .tests_failed = 0,
+                    .test_results = empty_test_results,
+                    .compile_errors = compile_errors,
+                    .file_failed = true,
+                };
+            }
+            var buf: [512]u8 = undefined;
+            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
+            try stderr.writeAll(header);
+
+            for (checker.errors.items) |check_err| {
+                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                    check_err.span.line,
+                    check_err.span.column,
+                    check_err.message,
+                }) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return error.TestsFailed;
+        }
+
+        var module_interpreters = std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter){};
+        defer module_interpreters.deinit(allocator);
+
+        var owned_interpreters = std.ArrayListUnmanaged(*Interpreter){};
+        defer {
+            for (owned_interpreters.items) |interp_ptr| {
+                interp_ptr.deinit();
+                allocator.destroy(interp_ptr);
+            }
+            owned_interpreters.deinit(allocator);
+        }
+
+        // Build one interpreter per module in dependency order.
+        for (compilation_order) |mod| {
+            const mod_ast = mod.module_ast orelse continue;
+
+            const interp_ptr = try allocator.create(Interpreter);
+            interp_ptr.* = try Interpreter.init(allocator);
+            try owned_interpreters.append(allocator, interp_ptr);
+
+            bindRuntimeImportsForModule(interp_ptr, mod, &resolver, &module_interpreters) catch |err| {
+                if (options.json_output) {
+                    var msg_buf: [256]u8 = undefined;
+                    const module_name = mod.canonicalName(allocator) catch "<module>";
+                    defer if (!std.mem.eql(u8, module_name, "<module>")) allocator.free(module_name);
+                    const msg = std.fmt.bufPrint(&msg_buf, "Runtime setup error in module '{s}': {s}", .{ module_name, @errorName(err) }) catch "Runtime setup error";
+                    return makeSingleCompileErrorResult(allocator, "runtime_setup", msg, null, null);
+                }
+                var buf: [512]u8 = undefined;
+                const module_name = mod.canonicalName(allocator) catch "<module>";
+                defer if (!std.mem.eql(u8, module_name, "<module>")) allocator.free(module_name);
+                const msg = std.fmt.bufPrint(&buf, "Runtime setup error in module '{s}': {s}\n", .{ module_name, @errorName(err) }) catch "Runtime setup error\n";
+                try stderr.writeAll(msg);
+                return error.TestsFailed;
+            };
+
+            interp_ptr.executeModule(mod_ast) catch |err| {
+                if (options.json_output) {
+                    var msg_buf: [256]u8 = undefined;
+                    const module_name = mod.canonicalName(allocator) catch "<module>";
+                    defer if (!std.mem.eql(u8, module_name, "<module>")) allocator.free(module_name);
+                    const msg = std.fmt.bufPrint(&msg_buf, "Runtime setup error in module '{s}': {s}", .{ module_name, @errorName(err) }) catch "Runtime setup error";
+                    return makeSingleCompileErrorResult(allocator, "runtime_setup", msg, null, null);
+                }
+                var buf: [512]u8 = undefined;
+                const module_name = mod.canonicalName(allocator) catch "<module>";
+                defer if (!std.mem.eql(u8, module_name, "<module>")) allocator.free(module_name);
+                const msg = std.fmt.bufPrint(&buf, "Runtime setup error in module '{s}': {s}\n", .{ module_name, @errorName(err) }) catch "Runtime setup error\n";
+                try stderr.writeAll(msg);
+                return error.TestsFailed;
+            };
+
+            try module_interpreters.put(allocator, mod, interp_ptr);
+        }
+
+        const entry_mod = resolver.entry_module orelse {
+            if (options.json_output) {
+                return makeSingleCompileErrorResult(allocator, "runtime_setup", "missing entry module", null, null);
+            }
+            try stderr.writeAll("Runtime setup error: missing entry module\n");
+            return error.TestsFailed;
+        };
+        const entry_ast = entry_mod.module_ast orelse {
+            if (options.json_output) {
+                return makeSingleCompileErrorResult(allocator, "runtime_setup", "missing entry module AST", null, null);
+            }
+            try stderr.writeAll("Runtime setup error: missing entry module AST\n");
+            return error.TestsFailed;
+        };
+        const entry_interp = module_interpreters.get(entry_mod) orelse {
+            if (options.json_output) {
+                return makeSingleCompileErrorResult(allocator, "runtime_setup", "missing entry interpreter", null, null);
+            }
+            try stderr.writeAll("Runtime setup error: missing entry interpreter\n");
+            return error.TestsFailed;
+        };
+
+        var total_tests: usize = 0;
+        for (entry_ast.declarations) |decl| {
+            if (decl != .test_decl) continue;
+            const test_decl = decl.test_decl;
+            if (options.fn_filter) |fn_name| {
+                if (!std.mem.eql(u8, test_decl.name, fn_name)) continue;
+            }
+            total_tests += 1;
+        }
+
+        if (total_tests == 0) {
+            var buf: [512]u8 = undefined;
+            const msg = if (options.fn_filter) |fn_name|
+                std.fmt.bufPrint(&buf, "No tests matched '{s}' in '{s}'\n", .{ fn_name, path }) catch "No tests matched\n"
+            else
+                std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
+            if (options.emit_output and !options.json_output) {
+                try stdout.writeAll(msg);
+            }
+            if (options.require_tests) {
+                const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
+                try stderr.writeAll(err_msg);
+                return error.TestsFailed;
+            }
+            if (options.strict_tests) {
+                const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
+                try stderr.writeAll(warn_msg);
+            }
+            if (options.emit_output and options.json_output) {
+                try stdout.writeAll("{\"file\":");
+                try writeJsonEscaped(stdout, path);
+                try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0,\"tests\":[]}\n");
+            }
+            return .{
+                .tests_discovered = 0,
+                .tests_passed = 0,
+                .tests_failed = 0,
+                .test_results = try allocator.alloc(JsonTestSummary, 0),
+                .compile_errors = try allocator.alloc(JsonCompileError, 0),
+            };
+        }
+
+        var passed: usize = 0;
+        var failed: usize = 0;
+        var assertion_recorder = AssertionRecorder.init(allocator);
+        defer assertion_recorder.deinit();
+        const record_assertions = options.json_output;
+        if (record_assertions) {
+            interp_mod.setAssertionRecorder(&assertion_recorder);
+        }
+        defer if (record_assertions) interp_mod.setAssertionRecorder(null);
+
+        var test_results = std.ArrayListUnmanaged(JsonTestSummary){};
+        var test_results_transferred = false;
+        defer {
+            if (!test_results_transferred) {
+                for (test_results.items) |test_result| {
+                    allocator.free(test_result.name);
+                    if (test_result.error_name) |error_name| allocator.free(error_name);
+                    if (test_result.source) |test_source| allocator.free(test_source);
+                    for (test_result.assertions) |assertion| {
+                        if (assertion.expected) |expected| allocator.free(expected);
+                        if (assertion.actual) |actual| allocator.free(actual);
+                    }
+                    allocator.free(test_result.assertions);
+                }
+            }
+            test_results.deinit(allocator);
+        }
+
+        var buf: [512]u8 = undefined;
+        if (options.emit_output and !options.json_output) {
+            const start_msg = std.fmt.bufPrint(&buf, "Running {d} test(s)\n", .{total_tests}) catch "Running tests\n";
+            try stdout.writeAll(start_msg);
+        }
+
+        for (entry_ast.declarations) |decl| {
+            if (decl != .test_decl) continue;
+            const test_decl = decl.test_decl;
+            if (options.fn_filter) |fn_name| {
+                if (!std.mem.eql(u8, test_decl.name, fn_name)) continue;
+            }
+
+            if (record_assertions) {
+                const test_source = if (options.include_source) blk: {
+                    if (findFunctionSource(entry_ast, source, test_decl.name)) |function_source| {
+                        break :blk try allocator.dupe(u8, function_source);
+                    }
+                    break :blk null;
+                } else null;
+                errdefer if (test_source) |owned_source| allocator.free(owned_source);
+                assertion_recorder.clear();
+                if (entry_interp.evalBlock(test_decl.body)) |_| {
+                    const assertion_results = try duplicateAssertionRecords(allocator, assertion_recorder.records.items);
+                    const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
+                    if (options.emit_output and !options.json_output) {
+                        try stdout.writeAll(pass_msg);
+                    }
+                    try test_results.append(allocator, .{
+                        .name = try allocator.dupe(u8, test_decl.name),
+                        .passed = true,
+                        .assertions = assertion_results,
+                        .source = test_source,
+                    });
+                    passed += 1;
+                } else |err| {
+                    const assertion_results = try duplicateAssertionRecords(allocator, assertion_recorder.records.items);
+                    const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
+                    if (options.emit_output and !options.json_output) {
+                        try stdout.writeAll(fail_msg);
+                    }
+                    try test_results.append(allocator, .{
+                        .name = try allocator.dupe(u8, test_decl.name),
+                        .passed = false,
+                        .error_name = try allocator.dupe(u8, @errorName(err)),
+                        .assertions = assertion_results,
+                        .source = test_source,
+                    });
+                    failed += 1;
+                }
+            } else {
+                if (entry_interp.evalBlock(test_decl.body)) |_| {
+                    const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
+                    if (options.emit_output) {
+                        try stdout.writeAll(pass_msg);
+                    }
+                    passed += 1;
+                } else |err| {
+                    const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
+                    if (options.emit_output) {
+                        try stdout.writeAll(fail_msg);
+                    }
+                    failed += 1;
+                }
+            }
+        }
+
+        if (options.emit_output and options.json_output) {
+            try stdout.writeAll("{\"file\":");
+            try writeJsonEscaped(stdout, path);
+            try stdout.writeAll(",\"total\":");
+            try writeJsonUsize(stdout, total_tests);
+            try stdout.writeAll(",\"passed\":");
+            try writeJsonUsize(stdout, passed);
+            try stdout.writeAll(",\"failed\":");
+            try writeJsonUsize(stdout, failed);
+            try stdout.writeAll(",\"tests\":[");
+            for (test_results.items, 0..) |test_result, idx| {
+                if (idx > 0) try stdout.writeAll(",");
+                try stdout.writeAll("{\"name\":");
+                try writeJsonEscaped(stdout, test_result.name);
+                try stdout.writeAll(",\"status\":");
+                try writeJsonEscaped(stdout, if (test_result.passed) "PASS" else "FAIL");
+                if (test_result.error_name) |error_name| {
+                    try stdout.writeAll(",\"error\":");
+                    try writeJsonEscaped(stdout, error_name);
+                }
+                if (test_result.source) |test_source| {
+                    try stdout.writeAll(",\"source\":");
+                    try writeJsonEscaped(stdout, test_source);
+                }
+                try stdout.writeAll(",\"assertions\":[");
+                for (test_result.assertions, 0..) |assertion, assertion_idx| {
+                    if (assertion_idx > 0) try stdout.writeAll(",");
+                    try stdout.writeAll("{\"type\":");
+                    try writeJsonEscaped(stdout, assertion.assertion_type);
+                    try stdout.writeAll(",\"passed\":");
+                    try writeJsonBool(stdout, assertion.passed);
+                    if (assertion.expected) |expected| {
+                        try stdout.writeAll(",\"expected\":");
+                        try writeJsonEscaped(stdout, expected);
+                    }
+                    if (assertion.actual) |actual| {
+                        try stdout.writeAll(",\"actual\":");
+                        try writeJsonEscaped(stdout, actual);
+                    }
+                    try stdout.writeAll("}");
+                }
+                try stdout.writeAll("]}");
+            }
+            try stdout.writeAll("],\"errors\":[]}\n");
+        } else if (options.emit_output) {
+            const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
+            try stdout.writeAll(summary);
+        }
+
+        test_results_transferred = true;
+        const owned_test_results = if (record_assertions)
+            try test_results.toOwnedSlice(allocator)
+        else
+            try allocator.alloc(JsonTestSummary, 0);
+        return .{
+            .tests_discovered = total_tests,
+            .tests_passed = passed,
+            .tests_failed = failed,
+            .test_results = owned_test_results,
+            .compile_errors = try allocator.alloc(JsonCompileError, 0),
+        };
+    } else {
+        checker.checkModule(module);
+
+        if (checker.hasErrors()) {
+            if (options.json_output) {
+                const compile_errors = try allocator.alloc(JsonCompileError, checker.errors.items.len);
+                var compile_errors_initialized: usize = 0;
+                errdefer {
+                    for (compile_errors[0..compile_errors_initialized]) |compile_error| {
+                        allocator.free(compile_error.message);
+                    }
+                    allocator.free(compile_errors);
+                }
+                for (checker.errors.items, 0..) |check_err, idx| {
+                    compile_errors[idx] = .{
+                        .stage = "type_check",
+                        .message = try allocator.dupe(u8, check_err.message),
+                        .line = check_err.span.line,
+                        .column = check_err.span.column,
+                    };
+                    compile_errors_initialized += 1;
+                }
+                const empty_test_results = try allocator.alloc(JsonTestSummary, 0);
+                return .{
+                    .tests_discovered = 0,
+                    .tests_passed = 0,
+                    .tests_failed = 0,
+                    .test_results = empty_test_results,
+                    .compile_errors = compile_errors,
+                    .file_failed = true,
+                };
+            }
+            var buf: [512]u8 = undefined;
+            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
+            try stderr.writeAll(header);
+
+            for (checker.errors.items) |check_err| {
+                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                    check_err.span.line,
+                    check_err.span.column,
+                    check_err.message,
+                }) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return error.TestsFailed;
+        }
+
+        var interp = try Interpreter.init(allocator);
+        defer interp.deinit();
+
+        interp.executeModule(module) catch |err| {
+            if (options.json_output) {
+                var msg_buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Runtime setup error: {s}", .{@errorName(err)}) catch "Runtime setup error";
+                return makeSingleCompileErrorResult(allocator, "runtime_setup", msg, null, null);
+            }
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Runtime setup error: {s}\n", .{@errorName(err)}) catch "Runtime setup error\n";
+            try stderr.writeAll(msg);
+            return error.TestsFailed;
+        };
+
+        var total_tests: usize = 0;
+        for (module.declarations) |decl| {
+            if (decl != .test_decl) continue;
+            const test_decl = decl.test_decl;
+            if (options.fn_filter) |fn_name| {
+                if (!std.mem.eql(u8, test_decl.name, fn_name)) continue;
+            }
+            total_tests += 1;
+        }
+
+        if (total_tests == 0) {
+            var buf: [512]u8 = undefined;
+            const msg = if (options.fn_filter) |fn_name|
+                std.fmt.bufPrint(&buf, "No tests matched '{s}' in '{s}'\n", .{ fn_name, path }) catch "No tests matched\n"
+            else
+                std.fmt.bufPrint(&buf, "No tests found in '{s}'\n", .{path}) catch "No tests found\n";
+            if (options.emit_output and !options.json_output) {
+                try stdout.writeAll(msg);
+            }
+            if (options.require_tests) {
+                const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
+                try stderr.writeAll(err_msg);
+                return error.TestsFailed;
+            }
+            if (options.strict_tests) {
+                const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
+                try stderr.writeAll(warn_msg);
+            }
+            if (options.emit_output and options.json_output) {
+                try stdout.writeAll("{\"file\":");
+                try writeJsonEscaped(stdout, path);
+                try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0,\"tests\":[]}\n");
+            }
+            return .{
+                .tests_discovered = 0,
+                .tests_passed = 0,
+                .tests_failed = 0,
+                .test_results = try allocator.alloc(JsonTestSummary, 0),
+                .compile_errors = try allocator.alloc(JsonCompileError, 0),
+            };
+        }
+
+        var passed: usize = 0;
+        var failed: usize = 0;
+        var assertion_recorder = AssertionRecorder.init(allocator);
+        defer assertion_recorder.deinit();
+        const record_assertions = options.json_output;
+        if (record_assertions) {
+            interp_mod.setAssertionRecorder(&assertion_recorder);
+        }
+        defer if (record_assertions) interp_mod.setAssertionRecorder(null);
+
+        var test_results = std.ArrayListUnmanaged(JsonTestSummary){};
+        var test_results_transferred = false;
+        defer {
+            if (!test_results_transferred) {
+                for (test_results.items) |test_result| {
+                    allocator.free(test_result.name);
+                    if (test_result.error_name) |error_name| allocator.free(error_name);
+                    if (test_result.source) |test_source| allocator.free(test_source);
+                    for (test_result.assertions) |assertion| {
+                        if (assertion.expected) |expected| allocator.free(expected);
+                        if (assertion.actual) |actual| allocator.free(actual);
+                    }
+                    allocator.free(test_result.assertions);
+                }
+            }
+            test_results.deinit(allocator);
+        }
+
+        var buf: [512]u8 = undefined;
+
+        if (options.emit_output and !options.json_output) {
+            const start_msg = std.fmt.bufPrint(&buf, "Running {d} test(s)\n", .{total_tests}) catch "Running tests\n";
+            try stdout.writeAll(start_msg);
+        }
+
+        for (module.declarations) |decl| {
+            if (decl != .test_decl) continue;
+            const test_decl = decl.test_decl;
+            if (options.fn_filter) |fn_name| {
+                if (!std.mem.eql(u8, test_decl.name, fn_name)) continue;
+            }
+
+            if (record_assertions) {
+                const test_source = if (options.include_source) blk: {
+                    if (findFunctionSource(module, source, test_decl.name)) |function_source| {
+                        break :blk try allocator.dupe(u8, function_source);
+                    }
+                    break :blk null;
+                } else null;
+                errdefer if (test_source) |owned_source| allocator.free(owned_source);
+                assertion_recorder.clear();
+                if (interp.evalBlock(test_decl.body)) |_| {
+                    const assertion_results = try duplicateAssertionRecords(allocator, assertion_recorder.records.items);
+                    const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
+                    if (options.emit_output and !options.json_output) {
+                        try stdout.writeAll(pass_msg);
+                    }
+                    try test_results.append(allocator, .{
+                        .name = try allocator.dupe(u8, test_decl.name),
+                        .passed = true,
+                        .assertions = assertion_results,
+                        .source = test_source,
+                    });
+                    passed += 1;
+                } else |err| {
+                    const assertion_results = try duplicateAssertionRecords(allocator, assertion_recorder.records.items);
+                    const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
+                    if (options.emit_output and !options.json_output) {
+                        try stdout.writeAll(fail_msg);
+                    }
+                    try test_results.append(allocator, .{
+                        .name = try allocator.dupe(u8, test_decl.name),
+                        .passed = false,
+                        .error_name = try allocator.dupe(u8, @errorName(err)),
+                        .assertions = assertion_results,
+                        .source = test_source,
+                    });
+                    failed += 1;
+                }
+            } else {
+                if (interp.evalBlock(test_decl.body)) |_| {
+                    const pass_msg = std.fmt.bufPrint(&buf, "  PASS {s}\n", .{test_decl.name}) catch "  PASS\n";
+                    if (options.emit_output) {
+                        try stdout.writeAll(pass_msg);
+                    }
+                    passed += 1;
+                } else |err| {
+                    const fail_msg = std.fmt.bufPrint(&buf, "  FAIL {s}: {s}\n", .{ test_decl.name, @errorName(err) }) catch "  FAIL\n";
+                    if (options.emit_output) {
+                        try stdout.writeAll(fail_msg);
+                    }
+                    failed += 1;
+                }
+            }
+        }
+
+        if (options.emit_output and options.json_output) {
+            try stdout.writeAll("{\"file\":");
+            try writeJsonEscaped(stdout, path);
+            try stdout.writeAll(",\"total\":");
+            try writeJsonUsize(stdout, total_tests);
+            try stdout.writeAll(",\"passed\":");
+            try writeJsonUsize(stdout, passed);
+            try stdout.writeAll(",\"failed\":");
+            try writeJsonUsize(stdout, failed);
+            try stdout.writeAll(",\"tests\":[");
+            for (test_results.items, 0..) |test_result, idx| {
+                if (idx > 0) try stdout.writeAll(",");
+                try stdout.writeAll("{\"name\":");
+                try writeJsonEscaped(stdout, test_result.name);
+                try stdout.writeAll(",\"status\":");
+                try writeJsonEscaped(stdout, if (test_result.passed) "PASS" else "FAIL");
+                if (test_result.error_name) |error_name| {
+                    try stdout.writeAll(",\"error\":");
+                    try writeJsonEscaped(stdout, error_name);
+                }
+                if (test_result.source) |test_source| {
+                    try stdout.writeAll(",\"source\":");
+                    try writeJsonEscaped(stdout, test_source);
+                }
+                try stdout.writeAll(",\"assertions\":[");
+                for (test_result.assertions, 0..) |assertion, assertion_idx| {
+                    if (assertion_idx > 0) try stdout.writeAll(",");
+                    try stdout.writeAll("{\"type\":");
+                    try writeJsonEscaped(stdout, assertion.assertion_type);
+                    try stdout.writeAll(",\"passed\":");
+                    try writeJsonBool(stdout, assertion.passed);
+                    if (assertion.expected) |expected| {
+                        try stdout.writeAll(",\"expected\":");
+                        try writeJsonEscaped(stdout, expected);
+                    }
+                    if (assertion.actual) |actual| {
+                        try stdout.writeAll(",\"actual\":");
+                        try writeJsonEscaped(stdout, actual);
+                    }
+                    try stdout.writeAll("}");
+                }
+                try stdout.writeAll("]}");
+            }
+                try stdout.writeAll("],\"errors\":[]}\n");
+        } else if (options.emit_output) {
+            const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
+            try stdout.writeAll(summary);
+        }
+
+        test_results_transferred = true;
+        const owned_test_results = if (record_assertions)
+            try test_results.toOwnedSlice(allocator)
+        else
+            try allocator.alloc(JsonTestSummary, 0);
+        return .{
+            .tests_discovered = total_tests,
+            .tests_passed = passed,
+            .tests_failed = failed,
+            .test_results = owned_test_results,
+            .compile_errors = try allocator.alloc(JsonCompileError, 0),
+        };
     }
 }
 
@@ -2226,7 +4011,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             const msg = std.fmt.bufPrint(&buf, "Runtime error: {s}\n", .{@errorName(err)}) catch "Runtime error\n";
             try stderr.writeAll(msg);
         }
-        return;
+        std.process.exit(1);
     };
 
     // Look for main function and call it
@@ -2256,6 +4041,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
                     const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
                     try stderr.writeAll(msg);
                 }
+                std.process.exit(1);
             };
         }
     }
@@ -2745,11 +4531,22 @@ fn printUsage() !void {
         \\  run [file]           Build and run project or file
         \\  update               Regenerate klar.lock from klar.json
         \\  check <file>         Type check a file
+        \\    --dump-ownership   Include ownership analysis details
+        \\    --partial          Parse with recovery and type-check partial declarations
+        \\    --scope-at L:C     Print in-scope bindings at line/column
+        \\    --expected-type-at L:C  Print expected type at line/column
+        \\    --scope-json       Emit scope output as JSON (with --scope-at)
         \\  repl                 Interactive REPL (Read-Eval-Print Loop)
-        \\  test                 Run tests (not implemented)
+        \\  test <path>          Run inline test blocks in a file or directory
+        \\    --fn <name>        Run only tests matching <name>
+        \\    --strict-tests     Warn when no tests are found
+        \\    --require-tests    Fail when no tests are found
+        \\    --json             Emit machine-readable JSON summary
+        \\    --include-source   Include matched function source in JSON test results
         \\  fmt [file|dir]       Format source files
         \\    -i                  Format files in-place
         \\    --check             Check formatting (exit 1 if unformatted)
+        \\  lsp                  Run LSP JSON-RPC transport over stdio
         \\  help                 Show this help
         \\  version              Show version
         \\  tokenize <file>      Tokenize a file (debug)
@@ -2842,4 +4639,5 @@ test {
     _ = @import("ir/mod.zig");
     _ = @import("opt/mod.zig");
     _ = @import("repl.zig");
+    _ = @import("lsp.zig");
 }

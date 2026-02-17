@@ -131,6 +131,11 @@ klar build hello.kl --emit-asm   # Creates hello.s
 
 # Cross-compilation
 klar build hello.kl --target x86_64-linux-gnu
+
+# WebAssembly
+klar build hello.kl --target wasm          # Freestanding wasm32
+klar build hello.kl --target wasi          # WASI target
+klar build hello.kl --target wasm -c       # Object file only
 ```
 
 **Target Triples:**
@@ -144,6 +149,10 @@ klar build hello.kl --target x86_64-linux-gnu
 | `x86_64-windows-msvc` | Windows on x86_64 |
 | `aarch64-none-elf` | Bare-metal ARM64 (ELF) |
 | `aarch64-none-eabi` | Bare-metal ARM64 (EABI) |
+| `wasm32-unknown-unknown` | WebAssembly (freestanding) |
+| `wasm32-unknown-wasi` | WebAssembly (WASI) |
+
+**Shorthand targets:** `--target wasm` expands to `wasm32-unknown-unknown`, `--target wasi` expands to `wasm32-unknown-wasi`.
 
 **Bare-Metal Options:**
 

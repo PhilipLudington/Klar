@@ -188,7 +188,7 @@ impl Point {
         return sqrt(self.x * self.x + self.y * self.y)
     }
     
-    fn translate(self: inout Point, dx: f64, dy: f64) {
+    fn translate(self: inout Point, dx: f64, dy: f64) -> void {
         self.x = self.x + dx
         self.y = self.y + dy
     }

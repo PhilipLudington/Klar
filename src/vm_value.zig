@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const chunk_mod = @import("chunk.zig");
 const Function = chunk_mod.Function;
 const gc_mod = @import("gc.zig");
+const async_state = @import("runtime/async_state.zig");
 pub const ObjHeader = gc_mod.ObjHeader;
 pub const ObjType = gc_mod.ObjType;
 pub const GC = gc_mod.GC;
@@ -33,6 +34,7 @@ pub const Value = union(enum) {
     upvalue: *ObjUpvalue,
     optional: *ObjOptional,
     range: *ObjRange,
+    future: FutureValue,
 
     // -------------------------------------------------------------------------
     // Value predicates
@@ -49,6 +51,7 @@ pub const Value = union(enum) {
         return switch (self) {
             .bool_ => |b| b,
             .optional => |opt| opt.value != null,
+            .future => |future| future.state == .completed,
             .int => |i| i != 0,
             .void_ => false,
             else => true,
@@ -124,6 +127,13 @@ pub const Value = union(enum) {
             .native => |n| n == other.native,
             .upvalue => |u| u == other.upvalue,
             .range => |r| r.start == other.range.start and r.end == other.range.end and r.inclusive == other.range.inclusive,
+            .future => |f| blk: {
+                const of = other.future;
+                if (f.task_id != of.task_id or f.state != of.state) break :blk false;
+                if (f.value == null and of.value == null) break :blk true;
+                if (f.value == null or of.value == null) break :blk false;
+                break :blk f.value.?.*.eql(of.value.?.*);
+            },
         };
     }
 
@@ -639,6 +649,21 @@ pub const ObjRange = struct {
     }
 };
 
+pub const TaskId = u64;
+
+pub const FutureState = enum(u8) {
+    pending = async_state.pending_tag,
+    completed = async_state.completed_tag,
+    failed = async_state.failed_tag,
+    cancelled = async_state.cancelled_tag,
+};
+
+pub const FutureValue = struct {
+    task_id: TaskId,
+    state: FutureState,
+    value: ?*Value = null,
+};
+
 // ============================================================================
 // Runtime Errors
 // ============================================================================
@@ -651,6 +676,7 @@ pub const RuntimeError = error{
     // Type errors
     TypeError,
     InvalidCast,
+    InvalidOperation,
 
     // Variable errors
     UndefinedVariable,
@@ -877,4 +903,26 @@ test "Range iteration" {
         count += 1;
     }
     try testing.expectEqual(@as(usize, 4), count);
+}
+
+test "Future value semantics" {
+    const testing = std.testing;
+
+    const pending = Value{ .future = .{ .task_id = 10, .state = .pending, .value = null } };
+    const completed = Value{ .future = .{ .task_id = 10, .state = .completed, .value = null } };
+    const cancelled = Value{ .future = .{ .task_id = 11, .state = .cancelled, .value = null } };
+
+    try testing.expect(!pending.isTruthy());
+    try testing.expect(completed.isTruthy());
+    try testing.expect(!cancelled.isTruthy());
+    try testing.expect(!pending.eql(completed));
+    try testing.expect(completed.eql(Value{ .future = .{ .task_id = 10, .state = .completed, .value = null } }));
+}
+
+test "VM FutureState tags are stable internal mapping" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(u8, 0), @intFromEnum(FutureState.pending));
+    try testing.expectEqual(@as(u8, 1), @intFromEnum(FutureState.completed));
+    try testing.expectEqual(@as(u8, 2), @intFromEnum(FutureState.failed));
+    try testing.expectEqual(@as(u8, 3), @intFromEnum(FutureState.cancelled));
 }

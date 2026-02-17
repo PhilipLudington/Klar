@@ -28,10 +28,10 @@ fn main() -> i32 {
 
 ### Void Functions
 
-Functions that don't return a value use implicit `void` return:
+Functions that don't return a value use explicit `-> void`:
 
 ```klar
-fn greet(name: string) {
+fn greet(name: string) -> void {
     println("Hello, {name}!")
 }
 
@@ -64,6 +64,28 @@ fn absolute(n: i32) -> i32 {
         return -n
     }
     return n
+}
+```
+
+## Async Functions
+
+Use `async fn` to declare asynchronous functions. `await` is only valid inside `async fn` bodies and requires a `Future[T]` value.
+`Future[T]` is a runtime-internal type: its memory layout is not a stable ABI and should not be used for FFI signatures or unsafe layout assumptions.
+For internal backend conventions, see `docs/design/async-runtime-internal.md`.
+
+```klar
+async fn fetch() -> Future[i32] {
+    return 21
+}
+
+async fn compute() -> Future[i32] {
+    return await fetch() + await fetch()
+}
+
+fn main() -> i32 {
+    let task: Future[i32] = compute()
+    let _unused: Future[i32] = task
+    return 0
 }
 ```
 
@@ -220,7 +242,7 @@ fn main(args: [String]) -> i32 {
 }
 
 // Void main (implicitly returns 0)
-fn main() {
+fn main() -> void {
     println("Hello!")
 }
 ```
@@ -252,7 +274,7 @@ fn length(ref arr: [i32]) -> i32 {
 Use `inout` for mutable references:
 
 ```klar
-fn double_in_place(inout n: i32) {
+fn double_in_place(inout n: i32) -> void {
     n = n * 2
 }
 

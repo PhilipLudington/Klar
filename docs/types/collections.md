@@ -268,7 +268,7 @@ for i: i64 in 0.as[i64]..100.as[i64] {
 Collections allocate memory on the heap. Call `drop()` when done:
 
 ```klar
-fn process() {
+fn process() -> void {
     var list: List[i32] = List.new[i32]()
     list.push(1)
     list.push(2)
@@ -339,7 +339,7 @@ impl Graph {
         return Graph { edges: Map.new[i32, List[i32]]() }
     }
 
-    fn add_edge(inout self: Graph, from: i32, to: i32) {
+    fn add_edge(inout self: Graph, from: i32, to: i32) -> void {
         if not self.edges.contains_key(from) {
             self.edges.insert(from, List.new[i32]())
         }
@@ -347,7 +347,7 @@ impl Graph {
         neighbors.push(to)
     }
 
-    fn drop(inout self: Graph) {
+    fn drop(inout self: Graph) -> void {
         // Drop all neighbor lists, then the map
         for (_, neighbors) in self.edges {
             neighbors.drop()

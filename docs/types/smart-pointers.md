@@ -49,7 +49,7 @@ let count2: i32 = rc.ref_count()  // 2
 When an `Rc` is dropped, the reference count decreases. The data is freed when the count reaches zero:
 
 ```klar
-fn example() {
+fn example() -> void {
     let rc1: Rc[i32] = Rc.new(42)
     {
         let rc2: Rc[i32] = rc1.clone()
@@ -163,7 +163,7 @@ impl Counter {
     }
 
     // Note: takes `ref self` (immutable) but can still modify count
-    fn increment(ref self: Counter) {
+    fn increment(ref self: Counter) -> void {
         let current: i32 = self.count.get()
         self.count.set(current + 1)
     }

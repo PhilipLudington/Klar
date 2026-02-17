@@ -12,17 +12,31 @@ const Interpreter = @import("interpreter.zig").Interpreter;
 const values = @import("values.zig");
 const Value = values.Value;
 
-// Zig 0.15 IO helpers
+const builtin = @import("builtin");
+
+// Cross-platform IO helpers
 fn getStdIn() std.fs.File {
-    return .{ .handle = std.posix.STDIN_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDIN_FILENO };
+    }
 }
 
 fn getStdOut() std.fs.File {
-    return .{ .handle = std.posix.STDOUT_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDOUT_FILENO };
+    }
 }
 
 fn getStdErr() std.fs.File {
-    return .{ .handle = std.posix.STDERR_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDERR_FILENO };
+    }
 }
 
 /// Read a line from a file, returning null on EOF

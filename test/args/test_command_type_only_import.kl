@@ -1,0 +1,14 @@
+import test_command_type_only_import_helper.{ Counter }
+
+fn use_type(c: Counter) -> i32 {
+    return c.value
+}
+
+fn target() -> i32 {
+    let c: Counter = Counter { value: 42 }
+    return use_type(c)
+}
+
+test target {
+    assert_eq(target(), 42)
+}

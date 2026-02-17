@@ -694,6 +694,7 @@ pub const Lowerer = struct {
         return switch (un.op) {
             .negate => self.builder.buildNeg(operand) catch return LowerError.OutOfMemory,
             .not => self.builder.buildNot(operand) catch return LowerError.OutOfMemory,
+            .await_ => return LowerError.UnsupportedFeature,
             .ref => self.builder.buildBorrow(operand) catch return LowerError.OutOfMemory,
             .ref_mut => self.builder.buildBorrowMut(operand) catch return LowerError.OutOfMemory,
             .deref => {

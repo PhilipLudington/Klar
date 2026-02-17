@@ -1,0 +1,70 @@
+{
+  "name": "klar-vscode",
+  "displayName": "Klar",
+  "description": "Klar language support with syntax highlighting and LSP integration.",
+  "version": "0.1.0",
+  "publisher": "klar-lang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:klar"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "klar",
+        "aliases": [
+          "Klar",
+          "klar"
+        ],
+        "extensions": [
+          ".kl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "klar",
+        "scopeName": "source.klar",
+        "path": "./syntaxes/klar.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Klar",
+      "properties": {
+        "klar.lsp.path": {
+          "type": "string",
+          "default": "klar",
+          "description": "Path to the Klar executable used to start the language server."
+        },
+        "klar.lsp.args": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional arguments appended after `klar lsp` when starting the server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

@@ -1,0 +1,25 @@
+// Test await result used with struct method call
+
+struct Wrapper {
+    value: i32,
+}
+
+impl Wrapper {
+    fn get(self: ref Wrapper) -> i32 {
+        return self.value
+    }
+}
+
+async fn fetch() -> Future[Wrapper] {
+    return Wrapper { value: 42 }
+}
+
+async fn process() -> Future[i32] {
+    let w: Wrapper = await fetch()
+    return w.get()
+}
+
+fn main() -> i32 {
+    let _f: Future[i32] = process()
+    return 0
+}

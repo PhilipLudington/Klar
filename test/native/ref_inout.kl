@@ -7,12 +7,12 @@ fn read_value(x: ref i32) -> i32 {
 }
 
 // Function taking a mutable reference (can modify)
-fn increment(x: inout i32) {
+fn increment(x: inout i32) -> void {
     *x = *x + 1
 }
 
 // Function taking a mutable reference and returning through it
-fn double(x: inout i32) {
+fn double(x: inout i32) -> void {
     *x = *x * 2
 }
 

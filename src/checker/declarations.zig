@@ -21,6 +21,7 @@ const StructMethod = traits_mod.StructMethod;
 pub fn checkDecl(tc: anytype, decl: ast.Decl) void {
     switch (decl) {
         .function => |f| checkFunction(tc, f),
+        .test_decl => |t| checkTestDecl(tc, t),
         .struct_decl => |s| checkStruct(tc, s),
         .enum_decl => |e| checkEnum(tc, e),
         .trait_decl => |t| checkTrait(tc, t),
@@ -32,6 +33,20 @@ pub fn checkDecl(tc: anytype, decl: ast.Decl) void {
         .extern_type_decl => |e| checkExternType(tc, e),
         .extern_block => |b| checkExternBlock(tc, b),
     }
+}
+
+fn checkTestDecl(tc: anytype, test_decl: *ast.TestDecl) void {
+    const referenced = tc.current_scope.lookup(test_decl.name) orelse {
+        tc.addError(.undefined_function, test_decl.span, "test '{s}' references missing function '{s}'", .{ test_decl.name, test_decl.name });
+        return;
+    };
+    if (referenced.kind != .function) {
+        tc.addError(.undefined_function, test_decl.span, "test '{s}' references '{s}', which is not a function", .{ test_decl.name, test_decl.name });
+        return;
+    }
+
+    // Check test body in its own block scope.
+    _ = tc.checkBlock(test_decl.body);
 }
 
 fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
@@ -61,7 +76,31 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
     else
         tc.type_builder.voidType();
 
-    const func_type = tc.type_builder.functionTypeWithFlags(param_types.items, return_type, comptime_params, func.is_unsafe) catch {
+    var signature_return_type = return_type;
+    var body_return_type = return_type;
+    if (func.is_async) {
+        if (func.return_type) |rt| {
+            if (tc.asyncReturnInnerTypeExpr(rt)) |inner_expr| {
+                signature_return_type = tc.resolveTypeExpr(rt) catch tc.type_builder.unknownType();
+                body_return_type = tc.resolveTypeExpr(inner_expr) catch tc.type_builder.unknownType();
+            } else {
+                tc.addError(.invalid_operation, rt.span(), "async function return type must be Future[T]", .{});
+                signature_return_type = tc.type_builder.unknownType();
+                body_return_type = tc.type_builder.unknownType();
+            }
+        } else {
+            tc.addError(.invalid_operation, func.span, "async function return type must be Future[T]", .{});
+            signature_return_type = tc.type_builder.unknownType();
+            body_return_type = tc.type_builder.unknownType();
+        }
+    } else if (tc.futureInnerType(return_type) != null) {
+        const error_span = if (func.return_type) |rt| rt.span() else func.span;
+        tc.addError(.invalid_operation, error_span, "non-async function return type cannot be Future[T]; declare function as async", .{});
+        signature_return_type = tc.type_builder.unknownType();
+        body_return_type = tc.type_builder.unknownType();
+    }
+
+    const func_type = tc.type_builder.functionTypeWithFlags(param_types.items, signature_return_type, comptime_params, func.is_unsafe) catch {
         return;
     };
 
@@ -84,8 +123,8 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
             }
         }
         // Return type must be i32 or void
-        const is_i32 = return_type == .primitive and return_type.primitive == .i32_;
-        const is_void = return_type == .void_;
+        const is_i32 = signature_return_type == .primitive and signature_return_type.primitive == .i32_;
+        const is_void = signature_return_type == .void_;
         if (!is_i32 and !is_void) {
             const error_span = if (func.return_type) |rt| rt.span() else func.span;
             tc.addError(.type_mismatch, error_span, "main() must return i32 or void", .{});
@@ -123,7 +162,7 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
             }) catch {};
         }
 
-        tc.current_return_type = return_type;
+        tc.current_return_type = body_return_type;
         defer tc.current_return_type = null;
 
         // For comptime functions, set the flag so nested comptime calls
@@ -140,6 +179,10 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
             tc.in_unsafe_context = true;
         }
         defer tc.in_unsafe_context = was_unsafe;
+
+        const was_async_context = tc.current_async_context;
+        tc.current_async_context = func.is_async;
+        defer tc.current_async_context = was_async_context;
 
         _ = tc.checkBlock(body);
     }
@@ -473,6 +516,11 @@ fn checkTrait(tc: anytype, trait_decl: *ast.TraitDecl) void {
     defer methods.deinit(tc.allocator);
 
     for (trait_decl.methods) |method| {
+        if (method.is_async) {
+            tc.addError(.invalid_operation, method.span, "async trait methods are not yet supported", .{});
+            continue;
+        }
+
         // Build parameter types for signature
         var sig_params: std.ArrayListUnmanaged(Type) = .{};
         defer sig_params.deinit(tc.allocator);
@@ -665,6 +713,11 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
     for (impl_decl.methods) |*method_decl_const| {
         // Need to cast to mutable pointer for registration
         const method_decl = @constCast(method_decl_const);
+
+        if (method_decl.is_async) {
+            tc.addError(.invalid_operation, method_decl.span, "async methods are not yet supported", .{});
+            continue;
+        }
 
         // Determine if this method has 'self' as first parameter
         var has_self = false;

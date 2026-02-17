@@ -38,6 +38,7 @@ pub const modules = @import("modules.zig");
 pub const TypeChecker = checker.TypeChecker;
 pub const CheckError = checker.CheckError;
 pub const Symbol = checker.Symbol;
+pub const ScopeEntry = checker.ScopeEntry;
 pub const Scope = checker.Scope;
 pub const TypeEnv = checker.TypeEnv;
 

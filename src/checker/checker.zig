@@ -123,6 +123,8 @@ pub const Symbol = struct {
     /// For imported symbols with aliases, stores the original name.
     /// Used by codegen to find the correct LLVM function.
     original_name: ?[]const u8 = null,
+    /// For namespace imports, points to the imported module info.
+    module_ref: ?*ModuleInfo = null,
 
     pub const Kind = enum {
         variable,
@@ -133,6 +135,15 @@ pub const Symbol = struct {
         module,
         constant,
     };
+};
+
+/// A symbol visible at a specific cursor position.
+pub const ScopeEntry = struct {
+    name: []const u8,
+    type_: Type,
+    kind: Symbol.Kind,
+    mutable: bool,
+    span: Span,
 };
 
 pub const Scope = struct {
@@ -257,6 +268,9 @@ pub const TypeChecker = struct {
     monomorphized_functions: std.StringHashMapUnmanaged(MonomorphizedFunction),
     /// Storage for generic function declarations (needed for codegen monomorphization).
     generic_functions: std.StringHashMapUnmanaged(*ast.FunctionDecl),
+    /// Set of async function names discovered during signature checking.
+    /// Used for await operand validation.
+    async_function_names: std.StringHashMapUnmanaged(void),
     /// Maps call expression pointers to resolved mangled function names.
     /// Used by codegen to emit calls to monomorphized functions.
     call_resolutions: std.AutoHashMapUnmanaged(*ast.Call, []const u8),
@@ -375,10 +389,16 @@ pub const TypeChecker = struct {
     /// Tracks whether we're inside an unsafe context (unsafe block or unsafe fn body).
     /// When true, unsafe operations like calling extern functions are allowed.
     in_unsafe_context: bool,
+    /// Tracks whether we're currently type-checking inside an async function body.
+    current_async_context: bool,
 
     /// Maps debug() call AST nodes to the argument type.
     /// Used by codegen to emit type-specific formatting code.
     debug_call_types: std.AutoHashMapUnmanaged(*ast.Call, Type),
+
+    /// When true, check top-level test declarations in modules.
+    /// Disabled for normal run/build flows so test-only failures are skipped.
+    check_test_decls: bool,
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -403,6 +423,7 @@ pub const TypeChecker = struct {
             .type_param_scopes = .{},
             .monomorphized_functions = .{},
             .generic_functions = .{},
+            .async_function_names = .{},
             .call_resolutions = .{},
             .monomorphized_structs = .{},
             .monomorphized_enums = .{},
@@ -438,10 +459,16 @@ pub const TypeChecker = struct {
             .error_conversions = .{},
             .expected_type = null,
             .in_unsafe_context = false,
+            .current_async_context = false,
             .debug_call_types = .{},
+            .check_test_decls = false,
         };
         checker.initBuiltins() catch @panic("Failed to initialize builtin types");
         return checker;
+    }
+
+    pub fn setTestMode(self: *TypeChecker, enabled: bool) void {
+        self.check_test_decls = enabled;
     }
 
     pub fn deinit(self: *TypeChecker) void {
@@ -473,6 +500,7 @@ pub const TypeChecker = struct {
         self.monomorphized_functions.deinit(self.allocator);
 
         self.generic_functions.deinit(self.allocator);
+        self.async_function_names.deinit(self.allocator);
         self.call_resolutions.deinit(self.allocator);
 
         // Clean up monomorphized structs
@@ -776,6 +804,53 @@ pub const TypeChecker = struct {
         try self.current_scope.define(.{
             .name = "assert_eq",
             .type_ = assert_eq_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        const assert_ne_type = try self.type_builder.functionType(&.{ self.type_builder.i32Type(), self.type_builder.i32Type() }, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_ne",
+            .type_ = assert_ne_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        const result_i32_i32 = try self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.i32Type());
+        const assert_ok_type = try self.type_builder.functionType(&.{result_i32_i32}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_ok",
+            .type_ = assert_ok_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        const assert_err_type = try self.type_builder.functionType(&.{result_i32_i32}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_err",
+            .type_ = assert_err_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        const optional_i32 = try self.type_builder.optionalType(self.type_builder.i32Type());
+        const assert_some_type = try self.type_builder.functionType(&.{optional_i32}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_some",
+            .type_ = assert_some_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        const assert_none_type = try self.type_builder.functionType(&.{optional_i32}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "assert_none",
+            .type_ = assert_none_type,
             .kind = .function,
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
@@ -2304,6 +2379,618 @@ pub const TypeChecker = struct {
         return type_resolution.resolveTypeExpr(self, type_expr);
     }
 
+    fn spanContainsOffset(span: Span, offset: usize) bool {
+        return offset >= span.start and offset <= span.end;
+    }
+
+    fn appendFunctionParamsToLocalScope(self: *TypeChecker, params: []const ast.FunctionParam, out: *std.ArrayListUnmanaged(Symbol)) !void {
+        for (params) |param| {
+            const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
+            try out.append(self.allocator, .{
+                .name = param.name,
+                .type_ = param_type,
+                .kind = .parameter,
+                .mutable = false,
+                .span = param.span,
+            });
+        }
+    }
+
+    fn appendPatternBindingsToLocalScope(self: *TypeChecker, pattern: ast.Pattern, out: *std.ArrayListUnmanaged(Symbol)) !void {
+        switch (pattern) {
+            .binding => |binding| {
+                const binding_type = if (binding.type_annotation) |type_expr|
+                    self.resolveTypeExpr(type_expr) catch self.type_builder.unknownType()
+                else
+                    self.type_builder.unknownType();
+                try out.append(self.allocator, .{
+                    .name = binding.name,
+                    .type_ = binding_type,
+                    .kind = .variable,
+                    .mutable = binding.mutable,
+                    .span = binding.span,
+                });
+            },
+            .variant => |variant| {
+                if (variant.payload) |payload| {
+                    try self.appendPatternBindingsToLocalScope(payload, out);
+                }
+            },
+            .struct_pattern => |struct_pattern| {
+                for (struct_pattern.fields) |field| {
+                    if (field.pattern) |field_pattern| {
+                        try self.appendPatternBindingsToLocalScope(field_pattern, out);
+                    } else {
+                        try out.append(self.allocator, .{
+                            .name = field.name,
+                            .type_ = self.type_builder.unknownType(),
+                            .kind = .variable,
+                            .mutable = false,
+                            .span = field.span,
+                        });
+                    }
+                }
+            },
+            .tuple_pattern => |tuple_pattern| {
+                for (tuple_pattern.elements) |elem| {
+                    try self.appendPatternBindingsToLocalScope(elem, out);
+                }
+            },
+            .or_pattern => |or_pattern| {
+                // Any alternative introduces the same binding set; use the first one.
+                if (or_pattern.alternatives.len > 0) {
+                    try self.appendPatternBindingsToLocalScope(or_pattern.alternatives[0], out);
+                }
+            },
+            .guarded => |guarded| try self.appendPatternBindingsToLocalScope(guarded.pattern, out),
+            else => {},
+        }
+    }
+
+    fn collectBlockSymbolsAtCursor(self: *TypeChecker, block: *ast.Block, cursor_offset: usize, out: *std.ArrayListUnmanaged(Symbol)) !void {
+        if (!spanContainsOffset(block.span, cursor_offset)) return;
+
+        for (block.statements) |stmt| {
+            const stmt_span = stmt.span();
+
+            if (cursor_offset < stmt_span.start) break;
+
+            if (stmt == .let_decl) {
+                const let_decl = stmt.let_decl;
+                if (cursor_offset >= let_decl.span.end) {
+                    const binding_type = self.resolveTypeExpr(let_decl.type_) catch self.type_builder.unknownType();
+                    try out.append(self.allocator, .{
+                        .name = let_decl.name,
+                        .type_ = binding_type,
+                        .kind = .variable,
+                        .mutable = false,
+                        .span = let_decl.span,
+                    });
+                }
+            } else if (stmt == .var_decl) {
+                const var_decl = stmt.var_decl;
+                if (cursor_offset >= var_decl.span.end) {
+                    const binding_type = self.resolveTypeExpr(var_decl.type_) catch self.type_builder.unknownType();
+                    try out.append(self.allocator, .{
+                        .name = var_decl.name,
+                        .type_ = binding_type,
+                        .kind = .variable,
+                        .mutable = true,
+                        .span = var_decl.span,
+                    });
+                }
+            }
+
+            if (!spanContainsOffset(stmt_span, cursor_offset)) continue;
+
+            switch (stmt) {
+                .for_loop => |for_loop| {
+                    if (spanContainsOffset(for_loop.body.span, cursor_offset)) {
+                        try self.appendPatternBindingsToLocalScope(for_loop.pattern, out);
+                        try self.collectBlockSymbolsAtCursor(for_loop.body, cursor_offset, out);
+                    }
+                },
+                .while_loop => |while_loop| {
+                    if (spanContainsOffset(while_loop.body.span, cursor_offset)) {
+                        try self.collectBlockSymbolsAtCursor(while_loop.body, cursor_offset, out);
+                    }
+                },
+                .loop_stmt => |loop_stmt| {
+                    if (spanContainsOffset(loop_stmt.body.span, cursor_offset)) {
+                        try self.collectBlockSymbolsAtCursor(loop_stmt.body, cursor_offset, out);
+                    }
+                },
+                .if_stmt => |if_stmt| {
+                    if (spanContainsOffset(if_stmt.then_branch.span, cursor_offset)) {
+                        try self.collectBlockSymbolsAtCursor(if_stmt.then_branch, cursor_offset, out);
+                    } else if (if_stmt.else_branch) |else_branch| {
+                        switch (else_branch.*) {
+                            .block => |else_block| {
+                                if (spanContainsOffset(else_block.span, cursor_offset)) {
+                                    try self.collectBlockSymbolsAtCursor(else_block, cursor_offset, out);
+                                }
+                            },
+                            .if_stmt => |else_if_stmt| {
+                                const synthetic_stmt = ast.Stmt{ .if_stmt = else_if_stmt };
+                                if (spanContainsOffset(synthetic_stmt.span(), cursor_offset)) {
+                                    var nested = ast.Block{
+                                        .statements = &.{synthetic_stmt},
+                                        .final_expr = null,
+                                        .span = synthetic_stmt.span(),
+                                    };
+                                    try self.collectBlockSymbolsAtCursor(&nested, cursor_offset, out);
+                                }
+                            },
+                        }
+                    }
+                },
+                .match_stmt => |match_stmt| {
+                    for (match_stmt.arms) |arm| {
+                        if (!spanContainsOffset(arm.span, cursor_offset)) continue;
+                        try self.appendPatternBindingsToLocalScope(arm.pattern, out);
+                        if (spanContainsOffset(arm.body.span, cursor_offset)) {
+                            try self.collectBlockSymbolsAtCursor(arm.body, cursor_offset, out);
+                        }
+                        break;
+                    }
+                },
+                else => {},
+            }
+
+            // Cursor is inside this statement; later statements are out of scope.
+            return;
+        }
+    }
+
+    fn collectLocalSymbolsAtCursor(self: *TypeChecker, module: ast.Module, cursor_offset: usize, out: *std.ArrayListUnmanaged(Symbol)) !void {
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .function => |function_decl| {
+                    if (!spanContainsOffset(function_decl.span, cursor_offset)) continue;
+                    if (function_decl.body) |body| {
+                        if (!spanContainsOffset(body.span, cursor_offset)) return;
+                        try self.appendFunctionParamsToLocalScope(function_decl.params, out);
+                        try self.collectBlockSymbolsAtCursor(body, cursor_offset, out);
+                    }
+                    return;
+                },
+                .test_decl => |test_decl| {
+                    if (!spanContainsOffset(test_decl.span, cursor_offset)) continue;
+                    if (spanContainsOffset(test_decl.body.span, cursor_offset)) {
+                        try self.collectBlockSymbolsAtCursor(test_decl.body, cursor_offset, out);
+                    }
+                    return;
+                },
+                .impl_decl => |impl_decl| {
+                    if (!spanContainsOffset(impl_decl.span, cursor_offset)) continue;
+                    for (impl_decl.methods) |*method| {
+                        if (!spanContainsOffset(method.span, cursor_offset)) continue;
+                        if (method.body) |body| {
+                            if (!spanContainsOffset(body.span, cursor_offset)) return;
+                            try self.appendFunctionParamsToLocalScope(method.params, out);
+                            try self.collectBlockSymbolsAtCursor(body, cursor_offset, out);
+                        }
+                        return;
+                    }
+                    return;
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn lookupSymbolFromScope(scope: *const Scope, name: []const u8) ?Symbol {
+        if (scope.symbols.get(name)) |sym| return sym;
+        if (scope.parent) |parent| return lookupSymbolFromScope(parent, name);
+        return null;
+    }
+
+    fn lookupSymbolAtCursor(local_symbols: []const Symbol, root_scope: *const Scope, name: []const u8) ?Symbol {
+        var i = local_symbols.len;
+        while (i > 0) {
+            i -= 1;
+            const symbol = local_symbols[i];
+            if (std.mem.eql(u8, symbol.name, name)) return symbol;
+        }
+        return lookupSymbolFromScope(root_scope, name);
+    }
+
+    fn inferAssignableTargetType(
+        self: *TypeChecker,
+        expr: ast.Expr,
+        local_symbols: []const Symbol,
+        root_scope: *const Scope,
+    ) ?Type {
+        switch (expr) {
+            .identifier => |identifier| {
+                if (lookupSymbolAtCursor(local_symbols, root_scope, identifier.name)) |symbol| {
+                    return symbol.type_;
+                }
+                return null;
+            },
+            .index => |index| {
+                const object_type = self.inferAssignableTargetType(index.object, local_symbols, root_scope) orelse return null;
+                return switch (object_type) {
+                    .array => |arr| arr.element,
+                    .slice => |slice| slice.element,
+                    else => null,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    fn inferExpectedTypeInExpr(
+        self: *TypeChecker,
+        expr: ast.Expr,
+        cursor_offset: usize,
+        inherited_expected: ?Type,
+        local_symbols: []const Symbol,
+        root_scope: *const Scope,
+    ) ?Type {
+        if (!spanContainsOffset(expr.span(), cursor_offset)) return null;
+
+        switch (expr) {
+            .grouped => |grouped| return self.inferExpectedTypeInExpr(grouped.expr, cursor_offset, inherited_expected, local_symbols, root_scope) orelse inherited_expected,
+            .unary => |unary| return self.inferExpectedTypeInExpr(unary.operand, cursor_offset, inherited_expected, local_symbols, root_scope) orelse inherited_expected,
+            .postfix => |postfix| return self.inferExpectedTypeInExpr(postfix.operand, cursor_offset, inherited_expected, local_symbols, root_scope) orelse inherited_expected,
+            .type_cast => |type_cast| {
+                const cast_type = self.resolveTypeExpr(type_cast.target_type) catch self.type_builder.unknownType();
+                return self.inferExpectedTypeInExpr(type_cast.expr, cursor_offset, cast_type, local_symbols, root_scope) orelse cast_type;
+            },
+            .binary => |binary| {
+                if (spanContainsOffset(binary.left.span(), cursor_offset)) {
+                    return self.inferExpectedTypeInExpr(binary.left, cursor_offset, null, local_symbols, root_scope);
+                }
+                if (spanContainsOffset(binary.right.span(), cursor_offset)) {
+                    const rhs_expected: ?Type = switch (binary.op) {
+                        .assign, .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign => self.inferAssignableTargetType(binary.left, local_symbols, root_scope),
+                        else => null,
+                    };
+                    return self.inferExpectedTypeInExpr(binary.right, cursor_offset, rhs_expected, local_symbols, root_scope) orelse rhs_expected orelse inherited_expected;
+                }
+                return inherited_expected;
+            },
+            .call => |call| {
+                var call_signature: ?*types.FunctionType = null;
+                if (call.callee == .identifier) {
+                    if (lookupSymbolAtCursor(local_symbols, root_scope, call.callee.identifier.name)) |symbol| {
+                        if (symbol.type_ == .function) {
+                            call_signature = symbol.type_.function;
+                        }
+                    }
+                }
+                for (call.args, 0..) |arg, i| {
+                    if (!spanContainsOffset(arg.span(), cursor_offset)) continue;
+                    const arg_expected: ?Type = if (call_signature) |sig|
+                        if (i < sig.params.len) sig.params[i] else null
+                    else
+                        null;
+                    return self.inferExpectedTypeInExpr(arg, cursor_offset, arg_expected, local_symbols, root_scope) orelse arg_expected orelse inherited_expected;
+                }
+                return inherited_expected;
+            },
+            .method_call => |method_call| {
+                var arg_expected: ?Type = null;
+                var object_type: ?Type = null;
+                if (method_call.object == .identifier) {
+                    if (lookupSymbolAtCursor(local_symbols, root_scope, method_call.object.identifier.name)) |sym| {
+                        object_type = sym.type_;
+                    }
+                }
+                if (object_type) |obj_type_raw| {
+                    const obj_type = if (obj_type_raw == .reference) obj_type_raw.reference.inner else obj_type_raw;
+                    switch (obj_type) {
+                        .struct_ => |struct_type| {
+                            if (self.lookupStructMethod(struct_type.name, method_call.method_name)) |method| {
+                                const param_start: usize = if (method.has_self) 1 else 0;
+                                for (method_call.args, 0..) |arg, i| {
+                                    if (!spanContainsOffset(arg.span(), cursor_offset)) continue;
+                                    const param_idx = param_start + i;
+                                    if (param_idx < method.func_type.function.params.len) {
+                                        arg_expected = method.func_type.function.params[param_idx];
+                                    }
+                                }
+                            }
+                        },
+                        .enum_ => |enum_type| {
+                            if (self.lookupStructMethod(enum_type.name, method_call.method_name)) |method| {
+                                const param_start: usize = if (method.has_self) 1 else 0;
+                                for (method_call.args, 0..) |arg, i| {
+                                    if (!spanContainsOffset(arg.span(), cursor_offset)) continue;
+                                    const param_idx = param_start + i;
+                                    if (param_idx < method.func_type.function.params.len) {
+                                        arg_expected = method.func_type.function.params[param_idx];
+                                    }
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+                for (method_call.args) |arg| {
+                    if (!spanContainsOffset(arg.span(), cursor_offset)) continue;
+                    return self.inferExpectedTypeInExpr(arg, cursor_offset, arg_expected, local_symbols, root_scope) orelse arg_expected orelse inherited_expected;
+                }
+                return inherited_expected;
+            },
+            .array_literal => |array_literal| {
+                const element_expected: ?Type = if (inherited_expected) |expected| switch (expected) {
+                    .array => |arr| arr.element,
+                    .slice => |slice| slice.element,
+                    else => null,
+                } else null;
+                for (array_literal.elements) |elem| {
+                    if (!spanContainsOffset(elem.span(), cursor_offset)) continue;
+                    return self.inferExpectedTypeInExpr(elem, cursor_offset, element_expected, local_symbols, root_scope) orelse element_expected orelse inherited_expected;
+                }
+                return inherited_expected;
+            },
+            .tuple_literal => |tuple_literal| {
+                for (tuple_literal.elements, 0..) |elem, i| {
+                    if (!spanContainsOffset(elem.span(), cursor_offset)) continue;
+                    const elem_expected: ?Type = if (inherited_expected) |expected| switch (expected) {
+                        .tuple => |tuple_type| if (i < tuple_type.elements.len) tuple_type.elements[i] else null,
+                        else => null,
+                    } else null;
+                    return self.inferExpectedTypeInExpr(elem, cursor_offset, elem_expected, local_symbols, root_scope) orelse elem_expected orelse inherited_expected;
+                }
+                return inherited_expected;
+            },
+            .closure => |closure| {
+                const return_type = self.resolveTypeExpr(closure.return_type) catch self.type_builder.unknownType();
+                return self.inferExpectedTypeInExpr(closure.body, cursor_offset, return_type, local_symbols, root_scope) orelse return_type;
+            },
+            .block => |block| {
+                return self.inferExpectedTypeInBlock(block, cursor_offset, inherited_expected, null, local_symbols, root_scope);
+            },
+            .comptime_block => |comptime_block| {
+                return self.inferExpectedTypeInBlock(comptime_block.body, cursor_offset, inherited_expected, null, local_symbols, root_scope);
+            },
+            .unsafe_block => |unsafe_block| {
+                return self.inferExpectedTypeInBlock(unsafe_block.body, cursor_offset, inherited_expected, null, local_symbols, root_scope);
+            },
+            .field, .index, .range, .builtin_call, .out_arg, .interpolated_string, .enum_literal, .struct_literal, .literal, .identifier => return inherited_expected,
+        }
+    }
+
+    fn inferExpectedTypeInStmt(
+        self: *TypeChecker,
+        stmt: ast.Stmt,
+        cursor_offset: usize,
+        current_return_type: ?Type,
+        local_symbols: []const Symbol,
+        root_scope: *const Scope,
+    ) ?Type {
+        if (!spanContainsOffset(stmt.span(), cursor_offset)) return null;
+
+        switch (stmt) {
+            .let_decl => |let_decl| {
+                if (!spanContainsOffset(let_decl.value.span(), cursor_offset)) return null;
+                const declared_type = self.resolveTypeExpr(let_decl.type_) catch self.type_builder.unknownType();
+                return self.inferExpectedTypeInExpr(let_decl.value, cursor_offset, declared_type, local_symbols, root_scope) orelse declared_type;
+            },
+            .var_decl => |var_decl| {
+                if (!spanContainsOffset(var_decl.value.span(), cursor_offset)) return null;
+                const declared_type = self.resolveTypeExpr(var_decl.type_) catch self.type_builder.unknownType();
+                return self.inferExpectedTypeInExpr(var_decl.value, cursor_offset, declared_type, local_symbols, root_scope) orelse declared_type;
+            },
+            .assignment => |assignment| {
+                if (!spanContainsOffset(assignment.value.span(), cursor_offset)) return null;
+                const target_type = self.inferAssignableTargetType(assignment.target, local_symbols, root_scope);
+                return self.inferExpectedTypeInExpr(assignment.value, cursor_offset, target_type, local_symbols, root_scope) orelse target_type;
+            },
+            .return_stmt => |ret| {
+                if (ret.value) |value_expr| {
+                    if (!spanContainsOffset(value_expr.span(), cursor_offset)) return current_return_type;
+                    return self.inferExpectedTypeInExpr(value_expr, cursor_offset, current_return_type, local_symbols, root_scope) orelse current_return_type;
+                }
+                return current_return_type;
+            },
+            .expr_stmt => |expr_stmt| {
+                return self.inferExpectedTypeInExpr(expr_stmt.expr, cursor_offset, null, local_symbols, root_scope);
+            },
+            .if_stmt => |if_stmt| {
+                if (spanContainsOffset(if_stmt.condition.span(), cursor_offset)) {
+                    return self.inferExpectedTypeInExpr(if_stmt.condition, cursor_offset, self.type_builder.boolType(), local_symbols, root_scope) orelse self.type_builder.boolType();
+                }
+                if (spanContainsOffset(if_stmt.then_branch.span, cursor_offset)) {
+                    return self.inferExpectedTypeInBlock(if_stmt.then_branch, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                }
+                if (if_stmt.else_branch) |else_branch| {
+                    switch (else_branch.*) {
+                        .block => |else_block| {
+                            if (spanContainsOffset(else_block.span, cursor_offset)) {
+                                return self.inferExpectedTypeInBlock(else_block, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                            }
+                        },
+                        .if_stmt => |nested_if| {
+                            const nested_stmt = ast.Stmt{ .if_stmt = nested_if };
+                            return self.inferExpectedTypeInStmt(nested_stmt, cursor_offset, current_return_type, local_symbols, root_scope);
+                        },
+                    }
+                }
+                return null;
+            },
+            .while_loop => |while_loop| {
+                if (spanContainsOffset(while_loop.condition.span(), cursor_offset)) {
+                    return self.inferExpectedTypeInExpr(while_loop.condition, cursor_offset, self.type_builder.boolType(), local_symbols, root_scope) orelse self.type_builder.boolType();
+                }
+                if (spanContainsOffset(while_loop.body.span, cursor_offset)) {
+                    return self.inferExpectedTypeInBlock(while_loop.body, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                }
+                return null;
+            },
+            .for_loop => |for_loop| {
+                if (spanContainsOffset(for_loop.iterable.span(), cursor_offset)) {
+                    return self.inferExpectedTypeInExpr(for_loop.iterable, cursor_offset, null, local_symbols, root_scope);
+                }
+                if (spanContainsOffset(for_loop.body.span, cursor_offset)) {
+                    return self.inferExpectedTypeInBlock(for_loop.body, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                }
+                return null;
+            },
+            .loop_stmt => |loop_stmt| {
+                if (spanContainsOffset(loop_stmt.body.span, cursor_offset)) {
+                    return self.inferExpectedTypeInBlock(loop_stmt.body, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                }
+                return null;
+            },
+            .match_stmt => |match_stmt| {
+                if (spanContainsOffset(match_stmt.subject.span(), cursor_offset)) {
+                    return self.inferExpectedTypeInExpr(match_stmt.subject, cursor_offset, null, local_symbols, root_scope);
+                }
+                for (match_stmt.arms) |arm| {
+                    if (!spanContainsOffset(arm.body.span, cursor_offset)) continue;
+                    return self.inferExpectedTypeInBlock(arm.body, cursor_offset, null, current_return_type, local_symbols, root_scope);
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    fn inferExpectedTypeInBlock(
+        self: *TypeChecker,
+        block: *ast.Block,
+        cursor_offset: usize,
+        final_expr_expected: ?Type,
+        current_return_type: ?Type,
+        local_symbols: []const Symbol,
+        root_scope: *const Scope,
+    ) ?Type {
+        if (!spanContainsOffset(block.span, cursor_offset)) return null;
+
+        for (block.statements) |stmt| {
+            if (!spanContainsOffset(stmt.span(), cursor_offset)) continue;
+            return self.inferExpectedTypeInStmt(stmt, cursor_offset, current_return_type, local_symbols, root_scope);
+        }
+
+        if (block.final_expr) |final_expr| {
+            if (spanContainsOffset(final_expr.span(), cursor_offset)) {
+                return self.inferExpectedTypeInExpr(final_expr, cursor_offset, final_expr_expected, local_symbols, root_scope) orelse final_expr_expected;
+            }
+        }
+
+        return null;
+    }
+
+    /// Infer the expected type at a byte offset in source, using a specific module scope chain.
+    pub fn expectedTypeAtOffsetInScope(
+        self: *TypeChecker,
+        module: ast.Module,
+        cursor_offset: usize,
+        root_scope: *const Scope,
+    ) ?Type {
+        var local_symbols = std.ArrayListUnmanaged(Symbol){};
+        defer local_symbols.deinit(self.allocator);
+        self.collectLocalSymbolsAtCursor(module, cursor_offset, &local_symbols) catch {};
+
+        for (module.declarations) |decl| {
+            if (!spanContainsOffset(decl.span(), cursor_offset)) continue;
+            switch (decl) {
+                .function => |function_decl| {
+                    if (function_decl.body) |body| {
+                        const return_type = if (function_decl.return_type) |type_expr|
+                            self.resolveTypeExpr(type_expr) catch self.type_builder.unknownType()
+                        else
+                            self.type_builder.voidType();
+                        return self.inferExpectedTypeInBlock(body, cursor_offset, null, return_type, local_symbols.items, root_scope);
+                    }
+                    return null;
+                },
+                .test_decl => |test_decl| return self.inferExpectedTypeInBlock(test_decl.body, cursor_offset, null, null, local_symbols.items, root_scope),
+                .impl_decl => |impl_decl| {
+                    for (impl_decl.methods) |method| {
+                        if (!spanContainsOffset(method.span, cursor_offset)) continue;
+                        if (method.body) |body| {
+                            const return_type = if (method.return_type) |type_expr|
+                                self.resolveTypeExpr(type_expr) catch self.type_builder.unknownType()
+                            else
+                                self.type_builder.voidType();
+                            return self.inferExpectedTypeInBlock(body, cursor_offset, null, return_type, local_symbols.items, root_scope);
+                        }
+                    }
+                    return null;
+                },
+                else => return null,
+            }
+        }
+        return null;
+    }
+
+    /// Infer the expected type at a byte offset using current scope chain.
+    pub fn expectedTypeAtOffset(self: *TypeChecker, module: ast.Module, cursor_offset: usize) ?Type {
+        return self.expectedTypeAtOffsetInScope(module, cursor_offset, self.current_scope);
+    }
+
+    /// Return all in-scope bindings at a byte offset in source using a specific scope chain.
+    /// Entries are deduplicated by name (nearest scope wins) and sorted by name.
+    pub fn extractScopeAtOffsetInScope(
+        self: *TypeChecker,
+        module: ast.Module,
+        cursor_offset: usize,
+        root_scope: *const Scope,
+    ) ![]ScopeEntry {
+        var local_symbols = std.ArrayListUnmanaged(Symbol){};
+        defer local_symbols.deinit(self.allocator);
+        try self.collectLocalSymbolsAtCursor(module, cursor_offset, &local_symbols);
+
+        var entries = std.ArrayListUnmanaged(ScopeEntry){};
+        errdefer entries.deinit(self.allocator);
+
+        var seen = std.StringHashMapUnmanaged(void){};
+        defer seen.deinit(self.allocator);
+
+        // Prefer innermost local binding when names shadow.
+        var i = local_symbols.items.len;
+        while (i > 0) {
+            i -= 1;
+            const symbol = local_symbols.items[i];
+            if (seen.get(symbol.name) != null) continue;
+            try seen.put(self.allocator, symbol.name, {});
+            try entries.append(self.allocator, .{
+                .name = symbol.name,
+                .type_ = symbol.type_,
+                .kind = symbol.kind,
+                .mutable = symbol.mutable,
+                .span = symbol.span,
+            });
+        }
+
+        // Merge provided scope chain (module scope + builtins).
+        var scope_cursor: ?*const Scope = root_scope;
+        while (scope_cursor) |scope| {
+            var iter = scope.symbols.valueIterator();
+            while (iter.next()) |symbol_ptr| {
+                const symbol = symbol_ptr.*;
+                if (seen.get(symbol.name) != null) continue;
+                try seen.put(self.allocator, symbol.name, {});
+                try entries.append(self.allocator, .{
+                    .name = symbol.name,
+                    .type_ = symbol.type_,
+                    .kind = symbol.kind,
+                    .mutable = symbol.mutable,
+                    .span = symbol.span,
+                });
+            }
+            scope_cursor = scope.parent;
+        }
+
+        std.sort.block(ScopeEntry, entries.items, {}, struct {
+            fn lessThan(_: void, a: ScopeEntry, b: ScopeEntry) bool {
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.lessThan);
+
+        return entries.toOwnedSlice(self.allocator);
+    }
+
+    /// Return all in-scope bindings at a byte offset in source using current scope chain.
+    pub fn extractScopeAtOffset(self: *TypeChecker, module: ast.Module, cursor_offset: usize) ![]ScopeEntry {
+        return self.extractScopeAtOffsetInScope(module, cursor_offset, self.current_scope);
+    }
+
     // NOTE: resolveTypeExpr implementation moved to type_resolution.zig
     // The old implementation (400+ lines) is now in type_resolution.zig
     // ========================================================================
@@ -2439,6 +3126,54 @@ pub const TypeChecker = struct {
                 const is_string_data = arg_type == .string_data;
                 if (!is_string and !is_string_data) {
                     self.addError(.type_mismatch, call.args[0].span(), "print/println expects string or String", .{});
+                }
+                return self.type_builder.voidType();
+            }
+
+            // Special handling for assert_eq/assert_ne - accepts any two values of matching type
+            if (std.mem.eql(u8, func_name, "assert_eq") or std.mem.eql(u8, func_name, "assert_ne")) {
+                if (call.args.len != 2) {
+                    self.addError(.invalid_call, call.span, "{s} requires exactly 2 arguments, got {d}", .{ func_name, call.args.len });
+                    return self.type_builder.voidType();
+                }
+                const left_type = self.checkExpr(call.args[0]);
+                const right_type = self.checkExpr(call.args[1]);
+                if (!self.isTypeCompatible(left_type, right_type)) {
+                    const left_str = types.typeToString(self.allocator, left_type) catch "unknown";
+                    const right_str = types.typeToString(self.allocator, right_type) catch "unknown";
+                    self.addError(.type_mismatch, call.args[1].span(), "{s} arguments must have matching types, got {s} and {s}", .{
+                        func_name,
+                        left_str,
+                        right_str,
+                    });
+                }
+                return self.type_builder.voidType();
+            }
+
+            // Special handling for Result assertions
+            if (std.mem.eql(u8, func_name, "assert_ok") or std.mem.eql(u8, func_name, "assert_err")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "{s} requires exactly 1 argument, got {d}", .{ func_name, call.args.len });
+                    return self.type_builder.voidType();
+                }
+                const arg_type = self.checkExpr(call.args[0]);
+                if (arg_type != .result) {
+                    const arg_str = types.typeToString(self.allocator, arg_type) catch "unknown";
+                    self.addError(.type_mismatch, call.args[0].span(), "{s} expects Result[T, E], got {s}", .{ func_name, arg_str });
+                }
+                return self.type_builder.voidType();
+            }
+
+            // Special handling for Optional assertions
+            if (std.mem.eql(u8, func_name, "assert_some") or std.mem.eql(u8, func_name, "assert_none")) {
+                if (call.args.len != 1) {
+                    self.addError(.invalid_call, call.span, "{s} requires exactly 1 argument, got {d}", .{ func_name, call.args.len });
+                    return self.type_builder.voidType();
+                }
+                const arg_type = self.checkExpr(call.args[0]);
+                if (arg_type != .optional) {
+                    const arg_str = types.typeToString(self.allocator, arg_type) catch "unknown";
+                    self.addError(.type_mismatch, call.args[0].span(), "{s} expects Optional[T], got {s}", .{ func_name, arg_str });
                 }
                 return self.type_builder.voidType();
             }
@@ -2810,6 +3545,65 @@ pub const TypeChecker = struct {
         // Handle static constructors (Rc.new, List.new, Map.new, etc.)
         if (method_calls.checkStaticConstructor(self, method)) |result| {
             return result;
+        }
+
+        // Module namespace calls: import math; math.add(...)
+        if (method.object == .identifier) {
+            const obj_name = method.object.identifier.name;
+            if (self.current_scope.lookup(obj_name)) |namespace_sym| {
+                if (namespace_sym.kind == .module) {
+                    const mod_ref = namespace_sym.module_ref orelse {
+                        self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
+                        return self.type_builder.unknownType();
+                    };
+                    const module_name = mod_ref.canonicalName(self.allocator) catch {
+                        self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
+                        return self.type_builder.unknownType();
+                    };
+                    defer self.allocator.free(module_name);
+
+                    const mod_symbols = self.module_registry.get(module_name) orelse {
+                        self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
+                        return self.type_builder.unknownType();
+                    };
+
+                    const mod_sym = mod_symbols.symbols.get(method.method_name) orelse {
+                        self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
+                        return self.type_builder.unknownType();
+                    };
+
+                    if (mod_sym.kind != .function or mod_sym.type_ == null) {
+                        self.addError(.undefined_method, method.span, "method '{s}' not found", .{method.method_name});
+                        return self.type_builder.unknownType();
+                    }
+
+                    // Route through normal call checker so namespace calls share
+                    // generic inference and monomorphization behavior.
+                    _ = self.pushScope(.block) catch return self.type_builder.unknownType();
+                    defer self.popScope();
+
+                    self.current_scope.define(.{
+                        .name = method.method_name,
+                        .type_ = mod_sym.type_.?,
+                        .kind = .function,
+                        .mutable = false,
+                        .span = method.span,
+                    }) catch return self.type_builder.unknownType();
+
+                    const synthetic_ident = ast.Identifier{
+                        .name = method.method_name,
+                        .span = method.span,
+                    };
+                    var synthetic_call = ast.Call{
+                        .callee = .{ .identifier = synthetic_ident },
+                        .args = method.args,
+                        .type_args = method.type_args,
+                        .span = method.span,
+                    };
+
+                    return self.checkCallImpl(&synthetic_call);
+                }
+            }
         }
 
         const object_type = self.checkExpr(method.object);
@@ -3286,6 +4080,28 @@ pub const TypeChecker = struct {
         return type_utils.isTypeCompatible(self, target, value);
     }
 
+    /// Returns the inner type if `t` is Future[T], otherwise null.
+    pub fn futureInnerType(self: *TypeChecker, t: Type) ?Type {
+        _ = self;
+        if (t != .applied) return null;
+        const applied = t.applied;
+        if (applied.base != .extern_type) return null;
+        if (!std.mem.eql(u8, applied.base.extern_type.name, "Future")) return null;
+        if (applied.args.len != 1) return null;
+        return applied.args[0];
+    }
+
+    /// Parses async return type annotation and returns the inner T for Future[T].
+    pub fn asyncReturnInnerTypeExpr(self: *TypeChecker, return_type_expr: ast.TypeExpr) ?ast.TypeExpr {
+        _ = self;
+        if (return_type_expr != .generic_apply) return null;
+        const generic = return_type_expr.generic_apply;
+        if (generic.base != .named) return null;
+        if (!std.mem.eql(u8, generic.base.named.name, "Future")) return null;
+        if (generic.args.len != 1) return null;
+        return generic.args[0];
+    }
+
     // ========================================================================
     // Module System Support
     // ========================================================================
@@ -3463,8 +4279,10 @@ pub const TypeChecker = struct {
                 .kind = .module,
                 .mutable = false,
                 .span = import_decl.span,
-            }) catch {};
-        }
+                // Keep canonical module name for namespace method resolution.
+            .module_ref = mod_symbols.module_info,
+        }) catch {};
+    }
     }
 
     /// Import all public symbols from a module into current scope.
@@ -3541,6 +4359,8 @@ pub const TypeChecker = struct {
     // ========================================================================
 
     pub fn checkModule(self: *TypeChecker, module: ast.Module) void {
+        self.async_function_names.clearRetainingCapacity();
+
         // Process imports first (for multi-file compilation)
         self.processImports(module);
 
@@ -3556,6 +4376,10 @@ pub const TypeChecker = struct {
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
+                    if (f.is_async) {
+                        self.async_function_names.put(self.allocator, f.name, {}) catch {};
+                    }
+
                     // Push type parameters for generic functions
                     const has_type_params = f.type_params.len > 0;
                     if (has_type_params) {
@@ -3579,10 +4403,25 @@ pub const TypeChecker = struct {
                         }
                     }
 
-                    const return_type = if (f.return_type) |rt|
-                        self.resolveTypeExpr(rt) catch self.type_builder.unknownType()
-                    else
-                        self.type_builder.voidType();
+                    var return_type: Type = self.type_builder.voidType();
+                    if (f.return_type) |rt| {
+                        return_type = self.resolveTypeExpr(rt) catch self.type_builder.unknownType();
+                    }
+                    if (f.is_async) {
+                        if (f.return_type) |rt| {
+                            if (self.asyncReturnInnerTypeExpr(rt) == null) {
+                                self.addError(.invalid_operation, rt.span(), "async function return type must be Future[T]", .{});
+                                return_type = self.type_builder.unknownType();
+                            }
+                        } else {
+                            self.addError(.invalid_operation, f.span, "async function return type must be Future[T]", .{});
+                            return_type = self.type_builder.unknownType();
+                        }
+                    } else if (self.futureInnerType(return_type) != null) {
+                        const error_span = if (f.return_type) |rt| rt.span() else f.span;
+                        self.addError(.invalid_operation, error_span, "non-async function return type cannot be Future[T]; declare function as async", .{});
+                        return_type = self.type_builder.unknownType();
+                    }
 
                     const func_type = self.type_builder.functionTypeWithFlags(param_types.items, return_type, comptime_params, f.is_unsafe) catch continue;
 
@@ -3658,10 +4497,20 @@ pub const TypeChecker = struct {
                             }) catch {};
                         }
 
-                        self.current_return_type = if (f.return_type) |rt|
-                            self.resolveTypeExpr(rt) catch self.type_builder.voidType()
-                        else
-                            self.type_builder.voidType();
+                        self.current_return_type = blk: {
+                            if (f.is_async) {
+                                if (f.return_type) |rt| {
+                                    if (self.asyncReturnInnerTypeExpr(rt)) |inner_expr| {
+                                        break :blk self.resolveTypeExpr(inner_expr) catch self.type_builder.unknownType();
+                                    }
+                                }
+                                break :blk self.type_builder.unknownType();
+                            }
+                            if (f.return_type) |rt| {
+                                break :blk self.resolveTypeExpr(rt) catch self.type_builder.voidType();
+                            }
+                            break :blk self.type_builder.voidType();
+                        };
                         defer self.current_return_type = null;
 
                         // For comptime functions, set the flag so nested comptime calls
@@ -3679,7 +4528,16 @@ pub const TypeChecker = struct {
                         }
                         defer self.in_unsafe_context = was_unsafe;
 
+                        const was_async_context = self.current_async_context;
+                        self.current_async_context = f.is_async;
+                        defer self.current_async_context = was_async_context;
+
                         _ = self.checkBlock(body);
+                    }
+                },
+                .test_decl => {
+                    if (self.check_test_decls) {
+                        self.checkDecl(decl);
                     }
                 },
                 .impl_decl => self.checkDecl(decl),
@@ -3765,4 +4623,212 @@ test "Loop scope tracking" {
 
     checker.popScope();
     try testing.expect(!checker.current_scope.isInLoop());
+}
+
+fn testParseModuleForScope(source: []const u8) !struct { module: ast.Module, arena: std.heap.ArenaAllocator } {
+    const Lexer = @import("../lexer.zig").Lexer;
+    const Parser = @import("../parser.zig").Parser;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    errdefer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+    const module = try parser.parseModule();
+    return .{ .module = module, .arena = arena };
+}
+
+fn hasScopeEntry(entries: []const ScopeEntry, name: []const u8) bool {
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return true;
+    }
+    return false;
+}
+
+fn findScopeEntry(entries: []const ScopeEntry, name: []const u8) ?ScopeEntry {
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return entry;
+    }
+    return null;
+}
+
+fn hasErrorMessage(errors: []const CheckError, needle: []const u8) bool {
+    for (errors) |err| {
+        if (std.mem.indexOf(u8, err.message, needle) != null) return true;
+    }
+    return false;
+}
+
+test "extractScopeAtOffset includes params and prior local bindings" {
+    const testing = std.testing;
+    const source =
+        \\fn main() -> void {
+        \\    let a: i32 = 1
+        \\    if true {
+        \\        let b: i32 = a
+        \\        let c: string = "x"
+        \\        debug(b)
+        \\    }
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+    try testing.expect(!checker.hasErrors());
+
+    const cursor = std.mem.indexOf(u8, source, "debug(b)").?;
+    const entries = try checker.extractScopeAtOffset(parsed.module, cursor);
+    defer testing.allocator.free(entries);
+
+    try testing.expect(hasScopeEntry(entries, "a"));
+    try testing.expect(hasScopeEntry(entries, "b"));
+    try testing.expect(hasScopeEntry(entries, "c"));
+}
+
+test "extractScopeAtOffset excludes declarations after cursor" {
+    const testing = std.testing;
+    const source =
+        \\fn main() -> void {
+        \\    let before: i32 = 1
+        \\    debug(before)
+        \\    let after: i32 = 2
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+    try testing.expect(!checker.hasErrors());
+
+    const cursor = std.mem.indexOf(u8, source, "debug(before)").?;
+    const entries = try checker.extractScopeAtOffset(parsed.module, cursor);
+    defer testing.allocator.free(entries);
+
+    try testing.expect(hasScopeEntry(entries, "before"));
+    try testing.expect(!hasScopeEntry(entries, "after"));
+}
+
+test "extractScopeAtOffset prefers innermost shadowed binding" {
+    const testing = std.testing;
+    const source =
+        \\fn main() -> void {
+        \\    let x: string = "outer"
+        \\    if true {
+        \\        shadow let x: i32 = 42
+        \\        debug(x)
+        \\    }
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+    try testing.expect(!checker.hasErrors());
+
+    const cursor = std.mem.indexOf(u8, source, "debug(x)").?;
+    const entries = try checker.extractScopeAtOffset(parsed.module, cursor);
+    defer testing.allocator.free(entries);
+
+    const x_entry = findScopeEntry(entries, "x").?;
+    try testing.expect(x_entry.type_ == .primitive);
+    try testing.expect(x_entry.type_.primitive == .i32_);
+}
+
+test "await validates operand is async call" {
+    const testing = std.testing;
+    const source =
+        \\async fn task() -> Future[i32] {
+        \\    let value: i32 = 1
+        \\    return await value
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+
+    try testing.expect(checker.hasErrors());
+    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be Future[T]"));
+}
+
+test "await on async call type-checks successfully" {
+    const testing = std.testing;
+    const source =
+        \\async fn fetch() -> Future[i32] {
+        \\    return 1
+        \\}
+        \\
+        \\async fn worker() -> Future[i32] {
+        \\    return await fetch()
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+
+    try testing.expect(!checker.hasErrors());
+}
+
+test "await uses symbol kind, not just function name" {
+    const testing = std.testing;
+    const source =
+        \\async fn fetch() -> Future[i32] {
+        \\    return 1
+        \\}
+        \\
+        \\async fn worker() -> Future[i32] {
+        \\    let fetch: i32 = 7
+        \\    return await fetch()
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+
+    try testing.expect(checker.hasErrors());
+    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be Future[T]"));
+}
+
+test "await accepts future-typed local values" {
+    const testing = std.testing;
+    const source =
+        \\async fn fetch() -> Future[i32] {
+        \\    return 1
+        \\}
+        \\
+        \\async fn worker() -> Future[i32] {
+        \\    let pending: Future[i32] = fetch()
+        \\    return await pending
+        \\}
+    ;
+
+    var parsed = try testParseModuleForScope(source);
+    defer parsed.arena.deinit();
+
+    var checker = TypeChecker.init(testing.allocator);
+    defer checker.deinit();
+    checker.checkModule(parsed.module);
+
+    try testing.expect(!checker.hasErrors());
 }

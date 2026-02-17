@@ -1,0 +1,15 @@
+fn target_one() -> i32 {
+    return 1
+}
+
+fn target_two() -> i32 {
+    return 2
+}
+
+test target_one {
+    assert_eq(target_one(), 1)
+}
+
+test target_two {
+    assert_eq(target_two(), 2)
+}

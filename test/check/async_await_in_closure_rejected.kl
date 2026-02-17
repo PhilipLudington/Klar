@@ -1,0 +1,14 @@
+// Expected: check-error invalid_operation
+
+async fn fetch() -> Future[i32] {
+    return 42
+}
+
+async fn outer() -> Future[i32] {
+    let f: fn() -> i32 = || -> i32 {
+        return await fetch()
+    }
+    return f()
+}
+
+fn main() -> i32 { return 0 }

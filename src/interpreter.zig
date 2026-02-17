@@ -1,8 +1,10 @@
 const std = @import("std");
+const zig_builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ast = @import("ast.zig");
 const types = @import("types.zig");
 const values = @import("values.zig");
+const async_executor = @import("runtime/async_executor.zig");
 const Value = values.Value;
 const Integer = values.Integer;
 const Float = values.Float;
@@ -10,13 +12,91 @@ const Environment = values.Environment;
 const RuntimeError = values.RuntimeError;
 const ValueBuilder = values.ValueBuilder;
 
-// Zig 0.15 IO helpers
+// Cross-platform IO helpers
 fn getStdOut() std.fs.File {
-    return .{ .handle = std.posix.STDOUT_FILENO };
+    if (comptime zig_builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDOUT_FILENO };
+    }
 }
 
 fn getStdIn() std.fs.File {
-    return .{ .handle = std.posix.STDIN_FILENO };
+    if (comptime zig_builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDIN_FILENO };
+    }
+}
+
+fn getStdErr() std.fs.File {
+    if (comptime zig_builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDERR_FILENO };
+    }
+}
+
+pub const AssertionRecord = struct {
+    assertion_type: []const u8,
+    passed: bool,
+    expected: ?[]const u8 = null,
+    actual: ?[]const u8 = null,
+};
+
+pub const AssertionRecorder = struct {
+    allocator: Allocator,
+    records: std.ArrayListUnmanaged(AssertionRecord) = .{},
+
+    pub fn init(allocator: Allocator) AssertionRecorder {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *AssertionRecorder) void {
+        self.clear();
+        self.records.deinit(self.allocator);
+    }
+
+    pub fn clear(self: *AssertionRecorder) void {
+        for (self.records.items) |assert_record| {
+            if (assert_record.expected) |expected| self.allocator.free(expected);
+            if (assert_record.actual) |actual| self.allocator.free(actual);
+        }
+        self.records.clearRetainingCapacity();
+    }
+
+    fn record(self: *AssertionRecorder, assertion_type: []const u8, passed: bool, expected_value: ?Value, actual_value: ?Value) RuntimeError!void {
+        var expected: ?[]const u8 = null;
+        var actual: ?[]const u8 = null;
+        errdefer if (expected) |value| self.allocator.free(value);
+        errdefer if (actual) |value| self.allocator.free(value);
+
+        if (expected_value) |value| {
+            expected = values.valueToString(self.allocator, value) catch return RuntimeError.OutOfMemory;
+        }
+        if (actual_value) |value| {
+            actual = values.valueToString(self.allocator, value) catch return RuntimeError.OutOfMemory;
+        }
+
+        self.records.append(self.allocator, .{
+            .assertion_type = assertion_type,
+            .passed = passed,
+            .expected = expected,
+            .actual = actual,
+        }) catch return RuntimeError.OutOfMemory;
+    }
+};
+
+var active_assertion_recorder: ?*AssertionRecorder = null;
+
+pub fn setAssertionRecorder(recorder: ?*AssertionRecorder) void {
+    active_assertion_recorder = recorder;
+}
+
+fn maybeRecordAssertion(assertion_type: []const u8, passed: bool, expected_value: ?Value, actual_value: ?Value) RuntimeError!void {
+    if (active_assertion_recorder) |recorder| {
+        try recorder.record(assertion_type, passed, expected_value, actual_value);
+    }
 }
 
 // ============================================================================
@@ -47,6 +127,11 @@ pub const Interpreter = struct {
     // Track allocated functions for cleanup
     allocated_functions: std.ArrayListUnmanaged(*values.FunctionValue),
 
+    // Cooperative executor scaffold for upcoming async runtime support.
+    executor: async_executor.CooperativeExecutor,
+    next_future_task_id: values.TaskId,
+    last_error_message: ?[]const u8,
+
     pub fn init(allocator: Allocator) !Interpreter {
         const global_env = try allocator.create(Environment);
         global_env.* = Environment.init(allocator, null);
@@ -64,6 +149,9 @@ pub const Interpreter = struct {
             .is_continuing = false,
             .output = .{},
             .allocated_functions = .{},
+            .executor = async_executor.CooperativeExecutor.init(allocator),
+            .next_future_task_id = 1,
+            .last_error_message = null,
         };
 
         try interp.initBuiltins();
@@ -91,6 +179,7 @@ pub const Interpreter = struct {
             self.allocator.destroy(func);
         }
         self.allocated_functions.deinit(self.allocator);
+        self.executor.deinit();
 
         // Free builtin functions
         if (self.global_env.get("print")) |v| {
@@ -103,6 +192,33 @@ pub const Interpreter = struct {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
         if (self.global_env.get("assert_eq")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("assert_ne")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("assert_ok")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("assert_err")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("assert_some")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("assert_none")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("Ok")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("Err")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("Some")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("None")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
         if (self.global_env.get("panic")) |v| {
@@ -122,6 +238,12 @@ pub const Interpreter = struct {
         }
         self.global_env.deinit();
         self.allocator.destroy(self.global_env);
+    }
+
+    pub fn consumeLastErrorMessage(self: *Interpreter) ?[]const u8 {
+        const msg = self.last_error_message;
+        self.last_error_message = null;
+        return msg;
     }
 
     /// Get the allocator for runtime allocations (strings and temporary values, uses arena)
@@ -155,6 +277,42 @@ pub const Interpreter = struct {
         const assert_eq_fn = try self.allocator.create(values.BuiltinFunction);
         assert_eq_fn.* = .{ .name = "assert_eq", .func = &builtinAssertEq };
         try self.global_env.define("assert_eq", .{ .builtin = assert_eq_fn }, false);
+
+        const assert_ne_fn = try self.allocator.create(values.BuiltinFunction);
+        assert_ne_fn.* = .{ .name = "assert_ne", .func = &builtinAssertNe };
+        try self.global_env.define("assert_ne", .{ .builtin = assert_ne_fn }, false);
+
+        const assert_ok_fn = try self.allocator.create(values.BuiltinFunction);
+        assert_ok_fn.* = .{ .name = "assert_ok", .func = &builtinAssertOk };
+        try self.global_env.define("assert_ok", .{ .builtin = assert_ok_fn }, false);
+
+        const assert_err_fn = try self.allocator.create(values.BuiltinFunction);
+        assert_err_fn.* = .{ .name = "assert_err", .func = &builtinAssertErr };
+        try self.global_env.define("assert_err", .{ .builtin = assert_err_fn }, false);
+
+        const assert_some_fn = try self.allocator.create(values.BuiltinFunction);
+        assert_some_fn.* = .{ .name = "assert_some", .func = &builtinAssertSome };
+        try self.global_env.define("assert_some", .{ .builtin = assert_some_fn }, false);
+
+        const assert_none_fn = try self.allocator.create(values.BuiltinFunction);
+        assert_none_fn.* = .{ .name = "assert_none", .func = &builtinAssertNone };
+        try self.global_env.define("assert_none", .{ .builtin = assert_none_fn }, false);
+
+        const ok_fn = try self.allocator.create(values.BuiltinFunction);
+        ok_fn.* = .{ .name = "Ok", .func = &builtinOk };
+        try self.global_env.define("Ok", .{ .builtin = ok_fn }, false);
+
+        const err_fn = try self.allocator.create(values.BuiltinFunction);
+        err_fn.* = .{ .name = "Err", .func = &builtinErr };
+        try self.global_env.define("Err", .{ .builtin = err_fn }, false);
+
+        const some_fn = try self.allocator.create(values.BuiltinFunction);
+        some_fn.* = .{ .name = "Some", .func = &builtinSome };
+        try self.global_env.define("Some", .{ .builtin = some_fn }, false);
+
+        const none_fn = try self.allocator.create(values.BuiltinFunction);
+        none_fn.* = .{ .name = "None", .func = &builtinNone };
+        try self.global_env.define("None", .{ .builtin = none_fn }, false);
 
         const panic_fn = try self.allocator.create(values.BuiltinFunction);
         panic_fn.* = .{ .name = "panic", .func = &builtinPanic };
@@ -619,6 +777,25 @@ pub const Interpreter = struct {
                 }
                 return RuntimeError.TypeError;
             },
+            .await_ => {
+                self.last_error_message = null;
+                if (operand != .future) {
+                    return operand;
+                }
+
+                const future = operand.future;
+                return switch (future.state) {
+                    .pending => blk: {
+                        self.last_error_message = "runtime error: await on non-completed Future";
+                        break :blk RuntimeError.InvalidOperation;
+                    },
+                    .completed => if (future.value) |value| value.* else self.builder.voidVal(),
+                    .failed, .cancelled => blk: {
+                        self.last_error_message = "runtime error: await on non-completed Future";
+                        break :blk RuntimeError.InvalidOperation;
+                    },
+                };
+            },
             .ref => {
                 const ref = try self.allocator.create(values.ReferenceValue);
                 const target = try self.allocator.create(Value);
@@ -741,11 +918,17 @@ pub const Interpreter = struct {
         if (self.return_value) |ret| {
             const result = ret;
             self.return_value = null;
-            return result;
+            if (!func.is_async) return result;
+            const task_id = self.next_future_task_id;
+            self.next_future_task_id += 1;
+            return self.builder.futureCompleted(task_id, result) catch RuntimeError.OutOfMemory;
         }
 
         // Otherwise use the block's final expression value
-        return block_result;
+        if (!func.is_async) return block_result;
+        const task_id = self.next_future_task_id;
+        self.next_future_task_id += 1;
+        return self.builder.futureCompleted(task_id, block_result) catch RuntimeError.OutOfMemory;
     }
 
     fn callClosure(self: *Interpreter, closure: *values.ClosureValue, args: []const Value) RuntimeError!Value {
@@ -1079,7 +1262,7 @@ pub const Interpreter = struct {
                 }
                 // Print error message and panic
                 if (args.items.len == 1 and args.items[0] == .string) {
-                    const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+                    const stderr = getStdErr();
                     stderr.writeAll("panic: ") catch {};
                     stderr.writeAll(args.items[0].string) catch {};
                     stderr.writeAll("\n") catch {};
@@ -1189,6 +1372,22 @@ pub const Interpreter = struct {
             std.mem.eql(u8, method.method_name, "trunc"))
         {
             return object; // Type checking done by checker
+        }
+
+        // Module namespace calls are represented as method calls on a synthetic struct:
+        // import math as m; m.add(...)
+        if (object == .struct_) {
+            if (object.struct_.fields.get(method.method_name)) |member| {
+                if (member == .builtin) {
+                    return member.builtin.func(self.stringAllocator(), args.items);
+                }
+                if (member == .function) {
+                    return self.callFunction(member.function, args.items);
+                }
+                if (member == .closure) {
+                    return self.callClosure(member.closure, args.items);
+                }
+            }
         }
 
         return RuntimeError.InvalidOperation;
@@ -1795,6 +1994,7 @@ pub const Interpreter = struct {
                 .params = params_slice,
                 .body = body,
                 .closure_env = self.current_env,
+                .is_async = func.is_async,
             };
 
             // Track for cleanup
@@ -2109,7 +2309,9 @@ fn builtinAssert(allocator: Allocator, args: []const Value) RuntimeError!Value {
 
     if (args[0] != .bool_) return RuntimeError.TypeError;
 
-    if (!args[0].bool_) {
+    const passed = args[0].bool_;
+    try maybeRecordAssertion("assert", passed, .{ .bool_ = true }, args[0]);
+    if (!passed) {
         return RuntimeError.AssertionFailed;
     }
 
@@ -2120,11 +2322,120 @@ fn builtinAssertEq(allocator: Allocator, args: []const Value) RuntimeError!Value
     _ = allocator;
     if (args.len != 2) return RuntimeError.InvalidOperation;
 
-    if (!args[0].eql(args[1])) {
+    const passed = args[0].eql(args[1]);
+    try maybeRecordAssertion("assert_eq", passed, args[1], args[0]);
+    if (!passed) {
         return RuntimeError.AssertionFailed;
     }
 
     return .void_;
+}
+
+fn builtinAssertNe(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 2) return RuntimeError.InvalidOperation;
+
+    const passed = !args[0].eql(args[1]);
+    try maybeRecordAssertion("assert_ne", passed, args[1], args[0]);
+    if (!passed) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn builtinAssertOk(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .result) return RuntimeError.TypeError;
+
+    const passed = args[0].result.is_ok;
+    try maybeRecordAssertion("assert_ok", passed, null, args[0]);
+    if (!passed) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn builtinAssertErr(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .result) return RuntimeError.TypeError;
+
+    const passed = !args[0].result.is_ok;
+    try maybeRecordAssertion("assert_err", passed, null, args[0]);
+    if (!passed) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn builtinAssertSome(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .optional) return RuntimeError.TypeError;
+
+    const passed = args[0].optional.value != null;
+    try maybeRecordAssertion("assert_some", passed, null, args[0]);
+    if (!passed) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn builtinAssertNone(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .optional) return RuntimeError.TypeError;
+
+    const passed = args[0].optional.value == null;
+    try maybeRecordAssertion("assert_none", passed, null, args[0]);
+    if (!passed) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn builtinOk(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    const value_ptr = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    value_ptr.* = args[0];
+
+    const result_ptr = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    result_ptr.* = .{
+        .is_ok = true,
+        .value = value_ptr,
+    };
+    return .{ .result = result_ptr };
+}
+
+fn builtinErr(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    const value_ptr = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    value_ptr.* = args[0];
+
+    const result_ptr = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    result_ptr.* = .{
+        .is_ok = false,
+        .value = value_ptr,
+    };
+    return .{ .result = result_ptr };
+}
+
+fn builtinSome(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    var builder = values.ValueBuilder.init(allocator);
+    return builder.some(args[0]) catch return RuntimeError.OutOfMemory;
+}
+
+fn builtinNone(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 0) return RuntimeError.InvalidOperation;
+    var builder = values.ValueBuilder.init(allocator);
+    return builder.none() catch return RuntimeError.OutOfMemory;
 }
 
 fn builtinPanic(allocator: Allocator, args: []const Value) RuntimeError!Value {
@@ -2132,7 +2443,7 @@ fn builtinPanic(allocator: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 1) return RuntimeError.InvalidOperation;
 
     // Print panic message to stderr
-    const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+    const stderr = getStdErr();
     stderr.writeAll("panic: ") catch {};
 
     switch (args[0]) {
@@ -2191,6 +2502,7 @@ fn builtinTypeOf(allocator: Allocator, args: []const Value) RuntimeError!Value {
         .optional => "?T",
         .result => "Result[T, E]",
         .context_error => "ContextError[E]",
+        .future => "Future[T]",
         .reference => "&T",
         .function => "fn",
         .closure => "closure",
@@ -2371,4 +2683,143 @@ test "Saturating arithmetic" {
     const max_i32 = interp.builder.int(std.math.maxInt(i32), .i32_);
     const result = try interp.intArithmetic(max_i32, interp.builder.i32Val(1), .add, .saturate);
     try testing.expectEqual(@as(i128, std.math.maxInt(i32)), result.int.value);
+}
+
+test "await returns completed future value in interpreter runtime" {
+    const testing = std.testing;
+    var interp = try Interpreter.init(testing.allocator);
+    defer interp.deinit();
+
+    const ready = try interp.builder.futureCompleted(1, interp.builder.i32Val(42));
+    try interp.current_env.define("ready", ready, false);
+
+    const unary = try testing.allocator.create(ast.Unary);
+    defer testing.allocator.destroy(unary);
+    unary.* = .{
+        .op = .await_,
+        .operand = .{
+            .identifier = .{
+                .name = "ready",
+                .span = .{ .start = 0, .end = 0, .line = 1, .column = 7 },
+            },
+        },
+        .span = .{ .start = 0, .end = 0, .line = 1, .column = 1 },
+    };
+    const expr = ast.Expr{ .unary = unary };
+
+    const awaited = try interp.evaluate(expr);
+    try testing.expect(awaited.eql(interp.builder.i32Val(42)));
+}
+
+test "await on pending future returns invalid operation" {
+    const testing = std.testing;
+    var interp = try Interpreter.init(testing.allocator);
+    defer interp.deinit();
+
+    const pending = try interp.builder.futurePending(2);
+    try interp.current_env.define("pending", pending, false);
+
+    const unary = try testing.allocator.create(ast.Unary);
+    defer testing.allocator.destroy(unary);
+    unary.* = .{
+        .op = .await_,
+        .operand = .{
+            .identifier = .{
+                .name = "pending",
+                .span = .{ .start = 0, .end = 0, .line = 1, .column = 7 },
+            },
+        },
+        .span = .{ .start = 0, .end = 0, .line = 1, .column = 1 },
+    };
+    const expr = ast.Expr{ .unary = unary };
+
+    try testing.expectError(RuntimeError.InvalidOperation, interp.evaluate(expr));
+    try testing.expectEqualStrings(
+        "runtime error: await on non-completed Future",
+        interp.consumeLastErrorMessage() orelse "",
+    );
+    try testing.expect(interp.consumeLastErrorMessage() == null);
+}
+
+test "await on failed future returns invalid operation with runtime message" {
+    const testing = std.testing;
+    var interp = try Interpreter.init(testing.allocator);
+    defer interp.deinit();
+
+    const failed = try interp.builder.futureFailed(3, interp.builder.i32Val(9));
+    try interp.current_env.define("failed", failed, false);
+
+    const unary = try testing.allocator.create(ast.Unary);
+    defer testing.allocator.destroy(unary);
+    unary.* = .{
+        .op = .await_,
+        .operand = .{
+            .identifier = .{
+                .name = "failed",
+                .span = .{ .start = 0, .end = 0, .line = 1, .column = 7 },
+            },
+        },
+        .span = .{ .start = 0, .end = 0, .line = 1, .column = 1 },
+    };
+    const expr = ast.Expr{ .unary = unary };
+
+    try testing.expectError(RuntimeError.InvalidOperation, interp.evaluate(expr));
+    try testing.expectEqualStrings(
+        "runtime error: await on non-completed Future",
+        interp.consumeLastErrorMessage() orelse "",
+    );
+}
+
+test "await on cancelled future returns invalid operation with runtime message" {
+    const testing = std.testing;
+    var interp = try Interpreter.init(testing.allocator);
+    defer interp.deinit();
+
+    const cancelled = try interp.builder.futureCancelled(4);
+    try interp.current_env.define("cancelled", cancelled, false);
+
+    const unary = try testing.allocator.create(ast.Unary);
+    defer testing.allocator.destroy(unary);
+    unary.* = .{
+        .op = .await_,
+        .operand = .{
+            .identifier = .{
+                .name = "cancelled",
+                .span = .{ .start = 0, .end = 0, .line = 1, .column = 10 },
+            },
+        },
+        .span = .{ .start = 0, .end = 0, .line = 1, .column = 1 },
+    };
+    const expr = ast.Expr{ .unary = unary };
+
+    try testing.expectError(RuntimeError.InvalidOperation, interp.evaluate(expr));
+    try testing.expectEqualStrings(
+        "runtime error: await on non-completed Future",
+        interp.consumeLastErrorMessage() orelse "",
+    );
+}
+
+test "await on non-future value is passthrough" {
+    const testing = std.testing;
+    var interp = try Interpreter.init(testing.allocator);
+    defer interp.deinit();
+
+    try interp.current_env.define("value", interp.builder.i32Val(9), false);
+
+    const unary = try testing.allocator.create(ast.Unary);
+    defer testing.allocator.destroy(unary);
+    unary.* = .{
+        .op = .await_,
+        .operand = .{
+            .identifier = .{
+                .name = "value",
+                .span = .{ .start = 0, .end = 0, .line = 1, .column = 7 },
+            },
+        },
+        .span = .{ .start = 0, .end = 0, .line = 1, .column = 1 },
+    };
+    const expr = ast.Expr{ .unary = unary };
+
+    const awaited = try interp.evaluate(expr);
+    try testing.expect(awaited.eql(interp.builder.i32Val(9)));
 }

@@ -293,6 +293,36 @@ pub const Parser = struct {
         });
     }
 
+    fn isTopLevelDeclStart(kind: Token.Kind) bool {
+        return switch (kind) {
+            .pub_,
+            .async_,
+            .unsafe_,
+            .extern_,
+            .fn_,
+            .test_,
+            .struct_,
+            .enum_,
+            .trait,
+            .impl,
+            .type_,
+            .const_,
+            .import,
+            .module,
+            => true,
+            else => false,
+        };
+    }
+
+    /// Recover to the next likely top-level declaration boundary.
+    /// This enables parsing a partial module after declaration-level errors.
+    fn synchronizeTopLevel(self: *Parser) void {
+        while (!self.check(.eof)) {
+            if (isTopLevelDeclStart(self.current.kind)) return;
+            self.advance();
+        }
+    }
+
     // ========================================================================
     // Allocation helpers
     // ========================================================================
@@ -407,6 +437,7 @@ pub const Parser = struct {
             // Unary operators
             .minus => self.parseUnary(.negate),
             .not => self.parseUnary(.not),
+            .await_ => self.parseUnary(.await_),
             .ref => self.parseRefExpr(),
             .star => self.parseUnary(.deref),
 
@@ -1138,7 +1169,7 @@ pub const Parser = struct {
 
     fn isStatementKeyword(self: *Parser) bool {
         return switch (self.current.kind) {
-            .let, .var_, .return_, .break_, .continue_, .for_, .while_, .loop, .if_, .match => true,
+            .let, .shadow, .var_, .return_, .break_, .continue_, .for_, .while_, .loop, .if_, .match => true,
             else => false,
         };
     }
@@ -1681,8 +1712,8 @@ pub const Parser = struct {
             return .{ .decl = decl };
         }
 
-        // Check for statement keywords (let, var, return, break, continue, loops, if, match)
-        if (self.check(.let) or self.check(.var_) or self.check(.return_) or
+        // Check for statement keywords (let, shadow, var, return, break, continue, loops, if, match)
+        if (self.check(.let) or self.check(.shadow) or self.check(.var_) or self.check(.return_) or
             self.check(.break_) or self.check(.continue_) or self.check(.for_) or
             self.check(.while_) or self.check(.loop) or self.check(.if_) or
             self.check(.match))
@@ -1730,6 +1761,7 @@ pub const Parser = struct {
     pub fn parseStatement(self: *Parser) ParseError!ast.Stmt {
         return switch (self.current.kind) {
             .let => self.parseLetDecl(),
+            .shadow => self.parseShadowDecl(),
             .var_ => self.parseVarDecl(),
             .return_ => self.parseReturnStmt(),
             .break_ => self.parseBreakStmt(),
@@ -1746,7 +1778,10 @@ pub const Parser = struct {
     fn parseLetDecl(self: *Parser) ParseError!ast.Stmt {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'let'
+        return self.parseLetDeclAfterKeyword(start_span, false);
+    }
 
+    fn parseLetDeclAfterKeyword(self: *Parser, start_span: ast.Span, is_shadow: bool) ParseError!ast.Stmt {
         const name = try self.consumeIdentifier();
 
         // Type annotation is required
@@ -1764,6 +1799,7 @@ pub const Parser = struct {
             .name = name,
             .type_ = type_,
             .value = value,
+            .is_shadow = is_shadow,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .let_decl = let_decl };
@@ -1772,7 +1808,10 @@ pub const Parser = struct {
     fn parseVarDecl(self: *Parser) ParseError!ast.Stmt {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'var'
+        return self.parseVarDeclAfterKeyword(start_span, false);
+    }
 
+    fn parseVarDeclAfterKeyword(self: *Parser, start_span: ast.Span, is_shadow: bool) ParseError!ast.Stmt {
         const name = try self.consumeIdentifier();
 
         // Type annotation is required
@@ -1790,9 +1829,30 @@ pub const Parser = struct {
             .name = name,
             .type_ = type_,
             .value = value,
+            .is_shadow = is_shadow,
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .var_decl = var_decl };
+    }
+
+    fn parseShadowDecl(self: *Parser) ParseError!ast.Stmt {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'shadow'
+
+        return switch (self.current.kind) {
+            .let => blk: {
+                self.advance(); // consume 'let'
+                break :blk self.parseLetDeclAfterKeyword(start_span, true);
+            },
+            .var_ => blk: {
+                self.advance(); // consume 'var'
+                break :blk self.parseVarDeclAfterKeyword(start_span, true);
+            },
+            else => {
+                try self.reportError("expected 'let' or 'var' after 'shadow'");
+                return ParseError.UnexpectedToken;
+            },
+        };
     }
 
     fn parseReturnStmt(self: *Parser) ParseError!ast.Stmt {
@@ -2302,10 +2362,18 @@ pub const Parser = struct {
     // Declaration parsing
     // ========================================================================
 
-    /// Parse a declaration at the top level
+    /// Parse a declaration at the top level.
+    ///
+    /// Canonical modifier order: `pub async unsafe extern fn`
+    /// Each modifier is optional, but when present they must appear in this order.
+    /// This is enforced by parsing them sequentially — a later modifier appearing
+    /// before an earlier one will hit the wrong production rule and error.
     pub fn parseDeclaration(self: *Parser) ParseError!ast.Decl {
         // Handle visibility modifier
         const is_pub = self.match(.pub_);
+
+        // Handle async modifier (for async fn)
+        const is_async = self.match(.async_);
 
         // Handle unsafe modifier (for unsafe fn)
         const is_unsafe = self.match(.unsafe_);
@@ -2341,9 +2409,32 @@ pub const Parser = struct {
                     try self.reportError("extern functions must be declared inside 'extern { }' blocks");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseFunctionDecl(is_pub, is_unsafe);
+                break :blk self.parseFunctionDecl(is_pub, is_unsafe, is_async);
+            },
+            .test_ => blk: {
+                if (is_pub) {
+                    try self.reportError("'pub' modifier is not allowed on test declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_async) {
+                    try self.reportError("'async' modifier is not allowed on test declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_unsafe) {
+                    try self.reportError("'unsafe' modifier is not allowed on test declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                if (is_extern) {
+                    try self.reportError("'extern' modifier is not allowed on test declarations");
+                    return ParseError.UnexpectedToken;
+                }
+                break :blk self.parseTestDecl();
             },
             .struct_ => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on struct declarations");
                     return ParseError.UnexpectedToken;
@@ -2351,6 +2442,10 @@ pub const Parser = struct {
                 break :blk self.parseStructDecl(is_pub, is_extern);
             },
             .enum_ => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on enum declarations");
                     return ParseError.UnexpectedToken;
@@ -2358,6 +2453,10 @@ pub const Parser = struct {
                 break :blk self.parseEnumDecl(is_pub, is_extern);
             },
             .trait => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_extern) {
                     try self.reportError("'extern' modifier is not allowed on trait declarations");
                     return ParseError.UnexpectedToken;
@@ -2365,6 +2464,10 @@ pub const Parser = struct {
                 break :blk self.parseTraitDecl(is_pub, is_unsafe);
             },
             .impl => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_extern) {
                     try self.reportError("'extern' modifier is not allowed on impl declarations");
                     return ParseError.UnexpectedToken;
@@ -2372,6 +2475,10 @@ pub const Parser = struct {
                 break :blk self.parseImplDecl(is_unsafe);
             },
             .type_ => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on type aliases");
                     return ParseError.UnexpectedToken;
@@ -2380,6 +2487,10 @@ pub const Parser = struct {
                 break :blk self.parseTypeAlias(is_pub);
             },
             .const_ => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on const declarations");
                     return ParseError.UnexpectedToken;
@@ -2391,6 +2502,10 @@ pub const Parser = struct {
                 break :blk self.parseConstDecl(is_pub);
             },
             .import => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on import declarations");
                     return ParseError.UnexpectedToken;
@@ -2402,6 +2517,10 @@ pub const Parser = struct {
                 break :blk self.parseImportDecl();
             },
             .module => blk: {
+                if (is_async) {
+                    try self.reportError("'async' modifier is only allowed on function declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_unsafe) {
                     try self.reportError("'unsafe' modifier is not allowed on module declarations");
                     return ParseError.UnexpectedToken;
@@ -2415,6 +2534,8 @@ pub const Parser = struct {
             else => {
                 if (is_extern) {
                     try self.reportError("expected 'type', 'fn', 'struct', or 'enum' after 'extern'");
+                } else if (is_async) {
+                    try self.reportError("expected 'fn' after 'async'");
                 } else if (is_unsafe) {
                     try self.reportError("expected 'fn', 'trait', or 'impl' after 'unsafe'");
                 } else {
@@ -2425,7 +2546,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool) ParseError!ast.Decl {
+    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool, is_async: bool) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'fn'
 
@@ -2442,11 +2563,9 @@ pub const Parser = struct {
         const params = try self.parseFunctionParams();
         try self.consume(.r_paren, "expected ')' after parameters");
 
-        // Parse optional return type
-        var return_type: ?ast.TypeExpr = null;
-        if (self.match(.arrow)) {
-            return_type = try self.parseType();
-        }
+        // Parse return type (required)
+        try self.consume(.arrow, "return type required for function (use '-> void' for functions that return nothing)");
+        const return_type: ?ast.TypeExpr = try self.parseType();
 
         // Parse optional where clause
         const where_clause = try self.parseWhereClause();
@@ -2476,7 +2595,7 @@ pub const Parser = struct {
             .where_clause = where_clause,
             .body = body,
             .is_pub = is_pub,
-            .is_async = false,
+            .is_async = is_async,
             .is_comptime = is_comptime,
             .is_unsafe = is_unsafe,
             .is_extern = false,
@@ -2484,6 +2603,21 @@ pub const Parser = struct {
             .span = ast.Span.merge(start_span, end_span),
         });
         return .{ .function = func };
+    }
+
+    fn parseTestDecl(self: *Parser) ParseError!ast.Decl {
+        const start_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'test'
+
+        const name = try self.consumeIdentifier();
+        const body = try self.parseBlock();
+
+        const test_decl = try self.create(ast.TestDecl, .{
+            .name = name,
+            .body = body,
+            .span = ast.Span.merge(start_span, body.span),
+        });
+        return .{ .test_decl = test_decl };
     }
 
     fn parseTypeParams(self: *Parser) ParseError![]const ast.TypeParam {
@@ -2849,7 +2983,8 @@ pub const Parser = struct {
             } else {
                 // Each method in trait is a function signature (potentially without body)
                 // Note: unsafe methods in traits not yet supported
-                const method_decl = try self.parseFunctionDecl(false, false);
+                const method_is_async = self.match(.async_);
+                const method_decl = try self.parseFunctionDecl(false, false, method_is_async);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -2941,8 +3076,9 @@ pub const Parser = struct {
                 try associated_types.append(self.allocator, assoc_binding);
             } else {
                 const is_pub = self.match(.pub_);
+                const method_is_async = self.match(.async_);
                 const method_is_unsafe = self.match(.unsafe_);
-                const method_decl = try self.parseFunctionDecl(is_pub, method_is_unsafe);
+                const method_decl = try self.parseFunctionDecl(is_pub, method_is_unsafe, method_is_async);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -3105,11 +3241,9 @@ pub const Parser = struct {
         const is_variadic = params_result.is_variadic;
         try self.consume(.r_paren, "expected ')' after parameters");
 
-        // Parse optional return type
-        var return_type: ?ast.TypeExpr = null;
-        if (self.match(.arrow)) {
-            return_type = try self.parseType();
-        }
+        // Parse return type (required)
+        try self.consume(.arrow, "return type required for extern function (use '-> void' for functions that return nothing)");
+        const return_type: ?ast.TypeExpr = try self.parseType();
 
         const end_span = if (return_type) |rt| rt.span() else self.spanFromToken(self.previous);
 
@@ -3329,8 +3463,9 @@ pub const Parser = struct {
     // Top-level parsing
     // ========================================================================
 
-    /// Parse a complete module (file)
-    pub fn parseModule(self: *Parser) ParseError!ast.Module {
+    /// Parse a complete module (file) with top-level error recovery.
+    /// Returns a partial AST and records diagnostics in `errors`.
+    pub fn parseModuleRecovering(self: *Parser) ParseError!ast.Module {
         var module_decl: ?ast.ModuleDecl = null;
         var imports = std.ArrayListUnmanaged(ast.ImportDecl){};
         var declarations = std.ArrayListUnmanaged(ast.Decl){};
@@ -3340,8 +3475,19 @@ pub const Parser = struct {
 
         // Parse optional module declaration
         if (self.check(.module)) {
-            const decl = try self.parseDeclaration();
-            module_decl = decl.module_decl.*;
+            const decl = self.parseDeclaration() catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => blk: {
+                    self.synchronizeTopLevel();
+                    // Keep parsing remaining declarations even if module decl is malformed.
+                    break :blk @as(?ast.Decl, null);
+                },
+            };
+            if (decl) |parsed_decl| {
+                if (parsed_decl == .module_decl) {
+                    module_decl = parsed_decl.module_decl.*;
+                }
+            }
             _ = self.match(.newline);
         }
 
@@ -3351,7 +3497,13 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.eof)) break;
 
-            const decl = try self.parseDeclaration();
+            const decl = self.parseDeclaration() catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => {
+                    self.synchronizeTopLevel();
+                    continue;
+                },
+            };
 
             // Separate imports from other declarations
             if (decl == .import_decl) {
@@ -3368,6 +3520,16 @@ pub const Parser = struct {
             .imports = try self.dupeSlice(ast.ImportDecl, imports.items),
             .declarations = try self.dupeSlice(ast.Decl, declarations.items),
         };
+    }
+
+    /// Parse a complete module (file).
+    /// For compatibility with existing compiler flows, parse diagnostics are treated as fatal.
+    pub fn parseModule(self: *Parser) ParseError!ast.Module {
+        const module = try self.parseModuleRecovering();
+        if (self.errors.items.len > 0) {
+            return ParseError.UnexpectedToken;
+        }
+        return module;
     }
 };
 
@@ -3469,6 +3631,14 @@ test "parse unary" {
     try std.testing.expectEqual(ast.UnaryOp.negate, result.expr.unary.op);
 }
 
+test "parse await unary expression" {
+    var result = try testParse("await value");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.expr == .unary);
+    try std.testing.expectEqual(ast.UnaryOp.await_, result.expr.unary.op);
+}
+
 test "parse index" {
     var result = try testParse("arr[0]");
     defer result.arena.deinit();
@@ -3513,9 +3683,18 @@ test "parse let declaration with type" {
 
     try std.testing.expect(result.stmt == .let_decl);
     try std.testing.expectEqualStrings("x", result.stmt.let_decl.name);
+    try std.testing.expect(!result.stmt.let_decl.is_shadow);
     // Type is required and should be a named type "i32"
     try std.testing.expect(result.stmt.let_decl.type_ == .named);
     try std.testing.expectEqualStrings("i32", result.stmt.let_decl.type_.named.name);
+}
+
+test "parse shadow let declaration with type" {
+    var result = try testParseStmt("shadow let x: i32 = 42");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .let_decl);
+    try std.testing.expect(result.stmt.let_decl.is_shadow);
 }
 
 test "parse var declaration with type" {
@@ -3524,9 +3703,18 @@ test "parse var declaration with type" {
 
     try std.testing.expect(result.stmt == .var_decl);
     try std.testing.expectEqualStrings("count", result.stmt.var_decl.name);
+    try std.testing.expect(!result.stmt.var_decl.is_shadow);
     // Type is required
     try std.testing.expect(result.stmt.var_decl.type_ == .named);
     try std.testing.expectEqualStrings("i32", result.stmt.var_decl.type_.named.name);
+}
+
+test "parse shadow var declaration with type" {
+    var result = try testParseStmt("shadow var count: i32 = 0");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.stmt == .var_decl);
+    try std.testing.expect(result.stmt.var_decl.is_shadow);
 }
 
 test "parse return statement" {
@@ -3601,6 +3789,36 @@ test "parse function declaration" {
     try std.testing.expect(result.decl.function.return_type != null);
 }
 
+test "parse async function declaration" {
+    var result = try testParseDecl("async fn fetch() -> i32 { return 1 }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .function);
+    try std.testing.expect(result.decl.function.is_async);
+}
+
+test "reject async modifier on non-function declaration" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init("async struct Job { id: i32 }");
+    var parser = Parser.init(arena.allocator(), &lexer, "async struct Job { id: i32 }");
+
+    try std.testing.expectError(ParseError.UnexpectedToken, parser.parseDeclaration());
+    try std.testing.expect(parser.errors.items.len >= 1);
+}
+
+test "reject invalid modifier order for async function declaration" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init("unsafe async fn work() -> void { }");
+    var parser = Parser.init(arena.allocator(), &lexer, "unsafe async fn work() -> void { }");
+
+    try std.testing.expectError(ParseError.UnexpectedToken, parser.parseDeclaration());
+    try std.testing.expect(parser.errors.items.len >= 1);
+}
+
 test "parse generic function" {
     var result = try testParseDecl("fn identity[T](x: T) -> T { x }");
     defer result.arena.deinit();
@@ -3611,11 +3829,21 @@ test "parse generic function" {
 }
 
 test "parse pub function" {
-    var result = try testParseDecl("pub fn hello() { }");
+    var result = try testParseDecl("pub fn hello() -> void { }");
     defer result.arena.deinit();
 
     try std.testing.expect(result.decl == .function);
     try std.testing.expect(result.decl.function.is_pub);
+}
+
+test "parse test declaration" {
+    var result = try testParseDecl("test gcd { assert_eq(gcd(12, 8), 4) }");
+    defer result.arena.deinit();
+
+    try std.testing.expect(result.decl == .test_decl);
+    try std.testing.expectEqualStrings("gcd", result.decl.test_decl.name);
+    try std.testing.expectEqual(@as(usize, 0), result.decl.test_decl.body.statements.len);
+    try std.testing.expect(result.decl.test_decl.body.final_expr != null);
 }
 
 test "parse single-expression function" {
@@ -3739,7 +3967,7 @@ fn testParseModule(source: []const u8) !struct { module: ast.Module, arena: std.
     var lexer = Lexer.init(source);
     var parser = Parser.init(arena.allocator(), &lexer, source);
 
-    const module = try parser.parseModule();
+    const module = try parser.parseModuleRecovering();
     return .{ .module = module, .arena = arena };
 }
 
@@ -3749,7 +3977,7 @@ test "parse complete module" {
         \\
         \\import std.io
         \\
-        \\fn main() {
+        \\fn main() -> void {
         \\    println("Hello")
         \\}
     ;
@@ -3760,4 +3988,48 @@ test "parse complete module" {
     try std.testing.expect(result.module.module_decl != null);
     try std.testing.expectEqual(@as(usize, 1), result.module.imports.len);
     try std.testing.expectEqual(@as(usize, 1), result.module.declarations.len);
+}
+
+test "parse module recovers after invalid top-level declaration" {
+    const source =
+        \\fn first() -> i32 { 1 }
+        \\this_is_not_a_declaration
+        \\fn second() -> i32 { 2 }
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = try parser.parseModuleRecovering();
+    try std.testing.expect(parser.errors.items.len >= 1);
+    try std.testing.expectEqual(@as(usize, 2), module.declarations.len);
+    try std.testing.expect(module.declarations[0] == .function);
+    try std.testing.expect(module.declarations[1] == .function);
+    try std.testing.expectEqualStrings("first", module.declarations[0].function.name);
+    try std.testing.expectEqualStrings("second", module.declarations[1].function.name);
+}
+
+test "parse module recovers after malformed module declaration" {
+    const source =
+        \\module 123
+        \\import std.io
+        \\fn main() -> void { }
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = try parser.parseModuleRecovering();
+    try std.testing.expect(parser.errors.items.len >= 1);
+    try std.testing.expect(module.module_decl == null);
+    try std.testing.expectEqual(@as(usize, 1), module.imports.len);
+    try std.testing.expectEqual(@as(usize, 1), module.declarations.len);
+    try std.testing.expect(module.declarations[0] == .function);
+    try std.testing.expectEqualStrings("main", module.declarations[0].function.name);
 }

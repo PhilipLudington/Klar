@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -88,6 +89,20 @@ fn detectLLVMPrefix() ?[]const u8 {
     if (std.fs.accessAbsolute("/usr/local/include/llvm-c/Core.h", .{})) |_| {
         return "/usr/local";
     } else |_| {}
+
+    // Windows - check common LLVM installation paths
+    if (builtin.os.tag == .windows) {
+        const win_paths = [_][]const u8{
+            "C:\\Program Files\\LLVM",
+            "C:\\ProgramData\\chocolatey\\lib\\llvm",
+        };
+        for (win_paths) |p| {
+            const check = std.fmt.allocPrint(std.heap.page_allocator, "{s}\\include\\llvm-c\\Core.h", .{p}) catch continue;
+            if (std.fs.accessAbsolute(check, .{})) |_| {
+                return p;
+            } else |_| {}
+        }
+    }
 
     // LLVM not found - will compile without native codegen support
     return null;

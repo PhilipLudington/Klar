@@ -59,6 +59,10 @@ klar run hello.kl
 - [References](memory/references.md) - `ref` and `inout` parameters
 - [Reference Counting](memory/reference-counting.md) - Rc and Arc patterns
 
+### Guides
+
+- [WebAssembly](guides/wasm.md) - Compile to WebAssembly
+
 ### Advanced Topics
 
 - [Operators](advanced/operators.md) - Complete operator reference

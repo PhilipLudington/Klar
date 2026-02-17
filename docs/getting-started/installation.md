@@ -39,8 +39,12 @@ brew install llvm@17
 # Ubuntu/Debian
 apt install llvm-17 llvm-17-dev
 
-# Windows
-# Download from releases.llvm.org
+# Windows (Chocolatey)
+choco install llvm
+
+# Windows (manual)
+# Download from releases.llvm.org and install to C:\Program Files\LLVM
+# Or set LLVM_PREFIX environment variable to your LLVM install path
 ```
 
 ## Building Klar
@@ -54,6 +58,21 @@ cd klar
 ```
 
 The build script compiles the Klar compiler to `./zig-out/bin/klar`.
+
+### Windows Build Notes
+
+On Windows, use WSL, Git Bash, or any Bash-compatible shell to run the build and test scripts. Alternatively, you can build directly with Zig:
+
+```bash
+zig build
+```
+
+The build system auto-detects LLVM in these locations:
+- `C:\Program Files\LLVM`
+- `C:\ProgramData\chocolatey\lib\llvm`
+- Custom path via the `LLVM_PREFIX` environment variable
+
+**Known difference:** When using `klar run` on Windows, `args[0]` shows the temp binary path rather than the source file path. Standalone binaries (`klar build`) are not affected.
 
 ## Verifying the Installation
 

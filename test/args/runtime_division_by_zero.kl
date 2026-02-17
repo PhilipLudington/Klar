@@ -1,0 +1,5 @@
+fn main() -> i32 {
+    let x: i32 = 1
+    let z: i32 = 0
+    return x / z
+}

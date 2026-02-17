@@ -273,6 +273,7 @@ pub const Compiler = struct {
             .const_decl => |c| try self.compileConstDecl(c),
             .struct_decl => |s| try self.compileStructDecl(s),
             .enum_decl => |e| try self.compileEnumDecl(e),
+            .test_decl => {}, // Test declarations are handled by `klar test`, not VM compilation
             // VM limitation: traits, impls, imports not supported - use native compilation
             .trait_decl, .impl_decl, .type_alias, .import_decl, .module_decl => {},
             // Extern types and blocks are compile-time only (FFI not supported in VM)
@@ -287,6 +288,7 @@ pub const Compiler = struct {
         // Create the function object.
         const new_func = try self.allocator.create(Function);
         new_func.* = Function.init(self.allocator, func.name, @intCast(func.params.len));
+        new_func.is_async = func.is_async;
         errdefer {
             new_func.deinit();
             self.allocator.destroy(new_func);
@@ -977,6 +979,7 @@ pub const Compiler = struct {
         const op: OpCode = switch (unary.op) {
             .negate => .op_neg,
             .not => .op_not,
+            .await_ => .op_await,
             .ref => .op_nop, // TODO: implement references
             .ref_mut => .op_nop,
             .deref => .op_nop,

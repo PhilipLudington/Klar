@@ -39,7 +39,7 @@ println(copy2.get())     // "shared data"
 The data is freed when the last owner is dropped:
 
 ```klar
-fn example() {
+fn example() -> void {
     let rc1: Rc[i32] = Rc.new(42)
     let rc2: Rc[i32] = rc1.clone()
 
@@ -155,7 +155,7 @@ struct Player {
 }
 
 impl Player {
-    fn add_points(ref self: Player, points: i32) {
+    fn add_points(ref self: Player, points: i32) -> void {
         let current: i32 = self.state.get().score.get()
         self.state.get().score.set(current + points)
     }
@@ -209,7 +209,7 @@ struct TreeNode {
     children: List[Rc[TreeNode]],
 }
 
-fn share_subtree() {
+fn share_subtree() -> void {
     let shared: Rc[TreeNode] = Rc.new(TreeNode {
         value: 100,
         children: List.new[Rc[TreeNode]](),
@@ -236,11 +236,11 @@ struct Observable {
 }
 
 impl Observable {
-    fn subscribe(inout self: Observable, observer: Rc[Observer]) {
+    fn subscribe(inout self: Observable, observer: Rc[Observer]) -> void {
         self.observers.push(observer)
     }
 
-    fn notify(ref self: Observable, event: string) {
+    fn notify(ref self: Observable, event: string) -> void {
         for obs: Rc[Observer] in self.observers {
             obs.get().on_event(event)
         }
@@ -300,10 +300,10 @@ struct Node {
 // Consider: Do you really need shared ownership?
 
 // Maybe ownership transfer is enough:
-fn process(data: Data) { ... }
+fn process(data: Data) -> void { ... }
 
 // Or borrowing:
-fn process(ref data: Data) { ... }
+fn process(ref data: Data) -> void { ... }
 ```
 
 ## Best Practices

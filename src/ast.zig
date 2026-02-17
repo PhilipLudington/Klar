@@ -200,6 +200,7 @@ pub const Unary = struct {
 pub const UnaryOp = enum {
     negate,
     not,
+    await_,
     ref,
     ref_mut,
     deref,
@@ -208,6 +209,7 @@ pub const UnaryOp = enum {
         return switch (kind) {
             .minus => .negate,
             .not => .not,
+            .await_ => .await_,
             .amp => .ref,
             .star => .deref,
             else => null,
@@ -504,6 +506,7 @@ pub const LetDecl = struct {
     name: []const u8,
     type_: TypeExpr,
     value: Expr,
+    is_shadow: bool,
     span: Span,
 };
 
@@ -511,6 +514,7 @@ pub const VarDecl = struct {
     name: []const u8,
     type_: TypeExpr,
     value: Expr,
+    is_shadow: bool,
     span: Span,
 };
 
@@ -589,6 +593,7 @@ pub const MatchArmStmt = struct {
 
 pub const Decl = union(enum) {
     function: *FunctionDecl,
+    test_decl: *TestDecl,
     struct_decl: *StructDecl,
     enum_decl: *EnumDecl,
     trait_decl: *TraitDecl,
@@ -603,6 +608,7 @@ pub const Decl = union(enum) {
     pub fn span(self: Decl) Span {
         return switch (self) {
             .function => |f| f.span,
+            .test_decl => |t| t.span,
             .struct_decl => |s| s.span,
             .enum_decl => |e| e.span,
             .trait_decl => |t| t.span,
@@ -630,6 +636,12 @@ pub const FunctionDecl = struct {
     is_unsafe: bool, // true for `unsafe fn` (unsafe function)
     is_extern: bool, // true for extern fn (C FFI function)
     is_variadic: bool, // true for variadic fn (has ... in params)
+    span: Span,
+};
+
+pub const TestDecl = struct {
+    name: []const u8,
+    body: *Block,
     span: Span,
 };
 
@@ -920,5 +932,6 @@ test "BinaryOp fromToken" {
 test "UnaryOp fromToken" {
     try std.testing.expectEqual(UnaryOp.negate, UnaryOp.fromToken(.minus).?);
     try std.testing.expectEqual(UnaryOp.not, UnaryOp.fromToken(.not).?);
+    try std.testing.expectEqual(UnaryOp.await_, UnaryOp.fromToken(.await_).?);
     try std.testing.expect(UnaryOp.fromToken(.plus) == null);
 }

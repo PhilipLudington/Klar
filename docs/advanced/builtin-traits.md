@@ -149,7 +149,7 @@ The `Drop` trait allows custom cleanup when a value goes out of scope.
 
 ```klar
 trait Drop {
-    fn drop(inout self: Self)
+    fn drop(inout self: Self) -> void
 }
 ```
 
@@ -161,7 +161,7 @@ struct Connection {
 }
 
 impl Connection: Drop {
-    fn drop(inout self: Connection) {
+    fn drop(inout self: Connection) -> void {
         println("Closing connection {self.id}")
         // Cleanup resources
     }
@@ -179,7 +179,7 @@ fn main() -> i32 {
 Values are dropped in reverse declaration order:
 
 ```klar
-fn example() {
+fn example() -> void {
     let a: Resource = acquire()  // Dropped third
     let b: Resource = acquire()  // Dropped second
     let c: Resource = acquire()  // Dropped first

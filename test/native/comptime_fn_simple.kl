@@ -4,7 +4,7 @@ fn @double(x: i32) -> i32 {
     return x * 2
 }
 
-fn main() {
+fn main() -> void {
     // This should be evaluated at compile time
     let result: i32 = @double(21)
     assert_eq(result, 42)

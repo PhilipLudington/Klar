@@ -1,13 +1,22 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const vm_value = @import("vm_value.zig");
 const Value = vm_value.Value;
 const ObjString = vm_value.ObjString;
 const ObjArray = vm_value.ObjArray;
 const ObjTuple = vm_value.ObjTuple;
+const ObjStruct = vm_value.ObjStruct;
 const ObjOptional = vm_value.ObjOptional;
 const ObjNative = vm_value.ObjNative;
 const RuntimeError = vm_value.RuntimeError;
+const GC = vm_value.GC;
+
+var active_gc: ?*GC = null;
+
+pub fn setActiveGC(gc: ?*GC) void {
+    active_gc = gc;
+}
 
 // ============================================================================
 // Native Function Type
@@ -39,6 +48,15 @@ pub const builtins = [_]NativeDesc{
     // Assertion functions
     .{ .name = "assert", .arity = 1, .function = nativeAssert },
     .{ .name = "assert_eq", .arity = 2, .function = nativeAssertEq },
+    .{ .name = "assert_ne", .arity = 2, .function = nativeAssertNe },
+    .{ .name = "assert_ok", .arity = 1, .function = nativeAssertOk },
+    .{ .name = "assert_err", .arity = 1, .function = nativeAssertErr },
+    .{ .name = "assert_some", .arity = 1, .function = nativeAssertSome },
+    .{ .name = "assert_none", .arity = 1, .function = nativeAssertNone },
+    .{ .name = "Ok", .arity = 1, .function = nativeOk },
+    .{ .name = "Err", .arity = 1, .function = nativeErr },
+    .{ .name = "Some", .arity = 1, .function = nativeSome },
+    .{ .name = "None", .arity = 0, .function = nativeNone },
     .{ .name = "panic", .arity = 1, .function = nativePanic },
 
     // Utility functions
@@ -144,10 +162,98 @@ fn nativeAssertEq(_: Allocator, args: []const Value) RuntimeError!Value {
     return .void_;
 }
 
+fn nativeAssertNe(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 2) return RuntimeError.WrongArity;
+
+    if (args[0].eql(args[1])) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn nativeAssertOk(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    if (args[0] != .struct_) return RuntimeError.TypeError;
+    const result_struct = args[0].struct_;
+    if (!std.mem.eql(u8, result_struct.type_name, "Result")) return RuntimeError.TypeError;
+    const ok_field = result_struct.getField("is_ok") orelse return RuntimeError.TypeError;
+    if (ok_field != .bool_) return RuntimeError.TypeError;
+    if (!ok_field.bool_) return RuntimeError.AssertionFailed;
+    return .void_;
+}
+
+fn nativeAssertErr(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    if (args[0] != .struct_) return RuntimeError.TypeError;
+    const result_struct = args[0].struct_;
+    if (!std.mem.eql(u8, result_struct.type_name, "Result")) return RuntimeError.TypeError;
+    const ok_field = result_struct.getField("is_ok") orelse return RuntimeError.TypeError;
+    if (ok_field != .bool_) return RuntimeError.TypeError;
+    if (ok_field.bool_) return RuntimeError.AssertionFailed;
+    return .void_;
+}
+
+fn nativeAssertSome(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    if (args[0] != .optional) return RuntimeError.TypeError;
+
+    if (args[0].optional.value == null) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn nativeAssertNone(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    if (args[0] != .optional) return RuntimeError.TypeError;
+
+    if (args[0].optional.value != null) {
+        return RuntimeError.AssertionFailed;
+    }
+
+    return .void_;
+}
+
+fn nativeOk(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = true }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", args[0]) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+fn nativeErr(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", args[0]) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+fn nativeSome(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 1) return RuntimeError.WrongArity;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const optional = ObjOptional.createSomeGC(gc, args[0]) catch return RuntimeError.OutOfMemory;
+    return .{ .optional = optional };
+}
+
+fn nativeNone(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = allocator;
+    if (args.len != 0) return RuntimeError.WrongArity;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const optional = ObjOptional.createNoneGC(gc) catch return RuntimeError.OutOfMemory;
+    return .{ .optional = optional };
+}
+
 fn nativePanic(_: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 1) return RuntimeError.WrongArity;
 
-    const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+    const stderr = getStdErr();
     stderr.writeAll("panic: ") catch {};
 
     switch (args[0]) {
@@ -193,6 +299,7 @@ fn nativeTypeOf(allocator: Allocator, args: []const Value) RuntimeError!Value {
         .optional => "optional",
         .range => "range",
         .upvalue => "upvalue",
+        .future => "future",
     };
 
     // Create a string object with the type name
@@ -418,6 +525,17 @@ fn debugValueToString(allocator: Allocator, value: Value, depth: usize) RuntimeE
             break :blk std.fmt.allocPrint(allocator, "{d}{s}{d}", .{ r.start, op, r.end }) catch return RuntimeError.OutOfMemory;
         },
         .upvalue => allocator.dupe(u8, "<upvalue>") catch return RuntimeError.OutOfMemory,
+        .future => |future| blk: {
+            break :blk std.fmt.allocPrint(allocator, "Future(task={d}, state={s})", .{
+                future.task_id,
+                switch (future.state) {
+                    .pending => "pending",
+                    .completed => "completed",
+                    .failed => "failed",
+                    .cancelled => "cancelled",
+                },
+            }) catch return RuntimeError.OutOfMemory;
+        },
     };
 }
 
@@ -445,6 +563,7 @@ fn valueToString(allocator: Allocator, value: Value) RuntimeError![]const u8 {
         .native => |n| n.name,
         .range => "<range>",
         .upvalue => "<upvalue>",
+        .future => "<future>",
     };
 }
 
@@ -453,11 +572,27 @@ fn valueToString(allocator: Allocator, value: Value) RuntimeError![]const u8 {
 // ============================================================================
 
 fn getStdOut() std.fs.File {
-    return .{ .handle = std.posix.STDOUT_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDOUT_FILENO };
+    }
 }
 
 fn getStdIn() std.fs.File {
-    return .{ .handle = std.posix.STDIN_FILENO };
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDIN_FILENO };
+    }
+}
+
+fn getStdErr() std.fs.File {
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDERR_FILENO };
+    }
 }
 
 // ============================================================================

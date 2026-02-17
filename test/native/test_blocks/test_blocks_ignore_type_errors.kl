@@ -1,0 +1,11 @@
+// Test: test blocks are excluded from native build/run type checking
+// Expected: native-tests
+
+fn main() -> i32 {
+    return 77
+}
+
+test main {
+    // This would be a type error if test blocks were checked in native mode.
+    assert_eq("not-an-int", 1)
+}

@@ -1,0 +1,7 @@
+fn dir_two() -> i32 {
+    return 12
+}
+
+test dir_two {
+    assert_eq(dir_two(), 12)
+}

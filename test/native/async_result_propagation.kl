@@ -1,0 +1,25 @@
+// Test ? operator inside async function with Result return type
+
+fn get_value() -> Result[i32, i32] {
+    return Ok(42)
+}
+
+fn get_err() -> Result[i32, i32] {
+    return Err(-1)
+}
+
+async fn try_ok() -> Future[Result[i32, i32]] {
+    let v: i32 = get_value()?
+    return Ok(v)
+}
+
+async fn try_chain() -> Future[Result[i32, i32]] {
+    let v: i32 = get_value()?
+    return Ok(v + 1)
+}
+
+fn main() -> i32 {
+    let _f: Future[Result[i32, i32]] = try_ok()
+    let _g: Future[Result[i32, i32]] = try_chain()
+    return 0
+}

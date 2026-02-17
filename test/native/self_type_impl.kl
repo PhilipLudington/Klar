@@ -14,7 +14,7 @@ impl Counter {
     }
 
     // Self in inout self parameter
-    fn increment(self: inout Self) {
+    fn increment(self: inout Self) -> void {
         self.value = self.value + 1
     }
 

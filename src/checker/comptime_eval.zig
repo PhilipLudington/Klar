@@ -172,6 +172,7 @@ pub fn registerComptimeFunctionsInInterpreter(tc: anytype, interp: *Interpreter)
                 .params = params_slice,
                 .body = body,
                 .closure_env = interp.global_env,
+                .is_async = false,
             };
 
             // Track for cleanup
@@ -327,6 +328,7 @@ pub fn evaluateComptimeExpr(tc: anytype, expr: ast.Expr) ?Value {
                     if (operand == .bool_) return .{ .bool_ = !operand.bool_ };
                     return null;
                 },
+                .await_ => return null,
                 else => return null,
             }
         },

@@ -243,8 +243,8 @@ enum Option[T] { Some(T), None }
 enum Result[T, E] { Ok(T), Err(E) }
 
 // Traits
-trait Drawable { fn draw(self) }
-impl Circle: Drawable { fn draw(self) { ... } }
+trait Drawable { fn draw(self) -> void }
+impl Circle: Drawable { fn draw(self) -> void { ... } }
 
 // Control flow (statement-based, not expressions)
 var max: i32

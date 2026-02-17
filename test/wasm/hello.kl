@@ -1,0 +1,7 @@
+// Test basic print in WebAssembly (puts becomes wasm import)
+// Expected: build-success
+
+fn main() -> i32 {
+    println("Hello from WebAssembly!")
+    return 0
+}

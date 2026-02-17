@@ -190,6 +190,22 @@ fn typeToTypeExpr(allocator: std.mem.Allocator, ty: Type) ast.TypeExpr {
             };
             break :blk .{ .generic_apply = generic };
         },
+        .applied => |a| blk: {
+            if (a.base == .extern_type and std.mem.eql(u8, a.base.extern_type.name, "Future") and a.args.len == 1) {
+                const generic = allocator.create(ast.GenericApply) catch
+                    return .{ .named = .{ .name = "unknown", .span = empty_span } };
+                var args = allocator.alloc(ast.TypeExpr, 1) catch
+                    return .{ .named = .{ .name = "unknown", .span = empty_span } };
+                args[0] = typeToTypeExpr(allocator, a.args[0]);
+                generic.* = .{
+                    .base = .{ .named = .{ .name = "Future", .span = empty_span } },
+                    .args = args,
+                    .span = empty_span,
+                };
+                break :blk .{ .generic_apply = generic };
+            }
+            break :blk .{ .named = .{ .name = "unknown", .span = empty_span } };
+        },
         // Default fallback for types not yet handled
         else => .{ .named = .{ .name = "unknown", .span = empty_span } },
     };
@@ -389,6 +405,12 @@ fn checkBinary(tc: anytype, bin: *ast.Binary) Type {
         },
         // Comparison operators
         .eq, .not_eq, .lt, .gt, .lt_eq, .gt_eq => {
+            const left_is_future = tc.futureInnerType(left_type) != null;
+            const right_is_future = tc.futureInnerType(right_type) != null;
+            if (left_is_future or right_is_future) {
+                tc.addError(.invalid_operation, bin.span, "comparison on Future values is not supported; await first", .{});
+                return tc.type_builder.boolType();
+            }
             if (!left_type.eql(right_type)) {
                 tc.addError(.type_mismatch, bin.span, "comparison operands must have same type", .{});
             }
@@ -462,6 +484,17 @@ fn checkUnary(tc: anytype, un: *ast.Unary) Type {
                 return tc.type_builder.unknownType();
             }
             return tc.type_builder.boolType();
+        },
+        .await_ => {
+            if (!tc.current_async_context) {
+                tc.addError(.invalid_operation, un.span, "'await' can only be used inside async functions", .{});
+                return tc.type_builder.unknownType();
+            }
+            if (tc.futureInnerType(operand_type)) |inner| {
+                return inner;
+            }
+            tc.addError(.invalid_operation, un.span, "'await' operand must be Future[T]", .{});
+            return tc.type_builder.unknownType();
         },
         .ref => {
             // With new syntax, mutability is determined by whether the operand is mutable
@@ -627,6 +660,10 @@ fn checkClosure(tc: anytype, closure: *ast.Closure) Type {
     const old_return_type = tc.current_return_type;
     tc.current_return_type = return_type;
     defer tc.current_return_type = old_return_type;
+
+    const old_async_context = tc.current_async_context;
+    tc.current_async_context = false;
+    defer tc.current_async_context = old_async_context;
 
     _ = checkExpr(tc, closure.body);
 

@@ -209,7 +209,7 @@ let combined: string = first + ", " + second + "!"
 The `void` type represents the absence of a value. It's used for functions that don't return anything:
 
 ```klar
-fn print_greeting(name: string) {
+fn print_greeting(name: string) -> void {
     println("Hello, {name}!")
     // Implicitly returns void
 }

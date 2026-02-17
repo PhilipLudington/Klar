@@ -1,0 +1,15 @@
+// Expected: check-error invalid_operation
+
+struct Job {
+    id: i32,
+}
+
+impl Job {
+    async fn execute(self: Self) -> i32 {
+        return self.id
+    }
+}
+
+fn main() -> i32 {
+    return 0
+}

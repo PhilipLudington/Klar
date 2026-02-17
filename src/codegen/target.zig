@@ -18,11 +18,13 @@ pub const TargetInfo = struct {
     pub const Arch = enum {
         x86_64,
         aarch64,
+        wasm32,
         unknown,
 
         pub fn fromString(s: []const u8) Arch {
             if (std.mem.eql(u8, s, "x86_64") or std.mem.eql(u8, s, "x86-64")) return .x86_64;
             if (std.mem.eql(u8, s, "aarch64") or std.mem.eql(u8, s, "arm64")) return .aarch64;
+            if (std.mem.eql(u8, s, "wasm32")) return .wasm32;
             return .unknown;
         }
 
@@ -31,16 +33,17 @@ pub const TargetInfo = struct {
                 .macos => switch (self) {
                     .aarch64 => "arm64",
                     .x86_64 => "x86_64",
-                    .unknown => "unknown",
+                    else => "unknown",
                 },
                 .none => switch (self) {
                     .aarch64 => "aarch64",
                     .x86_64 => "elf_x86_64",
-                    .unknown => "unknown",
+                    else => "unknown",
                 },
                 else => switch (self) {
                     .aarch64 => "aarch64",
                     .x86_64 => "x86_64",
+                    .wasm32 => "wasm32",
                     .unknown => "unknown",
                 },
             };
@@ -51,6 +54,7 @@ pub const TargetInfo = struct {
         macos,
         linux,
         windows,
+        wasi,
         none, // bare-metal/freestanding
         unknown,
 
@@ -66,6 +70,7 @@ pub const TargetInfo = struct {
             {
                 return .windows;
             }
+            if (std.mem.eql(u8, s, "wasi") or std.mem.startsWith(u8, s, "wasi")) return .wasi;
             if (std.mem.eql(u8, s, "none")) return .none;
             return .unknown;
         }
@@ -190,6 +195,7 @@ pub const TargetInfo = struct {
             .linux => .gnu,
             .windows => .msvc,
             .macos => .none,
+            .wasi => .none,
             .none => .elf, // bare-metal defaults to ELF
             .unknown => .unknown,
         };
@@ -202,6 +208,7 @@ pub const TargetInfo = struct {
                 .macos => "arm64",
                 else => "aarch64",
             },
+            .wasm32 => "wasm32",
             .unknown => "unknown",
         };
 
@@ -210,7 +217,8 @@ pub const TargetInfo = struct {
             .macos => "apple-macosx",
             .linux => "unknown-linux",
             .windows => "pc-windows",
-            .none => "none",
+            .wasi => "unknown-wasi",
+            .none => if (arch == .wasm32) "unknown-unknown" else "none",
             .unknown => "unknown-unknown",
         };
 
@@ -241,12 +249,14 @@ pub const TargetInfo = struct {
                 .macos => .macos,
                 .linux => .linux,
                 .windows => .windows,
+                .wasi => .wasi,
                 .none => .freestanding,
                 .unknown => builtin.os.tag, // Fallback to host
             },
             .arch = switch (self.arch) {
                 .x86_64 => .x86_64,
                 .aarch64 => .aarch64,
+                .wasm32 => .wasm32,
                 .unknown => builtin.cpu.arch, // Fallback to host
             },
         };
@@ -271,9 +281,9 @@ pub const TargetInfo = struct {
 
     /// Check if this is a cross-compilation (target != host).
     pub fn isCrossCompile(self: TargetInfo) bool {
-        // Bare-metal is always "cross-compilation" in the sense that
-        // we're not compiling for the host OS
-        if (self.os == .none) return true;
+        // Bare-metal and wasm are always "cross-compilation"
+        if (self.os == .none or self.os == .wasi) return true;
+        if (self.arch == .wasm32) return true;
 
         const host_arch: Arch = switch (builtin.cpu.arch) {
             .x86_64 => .x86_64,
@@ -371,6 +381,11 @@ pub const Platform = struct {
         return self.os == .freestanding;
     }
 
+    /// Check if this is a WebAssembly target.
+    pub fn isWasm(self: Platform) bool {
+        return self.arch == .wasm32;
+    }
+
     /// Get the object file extension for this platform.
     pub fn getObjectExtension(self: Platform) []const u8 {
         return switch (self.os) {
@@ -381,6 +396,7 @@ pub const Platform = struct {
 
     /// Get the executable file extension for this platform.
     pub fn getExecutableExtension(self: Platform) []const u8 {
+        if (self.isWasm()) return ".wasm";
         return switch (self.os) {
             .windows => ".exe",
             else => "",
@@ -403,6 +419,7 @@ pub const Platform = struct {
             else => switch (self.arch) {
                 .aarch64 => "aarch64",
                 .x86_64 => "x86_64",
+                .wasm32 => "wasm32",
                 else => "unknown",
             },
         };
@@ -421,9 +438,18 @@ pub const Platform = struct {
     pub fn getPointerSize(self: Platform) usize {
         return switch (self.arch) {
             .x86_64, .aarch64 => 8, // 64-bit architectures
-            .x86, .arm => 4, // 32-bit architectures
+            .x86, .arm, .wasm32 => 4, // 32-bit architectures
             else => 8, // Default to 64-bit
         };
+    }
+
+    /// Get the LLVM data layout string for this platform.
+    pub fn getDataLayout(self: Platform) [:0]const u8 {
+        if (self.isWasm()) {
+            return "e-m:e-p:32:32-i64:64-n32:64-S128";
+        }
+        // For other platforms, let LLVM's target machine set the layout
+        return "";
     }
 };
 

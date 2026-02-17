@@ -26,9 +26,23 @@ const vm_builtins = @import("vm_builtins.zig");
 const gc_mod = @import("gc.zig");
 const GC = gc_mod.GC;
 
-// Zig 0.15 IO helpers
+const zig_builtin = @import("builtin");
+
+// Cross-platform IO helpers
 fn getStdOut() std.fs.File {
-    return .{ .handle = std.posix.STDOUT_FILENO };
+    if (comptime zig_builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDOUT_FILENO };
+    }
+}
+
+fn getStdErr() std.fs.File {
+    if (comptime zig_builtin.os.tag == .windows) {
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) };
+    } else {
+        return .{ .handle = std.posix.STDERR_FILENO };
+    }
 }
 
 // ============================================================================
@@ -101,6 +115,16 @@ pub const VM = struct {
     /// Last error context (for detailed error reporting).
     last_error: ?ErrorContext,
 
+    /// Monotonic task id generator for runtime Future objects.
+    next_future_task_id: vm_value.TaskId,
+
+    /// Heap boxes used for completed Future payloads.
+    /// Grows monotonically during execution — each async fn return allocates one box.
+    /// All entries are freed in deinit(). This is acceptable for the current synchronous-
+    /// completion model where programs are short-lived. A true async runtime would need
+    /// per-task cleanup or arena-based lifetime management instead.
+    future_payloads: std.ArrayListUnmanaged(*Value),
+
     // -------------------------------------------------------------------------
     // Initialization
     // -------------------------------------------------------------------------
@@ -120,6 +144,8 @@ pub const VM = struct {
             .debug_gc = false,
             .stress_gc = false,
             .last_error = null,
+            .next_future_task_id = 1,
+            .future_payloads = .{},
         };
 
         // Initialize stack with void values
@@ -163,6 +189,10 @@ pub const VM = struct {
     }
 
     pub fn deinit(self: *VM) void {
+        for (self.future_payloads.items) |payload| {
+            self.allocator.destroy(payload);
+        }
+        self.future_payloads.deinit(self.allocator);
         self.gc.deinit();
         self.globals.deinit(self.allocator);
     }
@@ -246,8 +276,28 @@ pub const VM = struct {
         if (self.last_error) |ctx| {
             var buf: [2048]u8 = undefined;
             const msg = ctx.format(&buf);
-            const stderr = std.io.getStdErr();
+            const stderr = getStdErr();
             stderr.writeAll(msg) catch {};
+        }
+    }
+
+    fn resolveAwaitValue(self: *VM, value: Value) RuntimeError!Value {
+        switch (value) {
+            .future => |future| switch (future.state) {
+                .completed => {
+                    if (future.value) |resolved| {
+                        return resolved.*;
+                    }
+                    return Value.void_val;
+                },
+                .pending, .failed, .cancelled => {
+                    return self.recordErrorWithMessage(
+                        RuntimeError.InvalidOperation,
+                        "runtime error: await on non-completed Future",
+                    );
+                },
+            },
+            else => return value,
         }
     }
 
@@ -372,6 +422,11 @@ pub const VM = struct {
                 .op_not => {
                     const value = try self.pop();
                     try self.push(Value.fromBool(value.isFalsey()));
+                },
+                .op_await => {
+                    const value = try self.pop();
+                    const awaited = try self.resolveAwaitValue(value);
+                    try self.push(awaited);
                 },
                 .op_and => {
                     const offset = self.readU16();
@@ -526,7 +581,24 @@ pub const VM = struct {
                     try self.callValue(callee, arg_count);
                 },
                 .op_return => {
-                    const result = try self.pop();
+                    var result = try self.pop();
+
+                    if (self.currentFrame().closure.function.is_async) {
+                        const payload = try self.allocator.create(Value);
+                        payload.* = result;
+                        self.future_payloads.append(self.allocator, payload) catch {
+                            self.allocator.destroy(payload);
+                            return RuntimeError.OutOfMemory;
+                        };
+                        result = .{
+                            .future = .{
+                                .task_id = self.next_future_task_id,
+                                .state = .completed,
+                                .value = payload,
+                            },
+                        };
+                        self.next_future_task_id += 1;
+                    }
 
                     // Close any open upvalues in the returning function's scope.
                     try self.closeUpvalues(self.currentFrame().slots_base);
@@ -541,17 +613,29 @@ pub const VM = struct {
                     try self.push(result);
                 },
                 .op_return_void => {
+                    var result: Value = .void_;
+                    if (self.currentFrame().closure.function.is_async) {
+                        result = .{
+                            .future = .{
+                                .task_id = self.next_future_task_id,
+                                .state = .completed,
+                                .value = null,
+                            },
+                        };
+                        self.next_future_task_id += 1;
+                    }
+
                     // Close any open upvalues.
                     try self.closeUpvalues(self.currentFrame().slots_base);
 
                     self.frame_count -= 1;
                     if (self.frame_count == 0) {
                         _ = try self.pop();
-                        return .void_;
+                        return result;
                     }
 
                     self.stack_top = self.frames[self.frame_count].slots_base;
-                    try self.push(.void_);
+                    try self.push(result);
                 },
                 .op_closure => {
                     const func_idx = self.readU16();
@@ -1053,6 +1137,8 @@ pub const VM = struct {
                     return RuntimeError.WrongArity;
                 }
                 const args = self.stack[self.stack_top - arg_count .. self.stack_top];
+                vm_builtins.setActiveGC(&self.gc);
+                defer vm_builtins.setActiveGC(null);
                 const result = try native.function(self.allocator, args);
                 self.stack_top -= arg_count + 1; // Pop args and callee
                 try self.push(result);
@@ -1558,7 +1644,7 @@ pub const VM = struct {
                 try self.push(v.*);
             } else {
                 // Print error message and panic
-                const stderr = std.fs.File{ .handle = std.posix.STDERR_FILENO };
+                const stderr = getStdErr();
                 stderr.writeAll("expect failed: ") catch {};
                 if (msg == .string) {
                     stderr.writeAll(msg.string.chars) catch {};
@@ -1635,6 +1721,18 @@ pub const VM = struct {
             },
             .void_ => .{ .str = "void", .needs_free = false },
             .string => |s| .{ .str = s.chars, .needs_free = false },
+            .future => |future| blk: {
+                const str = try std.fmt.allocPrint(self.allocator, "Future(task={d}, state={s})", .{
+                    future.task_id,
+                    switch (future.state) {
+                        .pending => "pending",
+                        .completed => "completed",
+                        .failed => "failed",
+                        .cancelled => "cancelled",
+                    },
+                });
+                break :blk .{ .str = str, .needs_free = true };
+            },
             else => .{ .str = "<object>", .needs_free = false },
         };
     }
@@ -1654,6 +1752,7 @@ pub const VM = struct {
             .optional => "optional",
             .range => "range",
             .upvalue => "upvalue",
+            .future => "future",
         };
     }
 
@@ -1709,6 +1808,20 @@ pub const VM = struct {
                 } else {
                     self.write("None");
                 }
+            },
+            .future => |future| {
+                self.write("Future(task=");
+                var id_buf: [32]u8 = undefined;
+                const id_text = std.fmt.bufPrint(&id_buf, "{d}", .{future.task_id}) catch "?";
+                self.write(id_text);
+                self.write(", state=");
+                self.write(switch (future.state) {
+                    .pending => "pending",
+                    .completed => "completed",
+                    .failed => "failed",
+                    .cancelled => "cancelled",
+                });
+                self.write(")");
             },
             .closure => self.write("<closure>"),
             .function => self.write("<function>"),
@@ -1850,4 +1963,61 @@ test "VM comparison" {
     try vm.comparisonOp(.gt);
     const gt_result = try vm.pop();
     try testing.expect(gt_result.eql(Value.true_val));
+}
+
+test "VM await resolve semantics" {
+    const testing = std.testing;
+
+    var vm = try VM.init(testing.allocator);
+    defer vm.deinit();
+
+    var completed_payload = Value.fromInt(42);
+    const completed = Value{
+        .future = .{
+            .task_id = 1,
+            .state = .completed,
+            .value = &completed_payload,
+        },
+    };
+    const completed_result = try vm.resolveAwaitValue(completed);
+    try testing.expect(completed_result.eql(Value.fromInt(42)));
+
+    const completed_void = Value{
+        .future = .{
+            .task_id = 2,
+            .state = .completed,
+            .value = null,
+        },
+    };
+    const void_result = try vm.resolveAwaitValue(completed_void);
+    try testing.expect(void_result.eql(Value.void_val));
+
+    const passthrough = try vm.resolveAwaitValue(Value.fromInt(7));
+    try testing.expect(passthrough.eql(Value.fromInt(7)));
+}
+
+test "VM await rejects non-completed futures with stable message" {
+    const testing = std.testing;
+
+    var vm = try VM.init(testing.allocator);
+    defer vm.deinit();
+
+    const states = [_]vm_value.FutureState{ .pending, .failed, .cancelled };
+    for (states, 0..) |state, i| {
+        vm.last_error = null;
+        const fut = Value{
+            .future = .{
+                .task_id = @intCast(i + 1),
+                .state = state,
+                .value = null,
+            },
+        };
+        try testing.expectError(RuntimeError.InvalidOperation, vm.resolveAwaitValue(fut));
+        try testing.expect(vm.getLastError() != null);
+        const ctx = vm.getLastError().?;
+        try testing.expectEqualStrings(
+            "runtime error: await on non-completed Future",
+            ctx.message orelse "",
+        );
+    }
 }
