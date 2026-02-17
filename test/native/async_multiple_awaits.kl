@@ -1,0 +1,20 @@
+// Test multiple await expressions in a single function
+
+async fn a() -> Future[i32] {
+    return 20
+}
+
+async fn b() -> Future[i32] {
+    return 22
+}
+
+async fn combined() -> Future[i32] {
+    let x: i32 = await a()
+    let y: i32 = await b()
+    return x + y
+}
+
+fn main() -> i32 {
+    let _f: Future[i32] = combined()
+    return 0
+}

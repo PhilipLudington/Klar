@@ -284,14 +284,14 @@ Optionally include function source with `--include-source` for richer AI context
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Async/Await | Stretch goal | |
+| Async/Await | **Done** (Milestone 6) | |
 | Self-hosting | Stretch goal | |
 | WebAssembly target | Stretch goal | |
 | Windows support | Stretch goal | |
 
 ### Suggested Next Execution Order
 
-1. Async/Await
+1. ~~Async/Await~~ (Complete)
 2. WebAssembly target
 3. Windows support
 4. Self-hosting
@@ -302,7 +302,7 @@ Optionally include function source with `--include-source` for richer AI context
 
 **Objective:** Add first-class async functions with explicit `async fn` declarations and `await` expressions.
 
-**Status:** In progress
+**Status:** Complete
 
 **Effort:** High | **Impact:** High | **Dependencies:** Milestones 2, 3
 
@@ -341,7 +341,7 @@ Optionally include function source with `--include-source` for richer AI context
 - [x] **6.4** Tooling integration
   - Update formatter for async/await constructs
   - Added formatter emission for `async fn` modifiers across top-level, trait, and impl method declarations
-  - Added formatter regression fixture `test/fmt/async.kl` covering `async fn`, `await` expressions, and async trait/impl methods
+  - Updated formatter regression fixture `test/fmt/async.kl` to use semantically valid async patterns (`Future[T]` returns)
   - Add LSP completion/hover/diagnostic support for new syntax
   - Added LSP keyword completions for `async`/`await` with async-aware detail text
   - Added LSP hover keyword docs for `async`/`await` when not resolving to symbols
@@ -351,13 +351,15 @@ Optionally include function source with `--include-source` for richer AI context
   - Added checker unit regressions for async `await` success cases and operand-validation failures
   - Added cross-backend args-suite regression (`native`/`vm`/`interpret`) for async/await execution parity
   - Added native regression fixture `test/native/async_await_basic.kl`
-  - Add examples showing sequential and concurrent async flows
+  - Add examples showing sequential async flows (concurrent execution deferred to future work)
   - Update MEMORY.md and docs language guide
   - Updated `MEMORY.md`, `docs/language/functions.md`, and `docs/appendix/keywords.md` for async/await language status and usage
+  - Added canonical async patterns and anti-patterns to `MEMORY.md` (Future[T] return, await usage, common mistakes)
+  - Renamed misleading check test `async_function_not_supported.kl` → `async_function_pass.kl`
 
 ### Success Criteria
 
-- [ ] Async functions parse/type-check with explicit, unambiguous signatures
+- [x] Async functions parse/type-check with explicit, unambiguous signatures
 - [x] Await works correctly across interpreter, VM, and native build paths
 - [x] Async misuse surfaces actionable diagnostics
 - [x] Test suite includes regression coverage for async/await semantics

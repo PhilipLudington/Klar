@@ -251,7 +251,12 @@
 
 ### Other
 
-`comptime`, `async`, `await`
+`comptime`, `async`, `await`, `Future`
+
+- `async fn` declares an async function; must return `Future[T]`
+- `await expr` suspends until `Future[T]` resolves, yields `T`; only valid inside `async fn`
+- `Future[T]` is the return type wrapper for async functions
+- Async trait/impl methods are not yet supported
 
 Async runtime internals (state tags/layout conventions): `docs/design/async-runtime-internal.md`
 
@@ -310,6 +315,17 @@ fn process[T: Eq + Clone](item: T) -> T {
 // Comptime parameter
 fn make_array[comptime N: i32]() -> [i32; N] {
     return @repeat(0, N)
+}
+
+// Async function (must return Future[T], body returns T)
+async fn fetch(url: string) -> Future[i32] {
+    return 200
+}
+
+// Awaiting a future (only inside async fn, yields T from Future[T])
+async fn process() -> Future[i32] {
+    let status: i32 = await fetch("https://example.com")
+    return status
 }
 ```
 
@@ -1388,6 +1404,41 @@ fn double(n: i32) -> void { n = n * 2 }
 
 // CORRECT
 fn double(inout n: i32) -> void { n = n * 2 }
+```
+
+### DO NOT omit `Future[T]` on async functions
+
+```klar
+// WRONG — async fn must return Future[T]
+async fn fetch() -> i32 { return 1 }
+
+// CORRECT
+async fn fetch() -> Future[i32] { return 1 }
+```
+
+### DO NOT return `Future[T]` from non-async functions
+
+```klar
+// WRONG — only async fn may return Future[T]
+fn fetch() -> Future[i32] { return 1 }
+
+// CORRECT
+async fn fetch() -> Future[i32] { return 1 }
+```
+
+### DO NOT use `await` outside async functions
+
+```klar
+// WRONG — await only valid inside async fn
+fn main() -> i32 {
+    let x: i32 = await fetch()
+    return x
+}
+
+// CORRECT
+async fn process() -> Future[i32] {
+    return await fetch()
+}
 ```
 
 ---

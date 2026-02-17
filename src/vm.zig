@@ -105,6 +105,10 @@ pub const VM = struct {
     next_future_task_id: vm_value.TaskId,
 
     /// Heap boxes used for completed Future payloads.
+    /// Grows monotonically during execution — each async fn return allocates one box.
+    /// All entries are freed in deinit(). This is acceptable for the current synchronous-
+    /// completion model where programs are short-lived. A true async runtime would need
+    /// per-task cleanup or arena-based lifetime management instead.
     future_payloads: std.ArrayListUnmanaged(*Value),
 
     // -------------------------------------------------------------------------

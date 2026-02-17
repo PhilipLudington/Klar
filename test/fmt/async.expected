@@ -1,14 +1,12 @@
-pub async fn fetch_data() -> i32 {
+pub async fn fetch_data() -> Future[i32] {
     let value: i32 = await compute()
     return value
 }
 
-trait Worker {
-    async fn run(self: Self) -> i32
+async fn compute() -> Future[i32] {
+    return 42
 }
 
-impl JobRunner: Worker {
-    pub async unsafe fn run(self: Self) -> i32 {
-        return await compute()
-    }
+fn main() -> i32 {
+    return 0
 }

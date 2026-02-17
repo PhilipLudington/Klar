@@ -2362,7 +2362,12 @@ pub const Parser = struct {
     // Declaration parsing
     // ========================================================================
 
-    /// Parse a declaration at the top level
+    /// Parse a declaration at the top level.
+    ///
+    /// Canonical modifier order: `pub async unsafe extern fn`
+    /// Each modifier is optional, but when present they must appear in this order.
+    /// This is enforced by parsing them sequentially — a later modifier appearing
+    /// before an earlier one will hit the wrong production rule and error.
     pub fn parseDeclaration(self: *Parser) ParseError!ast.Decl {
         // Handle visibility modifier
         const is_pub = self.match(.pub_);
