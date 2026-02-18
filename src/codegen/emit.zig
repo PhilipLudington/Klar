@@ -4242,7 +4242,14 @@ pub const Emitter = struct {
         const arr_type_kind = llvm.getTypeKind(arr_type);
 
         if (arr_type_kind != llvm.c.LLVMArrayTypeKind) {
-            return EmitError.UnsupportedFeature; // Only support fixed-size arrays for now
+            // Check if this is a List type — use inline set with bounds checking
+            if (local.list_element_type != null) {
+                const index_val = try self.emitExpr(idx.index);
+                const rhs = try self.emitExpr(bin.right);
+                _ = try self.emitListSetInline(local.value, idx.object, index_val, rhs);
+                return rhs;
+            }
+            return EmitError.UnsupportedFeature;
         }
 
         // Emit the index expression
@@ -16129,6 +16136,17 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
+        // For List[String], promote string literals (raw pointers) to StringHeader
+        var actual_value = value;
+        if (element_type == .string_data) {
+            const value_ty = llvm.typeOf(value);
+            const value_kind = llvm.getTypeKind(value_ty);
+            if (value_kind == llvm.c.LLVMPointerTypeKind) {
+                // String literal: convert ptr to StringHeader { ptr, len, capacity }
+                actual_value = try self.emitStringFromPtr(value);
+            }
+        }
+
         const list_type = self.getListStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -16198,8 +16216,8 @@ pub const Emitter = struct {
         var gep_indices = [_]llvm.ValueRef{offset};
         const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, phi, &gep_indices, 1, "push.elem_ptr");
 
-        // Store the value
-        _ = self.builder.buildStore(value, elem_ptr);
+        // Store the value (use actual_value which may have been promoted for List[String])
+        _ = self.builder.buildStore(actual_value, elem_ptr);
 
         // Increment len and store back
         const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, current_len, llvm.Const.int32(self.ctx, 1), "push.new_len");
@@ -16209,43 +16227,86 @@ pub const Emitter = struct {
         return llvm.Const.int32(self.ctx, 0);
     }
 
-    /// Emit list.pop() - removes and returns the last element as Optional.
+    /// Emit list.pop() - removes and returns last element as Optional.
+    /// Uses inline LLVM codegen (no runtime function call).
     fn emitListPop(self: *Emitter, list_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
-        const list_pop_fn = self.getOrDeclareListPop();
+        const func = self.current_function orelse return EmitError.InvalidAST;
 
-        // Get element type
+        // Get element type info
         const element_type = self.getListElementType(method.object) orelse return EmitError.InvalidAST;
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
-        // Allocate stack space for the output value
-        const value_out = self.builder.buildAlloca(element_llvm_type, "pop.value");
+        const list_type = self.getListStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
 
-        var args = [_]llvm.ValueRef{
-            list_ptr,
-            llvm.Const.int64(self.ctx, @intCast(element_size)),
-            value_out,
-        };
-        const success = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(list_pop_fn), list_pop_fn, &args, "pop.success");
+        // Load current len
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "pop.len_ptr");
+        const current_len = self.builder.buildLoad(i32_type, len_ptr, "pop.current_len");
+
+        // Check if empty: len > 0
+        const zero = llvm.Const.int32(self.ctx, 0);
+        const not_empty = self.builder.buildICmp(llvm.c.LLVMIntSGT, current_len, zero, "pop.not_empty");
 
         // Build optional type: { i1, T }
-        const i1_type = llvm.Types.int1(self.ctx);
         var opt_fields = [_]llvm.TypeRef{ i1_type, element_llvm_type };
         const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
-
-        // Allocate the optional result
         const opt_alloca = self.builder.buildAlloca(opt_type, "pop.optional");
 
-        // Store the tag (success bool)
-        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "pop.tag_ptr");
-        _ = self.builder.buildStore(success, tag_ptr);
+        // Create basic blocks
+        const valid_bb = llvm.appendBasicBlock(self.ctx, func, "pop.valid");
+        const empty_bb = llvm.appendBasicBlock(self.ctx, func, "pop.empty");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, func, "pop.merge");
 
-        // Store the value (if success)
-        const value_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 1, "pop.value_ptr");
-        const loaded_value = self.builder.buildLoad(element_llvm_type, value_out, "pop.loaded");
-        _ = self.builder.buildStore(loaded_value, value_ptr);
+        _ = self.builder.buildCondBr(not_empty, valid_bb, empty_bb);
 
-        // Load and return the optional
+        // --- Valid block: list is non-empty ---
+        self.builder.positionAtEnd(valid_bb);
+
+        // new_len = len - 1
+        const one = llvm.Const.int32(self.ctx, 1);
+        const new_len = self.builder.buildSub(current_len, one, "pop.new_len");
+
+        // Load data pointer
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "pop.ptr_ptr");
+        const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "pop.current_ptr");
+
+        // Calculate address of last element: ptr + new_len * element_size
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_len, i64_type, "pop.idx_i64");
+        const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
+        const offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "pop.offset");
+        var gep_indices = [_]llvm.ValueRef{offset};
+        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, current_ptr, &gep_indices, 1, "pop.elem_ptr");
+
+        // Load the value
+        const loaded_value = self.builder.buildLoad(element_llvm_type, elem_ptr, "pop.loaded");
+
+        // Decrement len
+        _ = self.builder.buildStore(new_len, len_ptr);
+
+        // Store success (true) and value
+        const tag_ptr_valid = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "pop.tag_valid");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr_valid);
+        const value_ptr_valid = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 1, "pop.value_valid");
+        _ = self.builder.buildStore(loaded_value, value_ptr_valid);
+
+        _ = self.builder.buildBr(merge_bb);
+
+        // --- Empty block: list is empty ---
+        self.builder.positionAtEnd(empty_bb);
+
+        const tag_ptr_empty = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "pop.tag_empty");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr_empty);
+
+        _ = self.builder.buildBr(merge_bb);
+
+        // --- Merge block ---
+        self.builder.positionAtEnd(merge_bb);
+
         return self.builder.buildLoad(opt_type, opt_alloca, "pop.result");
     }
 
@@ -16415,17 +16476,17 @@ pub const Emitter = struct {
     }
 
     /// Emit list.drop() - frees the list's memory.
-    /// Uses inline LLVM codegen (no runtime function call).
+    /// For List[String], iterates to free each string's buffer before freeing the list buffer.
+    /// For other element types, uses inline LLVM codegen.
     fn emitListDrop(self: *Emitter, list_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Get element type info
         const element_type = self.getListElementType(method.object) orelse return EmitError.InvalidAST;
-        const element_llvm_type = self.typeToLLVM(element_type);
-        _ = self.getLLVMTypeSize(element_llvm_type); // validate element type
 
         const list_type = self.getListStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
 
         // Load the data pointer from the list
         const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "drop.data_ptr_ptr");
@@ -16441,10 +16502,71 @@ pub const Emitter = struct {
 
         _ = self.builder.buildCondBr(is_null, done_bb, free_bb);
 
-        // --- Free block: ptr is not null, free the memory ---
+        // --- Free block: ptr is not null ---
         self.builder.positionAtEnd(free_bb);
 
-        // Call free(ptr)
+        // For List[String], iterate and free each string's buffer first
+        if (element_type == .string_data) {
+            const string_type = self.getStringStructType();
+            const i64_type = llvm.Types.int64(self.ctx);
+            const i8_type = llvm.Types.int8(self.ctx);
+            const string_size = self.getLLVMTypeSize(string_type);
+
+            // Load len
+            const len_ptr_loop = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "drop.len_for_loop");
+            const list_len = self.builder.buildLoad(i32_type, len_ptr_loop, "drop.list_len");
+
+            // Loop: i = 0; while i < len
+            const i_alloca = self.builder.buildAlloca(i32_type, "drop.i");
+            _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), i_alloca);
+
+            const loop_cond_bb = llvm.appendBasicBlock(self.ctx, func, "drop.loop_cond");
+            const loop_body_bb = llvm.appendBasicBlock(self.ctx, func, "drop.loop_body");
+            const loop_end_bb = llvm.appendBasicBlock(self.ctx, func, "drop.loop_end");
+
+            _ = self.builder.buildBr(loop_cond_bb);
+
+            // Loop condition: i < len
+            self.builder.positionAtEnd(loop_cond_bb);
+            const i_val = self.builder.buildLoad(i32_type, i_alloca, "drop.i_val");
+            const cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, i_val, list_len, "drop.loop_cond");
+            _ = self.builder.buildCondBr(cond, loop_body_bb, loop_end_bb);
+
+            // Loop body: get string ptr, free its buffer
+            self.builder.positionAtEnd(loop_body_bb);
+            const i_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, i_val, i64_type, "drop.i_i64");
+            const str_size_val = llvm.Const.int64(self.ctx, @intCast(string_size));
+            const str_offset = llvm.c.LLVMBuildMul(self.builder.ref, i_i64, str_size_val, "drop.str_offset");
+            var gep_idx = [_]llvm.ValueRef{str_offset};
+            const str_elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &gep_idx, 1, "drop.str_elem_ptr");
+
+            // Load the string's data pointer (first field of StringHeader)
+            const str_data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_elem_ptr, 0, "drop.str_data_ptr_ptr");
+            const str_data_ptr = self.builder.buildLoad(ptr_type, str_data_ptr_ptr, "drop.str_data_ptr");
+
+            // If string ptr is not null, free it
+            const str_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, str_data_ptr, null_ptr, "drop.str_is_null");
+            const str_free_bb = llvm.appendBasicBlock(self.ctx, func, "drop.str_free");
+            const str_next_bb = llvm.appendBasicBlock(self.ctx, func, "drop.str_next");
+            _ = self.builder.buildCondBr(str_is_null, str_next_bb, str_free_bb);
+
+            self.builder.positionAtEnd(str_free_bb);
+            const free_fn_str = self.getOrDeclareFree();
+            var str_free_args = [_]llvm.ValueRef{str_data_ptr};
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn_str), free_fn_str, &str_free_args, "");
+            _ = self.builder.buildBr(str_next_bb);
+
+            self.builder.positionAtEnd(str_next_bb);
+            // Increment i
+            const next_i = llvm.c.LLVMBuildAdd(self.builder.ref, i_val, llvm.Const.int32(self.ctx, 1), "drop.next_i");
+            _ = self.builder.buildStore(next_i, i_alloca);
+            _ = self.builder.buildBr(loop_cond_bb);
+
+            // After loop: free the list buffer
+            self.builder.positionAtEnd(loop_end_bb);
+        }
+
+        // Call free(data_ptr) to free the list buffer
         const free_fn = self.getOrDeclareFree();
         var free_args = [_]llvm.ValueRef{data_ptr};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
@@ -17433,27 +17555,60 @@ pub const Emitter = struct {
     }
 
     /// Emit list.set(index, value) - sets element at index.
+    /// Uses inline LLVM codegen with bounds checking (no runtime function call).
     fn emitListSet(self: *Emitter, list_ptr: llvm.ValueRef, method: *ast.MethodCall, index: llvm.ValueRef, value: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const list_set_fn = self.getOrDeclareListSet();
+        return self.emitListSetInline(list_ptr, method.object, index, value);
+    }
 
-        // Get element type
-        const element_type = self.getListElementType(method.object) orelse return EmitError.InvalidAST;
+    /// Inline implementation of list set - shared by emitListSet and emitIndexAssignment.
+    fn emitListSetInline(self: *Emitter, list_ptr: llvm.ValueRef, object: ast.Expr, index: llvm.ValueRef, value: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
+        const element_type = self.getListElementType(object) orelse return EmitError.InvalidAST;
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
-        // Allocate stack space for the value and get its pointer
-        const value_alloca = self.builder.buildAlloca(element_llvm_type, "set.value");
-        _ = self.builder.buildStore(value, value_alloca);
+        const list_type = self.getListStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
 
-        var args = [_]llvm.ValueRef{
-            list_ptr,
-            llvm.Const.int64(self.ctx, @intCast(element_size)),
-            index,
-            value_alloca,
-        };
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(list_set_fn), list_set_fn, &args, "");
+        // Load current len for bounds check
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "set.len_ptr");
+        const current_len = self.builder.buildLoad(i32_type, len_ptr, "set.current_len");
 
-        // Return void (represented as i32 0 for now)
+        // Bounds check: index >= 0 and index < len
+        const zero = llvm.Const.int32(self.ctx, 0);
+        const idx_ge_zero = self.builder.buildICmp(llvm.c.LLVMIntSGE, index, zero, "set.idx_ge_zero");
+        const idx_lt_len = self.builder.buildICmp(llvm.c.LLVMIntSLT, index, current_len, "set.idx_lt_len");
+        const in_bounds = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ge_zero, idx_lt_len, "set.in_bounds");
+
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "set.ok");
+        const fail_bb = llvm.appendBasicBlock(self.ctx, func, "set.fail");
+
+        _ = self.builder.buildCondBr(in_bounds, ok_bb, fail_bb);
+
+        // Fail block: trap
+        self.builder.positionAtEnd(fail_bb);
+        _ = self.builder.buildUnreachable();
+
+        // OK block: perform the set
+        self.builder.positionAtEnd(ok_bb);
+
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "set.ptr_ptr");
+        const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "set.current_ptr");
+
+        // Calculate address: ptr + index * element_size
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index, i64_type, "set.idx_i64");
+        const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
+        const offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "set.offset");
+        var gep_indices = [_]llvm.ValueRef{offset};
+        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, current_ptr, &gep_indices, 1, "set.elem_ptr");
+
+        // Store the value
+        _ = self.builder.buildStore(value, elem_ptr);
+
         return llvm.Const.int32(self.ctx, 0);
     }
 
@@ -17498,42 +17653,80 @@ pub const Emitter = struct {
     }
 
     /// Emit list.last() - returns last element as Optional.
+    /// Uses inline LLVM codegen (no runtime function call).
     fn emitListLast(self: *Emitter, list_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
-        const list_last_fn = self.getOrDeclareListLast();
+        const func = self.current_function orelse return EmitError.InvalidAST;
 
-        // Get element type
+        // Get element type info
         const element_type = self.getListElementType(method.object) orelse return EmitError.InvalidAST;
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
-        // Allocate stack space for the output value
-        const value_out = self.builder.buildAlloca(element_llvm_type, "last.value");
+        const list_type = self.getListStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i1_type = llvm.Types.int1(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
 
-        var args = [_]llvm.ValueRef{
-            list_ptr,
-            llvm.Const.int64(self.ctx, @intCast(element_size)),
-            value_out,
-        };
-        const success = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(list_last_fn), list_last_fn, &args, "last.success");
+        // Load current len
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "last.len_ptr");
+        const current_len = self.builder.buildLoad(i32_type, len_ptr, "last.current_len");
+
+        // Check if empty: len > 0
+        const zero = llvm.Const.int32(self.ctx, 0);
+        const not_empty = self.builder.buildICmp(llvm.c.LLVMIntSGT, current_len, zero, "last.not_empty");
 
         // Build optional type: { i1, T }
-        const i1_type = llvm.Types.int1(self.ctx);
         var opt_fields = [_]llvm.TypeRef{ i1_type, element_llvm_type };
         const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
-
-        // Allocate the optional result
         const opt_alloca = self.builder.buildAlloca(opt_type, "last.optional");
 
-        // Store the tag (success bool)
-        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "last.tag_ptr");
-        _ = self.builder.buildStore(success, tag_ptr);
+        // Create basic blocks
+        const valid_bb = llvm.appendBasicBlock(self.ctx, func, "last.valid");
+        const empty_bb = llvm.appendBasicBlock(self.ctx, func, "last.empty");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, func, "last.merge");
 
-        // Store the value (if success)
-        const value_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 1, "last.value_ptr");
-        const loaded_value = self.builder.buildLoad(element_llvm_type, value_out, "last.loaded");
-        _ = self.builder.buildStore(loaded_value, value_ptr);
+        _ = self.builder.buildCondBr(not_empty, valid_bb, empty_bb);
 
-        // Load and return the optional
+        // --- Valid block: list is non-empty ---
+        self.builder.positionAtEnd(valid_bb);
+
+        // Load data pointer
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "last.ptr_ptr");
+        const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "last.current_ptr");
+
+        // Calculate address of last element: ptr + (len - 1) * element_size
+        const one = llvm.Const.int32(self.ctx, 1);
+        const last_idx = self.builder.buildSub(current_len, one, "last.idx");
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, last_idx, i64_type, "last.idx_i64");
+        const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
+        const offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "last.offset");
+        var gep_indices = [_]llvm.ValueRef{offset};
+        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, current_ptr, &gep_indices, 1, "last.elem_ptr");
+
+        // Load the value
+        const loaded_value = self.builder.buildLoad(element_llvm_type, elem_ptr, "last.loaded");
+
+        // Store success (true) and value
+        const tag_ptr_valid = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "last.tag_valid");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr_valid);
+        const value_ptr_valid = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 1, "last.value_valid");
+        _ = self.builder.buildStore(loaded_value, value_ptr_valid);
+
+        _ = self.builder.buildBr(merge_bb);
+
+        // --- Empty block: list is empty ---
+        self.builder.positionAtEnd(empty_bb);
+
+        const tag_ptr_empty = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "last.tag_empty");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr_empty);
+
+        _ = self.builder.buildBr(merge_bb);
+
+        // --- Merge block ---
+        self.builder.positionAtEnd(merge_bb);
+
         return self.builder.buildLoad(opt_type, opt_alloca, "last.result");
     }
 
@@ -21042,6 +21235,49 @@ pub const Emitter = struct {
 
         // Load and return the struct value
         return self.builder.buildLoad(string_type, string_alloca, "str.from.result");
+    }
+
+    /// Promote a raw string pointer (from a string literal) to a StringHeader value.
+    /// Allocates heap memory, copies content, returns { ptr, len, capacity } struct value.
+    fn emitStringFromPtr(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        // Call strlen to get the length
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str_ptr};
+        const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "promote.len");
+
+        // Convert to i32 (String uses i32 for len)
+        const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "promote.len_i32");
+
+        // Allocate memory: len + 1 for null terminator
+        const one_i32 = llvm.Const.int32(self.ctx, 1);
+        const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, one_i32, "promote.alloc_len");
+        const alloc_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_len, i64_type, "promote.alloc_len_i64");
+
+        // Call malloc
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_len_i64};
+        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "promote.ptr");
+
+        // Copy content (including null terminator)
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ new_ptr, str_ptr, alloc_len_i64 };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
+
+        // Build the String struct: { ptr, len, len }
+        const string_alloca = self.builder.buildAlloca(string_type, "promote.result");
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 0, "promote.ptr_field");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 1, "promote.len_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 2, "promote.cap_field");
+
+        _ = self.builder.buildStore(new_ptr, ptr_field);
+        _ = self.builder.buildStore(len_i32, len_field);
+        _ = self.builder.buildStore(len_i32, cap_field);
+
+        return self.builder.buildLoad(string_type, string_alloca, "promote.str_val");
     }
 
     /// Emit String.with_capacity(n) - creates a string with pre-allocated capacity.
@@ -25224,21 +25460,6 @@ pub const Emitter = struct {
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
-    fn getOrDeclareListPop(self: *Emitter) llvm.ValueRef {
-        const fn_name = "klar_list_pop";
-        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
-            return func;
-        }
-
-        // bool klar_list_pop(ListHeader*, usize element_size, void* value_out)
-        const ptr_type = llvm.Types.pointer(self.ctx);
-        const i64_type = llvm.Types.int64(self.ctx);
-        const i1_type = llvm.Types.int1(self.ctx);
-        var param_types = [_]llvm.TypeRef{ ptr_type, i64_type, ptr_type };
-        const fn_type = llvm.c.LLVMFunctionType(i1_type, &param_types, 3, 0);
-        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
-    }
-
     fn getOrDeclareListGet(self: *Emitter) llvm.ValueRef {
         const fn_name = "klar_list_get";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
@@ -25255,22 +25476,6 @@ pub const Emitter = struct {
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
-    fn getOrDeclareListSet(self: *Emitter) llvm.ValueRef {
-        const fn_name = "klar_list_set";
-        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
-            return func;
-        }
-
-        // void klar_list_set(ListHeader*, usize element_size, i32 index, void* value)
-        const ptr_type = llvm.Types.pointer(self.ctx);
-        const i64_type = llvm.Types.int64(self.ctx);
-        const i32_type = llvm.Types.int32(self.ctx);
-        const void_type = llvm.Types.void_(self.ctx);
-        var param_types = [_]llvm.TypeRef{ ptr_type, i64_type, i32_type, ptr_type };
-        const fn_type = llvm.c.LLVMFunctionType(void_type, &param_types, 4, 0);
-        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
-    }
-
     fn getOrDeclareListFirst(self: *Emitter) llvm.ValueRef {
         const fn_name = "klar_list_first";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
@@ -25278,21 +25483,6 @@ pub const Emitter = struct {
         }
 
         // bool klar_list_first(ListHeader*, usize element_size, void* value_out)
-        const ptr_type = llvm.Types.pointer(self.ctx);
-        const i64_type = llvm.Types.int64(self.ctx);
-        const i1_type = llvm.Types.int1(self.ctx);
-        var param_types = [_]llvm.TypeRef{ ptr_type, i64_type, ptr_type };
-        const fn_type = llvm.c.LLVMFunctionType(i1_type, &param_types, 3, 0);
-        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
-    }
-
-    fn getOrDeclareListLast(self: *Emitter) llvm.ValueRef {
-        const fn_name = "klar_list_last";
-        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
-            return func;
-        }
-
-        // bool klar_list_last(ListHeader*, usize element_size, void* value_out)
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i1_type = llvm.Types.int1(self.ctx);

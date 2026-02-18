@@ -1,0 +1,38 @@
+// Test List[T].last() - returns optional last element
+
+fn main() -> i32 {
+    var list: List[i32] = List.new[i32]()
+
+    // last() on empty list returns None
+    let empty_last: ?i32 = list.last()
+    if (empty_last ?? -1) != -1 {
+        return 1
+    }
+
+    // Push some values
+    list.push(10)
+    list.push(20)
+    list.push(30)
+
+    // last() returns the last element
+    let val: ?i32 = list.last()
+    if (val ?? 0) != 30 {
+        return 2
+    }
+
+    // last() doesn't remove the element
+    let len: i32 = list.len()
+    if len != 3 {
+        return 3
+    }
+
+    // Push another and verify last updates
+    list.push(99)
+    let val2: ?i32 = list.last()
+    if (val2 ?? 0) != 99 {
+        return 4
+    }
+
+    list.drop()
+    return 42
+}

@@ -107,26 +107,6 @@ export fn klar_list_push(list: *ListHeader, element_size: usize, element_align_l
     }
 }
 
-/// Pop an element from the list.
-/// Returns true if an element was popped, false if list was empty.
-/// If true, the value is copied to value_out_ptr.
-export fn klar_list_pop(list: *ListHeader, element_size: usize, value_out_ptr: *anyopaque) bool {
-    if (list.len == 0) {
-        return false;
-    }
-
-    list.len -= 1;
-
-    if (list.ptr) |ptr| {
-        const src: [*]const u8 = @ptrCast(ptr);
-        const offset = @as(usize, @intCast(list.len)) * element_size;
-        const dest: [*]u8 = @ptrCast(value_out_ptr);
-        @memcpy(dest[0..element_size], src[offset..][0..element_size]);
-    }
-
-    return true;
-}
-
 /// Get an element from the list at the given index.
 /// Returns true if index is valid, false otherwise.
 /// If true, the value is copied to value_out_ptr.
@@ -144,21 +124,6 @@ export fn klar_list_get(list: *const ListHeader, element_size: usize, index: i32
     }
 
     return false;
-}
-
-/// Set an element in the list at the given index.
-/// Panics if index is out of bounds.
-export fn klar_list_set(list: *ListHeader, element_size: usize, index: i32, value_ptr: *const anyopaque) void {
-    if (index < 0 or index >= list.len) {
-        @panic("List index out of bounds");
-    }
-
-    if (list.ptr) |ptr| {
-        const dest: [*]u8 = @ptrCast(ptr);
-        const offset = @as(usize, @intCast(index)) * element_size;
-        const src: [*]const u8 = @ptrCast(value_ptr);
-        @memcpy(dest[offset..][0..element_size], src[0..element_size]);
-    }
 }
 
 /// Get the length of the list.
@@ -185,15 +150,6 @@ export fn klar_list_clear(list: *ListHeader) void {
 /// Returns true if there is a first element, false otherwise.
 export fn klar_list_first(list: *const ListHeader, element_size: usize, value_out_ptr: *anyopaque) bool {
     return klar_list_get(list, element_size, 0, value_out_ptr);
-}
-
-/// Get the last element if the list is non-empty.
-/// Returns true if there is a last element, false otherwise.
-export fn klar_list_last(list: *const ListHeader, element_size: usize, value_out_ptr: *anyopaque) bool {
-    if (list.len == 0) {
-        return false;
-    }
-    return klar_list_get(list, element_size, list.len - 1, value_out_ptr);
 }
 
 /// Free the list's memory.

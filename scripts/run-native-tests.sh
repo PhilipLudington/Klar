@@ -78,6 +78,11 @@ get_expected() {
         wrapping_mul) echo 0 ;;  # *% wraps on overflow
         test_blocks_ignore_type_errors) echo 77 ;;
         test_blocks_ignore_runtime_failures) echo 78 ;;
+        list_last) echo 42 ;;
+        list_pop) echo 42 ;;
+        list_string_drop) echo 42 ;;
+        list_index_assign) echo 42 ;;
+        list_nested_basic) echo 42 ;;
         *) echo -1 ;;  # -1 means accept any result
     esac
 }

@@ -1289,7 +1289,10 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                     return tc.type_builder.voidType();
                 }
                 const arg_type = tc.checkExpr(method.args[0]);
-                if (!arg_type.eql(element_type)) {
+                // Allow string literals (primitive.string_) for List[String] (string_data)
+                const is_string_compat = element_type == .string_data and
+                    arg_type == .primitive and arg_type.primitive == .string_;
+                if (!arg_type.eql(element_type) and !is_string_compat) {
                     tc.addError(.type_mismatch, method.span, "push() argument type mismatch", .{});
                 }
                 return tc.type_builder.voidType();

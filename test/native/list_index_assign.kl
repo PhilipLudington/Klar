@@ -1,0 +1,47 @@
+// Test list[i] = v index assignment syntax
+
+fn main() -> i32 {
+    var list: List[i32] = List.new[i32]()
+
+    // Push initial values
+    list.push(10)
+    list.push(20)
+    list.push(30)
+
+    // Use index assignment to modify element
+    list[1] = 99
+
+    // Verify the change
+    let val: ?i32 = list.get(1)
+    if (val ?? 0) != 99 {
+        return 1
+    }
+
+    // Other elements unchanged
+    let first: ?i32 = list.get(0)
+    if (first ?? 0) != 10 {
+        return 2
+    }
+
+    let third: ?i32 = list.get(2)
+    if (third ?? 0) != 30 {
+        return 3
+    }
+
+    // Assign to first element
+    list[0] = 55
+    let check0: ?i32 = list.get(0)
+    if (check0 ?? 0) != 55 {
+        return 4
+    }
+
+    // Assign to last element
+    list[2] = 77
+    let check2: ?i32 = list.get(2)
+    if (check2 ?? 0) != 77 {
+        return 5
+    }
+
+    list.drop()
+    return 42
+}

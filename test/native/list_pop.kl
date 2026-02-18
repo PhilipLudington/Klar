@@ -1,0 +1,54 @@
+// Test List[T].pop() - removes and returns last element
+
+fn main() -> i32 {
+    var list: List[i32] = List.new[i32]()
+
+    // pop() on empty list returns None
+    let empty_pop: ?i32 = list.pop()
+    if (empty_pop ?? -1) != -1 {
+        return 1
+    }
+
+    // Push values
+    list.push(10)
+    list.push(20)
+    list.push(30)
+
+    // pop() returns last element
+    let val: ?i32 = list.pop()
+    if (val ?? 0) != 30 {
+        return 2
+    }
+
+    // pop() removes the element
+    let len: i32 = list.len()
+    if len != 2 {
+        return 3
+    }
+
+    // pop() again returns new last
+    let val2: ?i32 = list.pop()
+    if (val2 ?? 0) != 20 {
+        return 4
+    }
+
+    // pop() last element
+    let val3: ?i32 = list.pop()
+    if (val3 ?? 0) != 10 {
+        return 5
+    }
+
+    // List is now empty
+    let empty_again: ?i32 = list.pop()
+    if (empty_again ?? -1) != -1 {
+        return 6
+    }
+
+    let final_len: i32 = list.len()
+    if final_len != 0 {
+        return 7
+    }
+
+    list.drop()
+    return 42
+}

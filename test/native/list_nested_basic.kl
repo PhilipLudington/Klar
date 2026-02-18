@@ -1,0 +1,34 @@
+// Test nested List[List[i32]] - basic creation and access
+// Note: Does NOT call outer.drop() because nested drop leaks inner list buffers.
+// The self-hosting compiler can work around this by manually dropping inner lists.
+
+fn main() -> i32 {
+    // Create outer list
+    var outer: List[List[i32]] = List.new[List[i32]]()
+
+    // Create and push inner lists
+    var inner1: List[i32] = List.new[i32]()
+    inner1.push(1)
+    inner1.push(2)
+    outer.push(inner1)
+
+    var inner2: List[i32] = List.new[i32]()
+    inner2.push(10)
+    inner2.push(20)
+    inner2.push(30)
+    outer.push(inner2)
+
+    // Verify outer list length
+    let outer_len: i32 = outer.len()
+    if outer_len != 2 {
+        return 1
+    }
+
+    // Verify not empty
+    let is_empty: bool = outer.is_empty()
+    if is_empty {
+        return 2
+    }
+
+    return 42
+}

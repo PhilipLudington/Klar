@@ -1102,6 +1102,7 @@ pub fn checkIndex(tc: anytype, idx: *ast.Index) Type {
     switch (object_type) {
         .array => |a| return a.element,
         .slice => |s| return s.element,
+        .list => |l| return l.element,
         .tuple => |t| {
             // TODO: check if index is comptime known and in bounds
             if (t.elements.len > 0) {
