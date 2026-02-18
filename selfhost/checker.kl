@@ -1,0 +1,39 @@
+// selfhost/checker.kl — Self-hosted type checker (stub)
+// Milestone 9.3: Bootstrap architecture scaffolding
+// Full implementation: Milestones 9.9–9.10
+
+import types.{KlarType}
+import ast.{Module, Expr}
+
+pub struct TypeChecker {
+    error_count: i32,
+}
+
+impl TypeChecker {
+    fn new() -> TypeChecker {
+        return TypeChecker {
+            error_count: 0,
+        }
+    }
+
+    // TODO(9.9): Change to mutable self — type checking accumulates errors and state
+    fn check_module(self: TypeChecker, m: Module) -> i32 {
+        // Stub: returns 0 errors
+        // Full implementation in Milestones 9.9–9.10
+        return 0
+    }
+
+    fn has_errors(self: TypeChecker) -> bool {
+        return self.error_count > 0
+    }
+}
+
+fn main() -> i32 {
+    return 0
+}
+
+test main {
+    let checker: TypeChecker = TypeChecker.new()
+    assert_eq(checker.has_errors(), false)
+    assert_eq(checker.error_count, 0)
+}

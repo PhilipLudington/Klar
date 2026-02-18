@@ -116,7 +116,16 @@ fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
             '\n' => try out.writeAll("\\n"),
             '\r' => try out.writeAll("\\r"),
             '\t' => try out.writeAll("\\t"),
-            else => try out.writeAll(&[_]u8{c}),
+            else => {
+                if (c < 0x20) {
+                    // RFC 8259: control characters U+0000–U+001F must be \uXXXX escaped
+                    var esc_buf: [6]u8 = undefined;
+                    const esc = std.fmt.bufPrint(&esc_buf, "\\u{x:0>4}", .{@as(u16, c)}) catch unreachable;
+                    try out.writeAll(esc);
+                } else {
+                    try out.writeAll(&[_]u8{c});
+                }
+            },
         }
     }
     try out.writeAll("\"");
@@ -124,7 +133,7 @@ fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
 
 fn writeJsonUsize(out: std.fs.File, value: usize) !void {
     var buf: [32]u8 = undefined;
-    const n = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
+    const n = std.fmt.bufPrint(&buf, "{d}", .{value}) catch unreachable;
     try out.writeAll(n);
 }
 
@@ -421,6 +430,18 @@ pub fn main() !void {
             return;
         }
         try parseFile(allocator, args[2]);
+    } else if (std.mem.eql(u8, command, "dump-tokens")) {
+        if (args.len < 3) {
+            try getStdErr().writeAll("Error: no input file\n");
+            return;
+        }
+        try dumpTokensFile(allocator, args[2]);
+    } else if (std.mem.eql(u8, command, "dump-ast")) {
+        if (args.len < 3) {
+            try getStdErr().writeAll("Error: no input file\n");
+            return;
+        }
+        try dumpAstFile(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "build")) {
         // Parse options - need to determine if first arg after "build" is a file or a flag
         var output_path: ?[]const u8 = null;
@@ -1050,6 +1071,1157 @@ fn tokenizeFile(allocator: std.mem.Allocator, path: []const u8) !void {
         try stdout.writeAll(msg);
 
         if (token.kind == .eof) break;
+    }
+}
+
+fn dumpTokensFile(allocator: std.mem.Allocator, path: []const u8) !void {
+    const source = readSourceFile(allocator, path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}", .{ path, err }) catch "Error opening file";
+        try getStdErr().writeAll(msg);
+        try getStdErr().writeAll("\n");
+        const out = getStdOut();
+        try out.writeAll("{\"error\":\"file_not_found\",\"message\":");
+        try writeJsonEscaped(out, msg);
+        try out.writeAll("}\n");
+        std.process.exit(1);
+    };
+    defer allocator.free(source);
+
+    const out = getStdOut();
+    var lexer = Lexer.init(source);
+    var first = true;
+
+    try out.writeAll("[");
+
+    while (true) {
+        const token = lexer.next();
+        const text = source[token.loc.start..token.loc.end];
+
+        if (!first) try out.writeAll(",");
+        first = false;
+
+        try out.writeAll("{\"kind\":");
+        try writeJsonEscaped(out, @tagName(token.kind));
+        try out.writeAll(",\"text\":");
+        try writeJsonEscaped(out, text);
+        try out.writeAll(",\"line\":");
+        try writeJsonUsize(out, token.loc.line);
+        try out.writeAll(",\"column\":");
+        try writeJsonUsize(out, token.loc.column);
+        try out.writeAll(",\"start\":");
+        try writeJsonUsize(out, token.loc.start);
+        try out.writeAll(",\"end\":");
+        try writeJsonUsize(out, token.loc.end);
+        try out.writeAll("}");
+
+        if (token.kind == .eof) break;
+    }
+
+    try out.writeAll("]\n");
+}
+
+fn dumpAstFile(allocator: std.mem.Allocator, path: []const u8) !void {
+    const source = readSourceFile(allocator, path) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}", .{ path, err }) catch "Error opening file";
+        try getStdErr().writeAll(msg);
+        try getStdErr().writeAll("\n");
+        const out = getStdOut();
+        try out.writeAll("{\"error\":\"file_not_found\",\"message\":");
+        try writeJsonEscaped(out, msg);
+        try out.writeAll("}\n");
+        std.process.exit(1);
+    };
+    defer allocator.free(source);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var lexer = Lexer.init(source);
+    var parser = Parser.init(arena.allocator(), &lexer, source);
+
+    const module = parser.parseModule() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Parse error: {}", .{err}) catch "Parse error";
+        try getStdErr().writeAll(msg);
+        try getStdErr().writeAll("\n");
+        for (parser.errors.items) |parse_err| {
+            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                parse_err.span.line,
+                parse_err.span.column,
+                parse_err.message,
+            }) catch continue;
+            try getStdErr().writeAll(err_msg);
+        }
+        const out = getStdOut();
+        try out.writeAll("{\"error\":\"parse_failed\",\"message\":");
+        try writeJsonEscaped(out, msg);
+        try out.writeAll("}\n");
+        std.process.exit(1);
+    };
+
+    const out = getStdOut();
+    try dumpModule(out, module);
+    try out.writeAll("\n");
+}
+
+fn dumpModule(out: std.fs.File, module: ast.Module) anyerror!void {
+    try out.writeAll("{\"module_decl\":");
+    if (module.module_decl) |md| {
+        try dumpModuleDecl(out, md);
+    } else {
+        try out.writeAll("null");
+    }
+    try out.writeAll(",\"imports\":[");
+    for (module.imports, 0..) |imp, i| {
+        if (i > 0) try out.writeAll(",");
+        try dumpImportDecl(out, imp);
+    }
+    try out.writeAll("],\"declarations\":[");
+    for (module.declarations, 0..) |decl, i| {
+        if (i > 0) try out.writeAll(",");
+        try dumpDecl(out, decl);
+    }
+    try out.writeAll("]}");
+}
+
+fn dumpModuleDecl(out: std.fs.File, md: ast.ModuleDecl) anyerror!void {
+    try out.writeAll("{\"path\":[");
+    for (md.path, 0..) |seg, i| {
+        if (i > 0) try out.writeAll(",");
+        try writeJsonEscaped(out, seg);
+    }
+    try out.writeAll("]}");
+}
+
+fn dumpImportDecl(out: std.fs.File, imp: ast.ImportDecl) anyerror!void {
+    try out.writeAll("{\"path\":[");
+    for (imp.path, 0..) |seg, i| {
+        if (i > 0) try out.writeAll(",");
+        try writeJsonEscaped(out, seg);
+    }
+    try out.writeAll("],\"items\":");
+    if (imp.items) |items| {
+        switch (items) {
+            .all => try out.writeAll("\"*\""),
+            .specific => |specs| {
+                try out.writeAll("[");
+                for (specs, 0..) |item, i| {
+                    if (i > 0) try out.writeAll(",");
+                    try out.writeAll("{\"name\":");
+                    try writeJsonEscaped(out, item.name);
+                    try out.writeAll(",\"alias\":");
+                    if (item.alias) |a| {
+                        try writeJsonEscaped(out, a);
+                    } else {
+                        try out.writeAll("null");
+                    }
+                    try out.writeAll("}");
+                }
+                try out.writeAll("]");
+            },
+        }
+    } else {
+        try out.writeAll("null");
+    }
+    try out.writeAll(",\"alias\":");
+    if (imp.alias) |a| {
+        try writeJsonEscaped(out, a);
+    } else {
+        try out.writeAll("null");
+    }
+    try out.writeAll("}");
+}
+
+fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
+    switch (decl) {
+        .function => |f| {
+            try out.writeAll("{\"kind\":\"function\",\"name\":");
+            try writeJsonEscaped(out, f.name);
+            try out.writeAll(",\"is_pub\":");
+            try writeJsonBool(out, f.is_pub);
+            try out.writeAll(",\"is_async\":");
+            try writeJsonBool(out, f.is_async);
+            try out.writeAll(",\"is_comptime\":");
+            try writeJsonBool(out, f.is_comptime);
+            try out.writeAll(",\"is_unsafe\":");
+            try writeJsonBool(out, f.is_unsafe);
+            try out.writeAll(",\"is_extern\":");
+            try writeJsonBool(out, f.is_extern);
+            try out.writeAll(",\"is_variadic\":");
+            try writeJsonBool(out, f.is_variadic);
+            try dumpTypeParams(out, f.type_params);
+            try dumpFunctionParams(out, f.params);
+            try out.writeAll(",\"return_type\":");
+            if (f.return_type) |rt| {
+                try dumpTypeExpr(out, rt);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"where_clause\":");
+            if (f.where_clause) |wc| {
+                try dumpWhereClause(out, wc);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"body\":");
+            if (f.body) |body| {
+                try dumpBlock(out, body);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .test_decl => |t| {
+            try out.writeAll("{\"kind\":\"test_decl\",\"name\":");
+            try writeJsonEscaped(out, t.name);
+            try out.writeAll(",\"body\":");
+            try dumpBlock(out, t.body);
+            try out.writeAll("}");
+        },
+        .struct_decl => |s| {
+            try out.writeAll("{\"kind\":\"struct_decl\",\"name\":");
+            try writeJsonEscaped(out, s.name);
+            try out.writeAll(",\"is_pub\":");
+            try writeJsonBool(out, s.is_pub);
+            try out.writeAll(",\"is_extern\":");
+            try writeJsonBool(out, s.is_extern);
+            try out.writeAll(",\"is_packed\":");
+            try writeJsonBool(out, s.is_packed);
+            try dumpTypeParams(out, s.type_params);
+            try out.writeAll(",\"fields\":[");
+            for (s.fields, 0..) |field, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpStructField(out, field);
+            }
+            try out.writeAll("],\"traits\":[");
+            for (s.traits, 0..) |tr, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpTypeExpr(out, tr);
+            }
+            try out.writeAll("]}");
+        },
+        .enum_decl => |e| {
+            try out.writeAll("{\"kind\":\"enum_decl\",\"name\":");
+            try writeJsonEscaped(out, e.name);
+            try out.writeAll(",\"is_pub\":");
+            try writeJsonBool(out, e.is_pub);
+            try out.writeAll(",\"is_extern\":");
+            try writeJsonBool(out, e.is_extern);
+            try dumpTypeParams(out, e.type_params);
+            try out.writeAll(",\"repr_type\":");
+            if (e.repr_type) |rt| {
+                try dumpTypeExpr(out, rt);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"variants\":[");
+            for (e.variants, 0..) |v, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpEnumVariant(out, v);
+            }
+            try out.writeAll("]}");
+        },
+        .trait_decl => |t| {
+            try out.writeAll("{\"kind\":\"trait_decl\",\"name\":");
+            try writeJsonEscaped(out, t.name);
+            try out.writeAll(",\"is_pub\":");
+            try writeJsonBool(out, t.is_pub);
+            try out.writeAll(",\"is_unsafe\":");
+            try writeJsonBool(out, t.is_unsafe);
+            try dumpTypeParams(out, t.type_params);
+            try out.writeAll(",\"super_traits\":[");
+            for (t.super_traits, 0..) |st, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpTypeExpr(out, st);
+            }
+            try out.writeAll("],\"associated_types\":[");
+            for (t.associated_types, 0..) |at, i| {
+                if (i > 0) try out.writeAll(",");
+                try out.writeAll("{\"name\":");
+                try writeJsonEscaped(out, at.name);
+                try out.writeAll(",\"bounds\":[");
+                for (at.bounds, 0..) |b, j| {
+                    if (j > 0) try out.writeAll(",");
+                    try dumpTypeExpr(out, b);
+                }
+                try out.writeAll("],\"default\":");
+                if (at.default) |d| {
+                    try dumpTypeExpr(out, d);
+                } else {
+                    try out.writeAll("null");
+                }
+                try out.writeAll("}");
+            }
+            try out.writeAll("],\"methods\":[");
+            for (t.methods, 0..) |m, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpFunctionDeclInline(out, m);
+            }
+            try out.writeAll("]}");
+        },
+        .impl_decl => |imp| {
+            try out.writeAll("{\"kind\":\"impl_decl\",\"is_unsafe\":");
+            try writeJsonBool(out, imp.is_unsafe);
+            try dumpTypeParams(out, imp.type_params);
+            try out.writeAll(",\"target_type\":");
+            try dumpTypeExpr(out, imp.target_type);
+            try out.writeAll(",\"trait_type\":");
+            if (imp.trait_type) |tt| {
+                try dumpTypeExpr(out, tt);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"associated_types\":[");
+            for (imp.associated_types, 0..) |at, i| {
+                if (i > 0) try out.writeAll(",");
+                try out.writeAll("{\"name\":");
+                try writeJsonEscaped(out, at.name);
+                try out.writeAll(",\"value\":");
+                try dumpTypeExpr(out, at.value);
+                try out.writeAll("}");
+            }
+            try out.writeAll("],\"where_clause\":");
+            if (imp.where_clause) |wc| {
+                try dumpWhereClause(out, wc);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"methods\":[");
+            for (imp.methods, 0..) |m, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpFunctionDeclInline(out, m);
+            }
+            try out.writeAll("]}");
+        },
+        .type_alias => |t| {
+            try out.writeAll("{\"kind\":\"type_alias\",\"name\":");
+            try writeJsonEscaped(out, t.name);
+            try out.writeAll(",\"is_pub\":");
+            try writeJsonBool(out, t.is_pub);
+            try dumpTypeParams(out, t.type_params);
+            try out.writeAll(",\"target\":");
+            try dumpTypeExpr(out, t.target);
+            try out.writeAll("}");
+        },
+        .const_decl => |c| {
+            try out.writeAll("{\"kind\":\"const_decl\",\"name\":");
+            try writeJsonEscaped(out, c.name);
+            try out.writeAll(",\"is_pub\":");
+            try writeJsonBool(out, c.is_pub);
+            try out.writeAll(",\"type\":");
+            if (c.type_) |t| {
+                try dumpTypeExpr(out, t);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"value\":");
+            try dumpExpr(out, c.value);
+            try out.writeAll("}");
+        },
+        .import_decl => |imp| {
+            try out.writeAll("{\"kind\":\"import_decl\"");
+            try out.writeAll(",\"data\":");
+            try dumpImportDecl(out, imp.*);
+            try out.writeAll("}");
+        },
+        .module_decl => |md| {
+            try out.writeAll("{\"kind\":\"module_decl\"");
+            try out.writeAll(",\"data\":");
+            try dumpModuleDecl(out, md.*);
+            try out.writeAll("}");
+        },
+        .extern_type_decl => |e| {
+            try out.writeAll("{\"kind\":\"extern_type_decl\",\"name\":");
+            try writeJsonEscaped(out, e.name);
+            try out.writeAll(",\"is_pub\":");
+            try writeJsonBool(out, e.is_pub);
+            try out.writeAll(",\"size\":");
+            if (e.size) |sz| {
+                var buf: [32]u8 = undefined;
+                const n = std.fmt.bufPrint(&buf, "{d}", .{sz}) catch "0";
+                try out.writeAll(n);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .extern_block => |eb| {
+            try out.writeAll("{\"kind\":\"extern_block\",\"functions\":[");
+            for (eb.functions, 0..) |f, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpFunctionDeclInline(out, f.*);
+            }
+            try out.writeAll("]}");
+        },
+    }
+}
+
+fn dumpFunctionDeclInline(out: std.fs.File, f: ast.FunctionDecl) anyerror!void {
+    try out.writeAll("{\"name\":");
+    try writeJsonEscaped(out, f.name);
+    try out.writeAll(",\"is_pub\":");
+    try writeJsonBool(out, f.is_pub);
+    try out.writeAll(",\"is_async\":");
+    try writeJsonBool(out, f.is_async);
+    try out.writeAll(",\"is_comptime\":");
+    try writeJsonBool(out, f.is_comptime);
+    try out.writeAll(",\"is_unsafe\":");
+    try writeJsonBool(out, f.is_unsafe);
+    try out.writeAll(",\"is_extern\":");
+    try writeJsonBool(out, f.is_extern);
+    try out.writeAll(",\"is_variadic\":");
+    try writeJsonBool(out, f.is_variadic);
+    try dumpTypeParams(out, f.type_params);
+    try dumpFunctionParams(out, f.params);
+    try out.writeAll(",\"return_type\":");
+    if (f.return_type) |rt| {
+        try dumpTypeExpr(out, rt);
+    } else {
+        try out.writeAll("null");
+    }
+    try out.writeAll(",\"where_clause\":");
+    if (f.where_clause) |wc| {
+        try dumpWhereClause(out, wc);
+    } else {
+        try out.writeAll("null");
+    }
+    try out.writeAll(",\"body\":");
+    if (f.body) |body| {
+        try dumpBlock(out, body);
+    } else {
+        try out.writeAll("null");
+    }
+    try out.writeAll("}");
+}
+
+fn dumpTypeParams(out: std.fs.File, type_params: []const ast.TypeParam) anyerror!void {
+    try out.writeAll(",\"type_params\":[");
+    for (type_params, 0..) |tp, i| {
+        if (i > 0) try out.writeAll(",");
+        try out.writeAll("{\"name\":");
+        try writeJsonEscaped(out, tp.name);
+        try out.writeAll(",\"bounds\":[");
+        for (tp.bounds, 0..) |b, j| {
+            if (j > 0) try out.writeAll(",");
+            try dumpTypeExpr(out, b);
+        }
+        try out.writeAll("]}");
+    }
+    try out.writeAll("]");
+}
+
+fn dumpFunctionParams(out: std.fs.File, params: []const ast.FunctionParam) anyerror!void {
+    try out.writeAll(",\"params\":[");
+    for (params, 0..) |p, i| {
+        if (i > 0) try out.writeAll(",");
+        try out.writeAll("{\"name\":");
+        try writeJsonEscaped(out, p.name);
+        try out.writeAll(",\"type\":");
+        try dumpTypeExpr(out, p.type_);
+        try out.writeAll(",\"is_comptime\":");
+        try writeJsonBool(out, p.is_comptime);
+        try out.writeAll(",\"is_out\":");
+        try writeJsonBool(out, p.is_out);
+        try out.writeAll(",\"default_value\":");
+        if (p.default_value) |dv| {
+            try dumpExpr(out, dv);
+        } else {
+            try out.writeAll("null");
+        }
+        try out.writeAll("}");
+    }
+    try out.writeAll("]");
+}
+
+fn dumpWhereClause(out: std.fs.File, wc: []const ast.WhereConstraint) anyerror!void {
+    try out.writeAll("[");
+    for (wc, 0..) |c, i| {
+        if (i > 0) try out.writeAll(",");
+        try out.writeAll("{\"type_param\":");
+        try writeJsonEscaped(out, c.type_param);
+        try out.writeAll(",\"bounds\":[");
+        for (c.bounds, 0..) |b, j| {
+            if (j > 0) try out.writeAll(",");
+            try dumpTypeExpr(out, b);
+        }
+        try out.writeAll("]}");
+    }
+    try out.writeAll("]");
+}
+
+fn dumpStructField(out: std.fs.File, field: ast.StructField) anyerror!void {
+    try out.writeAll("{\"name\":");
+    try writeJsonEscaped(out, field.name);
+    try out.writeAll(",\"type\":");
+    try dumpTypeExpr(out, field.type_);
+    try out.writeAll(",\"is_pub\":");
+    try writeJsonBool(out, field.is_pub);
+    try out.writeAll("}");
+}
+
+fn dumpEnumVariant(out: std.fs.File, v: ast.EnumVariant) anyerror!void {
+    try out.writeAll("{\"name\":");
+    try writeJsonEscaped(out, v.name);
+    try out.writeAll(",\"value\":");
+    if (v.value) |val| {
+        var buf: [64]u8 = undefined;
+        const n = std.fmt.bufPrint(&buf, "{d}", .{val}) catch "0";
+        try out.writeAll(n);
+    } else {
+        try out.writeAll("null");
+    }
+    try out.writeAll(",\"payload\":");
+    if (v.payload) |payload| {
+        switch (payload) {
+            .tuple => |tuple_types| {
+                try out.writeAll("{\"kind\":\"tuple\",\"types\":[");
+                for (tuple_types, 0..) |t, i| {
+                    if (i > 0) try out.writeAll(",");
+                    try dumpTypeExpr(out, t);
+                }
+                try out.writeAll("]}");
+            },
+            .struct_ => |fields| {
+                try out.writeAll("{\"kind\":\"struct\",\"fields\":[");
+                for (fields, 0..) |f, i| {
+                    if (i > 0) try out.writeAll(",");
+                    try dumpStructField(out, f);
+                }
+                try out.writeAll("]}");
+            },
+        }
+    } else {
+        try out.writeAll("null");
+    }
+    try out.writeAll("}");
+}
+
+fn dumpBlock(out: std.fs.File, block: *const ast.Block) anyerror!void {
+    try out.writeAll("{\"statements\":[");
+    for (block.statements, 0..) |stmt, i| {
+        if (i > 0) try out.writeAll(",");
+        try dumpStmt(out, stmt);
+    }
+    try out.writeAll("],\"final_expr\":");
+    if (block.final_expr) |fe| {
+        try dumpExpr(out, fe);
+    } else {
+        try out.writeAll("null");
+    }
+    try out.writeAll("}");
+}
+
+fn dumpStmt(out: std.fs.File, stmt: ast.Stmt) anyerror!void {
+    switch (stmt) {
+        .let_decl => |l| {
+            try out.writeAll("{\"kind\":\"let_decl\",\"name\":");
+            try writeJsonEscaped(out, l.name);
+            try out.writeAll(",\"is_shadow\":");
+            try writeJsonBool(out, l.is_shadow);
+            try out.writeAll(",\"type\":");
+            try dumpTypeExpr(out, l.type_);
+            try out.writeAll(",\"value\":");
+            try dumpExpr(out, l.value);
+            try out.writeAll("}");
+        },
+        .var_decl => |v| {
+            try out.writeAll("{\"kind\":\"var_decl\",\"name\":");
+            try writeJsonEscaped(out, v.name);
+            try out.writeAll(",\"is_shadow\":");
+            try writeJsonBool(out, v.is_shadow);
+            try out.writeAll(",\"type\":");
+            try dumpTypeExpr(out, v.type_);
+            try out.writeAll(",\"value\":");
+            try dumpExpr(out, v.value);
+            try out.writeAll("}");
+        },
+        .assignment => |a| {
+            try out.writeAll("{\"kind\":\"assignment\",\"op\":");
+            try writeJsonEscaped(out, @tagName(a.op));
+            try out.writeAll(",\"target\":");
+            try dumpExpr(out, a.target);
+            try out.writeAll(",\"value\":");
+            try dumpExpr(out, a.value);
+            try out.writeAll("}");
+        },
+        .expr_stmt => |e| {
+            try out.writeAll("{\"kind\":\"expr_stmt\",\"expr\":");
+            try dumpExpr(out, e.expr);
+            try out.writeAll("}");
+        },
+        .return_stmt => |r| {
+            try out.writeAll("{\"kind\":\"return_stmt\",\"value\":");
+            if (r.value) |v| {
+                try dumpExpr(out, v);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .break_stmt => |b| {
+            try out.writeAll("{\"kind\":\"break_stmt\",\"value\":");
+            if (b.value) |v| {
+                try dumpExpr(out, v);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .continue_stmt => {
+            try out.writeAll("{\"kind\":\"continue_stmt\"}");
+        },
+        .for_loop => |f| {
+            try out.writeAll("{\"kind\":\"for_loop\",\"pattern\":");
+            try dumpPattern(out, f.pattern);
+            try out.writeAll(",\"iterable\":");
+            try dumpExpr(out, f.iterable);
+            try out.writeAll(",\"body\":");
+            try dumpBlock(out, f.body);
+            try out.writeAll("}");
+        },
+        .while_loop => |w| {
+            try out.writeAll("{\"kind\":\"while_loop\",\"condition\":");
+            try dumpExpr(out, w.condition);
+            try out.writeAll(",\"body\":");
+            try dumpBlock(out, w.body);
+            try out.writeAll("}");
+        },
+        .loop_stmt => |l| {
+            try out.writeAll("{\"kind\":\"loop_stmt\",\"body\":");
+            try dumpBlock(out, l.body);
+            try out.writeAll("}");
+        },
+        .if_stmt => |i| {
+            try dumpIfStmt(out, i);
+        },
+        .match_stmt => |m| {
+            try out.writeAll("{\"kind\":\"match_stmt\",\"subject\":");
+            try dumpExpr(out, m.subject);
+            try out.writeAll(",\"arms\":[");
+            for (m.arms, 0..) |arm, j| {
+                if (j > 0) try out.writeAll(",");
+                try out.writeAll("{\"pattern\":");
+                try dumpPattern(out, arm.pattern);
+                try out.writeAll(",\"guard\":");
+                if (arm.guard) |g| {
+                    try dumpExpr(out, g);
+                } else {
+                    try out.writeAll("null");
+                }
+                try out.writeAll(",\"body\":");
+                try dumpBlock(out, arm.body);
+                try out.writeAll("}");
+            }
+            try out.writeAll("]}");
+        },
+    }
+}
+
+fn dumpIfStmt(out: std.fs.File, i: *const ast.IfStmt) anyerror!void {
+    try out.writeAll("{\"kind\":\"if_stmt\",\"condition\":");
+    try dumpExpr(out, i.condition);
+    try out.writeAll(",\"then_branch\":");
+    try dumpBlock(out, i.then_branch);
+    try out.writeAll(",\"else_branch\":");
+    if (i.else_branch) |eb| {
+        switch (eb.*) {
+            .block => |b| {
+                try out.writeAll("{\"kind\":\"block\",\"body\":");
+                try dumpBlock(out, b);
+                try out.writeAll("}");
+            },
+            .if_stmt => |nested| {
+                try dumpIfStmt(out, nested);
+            },
+        }
+    } else {
+        try out.writeAll("null");
+    }
+    try out.writeAll("}");
+}
+
+fn dumpExpr(out: std.fs.File, expr: ast.Expr) anyerror!void {
+    switch (expr) {
+        .literal => |lit| {
+            try out.writeAll("{\"kind\":\"literal\"");
+            switch (lit.kind) {
+                .int => |v| {
+                    try out.writeAll(",\"type\":\"int\",\"value\":");
+                    var buf: [64]u8 = undefined;
+                    const n = std.fmt.bufPrint(&buf, "{d}", .{v}) catch "0";
+                    try writeJsonEscaped(out, n);
+                },
+                .float => |v| {
+                    try out.writeAll(",\"type\":\"float\",\"value\":");
+                    var buf: [64]u8 = undefined;
+                    const n = std.fmt.bufPrint(&buf, "{d}", .{v}) catch "0";
+                    try out.writeAll(n);
+                },
+                .string => |v| {
+                    try out.writeAll(",\"type\":\"string\",\"value\":");
+                    try writeJsonEscaped(out, v);
+                },
+                .char => |v| {
+                    try out.writeAll(",\"type\":\"char\",\"value\":");
+                    var buf: [32]u8 = undefined;
+                    const n = std.fmt.bufPrint(&buf, "{d}", .{v}) catch "0";
+                    try out.writeAll(n);
+                },
+                .bool_ => |v| {
+                    try out.writeAll(",\"type\":\"bool\",\"value\":");
+                    try writeJsonBool(out, v);
+                },
+            }
+            try out.writeAll("}");
+        },
+        .identifier => |id| {
+            try out.writeAll("{\"kind\":\"identifier\",\"name\":");
+            try writeJsonEscaped(out, id.name);
+            try out.writeAll("}");
+        },
+        .binary => |bin| {
+            try out.writeAll("{\"kind\":\"binary\",\"op\":");
+            try writeJsonEscaped(out, @tagName(bin.op));
+            try out.writeAll(",\"left\":");
+            try dumpExpr(out, bin.left);
+            try out.writeAll(",\"right\":");
+            try dumpExpr(out, bin.right);
+            try out.writeAll("}");
+        },
+        .unary => |un| {
+            try out.writeAll("{\"kind\":\"unary\",\"op\":");
+            try writeJsonEscaped(out, @tagName(un.op));
+            try out.writeAll(",\"operand\":");
+            try dumpExpr(out, un.operand);
+            try out.writeAll("}");
+        },
+        .postfix => |p| {
+            try out.writeAll("{\"kind\":\"postfix\",\"op\":");
+            try writeJsonEscaped(out, @tagName(p.op));
+            try out.writeAll(",\"operand\":");
+            try dumpExpr(out, p.operand);
+            try out.writeAll("}");
+        },
+        .call => |c| {
+            try out.writeAll("{\"kind\":\"call\",\"callee\":");
+            try dumpExpr(out, c.callee);
+            try out.writeAll(",\"args\":[");
+            for (c.args, 0..) |arg, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpExpr(out, arg);
+            }
+            try out.writeAll("],\"type_args\":");
+            if (c.type_args) |ta| {
+                try out.writeAll("[");
+                for (ta, 0..) |t, i| {
+                    if (i > 0) try out.writeAll(",");
+                    try dumpTypeExpr(out, t);
+                }
+                try out.writeAll("]");
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .index => |idx| {
+            try out.writeAll("{\"kind\":\"index\",\"object\":");
+            try dumpExpr(out, idx.object);
+            try out.writeAll(",\"index\":");
+            try dumpExpr(out, idx.index);
+            try out.writeAll("}");
+        },
+        .field => |f| {
+            try out.writeAll("{\"kind\":\"field\",\"object\":");
+            try dumpExpr(out, f.object);
+            try out.writeAll(",\"field_name\":");
+            try writeJsonEscaped(out, f.field_name);
+            try out.writeAll("}");
+        },
+        .method_call => |m| {
+            try out.writeAll("{\"kind\":\"method_call\",\"object\":");
+            try dumpExpr(out, m.object);
+            try out.writeAll(",\"method_name\":");
+            try writeJsonEscaped(out, m.method_name);
+            try out.writeAll(",\"type_args\":");
+            if (m.type_args) |ta| {
+                try out.writeAll("[");
+                for (ta, 0..) |t, i| {
+                    if (i > 0) try out.writeAll(",");
+                    try dumpTypeExpr(out, t);
+                }
+                try out.writeAll("]");
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"args\":[");
+            for (m.args, 0..) |arg, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpExpr(out, arg);
+            }
+            try out.writeAll("]}");
+        },
+        .block => |b| {
+            try out.writeAll("{\"kind\":\"block\",\"body\":");
+            try dumpBlock(out, b);
+            try out.writeAll("}");
+        },
+        .closure => |c| {
+            try out.writeAll("{\"kind\":\"closure\",\"params\":[");
+            for (c.params, 0..) |p, i| {
+                if (i > 0) try out.writeAll(",");
+                try out.writeAll("{\"name\":");
+                try writeJsonEscaped(out, p.name);
+                try out.writeAll(",\"type\":");
+                try dumpTypeExpr(out, p.type_);
+                try out.writeAll("}");
+            }
+            try out.writeAll("],\"return_type\":");
+            try dumpTypeExpr(out, c.return_type);
+            try out.writeAll(",\"body\":");
+            try dumpExpr(out, c.body);
+            try out.writeAll("}");
+        },
+        .range => |r| {
+            try out.writeAll("{\"kind\":\"range\",\"inclusive\":");
+            try writeJsonBool(out, r.inclusive);
+            try out.writeAll(",\"start\":");
+            if (r.start) |s| {
+                try dumpExpr(out, s);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"end\":");
+            if (r.end) |e| {
+                try dumpExpr(out, e);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .struct_literal => |s| {
+            try out.writeAll("{\"kind\":\"struct_literal\",\"type_name\":");
+            if (s.type_name) |tn| {
+                try dumpTypeExpr(out, tn);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"fields\":[");
+            for (s.fields, 0..) |f, i| {
+                if (i > 0) try out.writeAll(",");
+                try out.writeAll("{\"name\":");
+                try writeJsonEscaped(out, f.name);
+                try out.writeAll(",\"value\":");
+                try dumpExpr(out, f.value);
+                try out.writeAll("}");
+            }
+            try out.writeAll("],\"spread\":");
+            if (s.spread) |sp| {
+                try dumpExpr(out, sp);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .array_literal => |a| {
+            try out.writeAll("{\"kind\":\"array_literal\",\"elements\":[");
+            for (a.elements, 0..) |e, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpExpr(out, e);
+            }
+            try out.writeAll("]}");
+        },
+        .tuple_literal => |t| {
+            try out.writeAll("{\"kind\":\"tuple_literal\",\"elements\":[");
+            for (t.elements, 0..) |e, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpExpr(out, e);
+            }
+            try out.writeAll("]}");
+        },
+        .type_cast => |tc| {
+            try out.writeAll("{\"kind\":\"type_cast\",\"truncating\":");
+            try writeJsonBool(out, tc.truncating);
+            try out.writeAll(",\"target_type\":");
+            try dumpTypeExpr(out, tc.target_type);
+            try out.writeAll(",\"expr\":");
+            try dumpExpr(out, tc.expr);
+            try out.writeAll("}");
+        },
+        .grouped => |g| {
+            try out.writeAll("{\"kind\":\"grouped\",\"expr\":");
+            try dumpExpr(out, g.expr);
+            try out.writeAll("}");
+        },
+        .interpolated_string => |is| {
+            try out.writeAll("{\"kind\":\"interpolated_string\",\"parts\":[");
+            for (is.parts, 0..) |part, i| {
+                if (i > 0) try out.writeAll(",");
+                switch (part) {
+                    .string => |s| {
+                        try out.writeAll("{\"kind\":\"string\",\"value\":");
+                        try writeJsonEscaped(out, s);
+                        try out.writeAll("}");
+                    },
+                    .expr => |e| {
+                        try out.writeAll("{\"kind\":\"expr\",\"value\":");
+                        try dumpExpr(out, e);
+                        try out.writeAll("}");
+                    },
+                }
+            }
+            try out.writeAll("]}");
+        },
+        .enum_literal => |el| {
+            try out.writeAll("{\"kind\":\"enum_literal\",\"enum_type\":");
+            try dumpTypeExpr(out, el.enum_type);
+            try out.writeAll(",\"variant_name\":");
+            try writeJsonEscaped(out, el.variant_name);
+            try out.writeAll(",\"payload\":[");
+            for (el.payload, 0..) |p, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpExpr(out, p);
+            }
+            try out.writeAll("]}");
+        },
+        .comptime_block => |cb| {
+            try out.writeAll("{\"kind\":\"comptime_block\",\"body\":");
+            try dumpBlock(out, cb.body);
+            try out.writeAll("}");
+        },
+        .builtin_call => |bc| {
+            try out.writeAll("{\"kind\":\"builtin_call\",\"name\":");
+            try writeJsonEscaped(out, bc.name);
+            try out.writeAll(",\"args\":[");
+            for (bc.args, 0..) |arg, i| {
+                if (i > 0) try out.writeAll(",");
+                switch (arg) {
+                    .type_arg => |t| {
+                        try out.writeAll("{\"kind\":\"type\",\"value\":");
+                        try dumpTypeExpr(out, t);
+                        try out.writeAll("}");
+                    },
+                    .expr_arg => |e| {
+                        try out.writeAll("{\"kind\":\"expr\",\"value\":");
+                        try dumpExpr(out, e);
+                        try out.writeAll("}");
+                    },
+                }
+            }
+            try out.writeAll("]}");
+        },
+        .unsafe_block => |ub| {
+            try out.writeAll("{\"kind\":\"unsafe_block\",\"body\":");
+            try dumpBlock(out, ub.body);
+            try out.writeAll("}");
+        },
+        .out_arg => |oa| {
+            try out.writeAll("{\"kind\":\"out_arg\",\"name\":");
+            try writeJsonEscaped(out, oa.name);
+            try out.writeAll("}");
+        },
+    }
+}
+
+fn dumpPattern(out: std.fs.File, pattern: ast.Pattern) anyerror!void {
+    switch (pattern) {
+        .wildcard => {
+            try out.writeAll("{\"kind\":\"wildcard\"}");
+        },
+        .literal => |lit| {
+            try out.writeAll("{\"kind\":\"literal\"");
+            switch (lit.kind) {
+                .int => |v| {
+                    try out.writeAll(",\"type\":\"int\",\"value\":");
+                    var buf: [64]u8 = undefined;
+                    const n = std.fmt.bufPrint(&buf, "{d}", .{v}) catch "0";
+                    try writeJsonEscaped(out, n);
+                },
+                .float => |v| {
+                    try out.writeAll(",\"type\":\"float\",\"value\":");
+                    var buf: [64]u8 = undefined;
+                    const n = std.fmt.bufPrint(&buf, "{d}", .{v}) catch "0";
+                    try out.writeAll(n);
+                },
+                .string => |v| {
+                    try out.writeAll(",\"type\":\"string\",\"value\":");
+                    try writeJsonEscaped(out, v);
+                },
+                .char => |v| {
+                    try out.writeAll(",\"type\":\"char\",\"value\":");
+                    var buf: [32]u8 = undefined;
+                    const n = std.fmt.bufPrint(&buf, "{d}", .{v}) catch "0";
+                    try out.writeAll(n);
+                },
+                .bool_ => |v| {
+                    try out.writeAll(",\"type\":\"bool\",\"value\":");
+                    try writeJsonBool(out, v);
+                },
+            }
+            try out.writeAll("}");
+        },
+        .binding => |b| {
+            try out.writeAll("{\"kind\":\"binding\",\"name\":");
+            try writeJsonEscaped(out, b.name);
+            try out.writeAll(",\"mutable\":");
+            try writeJsonBool(out, b.mutable);
+            try out.writeAll(",\"type_annotation\":");
+            if (b.type_annotation) |ta| {
+                try dumpTypeExpr(out, ta);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .variant => |v| {
+            try out.writeAll("{\"kind\":\"variant\",\"type_expr\":");
+            if (v.type_expr) |te| {
+                try dumpTypeExpr(out, te);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"variant_name\":");
+            try writeJsonEscaped(out, v.variant_name);
+            try out.writeAll(",\"payload\":");
+            if (v.payload) |p| {
+                try dumpPattern(out, p);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .struct_pattern => |sp| {
+            try out.writeAll("{\"kind\":\"struct_pattern\",\"type_name\":");
+            if (sp.type_name) |tn| {
+                try writeJsonEscaped(out, tn);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll(",\"fields\":[");
+            for (sp.fields, 0..) |f, i| {
+                if (i > 0) try out.writeAll(",");
+                try out.writeAll("{\"name\":");
+                try writeJsonEscaped(out, f.name);
+                try out.writeAll(",\"pattern\":");
+                if (f.pattern) |p| {
+                    try dumpPattern(out, p);
+                } else {
+                    try out.writeAll("null");
+                }
+                try out.writeAll("}");
+            }
+            try out.writeAll("]}");
+        },
+        .tuple_pattern => |tp| {
+            try out.writeAll("{\"kind\":\"tuple_pattern\",\"elements\":[");
+            for (tp.elements, 0..) |e, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpPattern(out, e);
+            }
+            try out.writeAll("]}");
+        },
+        .or_pattern => |op| {
+            try out.writeAll("{\"kind\":\"or_pattern\",\"alternatives\":[");
+            for (op.alternatives, 0..) |a, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpPattern(out, a);
+            }
+            try out.writeAll("]}");
+        },
+        .guarded => |g| {
+            try out.writeAll("{\"kind\":\"guarded\",\"pattern\":");
+            try dumpPattern(out, g.pattern);
+            try out.writeAll(",\"guard\":");
+            try dumpExpr(out, g.guard);
+            try out.writeAll("}");
+        },
+    }
+}
+
+fn dumpTypeExpr(out: std.fs.File, te: ast.TypeExpr) anyerror!void {
+    switch (te) {
+        .named => |n| {
+            try out.writeAll("{\"kind\":\"named\",\"name\":");
+            try writeJsonEscaped(out, n.name);
+            try out.writeAll("}");
+        },
+        .array => |a| {
+            try out.writeAll("{\"kind\":\"array\",\"element\":");
+            try dumpTypeExpr(out, a.element);
+            try out.writeAll(",\"size\":");
+            try dumpExpr(out, a.size);
+            try out.writeAll("}");
+        },
+        .slice => |s| {
+            try out.writeAll("{\"kind\":\"slice\",\"element\":");
+            try dumpTypeExpr(out, s.element);
+            try out.writeAll("}");
+        },
+        .tuple => |t| {
+            try out.writeAll("{\"kind\":\"tuple\",\"elements\":[");
+            for (t.elements, 0..) |e, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpTypeExpr(out, e);
+            }
+            try out.writeAll("]}");
+        },
+        .optional => |o| {
+            try out.writeAll("{\"kind\":\"optional\",\"inner\":");
+            try dumpTypeExpr(out, o.inner);
+            try out.writeAll("}");
+        },
+        .result => |r| {
+            try out.writeAll("{\"kind\":\"result\",\"ok_type\":");
+            try dumpTypeExpr(out, r.ok_type);
+            try out.writeAll(",\"err_type\":");
+            try dumpTypeExpr(out, r.err_type);
+            try out.writeAll("}");
+        },
+        .function => |f| {
+            try out.writeAll("{\"kind\":\"function\",\"params\":[");
+            for (f.params, 0..) |p, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpTypeExpr(out, p);
+            }
+            try out.writeAll("],\"return_type\":");
+            try dumpTypeExpr(out, f.return_type);
+            try out.writeAll("}");
+        },
+        .extern_function => |ef| {
+            try out.writeAll("{\"kind\":\"extern_function\",\"params\":[");
+            for (ef.params, 0..) |p, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpTypeExpr(out, p);
+            }
+            try out.writeAll("],\"return_type\":");
+            try dumpTypeExpr(out, ef.return_type);
+            try out.writeAll("}");
+        },
+        .reference => |r| {
+            try out.writeAll("{\"kind\":\"reference\",\"mutable\":");
+            try writeJsonBool(out, r.mutable);
+            try out.writeAll(",\"inner\":");
+            try dumpTypeExpr(out, r.inner);
+            try out.writeAll("}");
+        },
+        .generic_apply => |g| {
+            try out.writeAll("{\"kind\":\"generic_apply\",\"base\":");
+            try dumpTypeExpr(out, g.base);
+            try out.writeAll(",\"args\":[");
+            for (g.args, 0..) |a, i| {
+                if (i > 0) try out.writeAll(",");
+                try dumpTypeExpr(out, a);
+            }
+            try out.writeAll("]}");
+        },
+        .qualified => |q| {
+            try out.writeAll("{\"kind\":\"qualified\",\"base\":");
+            try dumpTypeExpr(out, q.base);
+            try out.writeAll(",\"member\":");
+            try writeJsonEscaped(out, q.member);
+            try out.writeAll("}");
+        },
     }
 }
 
@@ -4551,6 +5723,8 @@ fn printUsage() !void {
         \\  version              Show version
         \\  tokenize <file>      Tokenize a file (debug)
         \\  parse <file>         Parse a file (debug)
+        \\  dump-tokens <file>   Dump token stream as JSON (parity testing)
+        \\  dump-ast <file>      Dump AST as JSON (parity testing)
         \\  disasm <file>        Disassemble bytecode (debug)
         \\
         \\Build Options:

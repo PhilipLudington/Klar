@@ -1,0 +1,23 @@
+// selfhost/main.kl — Self-hosted compiler entry point (stub)
+// Milestone 9.3: Bootstrap architecture scaffolding
+// Full pipeline wiring: Milestone 9.11
+
+import lexer.{Lexer, Token}
+import parser.{Parser}
+import ast.{Module}
+import checker.{TypeChecker}
+import types.{KlarType}
+
+fn main() -> i32 {
+    println("Klar self-hosted compiler — not yet implemented")
+    println("See PLAN.md Milestone 9 for roadmap")
+    return 1
+}
+
+test main {
+    // Verify that all module imports resolve correctly
+    let lexer: Lexer = Lexer.new("")
+    let parser: Parser = Parser.new("")
+    let checker: TypeChecker = TypeChecker.new()
+    assert_eq(checker.error_count, 0)
+}

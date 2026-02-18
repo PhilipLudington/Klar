@@ -1,0 +1,73 @@
+// selfhost/ast.kl — Self-hosted AST definitions (stub)
+// Milestone 9.3: Bootstrap architecture scaffolding
+// Full implementation: Milestone 9.5
+
+// Type expressions
+pub enum TypeExpr {
+    Named(string),
+    Optional(string),
+    Array(string),
+    Function(string),
+    Void,
+}
+
+// Expressions
+pub enum Expr {
+    IntLit(i64),
+    FloatLit(f64),
+    StringLit(string),
+    BoolLit(bool),
+    Ident(string),
+    BinaryOp(string),
+    UnaryOp(string),
+    Call(string),
+    FieldAccess(string),
+    Block(string),
+}
+
+// Statements
+pub enum Stmt {
+    LetDecl(string),
+    VarDecl(string),
+    ExprStmt(string),
+    ReturnStmt(string),
+    IfStmt(string),
+    ForLoop(string),
+    WhileLoop(string),
+    MatchStmt(string),
+    Assignment(string),
+}
+
+// Declarations
+pub enum Decl {
+    Function(string),
+    Struct(string),
+    Enum(string),
+    Trait(string),
+    Impl(string),
+    Import(string),
+    Const(string),
+    TestDecl(string),
+}
+
+// Top-level module
+pub struct Module {
+    declarations: List[String],
+}
+
+impl Module {
+    fn new() -> Module {
+        return Module {
+            declarations: List.new[String](),
+        }
+    }
+}
+
+fn main() -> i32 {
+    return 0
+}
+
+test main {
+    // Stub test — full AST tests in Milestone 9.5
+    assert(true)
+}

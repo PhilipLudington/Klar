@@ -55,6 +55,7 @@ run_suite "Args Tests" "./scripts/run-args-tests.sh" || TOTAL_FAILED=$((TOTAL_FA
 run_suite "Freestanding Tests" "./scripts/run-freestanding-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 run_suite "Check Tests" "./scripts/run-check-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 run_suite "Fmt Tests" "./scripts/run-fmt-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
+run_suite "Selfhost Tests" "./scripts/run-selfhost-tests.sh" || TOTAL_FAILED=$((TOTAL_FAILED + 1))
 
 # Summary
 echo ""
@@ -86,9 +87,11 @@ CHECK_PASSED=$(read_json_field .check-test-results.json passed)
 CHECK_FAILED=$(read_json_field .check-test-results.json failed)
 FMT_PASSED=$(read_json_field .fmt-test-results.json passed)
 FMT_FAILED=$(read_json_field .fmt-test-results.json failed)
+SELFHOST_PASSED=$(read_json_field .selfhost-test-results.json passed)
+SELFHOST_FAILED=$(read_json_field .selfhost-test-results.json failed)
 
-TOTAL_PASSED=$((UNIT_PASSED + NATIVE_PASSED + APP_PASSED + MODULE_PASSED + ARGS_PASSED + FREESTANDING_PASSED + CHECK_PASSED + FMT_PASSED))
-TOTAL_FAILED=$((UNIT_FAILED + NATIVE_FAILED + APP_FAILED + MODULE_FAILED + ARGS_FAILED + FREESTANDING_FAILED + CHECK_FAILED + FMT_FAILED))
+TOTAL_PASSED=$((UNIT_PASSED + NATIVE_PASSED + APP_PASSED + MODULE_PASSED + ARGS_PASSED + FREESTANDING_PASSED + CHECK_PASSED + FMT_PASSED + SELFHOST_PASSED))
+TOTAL_FAILED=$((UNIT_FAILED + NATIVE_FAILED + APP_FAILED + MODULE_FAILED + ARGS_FAILED + FREESTANDING_FAILED + CHECK_FAILED + FMT_FAILED + SELFHOST_FAILED))
 
 printf "  %-15s %3d passed, %d failed\n" "Unit Tests:" "$UNIT_PASSED" "$UNIT_FAILED"
 printf "  %-15s %3d passed, %d failed\n" "Native Tests:" "$NATIVE_PASSED" "$NATIVE_FAILED"
@@ -102,6 +105,7 @@ else
 fi
 printf "  %-15s %3d passed, %d failed\n" "Check Tests:" "$CHECK_PASSED" "$CHECK_FAILED"
 printf "  %-15s %3d passed, %d failed\n" "Fmt Tests:" "$FMT_PASSED" "$FMT_FAILED"
+printf "  %-15s %3d passed, %d failed\n" "Selfhost:" "$SELFHOST_PASSED" "$SELFHOST_FAILED"
 echo "───────────────────────────────────────────────────────────"
 printf "  %-15s %3d passed, %d failed\n" "TOTAL:" "$TOTAL_PASSED" "$TOTAL_FAILED"
 echo ""

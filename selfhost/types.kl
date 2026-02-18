@@ -1,0 +1,55 @@
+// selfhost/types.kl — Self-hosted type system definitions (stub)
+// Milestone 9.3: Bootstrap architecture scaffolding
+// Full implementation: Milestone 9.8
+
+pub enum KlarType {
+    // Primitives
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    Bool,
+    Char,
+    StringType,
+    Void,
+
+    // Compound (stub — payload types added in 9.8)
+    Array(string),
+    Optional(string),
+    Function(string),
+    Struct(string),
+    Enum(string),
+    Trait(string),
+    Generic(string),
+
+    // Special
+    Unknown,
+    Error,
+}
+
+pub fn type_name(t: KlarType) -> string {
+    match t {
+        KlarType::I32 => { return "i32" }
+        KlarType::I64 => { return "i64" }
+        KlarType::F64 => { return "f64" }
+        KlarType::Bool => { return "bool" }
+        KlarType::StringType => { return "string" }
+        KlarType::Void => { return "void" }
+        _ => { return "<unknown>" }
+    }
+}
+
+fn main() -> i32 {
+    return 0
+}
+
+test main {
+    // Stub test — full type system tests in Milestone 9.8
+    assert(true)
+}

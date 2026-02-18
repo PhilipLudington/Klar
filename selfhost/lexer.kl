@@ -1,0 +1,131 @@
+// selfhost/lexer.kl — Self-hosted lexer (stub)
+// Milestone 9.3: Bootstrap architecture scaffolding
+// Full implementation: Milestone 9.4
+
+pub enum TokenKind {
+    // Literals
+    IntLiteral,
+    FloatLiteral,
+    StringLiteral,
+    CharLiteral,
+    True,
+    False,
+
+    // Identifier
+    Identifier,
+
+    // Keywords (subset — full set added in 9.4)
+    Fn,
+    Let,
+    Var,
+    Struct,
+    Enum,
+    Trait,
+    Impl,
+    If,
+    Else,
+    Match,
+    For,
+    While,
+    Loop,
+    Return,
+    Break,
+    Continue,
+    Pub,
+    Import,
+    Module,
+    Test,
+    As,
+    In,
+    Is,
+    And,
+    Or,
+    Not,
+
+    // Operators (subset)
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Eq,
+    EqEq,
+    NotEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
+    Arrow,
+    FatArrow,
+    Dot,
+    DotDot,
+    Colon,
+    ColonColon,
+    Question,
+    QuestionQuestion,
+
+    // Delimiters
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    LBrace,
+    RBrace,
+    Comma,
+    Semicolon,
+    Newline,
+
+    // Special
+    Eof,
+    Invalid,
+}
+
+pub struct Token {
+    kind: TokenKind,
+    text: string,
+    line: i32,
+    column: i32,
+    start: i32,
+    end: i32,
+}
+
+pub struct Lexer {
+    source: string,
+    pos: i32,
+    line: i32,
+    column: i32,
+}
+
+impl Lexer {
+    fn new(source: string) -> Lexer {
+        return Lexer {
+            source: source,
+            pos: 0,
+            line: 1,
+            column: 1,
+        }
+    }
+
+    // TODO(9.4): Change to mutable self — advancing the lexer requires mutation
+    fn next_token(self: Lexer) -> Token {
+        // Stub: always returns EOF
+        // Full implementation in Milestone 9.4
+        return Token {
+            kind: TokenKind::Eof,
+            text: "",
+            line: self.line,
+            column: self.column,
+            start: self.pos,
+            end: self.pos,
+        }
+    }
+}
+
+fn main() -> i32 {
+    return 0
+}
+
+test main {
+    // Stub test — full lexer tests in Milestone 9.4
+    assert(true)
+}

@@ -1,0 +1,38 @@
+// selfhost/parser.kl — Self-hosted parser (stub)
+// Milestone 9.3: Bootstrap architecture scaffolding
+// Full implementation: Milestones 9.6–9.7
+
+import lexer.{Lexer, Token, TokenKind}
+import ast.{Module, Decl, Stmt, Expr, TypeExpr}
+
+pub struct Parser {
+    source: string,
+    pos: i32,
+}
+
+impl Parser {
+    fn new(source: string) -> Parser {
+        return Parser {
+            source: source,
+            pos: 0,
+        }
+    }
+
+    // TODO(9.6): Change to mutable self — parsing consumes tokens and advances state
+    fn parse_module(self: Parser) -> Module {
+        // Stub: returns empty module
+        // Full implementation in Milestones 9.6–9.7
+        return Module.new()
+    }
+}
+
+fn main() -> i32 {
+    return 0
+}
+
+test main {
+    let source: string = "fn main() -> i32 { return 0 }"
+    let parser: Parser = Parser.new(source)
+    let m: Module = parser.parse_module()
+    assert_eq(m.declarations.len(), 0)
+}

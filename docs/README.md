@@ -62,6 +62,7 @@ klar run hello.kl
 ### Guides
 
 - [WebAssembly](guides/wasm.md) - Compile to WebAssembly
+- [Self-Hosting](guides/self-hosting.md) - Bootstrap architecture and compiler frontend port
 
 ### Advanced Topics
 

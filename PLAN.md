@@ -148,16 +148,16 @@ Fix known collection gaps that would block self-hosting data structures.
 
 Set up the directory structure, testing harness, and diagnostic commands for parity testing.
 
-- [ ] **9.3.1** Create `selfhost/` directory with stub files (`lexer.kl`, `parser.kl`, `ast.kl`, `types.kl`, `checker.kl`, `main.kl`)
-- [ ] **9.3.2** Add `klar dump-tokens <file>` command — output token stream as JSON for parity testing
-- [ ] **9.3.3** Add `klar dump-ast <file>` command — output AST as JSON for parity testing
-- [ ] **9.3.4** Create `scripts/run-selfhost-tests.sh` — runs parity tests between Zig and Klar frontends
-- [ ] **9.3.5** Document bootstrap process (Stage 0/1/2) in `docs/guides/self-hosting.md`
+- [x] **9.3.1** Create `selfhost/` directory with stub files (`lexer.kl`, `parser.kl`, `ast.kl`, `types.kl`, `checker.kl`, `main.kl`)
+- [x] **9.3.2** Add `klar dump-tokens <file>` command — output token stream as JSON for parity testing
+- [x] **9.3.3** Add `klar dump-ast <file>` command — output AST as JSON for parity testing
+- [x] **9.3.4** Create `scripts/run-selfhost-tests.sh` — runs parity tests between Zig and Klar frontends
+- [x] **9.3.5** Document bootstrap process (Stage 0/1/2) in `docs/guides/self-hosting.md`
 
 **Success Criteria:**
-- [ ] `klar dump-tokens` produces deterministic JSON for any valid `.kl` file
-- [ ] `klar dump-ast` produces deterministic JSON for any valid `.kl` file
-- [ ] `selfhost/` directory compiles (even if stubs produce no useful output yet)
+- [x] `klar dump-tokens` produces deterministic JSON for any valid `.kl` file
+- [x] `klar dump-ast` produces deterministic JSON for any valid `.kl` file
+- [x] `selfhost/` directory compiles (even if stubs produce no useful output yet)
 
 ---
 

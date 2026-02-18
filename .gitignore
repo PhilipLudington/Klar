@@ -19,6 +19,7 @@ zig-out/
 .check-test-results.json
 .fmt-test-results.json
 .doc-test-results.json
+.selfhost-test-results.json
 
 # LLVM IR output (when debugging)
 *.ll
