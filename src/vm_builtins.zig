@@ -70,6 +70,11 @@ pub const builtins = [_]NativeDesc{
 
     // Debug functions
     .{ .name = "debug", .arity = 1, .function = nativeDebug },
+
+    // String primitive functions
+    .{ .name = "from_byte", .arity = 1, .function = nativeFromByte },
+    .{ .name = "parse_int", .arity = 1, .function = nativeParseInt },
+    .{ .name = "parse_float", .arity = 1, .function = nativeParseFloat },
 };
 
 // ============================================================================
@@ -275,7 +280,17 @@ fn nativeLen(_: Allocator, args: []const Value) RuntimeError!Value {
     const len: i128 = switch (args[0]) {
         .array => |a| @intCast(a.items.len),
         .tuple => |t| @intCast(t.items.len),
-        .string => |s| @intCast(s.chars.len),
+        .string => |s| blk: {
+            // Count UTF-8 codepoints (not bytes)
+            var cp_count: i128 = 0;
+            var i: usize = 0;
+            while (i < s.chars.len) {
+                const cp_len = std.unicode.utf8ByteSequenceLength(s.chars[i]) catch 1;
+                i += cp_len;
+                cp_count += 1;
+            }
+            break :blk cp_count;
+        },
         else => return RuntimeError.TypeError,
     };
 
@@ -537,6 +552,48 @@ fn debugValueToString(allocator: Allocator, value: Value, depth: usize) RuntimeE
             }) catch return RuntimeError.OutOfMemory;
         },
     };
+}
+
+// ============================================================================
+// String Primitive Functions
+// ============================================================================
+
+fn nativeFromByte(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    const byte_val = args[0].asInt() orelse return RuntimeError.TypeError;
+    if (byte_val < 0 or byte_val > 255) return RuntimeError.TypeError;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    var buf = [_]u8{@intCast(byte_val)};
+    const str = ObjString.createGC(gc, &buf) catch return RuntimeError.OutOfMemory;
+    return .{ .string = str };
+}
+
+fn nativeParseInt(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    if (args[0] != .string) return RuntimeError.TypeError;
+    const str = args[0].string.chars;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    if (std.fmt.parseInt(i64, str, 10)) |val| {
+        const some = ObjOptional.createSomeGC(gc, Value.fromInt(val)) catch return RuntimeError.OutOfMemory;
+        return .{ .optional = some };
+    } else |_| {
+        const none = ObjOptional.createNoneGC(gc) catch return RuntimeError.OutOfMemory;
+        return .{ .optional = none };
+    }
+}
+
+fn nativeParseFloat(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.WrongArity;
+    if (args[0] != .string) return RuntimeError.TypeError;
+    const str = args[0].string.chars;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    if (std.fmt.parseFloat(f64, str)) |val| {
+        const some = ObjOptional.createSomeGC(gc, Value.fromFloat(val)) catch return RuntimeError.OutOfMemory;
+        return .{ .optional = some };
+    } else |_| {
+        const none = ObjOptional.createNoneGC(gc) catch return RuntimeError.OutOfMemory;
+        return .{ .optional = none };
+    }
 }
 
 // ============================================================================

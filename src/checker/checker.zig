@@ -955,6 +955,42 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
+        // from_byte(b: u8) -> string - create single-byte string from byte value
+        const from_byte_type = try self.type_builder.functionType(&.{.{ .primitive = .u8_ }}, self.type_builder.stringType());
+        try self.current_scope.define(.{
+            .name = "from_byte",
+            .type_ = from_byte_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // parse_int(s: string) -> ?i64 - parse string to optional integer
+        const parse_int_type = try self.type_builder.functionType(
+            &.{self.type_builder.stringType()},
+            try self.type_builder.optionalType(self.type_builder.i64Type()),
+        );
+        try self.current_scope.define(.{
+            .name = "parse_int",
+            .type_ = parse_int_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // parse_float(s: string) -> ?f64 - parse string to optional float
+        const parse_float_type = try self.type_builder.functionType(
+            &.{self.type_builder.stringType()},
+            try self.type_builder.optionalType(self.type_builder.f64Type()),
+        );
+        try self.current_scope.define(.{
+            .name = "parse_float",
+            .type_ = parse_float_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
         // ====================================================================
         // Register builtin traits
         // ====================================================================

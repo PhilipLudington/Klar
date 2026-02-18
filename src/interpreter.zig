@@ -236,6 +236,15 @@ pub const Interpreter = struct {
         if (self.global_env.get("debug")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
+        if (self.global_env.get("from_byte")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("parse_int")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("parse_float")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
         self.global_env.deinit();
         self.allocator.destroy(self.global_env);
     }
@@ -329,6 +338,18 @@ pub const Interpreter = struct {
         const debug_fn = try self.allocator.create(values.BuiltinFunction);
         debug_fn.* = .{ .name = "debug", .func = &builtinDebug };
         try self.global_env.define("debug", .{ .builtin = debug_fn }, false);
+
+        const from_byte_fn = try self.allocator.create(values.BuiltinFunction);
+        from_byte_fn.* = .{ .name = "from_byte", .func = &builtinFromByte };
+        try self.global_env.define("from_byte", .{ .builtin = from_byte_fn }, false);
+
+        const parse_int_fn = try self.allocator.create(values.BuiltinFunction);
+        parse_int_fn.* = .{ .name = "parse_int", .func = &builtinParseInt };
+        try self.global_env.define("parse_int", .{ .builtin = parse_int_fn }, false);
+
+        const parse_float_fn = try self.allocator.create(values.BuiltinFunction);
+        parse_float_fn.* = .{ .name = "parse_float", .func = &builtinParseFloat };
+        try self.global_env.define("parse_float", .{ .builtin = parse_float_fn }, false);
     }
 
     // ========================================================================
@@ -1042,7 +1063,16 @@ pub const Interpreter = struct {
                 return self.builder.int(@intCast(object.tuple.elements.len), .usize_);
             }
             if (object == .string) {
-                return self.builder.int(@intCast(object.string.len), .usize_);
+                // Count UTF-8 codepoints (not bytes)
+                const str = object.string;
+                var cp_count: i128 = 0;
+                var i: usize = 0;
+                while (i < str.len) {
+                    const cp_len = std.unicode.utf8ByteSequenceLength(str[i]) catch 1;
+                    i += cp_len;
+                    cp_count += 1;
+                }
+                return self.builder.int(cp_count, .usize_);
             }
             return RuntimeError.InvalidOperation;
         }
@@ -1134,7 +1164,7 @@ pub const Interpreter = struct {
             }
 
             if (std.mem.eql(u8, method.method_name, "slice")) {
-                // slice(start, end) - extract substring with clamping
+                // slice(start, end) - extract substring with clamping (byte-indexed)
                 if (args.items.len != 2) return RuntimeError.InvalidOperation;
                 const start_val = args.items[0];
                 const end_val = args.items[1];
@@ -1158,6 +1188,64 @@ pub const Interpreter = struct {
                 const result = self.stringAllocator().alloc(u8, sliced.len) catch return RuntimeError.OutOfMemory;
                 @memcpy(result, sliced);
                 return self.builder.string(result);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "byte_at")) {
+                if (args.items.len != 1 or args.items[0] != .int) return RuntimeError.InvalidOperation;
+                const idx = args.items[0].int.value;
+                if (idx < 0 or idx >= str.len) return RuntimeError.IndexOutOfBounds;
+                return self.builder.int(@intCast(str[@intCast(idx)]), .u8_);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "byte_len")) {
+                return self.builder.int(@intCast(str.len), .i32_);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "substring")) {
+                // substring(start, end) - char-indexed substring
+                if (args.items.len != 2) return RuntimeError.InvalidOperation;
+                const start_val = args.items[0];
+                const end_val = args.items[1];
+                if (start_val != .int or end_val != .int) return RuntimeError.InvalidOperation;
+
+                const char_start = start_val.int.value;
+                const char_end = end_val.int.value;
+
+                // Walk UTF-8 codepoints to convert char indices to byte offsets
+                var byte_start: usize = 0;
+                var byte_end: usize = 0;
+                var cp_idx: i128 = 0;
+                var i: usize = 0;
+                while (i < str.len) {
+                    if (cp_idx == char_start) byte_start = i;
+                    if (cp_idx == char_end) {
+                        byte_end = i;
+                        break;
+                    }
+                    const cp_len = std.unicode.utf8ByteSequenceLength(str[i]) catch 1;
+                    i += cp_len;
+                    cp_idx += 1;
+                }
+                // Handle end == total codepoint count
+                if (cp_idx == char_end) byte_end = i;
+                // Clamp: if start is past end, return empty
+                if (char_start >= char_end or byte_start >= byte_end) {
+                    return self.builder.string("");
+                }
+
+                const sliced = str[byte_start..byte_end];
+                const result = self.stringAllocator().alloc(u8, sliced.len) catch return RuntimeError.OutOfMemory;
+                @memcpy(result, sliced);
+                return self.builder.string(result);
+            }
+
+            if (std.mem.eql(u8, method.method_name, "index_of")) {
+                if (args.items.len != 1 or args.items[0] != .string) return RuntimeError.InvalidOperation;
+                const needle = args.items[0].string;
+                if (std.mem.indexOf(u8, str, needle)) |idx| {
+                    return self.builder.some(self.builder.int(@intCast(idx), .i32_));
+                }
+                return self.builder.none();
             }
         }
 
@@ -2462,7 +2550,17 @@ fn builtinLen(allocator: Allocator, args: []const Value) RuntimeError!Value {
     const len: i128 = switch (args[0]) {
         .array => |a| @intCast(a.elements.len),
         .tuple => |t| @intCast(t.elements.len),
-        .string => |s| @intCast(s.len),
+        .string => |s| blk: {
+            // Count UTF-8 codepoints (not bytes)
+            var cp_count: i128 = 0;
+            var i: usize = 0;
+            while (i < s.len) {
+                const cp_len = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+                i += cp_len;
+                cp_count += 1;
+            }
+            break :blk cp_count;
+        },
         else => return RuntimeError.TypeError,
     };
 
@@ -2520,6 +2618,54 @@ fn builtinDebug(allocator: Allocator, args: []const Value) RuntimeError!Value {
     // Use values.valueToString which already formats values in debug format
     const debug_str = values.valueToString(allocator, args[0]) catch return RuntimeError.OutOfMemory;
     return .{ .string = debug_str };
+}
+
+fn builtinFromByte(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .int) return RuntimeError.TypeError;
+    const byte_val = args[0].int.value;
+    if (byte_val < 0 or byte_val > 255) return RuntimeError.TypeError;
+    const buf = allocator.alloc(u8, 1) catch return RuntimeError.OutOfMemory;
+    buf[0] = @intCast(byte_val);
+    return .{ .string = buf };
+}
+
+fn builtinParseInt(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .string) return RuntimeError.TypeError;
+    const str = args[0].string;
+    if (std.fmt.parseInt(i64, str, 10)) |val| {
+        // Create Some(val)
+        const opt = allocator.create(values.OptionalValue) catch return RuntimeError.OutOfMemory;
+        const inner = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+        inner.* = .{ .int = .{ .value = val, .type_ = .i64_ } };
+        opt.* = .{ .value = inner };
+        return .{ .optional = opt };
+    } else |_| {
+        // Create None
+        const opt = allocator.create(values.OptionalValue) catch return RuntimeError.OutOfMemory;
+        opt.* = .{ .value = null };
+        return .{ .optional = opt };
+    }
+}
+
+fn builtinParseFloat(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 1) return RuntimeError.InvalidOperation;
+    if (args[0] != .string) return RuntimeError.TypeError;
+    const str = args[0].string;
+    if (std.fmt.parseFloat(f64, str)) |val| {
+        // Create Some(val)
+        const opt = allocator.create(values.OptionalValue) catch return RuntimeError.OutOfMemory;
+        const inner = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+        inner.* = .{ .float = .{ .value = val, .type_ = .f64_ } };
+        opt.* = .{ .value = inner };
+        return .{ .optional = opt };
+    } else |_| {
+        // Create None
+        const opt = allocator.create(values.OptionalValue) catch return RuntimeError.OutOfMemory;
+        opt.* = .{ .value = null };
+        return .{ .optional = opt };
+    }
 }
 
 // ============================================================================

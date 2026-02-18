@@ -17,6 +17,7 @@
 //! Assertions: `assert`, `assert_eq`, `assert_ne`, `assert_ok`, `assert_err`, `assert_some`, `assert_none`
 //! Control: `panic`
 //! Introspection: `type_name`, `len`
+//! String: `from_byte`, `parse_int`, `parse_float`
 //! Comptime: `repeat`, `comptime_print`
 
 const std = @import("std");
@@ -39,6 +40,9 @@ pub const BuiltinName = struct {
     pub const len = "len";
     pub const repeat = "repeat";
     pub const comptime_print = "comptime_print";
+    pub const from_byte = "from_byte";
+    pub const parse_int = "parse_int";
+    pub const parse_float = "parse_float";
 };
 
 /// Check if a function name is a built-in.
@@ -57,7 +61,10 @@ pub fn isBuiltin(name: []const u8) bool {
         std.mem.eql(u8, name, BuiltinName.type_name) or
         std.mem.eql(u8, name, BuiltinName.len) or
         std.mem.eql(u8, name, BuiltinName.repeat) or
-        std.mem.eql(u8, name, BuiltinName.comptime_print);
+        std.mem.eql(u8, name, BuiltinName.comptime_print) or
+        std.mem.eql(u8, name, BuiltinName.from_byte) or
+        std.mem.eql(u8, name, BuiltinName.parse_int) or
+        std.mem.eql(u8, name, BuiltinName.parse_float);
 }
 
 /// Check if a built-in is a print function.

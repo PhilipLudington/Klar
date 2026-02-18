@@ -1440,7 +1440,15 @@ pub const VM = struct {
         if (std.mem.eql(u8, method, "len")) {
             if (arg_count != 0) return RuntimeError.WrongArity;
             _ = try self.pop(); // Pop receiver
-            try self.push(Value.fromInt(@intCast(str.chars.len)));
+            // Count UTF-8 codepoints (not bytes)
+            var cp_count: i128 = 0;
+            var i: usize = 0;
+            while (i < str.chars.len) {
+                const cp_len = std.unicode.utf8ByteSequenceLength(str.chars[i]) catch 1;
+                i += cp_len;
+                cp_count += 1;
+            }
+            try self.push(Value.fromInt(cp_count));
         } else if (std.mem.eql(u8, method, "is_empty")) {
             if (arg_count != 0) return RuntimeError.WrongArity;
             _ = try self.pop();
@@ -1521,7 +1529,7 @@ pub const VM = struct {
             const arr = try ObjArray.createGC(&self.gc, bytes);
             try self.push(.{ .array = arr });
         } else if (std.mem.eql(u8, method, "slice")) {
-            // slice(start, end) - extract substring with clamping
+            // slice(start, end) - extract substring with clamping (byte-indexed)
             if (arg_count != 2) return RuntimeError.WrongArity;
             const end_val = try self.pop();
             const start_val = try self.pop();
@@ -1547,6 +1555,66 @@ pub const VM = struct {
             const sliced = str.chars[start_idx..end_idx];
             const new_str = try ObjString.createGC(&self.gc, sliced);
             try self.push(.{ .string = new_str });
+        } else if (std.mem.eql(u8, method, "byte_at")) {
+            if (arg_count != 1) return RuntimeError.WrongArity;
+            const idx_val = try self.pop();
+            _ = try self.pop(); // Pop receiver
+            const idx = idx_val.asInt() orelse return RuntimeError.TypeError;
+            if (idx < 0 or idx >= str.chars.len) return RuntimeError.IndexOutOfBounds;
+            try self.push(Value.fromInt(@intCast(str.chars[@intCast(idx)])));
+        } else if (std.mem.eql(u8, method, "byte_len")) {
+            if (arg_count != 0) return RuntimeError.WrongArity;
+            _ = try self.pop(); // Pop receiver
+            try self.push(Value.fromInt(@intCast(str.chars.len)));
+        } else if (std.mem.eql(u8, method, "substring")) {
+            // substring(start, end) - char-indexed substring
+            if (arg_count != 2) return RuntimeError.WrongArity;
+            const end_val = try self.pop();
+            const start_val = try self.pop();
+            _ = try self.pop(); // Pop receiver
+
+            const char_start = start_val.asInt() orelse return RuntimeError.TypeError;
+            const char_end = end_val.asInt() orelse return RuntimeError.TypeError;
+
+            // Walk UTF-8 codepoints to convert char indices to byte offsets
+            var byte_start: usize = 0;
+            var byte_end: usize = 0;
+            var cp_idx: i64 = 0;
+            var i: usize = 0;
+            while (i < str.chars.len) {
+                if (cp_idx == char_start) byte_start = i;
+                if (cp_idx == char_end) {
+                    byte_end = i;
+                    break;
+                }
+                const cp_len = std.unicode.utf8ByteSequenceLength(str.chars[i]) catch 1;
+                i += cp_len;
+                cp_idx += 1;
+            }
+            // Handle end == total codepoint count
+            if (cp_idx == char_end) byte_end = i;
+            // Clamp
+            if (char_start >= char_end or byte_start >= byte_end) {
+                const empty_str = try ObjString.createGC(&self.gc, "");
+                try self.push(.{ .string = empty_str });
+            } else {
+                const sliced = str.chars[byte_start..byte_end];
+                const new_str = try ObjString.createGC(&self.gc, sliced);
+                try self.push(.{ .string = new_str });
+            }
+        } else if (std.mem.eql(u8, method, "index_of")) {
+            if (arg_count != 1) return RuntimeError.WrongArity;
+            const needle_val = try self.pop();
+            _ = try self.pop(); // Pop receiver
+            if (needle_val != .string) return RuntimeError.TypeError;
+            const needle = needle_val.string.chars;
+            if (std.mem.indexOf(u8, str.chars, needle)) |idx| {
+                const some = try ObjOptional.createSomeGC(&self.gc, Value.fromInt(@intCast(idx)));
+                try self.push(.{ .optional = some });
+            } else {
+                const none = try ObjOptional.createNoneGC(&self.gc);
+                try self.push(.{ .optional = none });
+            }
         } else {
             return RuntimeError.UndefinedField;
         }

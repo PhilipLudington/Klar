@@ -794,6 +794,53 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 }
                 return tc.type_builder.stringType();
             }
+            // byte_at(i: i32) -> u8 - access byte at byte index
+            if (std.mem.eql(u8, method.method_name, "byte_at")) {
+                if (method.args.len != 1) {
+                    tc.addError(.invalid_call, method.span, "byte_at() takes exactly 1 argument (index)", .{});
+                } else {
+                    const arg_type = tc.checkExpr(method.args[0]);
+                    if (!arg_type.isInteger()) {
+                        tc.addError(.type_mismatch, method.span, "byte_at() index must be an integer", .{});
+                    }
+                }
+                return .{ .primitive = .u8_ };
+            }
+            // byte_len() -> i32 - byte count of string
+            if (std.mem.eql(u8, method.method_name, "byte_len")) {
+                if (method.args.len != 0) {
+                    tc.addError(.invalid_call, method.span, "byte_len() takes no arguments", .{});
+                }
+                return .{ .primitive = .i32_ };
+            }
+            // substring(start: i32, end: i32) -> string - char-indexed substring
+            if (std.mem.eql(u8, method.method_name, "substring")) {
+                if (method.args.len != 2) {
+                    tc.addError(.invalid_call, method.span, "substring() takes exactly 2 arguments (start, end)", .{});
+                } else {
+                    const start_type = tc.checkExpr(method.args[0]);
+                    const end_type = tc.checkExpr(method.args[1]);
+                    if (!start_type.isInteger()) {
+                        tc.addError(.type_mismatch, method.span, "substring() start index must be an integer", .{});
+                    }
+                    if (!end_type.isInteger()) {
+                        tc.addError(.type_mismatch, method.span, "substring() end index must be an integer", .{});
+                    }
+                }
+                return tc.type_builder.stringType();
+            }
+            // index_of(sub: string) -> ?i32 - find first byte offset of substring
+            if (std.mem.eql(u8, method.method_name, "index_of")) {
+                if (method.args.len != 1) {
+                    tc.addError(.invalid_call, method.span, "index_of() takes exactly 1 argument (substring)", .{});
+                } else {
+                    const arg_type = tc.checkExpr(method.args[0]);
+                    if (arg_type != .primitive or arg_type.primitive != .string_) {
+                        tc.addError(.type_mismatch, method.span, "index_of() argument must be a string", .{});
+                    }
+                }
+                return tc.type_builder.optionalType(.{ .primitive = .i32_ }) catch tc.type_builder.unknownType();
+            }
             // FFI: as_cstr() -> CStr - borrows string as C string (string literals are already null-terminated)
             if (std.mem.eql(u8, method.method_name, "as_cstr")) {
                 if (method.args.len != 0) {

@@ -5008,6 +5008,14 @@ pub const Emitter = struct {
             } else if (std.mem.eql(u8, name, "ptr_cast")) {
                 return self.emitPtrCast(call);
             }
+            // String primitive functions
+            else if (std.mem.eql(u8, name, "from_byte")) {
+                return self.emitFromByte(call);
+            } else if (std.mem.eql(u8, name, "parse_int")) {
+                return self.emitParseInt(call);
+            } else if (std.mem.eql(u8, name, "parse_float")) {
+                return self.emitParseFloat(call);
+            }
         }
 
         // Check if this is a monomorphized generic function call
@@ -10391,6 +10399,25 @@ pub const Emitter = struct {
                 const end = try self.emitExpr(method.args[1]);
                 return self.emitStringSlice(object, start, end);
             }
+            if (std.mem.eql(u8, method.method_name, "byte_at")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const idx = try self.emitExpr(method.args[0]);
+                return self.emitStringByteAt(object, idx);
+            }
+            if (std.mem.eql(u8, method.method_name, "byte_len")) {
+                return self.emitStringByteLen(object);
+            }
+            if (std.mem.eql(u8, method.method_name, "substring")) {
+                if (method.args.len != 2) return EmitError.InvalidAST;
+                const start = try self.emitExpr(method.args[0]);
+                const end = try self.emitExpr(method.args[1]);
+                return self.emitStringSubstring(object, start, end);
+            }
+            if (std.mem.eql(u8, method.method_name, "index_of")) {
+                if (method.args.len != 1) return EmitError.InvalidAST;
+                const needle = try self.emitExpr(method.args[0]);
+                return self.emitStringIndexOf(object, needle);
+            }
             // Handle string.to[T] - fallible conversion to numeric types
             if (std.mem.eql(u8, method.method_name, "to")) {
                 if (method.type_args) |type_args| {
@@ -13870,14 +13897,11 @@ pub const Emitter = struct {
             return llvm.Const.int32(self.ctx, @intCast(arr_len));
         }
 
-        // For strings (pointers), use strlen and truncate to i32
+        // For strings (pointers), count UTF-8 codepoints (consistent with str.len())
         if (type_kind == llvm.c.LLVMPointerTypeKind) {
-            const strlen_fn = self.getOrDeclareStrlen();
-            var strlen_args = [_]llvm.ValueRef{value};
-            const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "strlen");
-            // Truncate from size_t (i64) to i32
-            const i32_type = llvm.Types.int32(self.ctx);
-            return llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "strlen_i32");
+            const char_len_fn = self.getOrDeclareStringCharLen();
+            var char_len_args = [_]llvm.ValueRef{value};
+            return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(char_len_fn), char_len_fn, &char_len_args, "char_len");
         }
 
         // For other types, return 0
@@ -14938,12 +14962,131 @@ pub const Emitter = struct {
 
     /// Emit string.len() - returns length as i32.
     fn emitStringLen(self: *Emitter, str: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Count UTF-8 codepoints via runtime helper
+        const char_len_fn = self.getOrDeclareStringCharLen();
+        var args = [_]llvm.ValueRef{str};
+        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(char_len_fn), char_len_fn, &args, "char_len");
+    }
+
+    /// Emit string.byte_len() - returns byte count (the old len behavior).
+    fn emitStringByteLen(self: *Emitter, str: llvm.ValueRef) EmitError!llvm.ValueRef {
         const strlen_fn = self.getOrDeclareStrlen();
         var args = [_]llvm.ValueRef{str};
         const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &args, "strlen");
         // Truncate from size_t (i64) to i32
         const i32_type = llvm.Types.int32(self.ctx);
-        return llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "strlen_i32");
+        return llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "bytelen_i32");
+    }
+
+    /// Emit string.byte_at(idx) - returns the byte at byte index idx.
+    fn emitStringByteAt(self: *Emitter, str: llvm.ValueRef, idx: llvm.ValueRef) EmitError!llvm.ValueRef {
+        // Bounds check: idx >= 0 && idx < strlen(str)
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str};
+        const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "strlen");
+
+        const i64_type = llvm.Types.int64(self.ctx);
+        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, idx, i64_type, "idx_i64");
+
+        // Bounds check: abort if idx < 0 or idx >= len
+        const idx_neg = self.builder.buildICmp(llvm.c.LLVMIntSLT, idx_i64, llvm.Const.int64(self.ctx, 0), "idx_neg");
+        const idx_ge_len = self.builder.buildICmp(llvm.c.LLVMIntSGE, idx_i64, len_i64, "idx_ge_len");
+        const oob = llvm.c.LLVMBuildOr(self.builder.ref, idx_neg, idx_ge_len, "oob");
+
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const oob_bb = llvm.appendBasicBlock(self.ctx, current_fn, "byte_at.oob");
+        const ok_bb = llvm.appendBasicBlock(self.ctx, current_fn, "byte_at.ok");
+
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, oob, oob_bb, ok_bb);
+
+        // OOB block: print error and abort
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, oob_bb);
+        const fprintf_fn = self.getOrDeclareFprintf();
+        const stderr_fn = self.getOrDeclareStderr();
+        const stderr_val = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr");
+        const oob_msg = self.builder.buildGlobalStringPtr("panic: byte_at index out of bounds\n", "byte_at_oob_msg");
+        var fprintf_args = [_]llvm.ValueRef{ stderr_val, oob_msg };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fprintf_args, "");
+        const abort_fn = self.getOrDeclareAbort();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(abort_fn), abort_fn, &[_]llvm.ValueRef{}, "");
+        _ = self.builder.buildUnreachable();
+
+        // OK block: proceed with load
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ok_bb);
+
+        // GEP to the byte
+        const i8_type = llvm.Types.int8(self.ctx);
+        var gep_idx = [_]llvm.ValueRef{idx_i64};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, str, &gep_idx, 1, "byte_ptr");
+
+        // Load the byte
+        return self.builder.buildLoad(i8_type, byte_ptr, "byte_val");
+    }
+
+    /// Emit string.substring(start, end) - char-indexed substring via runtime helper.
+    fn emitStringSubstring(self: *Emitter, str: llvm.ValueRef, start: llvm.ValueRef, end: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const substring_fn = self.getOrDeclareStringSubstring();
+        const i64_type = llvm.Types.int64(self.ctx);
+        const start_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, start, i64_type, "start_i64");
+        const end_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, end, i64_type, "end_i64");
+        var args = [_]llvm.ValueRef{ str, start_i64, end_i64 };
+        return llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(substring_fn),
+            substring_fn,
+            &args,
+            3,
+            "substring",
+        );
+    }
+
+    /// Emit string.index_of(needle) - find first byte offset of substring.
+    /// Returns ?i32 (optional struct {i1, i32}).
+    fn emitStringIndexOf(self: *Emitter, str: llvm.ValueRef, needle: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const strstr_fn = self.getOrDeclareStrstr();
+        var strstr_args = [_]llvm.ValueRef{ str, needle };
+        const result_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strstr_fn), strstr_fn, &strstr_args, "strstr");
+
+        // Check if result is null
+        const null_ptr = llvm.c.LLVMConstPointerNull(llvm.Types.pointer(self.ctx));
+        const is_found = self.builder.buildICmp(llvm.c.LLVMIntNE, result_ptr, null_ptr, "is_found");
+
+        // Create basic blocks
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const found_bb = llvm.appendBasicBlock(self.ctx, current_fn, "index_of.found");
+        const not_found_bb = llvm.appendBasicBlock(self.ctx, current_fn, "index_of.not_found");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, current_fn, "index_of.merge");
+
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_found, found_bb, not_found_bb);
+
+        // Found block: compute offset = result_ptr - str
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, found_bb);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const str_int = llvm.c.LLVMBuildPtrToInt(self.builder.ref, str, i64_type, "str_int");
+        const result_int = llvm.c.LLVMBuildPtrToInt(self.builder.ref, result_ptr, i64_type, "result_int");
+        const offset_i64 = llvm.c.LLVMBuildSub(self.builder.ref, result_int, str_int, "offset");
+        const i32_type = llvm.Types.int32(self.ctx);
+        const offset_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, offset_i64, i32_type, "offset_i32");
+        const some_val = self.emitSome(offset_i32, i32_type);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+        const found_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Not found block: return None
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, not_found_bb);
+        var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), i32_type };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+        const none_val = self.emitNone(opt_type);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+        const not_found_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Merge block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, merge_bb);
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, opt_type, "index_of.result");
+        var incoming_vals = [_]llvm.ValueRef{ some_val, none_val };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ found_exit, not_found_exit };
+        llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 2);
+
+        return phi;
     }
 
     /// Emit string.is_empty() - returns true if len == 0.
@@ -15294,13 +15437,13 @@ pub const Emitter = struct {
         return EmitError.InvalidAST;
     }
 
-    /// Get or declare libc strtol function.
+    /// Get or declare libc strtoll function (guaranteed 64-bit on all platforms).
     fn getOrDeclareStrtol(self: *Emitter) llvm.ValueRef {
-        const name = "strtol";
+        const name = "strtoll";
         if (self.module.getNamedFunction(name)) |func| {
             return func;
         }
-        // long strtol(const char *str, char **endptr, int base)
+        // long long strtoll(const char *str, char **endptr, int base)
         var param_types = [_]llvm.TypeRef{
             llvm.Types.pointer(self.ctx), // str
             llvm.Types.pointer(self.ctx), // endptr
@@ -15323,6 +15466,217 @@ pub const Emitter = struct {
         };
         const fn_type = llvm.Types.function(llvm.Types.float64(self.ctx), &param_types, false);
         return llvm.addFunction(self.module, name, fn_type);
+    }
+
+    /// Get a pointer to errno via platform-specific function.
+    /// macOS: int* __error(void)
+    /// Linux: int* __errno_location(void)
+    fn emitGetErrno(self: *Emitter) llvm.ValueRef {
+        // Use __error on macOS, __errno_location on Linux
+        const fn_name = if (self.platform.os == .macos) "__error" else "__errno_location";
+        const func = if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |f|
+            f
+        else blk: {
+            // int* __error(void) / int* __errno_location(void)
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            break :blk llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        };
+        return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(func), func, &[_]llvm.ValueRef{}, "errno_ptr");
+    }
+
+    // ========================================================================
+    // String Primitive Free Functions
+    // ========================================================================
+
+    /// Emit from_byte(b: u8) -> string - creates a single-byte null-terminated string.
+    fn emitFromByte(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+        const byte_val = try self.emitExpr(call.args[0]);
+
+        // Allocate 2 bytes (byte + null terminator)
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, 2)};
+        const result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "from_byte_buf");
+
+        // Store the byte
+        const i8_type = llvm.Types.int8(self.ctx);
+        // Truncate to i8 if necessary
+        const byte_i8 = if (llvm.c.LLVMGetIntTypeWidth(llvm.c.LLVMTypeOf(byte_val)) > 8)
+            llvm.c.LLVMBuildTrunc(self.builder.ref, byte_val, i8_type, "byte_i8")
+        else
+            byte_val;
+        _ = self.builder.buildStore(byte_i8, result);
+
+        // Store null terminator
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+        var null_gep = [_]llvm.ValueRef{one_i64};
+        const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &null_gep, 1, "null_ptr");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), null_ptr);
+
+        return result;
+    }
+
+    /// Emit parse_int(s: string) -> ?i64 - parse string to optional integer.
+    fn emitParseInt(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+        const str = try self.emitExpr(call.args[0]);
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Clear errno before calling strtoll (for overflow detection)
+        const errno_ptr = self.emitGetErrno();
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), errno_ptr);
+
+        // Allocate endptr
+        const endptr_alloca = self.builder.buildAlloca(ptr_type, "endptr");
+
+        // Call strtoll(str, &endptr, 10)
+        const strtol_fn = self.getOrDeclareStrtol();
+        var strtol_args = [_]llvm.ValueRef{
+            str,
+            endptr_alloca,
+            llvm.Const.int32(self.ctx, 10),
+        };
+        const parsed = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(strtol_fn),
+            strtol_fn,
+            &strtol_args,
+            "parsed",
+        );
+
+        // Check validity: endptr == str_end and len > 0 and errno == 0
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str};
+        const str_len = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(strlen_fn),
+            strlen_fn,
+            &strlen_args,
+            "str_len",
+        );
+
+        const endptr = self.builder.buildLoad(ptr_type, endptr_alloca, "endptr_val");
+        const str_end = self.builder.buildGEP(llvm.Types.int8(self.ctx), str, &[_]llvm.ValueRef{str_len}, "str_end");
+
+        const consumed_all = self.builder.buildICmp(llvm.c.LLVMIntEQ, endptr, str_end, "consumed_all");
+        const len_gt_zero = self.builder.buildICmp(llvm.c.LLVMIntUGT, str_len, llvm.Const.int64(self.ctx, 0), "len_gt_zero");
+        // Check errno == 0 (ERANGE = 34 on overflow)
+        const errno_val = self.builder.buildLoad(i32_type, errno_ptr, "errno_val");
+        const no_overflow = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 0), "no_overflow");
+        const valid_1 = llvm.c.LLVMBuildAnd(self.builder.ref, consumed_all, len_gt_zero, "valid_1");
+        const is_valid = llvm.c.LLVMBuildAnd(self.builder.ref, valid_1, no_overflow, "is_valid");
+
+        // Branch on validity
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const success_bb = llvm.appendBasicBlock(self.ctx, current_fn, "parse_int.success");
+        const fail_bb = llvm.appendBasicBlock(self.ctx, current_fn, "parse_int.fail");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, current_fn, "parse_int.merge");
+
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_valid, success_bb, fail_bb);
+
+        // Success: Some(parsed)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, success_bb);
+        const some_val = self.emitSome(parsed, i64_type);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+        const success_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Failure: None
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, fail_bb);
+        var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), i64_type };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+        const none_val = self.emitNone(opt_type);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+        const fail_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Merge
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, merge_bb);
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, opt_type, "parse_int.result");
+        var incoming_vals = [_]llvm.ValueRef{ some_val, none_val };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ success_exit, fail_exit };
+        llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 2);
+
+        return phi;
+    }
+
+    /// Emit parse_float(s: string) -> ?f64 - parse string to optional float.
+    fn emitParseFloat(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (call.args.len != 1) return EmitError.InvalidAST;
+        const str = try self.emitExpr(call.args[0]);
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const f64_type = llvm.Types.float64(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Clear errno before calling strtod (for overflow detection)
+        const errno_ptr = self.emitGetErrno();
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), errno_ptr);
+
+        // Allocate endptr
+        const endptr_alloca = self.builder.buildAlloca(ptr_type, "endptr");
+
+        // Call strtod(str, &endptr)
+        const strtod_fn = self.getOrDeclareStrtod();
+        var strtod_args = [_]llvm.ValueRef{ str, endptr_alloca };
+        const parsed = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(strtod_fn),
+            strtod_fn,
+            &strtod_args,
+            "parsed",
+        );
+
+        // Check validity: endptr == str_end and len > 0 and errno == 0
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{str};
+        const str_len = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(strlen_fn),
+            strlen_fn,
+            &strlen_args,
+            "str_len",
+        );
+
+        const endptr = self.builder.buildLoad(ptr_type, endptr_alloca, "endptr_val");
+        const str_end = self.builder.buildGEP(llvm.Types.int8(self.ctx), str, &[_]llvm.ValueRef{str_len}, "str_end");
+
+        const consumed_all = self.builder.buildICmp(llvm.c.LLVMIntEQ, endptr, str_end, "consumed_all");
+        const len_gt_zero = self.builder.buildICmp(llvm.c.LLVMIntUGT, str_len, llvm.Const.int64(self.ctx, 0), "len_gt_zero");
+        // Check errno == 0 (ERANGE on overflow)
+        const errno_val = self.builder.buildLoad(i32_type, errno_ptr, "errno_val");
+        const no_overflow = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, 0), "no_overflow");
+        const valid_1 = llvm.c.LLVMBuildAnd(self.builder.ref, consumed_all, len_gt_zero, "valid_1");
+        const is_valid = llvm.c.LLVMBuildAnd(self.builder.ref, valid_1, no_overflow, "is_valid");
+
+        // Branch on validity
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const success_bb = llvm.appendBasicBlock(self.ctx, current_fn, "parse_float.success");
+        const fail_bb = llvm.appendBasicBlock(self.ctx, current_fn, "parse_float.fail");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, current_fn, "parse_float.merge");
+
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_valid, success_bb, fail_bb);
+
+        // Success: Some(parsed)
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, success_bb);
+        const some_val = self.emitSome(parsed, f64_type);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+        const success_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Failure: None
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, fail_bb);
+        var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), f64_type };
+        const opt_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
+        const none_val = self.emitNone(opt_type);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+        const fail_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Merge
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, merge_bb);
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, opt_type, "parse_float.result");
+        var incoming_vals = [_]llvm.ValueRef{ some_val, none_val };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ success_exit, fail_exit };
+        llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 2);
+
+        return phi;
     }
 
     // ========================================================================
@@ -26221,6 +26575,299 @@ pub const Emitter = struct {
         var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type, i64_type };
         const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 3, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+    }
+
+    /// Declare or get the klar_string_char_len runtime function.
+    /// Counts UTF-8 codepoints in a null-terminated string and returns i32.
+    fn getOrDeclareStringCharLen(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_char_len";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // i32 klar_string_char_len(const char* s)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{ptr_type};
+        const fn_type = llvm.c.LLVMFunctionType(i32_type, &param_types, 1, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        llvm.c.LLVMSetLinkage(func, llvm.c.LLVMInternalLinkage);
+
+        // Build the function body: count UTF-8 codepoints
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop");
+        const body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "body");
+        const done_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "done");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
+        const zero_i64 = llvm.Const.int64(self.ctx, 0);
+        const one_i32 = llvm.Const.int32(self.ctx, 1);
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+
+        // Entry: jump to loop
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+        const s = llvm.c.LLVMGetParam(func, 0);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
+
+        // Loop header: phi for index and count
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_bb);
+        const idx_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "idx");
+        const count_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i32_type, "count");
+
+        // Load current byte
+        var gep_idx = [_]llvm.ValueRef{idx_phi};
+        const byte_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &gep_idx, 1, "byte_ptr");
+        const byte_val = self.builder.buildLoad(i8_type, byte_ptr, "byte");
+
+        // Check if byte is 0 (null terminator)
+        const is_zero = self.builder.buildICmp(llvm.c.LLVMIntEQ, byte_val, llvm.Const.int8(self.ctx, 0), "is_zero");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_zero, done_bb, body_bb);
+
+        // Body: determine UTF-8 sequence length from lead byte
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, body_bb);
+        // UTF-8 sequence length from lead byte:
+        //   0x00-0x7F (< 0x80): 1 byte (ASCII)
+        //   0x80-0xBF (< 0xC0): 1 byte (continuation byte - invalid lead, skip 1 to match interpreter)
+        //   0xC0-0xDF (< 0xE0): 2 bytes
+        //   0xE0-0xEF (< 0xF0): 3 bytes
+        //   0xF0-0xFF: 4 bytes
+        const byte_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, byte_val, i32_type, "byte_i32");
+        const is_ascii = self.builder.buildICmp(llvm.c.LLVMIntULT, byte_i32, llvm.Const.int32(self.ctx, 0x80), "is_ascii");
+        const is_continuation = self.builder.buildICmp(llvm.c.LLVMIntULT, byte_i32, llvm.Const.int32(self.ctx, 0xC0), "is_continuation");
+        const is_2byte = self.builder.buildICmp(llvm.c.LLVMIntULT, byte_i32, llvm.Const.int32(self.ctx, 0xE0), "is_2byte");
+        const is_3byte = self.builder.buildICmp(llvm.c.LLVMIntULT, byte_i32, llvm.Const.int32(self.ctx, 0xF0), "is_3byte");
+
+        const two_i64 = llvm.Const.int64(self.ctx, 2);
+        const three_i64 = llvm.Const.int64(self.ctx, 3);
+        const four_i64 = llvm.Const.int64(self.ctx, 4);
+
+        // Select: is_3byte ? 3 : 4
+        const sel_34 = llvm.c.LLVMBuildSelect(self.builder.ref, is_3byte, three_i64, four_i64, "sel_34");
+        // Select: is_2byte ? 2 : sel_34
+        const sel_234 = llvm.c.LLVMBuildSelect(self.builder.ref, is_2byte, two_i64, sel_34, "sel_234");
+        // Select: is_continuation ? 1 : sel_234 (invalid lead byte -> advance 1)
+        const sel_cont = llvm.c.LLVMBuildSelect(self.builder.ref, is_continuation, one_i64, sel_234, "sel_cont");
+        // Select: is_ascii ? 1 : sel_cont
+        const cp_len = llvm.c.LLVMBuildSelect(self.builder.ref, is_ascii, one_i64, sel_cont, "cp_len");
+
+        // Advance index by cp_len, increment count by 1
+        const next_idx = llvm.c.LLVMBuildAdd(self.builder.ref, idx_phi, cp_len, "next_idx");
+        const next_count = llvm.c.LLVMBuildAdd(self.builder.ref, count_phi, one_i32, "next_count");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
+        const body_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Wire up phis
+        var idx_incoming_vals = [_]llvm.ValueRef{ zero_i64, next_idx };
+        var idx_incoming_blocks = [_]llvm.BasicBlockRef{ entry_bb, body_exit };
+        llvm.c.LLVMAddIncoming(idx_phi, &idx_incoming_vals, &idx_incoming_blocks, 2);
+
+        var count_incoming_vals = [_]llvm.ValueRef{ zero_i32, next_count };
+        var count_incoming_blocks = [_]llvm.BasicBlockRef{ entry_bb, body_exit };
+        llvm.c.LLVMAddIncoming(count_phi, &count_incoming_vals, &count_incoming_blocks, 2);
+
+        // Done: return count
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_bb);
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, count_phi);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
+    }
+
+    /// Declare or get the klar_string_substring runtime function.
+    /// Implements string.substring(start, end) with char (codepoint) indexing.
+    fn getOrDeclareStringSubstring(self: *Emitter) llvm.ValueRef {
+        const fn_name = "klar_string_substring";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // char* klar_string_substring(const char* s, int64_t start, int64_t end)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        var param_types = [_]llvm.TypeRef{ ptr_type, i64_type, i64_type };
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 3, 0);
+        const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+        llvm.c.LLVMSetLinkage(func, llvm.c.LLVMInternalLinkage);
+
+        // Build function body:
+        // Walk UTF-8 codepoints to convert char indices to byte offsets, then copy
+        const entry_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "entry");
+        const loop_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "loop");
+        const body_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "body");
+        const copy_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "copy");
+        const ret_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "return");
+
+        const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+        const saved_func = self.current_function;
+
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const zero_i64 = llvm.Const.int64(self.ctx, 0);
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+
+        // Entry block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry_bb);
+        const s = llvm.c.LLVMGetParam(func, 0);
+        const char_start = llvm.c.LLVMGetParam(func, 1);
+        const char_end = llvm.c.LLVMGetParam(func, 2);
+
+        // Allocate locals for byte_start, byte_end, and found_start flag
+        const byte_start_alloca = self.builder.buildAlloca(i64_type, "byte_start_alloca");
+        const byte_end_alloca = self.builder.buildAlloca(i64_type, "byte_end_alloca");
+        const found_start_alloca = self.builder.buildAlloca(llvm.Types.int1(self.ctx), "found_start_alloca");
+        _ = self.builder.buildStore(zero_i64, byte_start_alloca);
+        _ = self.builder.buildStore(zero_i64, byte_end_alloca);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), found_start_alloca);
+
+        // Early exit: if char_start >= char_end, return empty string immediately
+        const start_ge_end = self.builder.buildICmp(llvm.c.LLVMIntSGE, char_start, char_end, "start_ge_end");
+        const early_exit_bb = llvm.c.LLVMAppendBasicBlockInContext(self.ctx.ref, func, "early_exit");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, start_ge_end, early_exit_bb, loop_bb);
+
+        // Early exit block: return empty string
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, early_exit_bb);
+        const empty_malloc_fn = self.getOrDeclareMalloc();
+        var empty_alloc_args = [_]llvm.ValueRef{one_i64};
+        const empty_buf = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(empty_malloc_fn),
+            empty_malloc_fn,
+            &empty_alloc_args,
+            1,
+            "empty_buf",
+        );
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int8(self.ctx, 0), empty_buf);
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, empty_buf);
+
+        // Loop: walk codepoints
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_bb);
+        const byte_idx_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "byte_idx");
+        const cp_idx_phi = llvm.c.LLVMBuildPhi(self.builder.ref, i64_type, "cp_idx");
+
+        // Check if at null terminator
+        var gep_byte = [_]llvm.ValueRef{byte_idx_phi};
+        const cur_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &gep_byte, 1, "cur_ptr");
+        const cur_byte = self.builder.buildLoad(i8_type, cur_ptr, "cur_byte");
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, cur_byte, llvm.Const.int8(self.ctx, 0), "is_null");
+
+        // Also check if cp_idx >= char_end (we've found both offsets)
+        const past_end = self.builder.buildICmp(llvm.c.LLVMIntSGE, cp_idx_phi, char_end, "past_end");
+        const should_stop = llvm.c.LLVMBuildOr(self.builder.ref, is_null, past_end, "should_stop");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, should_stop, copy_bb, body_bb);
+
+        // Body: check if cp_idx matches start or end, advance
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, body_bb);
+
+        // If cp_idx == char_start, store byte_idx as byte_start and set found_start
+        const is_start = self.builder.buildICmp(llvm.c.LLVMIntEQ, cp_idx_phi, char_start, "is_start");
+        const cur_byte_start = self.builder.buildLoad(i64_type, byte_start_alloca, "cur_byte_start");
+        const new_byte_start = llvm.c.LLVMBuildSelect(self.builder.ref, is_start, byte_idx_phi, cur_byte_start, "new_byte_start");
+        _ = self.builder.buildStore(new_byte_start, byte_start_alloca);
+        // Update found_start flag
+        const cur_found = self.builder.buildLoad(llvm.Types.int1(self.ctx), found_start_alloca, "cur_found");
+        const new_found = llvm.c.LLVMBuildOr(self.builder.ref, cur_found, is_start, "new_found");
+        _ = self.builder.buildStore(new_found, found_start_alloca);
+
+        // Compute UTF-8 sequence length from lead byte (matching char_len logic)
+        const byte_i32 = llvm.c.LLVMBuildZExt(self.builder.ref, cur_byte, i32_type, "byte_i32");
+        const is_1b = self.builder.buildICmp(llvm.c.LLVMIntULT, byte_i32, llvm.Const.int32(self.ctx, 0x80), "is_1b");
+        const is_cont = self.builder.buildICmp(llvm.c.LLVMIntULT, byte_i32, llvm.Const.int32(self.ctx, 0xC0), "is_cont");
+        const is_2b = self.builder.buildICmp(llvm.c.LLVMIntULT, byte_i32, llvm.Const.int32(self.ctx, 0xE0), "is_2b");
+        const is_3b = self.builder.buildICmp(llvm.c.LLVMIntULT, byte_i32, llvm.Const.int32(self.ctx, 0xF0), "is_3b");
+
+        const two_i64 = llvm.Const.int64(self.ctx, 2);
+        const three_i64 = llvm.Const.int64(self.ctx, 3);
+        const four_i64 = llvm.Const.int64(self.ctx, 4);
+        const s34 = llvm.c.LLVMBuildSelect(self.builder.ref, is_3b, three_i64, four_i64, "s34");
+        const s234 = llvm.c.LLVMBuildSelect(self.builder.ref, is_2b, two_i64, s34, "s234");
+        const s_cont = llvm.c.LLVMBuildSelect(self.builder.ref, is_cont, one_i64, s234, "s_cont");
+        const seq_len = llvm.c.LLVMBuildSelect(self.builder.ref, is_1b, one_i64, s_cont, "seq_len");
+
+        const next_byte_idx = llvm.c.LLVMBuildAdd(self.builder.ref, byte_idx_phi, seq_len, "next_byte_idx");
+        const next_cp_idx = llvm.c.LLVMBuildAdd(self.builder.ref, cp_idx_phi, one_i64, "next_cp_idx");
+
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_bb);
+        const body_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Wire up phis
+        var byte_idx_vals = [_]llvm.ValueRef{ zero_i64, next_byte_idx };
+        var byte_idx_bbs = [_]llvm.BasicBlockRef{ entry_bb, body_exit };
+        llvm.c.LLVMAddIncoming(byte_idx_phi, &byte_idx_vals, &byte_idx_bbs, 2);
+
+        var cp_idx_vals = [_]llvm.ValueRef{ zero_i64, next_cp_idx };
+        var cp_idx_bbs = [_]llvm.BasicBlockRef{ entry_bb, body_exit };
+        llvm.c.LLVMAddIncoming(cp_idx_phi, &cp_idx_vals, &cp_idx_bbs, 2);
+
+        // Copy block: store byte_end, compute length, alloc, memcpy
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, copy_bb);
+        // byte_end = byte_idx (current position when we stopped)
+        _ = self.builder.buildStore(byte_idx_phi, byte_end_alloca);
+
+        // Check if char_start was ever found; if not, return empty string
+        const final_found = self.builder.buildLoad(llvm.Types.int1(self.ctx), found_start_alloca, "final_found");
+        const final_byte_start = self.builder.buildLoad(i64_type, byte_start_alloca, "final_byte_start");
+        const final_byte_end = self.builder.buildLoad(i64_type, byte_end_alloca, "final_byte_end");
+
+        // Compute slice_len = byte_end - byte_start (clamped to >= 0)
+        const raw_len = llvm.c.LLVMBuildSub(self.builder.ref, final_byte_end, final_byte_start, "raw_len");
+        const len_ge_0 = self.builder.buildICmp(llvm.c.LLVMIntSGT, raw_len, zero_i64, "len_ge_0");
+        const len_valid = llvm.c.LLVMBuildAnd(self.builder.ref, len_ge_0, final_found, "len_valid");
+        const slice_len = llvm.c.LLVMBuildSelect(self.builder.ref, len_valid, raw_len, zero_i64, "slice_len");
+
+        // Allocate result buffer (slice_len + 1)
+        const alloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, slice_len, one_i64, "alloc_size");
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const result = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(malloc_fn),
+            malloc_fn,
+            &malloc_args,
+            1,
+            "result",
+        );
+
+        // Jump to return block (memcpy with len=0 is safe, no separate branch needed)
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, ret_bb);
+
+        // Return block: memcpy + null terminator
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, ret_bb);
+        var src_gep = [_]llvm.ValueRef{final_byte_start};
+        const src_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, s, &src_gep, 1, "src_ptr");
+        const memcpy_fn = self.getOrDeclareMemcpy();
+        var memcpy_args = [_]llvm.ValueRef{ result, src_ptr, slice_len };
+        _ = llvm.c.LLVMBuildCall2(
+            self.builder.ref,
+            llvm.c.LLVMGlobalGetValueType(memcpy_fn),
+            memcpy_fn,
+            &memcpy_args,
+            3,
+            "",
+        );
+
+        // Add null terminator
+        var null_gep = [_]llvm.ValueRef{slice_len};
+        const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, result, &null_gep, 1, "null_ptr");
+        _ = llvm.c.LLVMBuildStore(self.builder.ref, llvm.Const.int8(self.ctx, 0), null_ptr);
+        _ = llvm.c.LLVMBuildRet(self.builder.ref, result);
+
+        // Restore builder position
+        if (saved_bb) |bb| {
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+        }
+        self.current_function = saved_func;
+
+        return func;
     }
 
     /// Declare or get the memcmp function.
