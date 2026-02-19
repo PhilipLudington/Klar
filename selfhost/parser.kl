@@ -3,7 +3,7 @@
 // Full implementation: Milestones 9.6–9.7
 
 import lexer.{Lexer, Token, TokenKind}
-import ast.{Module, Decl, Stmt, Expr, TypeExpr}
+import ast.{AstModule, Decl, Stmt, Expr, TypeExpr, Span, ExprId, StmtId, DeclId}
 
 pub struct Parser {
     source: string,
@@ -19,10 +19,17 @@ impl Parser {
     }
 
     // TODO(9.6): Change to mutable self — parsing consumes tokens and advances state
-    fn parse_module(self: Parser) -> Module {
+    // The parser will manage var lists for exprs, stmts, decls, etc.
+    // and return an AstModule with index ranges into those lists.
+    fn parse_module(self: Parser) -> AstModule {
         // Stub: returns empty module
         // Full implementation in Milestones 9.6–9.7
-        return Module.new()
+        return AstModule {
+            imports_start: 0,
+            imports_count: 0,
+            decls_start: 0,
+            decls_count: 0,
+        }
     }
 }
 
@@ -33,6 +40,6 @@ fn main() -> i32 {
 test main {
     let source: string = "fn main() -> i32 { return 0 }"
     let parser: Parser = Parser.new(source)
-    let m: Module = parser.parse_module()
-    assert_eq(m.declarations.len(), 0)
+    let m: AstModule = parser.parse_module()
+    assert_eq(m.decls_count, 0)
 }

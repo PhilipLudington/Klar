@@ -1,73 +1,1051 @@
-// selfhost/ast.kl — Self-hosted AST definitions (stub)
-// Milestone 9.3: Bootstrap architecture scaffolding
-// Full implementation: Milestone 9.5
+// selfhost/ast.kl — Self-hosted AST definitions
+// Milestone 9.5: Full AST type hierarchy
+//
+// Architecture: Node pool / arena approach. All AST nodes live in typed
+// List[T] pools managed as direct `var` variables (not struct fields,
+// due to Klar's value semantics for List in structs).
+//
+// Cross-references use i32 indices wrapped in typed ID structs.
+// Variable-length children (e.g., function args, block stmts) use
+// (start, count) i32 ranges into flat "extra" lists — the same pattern
+// used by Zig's AST (extra_data array).
+//
+// Each enum variant wraps a single helper struct for match destructuring.
 
-// Type expressions
-pub enum TypeExpr {
-    Named(string),
-    Optional(string),
-    Array(string),
-    Function(string),
-    Void,
+// ─── Span + ID Wrappers ───────────────────────────────────────────────
+
+pub struct Span {
+    line: i32,
+    column: i32,
+    start: i32,
+    end: i32,
 }
 
-// Expressions
+fn no_span() -> Span {
+    return Span { line: 0, column: 0, start: 0, end: 0 }
+}
+
+// Typed indices into arena lists
+pub struct ExprId { id: i32 }
+pub struct StmtId { id: i32 }
+pub struct DeclId { id: i32 }
+pub struct TypeExprId { id: i32 }
+pub struct PatternId { id: i32 }
+
+// Sentinel values (-1 = no node)
+fn no_expr() -> ExprId { return ExprId { id: -1 } }
+fn no_stmt() -> StmtId { return StmtId { id: -1 } }
+fn no_decl() -> DeclId { return DeclId { id: -1 } }
+fn no_type_expr() -> TypeExprId { return TypeExprId { id: -1 } }
+fn no_pattern() -> PatternId { return PatternId { id: -1 } }
+
+fn has_expr(eid: ExprId) -> bool { return eid.id >= 0 }
+fn has_stmt(sid: StmtId) -> bool { return sid.id >= 0 }
+fn has_decl(did: DeclId) -> bool { return did.id >= 0 }
+fn has_type_expr(tid: TypeExprId) -> bool { return tid.id >= 0 }
+fn has_pattern(pid: PatternId) -> bool { return pid.id >= 0 }
+
+// ─── Operator Enums ───────────────────────────────────────────────────
+
+pub enum BinaryOp {
+    // Arithmetic
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    // Wrapping arithmetic
+    AddWrap,
+    SubWrap,
+    MulWrap,
+    // Saturating arithmetic
+    AddSat,
+    SubSat,
+    MulSat,
+    // Comparison
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
+    Is,
+    // Logical
+    And,
+    Or,
+    // Bitwise
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    // Range
+    Range,
+    RangeInclusive,
+    // Other
+    NullCoalesce,
+    Pipe,
+    Concat,
+}
+
+pub enum UnaryOp {
+    Negate,
+    Not,
+    BitNot,
+    Deref,
+    MakeRef,
+    MakeRefMut,
+}
+
+pub enum PostfixOp {
+    Try,
+    Unwrap,
+}
+
+pub enum AssignOp {
+    Plain,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    AddWrap,
+    SubWrap,
+    MulWrap,
+    AddSat,
+    SubSat,
+    MulSat,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    Concat,
+}
+
+// ─── Shared Helper Structs ────────────────────────────────────────────
+// (Defined before Expr/Stmt/Decl to avoid forward-reference issues)
+
+pub struct FnParam {
+    param_name: string,
+    type_expr: TypeExprId,
+    default_value: ExprId,
+    is_mut: bool,
+    span: Span,
+}
+
+pub struct MatchArm {
+    pattern: PatternId,
+    guard: ExprId,
+    body: ExprId,
+    span: Span,
+}
+
+pub struct FieldInit {
+    field_name: string,
+    value: ExprId,
+    span: Span,
+}
+
+pub struct GenericParam {
+    param_name: string,
+    bound: TypeExprId,
+    span: Span,
+}
+
+pub struct StructField {
+    field_name: string,
+    type_expr: TypeExprId,
+    span: Span,
+}
+
+pub struct EnumVariantDecl {
+    variant_name: string,
+    payload_start: i32,
+    payload_count: i32,
+    discriminant: ExprId,
+    span: Span,
+}
+
+pub struct TraitMethod {
+    method_name: string,
+    params_start: i32,
+    params_count: i32,
+    return_type: TypeExprId,
+    body_start: i32,
+    body_count: i32,
+    has_default: bool,
+    span: Span,
+}
+
+pub struct ImportItem {
+    item_name: string,
+    alias: string,
+}
+
+pub struct AssocTypeDecl {
+    type_name: string,
+    bound: TypeExprId,
+    span: Span,
+}
+
+pub struct AssocTypeBinding {
+    type_name: string,
+    value: TypeExprId,
+    span: Span,
+}
+
+pub struct PatternField {
+    field_name: string,
+    pattern: PatternId,
+    span: Span,
+}
+
+// ─── Expr Enum + Helper Structs ───────────────────────────────────────
+
+pub struct IntLiteralData { text: string, span: Span }
+pub struct FloatLiteralData { text: string, span: Span }
+pub struct StringLiteralData { value: string, span: Span }
+pub struct CharLiteralData { value: string, span: Span }
+pub struct BoolLiteralData { value: bool, span: Span }
+pub struct IdentifierData { ident_name: string, span: Span }
+pub struct BinaryData { left: ExprId, op: BinaryOp, right: ExprId, span: Span }
+pub struct UnaryData { op: UnaryOp, operand: ExprId, span: Span }
+pub struct PostfixData { op: PostfixOp, operand: ExprId, span: Span }
+
+// CallData: args in extra_expr_ids, type_args in extra_type_expr_ids
+// type_args for explicit generic calls like f[T](args)
+pub struct CallData {
+    callee: ExprId,
+    args_start: i32,
+    args_count: i32,
+    type_args_start: i32,
+    type_args_count: i32,
+    span: Span,
+}
+
+pub struct MethodCallData {
+    receiver: ExprId,
+    method_name: string,
+    args_start: i32,
+    args_count: i32,
+    type_args_start: i32,
+    type_args_count: i32,
+    span: Span,
+}
+
+pub struct FieldAccessData { object: ExprId, field_name: string, span: Span }
+pub struct IndexData { object: ExprId, index: ExprId, span: Span }
+pub struct CastData { expr: ExprId, target: TypeExprId, cast_kind: string, span: Span }
+
+// ClosureData: params in extra_params, body is a single ExprId (block)
+pub struct ClosureData {
+    params_start: i32,
+    params_count: i32,
+    return_type: TypeExprId,
+    body: ExprId,
+    span: Span,
+}
+
+// BlockData: stmts in extra_stmt_ids[stmts_start..stmts_start+stmts_count]
+pub struct BlockData { stmts_start: i32, stmts_count: i32, span: Span }
+pub struct IfExprData { condition: ExprId, then_body: ExprId, else_body: ExprId, span: Span }
+
+// MatchExprData: arms in extra_match_arms[arms_start..arms_start+arms_count]
+pub struct MatchExprData { subject: ExprId, arms_start: i32, arms_count: i32, span: Span }
+
+// TupleLiteralData: elements in extra_expr_ids
+pub struct TupleLiteralData { elems_start: i32, elems_count: i32, span: Span }
+pub struct ArrayLiteralData { elems_start: i32, elems_count: i32, span: Span }
+
+// StructLiteralData: fields in extra_field_inits
+pub struct StructLiteralData { struct_name: string, fields_start: i32, fields_count: i32, span: Span }
+
+// EnumVariantData: args in extra_expr_ids
+pub struct EnumVariantData { type_name: string, variant_name: string, args_start: i32, args_count: i32, span: Span }
+
+// InterpolatedStringData: parts alternate between string literal exprs and interpolated exprs
+pub struct InterpolatedStringData { parts_start: i32, parts_count: i32, span: Span }
+
+// GroupedData: parenthesized expression (x + y)
+pub struct GroupedData { inner: ExprId, span: Span }
+
+// ComptimeBlockData: comptime { ... }
+pub struct ComptimeBlockData { body_start: i32, body_count: i32, span: Span }
+
+// UnsafeBlockData: unsafe { ... }
+pub struct UnsafeBlockData { body_start: i32, body_count: i32, span: Span }
+
+// BuiltinCallData: @builtin_name(args)
+pub struct BuiltinCallData { builtin_name: string, args_start: i32, args_count: i32, span: Span }
+
 pub enum Expr {
-    IntLit(i64),
-    FloatLit(f64),
-    StringLit(string),
-    BoolLit(bool),
-    Ident(string),
-    BinaryOp(string),
-    UnaryOp(string),
-    Call(string),
-    FieldAccess(string),
-    Block(string),
+    IntLiteral(IntLiteralData),
+    FloatLiteral(FloatLiteralData),
+    StringLiteral(StringLiteralData),
+    CharLiteral(CharLiteralData),
+    BoolLiteral(BoolLiteralData),
+    Identifier(IdentifierData),
+    Binary(BinaryData),
+    Unary(UnaryData),
+    Postfix(PostfixData),
+    Call(CallData),
+    MethodCall(MethodCallData),
+    FieldAccess(FieldAccessData),
+    Index(IndexData),
+    Cast(CastData),
+    Closure(ClosureData),
+    Block(BlockData),
+    IfExpr(IfExprData),
+    MatchExpr(MatchExprData),
+    TupleLiteral(TupleLiteralData),
+    ArrayLiteral(ArrayLiteralData),
+    StructLiteral(StructLiteralData),
+    EnumVariant(EnumVariantData),
+    InterpolatedString(InterpolatedStringData),
+    Grouped(GroupedData),
+    ComptimeBlock(ComptimeBlockData),
+    UnsafeBlock(UnsafeBlockData),
+    BuiltinCall(BuiltinCallData),
 }
 
-// Statements
+// ─── Pattern Enum + Structs ──────────────────────────────────────────
+
+pub struct WildcardData { span: Span }
+pub struct LiteralPatData { value: ExprId, span: Span }
+pub struct BindingPatData { binding_name: string, is_mut: bool, span: Span }
+
+// VariantPat: type_expr is no_type_expr() when type is inferred (e.g., Some(x) in match)
+pub struct VariantPatData { type_expr: TypeExprId, variant_name: string, fields_start: i32, fields_count: i32, span: Span }
+pub struct TuplePatData { elems_start: i32, elems_count: i32, span: Span }
+pub struct OrPatData { left: PatternId, right: PatternId, span: Span }
+pub struct GuardedPatData { pattern: PatternId, guard: ExprId, span: Span }
+
+// StructPatData: fields in extra_pattern_fields
+pub struct StructPatData { type_name: string, fields_start: i32, fields_count: i32, span: Span }
+
+pub enum Pattern {
+    Wildcard(WildcardData),
+    LiteralPat(LiteralPatData),
+    BindingPat(BindingPatData),
+    VariantPat(VariantPatData),
+    TuplePat(TuplePatData),
+    OrPat(OrPatData),
+    GuardedPat(GuardedPatData),
+    StructPat(StructPatData),
+}
+
+// ─── Stmt Enum + Structs ─────────────────────────────────────────────
+
+pub struct LetDeclData {
+    decl_name: string,
+    type_expr: TypeExprId,
+    value: ExprId,
+    is_shadow: bool,
+    span: Span,
+}
+
+pub struct VarDeclData {
+    decl_name: string,
+    type_expr: TypeExprId,
+    value: ExprId,
+    is_shadow: bool,
+    span: Span,
+}
+
+pub struct AssignmentData {
+    target: ExprId,
+    op: AssignOp,
+    value: ExprId,
+    span: Span,
+}
+
+pub struct ExprStmtData { expr: ExprId, span: Span }
+pub struct ReturnStmtData { value: ExprId, span: Span }
+pub struct BreakStmtData { value: ExprId, span: Span }
+pub struct ContinueStmtData { span: Span }
+
+// ForLoopData: body stmts in extra_stmt_ids
+pub struct ForLoopData {
+    binding: string,
+    binding_type: TypeExprId,
+    iterable: ExprId,
+    body_start: i32,
+    body_count: i32,
+    span: Span,
+}
+
+pub struct WhileLoopData {
+    condition: ExprId,
+    body_start: i32,
+    body_count: i32,
+    span: Span,
+}
+
+pub struct LoopStmtData {
+    body_start: i32,
+    body_count: i32,
+    span: Span,
+}
+
+// IfStmtData: else-if chains are represented by having else_count == 1 and the
+// single stmt in the else range being another IfStmt. This is the standard
+// compiler approach (same as Zig, Rust, Go ASTs).
+pub struct IfStmtData {
+    condition: ExprId,
+    then_start: i32,
+    then_count: i32,
+    else_start: i32,
+    else_count: i32,
+    span: Span,
+}
+
+// MatchStmtData: arms in extra_match_arms
+pub struct MatchStmtData {
+    subject: ExprId,
+    arms_start: i32,
+    arms_count: i32,
+    span: Span,
+}
+
 pub enum Stmt {
-    LetDecl(string),
-    VarDecl(string),
-    ExprStmt(string),
-    ReturnStmt(string),
-    IfStmt(string),
-    ForLoop(string),
-    WhileLoop(string),
-    MatchStmt(string),
-    Assignment(string),
+    LetDecl(LetDeclData),
+    VarDecl(VarDeclData),
+    Assignment(AssignmentData),
+    ExprStmt(ExprStmtData),
+    ReturnStmt(ReturnStmtData),
+    BreakStmt(BreakStmtData),
+    ContinueStmt(ContinueStmtData),
+    ForLoop(ForLoopData),
+    WhileLoop(WhileLoopData),
+    LoopStmt(LoopStmtData),
+    IfStmt(IfStmtData),
+    MatchStmt(MatchStmtData),
 }
 
-// Declarations
+// ─── Decl Enum + Structs ─────────────────────────────────────────────
+
+// FunctionDeclData: generic_params, params, body all use ranges
+pub struct FunctionDeclData {
+    fn_name: string,
+    generics_start: i32,
+    generics_count: i32,
+    params_start: i32,
+    params_count: i32,
+    return_type: TypeExprId,
+    body_start: i32,
+    body_count: i32,
+    is_pub: bool,
+    is_extern: bool,
+    is_unsafe: bool,
+    is_comptime: bool,
+    is_variadic: bool,
+    span: Span,
+}
+
+pub struct TestDeclData {
+    test_name: string,
+    body_start: i32,
+    body_count: i32,
+    span: Span,
+}
+
+pub struct StructDeclData {
+    struct_name: string,
+    generics_start: i32,
+    generics_count: i32,
+    fields_start: i32,
+    fields_count: i32,
+    is_pub: bool,
+    is_extern: bool,
+    is_packed: bool,
+    span: Span,
+}
+
+pub struct EnumDeclData {
+    enum_name: string,
+    generics_start: i32,
+    generics_count: i32,
+    variants_start: i32,
+    variants_count: i32,
+    is_pub: bool,
+    span: Span,
+}
+
+pub struct TraitDeclData {
+    trait_name: string,
+    generics_start: i32,
+    generics_count: i32,
+    parents_start: i32,
+    parents_count: i32,
+    methods_start: i32,
+    methods_count: i32,
+    assoc_types_start: i32,
+    assoc_types_count: i32,
+    is_pub: bool,
+    span: Span,
+}
+
+pub struct ImplDeclData {
+    target_type: string,
+    impl_trait: string,
+    generics_start: i32,
+    generics_count: i32,
+    methods_start: i32,
+    methods_count: i32,
+    assoc_types_start: i32,
+    assoc_types_count: i32,
+    span: Span,
+}
+
+pub struct TypeAliasData {
+    alias_name: string,
+    generics_start: i32,
+    generics_count: i32,
+    target: TypeExprId,
+    is_pub: bool,
+    span: Span,
+}
+
+pub struct ConstDeclData {
+    const_name: string,
+    type_expr: TypeExprId,
+    value: ExprId,
+    is_pub: bool,
+    span: Span,
+}
+
+pub struct ImportDeclData {
+    path: string,
+    items_start: i32,
+    items_count: i32,
+    is_glob: bool,
+    span: Span,
+}
+
+pub struct ModuleDeclData {
+    mod_name: string,
+    span: Span,
+}
+
+pub struct ExternTypeDeclData {
+    ext_name: string,
+    is_pub: bool,
+    span: Span,
+}
+
+pub struct ExternBlockDeclData {
+    decls_start: i32,
+    decls_count: i32,
+    span: Span,
+}
+
 pub enum Decl {
-    Function(string),
-    Struct(string),
-    Enum(string),
-    Trait(string),
-    Impl(string),
-    Import(string),
-    Const(string),
-    TestDecl(string),
+    Function(FunctionDeclData),
+    TestDecl(TestDeclData),
+    StructDecl(StructDeclData),
+    EnumDecl(EnumDeclData),
+    TraitDecl(TraitDeclData),
+    ImplDecl(ImplDeclData),
+    TypeAlias(TypeAliasData),
+    ConstDecl(ConstDeclData),
+    ImportDecl(ImportDeclData),
+    ModuleDecl(ModuleDeclData),
+    ExternTypeDecl(ExternTypeDeclData),
+    ExternBlock(ExternBlockDeclData),
 }
 
-// Top-level module
-pub struct Module {
-    declarations: List[String],
+// ─── TypeExpr Enum + Structs ─────────────────────────────────────────
+
+pub struct NamedTypeData { type_name: string, span: Span }
+pub struct ArrayTypeData { element: TypeExprId, size: ExprId, span: Span }
+pub struct SliceTypeData { element: TypeExprId, span: Span }
+pub struct TupleTypeData { elems_start: i32, elems_count: i32, span: Span }
+pub struct OptionalTypeData { inner: TypeExprId, span: Span }
+pub struct ResultTypeData { ok_type: TypeExprId, err_type: TypeExprId, span: Span }
+pub struct FunctionTypeData { params_start: i32, params_count: i32, ret: TypeExprId, span: Span }
+pub struct ReferenceTypeData { inner: TypeExprId, is_mut: bool, span: Span }
+pub struct GenericApplyData { base: TypeExprId, args_start: i32, args_count: i32, span: Span }
+pub struct QualifiedTypeData { qualifier: TypeExprId, qualified_name: string, span: Span }
+
+pub enum TypeExpr {
+    Named(NamedTypeData),
+    Array(ArrayTypeData),
+    Slice(SliceTypeData),
+    Tuple(TupleTypeData),
+    Optional(OptionalTypeData),
+    ResultType(ResultTypeData),
+    FunctionType(FunctionTypeData),
+    Reference(ReferenceTypeData),
+    GenericApply(GenericApplyData),
+    Qualified(QualifiedTypeData),
 }
 
-impl Module {
-    fn new() -> Module {
-        return Module {
-            declarations: List.new[String](),
-        }
+// ─── AstModule ────────────────────────────────────────────────────────
+// Uses index ranges instead of Lists (Lists in structs lose data).
+
+pub struct AstModule {
+    imports_start: i32,
+    imports_count: i32,
+    decls_start: i32,
+    decls_count: i32,
+}
+
+fn new_module() -> AstModule {
+    return AstModule {
+        imports_start: 0,
+        imports_count: 0,
+        decls_start: 0,
+        decls_count: 0,
     }
 }
 
+// ─── Debug Functions ──────────────────────────────────────────────────
+
+fn expr_kind_name(e: Expr) -> string {
+    match e {
+        Expr::IntLiteral(_) => { return "IntLiteral" }
+        Expr::FloatLiteral(_) => { return "FloatLiteral" }
+        Expr::StringLiteral(_) => { return "StringLiteral" }
+        Expr::CharLiteral(_) => { return "CharLiteral" }
+        Expr::BoolLiteral(_) => { return "BoolLiteral" }
+        Expr::Identifier(_) => { return "Identifier" }
+        Expr::Binary(_) => { return "Binary" }
+        Expr::Unary(_) => { return "Unary" }
+        Expr::Postfix(_) => { return "Postfix" }
+        Expr::Call(_) => { return "Call" }
+        Expr::MethodCall(_) => { return "MethodCall" }
+        Expr::FieldAccess(_) => { return "FieldAccess" }
+        Expr::Index(_) => { return "Index" }
+        Expr::Cast(_) => { return "Cast" }
+        Expr::Closure(_) => { return "Closure" }
+        Expr::Block(_) => { return "Block" }
+        Expr::IfExpr(_) => { return "IfExpr" }
+        Expr::MatchExpr(_) => { return "MatchExpr" }
+        Expr::TupleLiteral(_) => { return "TupleLiteral" }
+        Expr::ArrayLiteral(_) => { return "ArrayLiteral" }
+        Expr::StructLiteral(_) => { return "StructLiteral" }
+        Expr::EnumVariant(_) => { return "EnumVariant" }
+        Expr::InterpolatedString(_) => { return "InterpolatedString" }
+        Expr::Grouped(_) => { return "Grouped" }
+        Expr::ComptimeBlock(_) => { return "ComptimeBlock" }
+        Expr::UnsafeBlock(_) => { return "UnsafeBlock" }
+        Expr::BuiltinCall(_) => { return "BuiltinCall" }
+    }
+}
+
+fn stmt_kind_name(s: Stmt) -> string {
+    match s {
+        Stmt::LetDecl(_) => { return "LetDecl" }
+        Stmt::VarDecl(_) => { return "VarDecl" }
+        Stmt::Assignment(_) => { return "Assignment" }
+        Stmt::ExprStmt(_) => { return "ExprStmt" }
+        Stmt::ReturnStmt(_) => { return "ReturnStmt" }
+        Stmt::BreakStmt(_) => { return "BreakStmt" }
+        Stmt::ContinueStmt(_) => { return "ContinueStmt" }
+        Stmt::ForLoop(_) => { return "ForLoop" }
+        Stmt::WhileLoop(_) => { return "WhileLoop" }
+        Stmt::LoopStmt(_) => { return "LoopStmt" }
+        Stmt::IfStmt(_) => { return "IfStmt" }
+        Stmt::MatchStmt(_) => { return "MatchStmt" }
+    }
+}
+
+fn decl_kind_name(d: Decl) -> string {
+    match d {
+        Decl::Function(_) => { return "Function" }
+        Decl::TestDecl(_) => { return "TestDecl" }
+        Decl::StructDecl(_) => { return "StructDecl" }
+        Decl::EnumDecl(_) => { return "EnumDecl" }
+        Decl::TraitDecl(_) => { return "TraitDecl" }
+        Decl::ImplDecl(_) => { return "ImplDecl" }
+        Decl::TypeAlias(_) => { return "TypeAlias" }
+        Decl::ConstDecl(_) => { return "ConstDecl" }
+        Decl::ImportDecl(_) => { return "ImportDecl" }
+        Decl::ModuleDecl(_) => { return "ModuleDecl" }
+        Decl::ExternTypeDecl(_) => { return "ExternTypeDecl" }
+        Decl::ExternBlock(_) => { return "ExternBlock" }
+    }
+}
+
+fn pattern_kind_name(p: Pattern) -> string {
+    match p {
+        Pattern::Wildcard(_) => { return "Wildcard" }
+        Pattern::LiteralPat(_) => { return "LiteralPat" }
+        Pattern::BindingPat(_) => { return "BindingPat" }
+        Pattern::VariantPat(_) => { return "VariantPat" }
+        Pattern::TuplePat(_) => { return "TuplePat" }
+        Pattern::OrPat(_) => { return "OrPat" }
+        Pattern::GuardedPat(_) => { return "GuardedPat" }
+        Pattern::StructPat(_) => { return "StructPat" }
+    }
+}
+
+fn type_expr_kind_name(t: TypeExpr) -> string {
+    match t {
+        TypeExpr::Named(_) => { return "Named" }
+        TypeExpr::Array(_) => { return "Array" }
+        TypeExpr::Slice(_) => { return "Slice" }
+        TypeExpr::Tuple(_) => { return "Tuple" }
+        TypeExpr::Optional(_) => { return "Optional" }
+        TypeExpr::ResultType(_) => { return "ResultType" }
+        TypeExpr::FunctionType(_) => { return "FunctionType" }
+        TypeExpr::Reference(_) => { return "Reference" }
+        TypeExpr::GenericApply(_) => { return "GenericApply" }
+        TypeExpr::Qualified(_) => { return "Qualified" }
+    }
+}
+
+fn binary_op_name(op: BinaryOp) -> string {
+    match op {
+        BinaryOp::Add => { return "+" }
+        BinaryOp::Sub => { return "-" }
+        BinaryOp::Mul => { return "*" }
+        BinaryOp::Div => { return "/" }
+        BinaryOp::Mod => { return "%" }
+        BinaryOp::AddWrap => { return "+%" }
+        BinaryOp::SubWrap => { return "-%" }
+        BinaryOp::MulWrap => { return "*%" }
+        BinaryOp::AddSat => { return "+|" }
+        BinaryOp::SubSat => { return "-|" }
+        BinaryOp::MulSat => { return "*|" }
+        BinaryOp::Eq => { return "==" }
+        BinaryOp::Neq => { return "!=" }
+        BinaryOp::Lt => { return "<" }
+        BinaryOp::Gt => { return ">" }
+        BinaryOp::LtEq => { return "<=" }
+        BinaryOp::GtEq => { return ">=" }
+        BinaryOp::Is => { return "is" }
+        BinaryOp::And => { return "and" }
+        BinaryOp::Or => { return "or" }
+        BinaryOp::BitAnd => { return "&" }
+        BinaryOp::BitOr => { return "|" }
+        BinaryOp::BitXor => { return "^" }
+        BinaryOp::Shl => { return "<<" }
+        BinaryOp::Shr => { return ">>" }
+        BinaryOp::Range => { return ".." }
+        BinaryOp::RangeInclusive => { return "..=" }
+        BinaryOp::NullCoalesce => { return "??" }
+        BinaryOp::Pipe => { return "|>" }
+        BinaryOp::Concat => { return "++" }
+    }
+}
+
+fn unary_op_name(op: UnaryOp) -> string {
+    match op {
+        UnaryOp::Negate => { return "-" }
+        UnaryOp::Not => { return "not" }
+        UnaryOp::BitNot => { return "~" }
+        UnaryOp::Deref => { return "*" }
+        UnaryOp::MakeRef => { return "ref" }
+        UnaryOp::MakeRefMut => { return "ref mut" }
+    }
+}
+
+fn postfix_op_name(op: PostfixOp) -> string {
+    match op {
+        PostfixOp::Try => { return "?" }
+        PostfixOp::Unwrap => { return ".?" }
+    }
+}
+
+fn assign_op_name(op: AssignOp) -> string {
+    match op {
+        AssignOp::Plain => { return "=" }
+        AssignOp::Add => { return "+=" }
+        AssignOp::Sub => { return "-=" }
+        AssignOp::Mul => { return "*=" }
+        AssignOp::Div => { return "/=" }
+        AssignOp::Mod => { return "%=" }
+        AssignOp::AddWrap => { return "+%=" }
+        AssignOp::SubWrap => { return "-%=" }
+        AssignOp::MulWrap => { return "*%=" }
+        AssignOp::AddSat => { return "+|=" }
+        AssignOp::SubSat => { return "-|=" }
+        AssignOp::MulSat => { return "*|=" }
+        AssignOp::BitAnd => { return "&=" }
+        AssignOp::BitOr => { return "|=" }
+        AssignOp::BitXor => { return "^=" }
+        AssignOp::Shl => { return "<<=" }
+        AssignOp::Shr => { return ">>=" }
+        AssignOp::Concat => { return "++=" }
+    }
+}
+
+// ─── Smoke Test ───────────────────────────────────────────────────────
+
 fn main() -> i32 {
+    let s: Span = Span { line: 1, column: 1, start: 0, end: 2 }
+
+    // Test 1: Expr creation (including new variants)
+    var exprs: List[Expr] = List.new[Expr]()
+    exprs.push(Expr::IntLiteral(IntLiteralData { text: "42", span: s }))
+    exprs.push(Expr::Identifier(IdentifierData { ident_name: "x", span: s }))
+    exprs.push(Expr::Binary(BinaryData {
+        left: ExprId { id: 0 },
+        op: BinaryOp::Add,
+        right: ExprId { id: 1 },
+        span: s,
+    }))
+    exprs.push(Expr::Postfix(PostfixData {
+        op: PostfixOp::Try,
+        operand: ExprId { id: 0 },
+        span: s,
+    }))
+    exprs.push(Expr::InterpolatedString(InterpolatedStringData {
+        parts_start: 0, parts_count: 3, span: s,
+    }))
+    exprs.push(Expr::Grouped(GroupedData { inner: ExprId { id: 0 }, span: s }))
+    exprs.push(Expr::BuiltinCall(BuiltinCallData {
+        builtin_name: "fn_ptr", args_start: 0, args_count: 1, span: s,
+    }))
+    if exprs.len() != 7 {
+        println("FAIL: expected 7 exprs")
+        return 1
+    }
+
+    // Test 2: Retrieval preserves kind
+    let e0: ?Expr = exprs.get(0)
+    match e0 {
+        Some(e) => {
+            if expr_kind_name(e) != "IntLiteral" {
+                println("FAIL: e0 should be IntLiteral")
+                return 2
+            }
+        }
+        None => { println("FAIL: e0 is None"); return 2 }
+    }
+
+    let e3: ?Expr = exprs.get(3)
+    match e3 {
+        Some(e) => {
+            if expr_kind_name(e) != "Postfix" {
+                println("FAIL: e3 should be Postfix")
+                return 3
+            }
+        }
+        None => { println("FAIL: e3 is None"); return 3 }
+    }
+
+    // Test 3: All sentinel IDs
+    if has_expr(no_expr()) {
+        println("FAIL: no_expr should not have expr")
+        return 4
+    }
+    if not has_expr(ExprId { id: 0 }) {
+        println("FAIL: ExprId(0) should have expr")
+        return 5
+    }
+    if has_type_expr(no_type_expr()) {
+        println("FAIL: no_type_expr should not have type_expr")
+        return 5
+    }
+    if has_pattern(no_pattern()) {
+        println("FAIL: no_pattern should not have pattern")
+        return 5
+    }
+    if has_stmt(no_stmt()) {
+        println("FAIL: no_stmt should not have stmt")
+        return 5
+    }
+    if has_decl(no_decl()) {
+        println("FAIL: no_decl should not have decl")
+        return 5
+    }
+
+    // Test 4: Stmt creation with AssignOp, break-with-value, shadow var
+    var stmts: List[Stmt] = List.new[Stmt]()
+    stmts.push(Stmt::ReturnStmt(ReturnStmtData { value: ExprId { id: 0 }, span: s }))
+    stmts.push(Stmt::BreakStmt(BreakStmtData { value: no_expr(), span: s }))
+    stmts.push(Stmt::BreakStmt(BreakStmtData { value: ExprId { id: 0 }, span: s }))
+    stmts.push(Stmt::Assignment(AssignmentData {
+        target: ExprId { id: 0 },
+        op: AssignOp::Add,
+        value: ExprId { id: 1 },
+        span: s,
+    }))
+    stmts.push(Stmt::VarDecl(VarDeclData {
+        decl_name: "x",
+        type_expr: TypeExprId { id: 0 },
+        value: ExprId { id: 0 },
+        is_shadow: true,
+        span: s,
+    }))
+    if stmts.len() != 5 {
+        println("FAIL: expected 5 stmts")
+        return 6
+    }
+
+    // Test 5: Decl creation with updated FunctionDeclData modifiers
+    var decls: List[Decl] = List.new[Decl]()
+    decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "main",
+        generics_start: 0,
+        generics_count: 0,
+        params_start: 0,
+        params_count: 0,
+        return_type: TypeExprId { id: 0 },
+        body_start: 0,
+        body_count: 1,
+        is_pub: false,
+        is_extern: false,
+        is_unsafe: false,
+        is_comptime: false,
+        is_variadic: false,
+        span: s,
+    }))
+    decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Point",
+        generics_start: 0,
+        generics_count: 0,
+        fields_start: 0,
+        fields_count: 2,
+        is_pub: true,
+        is_extern: false,
+        is_packed: false,
+        span: s,
+    }))
+    if decls.len() != 2 {
+        println("FAIL: expected 2 decls")
+        return 7
+    }
+
+    // Test 6: TypeExpr creation with GenericApply using TypeExprId base
+    var type_exprs: List[TypeExpr] = List.new[TypeExpr]()
+    type_exprs.push(TypeExpr::Named(NamedTypeData { type_name: "i32", span: s }))
+    type_exprs.push(TypeExpr::Optional(OptionalTypeData { inner: TypeExprId { id: 0 }, span: s }))
+    type_exprs.push(TypeExpr::GenericApply(GenericApplyData {
+        base: TypeExprId { id: 0 },
+        args_start: 0,
+        args_count: 1,
+        span: s,
+    }))
+    if type_exprs.len() != 3 {
+        println("FAIL: expected 3 type_exprs")
+        return 8
+    }
+
+    // Test 7: Pattern creation (expanded with StructPat and VariantPat)
+    var patterns: List[Pattern] = List.new[Pattern]()
+    patterns.push(Pattern::Wildcard(WildcardData { span: s }))
+    patterns.push(Pattern::BindingPat(BindingPatData { binding_name: "x", is_mut: false, span: s }))
+    patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Some",
+        fields_start: 0,
+        fields_count: 1,
+        span: s,
+    }))
+    patterns.push(Pattern::StructPat(StructPatData {
+        type_name: "Point",
+        fields_start: 0,
+        fields_count: 2,
+        span: s,
+    }))
+    if patterns.len() != 4 {
+        println("FAIL: expected 4 patterns")
+        return 9
+    }
+
+    // Test 8: Operator names (exhaustive binary_op_name, no wildcard)
+    if binary_op_name(BinaryOp::Add) != "+" {
+        println("FAIL: Add should be +")
+        return 10
+    }
+    if binary_op_name(BinaryOp::AddWrap) != "+%" {
+        println("FAIL: AddWrap should be +%")
+        return 10
+    }
+    if binary_op_name(BinaryOp::Is) != "is" {
+        println("FAIL: Is should be is")
+        return 10
+    }
+    if binary_op_name(BinaryOp::Concat) != "++" {
+        println("FAIL: Concat should be ++")
+        return 10
+    }
+    if unary_op_name(UnaryOp::Not) != "not" {
+        println("FAIL: Not should be not")
+        return 11
+    }
+    if postfix_op_name(PostfixOp::Try) != "?" {
+        println("FAIL: Try should be ?")
+        return 11
+    }
+    if assign_op_name(AssignOp::Plain) != "=" {
+        println("FAIL: AssignOp::Plain should be =")
+        return 11
+    }
+    if assign_op_name(AssignOp::Add) != "+=" {
+        println("FAIL: AssignOp::Add should be +=")
+        return 11
+    }
+
+    // Test 9: Module
+    let m: AstModule = new_module()
+    if m.decls_count != 0 {
+        println("FAIL: new module should have 0 decls")
+        return 12
+    }
+
+    // Test 10: CallData with type_args
+    let call: Expr = Expr::Call(CallData {
+        callee: ExprId { id: 0 },
+        args_start: 0,
+        args_count: 1,
+        type_args_start: 0,
+        type_args_count: 1,
+        span: s,
+    })
+    if expr_kind_name(call) != "Call" {
+        println("FAIL: call should be Call")
+        return 13
+    }
+
+    // Test 11: kind_name functions for Pattern and TypeExpr
+    let w: Pattern = Pattern::Wildcard(WildcardData { span: s })
+    if pattern_kind_name(w) != "Wildcard" {
+        println("FAIL: Wildcard pattern kind")
+        return 14
+    }
+    let n: TypeExpr = TypeExpr::Named(NamedTypeData { type_name: "i32", span: s })
+    if type_expr_kind_name(n) != "Named" {
+        println("FAIL: Named type_expr kind")
+        return 14
+    }
+
+    println("ast.kl: all smoke tests passed")
     return 0
 }
 
 test main {
-    // Stub test — full AST tests in Milestone 9.5
-    assert(true)
+    // All sentinel IDs
+    assert_eq(no_expr().id, -1)
+    assert(not has_expr(no_expr()))
+    assert(has_expr(ExprId { id: 0 }))
+    assert_eq(no_type_expr().id, -1)
+    assert(not has_type_expr(no_type_expr()))
+    assert_eq(no_pattern().id, -1)
+    assert(not has_pattern(no_pattern()))
+    assert_eq(no_stmt().id, -1)
+    assert(not has_stmt(no_stmt()))
+    assert_eq(no_decl().id, -1)
+    assert(not has_decl(no_decl()))
+
+    // Span
+    let s: Span = no_span()
+    assert_eq(s.line, 0)
+
+    // Module
+    let m: AstModule = new_module()
+    assert_eq(m.decls_count, 0)
+
+    // Operator names
+    assert(binary_op_name(BinaryOp::Add) == "+")
+    assert(binary_op_name(BinaryOp::Is) == "is")
+    assert(binary_op_name(BinaryOp::Concat) == "++")
+    assert(unary_op_name(UnaryOp::Not) == "not")
+    assert(postfix_op_name(PostfixOp::Try) == "?")
+    assert(assign_op_name(AssignOp::Plain) == "=")
+    assert(assign_op_name(AssignOp::Concat) == "++=")
 }

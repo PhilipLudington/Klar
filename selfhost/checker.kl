@@ -3,7 +3,7 @@
 // Full implementation: Milestones 9.9–9.10
 
 import types.{KlarType}
-import ast.{Module, Expr}
+import ast.{AstModule, Expr}
 
 pub struct TypeChecker {
     error_count: i32,
@@ -17,7 +17,7 @@ impl TypeChecker {
     }
 
     // TODO(9.9): Change to mutable self — type checking accumulates errors and state
-    fn check_module(self: TypeChecker, m: Module) -> i32 {
+    fn check_module(self: TypeChecker, m: AstModule) -> i32 {
         // Stub: returns 0 errors
         // Full implementation in Milestones 9.9–9.10
         return 0

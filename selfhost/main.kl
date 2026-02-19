@@ -4,7 +4,7 @@
 
 import lexer.{Lexer, Token}
 import parser.{Parser}
-import ast.{Module}
+import ast.{AstModule}
 import checker.{TypeChecker}
 import types.{KlarType}
 
