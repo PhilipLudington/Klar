@@ -2,7 +2,7 @@
 # Run self-hosted compiler stub tests
 #
 # Phase 1: Verify each selfhost/*.kl file passes klar check and inline tests
-# Phase 2 (future): Parity testing with dump-tokens/dump-ast
+# Phase 2: Lexer parity testing — compares Zig vs selfhost dump-tokens output
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESULTS_FILE="$SCRIPT_DIR/.selfhost-test-results.json"
@@ -68,30 +68,65 @@ for f in "$SELFHOST_DIR"/*.kl; do
     fi
 done
 
-# Phase 2 (future): Parity testing
-# When the selfhost lexer/parser are functional (milestones 9.4+),
-# uncomment and extend this section.
-#
-# echo ""
-# echo "Phase 2: Parity testing (dump-tokens / dump-ast)"
-# echo "────────────────────────────────────────"
-#
-# PARITY_FILES="test/native/arith.kl test/native/struct_basic.kl test/native/trait_basic.kl"
-# for f in $PARITY_FILES; do
-#     [ -f "$SCRIPT_DIR/$f" ] || continue
-#     name=$(basename "$f" .kl)
-#
-#     # Compare Zig lexer output vs selfhost lexer output
-#     zig_tokens=$("$KLAR" dump-tokens "$SCRIPT_DIR/$f" 2>/dev/null)
-#     # selfhost_tokens=$("$KLAR" run "$SELFHOST_DIR/main.kl" -- dump-tokens "$SCRIPT_DIR/$f" 2>/dev/null)
-#     # if [ "$zig_tokens" = "$selfhost_tokens" ]; then
-#     #     echo "  ✓ $name (token parity)"
-#     #     PASSED=$((PASSED + 1))
-#     # else
-#     #     echo "  ✗ $name (token mismatch)"
-#     #     FAILED=$((FAILED + 1))
-#     # fi
-# done
+# Phase 2: Lexer parity testing (dump-tokens)
+# Compares Zig lexer JSON output with selfhost lexer JSON output.
+# Pre-builds the selfhost lexer binary once, then reuses it for all test files.
+echo ""
+echo "Phase 2: Lexer parity testing (dump-tokens)"
+echo "────────────────────────────────────────"
+
+SELFHOST_LEXER="$SCRIPT_DIR/build/selfhost_lexer"
+build_output=$("$KLAR" build "$SELFHOST_DIR/lexer.kl" -o "$SELFHOST_LEXER" 2>&1)
+build_exit=$?
+if [ $build_exit -ne 0 ]; then
+    echo "  ✗ selfhost lexer build failed"
+    echo "    $build_output" | head -3
+    FAILED=$((FAILED + 1))
+    [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+    FAILURES="$FAILURES\"selfhost lexer: build failed\""
+else
+    PARITY_FILES="test/native/arith.kl test/native/struct.kl test/native/trait_basic.kl test/native/generics_basic.kl test/native/string_primitives.kl test/native/closure_simple.kl test/native/enum_struct_payload.kl test/native/for_range.kl"
+    for f in $PARITY_FILES; do
+        [ -f "$SCRIPT_DIR/$f" ] || continue
+        name=$(basename "$f" .kl)
+
+        # Get Zig lexer output
+        zig_tokens=$("$KLAR" dump-tokens "$SCRIPT_DIR/$f" 2>/dev/null)
+        zig_exit=$?
+        if [ $zig_exit -ne 0 ]; then
+            echo "  ✗ $name (zig lexer failed)"
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: zig lexer failed\""
+            continue
+        fi
+
+        # Get selfhost lexer output (using pre-built binary)
+        selfhost_tokens=$("$SELFHOST_LEXER" "$SCRIPT_DIR/$f" 2>/dev/null)
+        selfhost_exit=$?
+        if [ $selfhost_exit -ne 0 ]; then
+            echo "  ✗ $name (selfhost lexer failed)"
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: selfhost lexer failed\""
+            continue
+        fi
+
+        # Compare token streams
+        if [ "$zig_tokens" = "$selfhost_tokens" ]; then
+            echo "  ✓ $name (token parity)"
+            PASSED=$((PASSED + 1))
+        else
+            echo "  ✗ $name (token mismatch)"
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: token mismatch\""
+            # Show first difference for debugging
+            diff <(echo "$zig_tokens" | python3 -m json.tool 2>/dev/null || echo "$zig_tokens") \
+                 <(echo "$selfhost_tokens" | python3 -m json.tool 2>/dev/null || echo "$selfhost_tokens") 2>/dev/null | head -10
+        fi
+    done
+fi
 
 TOTAL=$((PASSED + FAILED))
 echo ""

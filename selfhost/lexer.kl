@@ -1,6 +1,10 @@
-// selfhost/lexer.kl — Self-hosted lexer (stub)
-// Milestone 9.3: Bootstrap architecture scaffolding
-// Full implementation: Milestone 9.4
+// selfhost/lexer.kl — Self-hosted lexer
+// Milestone 9.4: Full implementation
+//
+// Architecture note: Klar does not yet support self-method calls within impl
+// blocks (one method calling another on self). Therefore, all helper logic is
+// either inlined into next_token or extracted into free functions that take
+// individual fields by value.
 
 pub enum TokenKind {
     // Literals
@@ -14,9 +18,10 @@ pub enum TokenKind {
     // Identifier
     Identifier,
 
-    // Keywords (subset — full set added in 9.4)
+    // Keywords
     Fn,
     Let,
+    Shadow,
     Var,
     Struct,
     Enum,
@@ -32,6 +37,12 @@ pub enum TokenKind {
     Break,
     Continue,
     Pub,
+    Mut,
+    Async,
+    Await,
+    Unsafe,
+    Extern,
+    Packed,
     Import,
     Module,
     Test,
@@ -41,13 +52,29 @@ pub enum TokenKind {
     And,
     Or,
     Not,
+    Comptime,
+    Where,
+    Dyn,
+    Type,
+    Const,
+    Static,
+    SelfType,
+    Ref,
+    Inout,
+    Self_,
 
-    // Operators (subset)
+    // Operators
     Plus,
     Minus,
     Star,
     Slash,
     Percent,
+    PlusWrap,
+    MinusWrap,
+    StarWrap,
+    PlusSat,
+    MinusSat,
+    StarSat,
     Eq,
     EqEq,
     NotEq,
@@ -55,14 +82,31 @@ pub enum TokenKind {
     Gt,
     LtEq,
     GtEq,
-    Arrow,
-    FatArrow,
+    Amp,
+    Pipe,
+    Caret,
+    Tilde,
+    LtLt,
+    GtGt,
+    Question,
+    Bang,
+    QuestionQuestion,
     Dot,
     DotDot,
+    DotDotEq,
+    Ellipsis,
+    Arrow,
+    FatArrow,
     Colon,
     ColonColon,
-    Question,
-    QuestionQuestion,
+    At,
+
+    // Compound assignment
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
 
     // Delimiters
     LParen,
@@ -106,26 +150,824 @@ impl Lexer {
         }
     }
 
-    // TODO(9.4): Change to mutable self — advancing the lexer requires mutation
-    fn next_token(self: Lexer) -> Token {
-        // Stub: always returns EOF
-        // Full implementation in Milestone 9.4
-        return Token {
-            kind: TokenKind::Eof,
-            text: "",
-            line: self.line,
-            column: self.column,
-            start: self.pos,
-            end: self.pos,
+    fn next_token(self: inout Lexer) -> Token {
+        // ============================================================
+        // SKIP WHITESPACE AND COMMENTS
+        // ============================================================
+        while self.pos < self.source.byte_len() {
+            let wc: i32 = peek_at(self.source, self.pos)
+            if wc == 32 or wc == 9 or wc == 13 {
+                // Space (32), tab (9), carriage return (13)
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+            } else if wc == 47 and peek_at(self.source, self.pos + 1) == 47 {
+                // Line comment: //
+                while self.pos < self.source.byte_len() and peek_at(self.source, self.pos) != 10 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                }
+            } else if wc == 47 and peek_at(self.source, self.pos + 1) == 42 {
+                // Block comment: /* ... */
+                self.pos = self.pos + 2
+                self.column = self.column + 2
+                while self.pos < self.source.byte_len() {
+                    if peek_at(self.source, self.pos) == 42 and peek_at(self.source, self.pos + 1) == 47 {
+                        self.pos = self.pos + 2
+                        self.column = self.column + 2
+                        break
+                    }
+                    if peek_at(self.source, self.pos) == 10 {
+                        self.line = self.line + 1
+                        self.column = 0
+                    }
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                }
+            } else {
+                break
+            }
         }
+
+        // ============================================================
+        // SNAPSHOT START POSITION
+        // ============================================================
+        let sp: i32 = self.pos
+        let sl: i32 = self.line
+        let sc: i32 = self.column
+
+        // ============================================================
+        // EOF CHECK
+        // ============================================================
+        if self.pos >= self.source.byte_len() {
+            return make_tok(self.source, TokenKind::Eof, sp, self.pos, sl, sc)
+        }
+
+        // ============================================================
+        // CONSUME FIRST CHARACTER
+        // ============================================================
+        let c: i32 = peek_at(self.source, self.pos)
+        self.pos = self.pos + 1
+        self.column = self.column + 1
+
+        // ============================================================
+        // IDENTIFIER
+        // ============================================================
+        if is_alpha(c) {
+            while self.pos < self.source.byte_len() and is_alphanum(peek_at(self.source, self.pos)) {
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+            }
+            let text: string = self.source.substring(sp, self.pos)
+            let kind: TokenKind = lookup_keyword(text)
+            return make_tok(self.source, kind, sp, self.pos, sl, sc)
+        }
+
+        // ============================================================
+        // NUMBER
+        // ============================================================
+        if is_digit(c) {
+            // Check for hex/binary/octal prefix (first char was '0')
+            if c == 48 and self.pos < self.source.byte_len() {
+                let nx: i32 = peek_at(self.source, self.pos)
+                // 0x / 0X — hexadecimal
+                if nx == 120 or nx == 88 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    while self.pos < self.source.byte_len() and (is_hex_digit(peek_at(self.source, self.pos)) or peek_at(self.source, self.pos) == 95) {
+                        self.pos = self.pos + 1
+                        self.column = self.column + 1
+                    }
+                    return make_tok(self.source, TokenKind::IntLiteral, sp, self.pos, sl, sc)
+                }
+                // 0b / 0B — binary
+                if nx == 98 or nx == 66 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    while self.pos < self.source.byte_len() {
+                        let bc: i32 = peek_at(self.source, self.pos)
+                        if bc == 48 or bc == 49 or bc == 95 {
+                            self.pos = self.pos + 1
+                            self.column = self.column + 1
+                        } else {
+                            break
+                        }
+                    }
+                    return make_tok(self.source, TokenKind::IntLiteral, sp, self.pos, sl, sc)
+                }
+                // 0o / 0O — octal
+                if nx == 111 or nx == 79 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    while self.pos < self.source.byte_len() {
+                        let oc: i32 = peek_at(self.source, self.pos)
+                        if (oc >= 48 and oc <= 55) or oc == 95 {
+                            self.pos = self.pos + 1
+                            self.column = self.column + 1
+                        } else {
+                            break
+                        }
+                    }
+                    return make_tok(self.source, TokenKind::IntLiteral, sp, self.pos, sl, sc)
+                }
+            }
+
+            // Decimal digits with underscore separators
+            while self.pos < self.source.byte_len() and (is_digit(peek_at(self.source, self.pos)) or peek_at(self.source, self.pos) == 95) {
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+            }
+
+            // Float: dot followed by digit (not 1..5 range)
+            var is_float: bool = false
+            if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 46 and is_digit(peek_at(self.source, self.pos + 1)) {
+                is_float = true
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+                while self.pos < self.source.byte_len() and (is_digit(peek_at(self.source, self.pos)) or peek_at(self.source, self.pos) == 95) {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                }
+            }
+
+            // Scientific notation: e/E with optional +/-
+            if self.pos < self.source.byte_len() and (peek_at(self.source, self.pos) == 101 or peek_at(self.source, self.pos) == 69) {
+                is_float = true
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+                if self.pos < self.source.byte_len() and (peek_at(self.source, self.pos) == 43 or peek_at(self.source, self.pos) == 45) {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                }
+                while self.pos < self.source.byte_len() and is_digit(peek_at(self.source, self.pos)) {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                }
+            }
+
+            // Type suffix (e.g., 42i64, 3.14f32)
+            if self.pos < self.source.byte_len() and is_alpha(peek_at(self.source, self.pos)) {
+                while self.pos < self.source.byte_len() and is_alphanum(peek_at(self.source, self.pos)) {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                }
+            }
+
+            if is_float {
+                return make_tok(self.source, TokenKind::FloatLiteral, sp, self.pos, sl, sc)
+            }
+            return make_tok(self.source, TokenKind::IntLiteral, sp, self.pos, sl, sc)
+        }
+
+        // ============================================================
+        // DELIMITERS (single character)
+        // ============================================================
+        if c == 40 { return make_tok(self.source, TokenKind::LParen, sp, self.pos, sl, sc) }
+        if c == 41 { return make_tok(self.source, TokenKind::RParen, sp, self.pos, sl, sc) }
+        if c == 91 { return make_tok(self.source, TokenKind::LBracket, sp, self.pos, sl, sc) }
+        if c == 93 { return make_tok(self.source, TokenKind::RBracket, sp, self.pos, sl, sc) }
+        if c == 123 { return make_tok(self.source, TokenKind::LBrace, sp, self.pos, sl, sc) }
+        if c == 125 { return make_tok(self.source, TokenKind::RBrace, sp, self.pos, sl, sc) }
+        if c == 44 { return make_tok(self.source, TokenKind::Comma, sp, self.pos, sl, sc) }
+        if c == 59 { return make_tok(self.source, TokenKind::Semicolon, sp, self.pos, sl, sc) }
+
+        // ============================================================
+        // OPERATORS: + (plus, +%, +|, +=)
+        // ============================================================
+        if c == 43 {
+            if self.pos < self.source.byte_len() {
+                let nx: i32 = peek_at(self.source, self.pos)
+                if nx == 37 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::PlusWrap, sp, self.pos, sl, sc)
+                }
+                if nx == 124 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::PlusSat, sp, self.pos, sl, sc)
+                }
+                if nx == 61 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::PlusEq, sp, self.pos, sl, sc)
+                }
+            }
+            return make_tok(self.source, TokenKind::Plus, sp, self.pos, sl, sc)
+        }
+
+        // ============================================================
+        // OPERATORS: - (minus, ->, -%, -|, -=)
+        // ============================================================
+        if c == 45 {
+            if self.pos < self.source.byte_len() {
+                let nx: i32 = peek_at(self.source, self.pos)
+                if nx == 62 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::Arrow, sp, self.pos, sl, sc)
+                }
+                if nx == 37 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::MinusWrap, sp, self.pos, sl, sc)
+                }
+                if nx == 124 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::MinusSat, sp, self.pos, sl, sc)
+                }
+                if nx == 61 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::MinusEq, sp, self.pos, sl, sc)
+                }
+            }
+            return make_tok(self.source, TokenKind::Minus, sp, self.pos, sl, sc)
+        }
+
+        // ============================================================
+        // OPERATORS: * (star, *%, *|, *=)
+        // ============================================================
+        if c == 42 {
+            if self.pos < self.source.byte_len() {
+                let nx: i32 = peek_at(self.source, self.pos)
+                if nx == 37 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::StarWrap, sp, self.pos, sl, sc)
+                }
+                if nx == 124 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::StarSat, sp, self.pos, sl, sc)
+                }
+                if nx == 61 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::StarEq, sp, self.pos, sl, sc)
+                }
+            }
+            return make_tok(self.source, TokenKind::Star, sp, self.pos, sl, sc)
+        }
+
+        // OPERATORS: / (slash, /=)
+        if c == 47 {
+            if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 61 {
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+                return make_tok(self.source, TokenKind::SlashEq, sp, self.pos, sl, sc)
+            }
+            return make_tok(self.source, TokenKind::Slash, sp, self.pos, sl, sc)
+        }
+
+        // OPERATORS: % (percent, %=)
+        if c == 37 {
+            if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 61 {
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+                return make_tok(self.source, TokenKind::PercentEq, sp, self.pos, sl, sc)
+            }
+            return make_tok(self.source, TokenKind::Percent, sp, self.pos, sl, sc)
+        }
+
+        // OPERATORS: = (eq, ==, =>)
+        if c == 61 {
+            if self.pos < self.source.byte_len() {
+                let nx: i32 = peek_at(self.source, self.pos)
+                if nx == 61 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::EqEq, sp, self.pos, sl, sc)
+                }
+                if nx == 62 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::FatArrow, sp, self.pos, sl, sc)
+                }
+            }
+            return make_tok(self.source, TokenKind::Eq, sp, self.pos, sl, sc)
+        }
+
+        // OPERATORS: ! (bang, !=)
+        if c == 33 {
+            if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 61 {
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+                return make_tok(self.source, TokenKind::NotEq, sp, self.pos, sl, sc)
+            }
+            return make_tok(self.source, TokenKind::Bang, sp, self.pos, sl, sc)
+        }
+
+        // OPERATORS: < (lt, <=, <<)
+        if c == 60 {
+            if self.pos < self.source.byte_len() {
+                let nx: i32 = peek_at(self.source, self.pos)
+                if nx == 61 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::LtEq, sp, self.pos, sl, sc)
+                }
+                if nx == 60 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::LtLt, sp, self.pos, sl, sc)
+                }
+            }
+            return make_tok(self.source, TokenKind::Lt, sp, self.pos, sl, sc)
+        }
+
+        // OPERATORS: > (gt, >=, >>)
+        if c == 62 {
+            if self.pos < self.source.byte_len() {
+                let nx: i32 = peek_at(self.source, self.pos)
+                if nx == 61 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::GtEq, sp, self.pos, sl, sc)
+                }
+                if nx == 62 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::GtGt, sp, self.pos, sl, sc)
+                }
+            }
+            return make_tok(self.source, TokenKind::Gt, sp, self.pos, sl, sc)
+        }
+
+        // OPERATORS: . (dot, .., ..., ..=)
+        if c == 46 {
+            if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 46 {
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+                if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 46 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::Ellipsis, sp, self.pos, sl, sc)
+                }
+                if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 61 {
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    return make_tok(self.source, TokenKind::DotDotEq, sp, self.pos, sl, sc)
+                }
+                return make_tok(self.source, TokenKind::DotDot, sp, self.pos, sl, sc)
+            }
+            return make_tok(self.source, TokenKind::Dot, sp, self.pos, sl, sc)
+        }
+
+        // OPERATORS: : (colon, ::)
+        if c == 58 {
+            if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 58 {
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+                return make_tok(self.source, TokenKind::ColonColon, sp, self.pos, sl, sc)
+            }
+            return make_tok(self.source, TokenKind::Colon, sp, self.pos, sl, sc)
+        }
+
+        // OPERATORS: ? (question, ??)
+        if c == 63 {
+            if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 63 {
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+                return make_tok(self.source, TokenKind::QuestionQuestion, sp, self.pos, sl, sc)
+            }
+            return make_tok(self.source, TokenKind::Question, sp, self.pos, sl, sc)
+        }
+
+        // Single-char operators
+        if c == 38 { return make_tok(self.source, TokenKind::Amp, sp, self.pos, sl, sc) }
+        if c == 124 { return make_tok(self.source, TokenKind::Pipe, sp, self.pos, sl, sc) }
+        if c == 94 { return make_tok(self.source, TokenKind::Caret, sp, self.pos, sl, sc) }
+        if c == 126 { return make_tok(self.source, TokenKind::Tilde, sp, self.pos, sl, sc) }
+        if c == 64 { return make_tok(self.source, TokenKind::At, sp, self.pos, sl, sc) }
+
+        // ============================================================
+        // STRING LITERAL
+        // ============================================================
+        if c == 34 {
+            // Check for triple-quote """
+            if peek_at(self.source, self.pos) == 34 and peek_at(self.source, self.pos + 1) == 34 {
+                self.pos = self.pos + 2
+                self.column = self.column + 2
+                // Scan multi-line string until closing """
+                while self.pos < self.source.byte_len() {
+                    if peek_at(self.source, self.pos) == 34 and peek_at(self.source, self.pos + 1) == 34 and peek_at(self.source, self.pos + 2) == 34 {
+                        self.pos = self.pos + 3
+                        self.column = self.column + 3
+                        return make_tok(self.source, TokenKind::StringLiteral, sp, self.pos, sl, sc)
+                    }
+                    if peek_at(self.source, self.pos) == 10 {
+                        self.line = self.line + 1
+                        self.column = 0
+                    }
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                }
+                return make_tok(self.source, TokenKind::Invalid, sp, self.pos, sl, sc)
+            }
+            // Regular string
+            while self.pos < self.source.byte_len() and peek_at(self.source, self.pos) != 34 {
+                if peek_at(self.source, self.pos) == 10 {
+                    self.line = self.line + 1
+                    self.column = 0
+                }
+                if peek_at(self.source, self.pos) == 92 {
+                    // Backslash escape — skip next char
+                    self.pos = self.pos + 1
+                    self.column = self.column + 1
+                    if self.pos >= self.source.byte_len() {
+                        return make_tok(self.source, TokenKind::Invalid, sp, self.pos, sl, sc)
+                    }
+                }
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+            }
+            if self.pos >= self.source.byte_len() {
+                return make_tok(self.source, TokenKind::Invalid, sp, self.pos, sl, sc)
+            }
+            // Skip closing quote
+            self.pos = self.pos + 1
+            self.column = self.column + 1
+            return make_tok(self.source, TokenKind::StringLiteral, sp, self.pos, sl, sc)
+        }
+
+        // ============================================================
+        // CHARACTER LITERAL
+        // ============================================================
+        if c == 39 {
+            if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 92 {
+                // Escape sequence
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+                if self.pos < self.source.byte_len() {
+                    if peek_at(self.source, self.pos) == 117 and peek_at(self.source, self.pos + 1) == 123 {
+                        // Unicode escape \u{...}
+                        self.pos = self.pos + 2
+                        self.column = self.column + 2
+                        while self.pos < self.source.byte_len() and peek_at(self.source, self.pos) != 125 {
+                            self.pos = self.pos + 1
+                            self.column = self.column + 1
+                        }
+                        if self.pos < self.source.byte_len() {
+                            self.pos = self.pos + 1
+                            self.column = self.column + 1
+                        }
+                    } else {
+                        // Simple escape like \n, \t, \\
+                        self.pos = self.pos + 1
+                        self.column = self.column + 1
+                    }
+                }
+            } else if self.pos < self.source.byte_len() {
+                // Regular character
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+            }
+            // Expect closing quote
+            if self.pos < self.source.byte_len() and peek_at(self.source, self.pos) == 39 {
+                self.pos = self.pos + 1
+                self.column = self.column + 1
+                return make_tok(self.source, TokenKind::CharLiteral, sp, self.pos, sl, sc)
+            }
+            return make_tok(self.source, TokenKind::Invalid, sp, self.pos, sl, sc)
+        }
+
+        // ============================================================
+        // NEWLINE
+        // ============================================================
+        if c == 10 {
+            let tok: Token = make_tok(self.source, TokenKind::Newline, sp, self.pos, sl, sc)
+            self.line = self.line + 1
+            self.column = 1
+            return tok
+        }
+
+        // ============================================================
+        // INVALID
+        // ============================================================
+        return make_tok(self.source, TokenKind::Invalid, sp, self.pos, sl, sc)
     }
 }
 
-fn main() -> i32 {
+// ============================================================================
+// Free helper functions
+// ============================================================================
+
+// Peek at byte at position. Returns -1 as EOF sentinel (equivalent to Zig
+// lexer's 0 sentinel). Safe for multi-char lookahead: callers pass pos+1,
+// pos+2 etc. and -1 will fail all character comparisons naturally.
+// Note: positions use i32, so source must be < 2^31 bytes (~2 GB).
+fn peek_at(source: string, pos: i32) -> i32 {
+    if pos >= source.byte_len() {
+        return -1
+    }
+    return source.byte_at(pos).as[i32]
+}
+
+fn make_tok(src: string, kind: TokenKind, start: i32, end: i32, line: i32, col: i32) -> Token {
+    return Token {
+        kind: kind,
+        text: src.substring(start, end),
+        line: line,
+        column: col,
+        start: start,
+        end: end,
+    }
+}
+
+fn is_alpha(c: i32) -> bool {
+    return (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or c == 95
+}
+
+fn is_digit(c: i32) -> bool {
+    return c >= 48 and c <= 57
+}
+
+fn is_alphanum(c: i32) -> bool {
+    return is_alpha(c) or is_digit(c)
+}
+
+fn is_hex_digit(c: i32) -> bool {
+    return is_digit(c) or (c >= 97 and c <= 102) or (c >= 65 and c <= 70)
+}
+
+// ============================================================================
+// Keyword lookup
+// ============================================================================
+
+fn lookup_keyword(text: string) -> TokenKind {
+    if text == "fn" { return TokenKind::Fn }
+    if text == "let" { return TokenKind::Let }
+    if text == "shadow" { return TokenKind::Shadow }
+    if text == "var" { return TokenKind::Var }
+    if text == "struct" { return TokenKind::Struct }
+    if text == "enum" { return TokenKind::Enum }
+    if text == "trait" { return TokenKind::Trait }
+    if text == "impl" { return TokenKind::Impl }
+    if text == "if" { return TokenKind::If }
+    if text == "else" { return TokenKind::Else }
+    if text == "match" { return TokenKind::Match }
+    if text == "for" { return TokenKind::For }
+    if text == "while" { return TokenKind::While }
+    if text == "loop" { return TokenKind::Loop }
+    if text == "return" { return TokenKind::Return }
+    if text == "break" { return TokenKind::Break }
+    if text == "continue" { return TokenKind::Continue }
+    if text == "pub" { return TokenKind::Pub }
+    if text == "mut" { return TokenKind::Mut }
+    if text == "async" { return TokenKind::Async }
+    if text == "await" { return TokenKind::Await }
+    if text == "unsafe" { return TokenKind::Unsafe }
+    if text == "extern" { return TokenKind::Extern }
+    if text == "packed" { return TokenKind::Packed }
+    if text == "import" { return TokenKind::Import }
+    if text == "module" { return TokenKind::Module }
+    if text == "test" { return TokenKind::Test }
+    if text == "as" { return TokenKind::As }
+    if text == "in" { return TokenKind::In }
+    if text == "is" { return TokenKind::Is }
+    if text == "and" { return TokenKind::And }
+    if text == "or" { return TokenKind::Or }
+    if text == "not" { return TokenKind::Not }
+    if text == "true" { return TokenKind::True }
+    if text == "false" { return TokenKind::False }
+    if text == "comptime" { return TokenKind::Comptime }
+    if text == "where" { return TokenKind::Where }
+    if text == "dyn" { return TokenKind::Dyn }
+    if text == "type" { return TokenKind::Type }
+    if text == "const" { return TokenKind::Const }
+    if text == "static" { return TokenKind::Static }
+    if text == "self" { return TokenKind::Self_ }
+    if text == "Self" { return TokenKind::SelfType }
+    if text == "ref" { return TokenKind::Ref }
+    if text == "inout" { return TokenKind::Inout }
+    return TokenKind::Identifier
+}
+
+// ============================================================================
+// Tag name mapping (Klar PascalCase -> Zig snake_case for parity testing)
+// ============================================================================
+
+pub fn tag_name(kind: TokenKind) -> string {
+    match kind {
+        TokenKind::IntLiteral => { return "int_literal" }
+        TokenKind::FloatLiteral => { return "float_literal" }
+        TokenKind::StringLiteral => { return "string_literal" }
+        TokenKind::CharLiteral => { return "char_literal" }
+        TokenKind::True => { return "true_" }
+        TokenKind::False => { return "false_" }
+        TokenKind::Identifier => { return "identifier" }
+        TokenKind::Fn => { return "fn_" }
+        TokenKind::Let => { return "let" }
+        TokenKind::Shadow => { return "shadow" }
+        TokenKind::Var => { return "var_" }
+        TokenKind::Struct => { return "struct_" }
+        TokenKind::Enum => { return "enum_" }
+        TokenKind::Trait => { return "trait" }
+        TokenKind::Impl => { return "impl" }
+        TokenKind::If => { return "if_" }
+        TokenKind::Else => { return "else_" }
+        TokenKind::Match => { return "match" }
+        TokenKind::For => { return "for_" }
+        TokenKind::While => { return "while_" }
+        TokenKind::Loop => { return "loop" }
+        TokenKind::Return => { return "return_" }
+        TokenKind::Break => { return "break_" }
+        TokenKind::Continue => { return "continue_" }
+        TokenKind::Pub => { return "pub_" }
+        TokenKind::Mut => { return "mut" }
+        TokenKind::Async => { return "async_" }
+        TokenKind::Await => { return "await_" }
+        TokenKind::Unsafe => { return "unsafe_" }
+        TokenKind::Extern => { return "extern_" }
+        TokenKind::Packed => { return "packed_" }
+        TokenKind::Import => { return "import" }
+        TokenKind::Module => { return "module" }
+        TokenKind::Test => { return "test_" }
+        TokenKind::As => { return "as" }
+        TokenKind::In => { return "in" }
+        TokenKind::Is => { return "is" }
+        TokenKind::And => { return "and_" }
+        TokenKind::Or => { return "or_" }
+        TokenKind::Not => { return "not" }
+        TokenKind::Comptime => { return "comptime_" }
+        TokenKind::Where => { return "where" }
+        TokenKind::Dyn => { return "dyn" }
+        TokenKind::Type => { return "type_" }
+        TokenKind::Const => { return "const_" }
+        TokenKind::Static => { return "static" }
+        TokenKind::SelfType => { return "self_type" }
+        TokenKind::Ref => { return "ref" }
+        TokenKind::Inout => { return "inout" }
+        TokenKind::Self_ => { return "self" }
+        TokenKind::Plus => { return "plus" }
+        TokenKind::Minus => { return "minus" }
+        TokenKind::Star => { return "star" }
+        TokenKind::Slash => { return "slash" }
+        TokenKind::Percent => { return "percent" }
+        TokenKind::PlusWrap => { return "plus_wrap" }
+        TokenKind::MinusWrap => { return "minus_wrap" }
+        TokenKind::StarWrap => { return "star_wrap" }
+        TokenKind::PlusSat => { return "plus_sat" }
+        TokenKind::MinusSat => { return "minus_sat" }
+        TokenKind::StarSat => { return "star_sat" }
+        TokenKind::Eq => { return "eq" }
+        TokenKind::EqEq => { return "eq_eq" }
+        TokenKind::NotEq => { return "not_eq" }
+        TokenKind::Lt => { return "lt" }
+        TokenKind::Gt => { return "gt" }
+        TokenKind::LtEq => { return "lt_eq" }
+        TokenKind::GtEq => { return "gt_eq" }
+        TokenKind::Amp => { return "amp" }
+        TokenKind::Pipe => { return "pipe" }
+        TokenKind::Caret => { return "caret" }
+        TokenKind::Tilde => { return "tilde" }
+        TokenKind::LtLt => { return "lt_lt" }
+        TokenKind::GtGt => { return "gt_gt" }
+        TokenKind::Question => { return "question" }
+        TokenKind::Bang => { return "bang" }
+        TokenKind::QuestionQuestion => { return "question_question" }
+        TokenKind::Dot => { return "dot" }
+        TokenKind::DotDot => { return "dot_dot" }
+        TokenKind::DotDotEq => { return "dot_dot_eq" }
+        TokenKind::Ellipsis => { return "ellipsis" }
+        TokenKind::Arrow => { return "arrow" }
+        TokenKind::FatArrow => { return "fat_arrow" }
+        TokenKind::Colon => { return "colon" }
+        TokenKind::ColonColon => { return "colon_colon" }
+        TokenKind::At => { return "at" }
+        TokenKind::PlusEq => { return "plus_eq" }
+        TokenKind::MinusEq => { return "minus_eq" }
+        TokenKind::StarEq => { return "star_eq" }
+        TokenKind::SlashEq => { return "slash_eq" }
+        TokenKind::PercentEq => { return "percent_eq" }
+        TokenKind::LParen => { return "l_paren" }
+        TokenKind::RParen => { return "r_paren" }
+        TokenKind::LBracket => { return "l_bracket" }
+        TokenKind::RBracket => { return "r_bracket" }
+        TokenKind::LBrace => { return "l_brace" }
+        TokenKind::RBrace => { return "r_brace" }
+        TokenKind::Comma => { return "comma" }
+        TokenKind::Semicolon => { return "semicolon" }
+        TokenKind::Newline => { return "newline" }
+        TokenKind::Eof => { return "eof" }
+        TokenKind::Invalid => { return "invalid" }
+        _ => { return "unknown" }
+    }
+}
+
+// ============================================================================
+// JSON serialization — for parity testing with klar dump-tokens
+// ============================================================================
+
+fn hex_nibble(n: i32) -> string {
+    if n == 0 { return "0" }
+    if n == 1 { return "1" }
+    if n == 2 { return "2" }
+    if n == 3 { return "3" }
+    if n == 4 { return "4" }
+    if n == 5 { return "5" }
+    if n == 6 { return "6" }
+    if n == 7 { return "7" }
+    if n == 8 { return "8" }
+    if n == 9 { return "9" }
+    if n == 10 { return "a" }
+    if n == 11 { return "b" }
+    if n == 12 { return "c" }
+    if n == 13 { return "d" }
+    if n == 14 { return "e" }
+    return "f"
+}
+
+fn print_json_str(s: string) -> void {
+    print("\"")
+    var i: i32 = 0
+    while i < s.byte_len() {
+        let c: i32 = s.byte_at(i).as[i32]
+        if c == 34 { print("\\\"") }
+        else if c == 92 { print("\\\\") }
+        else if c == 10 { print("\\n") }
+        else if c == 13 { print("\\r") }
+        else if c == 9 { print("\\t") }
+        else if c < 32 {
+            // Control chars 0x00-0x1F as \u00XX
+            print("\\u00")
+            print(hex_nibble(c / 16))
+            print(hex_nibble(c % 16))
+        }
+        else { print(from_byte(c.as[u8])) }
+        i = i + 1
+    }
+    print("\"")
+}
+
+pub fn dump_tokens_json(source: string) -> void {
+    var lex: Lexer = Lexer.new(source)
+    var first: bool = true
+    var done: bool = false
+    print("[")
+    while not done {
+        let tok: Token = lex.next_token()
+        if not first { print(",") }
+        first = false
+        print("{\"kind\":")
+        print_json_str(tag_name(tok.kind))
+        print(",\"text\":")
+        print_json_str(tok.text)
+        print(",\"line\":")
+        print(tok.line.to_string())
+        print(",\"column\":")
+        print(tok.column.to_string())
+        print(",\"start\":")
+        print(tok.start.to_string())
+        print(",\"end\":")
+        print(tok.end.to_string())
+        print("}")
+        if tag_name(tok.kind) == "eof" {
+            done = true
+        }
+    }
+    println("]")
+}
+
+// ============================================================================
+// Entry point — smoke test or dump-tokens mode
+// Usage:
+//   klar run selfhost/lexer.kl                  → smoke test
+//   klar run selfhost/lexer.kl -- <file.kl>     → dump tokens as JSON
+// ============================================================================
+
+fn smoke_test() -> i32 {
+    var lex: Lexer = Lexer.new("fn main()")
+    let t1: Token = lex.next_token()
+    assert(tag_name(t1.kind) == "fn_")
+    assert(t1.text == "fn")
+    let t2: Token = lex.next_token()
+    assert(tag_name(t2.kind) == "identifier")
+    assert(t2.text == "main")
+    let t3: Token = lex.next_token()
+    assert(tag_name(t3.kind) == "l_paren")
+    let t4: Token = lex.next_token()
+    assert(tag_name(t4.kind) == "r_paren")
+    let t5: Token = lex.next_token()
+    assert(tag_name(t5.kind) == "eof")
+    println("Lexer smoke test passed!")
     return 0
 }
 
-test main {
-    // Stub test — full lexer tests in Milestone 9.4
-    assert(true)
+fn main(args: [String]) -> i32 {
+    if args.len() < 2 {
+        return smoke_test()
+    }
+    let arg1: String = args[1]
+    let path: string = arg1.as_str()
+    let result: Result[String, IoError] = File.read_to_string(path)
+    if not result.is_ok() {
+        println("Error: could not read file")
+        return 1
+    }
+    let content: String = result!
+    let src: string = content.as_str()
+    dump_tokens_json(src)
+    return 0
 }
