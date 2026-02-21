@@ -21,6 +21,9 @@ zig-out/
 .doc-test-results.json
 .selfhost-test-results.json
 
+# Python bytecode cache
+__pycache__/
+
 # LLVM IR output (when debugging)
 *.ll
 
