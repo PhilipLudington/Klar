@@ -178,8 +178,9 @@ In Phase 1, `parser_type` skips `import parser_expr` (not yet registered). In Ph
    - Multi-module main conflict: `skip_main` flag prevents non-entry modules from declaring/emitting their `main` functions
 3. ~~**Run split parser natively**~~ — DONE. `klar run selfhost/parser_main.kl` prints "parser.kl: all smoke tests passed"
 
+4. ~~**Fix test block error**~~ — FIXED. `test smoke` renamed to `test run_smoke_tests` in `parser_main.kl`. Klar's `test <name>` syntax requires the name to reference an existing function; `smoke` didn't exist but `run_smoke_tests` does.
+
 ### Remaining
-4. **Fix test block error** — `klar check` reports `test 'smoke' references missing function 'smoke'` for `parser_main.kl`. The test block syntax may need investigation.
 5. **Parity testing:** compare `parser_main.kl` output against `klar dump-ast` for test corpus
 6. **Add Phase 3** to `scripts/run-selfhost-tests.sh`
 

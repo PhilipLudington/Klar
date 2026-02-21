@@ -106,7 +106,7 @@ fn main(args: [String]) -> i32 {
     return 0
 }
 
-test smoke {
+test run_smoke_tests {
     let p: Parser = new_parser("42")
     let r: (Parser, string) = parse_expression(p)
     assert(starts_with(r.1, "{\"kind\":\"literal\""))
