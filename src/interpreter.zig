@@ -127,6 +127,10 @@ pub const Interpreter = struct {
     // Track allocated functions for cleanup
     allocated_functions: std.ArrayListUnmanaged(*values.FunctionValue),
 
+    // Type method registry: maps type_name -> method_name -> function value
+    // Used for dispatching user-defined impl methods at runtime.
+    type_methods: std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(*values.FunctionValue)),
+
     // Cooperative executor scaffold for upcoming async runtime support.
     executor: async_executor.CooperativeExecutor,
     next_future_task_id: values.TaskId,
@@ -149,6 +153,7 @@ pub const Interpreter = struct {
             .is_continuing = false,
             .output = .{},
             .allocated_functions = .{},
+            .type_methods = .{},
             .executor = async_executor.CooperativeExecutor.init(allocator),
             .next_future_task_id = 1,
             .last_error_message = null,
@@ -179,6 +184,14 @@ pub const Interpreter = struct {
             self.allocator.destroy(func);
         }
         self.allocated_functions.deinit(self.allocator);
+
+        // Free type method maps
+        var type_iter = self.type_methods.valueIterator();
+        while (type_iter.next()) |methods| {
+            methods.deinit(self.allocator);
+        }
+        self.type_methods.deinit(self.allocator);
+
         self.executor.deinit();
 
         // Free builtin functions
@@ -396,10 +409,7 @@ pub const Interpreter = struct {
             .type_cast => |tc| self.evalTypeCast(tc),
             .grouped => |g| self.evaluate(g.expr),
             .interpolated_string => |is| self.evalInterpolatedString(is),
-            .enum_literal => {
-                // Interpreter limitation: enum literals not supported - use native compilation
-                return error.NotImplemented;
-            },
+            .enum_literal => |el| self.evalEnumLiteral(el),
             .comptime_block => |cb| self.evalComptimeBlock(cb),
             .builtin_call => |bc| self.evalBuiltinCall(bc),
             .unsafe_block => |ub| self.evalBlock(ub.body),
@@ -450,6 +460,17 @@ pub const Interpreter = struct {
     fn evalIdentifier(self: *Interpreter, id: ast.Identifier) RuntimeError!Value {
         if (self.current_env.get(id.name)) |value| {
             return value;
+        }
+        // Store useful error context (arena-allocated, freed with interpreter)
+        if (id.name.len > 0) {
+            const arena_alloc = self.runtimeAllocator();
+            const err_buf = arena_alloc.alloc(u8, 64 + id.name.len) catch null;
+            if (err_buf) |buf| {
+                const msg = std.fmt.bufPrint(buf, "Undefined variable: '{s}'", .{id.name}) catch null;
+                if (msg) |m| {
+                    self.last_error_message = m;
+                }
+            }
         }
         return RuntimeError.UndefinedVariable;
     }
@@ -1462,8 +1483,8 @@ pub const Interpreter = struct {
             return object; // Type checking done by checker
         }
 
-        // Module namespace calls are represented as method calls on a synthetic struct:
-        // import math as m; m.add(...)
+        // Module namespace / type namespace calls (static methods, namespace imports):
+        // import math as m; m.add(...)  OR  Lexer.new(...)
         if (object == .struct_) {
             if (object.struct_.fields.get(method.method_name)) |member| {
                 if (member == .builtin) {
@@ -1474,6 +1495,18 @@ pub const Interpreter = struct {
                 }
                 if (member == .closure) {
                     return self.callClosure(member.closure, args.items);
+                }
+            }
+
+            // Instance method dispatch: look up by type_name in type_methods registry
+            if (self.type_methods.get(object.struct_.type_name)) |methods| {
+                if (methods.get(method.method_name)) |func_val| {
+                    // Prepend self (the struct) to the args
+                    var full_args = std.ArrayListUnmanaged(Value){};
+                    defer full_args.deinit(self.allocator);
+                    full_args.append(self.allocator, object) catch return RuntimeError.OutOfMemory;
+                    full_args.appendSlice(self.allocator, args.items) catch return RuntimeError.OutOfMemory;
+                    return self.callFunction(func_val, full_args.items);
                 }
             }
         }
@@ -1617,6 +1650,42 @@ pub const Interpreter = struct {
         }
 
         return .{ .struct_ = s };
+    }
+
+    fn evalEnumLiteral(self: *Interpreter, lit: *ast.EnumLiteral) RuntimeError!Value {
+        self.ensureBuilderInitialized();
+
+        const type_name = switch (lit.enum_type) {
+            .named => |n| n.name,
+            .generic_apply => |g| switch (g.base) {
+                .named => |n| n.name,
+                // TODO: handle nested generic_apply for doubly-nested generics
+                else => return RuntimeError.NotImplemented,
+            },
+            // TODO: handle other type expression kinds
+            else => return RuntimeError.NotImplemented,
+        };
+
+        // Evaluate payload if present
+        var payload_val: ?Value = null;
+        if (lit.payload.len == 1) {
+            payload_val = try self.evaluate(lit.payload[0]);
+        } else if (lit.payload.len > 1) {
+            // Multi-field payload: wrap in tuple via builder (arena-allocated)
+            var elements = std.ArrayListUnmanaged(Value){};
+            elements.ensureTotalCapacity(self.allocator, lit.payload.len) catch
+                return RuntimeError.OutOfMemory;
+            for (lit.payload) |elem| {
+                const val = try self.evaluate(elem);
+                elements.appendAssumeCapacity(val);
+            }
+            payload_val = self.builder.tuple(elements.items) catch
+                return RuntimeError.OutOfMemory;
+        }
+
+        // Use builder for arena-allocated enum value
+        return self.builder.enumVal(type_name, lit.variant_name, payload_val) catch
+            return RuntimeError.OutOfMemory;
     }
 
     fn evalArrayLiteral(self: *Interpreter, arr: *ast.ArrayLiteral) RuntimeError!Value {
@@ -2059,8 +2128,94 @@ pub const Interpreter = struct {
             .struct_decl => {}, // Structs are types, handled by type checker
             .enum_decl => {}, // Enums are types, handled by type checker
             .const_decl => |c| try self.execConst(c),
+            .impl_decl => |impl| try self.execImpl(impl),
             else => {},
         }
+    }
+
+    fn execImpl(self: *Interpreter, impl_decl: *ast.ImplDecl) RuntimeError!void {
+        // Get the type name from the impl target
+        const type_name = switch (impl_decl.target_type) {
+            .named => |n| n.name,
+            else => return, // Skip complex types (generics, etc.)
+        };
+
+        // TODO: handle trait impls — currently only inherent impls are processed.
+        // Trait methods (e.g., impl Circle: Drawable) need dispatch support.
+        if (impl_decl.trait_type != null) return;
+
+        // Get or create method map for this type
+        const gop = self.type_methods.getOrPut(self.allocator, type_name) catch
+            return RuntimeError.OutOfMemory;
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{};
+        }
+
+        // Reuse existing type namespace struct if present, to avoid orphaning allocations
+        const ns_val = self.current_env.get(type_name);
+        const ns_struct = if (ns_val != null and ns_val.? == .struct_)
+            ns_val.?.struct_
+        else blk: {
+            const s = self.allocator.create(values.StructValue) catch
+                return RuntimeError.OutOfMemory;
+            s.* = .{
+                .type_name = type_name,
+                .fields = .{},
+            };
+            break :blk s;
+        };
+
+        for (impl_decl.methods) |*method| {
+            const body = method.body orelse continue;
+
+            const is_instance = method.params.len > 0 and
+                std.mem.eql(u8, method.params[0].name, "self");
+
+            // Register the function value (with errdefer chain matching registerFunction)
+            const func_val = self.allocator.create(values.FunctionValue) catch
+                return RuntimeError.OutOfMemory;
+            errdefer self.allocator.destroy(func_val);
+
+            var params = std.ArrayListUnmanaged(values.FunctionValue.FunctionParam){};
+            for (method.params) |param| {
+                params.append(self.allocator, .{ .name = param.name }) catch {
+                    params.deinit(self.allocator);
+                    return RuntimeError.OutOfMemory;
+                };
+            }
+
+            const params_slice = params.toOwnedSlice(self.allocator) catch {
+                params.deinit(self.allocator);
+                return RuntimeError.OutOfMemory;
+            };
+            errdefer self.allocator.free(params_slice);
+
+            func_val.* = .{
+                .name = method.name,
+                .params = params_slice,
+                .body = body,
+                .closure_env = self.current_env,
+                .is_async = method.is_async,
+            };
+
+            // Track for cleanup (consumes errdefers — func_val now owned by allocated_functions)
+            self.allocated_functions.append(self.allocator, func_val) catch
+                return RuntimeError.OutOfMemory;
+
+            // Instance methods go in type_methods for self-dispatch
+            if (is_instance) {
+                gop.value_ptr.put(self.allocator, method.name, func_val) catch
+                    return RuntimeError.OutOfMemory;
+            } else {
+                // Static methods go on the type namespace struct (e.g., Lexer.new())
+                ns_struct.fields.put(self.allocator, method.name, .{ .function = func_val }) catch
+                    return RuntimeError.OutOfMemory;
+            }
+        }
+
+        // Define type namespace in environment (for static method calls)
+        self.current_env.define(type_name, .{ .struct_ = ns_struct }, false) catch
+            return RuntimeError.OutOfMemory;
     }
 
     fn registerFunction(self: *Interpreter, func: *ast.FunctionDecl) RuntimeError!void {

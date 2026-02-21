@@ -811,6 +811,66 @@ pub fn main() !void {
     }
 }
 
+/// Execute the main() function on an interpreter that has already had its module executed.
+/// Used by both single-module and multi-module interpreter paths.
+fn executeMainFunction(
+    interp: *Interpreter,
+    path: []const u8,
+    program_args: []const []const u8,
+    arena_alloc: std.mem.Allocator,
+    stderr: std.fs.File,
+) !void {
+    const main_val = interp.global_env.get("main") orelse return;
+    if (main_val != .function) return;
+    const func = main_val.function;
+
+    if (func.params.len > 0) {
+        // Build args array: [path, program_args...]
+        var string_values = std.ArrayListUnmanaged(values.Value){};
+        string_values.ensureTotalCapacity(arena_alloc, program_args.len + 1) catch {
+            try stderr.writeAll("Failed to allocate args array\n");
+            return;
+        };
+
+        // Add the source file path as first arg
+        string_values.appendAssumeCapacity(.{ .string = path });
+        for (program_args) |arg| {
+            string_values.appendAssumeCapacity(.{ .string = arg });
+        }
+
+        const arr = arena_alloc.create(values.ArrayValue) catch {
+            try stderr.writeAll("Failed to allocate args array\n");
+            return;
+        };
+        arr.* = .{ .elements = string_values.items };
+        const args_value = values.Value{ .array = arr };
+
+        _ = interp.callFunction(func, &.{args_value}) catch |err| {
+            var buf: [512]u8 = undefined;
+            if (interp.consumeLastErrorMessage()) |msg_text| {
+                const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
+                try stderr.writeAll(msg);
+                std.process.exit(1);
+            }
+            const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
+            try stderr.writeAll(msg);
+            std.process.exit(1);
+        };
+    } else {
+        _ = interp.callFunction(func, &.{}) catch |err| {
+            var buf: [512]u8 = undefined;
+            if (interp.consumeLastErrorMessage()) |msg_text| {
+                const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
+                try stderr.writeAll(msg);
+                std.process.exit(1);
+            }
+            const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
+            try stderr.writeAll(msg);
+            std.process.exit(1);
+        };
+    }
+}
+
 fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
@@ -950,11 +1010,110 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
                 checker.checkModuleBodies(mod.module_ast.?);
             }
         }
+
+        // Error check (before multi-module execution)
+        if (checker.hasErrors()) {
+            var buf: [512]u8 = undefined;
+            const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
+            try stderr.writeAll(header);
+
+            for (checker.errors.items) |check_err| {
+                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                    check_err.span.line,
+                    check_err.span.column,
+                    check_err.message,
+                }) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return;
+        }
+
+        // Multi-module execution: create per-module interpreters in dependency order
+        var module_interpreters = std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter){};
+        defer module_interpreters.deinit(allocator);
+
+        var owned_interpreters = std.ArrayListUnmanaged(*Interpreter){};
+        defer {
+            for (owned_interpreters.items) |interp_ptr| {
+                interp_ptr.deinit();
+                allocator.destroy(interp_ptr);
+            }
+            owned_interpreters.deinit(allocator);
+        }
+
+        // Pass 1: Create interpreters, bind available imports (skip circular), execute modules
+        for (compilation_order) |mod| {
+            const mod_ast = mod.module_ast orelse continue;
+
+            const interp_ptr = allocator.create(Interpreter) catch {
+                try stderr.writeAll("Failed to initialize interpreter\n");
+                return;
+            };
+            interp_ptr.* = Interpreter.init(allocator) catch {
+                allocator.destroy(interp_ptr);
+                try stderr.writeAll("Failed to initialize interpreter\n");
+                return;
+            };
+            owned_interpreters.append(allocator, interp_ptr) catch {
+                interp_ptr.deinit();
+                allocator.destroy(interp_ptr);
+                try stderr.writeAll("Failed to allocate interpreter list\n");
+                return;
+            };
+
+            // skip_unexecuted=true: skip deps whose interpreters aren't created yet (circular deps)
+            bindRuntimeImportsForModuleEx(interp_ptr, mod, &resolver, &module_interpreters, true) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Runtime import error: {s}\n", .{@errorName(err)}) catch "Runtime import error\n";
+                try stderr.writeAll(msg);
+                std.process.exit(1);
+            };
+
+            interp_ptr.executeModule(mod_ast) catch |err| {
+                var buf: [512]u8 = undefined;
+                if (interp_ptr.consumeLastErrorMessage()) |msg_text| {
+                    const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
+                    try stderr.writeAll(msg);
+                    std.process.exit(1);
+                }
+                const msg = std.fmt.bufPrint(&buf, "Runtime error: {s}\n", .{@errorName(err)}) catch "Runtime error\n";
+                try stderr.writeAll(msg);
+                std.process.exit(1);
+            };
+
+            module_interpreters.put(allocator, mod, interp_ptr) catch {
+                try stderr.writeAll("Failed to register module interpreter\n");
+                return;
+            };
+        }
+
+        // Pass 2: Bind remaining imports from circular dependencies (all modules now available)
+        for (compilation_order) |mod| {
+            _ = mod.module_ast orelse continue;
+            const interp_ptr = module_interpreters.get(mod) orelse continue;
+
+            bindRuntimeImportsForModuleEx(interp_ptr, mod, &resolver, &module_interpreters, false) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Runtime import error (pass 2): {s}\n", .{@errorName(err)}) catch "Runtime import error\n";
+                try stderr.writeAll(msg);
+                std.process.exit(1);
+            };
+        }
+
+        // Get entry module interpreter and call main
+        const entry_interp = module_interpreters.get(entry) orelse {
+            try stderr.writeAll("Missing entry module interpreter\n");
+            return;
+        };
+
+        try executeMainFunction(entry_interp, path, program_args, arena.allocator(), stderr);
+        return;
     } else {
         // Single-file compilation (no imports)
         checker.checkModule(module);
     }
 
+    // Single-module error check
     if (checker.hasErrors()) {
         var buf: [512]u8 = undefined;
         const header = std.fmt.bufPrint(&buf, "Type error(s):\n", .{}) catch "Type errors:\n";
@@ -971,7 +1130,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         return;
     }
 
-    // Execute
+    // Single-module execution
     var interp = Interpreter.init(allocator) catch {
         try stderr.writeAll("Failed to initialize interpreter\n");
         return;
@@ -990,68 +1149,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         std.process.exit(1);
     };
 
-    // Look for main function and call it
-    if (interp.global_env.get("main")) |main_val| {
-        if (main_val == .function) {
-            const func = main_val.function;
-
-            // Check if main takes args
-            if (func.params.len > 0) {
-                // Build args array: [path, program_args...]
-                // Use arena allocator - will be cleaned up when function exits
-                const arena_alloc = arena.allocator();
-
-                // First, create string Values for each arg
-                var string_values = std.ArrayListUnmanaged(values.Value){};
-                string_values.ensureTotalCapacity(arena_alloc, program_args.len + 1) catch {
-                    try stderr.writeAll("Failed to allocate args array\n");
-                    return;
-                };
-
-                // Add the source file path as first arg (like argv[1] in native)
-                string_values.appendAssumeCapacity(.{ .string = path });
-
-                // Add program args
-                for (program_args) |arg| {
-                    string_values.appendAssumeCapacity(.{ .string = arg });
-                }
-
-                // Create ArrayValue
-                const arr = arena_alloc.create(values.ArrayValue) catch {
-                    try stderr.writeAll("Failed to allocate args array\n");
-                    return;
-                };
-                arr.* = .{ .elements = string_values.items };
-
-                const args_value = values.Value{ .array = arr };
-
-                _ = interp.callFunction(func, &.{args_value}) catch |err| {
-                    var buf: [512]u8 = undefined;
-                    if (interp.consumeLastErrorMessage()) |msg_text| {
-                        const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
-                        try stderr.writeAll(msg);
-                        std.process.exit(1);
-                    }
-                    const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
-                    try stderr.writeAll(msg);
-                    std.process.exit(1);
-                };
-            } else {
-                // main() with no args
-                _ = interp.callFunction(func, &.{}) catch |err| {
-                    var buf: [512]u8 = undefined;
-                    if (interp.consumeLastErrorMessage()) |msg_text| {
-                        const msg = std.fmt.bufPrint(&buf, "{s}\n", .{msg_text}) catch "runtime error\n";
-                        try stderr.writeAll(msg);
-                        std.process.exit(1);
-                    }
-                    const msg = std.fmt.bufPrint(&buf, "Runtime error in main: {s}\n", .{@errorName(err)}) catch "Runtime error in main\n";
-                    try stderr.writeAll(msg);
-                    std.process.exit(1);
-                };
-            }
-        }
-    }
+    try executeMainFunction(&interp, path, program_args, arena.allocator(), stderr);
 }
 
 fn runRepl(allocator: std.mem.Allocator) !void {
@@ -3846,6 +3944,19 @@ fn bindRuntimeImportsForModule(
     resolver: *ModuleResolver,
     module_interpreters: *std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter),
 ) !void {
+    return bindRuntimeImportsForModuleEx(interp, mod, resolver, module_interpreters, false);
+}
+
+/// Bind runtime imports for a module. When skip_unexecuted is true, dependencies
+/// whose interpreters haven't been created yet are silently skipped (for circular
+/// import support during pass 1). Resolution and AST errors always propagate.
+fn bindRuntimeImportsForModuleEx(
+    interp: *Interpreter,
+    mod: *ModuleInfo,
+    resolver: *ModuleResolver,
+    module_interpreters: *std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter),
+    skip_unexecuted: bool,
+) !void {
     const module_ast = mod.module_ast orelse return;
 
     for (module_ast.imports) |import_decl| {
@@ -3856,6 +3967,7 @@ fn bindRuntimeImportsForModule(
             return error.ImportModuleResolveFailed;
         };
         const dep_interp = module_interpreters.get(dep) orelse {
+            if (skip_unexecuted) continue;
             return error.ImportInterpreterMissing;
         };
 
@@ -3863,16 +3975,36 @@ fn bindRuntimeImportsForModule(
             switch (items) {
                 .all => {
                     for (dep_ast.declarations) |decl| {
-                        const export_name = switch (decl) {
-                            .function => |f| if (f.is_pub) f.name else continue,
-                            .const_decl => |c| if (c.is_pub) c.name else continue,
+                        switch (decl) {
+                            .function => |f| {
+                                if (!f.is_pub) continue;
+                                const export_value = dep_interp.global_env.get(f.name) orelse {
+                                    return error.ImportValueMissing;
+                                };
+                                try interp.current_env.define(f.name, export_value, false);
+                            },
+                            .const_decl => |c| {
+                                if (!c.is_pub) continue;
+                                const export_value = dep_interp.global_env.get(c.name) orelse {
+                                    return error.ImportValueMissing;
+                                };
+                                try interp.current_env.define(c.name, export_value, false);
+                            },
+                            .struct_decl => |s| {
+                                if (!s.is_pub) continue;
+                                // Types may have runtime namespace values (from impl blocks)
+                                if (dep_interp.global_env.get(s.name)) |type_ns| {
+                                    try interp.current_env.define(s.name, type_ns, false);
+                                }
+                            },
+                            .enum_decl => |e| {
+                                if (!e.is_pub) continue;
+                                if (dep_interp.global_env.get(e.name)) |type_ns| {
+                                    try interp.current_env.define(e.name, type_ns, false);
+                                }
+                            },
                             else => continue,
-                        };
-
-                        const export_value = dep_interp.global_env.get(export_name) orelse {
-                            return error.ImportValueMissing;
-                        };
-                        try interp.current_env.define(export_name, export_value, false);
+                        }
                     }
                 },
                 .specific => |specific_items| {
@@ -3925,6 +4057,12 @@ fn bindRuntimeImportsForModule(
                             return error.ImportSymbolMissing;
                         }
                         if (symbol_kind == .type_only) {
+                            // Types may have runtime namespace values (from impl blocks)
+                            // Bind them if present in the dependency interpreter
+                            if (dep_interp.global_env.get(item.name)) |type_ns| {
+                                const local_name = item.alias orelse item.name;
+                                try interp.current_env.define(local_name, type_ns, false);
+                            }
                             continue;
                         }
 
@@ -3960,6 +4098,23 @@ fn bindRuntimeImportsForModule(
             }
 
             try interp.current_env.define(namespace_name, .{ .struct_ = namespace_struct }, false);
+        }
+
+        // Propagate type methods from dependency interpreter for instance method dispatch.
+        // When functions from the dependency are called, they may invoke instance methods
+        // on types defined in the dependency module. The importing interpreter needs these
+        // type_methods entries for dispatch.
+        var dep_type_iter = dep_interp.type_methods.iterator();
+        while (dep_type_iter.next()) |entry| {
+            const gop = try interp.type_methods.getOrPut(interp.allocator, entry.key_ptr.*);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = .{};
+            }
+            // Merge individual methods
+            var method_iter = entry.value_ptr.iterator();
+            while (method_iter.next()) |method_entry| {
+                try gop.value_ptr.put(interp.allocator, method_entry.key_ptr.*, method_entry.value_ptr.*);
+            }
         }
     }
 }
