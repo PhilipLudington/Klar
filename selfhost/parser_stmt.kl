@@ -1,0 +1,513 @@
+// selfhost/parser_stmt.kl — Statement, block, and pattern parsing
+// Handles statements (let/var/return/break/continue), blocks, control flow
+// (if/while/for/loop/match), and pattern matching.
+
+import lexer.{Lexer, Token, TokenKind, tag_name}
+import parser.{Parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, json_str, json_bool, json_int, starts_with}
+import parser_expr.{parse_expression, parse_int_literal, parse_float_literal, parse_string_literal, parse_bool_literal}
+import parser_type.{parse_type}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Statement parsing
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn parse_statement(p: Parser) -> (Parser, string) {
+    let k: string = tag_name(p.current.kind)
+
+    if k == "let" { return parse_let_decl(p, false) }
+    if k == "var_" { return parse_var_decl(p, false) }
+    if k == "shadow" { return parse_shadow_decl(p) }
+    if k == "return_" { return parse_return_stmt(p) }
+    if k == "break_" { return parse_break_stmt(p) }
+    if k == "continue_" { return parse_continue_stmt(p) }
+    if k == "if_" { return parse_if_stmt(p) }
+    if k == "while_" { return parse_while_loop(p) }
+    if k == "for_" { return parse_for_loop(p) }
+    if k == "loop" { return parse_loop_stmt(p) }
+    if k == "match" { return parse_match_stmt(p) }
+
+    return parse_expression_stmt(p)
+}
+
+fn parse_let_decl(p: Parser, is_shadow: bool) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'let'
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+
+    // Type annotation
+    var type_json: string = "null"
+    if tk(p2, "colon") {
+        p2 = advance(p2)
+        let type_result: (Parser, string) = parse_type(p2)
+        p2 = type_result.0
+        type_json = type_result.1
+    }
+
+    // Value
+    var value_json: string = "null"
+    if tk(p2, "eq") {
+        p2 = advance(p2)
+        let val_result: (Parser, string) = parse_expression(p2)
+        p2 = val_result.0
+        value_json = val_result.1
+    }
+
+    let json: string = "{\"kind\":\"let_decl\",\"name\":" + json_str(name_result.1) + ",\"is_shadow\":" + json_bool(is_shadow) + ",\"type\":" + type_json + ",\"value\":" + value_json + "}"
+    return (p2, json)
+}
+
+fn parse_var_decl(p: Parser, is_shadow: bool) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'var'
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+
+    // Type annotation
+    var type_json: string = "null"
+    if tk(p2, "colon") {
+        p2 = advance(p2)
+        let type_result: (Parser, string) = parse_type(p2)
+        p2 = type_result.0
+        type_json = type_result.1
+    }
+
+    // Value
+    var value_json: string = "null"
+    if tk(p2, "eq") {
+        p2 = advance(p2)
+        let val_result: (Parser, string) = parse_expression(p2)
+        p2 = val_result.0
+        value_json = val_result.1
+    }
+
+    let json: string = "{\"kind\":\"var_decl\",\"name\":" + json_str(name_result.1) + ",\"is_shadow\":" + json_bool(is_shadow) + ",\"type\":" + type_json + ",\"value\":" + value_json + "}"
+    return (p2, json)
+}
+
+fn parse_shadow_decl(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'shadow'
+    if tk(p2, "let") {
+        return parse_let_decl(p2, true)
+    }
+    if tk(p2, "var_") {
+        return parse_var_decl(p2, true)
+    }
+    return (error_and_advance(p2, "expected 'let' or 'var' after 'shadow'"), "null")
+}
+
+fn parse_return_stmt(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'return'
+
+    // Check if there's a value (not followed by } or EOF or newline-implied end)
+    var value_json: string = "null"
+    let k: string = tag_name(p2.current.kind)
+    if k != "r_brace" and k != "eof" and k != "semicolon" {
+        let val_result: (Parser, string) = parse_expression(p2)
+        p2 = val_result.0
+        value_json = val_result.1
+    }
+
+    let json: string = "{\"kind\":\"return_stmt\",\"value\":" + value_json + "}"
+    return (p2, json)
+}
+
+fn parse_break_stmt(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'break'
+    var value_json: string = "null"
+    let k: string = tag_name(p2.current.kind)
+    if k != "r_brace" and k != "eof" and k != "semicolon" {
+        let val_result: (Parser, string) = parse_expression(p2)
+        p2 = val_result.0
+        value_json = val_result.1
+    }
+    let json: string = "{\"kind\":\"break_stmt\",\"value\":" + value_json + "}"
+    return (p2, json)
+}
+
+fn parse_continue_stmt(p: Parser) -> (Parser, string) {
+    let p2: Parser = advance(p) // skip 'continue'
+    return (p2, "{\"kind\":\"continue_stmt\"}")
+}
+
+fn parse_expression_stmt(p: Parser) -> (Parser, string) {
+    // Parse expression; the result might be an assignment via binary op
+    let expr_result: (Parser, string) = parse_expression(p)
+    let json: string = "{\"kind\":\"expr_stmt\",\"expr\":" + expr_result.1 + "}"
+    return (expr_result.0, json)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Block parsing
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn parse_block(p: Parser) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_brace", "expected '{'")
+    var stmts: string = ""
+    var last_was_expr_stmt: bool = false
+    var last_expr_json: string = ""
+    var count: i32 = 0
+
+    while not tk(p2, "r_brace") and not tk(p2, "eof") {
+        let stmt_result: (Parser, string) = parse_statement(p2)
+        p2 = stmt_result.0
+
+        // Track if this was an expr_stmt (for final_expr detection)
+        // An expr_stmt that's the last thing before } becomes final_expr
+        last_was_expr_stmt = starts_with(stmt_result.1, "{\"kind\":\"expr_stmt\"")
+        last_expr_json = stmt_result.1
+
+        if count > 0 {
+            stmts = stmts + ","
+        }
+        stmts = stmts + stmt_result.1
+        count = count + 1
+
+        // Skip optional semicolons
+        let semi_result: (Parser, bool) = match_tok(p2, "semicolon")
+        p2 = semi_result.0
+    }
+    p2 = consume(p2, "r_brace", "expected '}'")
+
+    // Determine final_expr: if last statement was an expr_stmt, extract it
+    if last_was_expr_stmt and count > 0 {
+        // Remove last stmt from the list and make it final_expr
+        // Extract the expression from the expr_stmt JSON
+        let expr_json: string = extract_expr_from_expr_stmt(last_expr_json)
+
+        // Rebuild stmts without the last one
+        if count == 1 {
+            stmts = ""
+        } else {
+            // Find the last comma and truncate
+            stmts = remove_last_entry(stmts)
+        }
+
+        let json: string = "{\"statements\":[" + stmts + "],\"final_expr\":" + expr_json + "}"
+        return (p2, json)
+    }
+
+    let json: string = "{\"statements\":[" + stmts + "],\"final_expr\":null}"
+    return (p2, json)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Block helpers (string surgery)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn extract_expr_from_expr_stmt(json: string) -> string {
+    // Input: {"kind":"expr_stmt","expr":EXPR_JSON}
+    // Output: EXPR_JSON
+    // COUPLING: This depends on parse_expression_stmt producing exactly this
+    // JSON field order. If that format changes, update the prefix below too.
+    let prefix: string = "{\"kind\":\"expr_stmt\",\"expr\":"
+    if not starts_with(json, prefix) { return json }
+    // Return everything after prefix, minus the trailing }
+    let start: i32 = prefix.byte_len()
+    let end: i32 = json.byte_len() - 1
+    if end <= start { return "null" }
+    return json.substring(start, end)
+}
+
+fn remove_last_entry(csv: string) -> string {
+    // Remove the last comma-separated entry from a string
+    // Find the last comma at depth 0 (not inside braces/brackets/strings)
+    var last_comma: i32 = -1
+    var depth: i32 = 0
+    var i: i32 = 0
+    while i < csv.byte_len() {
+        let c: i32 = csv.byte_at(i).as[i32]
+        // Skip string content FIRST to avoid miscounting braces inside strings
+        if c == 34 {
+            i = i + 1
+            while i < csv.byte_len() {
+                let sc: i32 = csv.byte_at(i).as[i32]
+                if sc == 92 { i = i + 1 }  // skip escaped char
+                else if sc == 34 { break }  // end of string
+                i = i + 1
+            }
+            i = i + 1
+            continue
+        }
+        if c == 123 or c == 91 { depth = depth + 1 }  // { or [
+        if c == 125 or c == 93 { depth = depth - 1 }  // } or ]
+        if c == 44 and depth == 0 { last_comma = i }  // comma at depth 0
+        i = i + 1
+    }
+    if last_comma < 0 { return "" }
+    return csv.substring(0, last_comma)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Control flow
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn parse_if_stmt(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'if'
+    let cond_result: (Parser, string) = parse_expression(p2)
+    p2 = cond_result.0
+    let then_result: (Parser, string) = parse_block(p2)
+    p2 = then_result.0
+
+    var else_json: string = "null"
+    if tk(p2, "else_") {
+        p2 = advance(p2)
+        if tk(p2, "if_") {
+            // else if — nested if_stmt
+            let elif_result: (Parser, string) = parse_if_stmt(p2)
+            p2 = elif_result.0
+            else_json = elif_result.1
+        } else {
+            // else { block }
+            let else_block: (Parser, string) = parse_block(p2)
+            p2 = else_block.0
+            else_json = "{\"kind\":\"block\",\"body\":" + else_block.1 + "}"
+        }
+    }
+
+    let json: string = "{\"kind\":\"if_stmt\",\"condition\":" + cond_result.1 + ",\"then_branch\":" + then_result.1 + ",\"else_branch\":" + else_json + "}"
+    return (p2, json)
+}
+
+fn parse_while_loop(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'while'
+    let cond_result: (Parser, string) = parse_expression(p2)
+    p2 = cond_result.0
+    let body_result: (Parser, string) = parse_block(p2)
+    p2 = body_result.0
+    let json: string = "{\"kind\":\"while_loop\",\"condition\":" + cond_result.1 + ",\"body\":" + body_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_for_loop(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'for'
+
+    // Pattern: binding name with optional type
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+    var type_annotation: string = "null"
+    if tk(p2, "colon") {
+        p2 = advance(p2)
+        let type_result: (Parser, string) = parse_type(p2)
+        p2 = type_result.0
+        type_annotation = type_result.1
+    }
+
+    p2 = consume(p2, "in", "expected 'in'")
+
+    let iter_result: (Parser, string) = parse_expression(p2)
+    p2 = iter_result.0
+    let body_result: (Parser, string) = parse_block(p2)
+    p2 = body_result.0
+
+    let pattern_json: string = "{\"kind\":\"binding\",\"name\":" + json_str(name_result.1) + ",\"mutable\":false,\"type_annotation\":" + type_annotation + "}"
+    let json: string = "{\"kind\":\"for_loop\",\"pattern\":" + pattern_json + ",\"iterable\":" + iter_result.1 + ",\"body\":" + body_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_loop_stmt(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'loop'
+    let body_result: (Parser, string) = parse_block(p2)
+    p2 = body_result.0
+    let json: string = "{\"kind\":\"loop_stmt\",\"body\":" + body_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_match_stmt(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'match'
+    let subject_result: (Parser, string) = parse_expression(p2)
+    p2 = subject_result.0
+    p2 = consume(p2, "l_brace", "expected '{'")
+
+    var arms: string = ""
+    var first: bool = true
+    while not tk(p2, "r_brace") and not tk(p2, "eof") {
+        if not first { arms = arms + "," }
+        first = false
+        let arm_result: (Parser, string) = parse_match_arm(p2)
+        p2 = arm_result.0
+        arms = arms + arm_result.1
+    }
+    p2 = consume(p2, "r_brace", "expected '}'")
+
+    let json: string = "{\"kind\":\"match_stmt\",\"subject\":" + subject_result.1 + ",\"arms\":[" + arms + "]}"
+    return (p2, json)
+}
+
+fn parse_match_arm(p: Parser) -> (Parser, string) {
+    let pattern_result: (Parser, string) = parse_pattern(p)
+    var p2: Parser = pattern_result.0
+
+    // Optional guard: if expr
+    var guard_json: string = "null"
+    if tk(p2, "if_") {
+        p2 = advance(p2)
+        let guard_result: (Parser, string) = parse_expression(p2)
+        p2 = guard_result.0
+        guard_json = guard_result.1
+    }
+
+    p2 = consume(p2, "fat_arrow", "expected '=>'")
+
+    // Body: block
+    let body_result: (Parser, string) = parse_block(p2)
+    p2 = body_result.0
+
+    let json: string = "{\"pattern\":" + pattern_result.1 + ",\"guard\":" + guard_json + ",\"body\":" + body_result.1 + "}"
+    return (p2, json)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Pattern parsing
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn parse_pattern(p: Parser) -> (Parser, string) {
+    let k: string = tag_name(p.current.kind)
+
+    // Wildcard: _
+    if k == "identifier" and p.current.text == "_" {
+        let p2: Parser = advance(p)
+        return (p2, "{\"kind\":\"wildcard\"}")
+    }
+
+    // Literal patterns
+    if k == "int_literal" {
+        let lit_result: (Parser, string) = parse_int_literal(p)
+        return (lit_result.0, lit_result.1)
+    }
+    if k == "float_literal" {
+        let lit_result: (Parser, string) = parse_float_literal(p)
+        return (lit_result.0, lit_result.1)
+    }
+    if k == "string_literal" {
+        let lit_result: (Parser, string) = parse_string_literal(p)
+        return (lit_result.0, lit_result.1)
+    }
+    if k == "true_" or k == "false_" {
+        let lit_result: (Parser, string) = parse_bool_literal(p)
+        return (lit_result.0, lit_result.1)
+    }
+
+    // Minus for negative literals
+    if k == "minus" {
+        var p2: Parser = advance(p)
+        if tk(p2, "int_literal") {
+            let lit_result: (Parser, string) = parse_int_literal(p2)
+            // Negate the literal for pattern
+            let neg_json: string = "{\"kind\":\"literal\",\"type\":\"int\",\"value\":\"-" + extract_literal_value(lit_result.1) + "\"}"
+            return (lit_result.0, neg_json)
+        }
+        if tk(p2, "float_literal") {
+            let lit_result: (Parser, string) = parse_float_literal(p2)
+            let neg_json: string = "{\"kind\":\"literal\",\"type\":\"float\",\"value\":-" + extract_literal_value(lit_result.1) + "}"
+            return (lit_result.0, neg_json)
+        }
+        return (error_and_advance(p, "expected number after '-' in pattern"), "{\"kind\":\"wildcard\"}")
+    }
+
+    // Tuple pattern: (pat1, pat2)
+    if k == "l_paren" {
+        return parse_tuple_pattern(p)
+    }
+
+    // Identifier: could be binding or variant
+    if k == "identifier" {
+        return parse_binding_or_variant(p)
+    }
+
+    return (error_and_advance(p, "expected pattern"), "{\"kind\":\"wildcard\"}")
+}
+
+fn extract_literal_value(json: string) -> string {
+    // Extract value from {"kind":"literal","type":"int","value":"N"}
+    // Find "value":" and extract until next "
+    let marker: string = "\"value\":\""
+    var pos: i32 = 0
+    var found: bool = false
+    while pos < json.byte_len() - marker.byte_len() {
+        if json.substring(pos, pos + marker.byte_len()) == marker {
+            found = true
+            pos = pos + marker.byte_len()
+            break
+        }
+        pos = pos + 1
+    }
+    if not found { return "0" }
+    var end: i32 = pos
+    while end < json.byte_len() and json.byte_at(end).as[i32] != 34 {
+        end = end + 1
+    }
+    return json.substring(pos, end)
+}
+
+fn parse_binding_or_variant(p: Parser) -> (Parser, string) {
+    let name: string = p.current.text
+    var p2: Parser = advance(p)
+
+    // Check for :: (enum variant pattern)
+    if tk(p2, "colon_colon") {
+        p2 = advance(p2)
+        let variant_result: (Parser, string) = consume_identifier(p2)
+        p2 = variant_result.0
+        let variant_name: string = variant_result.1
+
+        // Check for payload: Variant(pattern)
+        var payload_json: string = "null"
+        if tk(p2, "l_paren") {
+            p2 = advance(p2)
+            let inner_pattern: (Parser, string) = parse_pattern(p2)
+            p2 = inner_pattern.0
+            payload_json = inner_pattern.1
+            p2 = consume(p2, "r_paren", "expected ')'")
+        }
+
+        let type_json: string = "{\"kind\":\"named\",\"name\":" + json_str(name) + "}"
+        let json: string = "{\"kind\":\"variant\",\"type_expr\":" + type_json + ",\"variant_name\":" + json_str(variant_name) + ",\"payload\":" + payload_json + "}"
+        return (p2, json)
+    }
+
+    // Check for variant without type qualifier: Some(x), None
+    // If name starts with uppercase and is followed by (, it's a variant
+    if name.byte_len() > 0 {
+        let first_char: i32 = name.byte_at(0).as[i32]
+        if first_char >= 65 and first_char <= 90 {
+            // Uppercase — could be variant
+            if tk(p2, "l_paren") {
+                p2 = advance(p2)
+                var payload_json: string = "null"
+                if not tk(p2, "r_paren") {
+                    let inner: (Parser, string) = parse_pattern(p2)
+                    p2 = inner.0
+                    payload_json = inner.1
+                }
+                p2 = consume(p2, "r_paren", "expected ')'")
+                let json: string = "{\"kind\":\"variant\",\"type_expr\":null,\"variant_name\":" + json_str(name) + ",\"payload\":" + payload_json + "}"
+                return (p2, json)
+            }
+            // Bare uppercase name could be a variant without payload (e.g., None)
+            let json: string = "{\"kind\":\"variant\",\"type_expr\":null,\"variant_name\":" + json_str(name) + ",\"payload\":null}"
+            return (p2, json)
+        }
+    }
+
+    // Binding pattern
+    let json: string = "{\"kind\":\"binding\",\"name\":" + json_str(name) + ",\"mutable\":false,\"type_annotation\":null}"
+    return (p2, json)
+}
+
+fn parse_tuple_pattern(p: Parser) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_paren", "expected '('")
+    var elems: string = ""
+    var first: bool = true
+
+    while not tk(p2, "r_paren") and not tk(p2, "eof") {
+        if not first { elems = elems + "," }
+        first = false
+        let elem_result: (Parser, string) = parse_pattern(p2)
+        p2 = elem_result.0
+        elems = elems + elem_result.1
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_paren", "expected ')'")
+    let json: string = "{\"kind\":\"tuple_pattern\",\"elements\":[" + elems + "]}"
+    return (p2, json)
+}

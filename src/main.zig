@@ -224,6 +224,27 @@ fn freeJsonCompilerErrors(allocator: std.mem.Allocator, compile_errors: []JsonCo
     allocator.free(compile_errors);
 }
 
+/// Detect circular imports and emit warnings to stderr.
+/// Returns true if cycles were found (for callers that want to know).
+fn warnCircularImports(resolver: *ModuleResolver, stderr: std.fs.File) bool {
+    const cycle = resolver.detectCycle() catch return false;
+    if (cycle) |modules| {
+        defer resolver.allocator.free(modules);
+        var buf: [512]u8 = undefined;
+        if (modules.len > 0) {
+            const name = modules[0].canonicalName(resolver.allocator) catch "?";
+            defer if (!std.mem.eql(u8, name, "?")) resolver.allocator.free(name);
+            const msg = std.fmt.bufPrint(&buf, "Warning: circular import detected involving '{s}'\n", .{name}) catch
+                "Warning: circular import detected\n";
+            stderr.writeAll(msg) catch {};
+        } else {
+            stderr.writeAll("Warning: circular import detected\n") catch {};
+        }
+        return true;
+    }
+    return false;
+}
+
 fn makeSingleCompileErrorResult(
     allocator: std.mem.Allocator,
     stage: []const u8,
@@ -901,24 +922,32 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         }
 
         // Get topological order
-        const compilation_order = resolver.getCompilationOrder() catch |err| {
-            if (err == error.CircularImport) {
-                try stderr.writeAll("Error: circular import detected\n");
-            }
+        const compilation_order = resolver.getCompilationOrder() catch {
             return;
         };
         defer allocator.free(compilation_order);
 
+        _ = warnCircularImports(&resolver, stderr);
+
         // Set up checker with module resolver
         checker.setModuleResolver(&resolver);
 
-        // Type check all modules in order
+        // Phase 1: Register all declarations and export symbols
         for (compilation_order) |mod| {
             if (mod.module_ast) |mod_ast| {
                 checker.prepareForNewModule();
                 checker.setCurrentModule(mod);
-                checker.checkModule(mod_ast);
+                checker.checkModuleDeclarations(mod_ast);
                 checker.registerModuleExports(mod) catch {};
+                checker.saveModuleScope(mod);
+            }
+        }
+        // Phase 2: Check all bodies (all exports now available)
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |_| {
+                checker.restoreModuleScope(mod);
+                checker.setCurrentModule(mod);
+                checker.checkModuleBodies(mod.module_ast.?);
             }
         }
     } else {
@@ -2450,30 +2479,38 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         }
 
         // Get topological order
-        const compilation_order = resolver.getCompilationOrder() catch |err| {
-            if (err == error.CircularImport) {
-                try stderr.writeAll("Error: circular import detected\n");
-            }
+        const compilation_order = resolver.getCompilationOrder() catch {
             return;
         };
         defer allocator.free(compilation_order);
 
+        _ = warnCircularImports(&resolver, stderr);
+
         // Set up checker with module resolver
         checker.setModuleResolver(&resolver);
 
-        // Type check all modules in order and collect for emission
+        // Phase 1: Register all declarations, export symbols, and collect for emission
         for (compilation_order) |mod| {
             if (mod.module_ast) |mod_ast| {
                 // Prepare fresh scope for this module (keeps builtins and type registry)
                 checker.prepareForNewModule();
                 checker.setCurrentModule(mod);
-                checker.checkModule(mod_ast);
+                checker.checkModuleDeclarations(mod_ast);
 
                 // Register exports WHILE in this module's scope (before switching)
                 checker.registerModuleExports(mod) catch {};
+                checker.saveModuleScope(mod);
 
                 // Collect for emission
                 try modules_to_emit.append(allocator, mod_ast);
+            }
+        }
+        // Phase 2: Check all bodies (all exports now available)
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |_| {
+                checker.restoreModuleScope(mod);
+                checker.setCurrentModule(mod);
+                checker.checkModuleBodies(mod.module_ast.?);
             }
         }
     } else {
@@ -3604,27 +3641,35 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
         }
 
         // Get topological order
-        const compilation_order = resolver.getCompilationOrder() catch |err| {
-            if (err == error.CircularImport) {
-                try stderr.writeAll("Error: circular import detected\n");
-            }
+        const compilation_order = resolver.getCompilationOrder() catch {
             return;
         };
         defer allocator.free(compilation_order);
 
+        _ = warnCircularImports(&resolver, stderr);
+
         // Set up checker with module resolver
         checker.setModuleResolver(&resolver);
 
-        // Type check all modules in order
+        // Phase 1: Register all declarations and export symbols
         for (compilation_order) |mod| {
             if (mod.module_ast) |mod_ast| {
                 checker.prepareForNewModule();
                 checker.setCurrentModule(mod);
-                checker.checkModule(mod_ast);
+                checker.checkModuleDeclarations(mod_ast);
+                checker.registerModuleExports(mod) catch {};
+                checker.saveModuleScope(mod);
+            }
+        }
+        // Phase 2: Check all bodies (all exports now available)
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |_| {
+                checker.restoreModuleScope(mod);
+                checker.setCurrentModule(mod);
+                checker.checkModuleBodies(mod.module_ast.?);
                 if (mod == entry) {
                     scope_root = checker.current_scope;
                 }
-                checker.registerModuleExports(mod) catch {};
             }
         }
     } else {
@@ -4371,28 +4416,34 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
         const compilation_order = resolver.getCompilationOrder() catch |err| {
             if (options.json_output) {
-                if (err == error.CircularImport) {
-                    return makeSingleCompileErrorResult(allocator, "module_resolve", "circular import detected", null, null);
-                }
                 var msg_buf: [256]u8 = undefined;
                 const msg = std.fmt.bufPrint(&msg_buf, "failed to compute compilation order: {s}", .{@errorName(err)}) catch "failed to compute compilation order";
                 return makeSingleCompileErrorResult(allocator, "module_resolve", msg, null, null);
-            }
-            if (err == error.CircularImport) {
-                try stderr.writeAll("Error: circular import detected\n");
             }
             return error.TestsFailed;
         };
         defer allocator.free(compilation_order);
 
+        _ = warnCircularImports(&resolver, stderr);
+
         checker.setModuleResolver(&resolver);
 
+        // Phase 1: Register all declarations and export symbols
         for (compilation_order) |mod| {
             if (mod.module_ast) |mod_ast| {
                 checker.prepareForNewModule();
                 checker.setCurrentModule(mod);
-                checker.checkModule(mod_ast);
+                checker.checkModuleDeclarations(mod_ast);
                 checker.registerModuleExports(mod) catch {};
+                checker.saveModuleScope(mod);
+            }
+        }
+        // Phase 2: Check all bodies (all exports now available)
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |_| {
+                checker.restoreModuleScope(mod);
+                checker.setCurrentModule(mod);
+                checker.checkModuleBodies(mod.module_ast.?);
             }
         }
 
@@ -5090,24 +5141,32 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         }
 
         // Get topological order
-        const compilation_order = resolver.getCompilationOrder() catch |err| {
-            if (err == error.CircularImport) {
-                try stderr.writeAll("Error: circular import detected\n");
-            }
+        const compilation_order = resolver.getCompilationOrder() catch {
             return;
         };
         defer allocator.free(compilation_order);
 
+        _ = warnCircularImports(&resolver, stderr);
+
         // Set up checker with module resolver
         checker.setModuleResolver(&resolver);
 
-        // Type check all modules in order
+        // Phase 1: Register all declarations and export symbols
         for (compilation_order) |mod| {
             if (mod.module_ast) |mod_ast| {
                 checker.prepareForNewModule();
                 checker.setCurrentModule(mod);
-                checker.checkModule(mod_ast);
+                checker.checkModuleDeclarations(mod_ast);
                 checker.registerModuleExports(mod) catch {};
+                checker.saveModuleScope(mod);
+            }
+        }
+        // Phase 2: Check all bodies (all exports now available)
+        for (compilation_order) |mod| {
+            if (mod.module_ast) |_| {
+                checker.restoreModuleScope(mod);
+                checker.setCurrentModule(mod);
+                checker.checkModuleBodies(mod.module_ast.?);
             }
         }
     } else {

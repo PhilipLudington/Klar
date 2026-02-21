@@ -1,0 +1,460 @@
+// selfhost/parser_decl.kl — Declaration and module parsing
+// Handles top-level declarations: functions, tests, structs, enums, const,
+// import, module, extern, trait/impl stubs. Also the parse_module entry point.
+
+import lexer.{Lexer, Token, TokenKind, tag_name}
+import parser.{Parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, synchronize_top_level, is_top_level_start, json_str, json_bool}
+import parser_expr.{parse_expression}
+import parser_type.{parse_type}
+import parser_stmt.{parse_block}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Declaration parsing
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn parse_declaration(p: Parser) -> (Parser, string) {
+    let k: string = tag_name(p.current.kind)
+
+    // Handle visibility and modifiers
+    var is_pub: bool = false
+    var p2: Parser = p
+    if k == "pub_" {
+        is_pub = true
+        p2 = advance(p2)
+    }
+
+    let k2: string = tag_name(p2.current.kind)
+
+    if k2 == "fn_" { return parse_function_decl(p2, is_pub, false, false, false) }
+    if k2 == "test_" { return parse_test_decl(p2) }
+    if k2 == "struct_" { return parse_struct_decl(p2, is_pub) }
+    if k2 == "enum_" { return parse_enum_decl(p2, is_pub) }
+    if k2 == "const_" { return parse_const_decl(p2, is_pub) }
+    if k2 == "import" { return parse_import_decl(p2) }
+    if k2 == "module" { return parse_module_decl(p2) }
+    if k2 == "extern_" { return parse_extern_decl(p2, is_pub) }
+    if k2 == "unsafe_" {
+        p2 = advance(p2)
+        if tk(p2, "fn_") {
+            return parse_function_decl(p2, is_pub, false, true, false)
+        }
+        return (error_and_advance(p2, "expected 'fn' after 'unsafe'"), "null")
+    }
+    // trait and impl — stub for core subset
+    if k2 == "trait" { return parse_trait_stub(p2, is_pub) }
+    if k2 == "impl" { return parse_impl_stub(p2) }
+
+    return (error_and_advance(p2, "expected declaration"), "null")
+}
+
+fn parse_function_decl(p: Parser, is_pub: bool, is_extern: bool, is_unsafe: bool, is_variadic: bool) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'fn'
+
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+
+    // Type params — skip for core subset
+    var type_params: string = "[]"
+
+    // Parameters
+    p2 = consume(p2, "l_paren", "expected '('")
+    var params: string = ""
+    var first: bool = true
+    while not tk(p2, "r_paren") and not tk(p2, "eof") {
+        if not first { params = params + "," }
+        first = false
+
+        // Check for self/inout self
+        var is_out: bool = false
+        var param_name: string = ""
+        if tk(p2, "self") {
+            param_name = "self"
+            p2 = advance(p2)
+        } else if tk(p2, "inout") {
+            is_out = true
+            p2 = advance(p2)
+            if tk(p2, "self") {
+                param_name = "self"
+                p2 = advance(p2)
+            } else {
+                let pn: (Parser, string) = consume_identifier(p2)
+                p2 = pn.0
+                param_name = pn.1
+            }
+        } else {
+            let pn: (Parser, string) = consume_identifier(p2)
+            p2 = pn.0
+            param_name = pn.1
+        }
+
+        // Type annotation
+        var param_type: string = "null"
+        if tk(p2, "colon") {
+            p2 = advance(p2)
+            let type_result: (Parser, string) = parse_type(p2)
+            p2 = type_result.0
+            param_type = type_result.1
+        }
+
+        // Default value
+        var default_val: string = "null"
+        if tk(p2, "eq") {
+            p2 = advance(p2)
+            let def_result: (Parser, string) = parse_expression(p2)
+            p2 = def_result.0
+            default_val = def_result.1
+        }
+
+        params = params + "{\"name\":" + json_str(param_name) + ",\"type\":" + param_type + ",\"is_comptime\":false,\"is_out\":" + json_bool(is_out) + ",\"default_value\":" + default_val + "}"
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_paren", "expected ')'")
+
+    // Return type
+    var ret_type: string = "null"
+    if tk(p2, "arrow") {
+        p2 = advance(p2)
+        let rt_result: (Parser, string) = parse_type(p2)
+        p2 = rt_result.0
+        ret_type = rt_result.1
+    }
+
+    // Body (optional for extern functions)
+    var body_json: string = "null"
+    if tk(p2, "l_brace") {
+        let body_result: (Parser, string) = parse_block(p2)
+        p2 = body_result.0
+        body_json = body_result.1
+    }
+
+    let json: string = "{\"kind\":\"function\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"is_async\":false,\"is_comptime\":false,\"is_unsafe\":" + json_bool(is_unsafe) + ",\"is_extern\":" + json_bool(is_extern) + ",\"is_variadic\":" + json_bool(is_variadic) + ",\"type_params\":" + type_params + ",\"params\":[" + params + "],\"return_type\":" + ret_type + ",\"where_clause\":null,\"body\":" + body_json + "}"
+    return (p2, json)
+}
+
+fn parse_test_decl(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'test'
+    // Test name is the next identifier
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+    let body_result: (Parser, string) = parse_block(p2)
+    p2 = body_result.0
+    let json: string = "{\"kind\":\"test_decl\",\"name\":" + json_str(name_result.1) + ",\"body\":" + body_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_struct_decl(p: Parser, is_pub: bool) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'struct'
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+
+    // Type params — skip for core subset
+    var type_params: string = "[]"
+
+    p2 = consume(p2, "l_brace", "expected '{'")
+    var fields: string = ""
+    var first: bool = true
+    while not tk(p2, "r_brace") and not tk(p2, "eof") {
+        if not first { fields = fields + "," }
+        first = false
+
+        var field_pub: bool = false
+        if tk(p2, "pub_") {
+            field_pub = true
+            p2 = advance(p2)
+        }
+
+        let field_name_result: (Parser, string) = consume_identifier(p2)
+        p2 = field_name_result.0
+        p2 = consume(p2, "colon", "expected ':'")
+        let field_type_result: (Parser, string) = parse_type(p2)
+        p2 = field_type_result.0
+
+        fields = fields + "{\"name\":" + json_str(field_name_result.1) + ",\"type\":" + field_type_result.1 + ",\"is_pub\":" + json_bool(field_pub) + "}"
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_brace", "expected '}'")
+
+    let json: string = "{\"kind\":\"struct_decl\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"is_extern\":false,\"is_packed\":false,\"type_params\":" + type_params + ",\"fields\":[" + fields + "],\"traits\":[]}"
+    return (p2, json)
+}
+
+fn parse_enum_decl(p: Parser, is_pub: bool) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'enum'
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+
+    // Type params — skip for core subset
+    var type_params: string = "[]"
+
+    p2 = consume(p2, "l_brace", "expected '{'")
+    var variants: string = ""
+    var first: bool = true
+    while not tk(p2, "r_brace") and not tk(p2, "eof") {
+        if not first { variants = variants + "," }
+        first = false
+
+        let variant_name_result: (Parser, string) = consume_identifier(p2)
+        p2 = variant_name_result.0
+
+        // Check for payload
+        var payload: string = "null"
+        if tk(p2, "l_paren") {
+            p2 = advance(p2)
+            var types: string = ""
+            var tfirst: bool = true
+            while not tk(p2, "r_paren") and not tk(p2, "eof") {
+                if not tfirst { types = types + "," }
+                tfirst = false
+                let t_result: (Parser, string) = parse_type(p2)
+                p2 = t_result.0
+                types = types + t_result.1
+                let comma_result: (Parser, bool) = match_tok(p2, "comma")
+                p2 = comma_result.0
+            }
+            p2 = consume(p2, "r_paren", "expected ')'")
+            payload = "{\"kind\":\"tuple\",\"types\":[" + types + "]}"
+        }
+
+        variants = variants + "{\"name\":" + json_str(variant_name_result.1) + ",\"value\":null,\"payload\":" + payload + "}"
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_brace", "expected '}'")
+
+    let json: string = "{\"kind\":\"enum_decl\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"is_extern\":false,\"type_params\":" + type_params + ",\"repr_type\":null,\"variants\":[" + variants + "]}"
+    return (p2, json)
+}
+
+fn parse_const_decl(p: Parser, is_pub: bool) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'const'
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+
+    var type_json: string = "null"
+    if tk(p2, "colon") {
+        p2 = advance(p2)
+        let type_result: (Parser, string) = parse_type(p2)
+        p2 = type_result.0
+        type_json = type_result.1
+    }
+
+    p2 = consume(p2, "eq", "expected '='")
+    let val_result: (Parser, string) = parse_expression(p2)
+    p2 = val_result.0
+
+    let json: string = "{\"kind\":\"const_decl\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"type\":" + type_json + ",\"value\":" + val_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_import_decl(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'import'
+    // Import path: module.{item1, item2} or module.*
+    let path_result: (Parser, string) = consume_identifier(p2)
+    p2 = path_result.0
+    var path: string = path_result.1
+
+    // Multi-segment path: foo.bar
+    while tk(p2, "dot") and not tk(advance(p2), "l_brace") and not tk(advance(p2), "star") {
+        p2 = advance(p2) // skip .
+        let seg_result: (Parser, string) = consume_identifier(p2)
+        p2 = seg_result.0
+        path = path + "." + seg_result.1
+    }
+
+    var items: string = ""
+    var is_glob: bool = false
+    if tk(p2, "dot") {
+        p2 = advance(p2) // skip .
+        if tk(p2, "l_brace") {
+            p2 = advance(p2)
+            var first: bool = true
+            while not tk(p2, "r_brace") and not tk(p2, "eof") {
+                if not first { items = items + "," }
+                first = false
+                let item_result: (Parser, string) = consume_identifier(p2)
+                p2 = item_result.0
+                items = items + json_str(item_result.1)
+                let comma_result: (Parser, bool) = match_tok(p2, "comma")
+                p2 = comma_result.0
+            }
+            p2 = consume(p2, "r_brace", "expected '}'")
+        } else if tk(p2, "star") {
+            is_glob = true
+            p2 = advance(p2)
+        }
+    }
+
+    let json: string = "{\"kind\":\"import_decl\",\"data\":{\"path\":" + json_str(path) + ",\"items\":[" + items + "],\"is_glob\":" + json_bool(is_glob) + "}}"
+    return (p2, json)
+}
+
+fn parse_module_decl(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'module'
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+    let json: string = "{\"kind\":\"module_decl\",\"data\":{\"name\":" + json_str(name_result.1) + "}}"
+    return (p2, json)
+}
+
+fn parse_extern_decl(p: Parser, is_pub: bool) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'extern'
+
+    // extern fn
+    if tk(p2, "fn_") {
+        return parse_function_decl(p2, is_pub, true, false, false)
+    }
+
+    // extern type
+    if tk(p2, "type_") {
+        p2 = advance(p2)
+        let name_result: (Parser, string) = consume_identifier(p2)
+        p2 = name_result.0
+        let json: string = "{\"kind\":\"extern_type_decl\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"size\":null}"
+        return (p2, json)
+    }
+
+    // extern { ... } block
+    if tk(p2, "l_brace") {
+        p2 = advance(p2)
+        var funcs: string = ""
+        var first: bool = true
+        while not tk(p2, "r_brace") and not tk(p2, "eof") {
+            if not first { funcs = funcs + "," }
+            first = false
+            let func_result: (Parser, string) = parse_function_decl(p2, false, true, false, false)
+            p2 = func_result.0
+            funcs = funcs + func_result.1
+        }
+        p2 = consume(p2, "r_brace", "expected '}'")
+        let json: string = "{\"kind\":\"extern_block\",\"functions\":[" + funcs + "]}"
+        return (p2, json)
+    }
+
+    return (error_and_advance(p2, "expected 'fn', 'type', or '{' after 'extern'"), "null")
+}
+
+// Stubs for trait/impl — deferred to Milestone 9.7
+fn parse_trait_stub(p: Parser, is_pub: bool) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'trait'
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+    // Skip to matching }
+    if tk(p2, "l_brace") {
+        p2 = skip_braces(p2)
+    }
+    let json: string = "{\"kind\":\"trait_decl\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"is_unsafe\":false,\"type_params\":[],\"super_traits\":[],\"associated_types\":[],\"methods\":[]}"
+    return (p2, json)
+}
+
+fn parse_impl_stub(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'impl'
+    // Parse target type name
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+    var trait_type: string = "null"
+    // Check for impl Type: Trait
+    if tk(p2, "colon") {
+        p2 = advance(p2)
+        let trait_result: (Parser, string) = consume_identifier(p2)
+        p2 = trait_result.0
+        trait_type = "{\"kind\":\"named\",\"name\":" + json_str(trait_result.1) + "}"
+    }
+    // Parse body
+    var methods: string = ""
+    if tk(p2, "l_brace") {
+        p2 = advance(p2)
+        var first: bool = true
+        while not tk(p2, "r_brace") and not tk(p2, "eof") {
+            // Check for visibility and modifier keywords before fn
+            var method_pub: bool = false
+            var method_unsafe: bool = false
+            if tk(p2, "pub_") {
+                method_pub = true
+                p2 = advance(p2)
+            }
+            if tk(p2, "unsafe_") {
+                method_unsafe = true
+                p2 = advance(p2)
+            }
+            if tk(p2, "fn_") {
+                if not first { methods = methods + "," }
+                first = false
+                let fn_result: (Parser, string) = parse_function_decl(p2, method_pub, false, method_unsafe, false)
+                p2 = fn_result.0
+                methods = methods + fn_result.1
+            } else if tk(p2, "l_brace") {
+                // Non-fn item with braces — skip with depth tracking
+                p2 = skip_braces(p2)
+            } else {
+                p2 = advance(p2)
+            }
+        }
+        p2 = consume(p2, "r_brace", "expected '}'")
+    }
+    let target_json: string = "{\"kind\":\"named\",\"name\":" + json_str(name_result.1) + "}"
+    let json: string = "{\"kind\":\"impl_decl\",\"is_unsafe\":false,\"type_params\":[],\"target_type\":" + target_json + ",\"trait_type\":" + trait_type + ",\"associated_types\":[],\"where_clause\":null,\"methods\":[" + methods + "]}"
+    return (p2, json)
+}
+
+fn skip_braces(p: Parser) -> Parser {
+    var p2: Parser = consume(p, "l_brace", "expected '{'")
+    var depth: i32 = 1
+    while depth > 0 and not tk(p2, "eof") {
+        if tk(p2, "l_brace") { depth = depth + 1 }
+        if tk(p2, "r_brace") { depth = depth - 1 }
+        if depth > 0 { p2 = advance(p2) }
+    }
+    if tk(p2, "r_brace") { p2 = advance(p2) }
+    return p2
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Module parsing (top-level entry point)
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn parse_module(p: Parser) -> (Parser, string) {
+    var p2: Parser = p
+
+    // Check for module declaration
+    var module_json: string = "null"
+    if tk(p2, "module") {
+        let mod_result: (Parser, string) = parse_module_decl(p2)
+        p2 = mod_result.0
+        module_json = mod_result.1
+    }
+
+    // Parse imports
+    var imports: string = ""
+    var import_first: bool = true
+    while tk(p2, "import") {
+        if not import_first { imports = imports + "," }
+        import_first = false
+        let imp_result: (Parser, string) = parse_import_decl(p2)
+        p2 = imp_result.0
+        imports = imports + imp_result.1
+    }
+
+    // Parse declarations
+    var decls: string = ""
+    var decl_first: bool = true
+    while not tk(p2, "eof") {
+        if not decl_first { decls = decls + "," }
+        decl_first = false
+        let prev_errors: i32 = p2.error_count
+        let decl_result: (Parser, string) = parse_declaration(p2)
+        p2 = decl_result.0
+
+        // Error recovery: only synchronize when new errors occurred in this decl
+        if p2.error_count > prev_errors {
+            p2 = synchronize_top_level(p2)
+            if tk(p2, "eof") { break }
+        }
+
+        decls = decls + decl_result.1
+    }
+
+    let json: string = "{\"module_decl\":" + module_json + ",\"imports\":[" + imports + "],\"declarations\":[" + decls + "]}"
+    return (p2, json)
+}

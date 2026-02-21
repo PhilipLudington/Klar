@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const log = std.log.scoped(.checker);
 const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const Type = types.Type;
@@ -321,6 +322,13 @@ pub const TypeChecker = struct {
     /// Module scopes created by prepareForNewModule (for cleanup).
     module_scopes: std.ArrayListUnmanaged(*Scope),
 
+    /// When true, processImport silently skips modules not yet in registry.
+    skip_missing_modules: bool = false,
+    /// When true, importSpecificSymbol/importAllSymbols skip already-imported symbols.
+    skip_existing_imports: bool = false,
+    /// Maps ModuleInfo pointers to their checker scopes for Phase 2 restore.
+    module_scope_map: std.AutoHashMapUnmanaged(*const ModuleInfo, *Scope),
+
     // Comptime evaluation
     /// Storage for comptime-evaluated string values.
     /// Maps BuiltinCall AST node pointers to their computed string values.
@@ -444,6 +452,9 @@ pub const TypeChecker = struct {
             .current_module = null,
             .module_resolver_ref = null,
             .module_scopes = .{},
+            .skip_missing_modules = false,
+            .skip_existing_imports = false,
+            .module_scope_map = .{},
             .comptime_strings = .{},
             .comptime_bools = .{},
             .comptime_ints = .{},
@@ -656,6 +667,7 @@ pub const TypeChecker = struct {
             self.allocator.destroy(scope);
         }
         self.module_scopes.deinit(self.allocator);
+        self.module_scope_map.deinit(self.allocator);
 
         // Clean up comptime strings
         var comptime_iter = self.comptime_strings.valueIterator();
@@ -4179,10 +4191,11 @@ pub const TypeChecker = struct {
                 switch (decl) {
                     .function => |f| {
                         if (f.is_pub) {
+                            const func_info = self.current_scope.lookup(f.name) orelse continue;
                             const sym = ModuleSymbol{
                                 .name = f.name,
                                 .kind = .function,
-                                .type_ = self.current_scope.lookup(f.name).?.type_,
+                                .type_ = func_info.type_,
                                 .is_pub = true,
                             };
                             try symbols.symbols.put(self.allocator, f.name, sym);
@@ -4227,10 +4240,11 @@ pub const TypeChecker = struct {
                     },
                     .const_decl => |c| {
                         if (c.is_pub) {
+                            const const_info = self.current_scope.lookup(c.name) orelse continue;
                             const sym = ModuleSymbol{
                                 .name = c.name,
                                 .kind = .constant,
-                                .type_ = self.current_scope.lookup(c.name).?.type_,
+                                .type_ = const_info.type_,
                                 .is_pub = true,
                             };
                             try symbols.symbols.put(self.allocator, c.name, sym);
@@ -4285,6 +4299,7 @@ pub const TypeChecker = struct {
 
         // Look up the module in the registry
         const mod_symbols = self.module_registry.get(canonical) orelse {
+            if (self.skip_missing_modules) return; // Phase 1: module not yet registered
             self.addError(.undefined_module, import_decl.span, "module '{s}' not found", .{canonical});
             return error.UndefinedModule;
         };
@@ -4308,6 +4323,11 @@ pub const TypeChecker = struct {
             // The last segment becomes the namespace name (or alias if provided)
             const namespace_name = import_decl.alias orelse import_decl.path[import_decl.path.len - 1];
 
+            // Skip if already registered (Phase 2)
+            if (self.skip_existing_imports and self.current_scope.lookupLocal(namespace_name) != null) {
+                return;
+            }
+
             // Register the module as a namespace symbol
             self.current_scope.define(.{
                 .name = namespace_name,
@@ -4330,6 +4350,7 @@ pub const TypeChecker = struct {
 
             // Check for conflicts
             if (self.current_scope.lookupLocal(sym.name)) |existing| {
+                if (self.skip_existing_imports) continue; // Phase 2: already imported
                 self.addError(.import_conflict, span, "import '{s}' conflicts with existing symbol defined at {d}:{d}", .{ sym.name, existing.span.line, existing.span.column });
                 continue;
             }
@@ -4354,12 +4375,14 @@ pub const TypeChecker = struct {
     /// Import a specific symbol from a module into current scope.
     fn importSpecificSymbol(self: *TypeChecker, mod_symbols: ModuleSymbols, item: ast.ImportItem, span: Span) void {
         const sym = mod_symbols.symbols.get(item.name) orelse {
-            self.addError(.undefined_variable, item.span, "symbol '{s}' not found in module", .{item.name});
+            if (!self.skip_existing_imports) // Phase 2: error already reported
+                self.addError(.undefined_variable, item.span, "symbol '{s}' not found in module", .{item.name});
             return;
         };
 
         if (!sym.is_pub) {
-            self.addError(.visibility_error, item.span, "symbol '{s}' is not public", .{item.name});
+            if (!self.skip_existing_imports) // Phase 2: error already reported
+                self.addError(.visibility_error, item.span, "symbol '{s}' is not public", .{item.name});
             return;
         }
 
@@ -4368,6 +4391,7 @@ pub const TypeChecker = struct {
 
         // Check for conflicts
         if (self.current_scope.lookupLocal(local_name)) |existing| {
+            if (self.skip_existing_imports) return; // Phase 2: already imported
             self.addError(.import_conflict, span, "import '{s}' conflicts with existing symbol defined at {d}:{d}", .{ local_name, existing.span.line, existing.span.column });
             return;
         }
@@ -4391,7 +4415,254 @@ pub const TypeChecker = struct {
     }
 
     // ========================================================================
-    // Module Checking Entry Point
+    // Two-Phase Module Checking (for circular imports)
+    // ========================================================================
+
+    /// Phase 1: Register types + function signatures (lenient imports).
+    /// Called for each module before any bodies are checked.
+    pub fn checkModuleDeclarations(self: *TypeChecker, module: ast.Module) void {
+        self.async_function_names.clearRetainingCapacity();
+
+        // Process imports leniently — modules not yet registered are skipped
+        self.skip_missing_modules = true;
+        self.processImports(module);
+        self.skip_missing_modules = false;
+
+        // Pass 1: register all type declarations
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .struct_decl, .enum_decl, .trait_decl, .type_alias, .extern_type_decl => self.checkDecl(decl),
+                else => {},
+            }
+        }
+
+        // Pass 2: check function signatures
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .function => |f| {
+                    if (f.is_async) {
+                        self.async_function_names.put(self.allocator, f.name, {}) catch {};
+                    }
+
+                    // Push type parameters for generic functions
+                    const has_type_params = f.type_params.len > 0;
+                    if (has_type_params) {
+                        _ = self.pushTypeParams(f.type_params) catch continue;
+                        // Store generic function declarations for later codegen monomorphization
+                        self.generic_functions.put(self.allocator, f.name, f) catch {};
+                    }
+                    defer if (has_type_params) self.popTypeParams();
+
+                    // Register function but don't check body yet
+                    var param_types: std.ArrayListUnmanaged(Type) = .{};
+                    defer param_types.deinit(self.allocator);
+
+                    // Build comptime parameter bitmask
+                    var comptime_params: u64 = 0;
+                    for (f.params, 0..) |param, i| {
+                        const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
+                        param_types.append(self.allocator, param_type) catch {};
+                        if (param.is_comptime and i < 64) {
+                            comptime_params |= @as(u64, 1) << @intCast(i);
+                        }
+                    }
+
+                    var return_type: Type = self.type_builder.voidType();
+                    if (f.return_type) |rt| {
+                        return_type = self.resolveTypeExpr(rt) catch self.type_builder.unknownType();
+                    }
+                    if (f.is_async) {
+                        if (f.return_type) |rt| {
+                            if (self.asyncReturnInnerTypeExpr(rt) == null) {
+                                self.addError(.invalid_operation, rt.span(), "async function return type must be Future[T]", .{});
+                                return_type = self.type_builder.unknownType();
+                            }
+                        } else {
+                            self.addError(.invalid_operation, f.span, "async function return type must be Future[T]", .{});
+                            return_type = self.type_builder.unknownType();
+                        }
+                    } else if (self.futureInnerType(return_type) != null) {
+                        const error_span = if (f.return_type) |rt| rt.span() else f.span;
+                        self.addError(.invalid_operation, error_span, "non-async function return type cannot be Future[T]; declare function as async", .{});
+                        return_type = self.type_builder.unknownType();
+                    }
+
+                    const func_type = self.type_builder.functionTypeWithFlags(param_types.items, return_type, comptime_params, f.is_unsafe) catch {
+                        // Register function with unknown type to prevent "undefined variable" errors
+                        self.current_scope.define(.{
+                            .name = f.name,
+                            .type_ = self.type_builder.unknownType(),
+                            .kind = .function,
+                            .mutable = false,
+                            .span = f.span,
+                        }) catch {};
+                        continue;
+                    };
+
+                    // Validate main() signature
+                    if (std.mem.eql(u8, f.name, "main")) {
+                        // main() accepts at most one parameter
+                        if (f.params.len > 1) {
+                            self.addError(.invalid_operation, f.span, "main() accepts at most one parameter (args: [String])", .{});
+                        }
+                        // If one parameter, must be [String]
+                        if (f.params.len == 1) {
+                            const param_type = param_types.items[0];
+                            // Check for slice of String (string_data type, not primitive string_)
+                            const is_string_slice = param_type == .slice and
+                                param_type.slice.element == .string_data;
+                            if (!is_string_slice) {
+                                const type_str = types.typeToString(self.allocator, param_type) catch "unknown";
+                                defer self.allocator.free(type_str);
+                                self.addError(.type_mismatch, f.params[0].span, "main() parameter must be [String], found {s}", .{type_str});
+                            }
+                        }
+                        // Return type must be i32 or void
+                        const is_i32 = return_type == .primitive and return_type.primitive == .i32_;
+                        const is_void = return_type == .void_;
+                        if (!is_i32 and !is_void) {
+                            const error_span = if (f.return_type) |rt| rt.span() else f.span;
+                            self.addError(.type_mismatch, error_span, "main() must return i32 or void", .{});
+                        }
+                    }
+
+                    self.current_scope.define(.{
+                        .name = f.name,
+                        .type_ = func_type,
+                        .kind = .function,
+                        .mutable = false,
+                        .span = f.span,
+                    }) catch |err| {
+                        log.err("failed to register function '{s}': {}", .{ f.name, err });
+                    };
+
+
+                    // Register comptime functions for compile-time evaluation
+                    if (f.is_comptime) {
+                        self.comptime_functions.put(self.allocator, f.name, f) catch {};
+                    }
+                },
+                .const_decl => self.checkDecl(decl),
+                .extern_block => self.checkDecl(decl),
+                else => {},
+            }
+        }
+    }
+
+    /// Phase 2: Complete imports + check bodies.
+    /// Called for each module after all modules have run Phase 1.
+    pub fn checkModuleBodies(self: *TypeChecker, module: ast.Module) void {
+        // Re-populate async function names for this module's bodies
+        self.async_function_names.clearRetainingCapacity();
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .function => |f| {
+                    if (f.is_async) {
+                        self.async_function_names.put(self.allocator, f.name, {}) catch {};
+                    }
+                },
+                else => {},
+            }
+        }
+
+        // Re-process imports — all exports now available, skip already-imported symbols
+        self.skip_existing_imports = true;
+        self.processImports(module);
+        self.skip_existing_imports = false;
+
+        // Pass 3: check function bodies
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .function => |f| {
+                    if (f.body) |body| {
+                        // Push type parameters for generic functions
+                        const has_type_params = f.type_params.len > 0;
+                        if (has_type_params) {
+                            _ = self.pushTypeParams(f.type_params) catch continue;
+                        }
+                        defer if (has_type_params) self.popTypeParams();
+
+                        _ = self.pushScope(.function) catch continue;
+                        defer self.popScope();
+
+                        for (f.params) |param| {
+                            const param_type = self.resolveTypeExpr(param.type_) catch self.type_builder.unknownType();
+                            self.current_scope.define(.{
+                                .name = param.name,
+                                .type_ = param_type,
+                                .kind = .parameter,
+                                .mutable = false,
+                                .span = param.span,
+                            }) catch {};
+                        }
+
+                        self.current_return_type = blk: {
+                            if (f.is_async) {
+                                if (f.return_type) |rt| {
+                                    if (self.asyncReturnInnerTypeExpr(rt)) |inner_expr| {
+                                        break :blk self.resolveTypeExpr(inner_expr) catch self.type_builder.unknownType();
+                                    }
+                                }
+                                break :blk self.type_builder.unknownType();
+                            }
+                            if (f.return_type) |rt| {
+                                break :blk self.resolveTypeExpr(rt) catch self.type_builder.voidType();
+                            }
+                            break :blk self.type_builder.voidType();
+                        };
+                        defer self.current_return_type = null;
+
+                        // For comptime functions, set the flag so nested comptime calls
+                        // are type-checked but not evaluated during this phase
+                        const was_checking_comptime_body = self.checking_comptime_function_body;
+                        if (f.is_comptime) {
+                            self.checking_comptime_function_body = true;
+                        }
+                        defer self.checking_comptime_function_body = was_checking_comptime_body;
+
+                        // For unsafe functions, the entire body is an unsafe context
+                        const was_unsafe = self.in_unsafe_context;
+                        if (f.is_unsafe) {
+                            self.in_unsafe_context = true;
+                        }
+                        defer self.in_unsafe_context = was_unsafe;
+
+                        const was_async_context = self.current_async_context;
+                        self.current_async_context = f.is_async;
+                        defer self.current_async_context = was_async_context;
+
+                        _ = self.checkBlock(body);
+                    }
+                },
+                .test_decl => {
+                    if (self.check_test_decls) {
+                        self.checkDecl(decl);
+                    }
+                },
+                .impl_decl => self.checkDecl(decl),
+                else => {},
+            }
+        }
+    }
+
+    /// Save current module scope for later restoration in Phase 2.
+    pub fn saveModuleScope(self: *TypeChecker, mod: *const ModuleInfo) void {
+        self.module_scope_map.put(self.allocator, mod, self.current_scope) catch |err| {
+            log.err("failed to save module scope: {}", .{err});
+        };
+    }
+
+    /// Restore a previously saved module scope for Phase 2.
+    pub fn restoreModuleScope(self: *TypeChecker, mod: *const ModuleInfo) void {
+        if (self.module_scope_map.get(mod)) |scope| {
+            self.current_scope = scope;
+        } else {
+            log.warn("no saved scope for module during Phase 2 restore", .{});
+        }
+    }
+
+    // ========================================================================
+    // Module Checking Entry Point (single-pass, for non-circular imports)
     // ========================================================================
 
     pub fn checkModule(self: *TypeChecker, module: ast.Module) void {
@@ -4459,7 +4730,17 @@ pub const TypeChecker = struct {
                         return_type = self.type_builder.unknownType();
                     }
 
-                    const func_type = self.type_builder.functionTypeWithFlags(param_types.items, return_type, comptime_params, f.is_unsafe) catch continue;
+                    const func_type = self.type_builder.functionTypeWithFlags(param_types.items, return_type, comptime_params, f.is_unsafe) catch {
+                        // Register function with unknown type to prevent "undefined variable" errors
+                        self.current_scope.define(.{
+                            .name = f.name,
+                            .type_ = self.type_builder.unknownType(),
+                            .kind = .function,
+                            .mutable = false,
+                            .span = f.span,
+                        }) catch {};
+                        continue;
+                    };
 
                     // Validate main() signature
                     if (std.mem.eql(u8, f.name, "main")) {
@@ -4494,7 +4775,9 @@ pub const TypeChecker = struct {
                         .kind = .function,
                         .mutable = false,
                         .span = f.span,
-                    }) catch {};
+                    }) catch |err| {
+                        log.err("failed to register function '{s}': {}", .{ f.name, err });
+                    };
 
                     // Register comptime functions for compile-time evaluation
                     if (f.is_comptime) {

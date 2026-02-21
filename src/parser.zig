@@ -654,9 +654,15 @@ pub const Parser = struct {
 
                 // Check if this is a valid expression or should be treated as literal
                 if (isValidExpressionContent(expr_text)) {
-                    // Parse the expression inside { }
-                    const expr = try self.parseExpressionFromString(expr_text);
-                    try parts.append(self.allocator, .{ .expr = expr });
+                    // Try to parse the expression inside { }
+                    if (self.parseExpressionFromString(expr_text)) |expr| {
+                        try parts.append(self.allocator, .{ .expr = expr });
+                    } else {
+                        // Parsing failed — treat as literal string (not a valid interpolation)
+                        const literal = content[brace_start .. expr_end + 1];
+                        const processed = processEscapes(self.allocator, literal) catch literal;
+                        try parts.append(self.allocator, .{ .string = processed });
+                    }
                 } else {
                     // Treat the braces and content as a literal string
                     const literal = content[brace_start .. expr_end + 1];
@@ -683,13 +689,18 @@ pub const Parser = struct {
         return .{ .interpolated_string = interp };
     }
 
-    fn parseExpressionFromString(self: *Parser, expr_text: []const u8) ParseError!ast.Expr {
+    fn parseExpressionFromString(self: *Parser, expr_text: []const u8) ?ast.Expr {
         // Create a sub-lexer and sub-parser for the expression
         var lexer = Lexer.init(expr_text);
         var sub_parser = Parser.init(self.allocator, &lexer, expr_text);
         defer sub_parser.deinit();
 
-        return sub_parser.parseExpression();
+        const expr = sub_parser.parseExpression() catch return null;
+        // Also verify the sub-parser consumed all input and had no errors
+        if (sub_parser.errors.items.len > 0 or !sub_parser.check(.eof)) {
+            return null;
+        }
+        return expr;
     }
 
     fn parseCharLiteral(self: *Parser) ParseError!ast.Expr {

@@ -431,19 +431,10 @@ pub const ModuleResolver = struct {
         visited: *std.StringHashMapUnmanaged(void),
         in_stack: *std.StringHashMapUnmanaged(void),
     ) !void {
-        // Check for cycle
+        // Back-edge in cycle — skip to allow topo sort to complete.
+        // Cycles are detected separately via detectCycle() and reported as warnings.
         if (in_stack.contains(canonical)) {
-            try self.errors.append(self.allocator, .{
-                .kind = .circular_import,
-                .message = try std.fmt.allocPrint(
-                    self.arena.allocator(),
-                    "circular import detected involving '{s}'",
-                    .{canonical},
-                ),
-                .span = null,
-                .module_path = module.path,
-            });
-            return error.CircularImport;
+            return;
         }
 
         // Already processed

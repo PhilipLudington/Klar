@@ -1,0 +1,166 @@
+// selfhost/parser_type.kl — Type parsing
+// Handles all type syntax: named, generic application, optional, reference,
+// array, slice, tuple, function types.
+
+import lexer.{Lexer, Token, TokenKind, tag_name}
+import parser.{Parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, json_str, json_bool, can_start_type}
+import parser_expr.{parse_expression}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Type parsing
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn parse_type(p: Parser) -> (Parser, string) {
+    let k: string = tag_name(p.current.kind)
+
+    // Optional type: ?T
+    if k == "question" {
+        return parse_optional_type(p)
+    }
+
+    // Reference: ref T or inout T
+    if k == "ref" or k == "inout" {
+        return parse_reference_type(p)
+    }
+
+    // Array/slice: [T; N] or [T]
+    if k == "l_bracket" {
+        return parse_array_or_slice_type(p)
+    }
+
+    // Tuple type: (T1, T2)
+    if k == "l_paren" {
+        return parse_tuple_type(p)
+    }
+
+    // Function type: fn(T1, T2) -> R
+    if k == "fn_" {
+        return parse_function_type(p)
+    }
+
+    // Self type
+    if k == "self_type" {
+        let p2: Parser = advance(p)
+        return (p2, "{\"kind\":\"named\",\"name\":\"Self\"}")
+    }
+
+    // Named type (possibly generic: Name[T1, T2])
+    if k == "identifier" {
+        return parse_named_type(p)
+    }
+
+    return (error_and_advance(p, "expected type"), "null")
+}
+
+fn parse_named_type(p: Parser) -> (Parser, string) {
+    let name: string = p.current.text
+    var p2: Parser = advance(p)
+    let base: string = "{\"kind\":\"named\",\"name\":" + json_str(name) + "}"
+
+    // Check for generic application: Name[T1, T2]
+    if tk(p2, "l_bracket") {
+        var p3: Parser = advance(p2)
+        var args: string = ""
+        var first: bool = true
+        while not tk(p3, "r_bracket") and not tk(p3, "eof") {
+            if not first { args = args + "," }
+            first = false
+            let arg_result: (Parser, string) = parse_type(p3)
+            p3 = arg_result.0
+            args = args + arg_result.1
+            let comma_result: (Parser, bool) = match_tok(p3, "comma")
+            p3 = comma_result.0
+        }
+        p3 = consume(p3, "r_bracket", "expected ']'")
+        let json: string = "{\"kind\":\"generic_apply\",\"base\":" + base + ",\"args\":[" + args + "]}"
+        return (p3, json)
+    }
+
+    return (p2, base)
+}
+
+fn parse_optional_type(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip ?
+    let inner_result: (Parser, string) = parse_type(p2)
+    p2 = inner_result.0
+    let json: string = "{\"kind\":\"optional\",\"inner\":" + inner_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_reference_type(p: Parser) -> (Parser, string) {
+    let is_mut: bool = tag_name(p.current.kind) == "inout"
+    var p2: Parser = advance(p) // skip ref/inout
+    let inner_result: (Parser, string) = parse_type(p2)
+    p2 = inner_result.0
+    let json: string = "{\"kind\":\"reference\",\"mutable\":" + json_bool(is_mut) + ",\"inner\":" + inner_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_array_or_slice_type(p: Parser) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_bracket", "expected '['")
+    let elem_result: (Parser, string) = parse_type(p2)
+    p2 = elem_result.0
+
+    // Check for ; N (fixed-size array)
+    if tk(p2, "semicolon") {
+        p2 = advance(p2)
+        let size_result: (Parser, string) = parse_expression(p2)
+        p2 = size_result.0
+        p2 = consume(p2, "r_bracket", "expected ']'")
+        let json: string = "{\"kind\":\"array\",\"element\":" + elem_result.1 + ",\"size\":" + size_result.1 + "}"
+        return (p2, json)
+    }
+
+    // Slice type
+    p2 = consume(p2, "r_bracket", "expected ']'")
+    let json: string = "{\"kind\":\"slice\",\"element\":" + elem_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_tuple_type(p: Parser) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_paren", "expected '('")
+    var elems: string = ""
+    var first: bool = true
+
+    while not tk(p2, "r_paren") and not tk(p2, "eof") {
+        if not first { elems = elems + "," }
+        first = false
+        let elem_result: (Parser, string) = parse_type(p2)
+        p2 = elem_result.0
+        elems = elems + elem_result.1
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_paren", "expected ')'")
+    let json: string = "{\"kind\":\"tuple\",\"elements\":[" + elems + "]}"
+    return (p2, json)
+}
+
+fn parse_function_type(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip fn
+    p2 = consume(p2, "l_paren", "expected '('")
+    var params: string = ""
+    var first: bool = true
+
+    while not tk(p2, "r_paren") and not tk(p2, "eof") {
+        if not first { params = params + "," }
+        first = false
+        let param_result: (Parser, string) = parse_type(p2)
+        p2 = param_result.0
+        params = params + param_result.1
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_paren", "expected ')'")
+
+    var ret: string = "{\"kind\":\"named\",\"name\":\"void\"}"
+    if tk(p2, "arrow") {
+        p2 = advance(p2)
+        let ret_result: (Parser, string) = parse_type(p2)
+        p2 = ret_result.0
+        ret = ret_result.1
+    }
+
+    let json: string = "{\"kind\":\"function\",\"params\":[" + params + "],\"return_type\":" + ret + "}"
+    return (p2, json)
+}

@@ -1,0 +1,113 @@
+// selfhost/parser_main.kl — Entry point for self-hosted parser
+// Smoke tests and file-mode parsing (dump-ast parity).
+
+import lexer.{Lexer, Token, TokenKind, tag_name}
+import parser.{Parser, new_parser, starts_with}
+import parser_expr.{parse_expression}
+import parser_decl.{parse_module}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Smoke tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn run_smoke_tests() -> i32 {
+    // Test 1: Simple int literal
+    let p1: Parser = new_parser("42")
+    let r1: (Parser, string) = parse_expression(p1)
+    if r1.1 != "{\"kind\":\"literal\",\"type\":\"int\",\"value\":\"42\"}" {
+        println("FAIL test 1: int literal")
+        println(r1.1)
+        return 1
+    }
+
+    // Test 2: Binary expression
+    let p2: Parser = new_parser("1 + 2")
+    let r2: (Parser, string) = parse_expression(p2)
+    if not starts_with(r2.1, "{\"kind\":\"binary\",\"op\":\"add\"") {
+        println("FAIL test 2: binary add")
+        println(r2.1)
+        return 2
+    }
+
+    // Test 3: Precedence: 1 + 2 * 3
+    let p3: Parser = new_parser("1 + 2 * 3")
+    let r3: (Parser, string) = parse_expression(p3)
+    // Should be add(1, mul(2,3))
+    if not starts_with(r3.1, "{\"kind\":\"binary\",\"op\":\"add\"") {
+        println("FAIL test 3: precedence")
+        println(r3.1)
+        return 3
+    }
+
+    // Test 4: Boolean literal
+    let p4: Parser = new_parser("true")
+    let r4: (Parser, string) = parse_expression(p4)
+    if r4.1 != "{\"kind\":\"literal\",\"type\":\"bool\",\"value\":true}" {
+        println("FAIL test 4: bool literal")
+        println(r4.1)
+        return 4
+    }
+
+    // Test 5: Identifier
+    let p5: Parser = new_parser("foo")
+    let r5: (Parser, string) = parse_expression(p5)
+    if r5.1 != "{\"kind\":\"identifier\",\"name\":\"foo\"}" {
+        println("FAIL test 5: identifier")
+        println(r5.1)
+        return 5
+    }
+
+    // Test 6: Unary negate
+    let p6: Parser = new_parser("-x")
+    let r6: (Parser, string) = parse_expression(p6)
+    if not starts_with(r6.1, "{\"kind\":\"unary\",\"op\":\"negate\"") {
+        println("FAIL test 6: unary negate")
+        println(r6.1)
+        return 6
+    }
+
+    // Test 7: parse_module for hello.kl
+    let p7: Parser = new_parser("fn main() -> i32 { return 42 }")
+    let r7: (Parser, string) = parse_module(p7)
+    if not starts_with(r7.1, "{\"module_decl\":null,\"imports\":[],\"declarations\":[") {
+        println("FAIL test 7: module")
+        println(r7.1)
+        return 7
+    }
+
+    println("parser.kl: all smoke tests passed")
+    return 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Main entry point
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn main(args: [String]) -> i32 {
+    if args.len() < 2 {
+        return run_smoke_tests()
+    }
+    // File mode: parse and dump JSON
+    let arg1: String = args[1]
+    let path: string = arg1.as_str()
+    let result: Result[String, IoError] = File.read_to_string(path)
+    if not result.is_ok() {
+        println("Error: could not read file")
+        return 1
+    }
+    let content: String = result!
+    let src: string = content.as_str()
+    let p: Parser = new_parser(src)
+    let module_result: (Parser, string) = parse_module(p)
+    println(module_result.1)
+    if module_result.0.had_error {
+        return 1
+    }
+    return 0
+}
+
+test smoke {
+    let p: Parser = new_parser("42")
+    let r: (Parser, string) = parse_expression(p)
+    assert(starts_with(r.1, "{\"kind\":\"literal\""))
+}

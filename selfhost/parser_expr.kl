@@ -1,0 +1,796 @@
+// selfhost/parser_expr.kl — Expression parsing (Pratt parser)
+// Handles all expressions: literals, identifiers, struct/enum literals,
+// grouping, tuples, arrays, operators, calls, field access, method calls,
+// type casts, closures, block/comptime/unsafe expressions.
+
+import lexer.{Lexer, Token, TokenKind, tag_name}
+import parser.{Parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, json_str, json_bool, json_int, get_precedence, binary_op_name, is_right_assoc, can_start_type, is_primitive_type}
+import parser_type.{parse_type}
+import parser_stmt.{parse_block}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Expression parsing — Pratt parser
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn parse_expression(p: Parser) -> (Parser, string) {
+    return parse_precedence(p, 1)
+}
+
+fn parse_precedence(p: Parser, min_prec: i32) -> (Parser, string) {
+    // Parse prefix
+    let prefix_result: (Parser, string) = parse_prefix(p)
+    var p2: Parser = prefix_result.0
+    var left: string = prefix_result.1
+
+    // Parse infix while precedence is high enough
+    var cur_prec: i32 = get_precedence(tag_name(p2.current.kind))
+    while cur_prec >= min_prec {
+        let infix_result: (Parser, string) = parse_infix(p2, left, cur_prec)
+        p2 = infix_result.0
+        left = infix_result.1
+        cur_prec = get_precedence(tag_name(p2.current.kind))
+    }
+
+    return (p2, left)
+}
+
+fn parse_prefix(p: Parser) -> (Parser, string) {
+    let k: string = tag_name(p.current.kind)
+
+    // Literals
+    if k == "int_literal" { return parse_int_literal(p) }
+    if k == "float_literal" { return parse_float_literal(p) }
+    if k == "string_literal" { return parse_string_literal(p) }
+    if k == "char_literal" { return parse_char_literal(p) }
+    if k == "true_" or k == "false_" { return parse_bool_literal(p) }
+
+    // Identifier (may lead to struct literal or enum literal)
+    if k == "identifier" { return parse_identifier_or_struct(p) }
+    if k == "self" { return parse_self_expr(p) }
+
+    // Grouping / tuple
+    if k == "l_paren" { return parse_grouped_or_tuple(p) }
+
+    // Array literal
+    if k == "l_bracket" { return parse_array_literal(p) }
+
+    // Block expression
+    if k == "l_brace" { return parse_block_expr(p) }
+
+    // Closure
+    if k == "pipe" { return parse_closure(p) }
+
+    // Unary operators
+    if k == "minus" { return parse_unary(p, "negate") }
+    if k == "not" { return parse_unary(p, "not") }
+    if k == "tilde" { return parse_unary(p, "bit_not") }
+    if k == "star" { return parse_unary(p, "deref") }
+    if k == "ref" { return parse_ref_expr(p) }
+
+    // @ — comptime or builtin
+    if k == "at" { return parse_at_expr(p) }
+
+    // unsafe block
+    if k == "unsafe_" { return parse_unsafe_block(p) }
+
+    return (error_and_advance(p, "expected expression"), "null")
+}
+
+fn parse_infix(p: Parser, left: string, prec: i32) -> (Parser, string) {
+    let k: string = tag_name(p.current.kind)
+
+    // Range operators — special handling
+    if k == "dot_dot" or k == "dot_dot_eq" {
+        return parse_range(p, left)
+    }
+
+    // Postfix: ? (unwrap), ! (force_unwrap)
+    if k == "question" {
+        let p2: Parser = advance(p)
+        let json: string = "{\"kind\":\"postfix\",\"op\":\"unwrap\",\"operand\":" + left + "}"
+        return (p2, json)
+    }
+    if k == "bang" {
+        let p2: Parser = advance(p)
+        let json: string = "{\"kind\":\"postfix\",\"op\":\"force_unwrap\",\"operand\":" + left + "}"
+        return (p2, json)
+    }
+
+    // Call
+    if k == "l_paren" {
+        return parse_call(p, left, "null")
+    }
+
+    // Index or type args
+    if k == "l_bracket" {
+        return parse_index_or_type_args(p, left)
+    }
+
+    // Field access or method call
+    if k == "dot" {
+        return parse_field_or_method(p, left)
+    }
+
+    // Binary operators (including assignment)
+    return parse_binary(p, left, prec)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Literal parsing
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn parse_int_literal(p: Parser) -> (Parser, string) {
+    let text: string = p.current.text
+    // Parse int value: strip underscores and base prefixes
+    let val: string = parse_int_value(text)
+    let p2: Parser = advance(p)
+    let json: string = "{\"kind\":\"literal\",\"type\":\"int\",\"value\":" + json_str(val) + "}"
+    return (p2, json)
+}
+
+fn parse_int_value(text: string) -> string {
+    // Strip underscores and type suffixes, handle base prefixes
+    var base: i32 = 10
+    var start: i32 = 0
+    if text.byte_len() >= 2 {
+        let c0: i32 = text.byte_at(0).as[i32]
+        let c1: i32 = text.byte_at(1).as[i32]
+        if c0 == 48 {
+            if c1 == 120 or c1 == 88 { base = 16; start = 2 }
+            else if c1 == 98 or c1 == 66 { base = 2; start = 2 }
+            else if c1 == 111 or c1 == 79 { base = 8; start = 2 }
+        }
+    }
+
+    // For base 10: strip underscores and type suffixes directly (no overflow risk)
+    if base == 10 {
+        var clean: string = ""
+        var i: i32 = 0
+        while i < text.byte_len() {
+            let c: i32 = text.byte_at(i).as[i32]
+            if c == 95 { i = i + 1; continue }
+            // Stop at type suffix (any letter)
+            if (c >= 97 and c <= 122) or (c >= 65 and c <= 90) { break }
+            clean = clean + from_byte(c.as[u8])
+            i = i + 1
+        }
+        if clean.byte_len() == 0 { return "0" }
+        return clean
+    }
+
+    // For other bases: compute decimal value (i64 — sufficient for most cases)
+    var result: i64 = 0
+    var i: i32 = start
+    while i < text.byte_len() {
+        let c: i32 = text.byte_at(i).as[i32]
+        if c == 95 { i = i + 1; continue }
+        // Stop at type suffix (letter that's not a hex digit in base 16)
+        if c >= 97 and c <= 122 {
+            if base != 16 { break }
+            if c > 102 { break }
+        }
+        if c >= 65 and c <= 90 {
+            if base != 16 { break }
+            if c > 70 { break }
+        }
+        var digit: i32 = 0
+        if c >= 48 and c <= 57 { digit = c - 48 }
+        else if c >= 97 and c <= 102 { digit = c - 97 + 10 }
+        else if c >= 65 and c <= 70 { digit = c - 65 + 10 }
+        else { break }
+        result = result * base.as[i64] + digit.as[i64]
+        i = i + 1
+    }
+    return result.to_string().as_str()
+}
+
+pub fn parse_float_literal(p: Parser) -> (Parser, string) {
+    let text: string = p.current.text
+    // Strip underscores and type suffix for JSON
+    var clean: string = ""
+    var i: i32 = 0
+    while i < text.byte_len() {
+        let c: i32 = text.byte_at(i).as[i32]
+        if c == 95 { i = i + 1; continue }
+        // Stop at 'f' suffix
+        if c == 102 and i > 0 { break }
+        clean = clean + from_byte(c.as[u8])
+        i = i + 1
+    }
+    let p2: Parser = advance(p)
+    // Output float as number (not quoted)
+    let json: string = "{\"kind\":\"literal\",\"type\":\"float\",\"value\":" + clean + "}"
+    return (p2, json)
+}
+
+pub fn parse_string_literal(p: Parser) -> (Parser, string) {
+    let raw: string = p.current.text
+    // Strip outer quotes
+    var content: string = ""
+    if raw.byte_len() >= 2 {
+        content = raw.substring(1, raw.byte_len() - 1)
+    }
+    // Process escape sequences for the JSON value
+    let value: string = process_string_escapes(content)
+    let p2: Parser = advance(p)
+    let json: string = "{\"kind\":\"literal\",\"type\":\"string\",\"value\":" + json_str(value) + "}"
+    return (p2, json)
+}
+
+fn process_string_escapes(s: string) -> string {
+    var result: string = ""
+    var i: i32 = 0
+    while i < s.byte_len() {
+        let c: i32 = s.byte_at(i).as[i32]
+        if c == 92 and i + 1 < s.byte_len() {
+            let next: i32 = s.byte_at(i + 1).as[i32]
+            if next == 110 { result = result + from_byte(10.as[u8]); i = i + 2; continue }
+            if next == 116 { result = result + from_byte(9.as[u8]); i = i + 2; continue }
+            if next == 114 { result = result + from_byte(13.as[u8]); i = i + 2; continue }
+            if next == 92 { result = result + "\\"; i = i + 2; continue }
+            if next == 34 { result = result + "\""; i = i + 2; continue }
+            if next == 48 { result = result + from_byte(0.as[u8]); i = i + 2; continue }
+            // Unknown escape — keep as-is
+            result = result + from_byte(next.as[u8])
+            i = i + 2
+            continue
+        }
+        result = result + from_byte(c.as[u8])
+        i = i + 1
+    }
+    return result
+}
+
+fn parse_char_literal(p: Parser) -> (Parser, string) {
+    let raw: string = p.current.text
+    // Parse character value as codepoint integer
+    var codepoint: i32 = 0
+    if raw.byte_len() >= 3 {
+        if raw.byte_at(1).as[i32] == 92 {
+            // Escape sequence
+            if raw.byte_len() >= 4 {
+                let esc: i32 = raw.byte_at(2).as[i32]
+                if esc == 110 { codepoint = 10 }      // \n
+                else if esc == 116 { codepoint = 9 }   // \t
+                else if esc == 114 { codepoint = 13 }   // \r
+                else if esc == 92 { codepoint = 92 }    // \\
+                else if esc == 48 { codepoint = 0 }     // \0
+                else if esc == 39 { codepoint = 39 }    // \'
+                else { codepoint = esc }
+            }
+        } else {
+            codepoint = raw.byte_at(1).as[i32]
+        }
+    }
+    let p2: Parser = advance(p)
+    let json: string = "{\"kind\":\"literal\",\"type\":\"char\",\"value\":" + json_int(codepoint) + "}"
+    return (p2, json)
+}
+
+pub fn parse_bool_literal(p: Parser) -> (Parser, string) {
+    let val: bool = tag_name(p.current.kind) == "true_"
+    let p2: Parser = advance(p)
+    let json: string = "{\"kind\":\"literal\",\"type\":\"bool\",\"value\":" + json_bool(val) + "}"
+    return (p2, json)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Identifier / struct literal / enum literal
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn parse_identifier_or_struct(p: Parser) -> (Parser, string) {
+    let name: string = p.current.text
+    let p2: Parser = advance(p)
+
+    // Check for struct literal: Name { field: value, ... }
+    if tk(p2, "l_brace") {
+        // Lookahead: is this Name { field: expr } or just Name followed by block?
+        // Heuristic: if next after { is identifier followed by :, it's a struct literal
+        if is_struct_literal_start(p2) {
+            return parse_struct_literal(p2, name)
+        }
+    }
+
+    // Check for enum literal: Name::Variant or Name::Variant(args)
+    if tk(p2, "colon_colon") {
+        return parse_enum_literal(p2, name)
+    }
+
+    let json: string = "{\"kind\":\"identifier\",\"name\":" + json_str(name) + "}"
+    return (p2, json)
+}
+
+fn is_struct_literal_start(p: Parser) -> bool {
+    // After seeing { — check if it looks like a struct literal
+    // Peek: { identifier : ... } is a struct literal
+    // { expr } or { stmt } is a block
+    if not tk(p, "l_brace") { return false }
+
+    // Save lexer state for lookahead
+    var lex: Lexer = p.lexer
+    var tok: Token = lex.next_token()
+    // Skip newlines
+    while tag_name(tok.kind) == "newline" {
+        tok = lex.next_token()
+    }
+    if tag_name(tok.kind) != "identifier" { return false }
+    var tok2: Token = lex.next_token()
+    while tag_name(tok2.kind) == "newline" {
+        tok2 = lex.next_token()
+    }
+    return tag_name(tok2.kind) == "colon"
+}
+
+fn parse_struct_literal(p: Parser, name: string) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_brace", "expected '{'")
+    var fields: string = ""
+    var first: bool = true
+
+    while not tk(p2, "r_brace") and not tk(p2, "eof") {
+        if not first { fields = fields + "," }
+        first = false
+
+        let field_result: (Parser, string) = consume_identifier(p2)
+        p2 = field_result.0
+        let field_name: string = field_result.1
+        p2 = consume(p2, "colon", "expected ':'")
+        let val_result: (Parser, string) = parse_expression(p2)
+        p2 = val_result.0
+
+        fields = fields + "{\"name\":" + json_str(field_name) + ",\"value\":" + val_result.1 + "}"
+
+        // Optional comma
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_brace", "expected '}'")
+
+    let type_json: string = "{\"kind\":\"named\",\"name\":" + json_str(name) + "}"
+    let json: string = "{\"kind\":\"struct_literal\",\"type_name\":" + type_json + ",\"fields\":[" + fields + "],\"spread\":null}"
+    return (p2, json)
+}
+
+fn parse_enum_literal(p: Parser, type_name: string) -> (Parser, string) {
+    var p2: Parser = consume(p, "colon_colon", "expected '::'")
+    let variant_result: (Parser, string) = consume_identifier(p2)
+    p2 = variant_result.0
+    let variant_name: string = variant_result.1
+
+    // Check for payload: Variant(args)
+    var payload: string = ""
+    if tk(p2, "l_paren") {
+        p2 = advance(p2)
+        var first: bool = true
+        while not tk(p2, "r_paren") and not tk(p2, "eof") {
+            if not first { payload = payload + "," }
+            first = false
+            let arg_result: (Parser, string) = parse_expression(p2)
+            p2 = arg_result.0
+            payload = payload + arg_result.1
+            let comma_result: (Parser, bool) = match_tok(p2, "comma")
+            p2 = comma_result.0
+        }
+        p2 = consume(p2, "r_paren", "expected ')'")
+    }
+
+    let type_json: string = "{\"kind\":\"named\",\"name\":" + json_str(type_name) + "}"
+    let json: string = "{\"kind\":\"enum_literal\",\"enum_type\":" + type_json + ",\"variant_name\":" + json_str(variant_name) + ",\"payload\":[" + payload + "]}"
+    return (p2, json)
+}
+
+fn parse_self_expr(p: Parser) -> (Parser, string) {
+    let p2: Parser = advance(p)
+    let json: string = "{\"kind\":\"identifier\",\"name\":\"self\"}"
+    return (p2, json)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Grouping, tuples, arrays
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn parse_grouped_or_tuple(p: Parser) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_paren", "expected '('")
+
+    // Empty tuple
+    if tk(p2, "r_paren") {
+        p2 = advance(p2)
+        return (p2, "{\"kind\":\"tuple_literal\",\"elements\":[]}")
+    }
+
+    let first_result: (Parser, string) = parse_expression(p2)
+    p2 = first_result.0
+
+    // Check for comma → tuple
+    if tk(p2, "comma") {
+        var elems: string = first_result.1
+        while tk(p2, "comma") {
+            p2 = advance(p2)
+            if tk(p2, "r_paren") { break }
+            let elem_result: (Parser, string) = parse_expression(p2)
+            p2 = elem_result.0
+            elems = elems + "," + elem_result.1
+        }
+        p2 = consume(p2, "r_paren", "expected ')'")
+        let json: string = "{\"kind\":\"tuple_literal\",\"elements\":[" + elems + "]}"
+        return (p2, json)
+    }
+
+    // Grouped expression
+    p2 = consume(p2, "r_paren", "expected ')'")
+    let json: string = "{\"kind\":\"grouped\",\"expr\":" + first_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_array_literal(p: Parser) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_bracket", "expected '['")
+    var elems: string = ""
+    var first: bool = true
+
+    while not tk(p2, "r_bracket") and not tk(p2, "eof") {
+        if not first { elems = elems + "," }
+        first = false
+        let elem_result: (Parser, string) = parse_expression(p2)
+        p2 = elem_result.0
+        elems = elems + elem_result.1
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_bracket", "expected ']'")
+    let json: string = "{\"kind\":\"array_literal\",\"elements\":[" + elems + "]}"
+    return (p2, json)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Operators
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn parse_binary(p: Parser, left: string, prec: i32) -> (Parser, string) {
+    let op_kind: string = tag_name(p.current.kind)
+    let op_name: string = binary_op_name(op_kind)
+    var p2: Parser = advance(p)
+
+    // Right-associative: use same precedence; left-assoc: use prec+1
+    var next_prec: i32 = prec + 1
+    if is_right_assoc(op_kind) {
+        next_prec = prec
+    }
+
+    let right_result: (Parser, string) = parse_precedence(p2, next_prec)
+    p2 = right_result.0
+    let json: string = "{\"kind\":\"binary\",\"op\":" + json_str(op_name) + ",\"left\":" + left + ",\"right\":" + right_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_unary(p: Parser, op: string) -> (Parser, string) {
+    var p2: Parser = advance(p)
+    let operand_result: (Parser, string) = parse_precedence(p2, 13)
+    p2 = operand_result.0
+    let json: string = "{\"kind\":\"unary\",\"op\":" + json_str(op) + ",\"operand\":" + operand_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_ref_expr(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'ref'
+    // Check for 'ref mut'
+    var op: string = "ref"
+    if tk(p2, "mut") {
+        p2 = advance(p2)
+        op = "ref_mut"
+    }
+    let operand_result: (Parser, string) = parse_precedence(p2, 13)
+    p2 = operand_result.0
+    let json: string = "{\"kind\":\"unary\",\"op\":" + json_str(op) + ",\"operand\":" + operand_result.1 + "}"
+    return (p2, json)
+}
+
+fn parse_range(p: Parser, left: string) -> (Parser, string) {
+    let inclusive: bool = tag_name(p.current.kind) == "dot_dot_eq"
+    var p2: Parser = advance(p)
+
+    // Parse end expression (if present)
+    var end_json: string = "null"
+    let k: string = tag_name(p2.current.kind)
+    if k != "r_paren" and k != "r_bracket" and k != "r_brace"
+        and k != "comma" and k != "eof" and k != "l_brace" {
+        let end_result: (Parser, string) = parse_precedence(p2, 7)
+        p2 = end_result.0
+        end_json = end_result.1
+    }
+
+    let json: string = "{\"kind\":\"range\",\"inclusive\":" + json_bool(inclusive) + ",\"start\":" + left + ",\"end\":" + end_json + "}"
+    return (p2, json)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Call, index, field access, method call, cast
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn parse_call(p: Parser, callee: string, type_args: string) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_paren", "expected '('")
+    var args: string = ""
+    var first: bool = true
+
+    while not tk(p2, "r_paren") and not tk(p2, "eof") {
+        if not first { args = args + "," }
+        first = false
+        let arg_result: (Parser, string) = parse_expression(p2)
+        p2 = arg_result.0
+        args = args + arg_result.1
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_paren", "expected ')'")
+
+    let json: string = "{\"kind\":\"call\",\"callee\":" + callee + ",\"args\":[" + args + "],\"type_args\":" + type_args + "}"
+    return (p2, json)
+}
+
+fn parse_index_or_type_args(p: Parser, left: string) -> (Parser, string) {
+    // [ could be array index or type arguments
+    // Type args: foo[T](...) — type after [ that starts with uppercase or is a known type
+    // Array index: foo[expr]
+    // Heuristic: if content after [ can start a type and is followed by ] then (
+    // try type args first
+
+    if is_type_args_context(p) {
+        return parse_type_args_and_call(p, left)
+    }
+
+    // Array index
+    var p2: Parser = consume(p, "l_bracket", "expected '['")
+    let index_result: (Parser, string) = parse_expression(p2)
+    p2 = index_result.0
+    p2 = consume(p2, "r_bracket", "expected ']'")
+    let json: string = "{\"kind\":\"index\",\"object\":" + left + ",\"index\":" + index_result.1 + "}"
+    return (p2, json)
+}
+
+fn is_type_args_context(p: Parser) -> bool {
+    // Lookahead to check if [Type](args) follows
+    // Save lexer state
+    var lex: Lexer = p.lexer
+    // Skip [
+    var tok: Token = lex.next_token()
+    while tag_name(tok.kind) == "newline" { tok = lex.next_token() }
+
+    // Check if first thing after [ looks like a type
+    let k: string = tag_name(tok.kind)
+    if not can_start_type(k) { return false }
+
+    // For identifiers, check if it starts with uppercase (type name convention)
+    if k == "identifier" {
+        if tok.text.byte_len() > 0 {
+            let first_char: i32 = tok.text.byte_at(0).as[i32]
+            // Lowercase names are usually variables, not types
+            // But primitive types (i32, f64, etc.) start with lowercase
+            // Check for known primitive types
+            if first_char >= 97 and first_char <= 122 {
+                if not is_primitive_type(tok.text) {
+                    return false
+                }
+            }
+        }
+    }
+    return true
+}
+
+fn parse_type_args_and_call(p: Parser, left: string) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_bracket", "expected '['")
+    var type_args: string = ""
+    var first: bool = true
+
+    while not tk(p2, "r_bracket") and not tk(p2, "eof") {
+        if not first { type_args = type_args + "," }
+        first = false
+        let type_result: (Parser, string) = parse_type(p2)
+        p2 = type_result.0
+        type_args = type_args + type_result.1
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_bracket", "expected ']'")
+
+    let ta_json: string = "[" + type_args + "]"
+
+    // Check for call after type args
+    if tk(p2, "l_paren") {
+        return parse_call(p2, left, ta_json)
+    }
+
+    // Type args without call — might be method call context handled elsewhere
+    // For now, treat as a call with no args (error recovery)
+    let json: string = "{\"kind\":\"call\",\"callee\":" + left + ",\"args\":[],\"type_args\":" + ta_json + "}"
+    return (p2, json)
+}
+
+fn parse_field_or_method(p: Parser, left: string) -> (Parser, string) {
+    var p2: Parser = consume(p, "dot", "expected '.'")
+
+    // Special: .as[T], .to[T], .trunc[T] — type cast
+    if tk(p2, "as") {
+        return parse_type_cast(p2, left, false)
+    }
+    if tk(p2, "identifier") {
+        if p2.current.text == "trunc" {
+            return parse_type_cast(p2, left, true)
+        }
+        if p2.current.text == "to" {
+            return parse_fallible_conversion(p2, left)
+        }
+    }
+
+    // .? — optional unwrap shorthand
+    if tk(p2, "question") {
+        p2 = advance(p2)
+        let json: string = "{\"kind\":\"postfix\",\"op\":\"unwrap\",\"operand\":" + left + "}"
+        return (p2, json)
+    }
+
+    // Field name
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+    let field_name: string = name_result.1
+
+    // Check for method call: .name[T](args) or .name(args)
+    if tk(p2, "l_bracket") and is_type_args_context(p2) {
+        // Method with type args
+        var p3: Parser = consume(p2, "l_bracket", "expected '['")
+        var type_args: string = ""
+        var first: bool = true
+        while not tk(p3, "r_bracket") and not tk(p3, "eof") {
+            if not first { type_args = type_args + "," }
+            first = false
+            let ta_result: (Parser, string) = parse_type(p3)
+            p3 = ta_result.0
+            type_args = type_args + ta_result.1
+            let comma_result: (Parser, bool) = match_tok(p3, "comma")
+            p3 = comma_result.0
+        }
+        p3 = consume(p3, "r_bracket", "expected ']'")
+        return parse_method_call(p3, left, field_name, "[" + type_args + "]")
+    }
+
+    if tk(p2, "l_paren") {
+        return parse_method_call(p2, left, field_name, "null")
+    }
+
+    // Plain field access
+    let json: string = "{\"kind\":\"field\",\"object\":" + left + ",\"field_name\":" + json_str(field_name) + "}"
+    return (p2, json)
+}
+
+fn parse_method_call(p: Parser, obj: string, method: string, type_args: string) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_paren", "expected '('")
+    var args: string = ""
+    var first: bool = true
+
+    while not tk(p2, "r_paren") and not tk(p2, "eof") {
+        if not first { args = args + "," }
+        first = false
+        let arg_result: (Parser, string) = parse_expression(p2)
+        p2 = arg_result.0
+        args = args + arg_result.1
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_paren", "expected ')'")
+
+    let json: string = "{\"kind\":\"method_call\",\"object\":" + obj + ",\"method_name\":" + json_str(method) + ",\"type_args\":" + type_args + ",\"args\":[" + args + "]}"
+    return (p2, json)
+}
+
+fn parse_type_cast(p: Parser, expr: string, truncating: bool) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'as' or 'trunc'
+    p2 = consume(p2, "l_bracket", "expected '['")
+    let type_result: (Parser, string) = parse_type(p2)
+    p2 = type_result.0
+    p2 = consume(p2, "r_bracket", "expected ']'")
+    let json: string = "{\"kind\":\"type_cast\",\"truncating\":" + json_bool(truncating) + ",\"fallible\":false,\"target_type\":" + type_result.1 + ",\"expr\":" + expr + "}"
+    return (p2, json)
+}
+
+fn parse_fallible_conversion(p: Parser, expr: string) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'to'
+    p2 = consume(p2, "l_bracket", "expected '['")
+    let type_result: (Parser, string) = parse_type(p2)
+    p2 = type_result.0
+    p2 = consume(p2, "r_bracket", "expected ']'")
+    // .to[T] is a fallible conversion (returns Result), distinct from .as[T] (safe widening)
+    let json: string = "{\"kind\":\"type_cast\",\"truncating\":false,\"fallible\":true,\"target_type\":" + type_result.1 + ",\"expr\":" + expr + "}"
+    return (p2, json)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Closure
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn parse_closure(p: Parser) -> (Parser, string) {
+    var p2: Parser = consume(p, "pipe", "expected '|'")
+    var params: string = ""
+    var first: bool = true
+
+    while not tk(p2, "pipe") and not tk(p2, "eof") {
+        if not first { params = params + "," }
+        first = false
+        let name_result: (Parser, string) = consume_identifier(p2)
+        p2 = name_result.0
+        var param_type: string = "null"
+        if tk(p2, "colon") {
+            p2 = advance(p2)
+            let type_result: (Parser, string) = parse_type(p2)
+            p2 = type_result.0
+            param_type = type_result.1
+        }
+        params = params + "{\"name\":" + json_str(name_result.1) + ",\"type\":" + param_type + "}"
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "pipe", "expected '|'")
+
+    // Optional return type: -> Type
+    var ret_type: string = "null"
+    if tk(p2, "arrow") {
+        p2 = advance(p2)
+        let rt_result: (Parser, string) = parse_type(p2)
+        p2 = rt_result.0
+        ret_type = rt_result.1
+    }
+
+    // Body: { ... } or expression
+    let body_result: (Parser, string) = parse_expression(p2)
+    p2 = body_result.0
+
+    let json: string = "{\"kind\":\"closure\",\"params\":[" + params + "],\"return_type\":" + ret_type + ",\"body\":" + body_result.1 + "}"
+    return (p2, json)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Block expression, comptime, unsafe
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn parse_block_expr(p: Parser) -> (Parser, string) {
+    let block_result: (Parser, string) = parse_block(p)
+    let json: string = "{\"kind\":\"block\",\"body\":" + block_result.1 + "}"
+    return (block_result.0, json)
+}
+
+fn parse_at_expr(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip @
+
+    // @{ ... } — comptime block
+    if tk(p2, "l_brace") {
+        let block_result: (Parser, string) = parse_block(p2)
+        p2 = block_result.0
+        let json: string = "{\"kind\":\"comptime_block\",\"body\":" + block_result.1 + "}"
+        return (p2, json)
+    }
+
+    // @name(args) — builtin call
+    let name_result: (Parser, string) = consume_identifier(p2)
+    p2 = name_result.0
+    p2 = consume(p2, "l_paren", "expected '('")
+    var args: string = ""
+    var first: bool = true
+    while not tk(p2, "r_paren") and not tk(p2, "eof") {
+        if not first { args = args + "," }
+        first = false
+        // Builtin args can be types or expressions
+        // For now, try expression
+        let arg_result: (Parser, string) = parse_expression(p2)
+        p2 = arg_result.0
+        args = args + "{\"kind\":\"expr\",\"value\":" + arg_result.1 + "}"
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_paren", "expected ')'")
+    let json: string = "{\"kind\":\"builtin_call\",\"name\":" + json_str(name_result.1) + ",\"args\":[" + args + "]}"
+    return (p2, json)
+}
+
+fn parse_unsafe_block(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'unsafe'
+    let block_result: (Parser, string) = parse_block(p2)
+    p2 = block_result.0
+    let json: string = "{\"kind\":\"unsafe_block\",\"body\":" + block_result.1 + "}"
+    return (p2, json)
+}

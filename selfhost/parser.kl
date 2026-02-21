@@ -1,45 +1,293 @@
-// selfhost/parser.kl — Self-hosted parser (stub)
-// Milestone 9.3: Bootstrap architecture scaffolding
-// Full implementation: Milestones 9.6–9.7
+// selfhost/parser.kl — Core parser infrastructure
+// Milestone 9.6: Parser struct, token navigation, JSON helpers, precedence tables
+//
+// This module provides the shared foundation for all parser sub-modules.
+// All functions are pub for cross-module use.
 
-import lexer.{Lexer, Token, TokenKind}
-import ast.{AstModule, Decl, Stmt, Expr, TypeExpr, Span, ExprId, StmtId, DeclId}
+import lexer.{Lexer, Token, TokenKind, tag_name}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// JSON helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn json_str(s: string) -> string {
+    // Wrap a string value in JSON-escaped quotes
+    var result: string = "\""
+    var i: i32 = 0
+    while i < s.byte_len() {
+        let c: i32 = s.byte_at(i).as[i32]
+        if c == 34 { result = result + "\\\"" }
+        else if c == 92 { result = result + "\\\\" }
+        else if c == 10 { result = result + "\\n" }
+        else if c == 13 { result = result + "\\r" }
+        else if c == 9 { result = result + "\\t" }
+        else if c == 8 { result = result + "\\b" }
+        else if c == 12 { result = result + "\\f" }
+        else if c < 32 {
+            // Escape other control characters as \u00XX
+            result = result + "\\u00"
+            let hi: i32 = c / 16
+            let lo: i32 = c - hi * 16
+            result = result + hex_digit(hi) + hex_digit(lo)
+        }
+        else { result = result + from_byte(c.as[u8]) }
+        i = i + 1
+    }
+    result = result + "\""
+    return result
+}
+
+fn hex_digit(n: i32) -> string {
+    if n < 10 { return from_byte((48 + n).as[u8]) }
+    return from_byte((97 + n - 10).as[u8])
+}
+
+pub fn json_bool(b: bool) -> string {
+    if b { return "true" }
+    return "false"
+}
+
+pub fn json_int(n: i32) -> string {
+    return n.to_string().as_str()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Parser struct — simple fields only (no Lists)
+// ═══════════════════════════════════════════════════════════════════════════
 
 pub struct Parser {
-    source: string,
-    pos: i32,
+    pub source: string,
+    pub lexer: Lexer,
+    pub current: Token,
+    pub previous: Token,
+    pub had_error: bool,
+    pub error_count: i32,
 }
 
-impl Parser {
-    fn new(source: string) -> Parser {
-        return Parser {
-            source: source,
-            pos: 0,
-        }
+// ═══════════════════════════════════════════════════════════════════════════
+// Parser construction
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn new_parser(source: string) -> Parser {
+    var lex: Lexer = Lexer.new(source)
+    var tok: Token = lex.next_token()
+    // Skip initial newlines
+    while tag_name(tok.kind) == "newline" {
+        tok = lex.next_token()
     }
-
-    // TODO(9.6): Change to mutable self — parsing consumes tokens and advances state
-    // The parser will manage var lists for exprs, stmts, decls, etc.
-    // and return an AstModule with index ranges into those lists.
-    fn parse_module(self: Parser) -> AstModule {
-        // Stub: returns empty module
-        // Full implementation in Milestones 9.6–9.7
-        return AstModule {
-            imports_start: 0,
-            imports_count: 0,
-            decls_start: 0,
-            decls_count: 0,
-        }
+    return Parser {
+        source: source,
+        lexer: lex,
+        current: tok,
+        previous: tok,
+        had_error: false,
+        error_count: 0,
     }
 }
 
-fn main() -> i32 {
-    return 0
+// ═══════════════════════════════════════════════════════════════════════════
+// Token navigation
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn advance(p: Parser) -> Parser {
+    var lex: Lexer = p.lexer
+    var tok: Token = lex.next_token()
+    while tag_name(tok.kind) == "newline" {
+        tok = lex.next_token()
+    }
+    return Parser {
+        source: p.source,
+        lexer: lex,
+        current: tok,
+        previous: p.current,
+        had_error: p.had_error,
+        error_count: p.error_count,
+    }
 }
 
-test main {
-    let source: string = "fn main() -> i32 { return 0 }"
-    let parser: Parser = Parser.new(source)
-    let m: AstModule = parser.parse_module()
-    assert_eq(m.decls_count, 0)
+pub fn tk(p: Parser, name: string) -> bool {
+    return tag_name(p.current.kind) == name
+}
+
+pub fn match_tok(p: Parser, name: string) -> (Parser, bool) {
+    if not tk(p, name) {
+        return (p, false)
+    }
+    return (advance(p), true)
+}
+
+pub fn consume(p: Parser, name: string, msg: string) -> Parser {
+    if tk(p, name) {
+        return advance(p)
+    }
+    return error_and_advance(p, msg)
+}
+
+pub fn consume_identifier(p: Parser) -> (Parser, string) {
+    if tk(p, "identifier") {
+        let name: string = p.current.text
+        return (advance(p), name)
+    }
+    return (error_and_advance(p, "expected identifier"), "")
+}
+
+pub fn report_error(p: Parser, msg: string) -> Parser {
+    print("Parse error at line ")
+    print(p.current.line.to_string())
+    print(", column ")
+    print(p.current.column.to_string())
+    print(": ")
+    println(msg)
+    return Parser {
+        source: p.source,
+        lexer: p.lexer,
+        current: p.current,
+        previous: p.previous,
+        had_error: true,
+        error_count: p.error_count + 1,
+    }
+}
+
+// Like report_error but advances past the offending token to prevent
+// infinite loops when called inside while-loops.
+pub fn error_and_advance(p: Parser, msg: string) -> Parser {
+    let p2: Parser = report_error(p, msg)
+    if not tk(p2, "eof") {
+        return advance(p2)
+    }
+    return p2
+}
+
+pub fn synchronize_top_level(p: Parser) -> Parser {
+    var p2: Parser = p
+    while not tk(p2, "eof") {
+        if is_top_level_start(p2) {
+            return p2
+        }
+        p2 = advance(p2)
+    }
+    return p2
+}
+
+pub fn is_top_level_start(p: Parser) -> bool {
+    let k: string = tag_name(p.current.kind)
+    return k == "pub_" or k == "fn_" or k == "test_" or k == "struct_"
+        or k == "enum_" or k == "trait" or k == "impl" or k == "type_"
+        or k == "const_" or k == "import" or k == "module"
+        or k == "extern_" or k == "unsafe_"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Precedence
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Precedence levels (inlined as literals to keep function count low)
+// 0=NONE, 1=ASSIGNMENT, 2=NULL_COALESCE, 3=OR, 4=AND, 5=COMPARISON,
+// 6=RANGE, 7=BIT_OR, 8=BIT_XOR, 9=BIT_AND, 10=SHIFT, 11=TERM,
+// 12=FACTOR, 13=UNARY, 14=POSTFIX, 15=CALL
+
+pub fn get_precedence(kind: string) -> i32 {
+    if kind == "eq" or kind == "plus_eq" or kind == "minus_eq"
+        or kind == "star_eq" or kind == "slash_eq" or kind == "percent_eq" {
+        return 1  // ASSIGNMENT
+    }
+    if kind == "question_question" { return 2 }  // NULL_COALESCE
+    if kind == "or_" { return 3 }  // OR
+    if kind == "and_" { return 4 }  // AND
+    if kind == "eq_eq" or kind == "not_eq" or kind == "lt" or kind == "gt"
+        or kind == "lt_eq" or kind == "gt_eq" or kind == "is" {
+        return 5  // COMPARISON
+    }
+    if kind == "dot_dot" or kind == "dot_dot_eq" { return 6 }  // RANGE
+    if kind == "pipe" { return 7 }  // BIT_OR
+    if kind == "caret" { return 8 }  // BIT_XOR
+    if kind == "amp" { return 9 }  // BIT_AND
+    if kind == "lt_lt" or kind == "gt_gt" { return 10 }  // SHIFT
+    if kind == "plus" or kind == "minus" or kind == "plus_wrap"
+        or kind == "minus_wrap" or kind == "plus_sat" or kind == "minus_sat" {
+        return 11  // TERM
+    }
+    if kind == "star" or kind == "slash" or kind == "percent"
+        or kind == "star_wrap" or kind == "star_sat" {
+        return 12  // FACTOR
+    }
+    if kind == "question" or kind == "bang" { return 14 }  // POSTFIX
+    if kind == "dot" or kind == "l_paren" or kind == "l_bracket" {
+        return 15  // CALL
+    }
+    return 0  // NONE
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Operator name mapping (token tag → JSON op name)
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn binary_op_name(kind: string) -> string {
+    if kind == "plus" { return "add" }
+    if kind == "minus" { return "sub" }
+    if kind == "star" { return "mul" }
+    if kind == "slash" { return "div" }
+    if kind == "percent" { return "mod" }
+    if kind == "plus_wrap" { return "add_wrap" }
+    if kind == "minus_wrap" { return "sub_wrap" }
+    if kind == "star_wrap" { return "mul_wrap" }
+    if kind == "plus_sat" { return "add_sat" }
+    if kind == "minus_sat" { return "sub_sat" }
+    if kind == "star_sat" { return "mul_sat" }
+    if kind == "eq_eq" { return "eq" }
+    if kind == "not_eq" { return "neq" }
+    if kind == "lt" { return "lt" }
+    if kind == "gt" { return "gt" }
+    if kind == "lt_eq" { return "lt_eq" }
+    if kind == "gt_eq" { return "gt_eq" }
+    if kind == "is" { return "is" }
+    if kind == "and_" { return "and" }
+    if kind == "or_" { return "or" }
+    if kind == "amp" { return "bit_and" }
+    if kind == "pipe" { return "bit_or" }
+    if kind == "caret" { return "bit_xor" }
+    if kind == "lt_lt" { return "shl" }
+    if kind == "gt_gt" { return "shr" }
+    if kind == "question_question" { return "null_coalesce" }
+    // Assignment operators (treated as binary in JSON parity)
+    if kind == "eq" { return "assign" }
+    if kind == "plus_eq" { return "add_assign" }
+    if kind == "minus_eq" { return "sub_assign" }
+    if kind == "star_eq" { return "mul_assign" }
+    if kind == "slash_eq" { return "div_assign" }
+    if kind == "percent_eq" { return "mod_assign" }
+    return "unknown"
+}
+
+pub fn is_right_assoc(kind: string) -> bool {
+    // Assignment is right-associative
+    return kind == "eq" or kind == "plus_eq" or kind == "minus_eq"
+        or kind == "star_eq" or kind == "slash_eq" or kind == "percent_eq"
+}
+
+pub fn can_start_type(kind: string) -> bool {
+    return kind == "identifier" or kind == "question" or kind == "ref"
+        or kind == "inout" or kind == "l_bracket" or kind == "l_paren"
+        or kind == "fn_" or kind == "self_type"
+}
+
+pub fn is_primitive_type(name: string) -> bool {
+    return name == "i8" or name == "i16" or name == "i32" or name == "i64"
+        or name == "u8" or name == "u16" or name == "u32" or name == "u64"
+        or name == "f32" or name == "f64" or name == "bool" or name == "void"
+        or name == "string" or name == "isize" or name == "usize"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// String utilities
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn starts_with(s: string, prefix: string) -> bool {
+    if s.byte_len() < prefix.byte_len() { return false }
+    var i: i32 = 0
+    while i < prefix.byte_len() {
+        if s.byte_at(i) != prefix.byte_at(i) { return false }
+        i = i + 1
+    }
+    return true
 }
