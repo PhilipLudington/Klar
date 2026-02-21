@@ -2,9 +2,11 @@
 
 ## Current State
 
-All compiler and self-hosted parser bugs from QA review are fixed. The two-phase module checking now has proper circular import warnings, robust error handling, and no duplicate diagnostics. The self-hosted parser has fixes for impl method modifiers, negative float patterns, JSON escaping, brace handling, and integer overflow.
+All compiler and self-hosted parser bugs from QA review are fixed. The two-phase module checking now has proper circular import warnings, robust error handling, and no duplicate diagnostics. The self-hosted parser has fixes for impl method modifiers, negative float patterns, JSON escaping, brace handling, and integer overflow. Native codegen now supports multi-module programs with cross-module struct field access and proper function declaration ordering.
 
-**Test results:** 694 passed, 1 failed (pre-existing `ast` selfhost inline test `NotImplemented`).
+**Test results:** 695 passed, 0 failed.
+
+**Self-hosted parser runs natively:** `klar run selfhost/parser_main.kl` → "parser.kl: all smoke tests passed"
 
 ## What Was Done
 
@@ -70,6 +72,52 @@ Comprehensive QA review found 10 issues across the changes. All 10 fixed:
     - Base-10 literals now strip underscores/suffixes directly from text (no numeric computation)
     - Non-decimal bases still compute via i64 (sufficient for practical cases)
 
+### Session 3: Native Codegen for Multi-Module Programs (COMPLETE)
+
+Fixed three bugs preventing native compilation of multi-module Klar programs:
+
+1. **Cross-module struct field resolution** (`checker.zig`, `emit.zig`)
+   - Root cause: `lookupFieldStructTypeName`, `lookupFieldType`, `getFieldType` used `tc.global_scope.lookup()` which only searches the current module's scope
+   - Fix: Added `lookupSymbolAcrossModules()` to TypeChecker that searches current scope + all saved module scopes. Updated all three emitter functions to use it.
+   - Symptom: `UnsupportedFeature` error on `p.current.kind` (chained field access through cross-module struct types)
+
+2. **Cross-module function declaration ordering** (`emit.zig`, `main.zig`)
+   - Root cause: `emitModule` bundles function declaration + body emission per-module. With circular imports, module A's body can call module B's function before B is emitted.
+   - Fix: Split into `declareModuleFunctions()` + `emitModuleBodies()`. Multi-module compilation now declares ALL functions across ALL modules first, then emits all bodies.
+   - Symptom: LLVM verification error — cross-module calls dispatched as closures (wrong calling convention)
+
+3. **Multi-module main conflict** (`emit.zig`, `main.zig`)
+   - Root cause: Multiple modules can define `main()` — codegen declared all of them, linker picked the wrong one
+   - Fix: Added `skip_main` flag to emitter. Non-entry modules (all except the last in compilation order) skip `main` declaration and emission.
+   - Symptom: Lexer's `main` ran instead of `parser_main`'s
+
+### Session 4: QA Review of Session 3 Changes (COMPLETE)
+
+QA review of the multi-module codegen changes found 5 issues. All addressed:
+
+1. **`emitMainArgsWrapper` called N times in multi-module path** (`emit.zig`, `main.zig`)
+   - `emitModuleBodies()` contained a `emitMainArgsWrapper()` call inherited from the `emitModule()` extraction
+   - In multi-module path, `emitModuleBodies` is called once per module, so the wrapper would be emitted N times
+   - Fix: Removed wrapper call from `emitModuleBodies` (now a pure body-emission function). Multi-module path in `main.zig` calls `emitMainArgsWrapper()` once after all modules are emitted.
+
+2. **`registerStructDecl` skipped in multi-module path** (`main.zig`)
+   - Multi-module path called `declareModuleFunctions` + `emitModuleBodies` but never registered struct declarations
+   - `emitModule()` has an explicit first pass for struct registration, but multi-module path bypassed it
+   - Fix: Added Phase 1 struct registration loop in `main.zig` before function declarations. Multi-module codegen now has 3 phases: struct registration, function declaration, body emission.
+
+3. **`lookupSymbolAcrossModules` non-deterministic on name collisions** (`checker.zig`)
+   - `module_scope_map.valueIterator()` order is non-deterministic (hash map)
+   - Safe in practice: current scope is checked first (deterministic priority), fallback is for unimported type references
+   - Fix: Added doc comment explaining the safety rationale and limitation.
+
+4. **`skip_main` state between loops** (`main.zig`)
+   - Informational only — per-iteration assignment in both loops is already correct
+   - No code change needed.
+
+5. **`registerStructDecl` and `emitMainArgsWrapper` visibility** (`emit.zig`)
+   - Both methods were private (`fn`) but now called from `main.zig` in the multi-module path
+   - Fix: Made both `pub` with doc comments explaining why.
+
 ## Architecture
 
 ### Two-Phase Module Checking
@@ -122,13 +170,16 @@ In Phase 1, `parser_type` skips `import parser_expr` (not yet registered). In Ph
 
 ## Remaining Tasks
 
-### Immediate: Runtime Execution
-1. **Fix interpreter `UndefinedVariable`** — `klar run selfhost/parser_main.kl --interpret` fails at runtime even though type checking passes. The interpreter can't find `run_smoke_tests` at runtime. This is likely a scope/binding issue in the interpreter for multi-module programs.
-2. **Fix codegen `UnsupportedFeature`** — `klar run selfhost/parser_main.kl` (native) fails because the LLVM codegen doesn't support some feature used by the selfhost parser (likely cross-module tuple types).
-3. **Fix test block error** — `klar check` reports `test 'smoke' references missing function 'smoke'` for `parser_main.kl`. The test block syntax may need investigation.
+### Completed
+1. ~~**Fix interpreter `UndefinedVariable`**~~ — FIXED. `klar run selfhost/parser_main.kl --interpret` runs and prints "parser.kl: all smoke tests passed".
+2. ~~**Fix codegen `UnsupportedFeature`**~~ — FIXED. Three bugs fixed:
+   - Cross-module struct field resolution: `lookupFieldStructTypeName`, `lookupFieldType`, `getFieldType` now use `lookupSymbolAcrossModules` instead of `global_scope.lookup`
+   - Cross-module function declaration ordering: multi-module codegen now declares ALL functions before emitting ANY bodies (split into `declareModuleFunctions` + `emitModuleBodies`)
+   - Multi-module main conflict: `skip_main` flag prevents non-entry modules from declaring/emitting their `main` functions
+3. ~~**Run split parser natively**~~ — DONE. `klar run selfhost/parser_main.kl` prints "parser.kl: all smoke tests passed"
 
-### After Runtime Works
-4. **Run split parser:** `./zig-out/bin/klar run selfhost/parser_main.kl` → should print "parser.kl: all smoke tests passed"
+### Remaining
+4. **Fix test block error** — `klar check` reports `test 'smoke' references missing function 'smoke'` for `parser_main.kl`. The test block syntax may need investigation.
 5. **Parity testing:** compare `parser_main.kl` output against `klar dump-ast` for test corpus
 6. **Add Phase 3** to `scripts/run-selfhost-tests.sh`
 
@@ -144,10 +195,11 @@ In Phase 1, `parser_type` skips `import parser_expr` (not yet registered). In Ph
 |------|--------|
 | `src/parser.zig` | Modified — fixed string interpolation false positive |
 | `src/module_resolver.zig` | Modified — cycle-tolerant topoSort |
-| `src/checker/checker.zig` | Modified — two-phase compilation, error handling, duplicate suppression |
-| `src/main.zig` | Modified — two-phase loops + `warnCircularImports` at all 5 entry points |
+| `src/checker/checker.zig` | Modified — two-phase compilation, error handling, duplicate suppression, `lookupSymbolAcrossModules` |
+| `src/main.zig` | Modified — two-phase loops, `warnCircularImports`, 3-phase multi-module codegen (structs, declarations, bodies + wrapper) |
+| `src/codegen/emit.zig` | Modified — cross-module type resolution, split declaration/body emission, `skip_main`, `emitModuleBodies` no longer emits wrapper |
 | `selfhost/parser.kl` | Modified — json_str control char escaping |
 | `selfhost/parser_decl.kl` | Modified — impl pub/unsafe + brace depth handling |
 | `selfhost/parser_stmt.kl` | Modified — negative float patterns |
 | `selfhost/parser_expr.kl` | Modified — base-10 int literal text passthrough |
-| `selfhost/parser_main.kl` | Type check PASSES, runtime blocked by interpreter/codegen bugs |
+| `selfhost/parser_main.kl` | FULLY WORKING — interpreter and native compilation both succeed |

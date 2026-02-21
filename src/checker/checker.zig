@@ -1997,6 +1997,30 @@ pub const TypeChecker = struct {
         return self.current_scope.lookup(name);
     }
 
+    /// Look up a symbol by name across all module scopes (for cross-module codegen).
+    /// First tries the current scope, then searches all saved module scopes.
+    ///
+    /// Note: If the same name exists in multiple module scopes, the first match
+    /// from hash map iteration is returned (non-deterministic). This is acceptable
+    /// because cross-module symbols are accessed via explicit imports, so the
+    /// current scope (checked first) will contain the correct binding. The fallback
+    /// search is for types/functions that were registered but not imported into the
+    /// current scope (e.g., struct types referenced only through field access chains).
+    pub fn lookupSymbolAcrossModules(self: *const TypeChecker, name: []const u8) ?Symbol {
+        // Try current scope first (deterministic, correct priority)
+        if (self.current_scope.lookup(name)) |sym| {
+            return sym;
+        }
+        // Fallback: search all saved module scopes
+        var it = self.module_scope_map.valueIterator();
+        while (it.next()) |scope_ptr| {
+            if (scope_ptr.*.lookup(name)) |sym| {
+                return sym;
+            }
+        }
+        return null;
+    }
+
     // ========================================================================
     // Scope Management
     // ========================================================================

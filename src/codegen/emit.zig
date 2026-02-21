@@ -163,6 +163,11 @@ pub const Emitter = struct {
     /// True when emitting body of an async function declaration.
     current_function_is_async: bool,
 
+    /// When true, skip declaring/emitting `main` functions.
+    /// Used in multi-module compilation to avoid conflicts between
+    /// main functions in imported modules and the entry point module.
+    skip_main: bool,
+
     /// Cache of allocated mangled enum names (for cleanup).
     mangled_enum_names: std.ArrayListUnmanaged([]const u8),
 
@@ -391,6 +396,7 @@ pub const Emitter = struct {
             .expected_type = null,
             .current_return_klar_type = null,
             .current_function_is_async = false,
+            .skip_main = false,
             .mangled_enum_names = .{},
             .resolved_type_allocs = .{},
             .current_sret_ptr = null,
@@ -564,6 +570,22 @@ pub const Emitter = struct {
         }
 
         // Second pass: declare all functions (including methods from impl blocks)
+        try self.declareModuleFunctions(module);
+
+        // Third pass: emit function bodies (including methods from impl blocks)
+        try self.emitModuleBodies(module);
+
+        // Fourth pass: generate main wrapper if main takes args
+        // Skip wrapper generation in freestanding mode - user's entry point is used directly
+        if (self.main_takes_args and !self.freestanding) {
+            try self.emitMainArgsWrapper();
+        }
+    }
+
+    /// Declare all functions in a module without emitting bodies.
+    /// Used in multi-module compilation to declare all functions across all modules
+    /// before emitting any bodies, so cross-module calls can find their targets.
+    pub fn declareModuleFunctions(self: *Emitter, module: ast.Module) EmitError!void {
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| try self.declareFunction(f),
@@ -576,8 +598,13 @@ pub const Emitter = struct {
                 else => {},
             }
         }
+    }
 
-        // Third pass: emit function bodies (including methods from impl blocks)
+    /// Emit all function bodies in a module (assumes functions are already declared).
+    /// Used in multi-module compilation after all functions have been declared.
+    /// Note: Does NOT emit the main args wrapper — caller is responsible for
+    /// calling emitMainArgsWrapper() once after all modules have been emitted.
+    pub fn emitModuleBodies(self: *Emitter, module: ast.Module) EmitError!void {
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
@@ -588,12 +615,6 @@ pub const Emitter = struct {
                 .impl_decl => |i| try self.emitImplMethods(i),
                 else => {},
             }
-        }
-
-        // Fourth pass: generate main wrapper if main takes args
-        // Skip wrapper generation in freestanding mode - user's entry point is used directly
-        if (self.main_takes_args and !self.freestanding) {
-            try self.emitMainArgsWrapper();
         }
     }
 
@@ -667,7 +688,9 @@ pub const Emitter = struct {
     }
 
     /// Generate a C-style main(argc, argv) wrapper that converts args to [String].
-    fn emitMainArgsWrapper(self: *Emitter) EmitError!void {
+    /// Public for multi-module compilation where wrapper generation is done
+    /// as a separate step after all module bodies have been emitted.
+    pub fn emitMainArgsWrapper(self: *Emitter) EmitError!void {
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
@@ -1034,7 +1057,9 @@ pub const Emitter = struct {
     }
 
     /// Register a struct declaration for later field name resolution.
-    fn registerStructDecl(self: *Emitter, struct_decl: *ast.StructDecl) EmitError!void {
+    /// Public for multi-module compilation where struct registration is done
+    /// as a separate phase before function declaration.
+    pub fn registerStructDecl(self: *Emitter, struct_decl: *ast.StructDecl) EmitError!void {
         // Skip if already registered
         if (self.struct_types.contains(struct_decl.name)) {
             return;
@@ -1060,6 +1085,11 @@ pub const Emitter = struct {
     fn declareFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
         // Skip generic functions - they are handled via monomorphization
         if (func.type_params.len > 0) {
+            return;
+        }
+
+        // Skip main from non-entry modules in multi-module compilation
+        if (self.skip_main and std.mem.eql(u8, func.name, "main")) {
             return;
         }
 
@@ -1582,6 +1612,11 @@ pub const Emitter = struct {
     fn emitFunction(self: *Emitter, func: *ast.FunctionDecl) EmitError!void {
         // Skip generic functions - they are handled via monomorphization
         if (func.type_params.len > 0) {
+            return;
+        }
+
+        // Skip main from non-entry modules in multi-module compilation
+        if (self.skip_main and std.mem.eql(u8, func.name, "main")) {
             return;
         }
 
@@ -7961,8 +7996,8 @@ pub const Emitter = struct {
 
             // Check if we have type checker info for the function's return type
             if (self.type_checker) |tc| {
-                // Look up the function symbol to get its return type
-                if (tc.global_scope.lookup(func_name)) |sym| {
+                // Look up the function symbol across all module scopes
+                if (tc.lookupSymbolAcrossModules(func_name)) |sym| {
                     if (sym.type_ == .function) {
                         const ret_type = sym.type_.function.return_type;
                         if (ret_type == .struct_) {
@@ -8036,9 +8071,9 @@ pub const Emitter = struct {
                         }
                     }
                 }
-                // Fall back to type checker's scope for the variable type
+                // Fall back to type checker across all module scopes
                 if (self.type_checker) |tc| {
-                    if (tc.global_scope.lookup(var_name)) |sym| {
+                    if (tc.lookupSymbolAcrossModules(var_name)) |sym| {
                         if (sym.type_ == .array) {
                             const elem_type = sym.type_.array.element;
                             if (elem_type == .struct_) {
@@ -8058,8 +8093,8 @@ pub const Emitter = struct {
     fn lookupFieldStructTypeName(self: *Emitter, struct_type_name: []const u8, field_name: []const u8) ?[]const u8 {
         const tc = self.type_checker orelse return null;
 
-        // Try global scope for non-generic structs
-        if (tc.global_scope.lookup(struct_type_name)) |sym| {
+        // Search across all module scopes for cross-module struct type resolution
+        if (tc.lookupSymbolAcrossModules(struct_type_name)) |sym| {
             if (sym.type_ == .struct_) {
                 for (sym.type_.struct_.fields) |field| {
                     if (std.mem.eql(u8, field.name, field_name)) {
@@ -8108,8 +8143,8 @@ pub const Emitter = struct {
     fn lookupFieldType(self: *Emitter, struct_type_name: []const u8, field_name: []const u8) ?llvm.TypeRef {
         const tc = self.type_checker orelse return null;
 
-        // Try global scope for non-generic structs
-        if (tc.global_scope.lookup(struct_type_name)) |sym| {
+        // Search across all module scopes for cross-module struct type resolution
+        if (tc.lookupSymbolAcrossModules(struct_type_name)) |sym| {
             if (sym.type_ == .struct_) {
                 for (sym.type_.struct_.fields) |field| {
                     if (std.mem.eql(u8, field.name, field_name)) {
@@ -8139,8 +8174,8 @@ pub const Emitter = struct {
     fn getFieldType(self: *Emitter, struct_type_name: []const u8, field_name: []const u8) ?types.Type {
         const tc = self.type_checker orelse return null;
 
-        // Try global scope for non-generic structs
-        if (tc.global_scope.lookup(struct_type_name)) |sym| {
+        // Search across all module scopes for cross-module struct type resolution
+        if (tc.lookupSymbolAcrossModules(struct_type_name)) |sym| {
             if (sym.type_ == .struct_) {
                 for (sym.type_.struct_.fields) |field| {
                     if (std.mem.eql(u8, field.name, field_name)) {

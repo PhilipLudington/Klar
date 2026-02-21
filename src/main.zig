@@ -2798,13 +2798,71 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     };
 
     // Emit all modules
-    for (modules_to_emit.items) |mod_to_emit| {
-        emitter.emitModule(mod_to_emit) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
-            try stderr.writeAll(msg);
-            return;
-        };
+    if (modules_to_emit.items.len > 1) {
+        // Multi-module: three phases to handle cross-module dependencies.
+        // Skip main from non-entry modules (entry module is last in list).
+        const last_idx = modules_to_emit.items.len - 1;
+
+        // Phase 1: Register struct declarations for field name resolution
+        for (modules_to_emit.items) |mod_to_emit| {
+            for (mod_to_emit.declarations) |decl| {
+                switch (decl) {
+                    .struct_decl => |s| {
+                        emitter.registerStructDecl(s) catch |err| {
+                            var buf: [512]u8 = undefined;
+                            const msg = std.fmt.bufPrint(&buf, "Codegen error (struct): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+                            try stderr.writeAll(msg);
+                            return;
+                        };
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        // Phase 2: Declare all functions across all modules so cross-module
+        // calls can find their targets even with circular dependencies.
+        for (modules_to_emit.items, 0..) |mod_to_emit, i| {
+            emitter.skip_main = (i != last_idx);
+            emitter.declareModuleFunctions(mod_to_emit) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Codegen error (decl): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+        }
+
+        // Phase 3: Emit all function bodies.
+        for (modules_to_emit.items, 0..) |mod_to_emit, i| {
+            emitter.skip_main = (i != last_idx);
+            emitter.emitModuleBodies(mod_to_emit) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+        }
+        emitter.skip_main = false;
+
+        // Generate main wrapper after all modules are emitted (once only)
+        if (emitter.main_takes_args and !emitter.freestanding) {
+            emitter.emitMainArgsWrapper() catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Codegen error (main wrapper): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+        }
+    } else {
+        // Single-module: use the combined approach
+        for (modules_to_emit.items) |mod_to_emit| {
+            emitter.emitModule(mod_to_emit) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+        }
     }
 
     // Emit monomorphized generic function bodies
