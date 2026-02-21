@@ -53,8 +53,13 @@ fn parse_function_decl(p: Parser, is_pub: bool, is_extern: bool, is_unsafe: bool
     let name_result: (Parser, string) = consume_identifier(p2)
     p2 = name_result.0
 
-    // Type params — skip for core subset
+    // Type params
     var type_params: string = "[]"
+    if tk(p2, "l_bracket") {
+        let tp_result: (Parser, string) = parse_type_params(p2)
+        p2 = tp_result.0
+        type_params = tp_result.1
+    }
 
     // Parameters
     p2 = consume(p2, "l_paren", "expected '('")
@@ -148,8 +153,13 @@ fn parse_struct_decl(p: Parser, is_pub: bool) -> (Parser, string) {
     let name_result: (Parser, string) = consume_identifier(p2)
     p2 = name_result.0
 
-    // Type params — skip for core subset
+    // Type params
     var type_params: string = "[]"
+    if tk(p2, "l_bracket") {
+        let tp_result: (Parser, string) = parse_type_params(p2)
+        p2 = tp_result.0
+        type_params = tp_result.1
+    }
 
     p2 = consume(p2, "l_brace", "expected '{'")
     var fields: string = ""
@@ -185,8 +195,13 @@ fn parse_enum_decl(p: Parser, is_pub: bool) -> (Parser, string) {
     let name_result: (Parser, string) = consume_identifier(p2)
     p2 = name_result.0
 
-    // Type params — skip for core subset
+    // Type params
     var type_params: string = "[]"
+    if tk(p2, "l_bracket") {
+        let tp_result: (Parser, string) = parse_type_params(p2)
+        p2 = tp_result.0
+        type_params = tp_result.1
+    }
 
     p2 = consume(p2, "l_brace", "expected '{'")
     var variants: string = ""
@@ -201,6 +216,7 @@ fn parse_enum_decl(p: Parser, is_pub: bool) -> (Parser, string) {
         // Check for payload
         var payload: string = "null"
         if tk(p2, "l_paren") {
+            // Tuple payload: Variant(Type1, Type2)
             p2 = advance(p2)
             var types: string = ""
             var tfirst: bool = true
@@ -215,6 +231,25 @@ fn parse_enum_decl(p: Parser, is_pub: bool) -> (Parser, string) {
             }
             p2 = consume(p2, "r_paren", "expected ')'")
             payload = "{\"kind\":\"tuple\",\"types\":[" + types + "]}"
+        } else if tk(p2, "l_brace") {
+            // Struct payload: Variant { field: Type, ... }
+            p2 = advance(p2)
+            var fields: string = ""
+            var ffirst: bool = true
+            while not tk(p2, "r_brace") and not tk(p2, "eof") {
+                if not ffirst { fields = fields + "," }
+                ffirst = false
+                let field_name_result: (Parser, string) = consume_identifier(p2)
+                p2 = field_name_result.0
+                p2 = consume(p2, "colon", "expected ':'")
+                let field_type_result: (Parser, string) = parse_type(p2)
+                p2 = field_type_result.0
+                fields = fields + "{\"name\":" + json_str(field_name_result.1) + ",\"type\":" + field_type_result.1 + ",\"is_pub\":false}"
+                let comma_result: (Parser, bool) = match_tok(p2, "comma")
+                p2 = comma_result.0
+            }
+            p2 = consume(p2, "r_brace", "expected '}'")
+            payload = "{\"kind\":\"struct\",\"fields\":[" + fields + "]}"
         }
 
         variants = variants + "{\"name\":" + json_str(variant_name_result.1) + ",\"value\":null,\"payload\":" + payload + "}"
@@ -396,6 +431,40 @@ fn parse_impl_stub(p: Parser) -> (Parser, string) {
     let target_json: string = "{\"kind\":\"named\",\"name\":" + json_str(name_result.1) + "}"
     let json: string = "{\"kind\":\"impl_decl\",\"is_unsafe\":false,\"type_params\":[],\"target_type\":" + target_json + ",\"trait_type\":" + trait_type + ",\"associated_types\":[],\"where_clause\":null,\"methods\":[" + methods + "]}"
     return (p2, json)
+}
+
+fn parse_type_params(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip '['
+    var params: string = ""
+    var first: bool = true
+    while not tk(p2, "r_bracket") and not tk(p2, "eof") {
+        if not first { params = params + "," }
+        first = false
+        let name_result: (Parser, string) = consume_identifier(p2)
+        p2 = name_result.0
+
+        // Bounds: T: Bound1 + Bound2  (bounds are full type expressions)
+        var bounds: string = ""
+        if tk(p2, "colon") {
+            p2 = advance(p2)
+            var bfirst: bool = true
+            while true {
+                if not bfirst { bounds = bounds + "," }
+                bfirst = false
+                let bound_result: (Parser, string) = parse_type(p2)
+                p2 = bound_result.0
+                bounds = bounds + bound_result.1
+                if not tk(p2, "plus") { break }
+                p2 = advance(p2) // skip '+'
+            }
+        }
+
+        params = params + "{\"name\":" + json_str(name_result.1) + ",\"bounds\":[" + bounds + "]}"
+        let comma_result: (Parser, bool) = match_tok(p2, "comma")
+        p2 = comma_result.0
+    }
+    p2 = consume(p2, "r_bracket", "expected ']'")
+    return (p2, "[" + params + "]")
 }
 
 fn skip_braces(p: Parser) -> Parser {
