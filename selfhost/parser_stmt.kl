@@ -204,7 +204,7 @@ fn extract_expr_from_expr_stmt(json: string) -> string {
     let start: i32 = prefix.byte_len()
     let end: i32 = json.byte_len() - 1
     if end <= start { return "null" }
-    return json.substring(start, end)
+    return json.slice(start, end)
 }
 
 fn remove_last_entry(csv: string) -> string {
@@ -233,7 +233,7 @@ fn remove_last_entry(csv: string) -> string {
         i = i + 1
     }
     if last_comma < 0 { return "" }
-    return csv.substring(0, last_comma)
+    return csv.slice(0, last_comma)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -280,15 +280,24 @@ fn parse_while_loop(p: Parser) -> (Parser, string) {
 fn parse_for_loop(p: Parser) -> (Parser, string) {
     var p2: Parser = advance(p) // skip 'for'
 
-    // Pattern: binding name with optional type
-    let name_result: (Parser, string) = consume_identifier(p2)
-    p2 = name_result.0
-    var type_annotation: string = "null"
-    if tk(p2, "colon") {
-        p2 = advance(p2)
-        let type_result: (Parser, string) = parse_type(p2)
-        p2 = type_result.0
-        type_annotation = type_result.1
+    // Pattern: tuple (a, b) or binding name with optional type
+    var pattern_json: string = ""
+    if tk(p2, "l_paren") {
+        // Tuple destructuring: for (a, b) in expr { ... }
+        let tp_result: (Parser, string) = parse_tuple_pattern(p2)
+        p2 = tp_result.0
+        pattern_json = tp_result.1
+    } else {
+        let name_result: (Parser, string) = consume_identifier(p2)
+        p2 = name_result.0
+        var type_annotation: string = "null"
+        if tk(p2, "colon") {
+            p2 = advance(p2)
+            let type_result: (Parser, string) = parse_type(p2)
+            p2 = type_result.0
+            type_annotation = type_result.1
+        }
+        pattern_json = "{\"kind\":\"binding\",\"name\":" + json_str(name_result.1) + ",\"mutable\":false,\"type_annotation\":" + type_annotation + "}"
     }
 
     p2 = consume(p2, "in", "expected 'in'")
@@ -298,7 +307,6 @@ fn parse_for_loop(p: Parser) -> (Parser, string) {
     let body_result: (Parser, string) = parse_block(p2)
     p2 = body_result.0
 
-    let pattern_json: string = "{\"kind\":\"binding\",\"name\":" + json_str(name_result.1) + ",\"mutable\":false,\"type_annotation\":" + type_annotation + "}"
     let json: string = "{\"kind\":\"for_loop\",\"pattern\":" + pattern_json + ",\"iterable\":" + iter_result.1 + ",\"body\":" + body_result.1 + "}"
     return (p2, json)
 }
@@ -423,7 +431,7 @@ fn extract_literal_value(json: string) -> string {
     var pos: i32 = 0
     var found: bool = false
     while pos < json.byte_len() - marker.byte_len() {
-        if json.substring(pos, pos + marker.byte_len()) == marker {
+        if json.slice(pos, pos + marker.byte_len()) == marker {
             found = true
             pos = pos + marker.byte_len()
             break
@@ -435,15 +443,15 @@ fn extract_literal_value(json: string) -> string {
     while end < json.byte_len() and json.byte_at(end).as[i32] != 34 {
         end = end + 1
     }
-    return json.substring(pos, end)
+    return json.slice(pos, end)
 }
 
 fn parse_binding_or_variant(p: Parser) -> (Parser, string) {
     let name: string = p.current.text
     var p2: Parser = advance(p)
 
-    // Check for :: (enum variant pattern)
-    if tk(p2, "colon_colon") {
+    // Check for :: or . (enum variant pattern): Type::Variant or Type.Variant
+    if tk(p2, "colon_colon") or tk(p2, "dot") {
         p2 = advance(p2)
         let variant_result: (Parser, string) = consume_identifier(p2)
         p2 = variant_result.0
@@ -482,9 +490,7 @@ fn parse_binding_or_variant(p: Parser) -> (Parser, string) {
                 let json: string = "{\"kind\":\"variant\",\"type_expr\":null,\"variant_name\":" + json_str(name) + ",\"payload\":" + payload_json + "}"
                 return (p2, json)
             }
-            // Bare uppercase name could be a variant without payload (e.g., None)
-            let json: string = "{\"kind\":\"variant\",\"type_expr\":null,\"variant_name\":" + json_str(name) + ",\"payload\":null}"
-            return (p2, json)
+            // Bare uppercase name without ( — treat as binding (type checker disambiguates)
         }
     }
 

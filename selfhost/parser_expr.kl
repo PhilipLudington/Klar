@@ -4,7 +4,7 @@
 // type casts, closures, block/comptime/unsafe expressions.
 
 import lexer.{Lexer, Token, TokenKind, tag_name}
-import parser.{Parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, json_str, json_bool, json_int, get_precedence, binary_op_name, is_right_assoc, can_start_type, is_primitive_type}
+import parser.{Parser, new_parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, json_str, json_bool, json_int, get_precedence, binary_op_name, is_right_assoc, can_start_type, is_primitive_type}
 import parser_type.{parse_type}
 import parser_stmt.{parse_block}
 
@@ -66,6 +66,9 @@ fn parse_prefix(p: Parser) -> (Parser, string) {
     if k == "tilde" { return parse_unary(p, "bit_not") }
     if k == "star" { return parse_unary(p, "deref") }
     if k == "ref" { return parse_ref_expr(p) }
+
+    // await expression
+    if k == "await_" { return parse_unary(p, "await_") }
 
     // @ — comptime or builtin
     if k == "at" { return parse_at_expr(p) }
@@ -208,12 +211,105 @@ pub fn parse_string_literal(p: Parser) -> (Parser, string) {
     // Strip outer quotes
     var content: string = ""
     if raw.byte_len() >= 2 {
-        content = raw.substring(1, raw.byte_len() - 1)
+        content = raw.slice(1, raw.byte_len() - 1)
     }
-    // Process escape sequences for the JSON value
+    // Check for string interpolation (unescaped { in content)
+    if has_unescaped_brace(content) {
+        return parse_interpolated_string_parts(p, content)
+    }
+    // Regular string literal
     let value: string = process_string_escapes(content)
     let p2: Parser = advance(p)
     let json: string = "{\"kind\":\"literal\",\"type\":\"string\",\"value\":" + json_str(value) + "}"
+    return (p2, json)
+}
+
+fn has_unescaped_brace(s: string) -> bool {
+    var i: i32 = 0
+    while i < s.byte_len() {
+        let c: i32 = s.byte_at(i).as[i32]
+        if c == 92 {
+            // Backslash — skip next char
+            i = i + 2
+            continue
+        }
+        if c == 123 {
+            // Unescaped {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fn parse_interpolated_string_parts(p: Parser, content: string) -> (Parser, string) {
+    var parts: string = ""
+    var text_accum: string = ""
+    var i: i32 = 0
+
+    while i < content.byte_len() {
+        let c: i32 = content.byte_at(i).as[i32]
+
+        // Handle escape sequences
+        if c == 92 and i + 1 < content.byte_len() {
+            let next: i32 = content.byte_at(i + 1).as[i32]
+            if next == 123 { text_accum = text_accum + "{"; i = i + 2; continue }
+            if next == 125 { text_accum = text_accum + "}"; i = i + 2; continue }
+            if next == 110 { text_accum = text_accum + from_byte(10.as[u8]); i = i + 2; continue }
+            if next == 116 { text_accum = text_accum + from_byte(9.as[u8]); i = i + 2; continue }
+            if next == 114 { text_accum = text_accum + from_byte(13.as[u8]); i = i + 2; continue }
+            if next == 92 { text_accum = text_accum + "\\"; i = i + 2; continue }
+            if next == 34 { text_accum = text_accum + "\""; i = i + 2; continue }
+            if next == 48 { text_accum = text_accum + from_byte(0.as[u8]); i = i + 2; continue }
+            text_accum = text_accum + from_byte(next.as[u8])
+            i = i + 2
+            continue
+        }
+
+        // Unescaped { — start expression
+        if c == 123 {
+            // Emit accumulated text part
+            if text_accum.byte_len() > 0 {
+                if parts.byte_len() > 0 { parts = parts + "," }
+                parts = parts + "{\"kind\":\"string\",\"value\":" + json_str(text_accum) + "}"
+                text_accum = ""
+            }
+
+            // Find matching }
+            i = i + 1
+            var depth: i32 = 1
+            let expr_start: i32 = i
+            while i < content.byte_len() and depth > 0 {
+                let ec: i32 = content.byte_at(i).as[i32]
+                if ec == 123 { depth = depth + 1 }
+                if ec == 125 { depth = depth - 1 }
+                if depth > 0 { i = i + 1 }
+            }
+
+            // Extract expression text and parse it
+            let expr_text: string = content.slice(expr_start, i)
+            i = i + 1  // skip closing }
+            let sub_parser: Parser = new_parser(expr_text)
+            let expr_result: (Parser, string) = parse_expression(sub_parser)
+
+            if parts.byte_len() > 0 { parts = parts + "," }
+            parts = parts + "{\"kind\":\"expr\",\"value\":" + expr_result.1 + "}"
+            continue
+        }
+
+        // Regular character
+        text_accum = text_accum + from_byte(c.as[u8])
+        i = i + 1
+    }
+
+    // Emit remaining text
+    if text_accum.byte_len() > 0 {
+        if parts.byte_len() > 0 { parts = parts + "," }
+        parts = parts + "{\"kind\":\"string\",\"value\":" + json_str(text_accum) + "}"
+    }
+
+    let p2: Parser = advance(p)
+    let json: string = "{\"kind\":\"interpolated_string\",\"parts\":[" + parts + "]}"
     return (p2, json)
 }
 
@@ -230,6 +326,8 @@ fn process_string_escapes(s: string) -> string {
             if next == 92 { result = result + "\\"; i = i + 2; continue }
             if next == 34 { result = result + "\""; i = i + 2; continue }
             if next == 48 { result = result + from_byte(0.as[u8]); i = i + 2; continue }
+            if next == 123 { result = result + "{"; i = i + 2; continue }  // \{
+            if next == 125 { result = result + "}"; i = i + 2; continue }  // \}
             // Unknown escape — keep as-is
             result = result + from_byte(next.as[u8])
             i = i + 2
@@ -280,20 +378,60 @@ pub fn parse_bool_literal(p: Parser) -> (Parser, string) {
 
 fn parse_identifier_or_struct(p: Parser) -> (Parser, string) {
     let name: string = p.current.text
-    let p2: Parser = advance(p)
+    var p2: Parser = advance(p)
+
+    let base_type: string = "{\"kind\":\"named\",\"name\":" + json_str(name) + "}"
+
+    // Check for generic type args: Name[T] followed by { or :: or (
+    if tk(p2, "l_bracket") and is_type_args_context(p2) {
+        var p3: Parser = advance(p2) // skip [
+        var type_args: string = ""
+        var first: bool = true
+        while not tk(p3, "r_bracket") and not tk(p3, "eof") {
+            if not first { type_args = type_args + "," }
+            first = false
+            let type_result: (Parser, string) = parse_type(p3)
+            p3 = type_result.0
+            type_args = type_args + type_result.1
+            let comma_result: (Parser, bool) = match_tok(p3, "comma")
+            p3 = comma_result.0
+        }
+        p3 = consume(p3, "r_bracket", "expected ']'")
+
+        let generic_type: string = "{\"kind\":\"generic_apply\",\"base\":" + base_type + ",\"args\":[" + type_args + "]}"
+        let ta_json: string = "[" + type_args + "]"
+
+        // Name[T] { ... } — generic struct literal
+        if tk(p3, "l_brace") and is_struct_literal_start(p3) {
+            return parse_struct_literal(p3, generic_type)
+        }
+
+        // Name[T]::Variant — generic enum literal
+        if tk(p3, "colon_colon") {
+            return parse_enum_literal(p3, generic_type)
+        }
+
+        // Name[T](args) — generic function call
+        if tk(p3, "l_paren") {
+            let callee: string = "{\"kind\":\"identifier\",\"name\":" + json_str(name) + "}"
+            return parse_call(p3, callee, ta_json)
+        }
+
+        // Bare Name[T] — return as call with no args (consistent with existing behavior)
+        let callee: string = "{\"kind\":\"identifier\",\"name\":" + json_str(name) + "}"
+        return (p3, "{\"kind\":\"call\",\"callee\":" + callee + ",\"args\":[],\"type_args\":" + ta_json + "}")
+    }
 
     // Check for struct literal: Name { field: value, ... }
     if tk(p2, "l_brace") {
-        // Lookahead: is this Name { field: expr } or just Name followed by block?
-        // Heuristic: if next after { is identifier followed by :, it's a struct literal
         if is_struct_literal_start(p2) {
-            return parse_struct_literal(p2, name)
+            return parse_struct_literal(p2, base_type)
         }
     }
 
     // Check for enum literal: Name::Variant or Name::Variant(args)
     if tk(p2, "colon_colon") {
-        return parse_enum_literal(p2, name)
+        return parse_enum_literal(p2, base_type)
     }
 
     let json: string = "{\"kind\":\"identifier\",\"name\":" + json_str(name) + "}"
@@ -321,7 +459,7 @@ fn is_struct_literal_start(p: Parser) -> bool {
     return tag_name(tok2.kind) == "colon"
 }
 
-fn parse_struct_literal(p: Parser, name: string) -> (Parser, string) {
+fn parse_struct_literal(p: Parser, type_json: string) -> (Parser, string) {
     var p2: Parser = consume(p, "l_brace", "expected '{'")
     var fields: string = ""
     var first: bool = true
@@ -345,12 +483,11 @@ fn parse_struct_literal(p: Parser, name: string) -> (Parser, string) {
     }
     p2 = consume(p2, "r_brace", "expected '}'")
 
-    let type_json: string = "{\"kind\":\"named\",\"name\":" + json_str(name) + "}"
     let json: string = "{\"kind\":\"struct_literal\",\"type_name\":" + type_json + ",\"fields\":[" + fields + "],\"spread\":null}"
     return (p2, json)
 }
 
-fn parse_enum_literal(p: Parser, type_name: string) -> (Parser, string) {
+fn parse_enum_literal(p: Parser, type_json: string) -> (Parser, string) {
     var p2: Parser = consume(p, "colon_colon", "expected '::'")
     let variant_result: (Parser, string) = consume_identifier(p2)
     p2 = variant_result.0
@@ -373,7 +510,6 @@ fn parse_enum_literal(p: Parser, type_name: string) -> (Parser, string) {
         p2 = consume(p2, "r_paren", "expected ')'")
     }
 
-    let type_json: string = "{\"kind\":\"named\",\"name\":" + json_str(type_name) + "}"
     let json: string = "{\"kind\":\"enum_literal\",\"enum_type\":" + type_json + ",\"variant_name\":" + json_str(variant_name) + ",\"payload\":[" + payload + "]}"
     return (p2, json)
 }
@@ -626,10 +762,16 @@ fn parse_field_or_method(p: Parser, left: string) -> (Parser, string) {
         return (p2, json)
     }
 
-    // Field name
-    let name_result: (Parser, string) = consume_identifier(p2)
-    p2 = name_result.0
-    let field_name: string = name_result.1
+    // Field name (identifier or int literal for tuple indexing: pair.0, pair.1)
+    var field_name: string = ""
+    if tk(p2, "int_literal") {
+        field_name = p2.current.text
+        p2 = advance(p2)
+    } else {
+        let name_result: (Parser, string) = consume_identifier(p2)
+        p2 = name_result.0
+        field_name = name_result.1
+    }
 
     // Check for method call: .name[T](args) or .name(args)
     if tk(p2, "l_bracket") and is_type_args_context(p2) {

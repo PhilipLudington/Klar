@@ -38,10 +38,19 @@ pub fn parse_type(p: Parser) -> (Parser, string) {
         return parse_function_type(p)
     }
 
-    // Self type
+    // Self type (possibly qualified: Self.Item)
     if k == "self_type" {
-        let p2: Parser = advance(p)
-        return (p2, "{\"kind\":\"named\",\"name\":\"Self\"}")
+        var p2: Parser = advance(p)
+        let self_type: string = "{\"kind\":\"named\",\"name\":\"Self\"}"
+        if tk(p2, "dot") {
+            var p3: Parser = advance(p2)
+            if tk(p3, "identifier") {
+                let member: string = p3.current.text
+                p3 = advance(p3)
+                return (p3, "{\"kind\":\"qualified\",\"base\":" + self_type + ",\"member\":" + json_str(member) + "}")
+            }
+        }
+        return (p2, self_type)
     }
 
     // Named type (possibly generic: Name[T1, T2])
@@ -55,7 +64,7 @@ pub fn parse_type(p: Parser) -> (Parser, string) {
 fn parse_named_type(p: Parser) -> (Parser, string) {
     let name: string = p.current.text
     var p2: Parser = advance(p)
-    let base: string = "{\"kind\":\"named\",\"name\":" + json_str(name) + "}"
+    var result: string = "{\"kind\":\"named\",\"name\":" + json_str(name) + "}"
 
     // Check for generic application: Name[T1, T2]
     if tk(p2, "l_bracket") {
@@ -72,11 +81,22 @@ fn parse_named_type(p: Parser) -> (Parser, string) {
             p3 = comma_result.0
         }
         p3 = consume(p3, "r_bracket", "expected ']'")
-        let json: string = "{\"kind\":\"generic_apply\",\"base\":" + base + ",\"args\":[" + args + "]}"
-        return (p3, json)
+        result = "{\"kind\":\"generic_apply\",\"base\":" + result + ",\"args\":[" + args + "]}"
+        p2 = p3
     }
 
-    return (p2, base)
+    // Check for qualified type: T.Item, Self.Item
+    if tk(p2, "dot") {
+        var p3: Parser = advance(p2)
+        if tk(p3, "identifier") {
+            let member: string = p3.current.text
+            p3 = advance(p3)
+            let json: string = "{\"kind\":\"qualified\",\"base\":" + result + ",\"member\":" + json_str(member) + "}"
+            return (p3, json)
+        }
+    }
+
+    return (p2, result)
 }
 
 fn parse_optional_type(p: Parser) -> (Parser, string) {

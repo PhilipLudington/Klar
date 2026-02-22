@@ -217,7 +217,7 @@ impl Lexer {
                 self.pos = self.pos + 1
                 self.column = self.column + 1
             }
-            let text: string = self.source.substring(sp, self.pos)
+            let text: string = self.source.slice(sp, self.pos)
             let kind: TokenKind = lookup_keyword(text)
             return make_tok(self.source, kind, sp, self.pos, sl, sc)
         }
@@ -667,7 +667,7 @@ fn peek_at(source: string, pos: i32) -> i32 {
 fn make_tok(src: string, kind: TokenKind, start: i32, end: i32, line: i32, col: i32) -> Token {
     return Token {
         kind: kind,
-        text: src.substring(start, end),
+        text: src.slice(start, end),
         line: line,
         column: col,
         start: start,

@@ -235,14 +235,14 @@ pub fn binary_op_name(kind: string) -> string {
     if kind == "minus_sat" { return "sub_sat" }
     if kind == "star_sat" { return "mul_sat" }
     if kind == "eq_eq" { return "eq" }
-    if kind == "not_eq" { return "neq" }
+    if kind == "not_eq" { return "not_eq" }
     if kind == "lt" { return "lt" }
     if kind == "gt" { return "gt" }
     if kind == "lt_eq" { return "lt_eq" }
     if kind == "gt_eq" { return "gt_eq" }
     if kind == "is" { return "is" }
-    if kind == "and_" { return "and" }
-    if kind == "or_" { return "or" }
+    if kind == "and_" { return "and_" }
+    if kind == "or_" { return "or_" }
     if kind == "amp" { return "bit_and" }
     if kind == "pipe" { return "bit_or" }
     if kind == "caret" { return "bit_xor" }
