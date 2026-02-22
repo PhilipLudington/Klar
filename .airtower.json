@@ -39,6 +39,11 @@
       "name": "Fmt Tests",
       "resultsFile": ".fmt-test-results.json",
       "command": "./scripts/run-fmt-tests.sh"
+    },
+    {
+      "name": "Selfhost Tests",
+      "resultsFile": ".selfhost-test-results.json",
+      "command": "./scripts/run-selfhost-tests.sh"
     }
   ],
   "builds": [

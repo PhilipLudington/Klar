@@ -889,6 +889,7 @@ fn print_json_str(s: string) -> void {
         else if c == 10 { print("\\n") }
         else if c == 13 { print("\\r") }
         else if c == 9 { print("\\t") }
+        else if c == 37 { print("%%") }  // printf interprets %; %% emits literal %
         else if c < 32 {
             // Control chars 0x00-0x1F as \u00XX
             print("\\u00")

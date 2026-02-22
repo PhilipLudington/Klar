@@ -2,7 +2,8 @@
 """Normalize AST JSON from Zig dump-ast and selfhost parser for parity comparison.
 
 Known structural differences handled:
-  1. Operator naming: Zig "not_eq" vs selfhost "neq" (and similar)
+  1. Operator naming: Zig uses trailing underscores for Zig-reserved words
+     ("not_eq"/"and_"/"or_"/"await_" vs selfhost "neq"/"and"/"or"/"await")
   2. Extra fields: selfhost adds "fallible" on type_cast nodes
   3. Trait methods: selfhost emits empty methods:[] for trait decls
   4. Impl method kind: selfhost may include/omit "kind":"function" on impl methods
@@ -22,6 +23,9 @@ import sys
 # The canonical form uses the Zig names; selfhost names are mapped to them.
 SELFHOST_OP_MAP = {
     "neq": "not_eq",
+    "and": "and_",
+    "or": "or_",
+    "await": "await_",
 }
 
 

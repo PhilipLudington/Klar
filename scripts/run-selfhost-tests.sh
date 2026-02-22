@@ -20,7 +20,7 @@ fi
 PASSED=0
 FAILED=0
 FAILURES=""
-PARITY_FILES="test/native/arith.kl test/native/struct.kl test/native/trait_basic.kl test/native/generics_basic.kl test/native/string_primitives.kl test/native/closure_simple.kl test/native/enum_struct_payload.kl test/native/for_range.kl"
+PARITY_FILES="test/native/arith.kl test/native/struct.kl test/native/trait_basic.kl test/native/generics_basic.kl test/native/string_primitives.kl test/native/closure_simple.kl test/native/enum_struct_payload.kl test/native/for_range.kl test/native/optional_coalesce.kl test/native/ref_self_method.kl test/native/nested_struct_field.kl test/native/result_propagate.kl test/native/array_methods.kl test/native/for_array.kl test/native/return_types.kl test/native/array_sized.kl test/native/recursive_deep.kl test/native/comptime_const_access.kl"
 
 # Phase 1: Type-check all selfhost files
 echo "Phase 1: Type checking selfhost/ stubs"
