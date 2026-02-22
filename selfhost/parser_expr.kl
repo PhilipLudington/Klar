@@ -208,10 +208,14 @@ pub fn parse_float_literal(p: Parser) -> (Parser, string) {
 
 pub fn parse_string_literal(p: Parser) -> (Parser, string) {
     let raw: string = p.current.text
-    // Strip outer quotes
+    // Strip outer quotes (handle triple-quoted strings too)
     var content: string = ""
-    if raw.byte_len() >= 2 {
-        content = raw.slice(1, raw.byte_len() - 1)
+    var quote_len: i32 = 1
+    if raw.byte_len() >= 6 and raw.byte_at(0).as[i32] == 34 and raw.byte_at(1).as[i32] == 34 and raw.byte_at(2).as[i32] == 34 {
+        quote_len = 3
+    }
+    if raw.byte_len() >= quote_len * 2 {
+        content = raw.slice(quote_len, raw.byte_len() - quote_len)
     }
     // Check for string interpolation (unescaped { in content)
     if has_unescaped_brace(content) {
@@ -275,12 +279,24 @@ fn parse_interpolated_string_parts(p: Parser, content: string) -> (Parser, strin
                 text_accum = ""
             }
 
-            // Find matching }
+            // Find matching } (skip string literals to avoid premature close)
             i = i + 1
             var depth: i32 = 1
             let expr_start: i32 = i
             while i < content.byte_len() and depth > 0 {
                 let ec: i32 = content.byte_at(i).as[i32]
+                if ec == 34 {
+                    // Quote — skip string literal content
+                    i = i + 1
+                    while i < content.byte_len() {
+                        let sc: i32 = content.byte_at(i).as[i32]
+                        if sc == 92 { i = i + 2; continue }  // skip escaped char
+                        if sc == 34 { break }  // end of string
+                        i = i + 1
+                    }
+                    if i < content.byte_len() { i = i + 1 }  // skip closing quote
+                    continue
+                }
                 if ec == 123 { depth = depth + 1 }
                 if ec == 125 { depth = depth - 1 }
                 if depth > 0 { i = i + 1 }

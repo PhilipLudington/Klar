@@ -425,9 +425,10 @@ fn parse_pattern(p: Parser) -> (Parser, string) {
 }
 
 fn extract_literal_value(json: string) -> string {
-    // Extract value from {"kind":"literal","type":"int","value":"N"}
-    // Find "value":" and extract until next "
-    let marker: string = "\"value\":\""
+    // Extract value from {"kind":"literal","type":"int","value":"N"} (quoted)
+    // or {"kind":"literal","type":"float","value":3.14} (unquoted)
+    // Find "value": and then handle both quoted and unquoted forms
+    let marker: string = "\"value\":"
     var pos: i32 = 0
     var found: bool = false
     while pos < json.byte_len() - marker.byte_len() {
@@ -439,8 +440,19 @@ fn extract_literal_value(json: string) -> string {
         pos = pos + 1
     }
     if not found { return "0" }
+    // Check if value is quoted (int/string) or unquoted (float)
+    if pos < json.byte_len() and json.byte_at(pos).as[i32] == 34 {
+        // Quoted value — skip opening quote, read until closing quote
+        pos = pos + 1
+        var end: i32 = pos
+        while end < json.byte_len() and json.byte_at(end).as[i32] != 34 {
+            end = end + 1
+        }
+        return json.slice(pos, end)
+    }
+    // Unquoted value (float) — read until } or ,
     var end: i32 = pos
-    while end < json.byte_len() and json.byte_at(end).as[i32] != 34 {
+    while end < json.byte_len() and json.byte_at(end).as[i32] != 125 and json.byte_at(end).as[i32] != 44 {
         end = end + 1
     }
     return json.slice(pos, end)

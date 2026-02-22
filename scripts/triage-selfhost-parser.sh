@@ -19,8 +19,8 @@ if [ "$1" = "--verbose" ]; then
     VERBOSE=true
 fi
 
-# Already-passing files (in PARITY_FILES in run-selfhost-tests.sh)
-ALREADY_PASSING="arith struct trait_basic generics_basic string_primitives closure_simple enum_struct_payload for_range optional_coalesce ref_self_method nested_struct_field result_propagate array_methods for_array return_types array_sized recursive_deep comptime_const_access"
+# Already-passing files (extracted from PARITY_FILES in run-selfhost-tests.sh)
+ALREADY_PASSING=$(grep 'test/native/.*\.kl' "$SCRIPT_DIR/scripts/run-selfhost-tests.sh" | sed 's|.*test/native/||' | sed 's|\.kl.*||' | tr '\n' ' ')
 
 is_already_passing() {
     local name="$1"
