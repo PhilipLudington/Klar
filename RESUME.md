@@ -2,9 +2,9 @@
 
 ## Current State
 
-**Parser parity testing expanded to 258 out of 259 test files.** Selfhost tests: 738/771 passed (33 failures are all from 17 known intermittent files). Only `missing_return_type.kl` remains — it's an intentional parse-error test where Zig rejects missing return types at parse time while the selfhost parser is more permissive.
+**Full 259/259 test file coverage.** 258 AST parity files + 1 error parity file (`missing_return_type.kl`). Selfhost tests: 742/774 passed (32 failures are all from 17 known intermittent files).
 
-**Test results:** 1412 passed, 32 failed (all intermittent selfhost). Selfhost: 738/771 passed.
+**Self-hosted parser now enforces mandatory return types** — matching Klar's "No ambiguity. No surprises." philosophy. Both parsers reject `fn greet() { ... }` and require `fn greet() -> void { ... }`.
 
 **Self-hosted parser runs natively:** `klar run selfhost/parser_main.kl` → "parser.kl: all smoke tests passed"
 
@@ -339,13 +339,33 @@ assoc_type_generic, error_from_conversion, into_trait, map_for, match_tuple_elem
 
 **Test results:** 738/771 selfhost tests passed. 33 failures are all from 17 known intermittent files (pass individually, fail in test runner context).
 
-**Only remaining file:** `missing_return_type` — Zig parser rejects missing `-> void` at parse time; selfhost parser is more permissive (accepts and emits `return_type: null`). This is an intentional validation-level difference, not a parser bug.
+### Session 12: Mandatory Return Types — Full 259/259 Coverage (COMPLETE)
+
+Enforced mandatory return type annotations in the selfhost parser, aligning with Klar's "No ambiguity. No surprises." philosophy. The Zig parser already rejected missing return types at parse time; now the selfhost parser does too.
+
+**Changes:**
+
+1. **`parser_decl.kl`** — `parse_function_decl` now rejects missing return types
+   - If no `->` arrow is found after `)` and the function is not extern, sets `missing_return_type` flag
+   - After parsing the body (for error recovery), prints error with saved line/column and sets `had_error = true`
+   - Error message: `Parse error at line N, column C: function 'greet' missing return type (use '-> void' for functions that return nothing)`
+   - Extern functions are exempt (see Known Limitations below for caveat)
+   - Captures line/column *before* body parsing so the error points at the `{` where `->` was expected, not at the token after the body. Uses inline Parser construction instead of `report_error()` which would report the post-body position
+
+2. **`scripts/run-selfhost-tests.sh`** — Added Phase 3c: error parity testing
+   - New `ERROR_PARITY_FILES` list for files both parsers should reject
+   - Verifies both Zig and selfhost parsers return non-zero exit for each file
+   - `missing_return_type.kl` is the first (and currently only) entry
+   - Reports "both reject", "selfhost accepts, zig rejects", etc.
+
+**Test results:** 742/774 selfhost tests passed. 259/259 test files now covered (258 AST parity + 1 error parity).
 
 ### Known Limitations (from QA review, deferred)
 - `parse_int_value`: hex/binary/octal literals still use i64 computation (overflow possible for values > i64 max)
 - `is_type_args_context`: uppercase identifier heuristic can misidentify `foo[Bar]` as type args (fundamental ambiguity)
 - `process_string_escapes`: `\u` and `\x` escape sequences not handled (falls through to unknown escape)
 - `final_expr` detection in `parse_block` uses fragile JSON prefix string matching (acknowledged by COUPLING comment)
+- `is_extern` exemption in mandatory return type check is moot: the Zig parser rejects standalone `extern fn` (requires `extern { }` block), so the selfhost exemption has no test coverage and creates a theoretical acceptance gap
 
 ## Key Files
 
@@ -358,11 +378,11 @@ assoc_type_generic, error_from_conversion, into_trait, map_for, match_tuple_elem
 | `src/codegen/emit.zig` | Modified — cross-module type resolution, split declaration/body emission, `skip_main`, `emitModuleBodies` no longer emits wrapper |
 | `selfhost/lexer.kl` | Modified — `substring` → `slice` for byte-indexed token text extraction (UTF-8 fix) |
 | `selfhost/parser.kl` | Modified — json_str control char escaping, operator name alignment (neq→not_eq, and→and_, or→or_) |
-| `selfhost/parser_decl.kl` | Modified — async/comptime/trait-inheritance, generic impl blocks, generic trait types |
+| `selfhost/parser_decl.kl` | Modified — async/comptime/trait-inheritance, generic impl blocks, generic trait types, mandatory return types |
 | `selfhost/parser_stmt.kl` | Modified — negative float patterns, dot-variant patterns, tuple for-loop destructuring, bare uppercase→binding fix, `substring`→`slice` |
 | `selfhost/parser_expr.kl` | Modified — int literal passthrough, await, tuple access, generic struct/enum literals, string interpolation, `\{`/`\}` escapes, `substring`→`slice` |
 | `selfhost/parser_type.kl` | Modified — qualified types (`T.Item`, `Self.Item`) |
 | `selfhost/parser_main.kl` | FULLY WORKING — interpreter and native compilation both succeed |
 | `scripts/triage-selfhost-parser.sh` | NEW — triages all test/native/ files into A/B/C buckets |
 | `scripts/normalize-ast.py` | Modified — 3 normalization rules (assoc types, floats, builtin args); op name rules now redundant |
-| `scripts/run-selfhost-tests.sh` | Modified — PARITY_FILES expanded from 18 → 258 files (258/259 total) |
+| `scripts/run-selfhost-tests.sh` | Modified — PARITY_FILES: 258 files, ERROR_PARITY_FILES: 1 file, Phase 3c error parity (259/259 total) |

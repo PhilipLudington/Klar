@@ -137,13 +137,19 @@ fn parse_function_decl(p: Parser, is_pub: bool, is_extern: bool, is_unsafe: bool
     }
     p2 = consume(p2, "r_paren", "expected ')'")
 
-    // Return type
+    // Return type (required — Klar: "No ambiguity. No surprises.")
     var ret_type: string = "null"
+    var missing_return_type: bool = false
+    // Capture location before body parsing for error reporting
+    let error_line: i32 = p2.current.line
+    let error_col: i32 = p2.current.column
     if tk(p2, "arrow") {
         p2 = advance(p2)
         let rt_result: (Parser, string) = parse_type(p2)
         p2 = rt_result.0
         ret_type = rt_result.1
+    } else if not is_extern {
+        missing_return_type = true
     }
 
     // Body (optional for extern functions)
@@ -152,6 +158,28 @@ fn parse_function_decl(p: Parser, is_pub: bool, is_extern: bool, is_unsafe: bool
         let body_result: (Parser, string) = parse_block(p2)
         p2 = body_result.0
         body_json = body_result.1
+    }
+
+    if missing_return_type {
+        // Report with saved location. We use inline Parser construction instead of
+        // report_error(p2, msg) because report_error reads p2.current.line/column,
+        // which points at the token *after* the body (e.g., next `fn`). The error
+        // location should be where the return type was expected (right after `)`).
+        print("Parse error at line ")
+        print(error_line.to_string())
+        print(", column ")
+        print(error_col.to_string())
+        print(": function '")
+        print(name_result.1)
+        println("' missing return type (use '-> void' for functions that return nothing)")
+        p2 = Parser {
+            source: p2.source,
+            lexer: p2.lexer,
+            current: p2.current,
+            previous: p2.previous,
+            had_error: true,
+            error_count: p2.error_count + 1,
+        }
     }
 
     let json: string = "{\"kind\":\"function\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"is_async\":" + json_bool(is_async) + ",\"is_comptime\":" + json_bool(is_comptime) + ",\"is_unsafe\":" + json_bool(is_unsafe) + ",\"is_extern\":" + json_bool(is_extern) + ",\"is_variadic\":" + json_bool(is_variadic) + ",\"type_params\":" + type_params + ",\"params\":[" + params + "],\"return_type\":" + ret_type + ",\"where_clause\":null,\"body\":" + body_json + "}"

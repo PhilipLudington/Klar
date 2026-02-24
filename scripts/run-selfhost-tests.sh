@@ -483,6 +483,58 @@ else
     done
 fi
 
+# Phase 3c: Error parity (both parsers must reject these files)
+echo ""
+echo "Phase 3c: Parser error parity"
+echo "────────────────────────────────────────"
+
+ERROR_PARITY_FILES="
+test/native/missing_return_type.kl
+"
+
+if [ $build_exit -ne 0 ]; then
+    echo "  (skipped — selfhost parser build failed)"
+else
+    for f in $ERROR_PARITY_FILES; do
+        name=$(basename "$f" .kl)
+        if [ ! -f "$SCRIPT_DIR/$f" ]; then
+            echo "  ✗ $name (file not found: $f)"
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: file not found\""
+            continue
+        fi
+
+        # Zig parser should reject
+        "$KLAR" dump-ast "$SCRIPT_DIR/$f" >/dev/null 2>&1
+        zig_exit=$?
+
+        # Selfhost parser should reject
+        "$SELFHOST_PARSER" "$SCRIPT_DIR/$f" >/dev/null 2>&1
+        selfhost_exit=$?
+
+        if [ $zig_exit -ne 0 ] && [ $selfhost_exit -ne 0 ]; then
+            echo "  ✓ $name (both reject)"
+            PASSED=$((PASSED + 1))
+        elif [ $zig_exit -eq 0 ] && [ $selfhost_exit -eq 0 ]; then
+            echo "  ✗ $name (both accept — expected rejection)"
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: expected parse error from both\""
+        elif [ $selfhost_exit -eq 0 ]; then
+            echo "  ✗ $name (selfhost accepts, zig rejects)"
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: selfhost should reject\""
+        else
+            echo "  ✗ $name (selfhost rejects, zig accepts)"
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: zig should reject\""
+        fi
+    done
+fi
+
 TOTAL=$((PASSED + FAILED))
 echo ""
 echo "Selfhost tests: $PASSED/$TOTAL passed"
