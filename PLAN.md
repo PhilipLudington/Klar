@@ -80,7 +80,7 @@ WebAssembly compilation target is fully working for wasm32 freestanding. `klar b
 
 **Objective:** Implement the Klar compiler front-end (lexer through type checker) in Klar itself, enabling the language to compile its own compiler.
 
-**Status:** In Progress — 9.5 (AST Definitions) complete, 9.6 (Parser Core Subset) next
+**Status:** In Progress — 9.1-9.7 complete (lexer, AST, parser at full parity: 259/259 files, 789/789 tests). 9.8+ (type system port) not started.
 
 **Effort:** Very High | **Impact:** Very High | **Dependencies:** Milestones 6, 7, 8
 
@@ -209,16 +209,16 @@ Define the full AST type hierarchy needed by the parser.
 
 Implement a recursive descent parser for the core language without generics or traits.
 
-- [ ] **9.6.1** Pratt precedence expression parsing (all operators, grouping, calls, field access)
-- [ ] **9.6.2** Statements: `let`/`var`, `return`, `if`/`else`, `while`, `for`, `loop`, `match`, assignment
-- [ ] **9.6.3** Function declarations (with parameter types and return types)
-- [ ] **9.6.4** Struct and enum declarations (no generics yet)
-- [ ] **9.6.5** Type annotation parsing (named types, optionals, arrays, function types)
-- [ ] **9.6.6** Parity tests: parser AST output matches `klar dump-ast` on non-generic test files
+- [x] **9.6.1** Pratt precedence expression parsing (all operators, grouping, calls, field access)
+- [x] **9.6.2** Statements: `let`/`var`, `return`, `if`/`else`, `while`, `for`, `loop`, `match`, assignment
+- [x] **9.6.3** Function declarations (with parameter types and return types)
+- [x] **9.6.4** Struct and enum declarations (no generics yet)
+- [x] **9.6.5** Type annotation parsing (named types, optionals, arrays, function types)
+- [x] **9.6.6** Parity tests: parser AST output matches `klar dump-ast` on non-generic test files
 
 **Success Criteria:**
-- [ ] Parser handles all `test/native/` files that don't use generics, traits, or imports
-- [ ] Error recovery produces partial AST (continue past first error)
+- [x] Parser handles all `test/native/` files that don't use generics, traits, or imports
+- [x] Error recovery produces partial AST (continue past first error)
 
 #### 9.7 — Parser (Full Language)
 
@@ -226,19 +226,19 @@ Implement a recursive descent parser for the core language without generics or t
 
 Extend the parser to cover the complete Klar language.
 
-- [ ] **9.7.1** Generic type parameters on functions, structs, enums (`#[T]`, `#[T: Bound]`)
-- [ ] **9.7.2** Trait definitions and impl blocks (including trait bounds, associated types)
-- [ ] **9.7.3** Closures with explicit types and return
-- [ ] **9.7.4** Full pattern matching (enum variants, wildcards, nested patterns)
-- [ ] **9.7.5** Comptime blocks, comptime functions, comptime parameters
-- [ ] **9.7.6** FFI syntax (`extern fn`), test blocks, `shadow` keyword
-- [ ] **9.7.7** Import statements (all variants: selective, glob, aliased)
-- [ ] **9.7.8** Full parity: identical AST output on entire `test/native/` suite
-- [ ] **9.7.9** Self-parse: parser can parse its own source files
+- [x] **9.7.1** Generic type parameters on functions, structs, enums (`#[T]`, `#[T: Bound]`)
+- [x] **9.7.2** Trait definitions and impl blocks (including trait bounds, associated types)
+- [x] **9.7.3** Closures with explicit types and return
+- [x] **9.7.4** Full pattern matching (enum variants, wildcards, nested patterns)
+- [x] **9.7.5** Comptime blocks, comptime functions, comptime parameters
+- [x] **9.7.6** FFI syntax (`extern fn`), test blocks, `shadow` keyword
+- [x] **9.7.7** Import statements (all variants: selective, glob, aliased)
+- [x] **9.7.8** Full parity: identical AST output on entire `test/native/` suite (259/259 files)
+- [x] **9.7.9** Self-parse: parser can parse its own source files
 
 **Success Criteria:**
-- [ ] 100% parity with Zig parser on all test files
-- [ ] Parser can parse `selfhost/*.kl` — i.e., it can parse itself
+- [x] 100% parity with Zig parser on all test files
+- [x] Parser can parse `selfhost/*.kl` — i.e., it can parse itself
 
 ---
 
@@ -436,7 +436,7 @@ let x: i32 = arr[0]
 
 - [x] **10.30** Update `CLAUDE.md` — Language Syntax Quick Reference
 - [x] **10.31** Update `docs/` — all files referencing generic syntax
-- [x] **10.32** Update `RESUME.md`
+- [x] **10.32** Update project documentation
 
 ### Success Criteria
 
@@ -463,3 +463,14 @@ let x: i32 = arr[0]
 - [DSPy Paper (arXiv)](https://arxiv.org/abs/2310.03714)
 - [DSPy Paper (ICLR 2024)](https://openreview.net/pdf?id=sY5N0zY5Od)
 - [Design Analysis](docs/design/dspy-opportunities.md)
+
+---
+
+## Backlog: Selfhost Parser Known Limitations
+
+Deferred tech debt from the Milestone 9.6 selfhost parser work.
+
+- [ ] `parse_int_value`: hex/binary/octal literals use i64 computation (overflow possible for values > i64 max)
+- [ ] `process_string_escapes`: `\u` and `\x` escape sequences not handled (falls through to unknown escape)
+- [ ] `final_expr` detection in `parse_block` uses fragile JSON prefix string matching (acknowledged by COUPLING comment)
+- [ ] `is_extern` exemption in mandatory return type check is moot: Zig parser rejects standalone `extern fn`, so the selfhost exemption has no test coverage
