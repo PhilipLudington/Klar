@@ -56,8 +56,8 @@ impl Point {
     }
 
     fn distance_from_origin(self: Point) -> f64 {
-        let x: f64 = self.x.as[f64]
-        let y: f64 = self.y.as[f64]
+        let x: f64 = self.x.as#[f64]
+        let y: f64 = self.y.as#[f64]
         return sqrt(x * x + y * y)
     }
 }
@@ -135,20 +135,20 @@ fn main() -> i32 {
 Structs can have type parameters:
 
 ```klar
-struct Pair[T] {
+struct Pair#[T] {
     first: T,
     second: T,
 }
 
-impl Pair[T] {
-    fn swap(self: Pair[T]) -> Pair[T] {
+impl Pair#[T] {
+    fn swap(self: Pair#[T]) -> Pair#[T] {
         return Pair { first: self.second, second: self.first }
     }
 }
 
 fn main() -> i32 {
-    let p: Pair[i32] = Pair { first: 10, second: 20 }
-    let swapped: Pair[i32] = p.swap()
+    let p: Pair#[i32] = Pair { first: 10, second: 20 }
+    let swapped: Pair#[i32] = p.swap()
     return swapped.first  // 20
 }
 ```
@@ -156,7 +156,7 @@ fn main() -> i32 {
 ### Multiple Type Parameters
 
 ```klar
-struct KeyValue[K, V] {
+struct KeyValue#[K, V] {
     key: K,
     value: V,
 }

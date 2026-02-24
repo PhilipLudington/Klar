@@ -1,15 +1,15 @@
-struct   Pair[ T ]  {
+struct   Pair#[ T ]  {
     first:  T
     second:  T
 }
 
-impl[T]  Pair[T]  {
-    fn  get_first( self:  Pair[T] )  ->  T  {
+impl#[T]  Pair#[T]  {
+    fn  get_first( self:  Pair#[T] )  ->  T  {
         return  self.first
     }
 }
 
-fn  max[ T:  Ordered ]( a:  T,  b:  T )  ->  T  {
+fn  max#[ T:  Ordered ]( a:  T,  b:  T )  ->  T  {
     if  a  >  b  {
         return  a
     }
@@ -17,6 +17,6 @@ fn  max[ T:  Ordered ]( a:  T,  b:  T )  ->  T  {
 }
 
 fn main() -> i32 {
-    let p: Pair[i32] = Pair[i32] { first: 10, second: 32 }
+    let p: Pair#[i32] = Pair#[i32] { first: 10, second: 32 }
     return p.get_first()
 }

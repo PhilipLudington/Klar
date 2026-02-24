@@ -48,7 +48,7 @@ klar run hello.kl
 - [Arrays](types/arrays.md) - Fixed-size arrays `[T; N]`
 - [Tuples](types/tuples.md) - Tuple types `(T1, T2, ...)`
 - [Optional](types/optional.md) - The `?T` optional type
-- [Result](types/result.md) - The `Result[T, E]` type
+- [Result](types/result.md) - The `Result#[T, E]` type
 - [Collections](types/collections.md) - List, Map, Set, Range
 - [Smart Pointers](types/smart-pointers.md) - Rc, Arc, Cell
 - [I/O Types](types/io-types.md) - File, streams, readers/writers
@@ -103,9 +103,9 @@ let c: i32 = a +| 200  // Saturating addition (clamps at max)
 Type changes are always explicit:
 
 ```klar
-let x: i64 = 42.as[i64]     // Safe conversion
-let y: ?i32 = "42".to[i32]  // Fallible conversion
-let z: i8 = x.trunc[i8]     // Truncating conversion
+let x: i64 = 42.as#[i64]     // Safe conversion
+let y: ?i32 = "42".to#[i32]  // Fallible conversion
+let z: i8 = x.trunc#[i8]     // Truncating conversion
 ```
 
 ### Ownership Without Complexity
@@ -113,8 +113,8 @@ let z: i8 = x.trunc[i8]     // Truncating conversion
 Memory safety through ownership, but simpler than Rust:
 
 ```klar
-let data: Rc[Data] = Rc.new(Data { ... })  // Reference counted
-let copy: Rc[Data] = data.clone()          // Explicit clone
+let data: Rc#[Data] = Rc.new(Data { ... })  // Reference counted
+let copy: Rc#[Data] = data.clone()          // Explicit clone
 ```
 
 ### C Interoperability (FFI)

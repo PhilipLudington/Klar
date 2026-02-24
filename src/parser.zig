@@ -234,24 +234,6 @@ pub const Parser = struct {
         return next;
     }
 
-    /// Check if a token kind can start a type expression.
-    /// Used to distinguish between type arguments (foo.method[T]()) and
-    /// array subscripts (foo.array[0]).
-    fn canStartType(kind: Token.Kind) bool {
-        return switch (kind) {
-            .identifier, // Named types: i32, String, MyType
-            .question, // Optional: ?T
-            .ref, // Reference: ref T
-            .inout, // Mutable reference: inout T
-            .l_bracket, // Array/slice: [T] or [T; N]
-            .l_paren, // Tuple: (T1, T2)
-            .fn_, // Function: fn(Args) -> Ret
-            .self_type, // Self type
-            => true,
-            else => false,
-        };
-    }
-
     fn match(self: *Parser, kind: Token.Kind) bool {
         if (!self.check(kind)) return false;
         self.advance();
@@ -383,7 +365,7 @@ pub const Parser = struct {
             .plus, .minus, .plus_wrap, .minus_wrap, .plus_sat, .minus_sat => .term,
             .star, .slash, .percent, .star_wrap, .star_sat => .factor,
             .question, .bang => .postfix,
-            .dot, .l_paren, .l_bracket => .call,
+            .dot, .l_paren, .l_bracket, .hash => .call,
             else => .none,
         };
     }
@@ -500,7 +482,8 @@ pub const Parser = struct {
 
             // Call/index/field
             .l_paren => self.parseCall(left, null),
-            .l_bracket => self.parseIndexOrTypeArgs(left),
+            .l_bracket => self.parseIndex(left),
+            .hash => self.parseGenericCall(left),
             .dot => self.parseFieldOrMethod(left),
 
             else => left,
@@ -762,10 +745,11 @@ pub const Parser = struct {
         // Check if this is an uppercase identifier (type name)
         const is_type_name = name.len > 0 and std.ascii.isUpper(name[0]);
 
-        // Check for generic type: TypeName[T, U] ...
-        if (is_type_name and self.check(.l_bracket)) {
+        // Check for generic type: TypeName#[T, U] ...
+        if (is_type_name and self.check(.hash)) {
             // Parse type arguments
-            self.advance(); // consume '['
+            self.advance(); // consume '#'
+            try self.consume(.l_bracket, "expected '[' after '#' in type arguments");
 
             var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
             while (!self.check(.r_bracket) and !self.check(.eof)) {
@@ -784,12 +768,12 @@ pub const Parser = struct {
             });
             const full_type: ast.TypeExpr = .{ .generic_apply = generic_type };
 
-            // Check for enum literal: TypeName[T]::VariantName or TypeName[T]::VariantName(payload)
+            // Check for enum literal: TypeName#[T]::VariantName or TypeName#[T]::VariantName(payload)
             if (self.check(.colon_colon)) {
                 return self.parseEnumLiteralWithType(full_type, start_span);
             }
 
-            // Check for struct literal with generic type: TypeName[T, U] { ... }
+            // Check for struct literal with generic type: TypeName#[T, U] { ... }
             if (self.check(.l_brace)) {
                 return self.parseStructLiteralWithType(full_type, start_span);
             }
@@ -1456,73 +1440,26 @@ pub const Parser = struct {
         return .{ .call = call };
     }
 
-    /// Parse either an index expression (arr[0]) or type arguments for a function call (func[T](...)).
-    /// Distinguishes by looking ahead: if the pattern is [...](, it's type args + call.
-    fn parseIndexOrTypeArgs(self: *Parser, left: ast.Expr) ParseError!ast.Expr {
-        // Only consider type arguments for identifier expressions (function names)
-        // Use lookahead to check if this is the pattern: identifier[...](
-        // This is unambiguous - arr[i] won't have ( after ], but func[T]() will.
-        if (left == .identifier and self.isTypeArgsFollowedByCall()) {
-            // This is type arguments followed by a call.
-            self.advance(); // consume '['
+    /// Parse generic type arguments on a function call: func#[T, U](...).
+    /// '#' is unambiguous — no lookahead heuristic needed.
+    fn parseGenericCall(self: *Parser, left: ast.Expr) ParseError!ast.Expr {
+        self.advance(); // consume '#'
+        try self.consume(.l_bracket, "expected '[' after '#' in type arguments");
 
-            var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
-            if (!self.check(.r_bracket)) {
-                while (true) {
-                    try type_args.append(self.allocator, try self.parseType());
-                    if (!self.match(.comma)) break;
-                }
-            }
-            try self.consume(.r_bracket, "expected ']' after type arguments");
-
-            // We already verified ( follows, so this should succeed
-            return self.parseCall(left, try self.dupeSlice(ast.TypeExpr, type_args.items));
-        }
-
-        // Otherwise it's a regular index expression
-        return self.parseIndex(left);
-    }
-
-    /// Look ahead to check if the current '[' starts type arguments followed by '('.
-    /// Scans forward counting bracket depth until finding the matching ']',
-    /// then checks if '(' immediately follows.
-    fn isTypeArgsFollowedByCall(self: *Parser) bool {
-        // Save lexer state for lookahead
-        const saved_pos = self.lexer.pos;
-        const saved_line = self.lexer.line;
-        const saved_column = self.lexer.column;
-
-        // We're currently at '[', skip it
-        var tok = self.lexer.next();
-        var depth: i32 = 1;
-
-        // Scan until we find the matching ']'
-        while (depth > 0 and tok.kind != .eof) {
-            if (tok.kind == .l_bracket) {
-                depth += 1;
-            } else if (tok.kind == .r_bracket) {
-                depth -= 1;
-            }
-            if (depth > 0) {
-                tok = self.lexer.next();
+        var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
+        if (!self.check(.r_bracket)) {
+            while (true) {
+                try type_args.append(self.allocator, try self.parseType());
+                if (!self.match(.comma)) break;
             }
         }
+        try self.consume(.r_bracket, "expected ']' after type arguments");
 
-        // Skip any newlines after ']'
-        var next = self.lexer.next();
-        while (next.kind == .newline) {
-            next = self.lexer.next();
+        if (!self.check(.l_paren)) {
+            try self.reportError("expected '(' after type arguments in generic call");
+            return ParseError.UnexpectedToken;
         }
-
-        // Check if '(' follows
-        const result = (depth == 0 and next.kind == .l_paren);
-
-        // Restore lexer state
-        self.lexer.pos = saved_pos;
-        self.lexer.line = saved_line;
-        self.lexer.column = saved_column;
-
-        return result;
+        return self.parseCall(left, try self.dupeSlice(ast.TypeExpr, type_args.items));
     }
 
     fn parseIndex(self: *Parser, object: ast.Expr) ParseError!ast.Expr {
@@ -1544,7 +1481,7 @@ pub const Parser = struct {
     fn parseFieldOrMethod(self: *Parser, object: ast.Expr) ParseError!ast.Expr {
         self.advance(); // consume '.'
 
-        // Check for type cast: .as[T] or .trunc[T] or .to[T]
+        // Check for type cast: .as#[T] or .trunc#[T] or .to#[T]
         if (self.check(.as) or self.tokenText(self.current).len > 0) {
             const method_name = self.tokenText(self.current);
             if (std.mem.eql(u8, method_name, "as")) {
@@ -1580,13 +1517,11 @@ pub const Parser = struct {
             return self.parseMethodCall(object, field_name, null);
         }
 
-        // Check for method call with type arguments: foo.method[T]()
-        // Only consume '[' if the next token can start a type expression.
-        // This distinguishes between:
-        //   - foo.method[T]() - type arguments (T can start a type)
-        //   - foo.array[0]    - array subscript (0 cannot start a type)
-        if (self.check(.l_bracket) and canStartType(self.peekNext().kind)) {
-            self.advance(); // consume '['
+        // Check for method call with type arguments: foo.method#[T]()
+        // '#' is unambiguous — no heuristic needed
+        if (self.check(.hash)) {
+            self.advance(); // consume '#'
+            try self.consume(.l_bracket, "expected '[' after '#' in type arguments");
             var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
             if (!self.check(.r_bracket)) {
                 while (true) {
@@ -1598,6 +1533,7 @@ pub const Parser = struct {
 
             // Now expect '(' for the method call
             if (!self.check(.l_paren)) {
+                try self.reportError("expected '(' after type arguments in method call");
                 return ParseError.UnexpectedToken;
             }
             return self.parseMethodCall(object, field_name, try self.dupeSlice(ast.TypeExpr, type_args.items));
@@ -1615,7 +1551,8 @@ pub const Parser = struct {
     fn parseTypeCast(self: *Parser, object: ast.Expr, truncating: bool) ParseError!ast.Expr {
         self.advance(); // consume 'as' or 'trunc'
 
-        try self.consume(.l_bracket, "expected '[' after cast");
+        try self.consume(.hash, "expected '#' after cast");
+        try self.consume(.l_bracket, "expected '[' after '#' in cast");
         const target_type = try self.parseType();
         try self.consume(.r_bracket, "expected ']' after type");
 
@@ -1630,12 +1567,13 @@ pub const Parser = struct {
         return .{ .type_cast = type_cast };
     }
 
-    /// Parse fallible conversion: value.to[T]
+    /// Parse fallible conversion: value.to#[T]
     /// Creates a MethodCall with method_name="to", type_args=[T], and empty args
     fn parseFallibleConversion(self: *Parser, object: ast.Expr) ParseError!ast.Expr {
         self.advance(); // consume 'to'
 
-        try self.consume(.l_bracket, "expected '[' after 'to'");
+        try self.consume(.hash, "expected '#' after 'to'");
+        try self.consume(.l_bracket, "expected '[' after '#' in conversion");
         const target_type = try self.parseType();
         try self.consume(.r_bracket, "expected ']' after type");
 
@@ -2021,10 +1959,11 @@ pub const Parser = struct {
         // Check if this looks like a type name (starts with uppercase)
         const is_type_name = name.len > 0 and std.ascii.isUpper(name[0]);
 
-        // Check for generic type pattern: Type[T]::Variant or Type[T].Variant
-        if (is_type_name and self.check(.l_bracket)) {
+        // Check for generic type pattern: Type#[T]::Variant or Type#[T].Variant
+        if (is_type_name and self.check(.hash)) {
             // Parse type arguments
-            self.advance(); // consume '['
+            self.advance(); // consume '#'
+            try self.consume(.l_bracket, "expected '[' after '#' in type arguments");
 
             var type_args = std.ArrayListUnmanaged(ast.TypeExpr){};
             while (!self.check(.r_bracket) and !self.check(.eof)) {
@@ -2327,8 +2266,10 @@ pub const Parser = struct {
 
             var base: ast.TypeExpr = .{ .named = .{ .name = name, .span = span } };
 
-            // Check for generic arguments: Type[A, B]
-            if (self.match(.l_bracket)) {
+            // Check for generic arguments: Type#[A, B]
+            if (self.check(.hash) and self.peekNext().kind == .l_bracket) {
+                self.advance(); // consume '#'
+                self.advance(); // consume '['
                 var args = std.ArrayListUnmanaged(ast.TypeExpr){};
 
                 while (true) {
@@ -2346,7 +2287,7 @@ pub const Parser = struct {
                 base = .{ .generic_apply = generic };
             }
 
-            // Check for qualified access: T.Item or T[U].Item
+            // Check for qualified access: T.Item or T#[U].Item
             while (self.match(.dot)) {
                 if (!self.check(.identifier)) {
                     try self.reportError("expected member name after '.'");
@@ -2632,9 +2573,11 @@ pub const Parser = struct {
     }
 
     fn parseTypeParams(self: *Parser) ParseError![]const ast.TypeParam {
-        if (!self.match(.l_bracket)) {
+        if (!(self.check(.hash) and self.peekNext().kind == .l_bracket)) {
             return &[_]ast.TypeParam{};
         }
+        self.advance(); // consume '#'
+        self.advance(); // consume '[' (confirmed by peekNext)
 
         var params = std.ArrayListUnmanaged(ast.TypeParam){};
 
@@ -2834,7 +2777,7 @@ pub const Parser = struct {
         var type_params: []const ast.TypeParam = &.{};
         if (!is_extern) {
             type_params = try self.parseTypeParams();
-        } else if (self.check(.l_bracket)) {
+        } else if (self.check(.hash)) {
             try self.reportError("extern enums cannot have type parameters");
             return ParseError.UnexpectedToken;
         }
@@ -3057,7 +3000,7 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'impl'
 
-        // Parse optional type parameters: impl[T]
+        // Parse optional type parameters: impl#[T]
         const type_params = try self.parseTypeParams();
 
         // Parse target type
@@ -3240,7 +3183,7 @@ pub const Parser = struct {
         const name = try self.consumeIdentifier();
 
         // Extern functions cannot have type parameters (generics)
-        if (self.check(.l_bracket)) {
+        if (self.check(.hash)) {
             try self.reportError("extern functions cannot have type parameters");
             return ParseError.UnexpectedToken;
         }
@@ -3831,7 +3774,7 @@ test "reject invalid modifier order for async function declaration" {
 }
 
 test "parse generic function" {
-    var result = try testParseDecl("fn identity[T](x: T) -> T { x }");
+    var result = try testParseDecl("fn identity#[T](x: T) -> T { x }");
     defer result.arena.deinit();
 
     try std.testing.expect(result.decl == .function);
@@ -3876,7 +3819,7 @@ test "parse struct declaration" {
 }
 
 test "parse generic struct" {
-    var result = try testParseDecl("struct Container[T] { value: T }");
+    var result = try testParseDecl("struct Container#[T] { value: T }");
     defer result.arena.deinit();
 
     try std.testing.expect(result.decl == .struct_decl);
@@ -3893,7 +3836,7 @@ test "parse enum declaration" {
 }
 
 test "parse enum with tuple payload" {
-    var result = try testParseDecl("enum Option[T] { Some(T), None }");
+    var result = try testParseDecl("enum Option#[T] { Some(T), None }");
     defer result.arena.deinit();
 
     try std.testing.expect(result.decl == .enum_decl);

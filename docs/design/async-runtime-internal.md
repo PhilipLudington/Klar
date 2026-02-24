@@ -6,7 +6,7 @@ This document defines internal async runtime conventions used by current Klar ba
 
 - Internal implementation detail only.
 - Not a stable public ABI.
-- `Future[T]` layout and state tags may change without compatibility guarantees.
+- `Future#[T]` layout and state tags may change without compatibility guarantees.
 
 ## Future State Tags
 
@@ -21,7 +21,7 @@ Interpreter and VM use enum-based state representations with equivalent semantic
 
 ## Await Semantics (Current)
 
-- `await` on `Future[T]` in `completed` state yields `T` (or `void` payload for `Future[void]`).
+- `await` on `Future#[T]` in `completed` state yields `T` (or `void` payload for `Future#[void]`).
 - `await` on `pending`/`failed`/`cancelled` is a runtime error with message:
   - `runtime error: await on non-completed Future`
 - CLI backend behavior is standardized to exit non-zero (`exit code 1`) on these runtime errors.

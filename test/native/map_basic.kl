@@ -1,7 +1,7 @@
-// Basic Map[K,V] tests
+// Basic Map#[K,V] tests
 fn main() -> i32 {
     // Create a new map
-    var m: Map[i32, i32] = Map.new[i32, i32]()
+    var m: Map#[i32, i32] = Map.new#[i32, i32]()
 
     // Test initial state
     if m.len() != 0 {

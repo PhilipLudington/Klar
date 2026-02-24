@@ -125,7 +125,7 @@ impl Point {
     }
 }
 
-fn identity[T](x: T) -> T {
+fn identity#[T](x: T) -> T {
     return x
 }
 

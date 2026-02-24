@@ -1,13 +1,13 @@
-async fn noop() -> Future[void] {
+async fn noop() -> Future#[void] {
     return
 }
 
-async fn worker() -> Future[i32] {
+async fn worker() -> Future#[i32] {
     await noop()
     return 7
 }
 
 fn main() -> i32 {
-    let _f: Future[i32] = worker()
+    let _f: Future#[i32] = worker()
     return 0
 }

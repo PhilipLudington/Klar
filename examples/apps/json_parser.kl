@@ -3,7 +3,7 @@
 //
 // A JSON parser implementation showcasing Klar's core features:
 // - Recursive enum type (JsonValue with nested arrays/objects)
-// - Generic collection types (List[T], Map[K,V])
+// - Generic collection types (List#[T], Map#[K,V])
 // - Result type for error handling
 // - Character-level string processing
 // - Pattern matching
@@ -17,8 +17,8 @@ enum JsonValue {
     Bool(bool),
     Number(f64),
     Str(string),
-    Array(List[JsonValue]),
-    Object(Map[string, JsonValue]),
+    Array(List#[JsonValue]),
+    Object(Map#[string, JsonValue]),
 }
 
 // ============================================================================
@@ -59,7 +59,7 @@ fn is_digit(code: i32) -> bool {
 fn skip_ws(chars: [char], pos: i32, len: i32) -> i32 {
     var i: i32 = pos
     while i < len {
-        if not is_whitespace(chars[i].as[i32]) {
+        if not is_whitespace(chars[i].as#[i32]) {
             break
         }
         i = i + 1
@@ -71,7 +71,7 @@ fn skip_ws(chars: [char], pos: i32, len: i32) -> i32 {
 // Main Parse Entry Point
 // ============================================================================
 
-fn parse_json(input: string) -> Result[JsonValue, JsonError] {
+fn parse_json(input: string) -> Result#[JsonValue, JsonError] {
     let chars: [char] = input.chars()
     let len: i32 = input.len()
     var pos: i32 = 0
@@ -92,14 +92,14 @@ fn parse_json(input: string) -> Result[JsonValue, JsonError] {
 // Value Parsing
 // ============================================================================
 
-fn parse_value(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), JsonError] {
+fn parse_value(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
     var p: i32 = skip_ws(chars, pos, len)
     
     if p >= len {
         return Err(JsonError::UnexpectedEnd)
     }
     
-    let code: i32 = chars[p].as[i32]
+    let code: i32 = chars[p].as#[i32]
 
     if code == 110 {            // 'n' -> null
         return parse_null(chars, p, len)
@@ -127,58 +127,58 @@ fn parse_value(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), Js
 }
 
 // Parse 'null'
-fn parse_null(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), JsonError] {
+fn parse_null(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
     if pos + 4 > len {
         return Err(JsonError::UnexpectedEnd)
     }
     // n=110, u=117, l=108
-    if chars[pos].as[i32] == 110 and chars[pos+1].as[i32] == 117 and
-       chars[pos+2].as[i32] == 108 and chars[pos+3].as[i32] == 108 {
+    if chars[pos].as#[i32] == 110 and chars[pos+1].as#[i32] == 117 and
+       chars[pos+2].as#[i32] == 108 and chars[pos+3].as#[i32] == 108 {
         return Ok((JsonValue::Null, pos + 4))
     }
     return Err(JsonError::ExpectedValue)
 }
 
 // Parse 'true'
-fn parse_true(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), JsonError] {
+fn parse_true(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
     if pos + 4 > len {
         return Err(JsonError::UnexpectedEnd)
     }
     // t=116, r=114, u=117, e=101
-    if chars[pos].as[i32] == 116 and chars[pos+1].as[i32] == 114 and
-       chars[pos+2].as[i32] == 117 and chars[pos+3].as[i32] == 101 {
+    if chars[pos].as#[i32] == 116 and chars[pos+1].as#[i32] == 114 and
+       chars[pos+2].as#[i32] == 117 and chars[pos+3].as#[i32] == 101 {
         return Ok((JsonValue::Bool(true), pos + 4))
     }
     return Err(JsonError::ExpectedValue)
 }
 
 // Parse 'false'
-fn parse_false(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), JsonError] {
+fn parse_false(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
     if pos + 5 > len {
         return Err(JsonError::UnexpectedEnd)
     }
     // f=102, a=97, l=108, s=115, e=101
-    if chars[pos].as[i32] == 102 and chars[pos+1].as[i32] == 97 and
-       chars[pos+2].as[i32] == 108 and chars[pos+3].as[i32] == 115 and
-       chars[pos+4].as[i32] == 101 {
+    if chars[pos].as#[i32] == 102 and chars[pos+1].as#[i32] == 97 and
+       chars[pos+2].as#[i32] == 108 and chars[pos+3].as#[i32] == 115 and
+       chars[pos+4].as#[i32] == 101 {
         return Ok((JsonValue::Bool(false), pos + 5))
     }
     return Err(JsonError::ExpectedValue)
 }
 
 // Parse a JSON string
-fn parse_string(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), JsonError] {
+fn parse_string(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
     let result: (string, i32) = parse_string_raw(chars, pos, len)?
     return Ok((JsonValue::Str(result.0), result.1))
 }
 
 // Parse raw string value (for keys and values)
-fn parse_string_raw(chars: [char], pos: i32, len: i32) -> Result[(string, i32), JsonError] {
+fn parse_string_raw(chars: [char], pos: i32, len: i32) -> Result#[(string, i32), JsonError] {
     var p: i32 = pos + 1  // Skip opening "
     var result: String = String.new()
     
     while p < len {
-        let code: i32 = chars[p].as[i32]
+        let code: i32 = chars[p].as#[i32]
         
         if code == 34 {             // '"' end of string
             return Ok((result.as_str(), p + 1))
@@ -189,16 +189,16 @@ fn parse_string_raw(chars: [char], pos: i32, len: i32) -> Result[(string, i32), 
             if p >= len {
                 return Err(JsonError::UnexpectedEnd)
             }
-            let esc: i32 = chars[p].as[i32]
+            let esc: i32 = chars[p].as#[i32]
             // Note: \uXXXX unicode escapes are not supported
             if esc == 34 { result.push('"') }           // \"
-            else if esc == 92 { result.push(92.as[char]) }  // \\
+            else if esc == 92 { result.push(92.as#[char]) }  // \\
             else if esc == 47 { result.push('/') }       // \/
-            else if esc == 98 { result.push(8.as[char]) }   // \b -> backspace
-            else if esc == 102 { result.push(12.as[char]) } // \f -> form feed
-            else if esc == 110 { result.push(10.as[char]) } // \n -> newline
-            else if esc == 114 { result.push(13.as[char]) } // \r -> carriage return
-            else if esc == 116 { result.push(9.as[char]) }  // \t -> tab
+            else if esc == 98 { result.push(8.as#[char]) }   // \b -> backspace
+            else if esc == 102 { result.push(12.as#[char]) } // \f -> form feed
+            else if esc == 110 { result.push(10.as#[char]) } // \n -> newline
+            else if esc == 114 { result.push(13.as#[char]) } // \r -> carriage return
+            else if esc == 116 { result.push(9.as#[char]) }  // \t -> tab
             else { return Err(JsonError::InvalidEscape) }
             p = p + 1
         } else {
@@ -211,11 +211,11 @@ fn parse_string_raw(chars: [char], pos: i32, len: i32) -> Result[(string, i32), 
 }
 
 // Parse a JSON number
-fn parse_number(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), JsonError] {
+fn parse_number(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
     var p: i32 = pos
     var negative: bool = false
     
-    if p < len and chars[p].as[i32] == 45 {  // '-'
+    if p < len and chars[p].as#[i32] == 45 {  // '-'
         negative = true
         p = p + 1
     }
@@ -223,8 +223,8 @@ fn parse_number(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), J
     // Parse integer part
     var int_part: f64 = 0.0
     var has_digits: bool = false
-    while p < len and is_digit(chars[p].as[i32]) {
-        int_part = int_part * 10.0 + (chars[p].as[i32] - 48).as[f64]
+    while p < len and is_digit(chars[p].as#[i32]) {
+        int_part = int_part * 10.0 + (chars[p].as#[i32] - 48).as#[f64]
         p = p + 1
         has_digits = true
     }
@@ -236,12 +236,12 @@ fn parse_number(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), J
     var result: f64 = int_part
     
     // Parse decimal part
-    if p < len and chars[p].as[i32] == 46 {  // '.'
+    if p < len and chars[p].as#[i32] == 46 {  // '.'
         p = p + 1
         var decimal: f64 = 0.1
         var has_frac: bool = false
-        while p < len and is_digit(chars[p].as[i32]) {
-            result = result + (chars[p].as[i32] - 48).as[f64] * decimal
+        while p < len and is_digit(chars[p].as#[i32]) {
+            result = result + (chars[p].as#[i32] - 48).as#[f64] * decimal
             decimal = decimal * 0.1
             p = p + 1
             has_frac = true
@@ -253,12 +253,12 @@ fn parse_number(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), J
     
     // Parse exponent
     if p < len {
-        let exp_char: i32 = chars[p].as[i32]
+        let exp_char: i32 = chars[p].as#[i32]
         if exp_char == 101 or exp_char == 69 {  // 'e' or 'E'
             p = p + 1
             var exp_neg: bool = false
             if p < len {
-                let sign: i32 = chars[p].as[i32]
+                let sign: i32 = chars[p].as#[i32]
                 if sign == 45 {  // '-'
                     exp_neg = true
                     p = p + 1
@@ -268,8 +268,8 @@ fn parse_number(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), J
             }
             var exp: i32 = 0
             var has_exp: bool = false
-            while p < len and is_digit(chars[p].as[i32]) {
-                exp = exp * 10 + (chars[p].as[i32] - 48)
+            while p < len and is_digit(chars[p].as#[i32]) {
+                exp = exp * 10 + (chars[p].as#[i32] - 48)
                 p = p + 1
                 has_exp = true
             }
@@ -298,13 +298,13 @@ fn parse_number(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), J
 }
 
 // Parse a JSON array
-fn parse_array(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), JsonError] {
+fn parse_array(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
     var p: i32 = pos + 1  // Skip '['
-    var elements: List[JsonValue] = List.new[JsonValue]()
+    var elements: List#[JsonValue] = List.new#[JsonValue]()
     
     p = skip_ws(chars, p, len)
     
-    if p < len and chars[p].as[i32] == 93 {  // ']'
+    if p < len and chars[p].as#[i32] == 93 {  // ']'
         return Ok((JsonValue::Array(elements), p + 1))
     }
 
@@ -316,7 +316,7 @@ fn parse_array(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), Js
 
     // Parse remaining elements
     while p < len {
-        let c: i32 = chars[p].as[i32]
+        let c: i32 = chars[p].as#[i32]
         if c == 93 {            // ']'
             return Ok((JsonValue::Array(elements), p + 1))
         }
@@ -335,20 +335,20 @@ fn parse_array(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), Js
 }
 
 // Parse a JSON object
-fn parse_object(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), JsonError] {
+fn parse_object(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
     var p: i32 = pos + 1  // Skip '{'
-    var entries: Map[string, JsonValue] = Map.new[string, JsonValue]()
+    var entries: Map#[string, JsonValue] = Map.new#[string, JsonValue]()
     
     p = skip_ws(chars, p, len)
     
-    if p < len and chars[p].as[i32] == 125 {  // '}'
+    if p < len and chars[p].as#[i32] == 125 {  // '}'
         return Ok((JsonValue::Object(entries), p + 1))
     }
 
     var first: bool = true
     while p < len {
         if not first {
-            if chars[p].as[i32] != 44 {  // ','
+            if chars[p].as#[i32] != 44 {  // ','
                 return Err(JsonError::ExpectedComma)
             }
             p = p + 1
@@ -359,7 +359,7 @@ fn parse_object(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), J
         let key: (string, i32) = parse_string_raw(chars, p, len)?
         p = key.1
         p = skip_ws(chars, p, len)
-        if p >= len or chars[p].as[i32] != 58 {  // ':'
+        if p >= len or chars[p].as#[i32] != 58 {  // ':'
             return Err(JsonError::ExpectedColon)
         }
         p = p + 1
@@ -369,7 +369,7 @@ fn parse_object(chars: [char], pos: i32, len: i32) -> Result[(JsonValue, i32), J
         p = val.1
         p = skip_ws(chars, p, len)
 
-        if p < len and chars[p].as[i32] == 125 {  // '}'
+        if p < len and chars[p].as#[i32] == 125 {  // '}'
             return Ok((JsonValue::Object(entries), p + 1))
         }
     }
@@ -448,7 +448,7 @@ fn main() -> i32 {
 
     println("=== Features Demonstrated ===")
     println("- Recursive enum (JsonValue)")  
-    println("- Generic collections (List[T], Map[K,V])")
+    println("- Generic collections (List#[T], Map#[K,V])")
     println("- Result type error handling")
     println("- ? operator for error propagation")
     println("- Pattern matching")
@@ -473,7 +473,7 @@ fn error_name(err: JsonError) -> string {
 }
 
 fn test_parse(input: string) -> void {
-    let result: Result[JsonValue, JsonError] = parse_json(input)
+    let result: Result#[JsonValue, JsonError] = parse_json(input)
     match result {
         Ok(v) => {
             let desc: string = value_kind(v)

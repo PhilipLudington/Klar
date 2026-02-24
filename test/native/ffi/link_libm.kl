@@ -15,7 +15,7 @@ fn main() -> i32 {
     let result: f64 = unsafe { sqrt(x) }
 
     // sqrt(4.0) = 2.0, floor it to integer
-    let int_result: i32 = unsafe { floor(result) }.as[i32]
+    let int_result: i32 = unsafe { floor(result) }.as#[i32]
 
     return int_result
 }

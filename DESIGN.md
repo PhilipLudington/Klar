@@ -46,7 +46,7 @@ Klar is not a systems language (like C, Rust, or Zig). It targets the same space
 | Null danger | `?T` option types |
 | Memory unsafety | Ownership + borrows, no dangling refs |
 | Header/source split | Modules |
-| Implicit conversions | Explicit `.as[]`, `.to[]` |
+| Implicit conversions | Explicit `.as#[]`, `.to#[]` |
 | Overloading complexity | No overloading, use generics |
 | Build system | In-language or convention-based |
 
@@ -225,7 +225,7 @@ fn greet(name: string) {
 }
 
 // Generic function
-fn max[T: Ordered](a: T, b: T) -> T {
+fn max#[T: Ordered](a: T, b: T) -> T {
     if a > b {
         return a
     }
@@ -233,7 +233,7 @@ fn max[T: Ordered](a: T, b: T) -> T {
 }
 
 // Async function
-async fn fetch(url: string) -> Result[Response, HttpError] {
+async fn fetch(url: string) -> Result#[Response, HttpError] {
     let response: Response = http.get(url).await?
     return Ok(response)
 }
@@ -247,7 +247,7 @@ All variables require explicit type annotations. This follows the "explicit over
 let x: i32 = 5          // immutable
 var y: i32 = 10         // mutable
 let name: string = "Alice"
-var items: List[i32] = List.new[i32]()
+var items: List#[i32] = List.new#[i32]()
 ```
 
 ### Structs
@@ -285,12 +285,12 @@ enum Direction {
 }
 
 // With data
-enum Option[T] {
+enum Option#[T] {
     Some(T)
     None
 }
 
-enum Result[T, E] {
+enum Result#[T, E] {
     Ok(T)
     Err(E)
 }
@@ -480,8 +480,8 @@ let f: fn(i32, i32) -> i32 = add
 
 ```klar
 type UserId = i64
-type Callback = fn(Event) -> Result[void, Error]
-type StringMap[V] = Map[String, V]
+type Callback = fn(Event) -> Result#[void, Error]
+type StringMap#[V] = Map#[String, V]
 ```
 
 ### No Implicit Conversions
@@ -490,9 +490,9 @@ type StringMap[V] = Map[String, V]
 let x: i32 = 5
 let y: i64 = x          // ERROR
 
-let y: i64 = x.as[i64]  // explicit widening (safe)
-let z: i16 = x.to[i16]  // explicit narrowing (may trap)
-let w: i16 = x.trunc[i16]  // truncate (never traps)
+let y: i64 = x.as#[i64]  // explicit widening (safe)
+let z: i16 = x.to#[i16]  // explicit narrowing (may trap)
+let w: i16 = x.trunc#[i16]  // truncate (never traps)
 ```
 
 ### Defined Arithmetic Behavior
@@ -521,7 +521,7 @@ fn process_data() {
     // Outer scope
     {
         // Inner block scope
-        var writer: BufWriter[File] = BufWriter.new[File](file)
+        var writer: BufWriter#[File] = BufWriter.new#[File](file)
         writer.write_string("data")
         // writer automatically flushed when block ends
     }
@@ -602,7 +602,7 @@ struct Parser {
 
 // OR: use Rc for sharing
 struct Parser {
-    source: Rc[string]
+    source: Rc#[string]
 }
 ```
 
@@ -612,25 +612,25 @@ This eliminates lifetime annotations entirely.
 
 ```klar
 // Single-threaded
-let data: Rc[Buffer] = Rc.new(Buffer.new(1024))
-let alias: Rc[Buffer] = data.clone()   // cheap increment
+let data: Rc#[Buffer] = Rc.new(Buffer.new(1024))
+let alias: Rc#[Buffer] = data.clone()   // cheap increment
 
 // Thread-safe
-let shared: Arc[Config] = Arc.new(Config.load())
+let shared: Arc#[Config] = Arc.new(Config.load())
 
 // Weak references (break cycles)
-let weak: Weak[Config] = strong.downgrade()
+let weak: Weak#[Config] = strong.downgrade()
 ```
 
 ### Interior Mutability
 
 ```klar
 // Cell for simple values
-let counter: Rc[Cell[i32]] = Rc.new(Cell.new(0))
+let counter: Rc#[Cell#[i32]] = Rc.new(Cell.new(0))
 counter.set(counter.get() + 1)
 
 // RefCell for complex values (runtime checks)
-let buffer: Rc[RefCell[Buffer]] = Rc.new(RefCell.new(Buffer.new(1024)))
+let buffer: Rc#[RefCell#[Buffer]] = Rc.new(RefCell.new(Buffer.new(1024)))
 buffer.borrow_mut().write(data)
 ```
 
@@ -638,7 +638,7 @@ buffer.borrow_mut().write(data)
 
 ```klar
 unsafe {
-    let ptr: RawPtr[u8] = raw_allocate(1024)
+    let ptr: RawPtr#[u8] = raw_allocate(1024)
     ptr.write(0, 42)
     raw_free(ptr)
 }
@@ -666,12 +666,12 @@ Traps halt execution immediately with a diagnostic.
 ### Result Type
 
 ```klar
-enum Result[T, E] {
+enum Result#[T, E] {
     Ok(T)
     Err(E)
 }
 
-fn divide(a: i32, b: i32) -> Result[i32, MathError] {
+fn divide(a: i32, b: i32) -> Result#[i32, MathError] {
     if b == 0 {
         return Err(MathError.DivideByZero)
     }
@@ -699,7 +699,7 @@ let value: i32 = result ?? 0
 let value: i32 = result!
 
 // Propagate with ?
-fn process() -> Result[Data, Error] {
+fn process() -> Result#[Data, Error] {
     let content: string = read_file(path)?   // returns early on Err
     let parsed: Data = parse(content)?
     return Ok(parsed)
@@ -722,7 +722,7 @@ enum ProcessError {
 }
 
 // Conversion for ? propagation
-impl IoError: Into[ProcessError] {
+impl IoError: Into#[ProcessError] {
     fn into(self) -> ProcessError {
         return ProcessError.Io(self)
     }
@@ -734,7 +734,7 @@ impl IoError: Into[ProcessError] {
 Try blocks allow grouping multiple fallible operations. The block captures errors and assigns the final result.
 
 ```klar
-var result: Result[Data, Error]
+var result: Result#[Data, Error]
 try {
     let a: Data1 = step_one()?
     let b: Data2 = step_two(a)?
@@ -752,7 +752,7 @@ try {
 ### Async/Await (IO-bound)
 
 ```klar
-async fn fetch_data(url: string) -> Result[Data, HttpError] {
+async fn fetch_data(url: string) -> Result#[Data, HttpError] {
     let response: Response = http.get(url).await?
     let body: string = response.read_body().await?
     return Ok(parse(body))
@@ -772,7 +772,7 @@ async fn main() -> i32 {
 spawn handle_connection(conn)
 
 // Await result
-let task: Task[Data] = spawn fetch_data(url)
+let task: Task#[Data] = spawn fetch_data(url)
 let result: Data = task.await
 
 // Concurrent operations
@@ -795,12 +795,12 @@ let first: Data = await_first(
 ### Structured Concurrency
 
 ```klar
-async fn process_batch(items: List[Item]) -> List[ProcessResult] {
-    let mapper: fn(Item) -> Task[ProcessResult] = |item: Item| -> Task[ProcessResult] {
+async fn process_batch(items: List#[Item]) -> List#[ProcessResult] {
+    let mapper: fn(Item) -> Task#[ProcessResult] = |item: Item| -> Task#[ProcessResult] {
         return spawn process_item(item)
     }
-    let tasks: List[Task[ProcessResult]] = items.map(mapper)
-    let results: List[ProcessResult] = await_all(tasks)
+    let tasks: List#[Task#[ProcessResult]] = items.map(mapper)
+    let results: List#[ProcessResult] = await_all(tasks)
     // All tasks guaranteed complete here
     return results
 }
@@ -822,9 +822,9 @@ thread.scope(scope_fn)
 ### Channels
 
 ```klar
-let channel_pair: (Sender[Message], Receiver[Message]) = channel[Message]()
-let tx: Sender[Message] = channel_pair.0
-let rx: Receiver[Message] = channel_pair.1
+let channel_pair: (Sender#[Message], Receiver#[Message]) = channel#[Message]()
+let tx: Sender#[Message] = channel_pair.0
+let rx: Receiver#[Message] = channel_pair.1
 
 spawn async {
     tx.send(Message.Data(payload)).await
@@ -854,33 +854,33 @@ loop {
 
 ```klar
 // Mutex
-let data: Mutex[HashMap[string, i32]] = Mutex.new(HashMap.new[string, i32]())
+let data: Mutex#[HashMap#[string, i32]] = Mutex.new(HashMap.new#[string, i32]())
 {
-    var guard: MutexGuard[HashMap[string, i32]] = data.lock()
+    var guard: MutexGuard#[HashMap#[string, i32]] = data.lock()
     guard.insert("key", value)
 }
 
 // RwLock
-let cache: RwLock[HashMap[string, i32]] = RwLock.new(HashMap.new[string, i32]())
+let cache: RwLock#[HashMap#[string, i32]] = RwLock.new(HashMap.new#[string, i32]())
 {
-    let view: ReadGuard[HashMap[string, i32]] = cache.read()      // many readers
+    let view: ReadGuard#[HashMap#[string, i32]] = cache.read()      // many readers
 }
 {
-    var edit: WriteGuard[HashMap[string, i32]] = cache.write() // exclusive writer
+    var edit: WriteGuard#[HashMap#[string, i32]] = cache.write() // exclusive writer
 }
 
 // Atomics
-let counter: Atomic[i64] = Atomic[i64].new(0)
+let counter: Atomic#[i64] = Atomic#[i64].new(0)
 counter.fetch_add(1)
 ```
 
 ### Send and Sync
 
 ```klar
-Rc[T]      // NOT Send, NOT Sync
-Arc[T]     // Send + Sync
-Mutex[T]   // Send + Sync
-RefCell[T] // NOT Sync
+Rc#[T]      // NOT Send, NOT Sync
+Arc#[T]     // Send + Sync
+Mutex#[T]   // Send + Sync
+RefCell#[T] // NOT Sync
 ```
 
 ---
@@ -890,14 +890,14 @@ RefCell[T] // NOT Sync
 ### Generic Functions
 
 ```klar
-fn max[T: Ordered](a: T, b: T) -> T {
+fn max#[T: Ordered](a: T, b: T) -> T {
     if a.compare(b) is Ordering.Greater {
         return a
     }
     return b
 }
 
-fn swap[T](a: inout T, b: inout T) {
+fn swap#[T](a: inout T, b: inout T) {
     let temp: T = *a
     *a = *b
     *b = temp
@@ -907,12 +907,12 @@ fn swap[T](a: inout T, b: inout T) {
 ### Generic Types
 
 ```klar
-struct Pair[A, B] {
+struct Pair#[A, B] {
     first: A
     second: B
 }
 
-enum Option[T] {
+enum Option#[T] {
     Some(T)
     None
 }
@@ -953,11 +953,11 @@ impl i32: Ordered {
 ### Trait Bounds
 
 ```klar
-fn process[T: Ordered + Printable](value: T) {
+fn process#[T: Ordered + Printable](value: T) {
     print(value)
 }
 
-fn merge[K, V](a: Map[K, V], b: Map[K, V]) -> Map[K, V]
+fn merge#[K, V](a: Map#[K, V], b: Map#[K, V]) -> Map#[K, V]
 where
     K: Hashable + Eq
     V: Clone
@@ -987,7 +987,7 @@ impl Buffer: Writer {
 }
 
 // Generic function calls trait method through bound
-fn write_to[W: Writer](writer: inout W, data: i32) -> i32 {
+fn write_to#[W: Writer](writer: inout W, data: i32) -> i32 {
     return writer.write(data)  // Resolves to W's implementation
 }
 
@@ -1003,12 +1003,12 @@ fn main() -> i32 {
 ```klar
 trait Iterator {
     type Item
-    fn next(self: inout Self) -> Option[Self.Item]
+    fn next(self: inout Self) -> Option#[Self.Item]
 }
 
-impl List[T]: Iterator {
+impl List#[T]: Iterator {
     type Item = T
-    fn next(self: inout Self) -> Option[T] { ... }
+    fn next(self: inout Self) -> Option#[T] { ... }
 }
 ```
 
@@ -1025,12 +1025,12 @@ struct User {
 ### Operator Overloading
 
 ```klar
-trait Add[Rhs] {
+trait Add#[Rhs] {
     type Output
     fn add(self, rhs: Rhs) -> Self.Output
 }
 
-impl Vec2: Add[Vec2] {
+impl Vec2: Add#[Vec2] {
     type Output = Vec2
     fn add(self, rhs: Vec2) -> Vec2 {
         return Vec2 { x: self.x + rhs.x, y: self.y + rhs.y }
@@ -1044,7 +1044,7 @@ let c: Vec2 = a + b    // calls a.add(b)
 
 ```klar
 // Dynamic dispatch
-fn draw_all(shapes: List[dyn Drawable]) {
+fn draw_all(shapes: List#[dyn Drawable]) {
     for shape in shapes {
         shape.draw()
     }
@@ -1086,7 +1086,7 @@ bool, i8, i16, i32, i64, i128
 u8, u16, u32, u64, u128
 f32, f64
 char, string
-Option[T], Result[T, E]
+Option#[T], Result#[T, E]
 
 // Traits
 Copy, Clone, Eq, Ordered, Hash, Printable, Default
@@ -1096,36 +1096,36 @@ Into, From, Iterator
 print(msg: string)
 println(msg: string)
 assert(condition: bool)
-assert_eq[T: Eq](a: T, b: T)
+assert_eq#[T: Eq](a: T, b: T)
 panic(msg: string) -> !
 ```
 
 ### std.collections
 
 ```klar
-struct List[T] {
-    fn new() -> List[T]
+struct List#[T] {
+    fn new() -> List#[T]
     fn push(self: inout Self, item: T)
-    fn pop(self: inout Self) -> Option[T]
-    fn get(self: ref Self, index: i32) -> Option[T]
+    fn pop(self: inout Self) -> Option#[T]
+    fn get(self: ref Self, index: i32) -> Option#[T]
     fn len(self: ref Self) -> i32  // i32 for ergonomic loop counters
-    fn iter(self: ref Self) -> ListIter[T]
+    fn iter(self: ref Self) -> ListIter#[T]
     // ...
 }
 
-struct Map[K: Hash + Eq, V] {
-    fn new() -> Map[K, V]
-    fn insert(self: inout Self, key: K, value: V) -> Option[V]
-    fn get(self: ref Self, key: ref K) -> Option[V]
+struct Map#[K: Hash + Eq, V] {
+    fn new() -> Map#[K, V]
+    fn insert(self: inout Self, key: K, value: V) -> Option#[V]
+    fn get(self: ref Self, key: ref K) -> Option#[V]
     fn contains_key(self: ref Self, key: ref K) -> bool
     // ...
 }
 
-struct Set[T: Hash + Eq] {
-    fn new() -> Set[T]
+struct Set#[T: Hash + Eq] {
+    fn new() -> Set#[T]
     fn insert(self: inout Self, item: T) -> bool
     fn contains(self: ref Self, item: ref T) -> bool
-    fn union(self: ref Self, other: ref Set[T]) -> Set[T]
+    fn union(self: ref Self, other: ref Set#[T]) -> Set#[T]
     // ...
 }
 ```
@@ -1138,7 +1138,7 @@ struct String {
     fn len(self: ref Self) -> i32
     fn chars(self: ref Self) -> CharIter
     fn contains(self: ref Self, pattern: ref str) -> bool
-    fn split(self: ref Self, sep: ref str) -> List[String]
+    fn split(self: ref Self, sep: ref str) -> List#[String]
     fn trim(self: ref Self) -> string
     fn to_uppercase(self: ref Self) -> String
     fn replace(self: ref Self, from: ref str, to: ref str) -> String
@@ -1156,14 +1156,14 @@ struct StringBuilder {
 
 ```klar
 trait Read {
-    fn read(self: inout Self, buf: inout [u8]) -> Result[i32, IoError]
-    fn read_all(self: inout Self) -> Result[List[u8], IoError]
-    fn read_string(self: inout Self) -> Result[String, IoError]
+    fn read(self: inout Self, buf: inout [u8]) -> Result#[i32, IoError]
+    fn read_all(self: inout Self) -> Result#[List#[u8], IoError]
+    fn read_string(self: inout Self) -> Result#[String, IoError]
 }
 
 trait Write {
-    fn write(self: inout Self, buf: ref [u8]) -> Result[i32, IoError]
-    fn flush(self: inout Self) -> Result[void, IoError]
+    fn write(self: inout Self, buf: ref [u8]) -> Result#[i32, IoError]
+    fn flush(self: inout Self) -> Result#[void, IoError]
 }
 
 fn stdin() -> Stdin
@@ -1171,16 +1171,16 @@ fn stdout() -> Stdout
 fn stderr() -> Stderr
 
 // Buffered I/O wrappers
-struct BufReader[R: Read] {
-    fn new(reader: R) -> BufReader[R]
-    fn read(self: inout Self, buf: ref [u8]) -> Result[i32, IoError]
-    fn read_line(self: inout Self) -> Result[String, IoError]
+struct BufReader#[R: Read] {
+    fn new(reader: R) -> BufReader#[R]
+    fn read(self: inout Self, buf: ref [u8]) -> Result#[i32, IoError]
+    fn read_line(self: inout Self) -> Result#[String, IoError]
 }
 
-struct BufWriter[W: Write] {
-    fn new(writer: W) -> BufWriter[W]
-    fn write_string(self: inout Self, s: string) -> Result[i32, IoError]
-    fn flush(self: inout Self) -> Result[void, IoError]
+struct BufWriter#[W: Write] {
+    fn new(writer: W) -> BufWriter#[W]
+    fn write_string(self: inout Self, s: string) -> Result#[i32, IoError]
+    fn flush(self: inout Self) -> Result#[void, IoError]
     // Note: BufWriter automatically flushes when going out of scope
 }
 ```
@@ -1189,7 +1189,7 @@ Note: I/O methods accept both slices (`[u8]`) and fixed-size arrays (`[u8; N]`).
 
 ```klar
 // Create mutable buffer with @repeat
-var buf: [u8; 256] = @repeat(0.as[u8], 256)
+var buf: [u8; 256] = @repeat(0.as#[u8], 256)
 
 // Read from stdin into the buffer
 var input: Stdin = stdin()
@@ -1200,7 +1200,7 @@ var file: File = File.open("/path/to/file", "r")!
 let n: i32 = file.read(ref buf)!
 
 // Access bytes in the buffer
-if buf[0] == 72.as[u8] {  // 'H'
+if buf[0] == 72.as#[u8] {  // 'H'
     print("First byte is H")
 }
 ```
@@ -1211,42 +1211,42 @@ if buf[0] == 72.as[u8] {  // 'H'
 
 ```klar
 // Static convenience methods (implemented)
-File.open(path: string, mode: string) -> Result[File, IoError]
-File.read_to_string(path: string) -> Result[String, IoError]
-File.read_all(path: string) -> Result[List[u8], IoError]
+File.open(path: string, mode: string) -> Result#[File, IoError]
+File.read_to_string(path: string) -> Result#[String, IoError]
+File.read_all(path: string) -> Result#[List#[u8], IoError]
 
 // Instance methods (implemented)
-file.read(buf: inout [u8]) -> Result[i32, IoError]
-file.write(buf: ref [u8]) -> Result[i32, IoError]
-file.write_string(s: string) -> Result[i32, IoError]
-file.flush() -> Result[void, IoError]
-file.close() -> Result[void, IoError]
+file.read(buf: inout [u8]) -> Result#[i32, IoError]
+file.write(buf: ref [u8]) -> Result#[i32, IoError]
+file.write_string(s: string) -> Result#[i32, IoError]
+file.flush() -> Result#[void, IoError]
+file.close() -> Result#[void, IoError]
 ```
 
 **Planned** (future standard library):
 
 ```klar
-fn read(path: ref Path) -> Result[List[u8], IoError]
-fn read_string(path: ref Path) -> Result[String, IoError]
-fn write(path: ref Path, data: [u8]) -> Result[void, IoError]
-fn write_string(path: ref Path, s: ref str) -> Result[void, IoError]
+fn read(path: ref Path) -> Result#[List#[u8], IoError]
+fn read_string(path: ref Path) -> Result#[String, IoError]
+fn write(path: ref Path, data: [u8]) -> Result#[void, IoError]
+fn write_string(path: ref Path, s: ref str) -> Result#[void, IoError]
 fn exists(path: ref Path) -> bool
-fn create_dir(path: ref Path) -> Result[void, IoError]
-fn remove(path: ref Path) -> Result[void, IoError]
-fn read_dir(path: ref Path) -> Result[DirIter, IoError]
+fn create_dir(path: ref Path) -> Result#[void, IoError]
+fn remove(path: ref Path) -> Result#[void, IoError]
+fn read_dir(path: ref Path) -> Result#[DirIter, IoError]
 ```
 
 ### std.net.http
 
 ```klar
-async fn get(url: ref str) -> Result[Response, HttpError]
-async fn post(url: ref str, body: [u8]) -> Result[Response, HttpError]
+async fn get(url: ref str) -> Result#[Response, HttpError]
+async fn post(url: ref str, body: [u8]) -> Result#[Response, HttpError]
 
 struct Response {
     status: u16
-    headers: Map[String, String]
-    async fn text(self) -> Result[String, HttpError]
-    async fn json[T: Deserialize](self) -> Result[T, HttpError]
+    headers: Map#[String, String]
+    async fn text(self) -> Result#[String, HttpError]
+    async fn json#[T: Deserialize](self) -> Result#[T, HttpError]
 }
 ```
 
@@ -1280,12 +1280,12 @@ enum Json {
     Bool(bool)
     Number(f64)
     String(String)
-    Array(List[Json])
-    Object(Map[String, Json])
+    Array(List#[Json])
+    Object(Map#[String, Json])
 }
 
 impl Json {
-    fn parse(s: ref str) -> Result[Json, JsonError]
+    fn parse(s: ref str) -> Result#[Json, JsonError]
     fn to_string(self: ref Self) -> String
 }
 
@@ -1294,7 +1294,7 @@ trait Serialize {
 }
 
 trait Deserialize {
-    fn from_json(json: ref Json) -> Result[Self, JsonError]
+    fn from_json(json: ref Json) -> Result#[Self, JsonError]
 }
 
 #[derive(Serialize, Deserialize)]

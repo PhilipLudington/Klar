@@ -68,7 +68,7 @@ point.1 = 40
 When iterating over Maps, tuples are destructured:
 
 ```klar
-var map: Map[string, i32] = Map.new[string, i32]()
+var map: Map#[string, i32] = Map.new#[string, i32]()
 map.insert("a", 1)
 map.insert("b", 2)
 

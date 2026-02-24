@@ -11,10 +11,10 @@ fn main() -> i32 {
     var read_file: File = File.open("/tmp/bufreader_test.txt", "r")!
 
     // Wrap in BufReader
-    var reader: BufReader[File] = BufReader.new[File](read_file)
+    var reader: BufReader#[File] = BufReader.new#[File](read_file)
 
     // Read into a buffer using @repeat to create 11 zero bytes
-    var buf: [u8; 11] = @repeat(0.as[u8], 11)
+    var buf: [u8; 11] = @repeat(0.as#[u8], 11)
     let bytes_read: i32 = reader.read(ref buf)!
 
     if bytes_read != 11 {
@@ -22,7 +22,7 @@ fn main() -> i32 {
     }
 
     // Verify first byte is 'H' (72)
-    if buf[0] != 72.as[u8] {
+    if buf[0] != 72.as#[u8] {
         return 2
     }
 

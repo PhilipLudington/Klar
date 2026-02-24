@@ -1,6 +1,6 @@
 # Error Handling
 
-Klar uses two main types for error handling: `?T` (Optional) for values that may be absent, and `Result[T, E]` for operations that may fail with an error.
+Klar uses two main types for error handling: `?T` (Optional) for values that may be absent, and `Result#[T, E]` for operations that may fail with an error.
 
 ## Optional Type (?T)
 
@@ -68,19 +68,19 @@ fn process(opt: ?i32) -> string {
 
 ## Result Type
 
-`Result[T, E]` represents an operation that either succeeds with a value of type `T` or fails with an error of type `E`.
+`Result#[T, E]` represents an operation that either succeeds with a value of type `T` or fails with an error of type `E`.
 
 ### Creating Results
 
 ```klar
-let success: Result[i32, string] = Ok(42)
-let failure: Result[i32, string] = Err("something went wrong")
+let success: Result#[i32, string] = Ok(42)
+let failure: Result#[i32, string] = Err("something went wrong")
 ```
 
 ### Returning Results from Functions
 
 ```klar
-fn divide(a: i32, b: i32) -> Result[i32, string] {
+fn divide(a: i32, b: i32) -> Result#[i32, string] {
     if b == 0 {
         return Err("division by zero")
     }
@@ -93,18 +93,18 @@ fn divide(a: i32, b: i32) -> Result[i32, string] {
 #### Force Unwrap (!)
 
 ```klar
-let result: Result[i32, string] = Ok(42)
+let result: Result#[i32, string] = Ok(42)
 let value: i32 = result!  // 42
 
 // Panics if Err!
-let err: Result[i32, string] = Err("oops")
+let err: Result#[i32, string] = Err("oops")
 let bad: i32 = err!  // Runtime panic
 ```
 
 ### Pattern Matching Results
 
 ```klar
-fn handle_result(r: Result[i32, string]) -> void {
+fn handle_result(r: Result#[i32, string]) -> void {
     match r {
         Ok(value) => {
             println("Success: {value}")
@@ -119,7 +119,7 @@ fn handle_result(r: Result[i32, string]) -> void {
 ### Checking Result Status
 
 ```klar
-let result: Result[i32, string] = Ok(42)
+let result: Result#[i32, string] = Ok(42)
 
 if result.is_ok() {
     println("Success!")
@@ -137,7 +137,7 @@ The `?` operator propagates errors up the call stack.
 ### With Result
 
 ```klar
-fn read_config() -> Result[Config, string] {
+fn read_config() -> Result#[Config, string] {
     let content: string = read_file("config.txt")?  // Propagates if Err
     let config: Config = parse_config(content)?     // Propagates if Err
     return Ok(config)
@@ -164,7 +164,7 @@ fn get_user_email(id: i32) -> ?string {
 
 ```klar
 // Optional to Result
-fn opt_to_result(opt: ?i32) -> Result[i32, string] {
+fn opt_to_result(opt: ?i32) -> Result#[i32, string] {
     match opt {
         Some(value) => { return Ok(value) }
         None => { return Err("value not found") }
@@ -172,7 +172,7 @@ fn opt_to_result(opt: ?i32) -> Result[i32, string] {
 }
 
 // Result to Optional (discards error)
-fn result_to_opt(r: Result[i32, string]) -> ?i32 {
+fn result_to_opt(r: Result#[i32, string]) -> ?i32 {
     match r {
         Ok(value) => { return Some(value) }
         Err(_) => { return None }
@@ -183,7 +183,7 @@ fn result_to_opt(r: Result[i32, string]) -> ?i32 {
 ## Example: File Processing
 
 ```klar
-fn process_file(path: string) -> Result[i32, string] {
+fn process_file(path: string) -> Result#[i32, string] {
     // Read file, propagate error if fails
     let content: string = read_file(path)?
 
@@ -195,7 +195,7 @@ fn process_file(path: string) -> Result[i32, string] {
 }
 
 fn main() -> i32 {
-    let result: Result[i32, string] = process_file("data.txt")
+    let result: Result#[i32, string] = process_file("data.txt")
 
     match result {
         Ok(value) => {
@@ -252,7 +252,7 @@ fn find_by_id(id: i32) -> ?User {
 - The caller needs to handle the error
 
 ```klar
-fn connect(host: string) -> Result[Connection, NetworkError] {
+fn connect(host: string) -> Result#[Connection, NetworkError] {
     // Connection might fail for various reasons
 }
 ```
@@ -261,14 +261,14 @@ fn connect(host: string) -> Result[Connection, NetworkError] {
 
 ```klar
 // Good - concise
-fn process() -> Result[i32, string] {
+fn process() -> Result#[i32, string] {
     let a: i32 = step1()?
     let b: i32 = step2(a)?
     return Ok(b)
 }
 
 // Verbose - only use when you need custom handling
-fn process_verbose() -> Result[i32, string] {
+fn process_verbose() -> Result#[i32, string] {
     var a: i32
     match step1() {
         Ok(value) => { a = value }

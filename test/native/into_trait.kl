@@ -1,4 +1,4 @@
-// Test Into[T] trait for type conversions
+// Test Into#[T] trait for type conversions
 
 struct Celsius { value: f64 }
 struct Fahrenheit { value: f64 }
@@ -9,7 +9,7 @@ impl Fahrenheit {
     }
 }
 
-impl Celsius: Into[Fahrenheit] {
+impl Celsius: Into#[Fahrenheit] {
     fn into(self: Celsius) -> Fahrenheit {
         return Fahrenheit { value: self.value * 1.8 + 32.0 }
     }

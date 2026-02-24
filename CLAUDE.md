@@ -19,13 +19,13 @@ Klar is an **AI-native application programming language** designed for AI code g
    - No null pointers (use `?T` optionals)
 
 3. **No implicit conversions** — Type changes must be explicit.
-   - `.as[T]` for safe conversions
-   - `.to[T]` for fallible conversions
-   - `.trunc[T]` for truncating conversions
+   - `.as#[T]` for safe conversions
+   - `.to#[T]` for fallible conversions
+   - `.trunc#[T]` for truncating conversions
 
 4. **Ownership without complexity** — Memory safety via ownership, but simpler than Rust.
    - No lifetime annotations
-   - Reference counting where needed (`Rc[T]`, `Arc[T]`)
+   - Reference counting where needed (`Rc#[T]`, `Arc#[T]`)
 
 Klar targets application-level programming (like C#/Go), not bare-metal systems (like C/Rust/Zig). This is why `.len()` returns `i32` for ergonomic loop counter usage.
 
@@ -196,7 +196,7 @@ Source (.kl) → Lexer → Parser → AST → Type Checker → [Backend]
 | Module system (imports) | ✅ Complete |
 | Standard library | ❌ Not started |
 
-**Note:** `Option[T]` and `Result[T, E]` are built-in generic enums handled by the compiler, not yet user-definable types.
+**Note:** `Option#[T]` and `Result#[T, E]` are built-in generic enums handled by the compiler, not yet user-definable types.
 
 ## Language Syntax Quick Reference
 
@@ -211,7 +211,7 @@ fn add(a: i32, b: i32) -> i32 {
     return a + b
 }
 
-fn max[T: Ordered](a: T, b: T) -> T {
+fn max#[T: Ordered](a: T, b: T) -> T {
     if a > b {
         return a
     }
@@ -239,8 +239,8 @@ impl Point {
 }
 
 // Enums with data
-enum Option[T] { Some(T), None }
-enum Result[T, E] { Ok(T), Err(E) }
+enum Option#[T] { Some(T), None }
+enum Result#[T, E] { Ok(T), Err(E) }
 
 // Traits
 trait Drawable { fn draw(self) -> void }
@@ -266,7 +266,7 @@ match value {
 let maybe: ?i32 = Some(42)
 let value: i32 = maybe ?? 0          // default if None
 
-fn read_config() -> Result[Config, Error] {
+fn read_config() -> Result#[Config, Error] {
     let content: string = read_file(path)?   // propagate error
     return Ok(parse(content))
 }

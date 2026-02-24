@@ -2,12 +2,12 @@
 
 fn main() -> i32 {
     // Test 1: enumerate non-empty list
-    var nums: List[i32] = List.new[i32]()
+    var nums: List#[i32] = List.new#[i32]()
     nums.push(10)
     nums.push(20)
     nums.push(30)
 
-    let enumerated: List[(i32, i32)] = nums.enumerate()
+    let enumerated: List#[(i32, i32)] = nums.enumerate()
     assert_eq(enumerated.len(), 3)
 
     // Get first tuple (0, 10)
@@ -26,8 +26,8 @@ fn main() -> i32 {
     assert_eq(t2.1, 30)
 
     // Test 2: enumerate empty list
-    var empty_list: List[i32] = List.new[i32]()
-    let from_empty: List[(i32, i32)] = empty_list.enumerate()
+    var empty_list: List#[i32] = List.new#[i32]()
+    let from_empty: List#[(i32, i32)] = empty_list.enumerate()
     assert_eq(from_empty.len(), 0)
 
     // Test 3: original list is unchanged

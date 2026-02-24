@@ -1,6 +1,6 @@
-//! List[T] helper utilities for codegen.
+//! List#[T] helper utilities for codegen.
 //!
-//! Provides constants, type constructors, and growth helpers for List[T]
+//! Provides constants, type constructors, and growth helpers for List#[T]
 //! code generation. The emission implementation (emitListNew, emitListPush,
 //! etc.) remains in emit.zig.
 //!
@@ -15,7 +15,7 @@
 //! ## List Struct Layout
 //!
 //! ```
-//! struct List[T] {
+//! struct List#[T] {
 //!     data: *T,      // Pointer to element array
 //!     len: i32,      // Current number of elements
 //!     capacity: i32, // Allocated capacity (number of T)

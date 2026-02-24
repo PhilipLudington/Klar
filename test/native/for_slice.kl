@@ -31,7 +31,7 @@ fn main() -> i32 {
     var code_sum: i32 = 0
     for c: char in hi_chars {
         // char is represented as i32 codepoint
-        code_sum = code_sum + c.as[i32]
+        code_sum = code_sum + c.as#[i32]
     }
     // 'A' = 65, 'B' = 66, sum = 131
     if code_sum != 131 {
@@ -57,10 +57,10 @@ fn main() -> i32 {
     let abc_chars: [char] = abc.chars()
     var skip_a_sum: i32 = 0
     for c: char in abc_chars {
-        if c.as[i32] == 97 {
+        if c.as#[i32] == 97 {
             continue
         }
-        skip_a_sum = skip_a_sum + c.as[i32]
+        skip_a_sum = skip_a_sum + c.as#[i32]
     }
     // 'b' = 98, 'c' = 99, sum = 197
     if skip_a_sum != 197 {

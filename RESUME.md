@@ -277,6 +277,8 @@ QA review of P1-P3 changes found 5 issues. 1 bug fixed, 2 additional improvement
 
 ### Session 10: Generic Support + Bucket C Fixes (COMPLETE)
 
+> **Note:** This session predates Milestone 10. Code examples below use the old `[T]` generic syntax, which was later replaced by `#[T]`.
+
 Expanded parity from 222 → 232 files. Multiple parser features added.
 
 1. **Generic impl blocks** (`parser_decl.kl`) — `parse_impl_stub` now:
@@ -391,12 +393,81 @@ This ensures all Klar `String` objects created from `argv` are properly null-ter
 
 ### Known Limitations (from QA review, deferred)
 - `parse_int_value`: hex/binary/octal literals still use i64 computation (overflow possible for values > i64 max)
-- `is_type_args_context`: uppercase identifier heuristic can misidentify `foo[Bar]` as type args (fundamental ambiguity)
+- ~~`is_type_args_context`: uppercase identifier heuristic can misidentify `foo[Bar]` as type args (fundamental ambiguity)~~ → **Fixed by Milestone 10** (generic syntax `[T]` → `#[T]`)
 - `process_string_escapes`: `\u` and `\x` escape sequences not handled (falls through to unknown escape)
 - `final_expr` detection in `parse_block` uses fragile JSON prefix string matching (acknowledged by COUPLING comment)
 - `is_extern` exemption in mandatory return type check is moot: the Zig parser rejects standalone `extern fn` (requires `extern { }` block), so the selfhost exemption has no test coverage and creates a theoretical acceptance gap
 
-## Key Files
+---
+
+## Milestone 10 — Unambiguous Generic Syntax (`[T]` → `#[T]`) — COMPLETE
+
+**Status:** Complete — 1465/1465 tests pass. All 32 tasks done.
+
+### What Changed
+
+Eliminated the syntactic ambiguity between generics (`[T]`) and array indexing (`[i]`). Now `[` is **always** arrays and `#[` is **always** generics — parseable at a glance with zero disambiguation heuristics.
+
+```klar
+fn max#[T: Ordered](a: T, b: T) -> T { ... }
+struct Pair#[A, B] { first: A, second: B }
+let list: List#[i32] = List.new#[i32]()
+value.as#[f64]
+
+// [ is ALWAYS arrays (unchanged)
+let arr: [i32; 3] = [1, 2, 3]
+let x: i32 = arr[0]
+```
+
+### Phase 1: Zig Compiler — Lexer (Tasks 10.1-10.3)
+- Added `hash` token to `src/token.zig` Kind enum + lexeme
+- Added `#` handler in `src/lexer.zig` main switch
+- 3 lexer tests added
+
+### Phase 2: Zig Compiler — Parser (Tasks 10.4-10.14)
+- `parseTypeParams()` — match `hash` then `l_bracket`
+- `parseIndexOrTypeArgs()` — simplified to always indexing (`[` is never generics)
+- Added `parseGenericCall()` for `expr#[T](...)` infix parsing
+- **Deleted `isTypeArgsFollowedByCall()`** (40-line lookahead heuristic) and `canStartType()`
+- Updated `parseFieldOrMethod()`, `parseTypeCast()`, `parseFallibleConversion()`, `parseType()`
+- Added `.hash` to `.call` precedence group in `getPrecedence()`
+- Updated `src/formatter.zig` (9 generic locations), `src/types.zig` (15+ type display strings)
+
+### Phase 3: Update All .kl Source Files (Tasks 10.15-10.18)
+- Created Python migration script `scratch/migrate_generics.py`
+- Migrated 198 files across test/native, selfhost, std, examples, test/fmt, test/module, test/app, test/check, test/args, test/wasm
+
+### Phase 4: Build + Verify (Tasks 10.19-10.21)
+- Fixed formatter, type display strings, hash precedence
+- All non-selfhost tests passing
+
+### Phase 5: Selfhost Parser (Tasks 10.22-10.27)
+- Added `Hash` token to selfhost lexer enum and handler
+- Updated all 4 parser modules: `parser_decl.kl`, `parser_expr.kl`, `parser_type.kl`
+- **Deleted `is_type_args_context()`** (27-line selfhost heuristic) and `parse_type_args_and_call()`
+- Added `parse_generic_call()` to selfhost parser
+
+### Phase 6: Selfhost Verify (Tasks 10.28-10.29)
+- 789/789 selfhost tests passed
+
+### Phase 7: Documentation (Tasks 10.30-10.32)
+- Updated CLAUDE.md Language Syntax Quick Reference
+- Updated 34 docs/ files with new generic syntax
+- Updated RESUME.md
+
+### Key Bugs Fixed During Migration
+1. `hash` token had no precedence in Pratt parser — added `.hash` to `.call` group
+2. Migration script missed lowercase generic calls (`ptr_cast[i32]`, `id[i32]`)
+3. Formatter still emitting `[` for generics (9 locations)
+4. Type display strings in `types.zig` still using `[` (15+ locations)
+5. `.expected` files for fmt tests had old syntax
+
+### Key Win
+The `isTypeArgsFollowedByCall()` 40-line lookahead heuristic and `canStartType()` helper were completely deleted from the Zig parser. The equivalent `is_type_args_context()` 27-line heuristic was deleted from the selfhost parser. Generic parsing is now trivial: see `#` → it's generics. See `[` → it's arrays.
+
+---
+
+## Milestone 9.6 Key Files
 
 | File | Status |
 |------|--------|

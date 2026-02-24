@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Generic type parameter syntax changed from `[T]` to `#[T]` — e.g. `fn max#[T: Ordered]`, `List#[i32]`, `Result#[T, E]`, `.as#[i32]`. This eliminates parsing ambiguity between generics and array indexing (Milestone 10)
+
 ## [v0.3.0] - 2026-01-22
 
 ### Added
@@ -16,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Implement functions, calling conventions, and control flow
 - Implement composite types: tuples, arrays, structs with named field access and bounds checking
 - Implement Optional and Result types for native compilation
-- Implement Rc[T], Arc[T], and Cell[T] for memory management
+- Implement Rc#[T], Arc#[T], and Cell#[T] for memory management
 - Implement closures with variable capture and closure passing
 - Implement runtime builtins and optimization passes
 - Implement debug information, cross-compilation (`--target`), and `--emit-ir` flag
@@ -42,11 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Implement `read_line()`, `read_to_string()`, and `read_all()` convenience methods
 
 #### Builtin Collection Types
-- Implement List[T] with push, with_capacity, clone, drop, and iterator adapters (take, skip, filter, map, enumerate, zip)
+- Implement List#[T] with push, with_capacity, clone, drop, and iterator adapters (take, skip, filter, map, enumerate, zip)
 - Implement String with push, concat, chars, bytes methods
-- Implement Set[T] with full hash set functionality
-- Implement Map[K,V] with full hash map functionality
-- Implement Range[T] as builtin iterator type with for-loop support
+- Implement Set#[T] with full hash set functionality
+- Implement Map#[K,V] with full hash map functionality
+- Implement Range#[T] as builtin iterator type with for-loop support
 
 #### Module System
 - Implement multi-file compilation with imports

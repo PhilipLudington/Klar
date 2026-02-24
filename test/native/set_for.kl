@@ -1,7 +1,7 @@
-// Test for-loop iteration over Set[T]
+// Test for-loop iteration over Set#[T]
 fn main() -> i32 {
     // Create a set with some values
-    var s: Set[i32] = Set.new[i32]()
+    var s: Set#[i32] = Set.new#[i32]()
     s.insert(10)
     s.insert(20)
     s.insert(30)
@@ -28,7 +28,7 @@ fn main() -> i32 {
     }
 
     // Test with empty set
-    var empty: Set[i32] = Set.new[i32]()
+    var empty: Set#[i32] = Set.new#[i32]()
     var empty_count: i32 = 0
     for z: i32 in empty {
         empty_count = empty_count + 1

@@ -2,7 +2,7 @@
 // Expected exit code: 42
 fn main() -> i32 {
     // Try to open a file that doesn't exist for reading
-    let result: Result[File, IoError] = File.open("/nonexistent/path/file.txt", "r")
+    let result: Result#[File, IoError] = File.open("/nonexistent/path/file.txt", "r")
 
     // Should fail (is_err should be true)
     if result.is_err() {

@@ -8,12 +8,12 @@ fn double(n: i32) -> i32 {
     return n * 2
 }
 
-async fn compute() -> Future[i32] {
+async fn compute() -> Future#[i32] {
     let sum: i32 = add(10, 11)
     return double(sum)
 }
 
 fn main() -> i32 {
-    let _f: Future[i32] = compute()
+    let _f: Future#[i32] = compute()
     return 0
 }

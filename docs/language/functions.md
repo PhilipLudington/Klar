@@ -69,32 +69,32 @@ fn absolute(n: i32) -> i32 {
 
 ## Async Functions
 
-Use `async fn` to declare asynchronous functions. `await` is only valid inside `async fn` bodies and requires a `Future[T]` value.
-`Future[T]` is a runtime-internal type: its memory layout is not a stable ABI and should not be used for FFI signatures or unsafe layout assumptions.
+Use `async fn` to declare asynchronous functions. `await` is only valid inside `async fn` bodies and requires a `Future#[T]` value.
+`Future#[T]` is a runtime-internal type: its memory layout is not a stable ABI and should not be used for FFI signatures or unsafe layout assumptions.
 For internal backend conventions, see `docs/design/async-runtime-internal.md`.
 
 ```klar
-async fn fetch() -> Future[i32] {
+async fn fetch() -> Future#[i32] {
     return 21
 }
 
-async fn compute() -> Future[i32] {
+async fn compute() -> Future#[i32] {
     return await fetch() + await fetch()
 }
 
 fn main() -> i32 {
-    let task: Future[i32] = compute()
-    let _unused: Future[i32] = task
+    let task: Future#[i32] = compute()
+    let _unused: Future#[i32] = task
     return 0
 }
 ```
 
 ## Generic Functions
 
-Functions can be generic over types using `[T]` syntax:
+Functions can be generic over types using `#[T]` syntax:
 
 ```klar
-fn identity[T](x: T) -> T {
+fn identity#[T](x: T) -> T {
     return x
 }
 
@@ -108,7 +108,7 @@ fn main() -> i32 {
 ### Multiple Type Parameters
 
 ```klar
-fn swap[T, U](a: T, b: U) -> (U, T) {
+fn swap#[T, U](a: T, b: U) -> (U, T) {
     return (b, a)
 }
 ```
@@ -118,7 +118,7 @@ fn swap[T, U](a: T, b: U) -> (U, T) {
 Constrain generic types with trait bounds:
 
 ```klar
-fn max[T: Ordered](a: T, b: T) -> T {
+fn max#[T: Ordered](a: T, b: T) -> T {
     if a > b {
         return a
     }

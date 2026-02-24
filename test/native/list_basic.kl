@@ -1,7 +1,7 @@
-// Test basic List[T] type and push operation
+// Test basic List#[T] type and push operation
 fn main() -> i32 {
     // Create an empty list using type parameter on method
-    var list: List[i32] = List.new[i32]()
+    var list: List#[i32] = List.new#[i32]()
 
     // Check initial state
     let len: i32 = list.len()

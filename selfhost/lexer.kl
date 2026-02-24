@@ -100,6 +100,7 @@ pub enum TokenKind {
     Colon,
     ColonColon,
     At,
+    Hash,
 
     // Compound assignment
     PlusEq,
@@ -540,6 +541,7 @@ impl Lexer {
         if c == 94 { return make_tok(self.source, TokenKind::Caret, sp, self.pos, sl, sc) }
         if c == 126 { return make_tok(self.source, TokenKind::Tilde, sp, self.pos, sl, sc) }
         if c == 64 { return make_tok(self.source, TokenKind::At, sp, self.pos, sl, sc) }
+        if c == 35 { return make_tok(self.source, TokenKind::Hash, sp, self.pos, sl, sc) }
 
         // ============================================================
         // STRING LITERAL
@@ -661,7 +663,7 @@ fn peek_at(source: string, pos: i32) -> i32 {
     if pos >= source.byte_len() {
         return -1
     }
-    return source.byte_at(pos).as[i32]
+    return source.byte_at(pos).as#[i32]
 }
 
 fn make_tok(src: string, kind: TokenKind, start: i32, end: i32, line: i32, col: i32) -> Token {
@@ -836,6 +838,7 @@ pub fn tag_name(kind: TokenKind) -> string {
         TokenKind::Colon => { return "colon" }
         TokenKind::ColonColon => { return "colon_colon" }
         TokenKind::At => { return "at" }
+        TokenKind::Hash => { return "hash" }
         TokenKind::PlusEq => { return "plus_eq" }
         TokenKind::MinusEq => { return "minus_eq" }
         TokenKind::StarEq => { return "star_eq" }
@@ -883,7 +886,7 @@ fn print_json_str(s: string) -> void {
     print("\"")
     var i: i32 = 0
     while i < s.byte_len() {
-        let c: i32 = s.byte_at(i).as[i32]
+        let c: i32 = s.byte_at(i).as#[i32]
         if c == 34 { print("\\\"") }
         else if c == 92 { print("\\\\") }
         else if c == 10 { print("\\n") }
@@ -896,7 +899,7 @@ fn print_json_str(s: string) -> void {
             print(hex_nibble(c / 16))
             print(hex_nibble(c % 16))
         }
-        else { print(from_byte(c.as[u8])) }
+        else { print(from_byte(c.as#[u8])) }
         i = i + 1
     }
     print("\"")
@@ -962,7 +965,7 @@ fn main(args: [String]) -> i32 {
     }
     let arg1: String = args[1]
     let path: string = arg1.as_str()
-    let result: Result[String, IoError] = File.read_to_string(path)
+    let result: Result#[String, IoError] = File.read_to_string(path)
     if not result.is_ok() {
         println("Error: could not read file")
         return 1

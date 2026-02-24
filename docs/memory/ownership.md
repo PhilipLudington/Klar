@@ -197,7 +197,7 @@ Collections own their elements:
 
 ```klar
 fn main() -> i32 {
-    var list: List[string] = List.new[string]()
+    var list: List#[string] = List.new#[string]()
     let s: string = "hello"
     list.push(s)  // s moved into list
 
@@ -212,8 +212,8 @@ fn main() -> i32 {
 When multiple owners are needed, use reference-counted pointers:
 
 ```klar
-let rc1: Rc[Data] = Rc.new(data)
-let rc2: Rc[Data] = rc1.clone()  // Both own the data
+let rc1: Rc#[Data] = Rc.new(data)
+let rc2: Rc#[Data] = rc1.clone()  // Both own the data
 // Data is dropped when both rc1 and rc2 are dropped
 ```
 
@@ -256,14 +256,14 @@ fn process_files() -> void {
 ```klar
 struct QueryBuilder {
     table: string,
-    conditions: List[string],
+    conditions: List#[string],
 }
 
 impl QueryBuilder {
     fn new(table: string) -> QueryBuilder {
         return QueryBuilder {
             table: table,
-            conditions: List.new[string](),
+            conditions: List.new#[string](),
         }
     }
 

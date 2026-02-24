@@ -1,7 +1,7 @@
-// Test List[T].last() - returns optional last element
+// Test List#[T].last() - returns optional last element
 
 fn main() -> i32 {
-    var list: List[i32] = List.new[i32]()
+    var list: List#[i32] = List.new#[i32]()
 
     // last() on empty list returns None
     let empty_last: ?i32 = list.last()

@@ -1,8 +1,8 @@
-// Test List.with_capacity[T](n) - creates a list with pre-allocated capacity
+// Test List.with_capacity#[T](n) - creates a list with pre-allocated capacity
 
 fn main() -> i32 {
     // Create a list with capacity for 100 elements
-    var list: List[i32] = List.with_capacity[i32](100)
+    var list: List#[i32] = List.with_capacity#[i32](100)
 
     // Should start with length 0 but capacity 100
     let len: i32 = list.len()

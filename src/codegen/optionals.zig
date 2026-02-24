@@ -1,30 +1,30 @@
 //! Optional and Result helper utilities for codegen.
 //!
-//! Provides constants, type constructors, and predicates for Optional[T]
-//! and Result[T, E] code generation. The emission implementation
+//! Provides constants, type constructors, and predicates for Optional#[T]
+//! and Result#[T, E] code generation. The emission implementation
 //! (emitSome, emitNone, emitOk, emitErr, etc.) remains in emit.zig.
 //!
 //! ## Provided by this module
 //!
 //! - `OptionalField` / `ResultField`: Struct field index constants
-//! - `createOptionalType`: Build LLVM type for Optional[T]
-//! - `createResultType`: Build LLVM type for Result[T, E]
-//! - `createResultStringErrorType`: Build Result[T, String] type
+//! - `createOptionalType`: Build LLVM type for Optional#[T]
+//! - `createResultType`: Build LLVM type for Result#[T, E]
+//! - `createResultStringErrorType`: Build Result#[T, String] type
 //! - `isSomeValue` / `isOkValue`: Tag predicates
 //!
-//! ## Optional[T] Layout
+//! ## Optional#[T] Layout
 //!
 //! ```
-//! struct Optional[T] {
+//! struct Optional#[T] {
 //!     has_value: i1,  // Tag: 0=None, 1=Some
 //!     value: T,       // Payload (undefined if None)
 //! }
 //! ```
 //!
-//! ## Result[T, E] Layout
+//! ## Result#[T, E] Layout
 //!
 //! ```
-//! struct Result[T, E] {
+//! struct Result#[T, E] {
 //!     is_ok: i1,           // Tag: 0=Err, 1=Ok
 //!     payload: [max(sizeof(T), sizeof(E)) x i8],
 //! }
@@ -45,7 +45,7 @@ pub const ResultField = struct {
     pub const payload = 1;
 };
 
-/// Create the LLVM type for Optional[T].
+/// Create the LLVM type for Optional#[T].
 pub fn createOptionalType(ctx: llvm.Context, inner_type: llvm.TypeRef) llvm.TypeRef {
     var fields = [_]llvm.TypeRef{
         llvm.Types.int1(ctx), // has_value flag
@@ -54,7 +54,7 @@ pub fn createOptionalType(ctx: llvm.Context, inner_type: llvm.TypeRef) llvm.Type
     return llvm.Types.struct_(ctx, &fields, false);
 }
 
-/// Create the LLVM type for Result[T, E] with payload size for the larger of T or E.
+/// Create the LLVM type for Result#[T, E] with payload size for the larger of T or E.
 /// Requires a module reference for target data layout (used to compute ABI type sizes).
 pub fn createResultType(module: llvm.Module, ctx: llvm.Context, ok_type: llvm.TypeRef, err_type: llvm.TypeRef) llvm.TypeRef {
     const target_data = llvm.c.LLVMGetModuleDataLayout(module.ref);

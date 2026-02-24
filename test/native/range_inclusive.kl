@@ -2,7 +2,7 @@
 // Uses manual iterator pattern with Range.next()
 
 fn main() -> i32 {
-    var r: Range[i32] = 0..=5
+    var r: Range#[i32] = 0..=5
     var sum: i32 = 0
 
     // Manual iteration using next() with method-based optional handling

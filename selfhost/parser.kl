@@ -15,7 +15,7 @@ pub fn json_str(s: string) -> string {
     var result: string = "\""
     var i: i32 = 0
     while i < s.byte_len() {
-        let c: i32 = s.byte_at(i).as[i32]
+        let c: i32 = s.byte_at(i).as#[i32]
         if c == 34 { result = result + "\\\"" }
         else if c == 92 { result = result + "\\\\" }
         else if c == 10 { result = result + "\\n" }
@@ -30,7 +30,7 @@ pub fn json_str(s: string) -> string {
             let lo: i32 = c - hi * 16
             result = result + hex_digit(hi) + hex_digit(lo)
         }
-        else { result = result + from_byte(c.as[u8]) }
+        else { result = result + from_byte(c.as#[u8]) }
         i = i + 1
     }
     result = result + "\""
@@ -38,8 +38,8 @@ pub fn json_str(s: string) -> string {
 }
 
 fn hex_digit(n: i32) -> string {
-    if n < 10 { return from_byte((48 + n).as[u8]) }
-    return from_byte((97 + n - 10).as[u8])
+    if n < 10 { return from_byte((48 + n).as#[u8]) }
+    return from_byte((97 + n - 10).as#[u8])
 }
 
 pub fn json_bool(b: bool) -> string {
@@ -212,7 +212,7 @@ pub fn get_precedence(kind: string) -> i32 {
         return 12  // FACTOR
     }
     if kind == "question" or kind == "bang" { return 14 }  // POSTFIX
-    if kind == "dot" or kind == "l_paren" or kind == "l_bracket" {
+    if kind == "dot" or kind == "l_paren" or kind == "l_bracket" or kind == "hash" {
         return 15  // CALL
     }
     return 0  // NONE
@@ -263,19 +263,6 @@ pub fn is_right_assoc(kind: string) -> bool {
     // Assignment is right-associative
     return kind == "eq" or kind == "plus_eq" or kind == "minus_eq"
         or kind == "star_eq" or kind == "slash_eq" or kind == "percent_eq"
-}
-
-pub fn can_start_type(kind: string) -> bool {
-    return kind == "identifier" or kind == "question" or kind == "ref"
-        or kind == "inout" or kind == "l_bracket" or kind == "l_paren"
-        or kind == "fn_" or kind == "self_type"
-}
-
-pub fn is_primitive_type(name: string) -> bool {
-    return name == "i8" or name == "i16" or name == "i32" or name == "i64"
-        or name == "u8" or name == "u16" or name == "u32" or name == "u64"
-        or name == "f32" or name == "f64" or name == "bool" or name == "void"
-        or name == "string" or name == "isize" or name == "usize"
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -126,15 +126,15 @@ Wire up low-level string operations and numeric parsing needed by a lexer/parser
 
 Fix known collection gaps that would block self-hosting data structures.
 
-- [x] **9.2.1** Fix `List[String]` drop — free individual string buffers before freeing list storage
+- [x] **9.2.1** Fix `List#[String]` drop — free individual string buffers before freeing list storage
 - [x] **9.2.2** `List.set(i, v)` / `list[i] = v` assignment in native codegen
 - [x] **9.2.3** `List.last() -> ?T` and `List.pop() -> ?T` in native codegen
-- [x] **9.2.4** Validate deeply nested structures: `List[List[i32]]` basic creation validated
+- [x] **9.2.4** Validate deeply nested structures: `List#[List#[i32]]` basic creation validated
 
-**Known Limitation:** `List[List[T]].drop()` leaks inner list buffers. Fixing this requires a general recursive element destructor, deferred to a future milestone. The self-hosting compiler can work around this by manually dropping inner lists before the outer list.
+**Known Limitation:** `List#[List#[T]].drop()` leaks inner list buffers. Fixing this requires a general recursive element destructor, deferred to a future milestone. The self-hosting compiler can work around this by manually dropping inner lists before the outer list.
 
 **Success Criteria:**
-- [x] `List[String]` can be created, mutated, and dropped without leaks
+- [x] `List#[String]` can be created, mutated, and dropped without leaks
 - [x] Index assignment compiles and executes correctly
 - [x] Nested generic structures validated (basic creation; nested drop is a known limitation)
 
@@ -172,12 +172,12 @@ Port token definitions and lexer logic from `src/token.zig` + `src/lexer.zig`.
 - [x] **9.4.1** Define `TokenKind` enum with all token variants
 - [x] **9.4.2** Define `Token` struct with kind, lexeme, line, column
 - [x] **9.4.3** Implement `Lexer` struct with `next_token() -> Token` method
-- [x] **9.4.4** Keyword lookup via `Map[string, TokenKind]`
+- [x] **9.4.4** Keyword lookup via `Map#[string, TokenKind]`
 - [x] **9.4.5** All operators, string/number/char literals, comments, location tracking
 - [x] **9.4.6** Inline `test` blocks for lexer edge cases
 - [x] **9.4.7** Parity tests: `selfhost/lexer.kl` output matches `klar dump-tokens` on test corpus
 
-**Known Limitation:** Keyword lookup uses chained `if`/`else` comparisons instead of `Map[string, TokenKind]` because Klar's `Map` doesn't yet support string keys with proper hashing. Functionally equivalent.
+**Known Limitation:** Keyword lookup uses chained `if`/`else` comparisons instead of `Map#[string, TokenKind]` because Klar's `Map` doesn't yet support string keys with proper hashing. Functionally equivalent.
 
 **Success Criteria:**
 - [x] Lexer tokenizes all files in `test/native/` identically to Zig lexer
@@ -193,11 +193,11 @@ Define the full AST type hierarchy needed by the parser.
 - [x] **9.5.2** Define `Stmt` enum (let/var, return, if/else, while, for, loop, match, assignment, expression)
 - [x] **9.5.3** Define `Decl` enum (function, struct, enum, trait, impl, import, test)
 - [x] **9.5.4** Define `TypeExpr` enum (named, generic, optional, array, function, reference)
-- [x] **9.5.5** Use typed i32 indices into flat `List[T]` pools for recursive indirection (arena pattern — same as Zig's AST)
+- [x] **9.5.5** Use typed i32 indices into flat `List#[T]` pools for recursive indirection (arena pattern — same as Zig's AST)
 - [x] **9.5.6** Debug functions (`expr_kind_name`, `binary_op_name`, `unary_op_name`) for diagnostics
 - [x] **9.5.7** Inline tests for AST construction, sentinels, and operator names
 
-**Known Limitation:** Klar's value semantics mean `List[T]` fields inside structs lose data on move. Variable-length children use `(start, count)` i32 ranges into flat "extra" lists managed as direct `var` variables by the parser. This is the same flat-arena pattern used by production compilers (Zig, Rust HIR).
+**Known Limitation:** Klar's value semantics mean `List#[T]` fields inside structs lose data on move. Variable-length children use `(start, count)` i32 ranges into flat "extra" lists managed as direct `var` variables by the parser. This is the same flat-arena pattern used by production compilers (Zig, Rust HIR).
 
 **Success Criteria:**
 - [x] AST types can represent every construct in the Klar language
@@ -226,7 +226,7 @@ Implement a recursive descent parser for the core language without generics or t
 
 Extend the parser to cover the complete Klar language.
 
-- [ ] **9.7.1** Generic type parameters on functions, structs, enums (`[T]`, `[T: Bound]`)
+- [ ] **9.7.1** Generic type parameters on functions, structs, enums (`#[T]`, `#[T: Bound]`)
 - [ ] **9.7.2** Trait definitions and impl blocks (including trait bounds, associated types)
 - [ ] **9.7.3** Closures with explicit types and return
 - [ ] **9.7.4** Full pattern matching (enum variants, wildcards, nested patterns)
@@ -266,7 +266,7 @@ Port the type representation from `src/types.zig`.
 
 Port the core type checking logic from `src/checker.zig`.
 
-- [ ] **9.9.1** Scope management via `List[Map[string, KlarType]]` stack
+- [ ] **9.9.1** Scope management via `List#[Map#[string, KlarType]]` stack
 - [ ] **9.9.2** Expression typing (literals, binary ops, unary ops, calls, field access, indexing)
 - [ ] **9.9.3** Function call type checking (argument count, parameter types, return type)
 - [ ] **9.9.4** Declaration checking (let/var type annotation matching)
@@ -349,6 +349,102 @@ Port selected tooling components to Klar.
 **Success Criteria:**
 - [ ] Self-hosted formatter produces identical output to Zig formatter
 - [ ] Self-hosted test runner passes its own tests
+
+---
+
+## Milestone 10: Unambiguous Generic Syntax (`[T]` → `#[T]`)
+
+**Objective:** Eliminate the syntactic ambiguity between generics (`[T]`) and array indexing (`[i]`). After this change, `[` is **always** arrays and `#[` is **always** generics — parseable at a glance with zero disambiguation heuristics.
+
+**Status:** Complete
+
+**Effort:** Medium | **Impact:** High (language design, philosophy alignment)
+
+### Motivation
+
+The current `[T]` syntax requires the parser to use uppercase heuristics and lookahead (`isTypeArgsFollowedByCall`) to disambiguate `foo[Bar]` (generics vs indexing). This violates Klar's core principle: **"No ambiguity. No surprises."**
+
+```klar
+// Before                              // After
+fn max[T: Ordered](a: T, b: T)        fn max#[T: Ordered](a: T, b: T)
+struct Pair[A, B] { ... }             struct Pair#[A, B] { ... }
+let list: List[i32] = ...             let list: List#[i32] = ...
+List.new[i32]()                       List.new#[i32]()
+value.as[f64]                         value.as#[f64]
+
+// Unchanged (arrays, not generics)
+let arr: [i32; 3] = [1, 2, 3]
+let x: i32 = arr[0]
+```
+
+### Design Decisions
+
+1. **Two tokens (`hash` + `l_bracket`), not one compound token** — lexer stays simple
+2. **`#[T]` everywhere** — declarations, type applications, method calls, casts
+3. **`isTypeArgsFollowedByCall()` deleted** — the entire lookahead heuristic becomes unnecessary
+
+### Tasks
+
+#### Phase 1: Zig Compiler — Lexer
+
+- [x] **10.1** Add `hash` token to `src/token.zig` (Kind enum + lexeme)
+- [x] **10.2** Handle `#` in `src/lexer.zig` main switch → `self.makeToken(.hash)`
+- [x] **10.3** Add lexer tests for `#` and `#[` sequences
+
+#### Phase 2: Zig Compiler — Parser
+
+- [x] **10.4** `parseTypeParams()` — match `hash` then `l_bracket` (was just `l_bracket`)
+- [x] **10.5** `parseIndexOrTypeArgs()` — `l_bracket` is now ALWAYS indexing; remove type-args branch
+- [x] **10.6** Add `hash` handling in infix expression parsing for `expr#[T](...)` calls
+- [x] **10.7** Delete `isTypeArgsFollowedByCall()` and `canStartType()` — no longer needed
+- [x] **10.8** `parseFieldOrMethod()` — `hash` instead of `l_bracket + canStartType` heuristic
+- [x] **10.9** `parseTypeCast()` (`.as#[T]`) — expect `hash` before `l_bracket`
+- [x] **10.10** `parseFallibleConversion()` (`.to#[T]`) — expect `hash` before `l_bracket`
+- [x] **10.11** `parseType()` generic application — match `hash` then `l_bracket`
+- [x] **10.12** Expression context generic types — check `hash` not `l_bracket`
+- [x] **10.13** Pattern context generic types — check `hash` not `l_bracket`
+- [x] **10.14** Extern fn/enum generic errors — check `hash` not `l_bracket`
+
+#### Phase 3: Update All .kl Source Files (~139 files)
+
+- [x] **10.15** Update `test/native/*.kl` files
+- [x] **10.16** Update `selfhost/*.kl` files (generic usage, not parser logic)
+- [x] **10.17** Update `std/*.kl`, `examples/*.kl`, `scratch/*.kl`
+- [x] **10.18** Update `test/fmt/*.kl`, `test/module/*.kl`, `test/app/*.kl`, `test/check/*.kl`, `test/args/*.kl`, `test/wasm/*.kl`
+
+#### Phase 4: Build + Verify
+
+- [x] **10.19** Build compiler: `./run-build.sh`
+- [x] **10.20** Run full test suite: `./run-tests.sh` (all non-selfhost tests pass)
+- [x] **10.21** Fix any failures (formatter, types.zig display, hash precedence)
+
+#### Phase 5: Selfhost Parser
+
+- [x] **10.22** Update `selfhost/lexer.kl` — add `Hash` token kind and `#` handler
+- [x] **10.23** Update `selfhost/parser_decl.kl` — fn/struct/enum/impl type params expect `hash`
+- [x] **10.24** Update `selfhost/parser_expr.kl` — delete `is_type_args_context()` and `parse_type_args_and_call()`; add `parse_generic_call()`
+- [x] **10.25** Update `selfhost/parser_expr.kl` — `parse_field_or_method()` uses `hash` for method generics
+- [x] **10.26** Update `selfhost/parser_type.kl` — `parse_named_type()` expects `hash`
+- [x] **10.27** Update `selfhost/parser_expr.kl` — cast syntax (`.as#[T]`, `.to#[T]`, `.trunc#[T]`)
+
+#### Phase 6: Selfhost Verify
+
+- [x] **10.28** Run selfhost tests: `./scripts/run-selfhost-tests.sh` — 789/789 passed
+- [x] **10.29** Fix any selfhost test failures — none needed
+
+#### Phase 7: Documentation
+
+- [x] **10.30** Update `CLAUDE.md` — Language Syntax Quick Reference
+- [x] **10.31** Update `docs/` — all files referencing generic syntax
+- [x] **10.32** Update `RESUME.md`
+
+### Success Criteria
+
+- [x] All test suites pass (native, unit, app, module, selfhost)
+- [x] `isTypeArgsFollowedByCall()` and `canStartType` heuristic are deleted
+- [x] `[` in expression context is ALWAYS parsed as indexing — no disambiguation
+- [x] `#[` is ALWAYS parsed as generics — unambiguous at the token level
+- [x] Documentation reflects new syntax throughout
 
 ---
 

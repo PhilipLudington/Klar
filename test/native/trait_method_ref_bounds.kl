@@ -16,7 +16,7 @@ impl Buffer: Reader {
 }
 
 // Generic function that uses a Reader bound with ref parameter
-fn read_from[R: Reader](reader: ref R) -> i32 {
+fn read_from#[R: Reader](reader: ref R) -> i32 {
     return reader.read()
 }
 

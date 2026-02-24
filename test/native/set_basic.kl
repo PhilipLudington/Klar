@@ -1,7 +1,7 @@
-// Basic Set[T] tests
+// Basic Set#[T] tests
 fn main() -> i32 {
     // Create a new set
-    var s: Set[i32] = Set.new[i32]()
+    var s: Set#[i32] = Set.new#[i32]()
 
     // Test initial state
     if s.len() != 0 {
@@ -79,7 +79,7 @@ fn main() -> i32 {
     }
 
     // Test clone
-    let s2: Set[i32] = s.clone()
+    let s2: Set#[i32] = s.clone()
     if s2.len() != s.len() {
         return 16
     }
@@ -107,7 +107,7 @@ fn main() -> i32 {
     }
 
     // Test with_capacity
-    var s3: Set[i32] = Set.with_capacity[i32](100)
+    var s3: Set#[i32] = Set.with_capacity#[i32](100)
     if s3.capacity() < 100 {
         return 23
     }

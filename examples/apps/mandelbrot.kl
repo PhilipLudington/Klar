@@ -22,13 +22,13 @@ fn main() -> i32 {
     var row: i32 = 0
     while row < height {
         // Map row to imaginary component (y-axis, inverted for display)
-        let y0: f64 = y_max - (row.as[f64] / height.as[f64]) * (y_max - y_min)
+        let y0: f64 = y_max - (row.as#[f64] / height.as#[f64]) * (y_max - y_min)
 
         // Iterate over each column
         var col: i32 = 0
         while col < width {
             // Map column to real component (x-axis)
-            let x0: f64 = x_min + (col.as[f64] / width.as[f64]) * (x_max - x_min)
+            let x0: f64 = x_min + (col.as#[f64] / width.as#[f64]) * (x_max - x_min)
 
             // Mandelbrot iteration: z = z^2 + c
             // Starting with z = 0, c = (x0, y0)

@@ -3,17 +3,17 @@
 // Note: ! unwrap works best in return position
 
 fn get_ok_value() -> i32 {
-    let result: Result[i32, i32] = Ok(42)
+    let result: Result#[i32, i32] = Ok(42)
     return result!
 }
 
 fn get_err_value() -> i32 {
-    let result: Result[i32, i32] = Err(99)
+    let result: Result#[i32, i32] = Err(99)
     return result.unwrap_err()
 }
 
 fn check_ok() -> i32 {
-    let result: Result[i32, i32] = Ok(100)
+    let result: Result#[i32, i32] = Ok(100)
     if result.is_ok() {
         return 1  // true
     } else {
@@ -22,7 +22,7 @@ fn check_ok() -> i32 {
 }
 
 fn check_err() -> i32 {
-    let result: Result[i32, i32] = Err(50)
+    let result: Result#[i32, i32] = Err(50)
     if result.is_ok() {
         return 1  // true
     } else {
@@ -60,14 +60,14 @@ fn main() -> i32 {
 
     // More complex example
     println("Conditional example:")
-    let success: Result[i32, i32] = Ok(200)
+    let success: Result#[i32, i32] = Ok(200)
     if success.is_ok() {
         println("  success is Ok - can unwrap safely")
     } else {
         println("  success is Err")
     }
 
-    let failure: Result[i32, i32] = Err(404)
+    let failure: Result#[i32, i32] = Err(404)
     if failure.is_ok() {
         println("  failure is Ok")
     } else {

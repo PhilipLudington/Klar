@@ -5,7 +5,7 @@ fn main() -> i32 {
     // Test 1: Capture i64
     let big: i64 = 12345678901234
     let f1: fn() -> i32 = || -> i32 {
-        let trunc: i32 = big.as[i32]  // truncate to i32 for return
+        let trunc: i32 = big.as#[i32]  // truncate to i32 for return
         return trunc
     }
     let r1: i32 = f1()
@@ -16,7 +16,7 @@ fn main() -> i32 {
     // Test 2: Capture f64
     let pi: f64 = 3.14159
     let f2: fn() -> i32 = || -> i32 {
-        let int_part: i32 = pi.as[i32]
+        let int_part: i32 = pi.as#[i32]
         return int_part
     }
     let r2: i32 = f2()
@@ -53,7 +53,7 @@ fn main() -> i32 {
     let c: f64 = 5.5
     let f5: fn() -> i32 = || -> i32 {
         // a + truncate(b) + truncate(c) = 10 + 20 + 5 = 35
-        return a + b.as[i32] + c.as[i32]
+        return a + b.as#[i32] + c.as#[i32]
     }
     let r5: i32 = f5()
     if r5 != 35 {

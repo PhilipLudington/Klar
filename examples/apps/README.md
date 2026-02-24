@@ -9,7 +9,7 @@ Demo programs that exercise and showcase Klar language features.
 #### Mandelbrot Set (`mandelbrot.kl`)
 ASCII Mandelbrot set renderer mapping the complex plane to terminal characters.
 
-**Features:** Type casts (`.as[f64]`), nested while loops, break, floating-point arithmetic
+**Features:** Type casts (`.as#[f64]`), nested while loops, break, floating-point arithmetic
 
 #### Collatz Conjecture (`collatz.kl`)
 Visualizes the 3n+1 problem with step-by-step output.
@@ -58,7 +58,7 @@ Reference counting for shared ownership.
 #### JSON Parser (`json_parser.kl`)
 A complete JSON parser demonstrating Klar's advanced features.
 
-**Features:** Recursive enums (`JsonValue`), generic collections (`List[T]`, `Map[K,V]`), 
+**Features:** Recursive enums (`JsonValue`), generic collections (`List#[T]`, `Map#[K,V]`),
 Result type error handling, `?` operator for error propagation, pattern matching, 
 character-level string processing
 

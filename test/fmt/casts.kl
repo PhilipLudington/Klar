@@ -1,0 +1,6 @@
+fn main() -> i32 {
+    let x: i64 = 42
+    let y: i32 =  x.as#[ i32 ]
+    let z: i32 =  x.trunc#[ i32 ]
+    return  y  +  z
+}

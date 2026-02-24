@@ -286,12 +286,12 @@ Optionally include function source with `--include-source` for richer AI context
   - Extended AST unary ops with `await` and parser support for `await <expr>`
   - Added parser support for `async fn` declarations (top-level and trait/impl methods)
   - Added parser/lexer regression tests for `async`/`await` syntax
-  - Enforce explicit return annotations for async functions (`-> Future[T]` or equivalent canonical form)
+  - Enforce explicit return annotations for async functions (`-> Future#[T]` or equivalent canonical form)
 - [x] **6.2** Type-checking semantics
-  - Validate await operand type constraints (`await` operand must be `Future[T]`)
+  - Validate await operand type constraints (`await` operand must be `Future#[T]`)
   - Enforced await usage context with checker diagnostics (`await` only permitted in async function context)
-  - Enforced explicit async contract: `async fn` must declare `-> Future[T]`
-  - `await` now enforces `Future[T]` operands and yields `T`
+  - Enforced explicit async contract: `async fn` must declare `-> Future#[T]`
+  - `await` now enforces `Future#[T]` operands and yields `T`
   - Added explicit checker diagnostics for unsupported async declarations and methods (`async fn`, async trait/impl methods)
   - Added check-suite regression coverage for invalid async method declarations
   - Added checker unit coverage for await operand validation and async-call await behavior
@@ -314,7 +314,7 @@ Optionally include function source with `--include-source` for richer AI context
 - [x] **6.4** Tooling integration
   - Update formatter for async/await constructs
   - Added formatter emission for `async fn` modifiers across top-level, trait, and impl method declarations
-  - Updated formatter regression fixture `test/fmt/async.kl` to use semantically valid async patterns (`Future[T]` returns)
+  - Updated formatter regression fixture `test/fmt/async.kl` to use semantically valid async patterns (`Future#[T]` returns)
   - Add LSP completion/hover/diagnostic support for new syntax
   - Added LSP keyword completions for `async`/`await` with async-aware detail text
   - Added LSP hover keyword docs for `async`/`await` when not resolving to symbols
@@ -327,7 +327,7 @@ Optionally include function source with `--include-source` for richer AI context
   - Add examples showing sequential async flows (concurrent execution deferred to future work)
   - Update MEMORY.md and docs language guide
   - Updated `MEMORY.md`, `docs/language/functions.md`, and `docs/appendix/keywords.md` for async/await language status and usage
-  - Added canonical async patterns and anti-patterns to `MEMORY.md` (Future[T] return, await usage, common mistakes)
+  - Added canonical async patterns and anti-patterns to `MEMORY.md` (Future#[T] return, await usage, common mistakes)
   - Renamed misleading check test `async_function_not_supported.kl` → `async_function_pass.kl`
 
 ### Success Criteria

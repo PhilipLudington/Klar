@@ -22,7 +22,7 @@ module std.core
 
 /// Represents an optional value - either Some(value) or None.
 /// Written as `?T` in type syntax.
-enum Option[T] {
+enum Option#[T] {
     Some(T)
     None
 }
@@ -32,7 +32,7 @@ enum Option[T] {
 // ============================================================================
 
 /// Represents a computation that may succeed with Ok(value) or fail with Err(error).
-enum Result[T, E] {
+enum Result#[T, E] {
     Ok(T)
     Err(E)
 }
@@ -127,32 +127,32 @@ pub fn assert(condition: bool) -> void {
 }
 
 /// Assert that two values are equal. Traps if not equal.
-pub fn assert_eq[T: Eq](a: T, b: T) -> void {
+pub fn assert_eq#[T: Eq](a: T, b: T) -> void {
     // Built-in implementation
 }
 
 /// Assert that two values are not equal. Traps if equal.
-pub fn assert_ne[T: Eq](a: T, b: T) -> void {
+pub fn assert_ne#[T: Eq](a: T, b: T) -> void {
     // Built-in implementation
 }
 
 /// Assert that a Result is Ok. Traps if Err.
-pub fn assert_ok[T, E](r: Result[T, E]) -> void {
+pub fn assert_ok#[T, E](r: Result#[T, E]) -> void {
     // Built-in implementation
 }
 
 /// Assert that a Result is Err. Traps if Ok.
-pub fn assert_err[T, E](r: Result[T, E]) -> void {
+pub fn assert_err#[T, E](r: Result#[T, E]) -> void {
     // Built-in implementation
 }
 
 /// Assert that an Optional is Some. Traps if None.
-pub fn assert_some[T](value: ?T) -> void {
+pub fn assert_some#[T](value: ?T) -> void {
     // Built-in implementation
 }
 
 /// Assert that an Optional is None. Traps if Some.
-pub fn assert_none[T](value: ?T) -> void {
+pub fn assert_none#[T](value: ?T) -> void {
     // Built-in implementation
 }
 
@@ -166,22 +166,22 @@ pub fn panic(msg: string) -> ! {
 // ============================================================================
 
 /// Returns the absolute value.
-pub fn abs[T](value: T) -> T {
+pub fn abs#[T](value: T) -> T {
     if value < 0 { -value } else { value }
 }
 
 /// Returns the minimum of two values.
-pub fn min[T: Ordered](a: T, b: T) -> T {
+pub fn min#[T: Ordered](a: T, b: T) -> T {
     if a.le(b) { a } else { b }
 }
 
 /// Returns the maximum of two values.
-pub fn max[T: Ordered](a: T, b: T) -> T {
+pub fn max#[T: Ordered](a: T, b: T) -> T {
     if a.ge(b) { a } else { b }
 }
 
 /// Clamps a value to a range.
-pub fn clamp[T: Ordered](value: T, min_val: T, max_val: T) -> T {
+pub fn clamp#[T: Ordered](value: T, min_val: T, max_val: T) -> T {
     if value.lt(min_val) {
         min_val
     } else if value.gt(max_val) {

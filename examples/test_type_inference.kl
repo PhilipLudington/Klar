@@ -2,17 +2,17 @@
 // Verifies that the checker infers concrete types from arguments
 
 // Generic identity function - T should be inferred from argument
-fn identity[T](x: T) -> T {
+fn identity#[T](x: T) -> T {
     return x;
 }
 
 // Generic function with two params of same type
-fn first_of_pair[T](a: T, b: T) -> T {
+fn first_of_pair#[T](a: T, b: T) -> T {
     return a;
 }
 
 // Generic function with multiple type params
-fn make_pair[A, B](a: A, b: B) -> (A, B) {
+fn make_pair#[A, B](a: A, b: B) -> (A, B) {
     return (a, b);
 }
 

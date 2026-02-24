@@ -49,8 +49,8 @@ test gcd {
 assert(condition: bool)                    // panics with location on failure
 assert_eq(left: T, right: T)              // requires T: Eq, shows both values
 assert_ne(left: T, right: T)              // requires T: Eq
-assert_err(result: Result[T, E])          // asserts Err variant
-assert_ok(result: Result[T, E])           // asserts Ok variant
+assert_err(result: Result#[T, E])          // asserts Err variant
+assert_ok(result: Result#[T, E])           // asserts Ok variant
 assert_some(opt: ?T)                      // asserts Some variant
 assert_none(opt: ?T)                      // asserts None variant
 ```
@@ -166,7 +166,7 @@ klar repl --sandbox
 - Worker executes the C function and returns the result
 - If the worker crashes (segfault, abort), the main process receives an error:
   ```klar
-  let result: Result[i32, FfiError] = sandbox { c_function(42) }
+  let result: Result#[i32, FfiError] = sandbox { c_function(42) }
   ```
 - Worker is automatically restarted for the next call
 
@@ -200,7 +200,7 @@ Start with the core language subset:
 - Structs: definition, field access
 - Enums: definition, `match` exhaustiveness
 - Optionals: `?T`, `Some`, `None`, `??`
-- Results: `Result[T, E]`, `Ok`, `Err`, `?` operator
+- Results: `Result#[T, E]`, `Ok`, `Err`, `?` operator
 
 ### Properties to Prove
 
@@ -238,7 +238,7 @@ A formally verified type system means LLMs can trust the compiler's error messag
 
 **Klar Design:**
 
-Klar already has wrapping (`+%`) and saturating (`+|`) operators. Add checked operators that return `Result[T, OverflowError]`:
+Klar already has wrapping (`+%`) and saturating (`+|`) operators. Add checked operators that return `Result#[T, OverflowError]`:
 
 ```klar
 // Existing overflow operators
@@ -246,7 +246,7 @@ let a: i32 = x +% y    // wrapping: silently wraps on overflow
 let b: i32 = x +| y    // saturating: clamps to min/max
 
 // New: checked operators
-let c: Result[i32, OverflowError] = x +? y    // returns Err on overflow
+let c: Result#[i32, OverflowError] = x +? y    // returns Err on overflow
 ```
 
 ### Operator Table (Complete)
@@ -256,10 +256,10 @@ let c: Result[i32, OverflowError] = x +? y    // returns Err on overflow
 | `+` | Panic on overflow (debug), wrap (release) | `T` |
 | `+%` | Wrapping (modular arithmetic) | `T` |
 | `+|` | Saturating (clamp to bounds) | `T` |
-| `+?` | Checked (return Result) | `Result[T, OverflowError]` |
+| `+?` | Checked (return Result) | `Result#[T, OverflowError]` |
 
 Same pattern for `-`, `*`, `/`:
-- `-?`, `*?`, `/?` all return `Result[T, OverflowError]`
+- `-?`, `*?`, `/?` all return `Result#[T, OverflowError]`
 - `/?` also catches division by zero
 
 ### OverflowError Enum
@@ -276,7 +276,7 @@ enum OverflowError {
 
 ```klar
 // With ? operator for propagation
-fn safe_area(w: i32, h: i32) -> Result[i32, OverflowError] {
+fn safe_area(w: i32, h: i32) -> Result#[i32, OverflowError] {
     let area: i32 = (w *? h)?
     return Ok(area)
 }
@@ -294,7 +294,7 @@ match x +? y {
 ### Implementation Notes
 
 - Parser: `+?`, `-?`, `*?`, `/?` as new binary operators
-- Checker: operands must be integer types, result type is `Result[T, OverflowError]`
+- Checker: operands must be integer types, result type is `Result#[T, OverflowError]`
 - LLVM codegen: use LLVM overflow intrinsics (`llvm.sadd.with.overflow.*`)
 - VM/Interpreter: runtime overflow check, construct Result value
 

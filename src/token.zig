@@ -103,6 +103,7 @@ pub const Token = struct {
         colon,
         colon_colon,
         at, // @ for builtin functions
+        hash, // # for generic type parameters
 
         // Compound assignment
         plus_eq,
@@ -208,6 +209,7 @@ pub const Token = struct {
                 .colon => ":",
                 .colon_colon => "::",
                 .at => "@",
+                .hash => "#",
                 .plus_eq => "+=",
                 .minus_eq => "-=",
                 .star_eq => "*=",

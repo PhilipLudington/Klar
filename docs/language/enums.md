@@ -95,7 +95,7 @@ fn process(msg: Message) -> void {
 Enums can have type parameters:
 
 ```klar
-enum MyOption[T] {
+enum MyOption#[T] {
     MySome(T),
     MyNone,
 }
@@ -106,14 +106,14 @@ enum MyOption[T] {
 Specify the type parameter with the enum name:
 
 ```klar
-let some_int: MyOption[i32] = MyOption[i32]::MySome(42)
-let none_int: MyOption[i32] = MyOption[i32]::MyNone
+let some_int: MyOption#[i32] = MyOption#[i32]::MySome(42)
+let none_int: MyOption#[i32] = MyOption#[i32]::MyNone
 ```
 
 ### Pattern Matching Generic Enums
 
 ```klar
-fn unwrap_or[T](opt: MyOption[T], default: T) -> T {
+fn unwrap_or#[T](opt: MyOption#[T], default: T) -> T {
     var result: T
     match opt {
         MyOption.MySome(value) => { result = value }
@@ -125,7 +125,7 @@ fn unwrap_or[T](opt: MyOption[T], default: T) -> T {
 
 ## Built-in Enums
 
-### Option[T] (written as ?T)
+### Option#[T] (written as ?T)
 
 The optional type for values that may or may not exist:
 
@@ -136,13 +136,13 @@ let no_value: ?i32 = None
 
 See [Optional](../types/optional.md) for details.
 
-### Result[T, E]
+### Result#[T, E]
 
 The result type for operations that may fail:
 
 ```klar
-let success: Result[i32, string] = Ok(42)
-let failure: Result[i32, string] = Err("something went wrong")
+let success: Result#[i32, string] = Ok(42)
+let failure: Result#[i32, string] = Err("something went wrong")
 ```
 
 See [Result](../types/result.md) for details.
@@ -198,8 +198,8 @@ impl Color: Describable {
 ```klar
 enum Expr {
     Number(i32),
-    Add(Rc[Expr], Rc[Expr]),
-    Multiply(Rc[Expr], Rc[Expr]),
+    Add(Rc#[Expr], Rc#[Expr]),
+    Multiply(Rc#[Expr], Rc#[Expr]),
 }
 
 fn eval(e: Expr) -> i32 {

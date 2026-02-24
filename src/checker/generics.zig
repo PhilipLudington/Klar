@@ -7,9 +7,9 @@
 //! ## Key Concepts
 //!
 //! - **Monomorphization**: The process of creating concrete type instantiations
-//!   from generic templates (e.g., `List[i32]` from `List[T]`)
+//!   from generic templates (e.g., `List#[i32]` from `List#[T]`)
 //! - **Mangled names**: Unique names for each concrete instantiation
-//!   (e.g., `List$i32` for `List[i32]`)
+//!   (e.g., `List$i32` for `List#[i32]`)
 //! - **Type parameter scopes**: Track type parameters (like `T`, `U`) during
 //!   generic function/struct checking
 //! - **Type substitution**: Replace type variables with concrete types during
@@ -39,7 +39,7 @@
 //! Examples:
 //! - `identity[i32]` -> `identity$i32`
 //! - `Pair[i32, string]` -> `Pair$i32$string`
-//! - `Option[List[i32]]` -> `Option$List$i32`
+//! - `Option#[List#[i32]]` -> `Option$List$i32`
 
 const std = @import("std");
 const types = @import("../types.zig");

@@ -6,7 +6,7 @@ fn main() -> i32 {
     var file: File = File.open("/tmp/bufwriter_test.txt", "w")!
 
     // Wrap in BufWriter for buffered writing
-    var writer: BufWriter[File] = BufWriter.new[File](file)
+    var writer: BufWriter#[File] = BufWriter.new#[File](file)
 
     // Write some data
     writer.write_string("Hello")!

@@ -1,18 +1,18 @@
 // Test await used inside if/else control flow
 
-async fn flag() -> Future[bool] {
+async fn flag() -> Future#[bool] {
     return true
 }
 
-async fn value_a() -> Future[i32] {
+async fn value_a() -> Future#[i32] {
     return 42
 }
 
-async fn value_b() -> Future[i32] {
+async fn value_b() -> Future#[i32] {
     return 0
 }
 
-async fn choose() -> Future[i32] {
+async fn choose() -> Future#[i32] {
     let cond: bool = await flag()
     if cond {
         return await value_a()
@@ -22,6 +22,6 @@ async fn choose() -> Future[i32] {
 }
 
 fn main() -> i32 {
-    let _f: Future[i32] = choose()
+    let _f: Future#[i32] = choose()
     return 0
 }

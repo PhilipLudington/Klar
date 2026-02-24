@@ -64,13 +64,13 @@ pub const Type = union(enum) {
     path: void, // Path type (wrapper around String for filesystem paths)
 
     // Buffered I/O types
-    buf_reader: *BufReaderType, // BufReader[R: Read] buffered reader wrapper
-    buf_writer: *BufWriterType, // BufWriter[W: Write] buffered writer wrapper
+    buf_reader: *BufReaderType, // BufReader#[R: Read] buffered reader wrapper
+    buf_writer: *BufWriterType, // BufWriter#[W: Write] buffered writer wrapper
 
     // FFI types
     extern_type: *ExternType, // External type for C interop
-    cptr: *CptrType, // Non-null raw pointer (CPtr[T])
-    copt_ptr: *CoptPtrType, // Nullable raw pointer (COptPtr[T])
+    cptr: *CptrType, // Non-null raw pointer (CPtr#[T])
+    copt_ptr: *CoptPtrType, // Nullable raw pointer (COptPtr#[T])
     cstr: void, // Null-terminated C string (borrowed)
     cstr_owned: void, // Null-terminated C string (owned, must be freed)
     extern_fn: *ExternFnType, // C function pointer (extern fn)
@@ -537,14 +537,14 @@ pub const ExternType = struct {
     size: ?u64, // null for opaque types, byte size for sized types
 };
 
-/// Non-null raw pointer type (CPtr[T])
+/// Non-null raw pointer type (CPtr#[T])
 /// Equivalent to T* in C, assumed non-null.
 /// Dereferencing requires `unsafe` block.
 pub const CptrType = struct {
     inner: Type, // The pointed-to type
 };
 
-/// Nullable raw pointer type (COptPtr[T])
+/// Nullable raw pointer type (COptPtr#[T])
 /// Equivalent to T* in C, may be null.
 /// Must check for null before dereferencing.
 pub const CoptPtrType = struct {
@@ -566,14 +566,14 @@ pub const ExternFnType = struct {
 // Generic Types
 // ============================================================================
 
-/// Type variable for generics (e.g., T in List[T])
+/// Type variable for generics (e.g., T in List#[T])
 pub const TypeVar = struct {
     id: u32,
     name: []const u8,
     bounds: []const *TraitType,
 };
 
-/// Applied generic type (e.g., List[i32])
+/// Applied generic type (e.g., List#[i32])
 pub const AppliedType = struct {
     base: Type,
     args: []const Type,
@@ -595,7 +595,7 @@ pub const AssociatedTypeRef = struct {
 // Reference-Counted Types
 // ============================================================================
 
-/// Reference-counted wrapper type (Rc[T])
+/// Reference-counted wrapper type (Rc#[T])
 /// Provides shared ownership with automatic memory management.
 /// The value is freed when the last Rc reference is dropped.
 /// NOT thread-safe - use Arc for thread-safe reference counting.
@@ -603,14 +603,14 @@ pub const RcType = struct {
     inner: Type, // The wrapped type
 };
 
-/// Weak reference type (Weak[T])
+/// Weak reference type (Weak#[T])
 /// Non-owning reference that doesn't prevent deallocation.
 /// Must be upgraded to Rc before accessing the value.
 pub const WeakRcType = struct {
     inner: Type, // The wrapped type
 };
 
-/// Atomic reference-counted wrapper type (Arc[T])
+/// Atomic reference-counted wrapper type (Arc#[T])
 /// Thread-safe shared ownership with automatic memory management.
 /// Uses atomic operations for reference count updates.
 /// The value is freed when the last Arc reference is dropped.
@@ -618,21 +618,21 @@ pub const ArcType = struct {
     inner: Type, // The wrapped type
 };
 
-/// Weak atomic reference type (WeakArc[T])
+/// Weak atomic reference type (WeakArc#[T])
 /// Thread-safe non-owning reference that doesn't prevent deallocation.
 /// Must be upgraded to Arc before accessing the value.
 pub const WeakArcType = struct {
     inner: Type, // The wrapped type
 };
 
-/// Cell type for interior mutability (Cell[T])
+/// Cell type for interior mutability (Cell#[T])
 /// Allows mutation of the inner value even through an immutable reference.
 /// Only safe for Copy types (no aliasing issues).
 pub const CellType = struct {
     inner: Type, // The wrapped type (must be Copy)
 };
 
-/// ContextError type for wrapping errors with context messages (ContextError[E])
+/// ContextError type for wrapping errors with context messages (ContextError#[E])
 /// Wraps an error with a context message for better error reporting.
 /// Layout: { message: string, cause: E, file: ?string, line: i32, column: i32 }
 /// In debug builds, file/line/column track the location of the .context() call.
@@ -641,7 +641,7 @@ pub const ContextErrorType = struct {
     inner_type: Type, // The wrapped error type
 };
 
-/// Range type for iteration (Range[T])
+/// Range type for iteration (Range#[T])
 /// Represents an iterator over a sequence of values from start to end.
 /// Layout: { start: T, end: T, current: T, inclusive: bool }
 pub const RangeType = struct {
@@ -649,14 +649,14 @@ pub const RangeType = struct {
     inclusive: bool,
 };
 
-/// List type for growable collections (List[T])
+/// List type for growable collections (List#[T])
 /// A heap-allocated, dynamically-sized array.
 /// Layout: { ptr: *T, len: i32, capacity: i32 }
 pub const ListType = struct {
     element: Type,
 };
 
-/// Map type for key-value collections (Map[K, V])
+/// Map type for key-value collections (Map#[K, V])
 /// A heap-allocated hash map using open addressing with linear probing.
 /// Layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
 /// Entry layout: { state: i8, cached_hash: i32, key: K, value: V }
@@ -666,7 +666,7 @@ pub const MapType = struct {
     value: Type,
 };
 
-/// Set type for unique element collections (Set[T])
+/// Set type for unique element collections (Set#[T])
 /// A heap-allocated hash set using open addressing with linear probing.
 /// Layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
 /// Entry layout: { state: i8, cached_hash: i32, element: T }
@@ -684,14 +684,14 @@ pub const StringDataType = struct {
     // This is a marker struct to distinguish from primitive string_ type
 };
 
-/// BufReader type for buffered reading (BufReader[R: Read])
+/// BufReader type for buffered reading (BufReader#[R: Read])
 /// Wraps a Read implementation with an internal buffer for efficient I/O.
 /// Layout: { inner: R, buffer: [u8; 8192], pos: i32, cap: i32 }
 pub const BufReaderType = struct {
     inner: Type, // The wrapped reader type (must implement Read)
 };
 
-/// BufWriter type for buffered writing (BufWriter[W: Write])
+/// BufWriter type for buffered writing (BufWriter#[W: Write])
 /// Wraps a Write implementation with an internal buffer for efficient I/O.
 /// Layout: { inner: W, buffer: [u8; 8192], len: i32 }
 pub const BufWriterType = struct {
@@ -859,7 +859,7 @@ pub const TypeBuilder = struct {
         return .{ .applied = applied };
     }
 
-    /// Future[T] marker type used by async function signatures.
+    /// Future#[T] marker type used by async function signatures.
     /// This is represented as an applied type whose base is an extern-type marker "Future".
     pub fn futureType(self: *TypeBuilder, inner: Type) !Type {
         const future_marker = try self.arena.allocator().create(ExternType);
@@ -1058,7 +1058,7 @@ pub fn formatType(writer: anytype, t: Type) !void {
             try formatType(writer, o.*);
         },
         .result => |r| {
-            try writer.writeAll("Result[");
+            try writer.writeAll("Result#[");
             try formatType(writer, r.ok_type);
             try writer.writeAll(", ");
             try formatType(writer, r.err_type);
@@ -1096,7 +1096,7 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .type_var => |tv| try writer.writeAll(tv.name),
         .applied => |a| {
             try formatType(writer, a.base);
-            try writer.writeAll("[");
+            try writer.writeAll("#[");
             for (a.args, 0..) |arg, i| {
                 if (i > 0) try writer.writeAll(", ");
                 try formatType(writer, arg);
@@ -1104,54 +1104,54 @@ pub fn formatType(writer: anytype, t: Type) !void {
             try writer.writeAll("]");
         },
         .rc => |r| {
-            try writer.writeAll("Rc[");
+            try writer.writeAll("Rc#[");
             try formatType(writer, r.inner);
             try writer.writeAll("]");
         },
         .weak_rc => |w| {
-            try writer.writeAll("Weak[");
+            try writer.writeAll("Weak#[");
             try formatType(writer, w.inner);
             try writer.writeAll("]");
         },
         .arc => |a| {
-            try writer.writeAll("Arc[");
+            try writer.writeAll("Arc#[");
             try formatType(writer, a.inner);
             try writer.writeAll("]");
         },
         .weak_arc => |w| {
-            try writer.writeAll("WeakArc[");
+            try writer.writeAll("WeakArc#[");
             try formatType(writer, w.inner);
             try writer.writeAll("]");
         },
         .cell => |c| {
-            try writer.writeAll("Cell[");
+            try writer.writeAll("Cell#[");
             try formatType(writer, c.inner);
             try writer.writeAll("]");
         },
         .context_error => |ce| {
-            try writer.writeAll("ContextError[");
+            try writer.writeAll("ContextError#[");
             try formatType(writer, ce.inner_type);
             try writer.writeAll("]");
         },
         .range => |r| {
-            try writer.writeAll("Range[");
+            try writer.writeAll("Range#[");
             try formatType(writer, r.element_type);
             try writer.writeAll("]");
         },
         .list => |l| {
-            try writer.writeAll("List[");
+            try writer.writeAll("List#[");
             try formatType(writer, l.element);
             try writer.writeAll("]");
         },
         .map => |m| {
-            try writer.writeAll("Map[");
+            try writer.writeAll("Map#[");
             try formatType(writer, m.key);
             try writer.writeAll(", ");
             try formatType(writer, m.value);
             try writer.writeAll("]");
         },
         .set => |s| {
-            try writer.writeAll("Set[");
+            try writer.writeAll("Set#[");
             try formatType(writer, s.element);
             try writer.writeAll("]");
         },
@@ -1165,12 +1165,12 @@ pub fn formatType(writer: anytype, t: Type) !void {
         .stdin_handle => try writer.writeAll("Stdin"),
         .path => try writer.writeAll("Path"),
         .buf_reader => |br| {
-            try writer.writeAll("BufReader[");
+            try writer.writeAll("BufReader#[");
             try formatType(writer, br.inner);
             try writer.writeAll("]");
         },
         .buf_writer => |bw| {
-            try writer.writeAll("BufWriter[");
+            try writer.writeAll("BufWriter#[");
             try formatType(writer, bw.inner);
             try writer.writeAll("]");
         },
@@ -1183,12 +1183,12 @@ pub fn formatType(writer: anytype, t: Type) !void {
             try writer.writeAll(ext.name);
         },
         .cptr => |c| {
-            try writer.writeAll("CPtr[");
+            try writer.writeAll("CPtr#[");
             try formatType(writer, c.inner);
             try writer.writeAll("]");
         },
         .copt_ptr => |c| {
-            try writer.writeAll("COptPtr[");
+            try writer.writeAll("COptPtr#[");
             try formatType(writer, c.inner);
             try writer.writeAll("]");
         },
@@ -1420,20 +1420,20 @@ test "Rc type formatting" {
     const rc_t = try builder.rcType(builder.i32Type());
     const rc_str = try typeToString(testing.allocator, rc_t);
     defer testing.allocator.free(rc_str);
-    try testing.expectEqualStrings("Rc[i32]", rc_str);
+    try testing.expectEqualStrings("Rc#[i32]", rc_str);
 
-    // Weak[string]
+    // Weak#[string]
     const weak_t = try builder.weakRcType(builder.stringType());
     const weak_str = try typeToString(testing.allocator, weak_t);
     defer testing.allocator.free(weak_str);
-    try testing.expectEqualStrings("Weak[string]", weak_str);
+    try testing.expectEqualStrings("Weak#[string]", weak_str);
 
-    // Nested: Rc[?i32]
+    // Nested: Rc#[?i32]
     const opt_i32 = try builder.optionalType(builder.i32Type());
     const rc_opt = try builder.rcType(opt_i32);
     const rc_opt_str = try typeToString(testing.allocator, rc_opt);
     defer testing.allocator.free(rc_opt_str);
-    try testing.expectEqualStrings("Rc[?i32]", rc_opt_str);
+    try testing.expectEqualStrings("Rc#[?i32]", rc_opt_str);
 }
 
 test "Arc type creation and equality" {
@@ -1473,20 +1473,20 @@ test "Arc type formatting" {
     const arc_t = try builder.arcType(builder.i32Type());
     const arc_str = try typeToString(testing.allocator, arc_t);
     defer testing.allocator.free(arc_str);
-    try testing.expectEqualStrings("Arc[i32]", arc_str);
+    try testing.expectEqualStrings("Arc#[i32]", arc_str);
 
-    // WeakArc[string]
+    // WeakArc#[string]
     const weak_t = try builder.weakArcType(builder.stringType());
     const weak_str = try typeToString(testing.allocator, weak_t);
     defer testing.allocator.free(weak_str);
-    try testing.expectEqualStrings("WeakArc[string]", weak_str);
+    try testing.expectEqualStrings("WeakArc#[string]", weak_str);
 
-    // Nested: Arc[?i32]
+    // Nested: Arc#[?i32]
     const opt_i32 = try builder.optionalType(builder.i32Type());
     const arc_opt = try builder.arcType(opt_i32);
     const arc_opt_str = try typeToString(testing.allocator, arc_opt);
     defer testing.allocator.free(arc_opt_str);
-    try testing.expectEqualStrings("Arc[?i32]", arc_opt_str);
+    try testing.expectEqualStrings("Arc#[?i32]", arc_opt_str);
 }
 
 test "Arc is not Copy" {
@@ -1546,13 +1546,13 @@ test "CPtr type formatting" {
     const cptr_t = try builder.cptrType(builder.i32Type());
     const cptr_str = try typeToString(testing.allocator, cptr_t);
     defer testing.allocator.free(cptr_str);
-    try testing.expectEqualStrings("CPtr[i32]", cptr_str);
+    try testing.expectEqualStrings("CPtr#[i32]", cptr_str);
 
-    // COptPtr[string]
+    // COptPtr#[string]
     const coptptr_t = try builder.coptPtrType(builder.stringType());
     const coptptr_str = try typeToString(testing.allocator, coptptr_t);
     defer testing.allocator.free(coptptr_str);
-    try testing.expectEqualStrings("COptPtr[string]", coptptr_str);
+    try testing.expectEqualStrings("COptPtr#[string]", coptptr_str);
 
     // CStr
     const cstr_t = builder.cstrType();
@@ -1560,12 +1560,12 @@ test "CPtr type formatting" {
     defer testing.allocator.free(cstr_str);
     try testing.expectEqualStrings("CStr", cstr_str);
 
-    // Nested: CPtr[COptPtr[i32]]
+    // Nested: CPtr#[COptPtr#[i32]]
     const inner = try builder.coptPtrType(builder.i32Type());
     const nested = try builder.cptrType(inner);
     const nested_str = try typeToString(testing.allocator, nested);
     defer testing.allocator.free(nested_str);
-    try testing.expectEqualStrings("CPtr[COptPtr[i32]]", nested_str);
+    try testing.expectEqualStrings("CPtr#[COptPtr#[i32]]", nested_str);
 }
 
 test "CPtr is Copy" {

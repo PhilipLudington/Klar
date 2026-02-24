@@ -1,12 +1,12 @@
-async fn id[T](value: T) -> Future[T] {
+async fn id#[T](value: T) -> Future#[T] {
     return value
 }
 
-async fn run() -> Future[i32] {
-    return await id[i32](42)
+async fn run() -> Future#[i32] {
+    return await id#[i32](42)
 }
 
 fn main() -> i32 {
-    let _f: Future[i32] = run()
+    let _f: Future#[i32] = run()
     return 0
 }

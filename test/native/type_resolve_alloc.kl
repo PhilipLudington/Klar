@@ -1,5 +1,5 @@
 // test_type_resolve_alloc.kl - Regression test for Bug 5
-// Tests: codegen resolveTypeExprDirect handles ?T, Result[T,E], and nested
+// Tests: codegen resolveTypeExprDirect handles ?T, Result#[T,E], and nested
 //        type combinations without leaking heap-allocated type objects.
 // Expected exit code: 0 (accept any via -1)
 
@@ -9,7 +9,7 @@ fn maybe_value(flag: bool) -> ?i32 {
     }
 }
 
-fn validate(n: i32) -> Result[i32, i32] {
+fn validate(n: i32) -> Result#[i32, i32] {
     if n > 0 {
         return Ok(n)
     }
@@ -25,7 +25,7 @@ fn nested_optional(flag: bool) -> ?i32 {
 }
 
 fn result_to_optional(n: i32) -> ?i32 {
-    let r: Result[i32, i32] = validate(n)
+    let r: Result#[i32, i32] = validate(n)
     if r.is_ok() {
         return r!
     }
@@ -38,9 +38,9 @@ fn main() -> i32 {
     let a_val: i32 = a!
     let b_val: i32 = b ?? 0
 
-    // Exercise Result[T, E] resolution
-    let r1: Result[i32, i32] = validate(10)
-    let r2: Result[i32, i32] = validate(-5)
+    // Exercise Result#[T, E] resolution
+    let r1: Result#[i32, i32] = validate(10)
+    let r2: Result#[i32, i32] = validate(-5)
 
     // Exercise nested optional paths
     let c: ?i32 = nested_optional(true)

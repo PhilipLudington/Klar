@@ -2,7 +2,7 @@
 // Milestone 9.5: Full AST type hierarchy
 //
 // Architecture: Node pool / arena approach. All AST nodes live in typed
-// List[T] pools managed as direct `var` variables (not struct fields,
+// List#[T] pools managed as direct `var` variables (not struct fields,
 // due to Klar's value semantics for List in structs).
 //
 // Cross-references use i32 indices wrapped in typed ID structs.
@@ -214,7 +214,7 @@ pub struct UnaryData { op: UnaryOp, operand: ExprId, span: Span }
 pub struct PostfixData { op: PostfixOp, operand: ExprId, span: Span }
 
 // CallData: args in extra_expr_ids, type_args in extra_type_expr_ids
-// type_args for explicit generic calls like f[T](args)
+// type_args for explicit generic calls like f#[T](args)
 pub struct CallData {
     callee: ExprId,
     args_start: i32,
@@ -778,7 +778,7 @@ fn main() -> i32 {
     let s: Span = Span { line: 1, column: 1, start: 0, end: 2 }
 
     // Test 1: Expr creation (including new variants)
-    var exprs: List[Expr] = List.new[Expr]()
+    var exprs: List#[Expr] = List.new#[Expr]()
     exprs.push(Expr::IntLiteral(IntLiteralData { text: "42", span: s }))
     exprs.push(Expr::Identifier(IdentifierData { ident_name: "x", span: s }))
     exprs.push(Expr::Binary(BinaryData {
@@ -854,7 +854,7 @@ fn main() -> i32 {
     }
 
     // Test 4: Stmt creation with AssignOp, break-with-value, shadow var
-    var stmts: List[Stmt] = List.new[Stmt]()
+    var stmts: List#[Stmt] = List.new#[Stmt]()
     stmts.push(Stmt::ReturnStmt(ReturnStmtData { value: ExprId { id: 0 }, span: s }))
     stmts.push(Stmt::BreakStmt(BreakStmtData { value: no_expr(), span: s }))
     stmts.push(Stmt::BreakStmt(BreakStmtData { value: ExprId { id: 0 }, span: s }))
@@ -877,7 +877,7 @@ fn main() -> i32 {
     }
 
     // Test 5: Decl creation with updated FunctionDeclData modifiers
-    var decls: List[Decl] = List.new[Decl]()
+    var decls: List#[Decl] = List.new#[Decl]()
     decls.push(Decl::Function(FunctionDeclData {
         fn_name: "main",
         generics_start: 0,
@@ -911,7 +911,7 @@ fn main() -> i32 {
     }
 
     // Test 6: TypeExpr creation with GenericApply using TypeExprId base
-    var type_exprs: List[TypeExpr] = List.new[TypeExpr]()
+    var type_exprs: List#[TypeExpr] = List.new#[TypeExpr]()
     type_exprs.push(TypeExpr::Named(NamedTypeData { type_name: "i32", span: s }))
     type_exprs.push(TypeExpr::Optional(OptionalTypeData { inner: TypeExprId { id: 0 }, span: s }))
     type_exprs.push(TypeExpr::GenericApply(GenericApplyData {
@@ -926,7 +926,7 @@ fn main() -> i32 {
     }
 
     // Test 7: Pattern creation (expanded with StructPat and VariantPat)
-    var patterns: List[Pattern] = List.new[Pattern]()
+    var patterns: List#[Pattern] = List.new#[Pattern]()
     patterns.push(Pattern::Wildcard(WildcardData { span: s }))
     patterns.push(Pattern::BindingPat(BindingPatData { binding_name: "x", is_mut: false, span: s }))
     patterns.push(Pattern::VariantPat(VariantPatData {

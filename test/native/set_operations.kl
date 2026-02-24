@@ -1,8 +1,8 @@
 // Set operation tests: union, intersection, difference
 fn main() -> i32 {
     // Create two sets
-    var a: Set[i32] = Set.new[i32]()
-    var b: Set[i32] = Set.new[i32]()
+    var a: Set#[i32] = Set.new#[i32]()
+    var b: Set#[i32] = Set.new#[i32]()
 
     // Set a = {1, 2, 3, 4}
     a.insert(1)
@@ -17,7 +17,7 @@ fn main() -> i32 {
     b.insert(6)
 
     // Test union: a ∪ b = {1, 2, 3, 4, 5, 6}
-    let u: Set[i32] = a.union(b)
+    let u: Set#[i32] = a.union(b)
     if u.len() != 6 {
         return 1
     }
@@ -41,7 +41,7 @@ fn main() -> i32 {
     }
 
     // Test intersection: a ∩ b = {3, 4}
-    let inter: Set[i32] = a.intersection(b)
+    let inter: Set#[i32] = a.intersection(b)
     if inter.len() != 2 {
         return 10
     }
@@ -60,7 +60,7 @@ fn main() -> i32 {
     }
 
     // Test difference: a \ b = {1, 2}
-    let diff: Set[i32] = a.difference(b)
+    let diff: Set#[i32] = a.difference(b)
     if diff.len() != 2 {
         return 20
     }
@@ -79,7 +79,7 @@ fn main() -> i32 {
     }
 
     // Test difference the other way: b \ a = {5, 6}
-    let diff2: Set[i32] = b.difference(a)
+    let diff2: Set#[i32] = b.difference(a)
     if diff2.len() != 2 {
         return 30
     }
@@ -91,47 +91,47 @@ fn main() -> i32 {
     }
 
     // Test with empty set
-    var empty: Set[i32] = Set.new[i32]()
+    var empty: Set#[i32] = Set.new#[i32]()
 
     // Union with empty: a ∪ ∅ = a
-    let u2: Set[i32] = a.union(empty)
+    let u2: Set#[i32] = a.union(empty)
     if u2.len() != 4 {
         return 40
     }
 
     // Intersection with empty: a ∩ ∅ = ∅
-    let inter2: Set[i32] = a.intersection(empty)
+    let inter2: Set#[i32] = a.intersection(empty)
     if inter2.len() != 0 {
         return 41
     }
 
     // Difference with empty: a \ ∅ = a
-    let diff3: Set[i32] = a.difference(empty)
+    let diff3: Set#[i32] = a.difference(empty)
     if diff3.len() != 4 {
         return 42
     }
 
     // Empty difference: ∅ \ a = ∅
-    let diff4: Set[i32] = empty.difference(a)
+    let diff4: Set#[i32] = empty.difference(a)
     if diff4.len() != 0 {
         return 43
     }
 
     // Test with self
     // Union with self: a ∪ a = a
-    let u3: Set[i32] = a.union(a)
+    let u3: Set#[i32] = a.union(a)
     if u3.len() != 4 {
         return 50
     }
 
     // Intersection with self: a ∩ a = a
-    let inter3: Set[i32] = a.intersection(a)
+    let inter3: Set#[i32] = a.intersection(a)
     if inter3.len() != 4 {
         return 51
     }
 
     // Difference with self: a \ a = ∅
-    let diff5: Set[i32] = a.difference(a)
+    let diff5: Set#[i32] = a.difference(a)
     if diff5.len() != 0 {
         return 52
     }

@@ -94,7 +94,7 @@ impl Person: Greetable {
 Constrain generic types to types implementing specific traits:
 
 ```klar
-fn print_description[T: Describable](item: T) {
+fn print_description#[T: Describable](item: T) {
     println(item.describe())
 }
 ```
@@ -104,7 +104,7 @@ fn print_description[T: Describable](item: T) {
 Use `+` to require multiple traits:
 
 ```klar
-fn process[T: Printable + Comparable](a: T, b: T) {
+fn process#[T: Printable + Comparable](a: T, b: T) {
     println(a.to_string())
     if a.compare(b) > 0 {
         println("a is greater")
@@ -250,7 +250,7 @@ impl Rectangle: Summable {
     }
 }
 
-fn total[T: Summable](items: [T]) -> i32 {
+fn total#[T: Summable](items: [T]) -> i32 {
     var total: i32 = 0
     for item: T in items {
         total = total + item.sum()

@@ -179,8 +179,8 @@ Use `:type` to understand how types work:
 klar> :type Some(42)
 ?i32
 
-klar> :type Ok[i32, string](42)
-Result[i32, string]
+klar> :type Ok#[i32, string](42)
+Result#[i32, string]
 ```
 
 ### Testing Functions

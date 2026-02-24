@@ -142,7 +142,7 @@ Chain operations that return optionals:
 ```klar
 fn parse_and_double(s: ?string) -> ?i32 {
     return s.and_then(|str: string| -> ?i32 {
-        let n: ?i32 = str.to[i32]
+        let n: ?i32 = str.to#[i32]
         return n.map(|x: i32| -> i32 { return x * 2 })
     })
 }
@@ -196,7 +196,7 @@ fn get_email_length(user: ?User) -> ?i32 {
 ## Example: Safe Dictionary Lookup
 
 ```klar
-fn get_value(map: Map[string, i32], key: string) -> ?i32 {
+fn get_value(map: Map#[string, i32], key: string) -> ?i32 {
     if map.contains_key(key) {
         return Some(map.get(key))
     }
@@ -204,7 +204,7 @@ fn get_value(map: Map[string, i32], key: string) -> ?i32 {
 }
 
 fn main() -> i32 {
-    var scores: Map[string, i32] = Map.new[string, i32]()
+    var scores: Map#[string, i32] = Map.new#[string, i32]()
     scores.insert("alice", 100)
     scores.insert("bob", 85)
 

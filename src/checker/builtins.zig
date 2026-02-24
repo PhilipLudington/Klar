@@ -16,8 +16,8 @@
 //! | `panic` | `fn(string) -> !` | Panic with message |
 //! | `assert_eq` | `fn(T, T)` | Assert equality |
 //! | `assert_ne` | `fn(T, T)` | Assert inequality |
-//! | `assert_ok` | `fn(Result[T, E])` | Assert Result is Ok |
-//! | `assert_err` | `fn(Result[T, E])` | Assert Result is Err |
+//! | `assert_ok` | `fn(Result#[T, E])` | Assert Result is Ok |
+//! | `assert_err` | `fn(Result#[T, E])` | Assert Result is Err |
 //! | `assert_some` | `fn(?T)` | Assert Optional is Some |
 //! | `assert_none` | `fn(?T)` | Assert Optional is None |
 //! | `dbg` | `fn(T) -> T` | Debug print and return |
@@ -49,13 +49,13 @@
 //! | `fs_exists` | `fn(string) -> bool` | Check if path exists |
 //! | `fs_is_file` | `fn(string) -> bool` | Check if path is file |
 //! | `fs_is_dir` | `fn(string) -> bool` | Check if path is directory |
-//! | `fs_create_dir` | `fn(string) -> Result[void, IoError]` | Create directory |
-//! | `fs_create_dir_all` | `fn(string) -> Result[void, IoError]` | Create directory tree |
-//! | `fs_remove_file` | `fn(string) -> Result[void, IoError]` | Remove file |
-//! | `fs_remove_dir` | `fn(string) -> Result[void, IoError]` | Remove directory |
-//! | `fs_read_string` | `fn(string) -> Result[String, IoError]` | Read file contents |
-//! | `fs_write_string` | `fn(string, string) -> Result[void, IoError]` | Write file contents |
-//! | `fs_read_dir` | `fn(string) -> Result[List[String], IoError]` | List directory |
+//! | `fs_create_dir` | `fn(string) -> Result#[void, IoError]` | Create directory |
+//! | `fs_create_dir_all` | `fn(string) -> Result#[void, IoError]` | Create directory tree |
+//! | `fs_remove_file` | `fn(string) -> Result#[void, IoError]` | Remove file |
+//! | `fs_remove_dir` | `fn(string) -> Result#[void, IoError]` | Remove directory |
+//! | `fs_read_string` | `fn(string) -> Result#[String, IoError]` | Read file contents |
+//! | `fs_write_string` | `fn(string, string) -> Result#[void, IoError]` | Write file contents |
+//! | `fs_read_dir` | `fn(string) -> Result#[List#[String], IoError]` | List directory |
 //!
 //! ## Comptime Builtins
 //!

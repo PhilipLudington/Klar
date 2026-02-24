@@ -1,6 +1,6 @@
-//! Set[T] helper utilities for codegen.
+//! Set#[T] helper utilities for codegen.
 //!
-//! Provides constants, type constructors, and hash table helpers for Set[T]
+//! Provides constants, type constructors, and hash table helpers for Set#[T]
 //! code generation. The emission implementation (emitSetNew, emitSetInsert,
 //! etc.) remains in emit.zig.
 //!
@@ -17,7 +17,7 @@
 //! Same open addressing approach as Map:
 //!
 //! ```
-//! struct Set[T] {
+//! struct Set#[T] {
 //!     entries: *Entry,   // Pointer to entry array
 //!     len: i32,          // Current number of elements
 //!     capacity: i32,     // Total slots (power of 2)

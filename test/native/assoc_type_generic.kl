@@ -29,7 +29,7 @@ impl StringBox: Container {
     }
 }
 
-fn extract[T: Container](container: T) -> T.Item {
+fn extract#[T: Container](container: T) -> T.Item {
     return container.get_first()
 }
 

@@ -1,21 +1,21 @@
 // Test reference parameters (ref self and inout self) in generic struct methods
 
-struct Box[T] {
+struct Box#[T] {
     value: T,
 }
 
-impl[T] Box[T] {
-    fn get(self: ref Box[T]) -> T {
+impl#[T] Box#[T] {
+    fn get(self: ref Box#[T]) -> T {
         return self.value
     }
 
-    fn set(self: inout Box[T], v: T) -> void {
+    fn set(self: inout Box#[T], v: T) -> void {
         self.value = v
     }
 }
 
 fn main() -> i32 {
-    var b: Box[i32] = Box[i32] { value: 10 }
+    var b: Box#[i32] = Box#[i32] { value: 10 }
     b.set(20)
     b.set(b.get() + 22)
     return b.get()

@@ -3,7 +3,7 @@
 // array, slice, tuple, function types.
 
 import lexer.{Lexer, Token, TokenKind, tag_name}
-import parser.{Parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, json_str, json_bool, can_start_type}
+import parser.{Parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, json_str, json_bool}
 import parser_expr.{parse_expression}
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -53,7 +53,7 @@ pub fn parse_type(p: Parser) -> (Parser, string) {
         return (p2, self_type)
     }
 
-    // Named type (possibly generic: Name[T1, T2])
+    // Named type (possibly generic: Name#[T1, T2])
     if k == "identifier" {
         return parse_named_type(p)
     }
@@ -66,9 +66,10 @@ fn parse_named_type(p: Parser) -> (Parser, string) {
     var p2: Parser = advance(p)
     var result: string = "{\"kind\":\"named\",\"name\":" + json_str(name) + "}"
 
-    // Check for generic application: Name[T1, T2]
-    if tk(p2, "l_bracket") {
-        var p3: Parser = advance(p2)
+    // Check for generic application: Name#[T1, T2]
+    if tk(p2, "hash") {
+        var p3: Parser = advance(p2) // skip '#'
+        p3 = consume(p3, "l_bracket", "expected '[' after '#'")
         var args: string = ""
         var first: bool = true
         while not tk(p3, "r_bracket") and not tk(p3, "eof") {

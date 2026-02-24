@@ -1,7 +1,7 @@
 // Test list[i] = v index assignment syntax
 
 fn main() -> i32 {
-    var list: List[i32] = List.new[i32]()
+    var list: List#[i32] = List.new#[i32]()
 
     // Push initial values
     list.push(10)

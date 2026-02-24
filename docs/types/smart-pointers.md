@@ -1,15 +1,15 @@
 # Smart Pointers
 
-Klar provides smart pointer types for shared ownership and interior mutability: `Rc[T]`, `Arc[T]`, and `Cell[T]`.
+Klar provides smart pointer types for shared ownership and interior mutability: `Rc#[T]`, `Arc#[T]`, and `Cell#[T]`.
 
-## Rc[T] - Reference Counted
+## Rc#[T] - Reference Counted
 
-`Rc[T]` provides shared ownership through reference counting. Multiple owners can share the same data, and the data is freed when the last owner drops.
+`Rc#[T]` provides shared ownership through reference counting. Multiple owners can share the same data, and the data is freed when the last owner drops.
 
 ### Creating Rc
 
 ```klar
-let rc: Rc[i32] = Rc.new(42)
+let rc: Rc#[i32] = Rc.new(42)
 ```
 
 ### Accessing the Value
@@ -17,7 +17,7 @@ let rc: Rc[i32] = Rc.new(42)
 Use `.get()` to access the wrapped value:
 
 ```klar
-let rc: Rc[i32] = Rc.new(42)
+let rc: Rc#[i32] = Rc.new(42)
 let value: i32 = rc.get()  // 42
 ```
 
@@ -26,8 +26,8 @@ let value: i32 = rc.get()  // 42
 Clone creates another owner of the same data:
 
 ```klar
-let rc1: Rc[i32] = Rc.new(42)
-let rc2: Rc[i32] = rc1.clone()  // Both point to same data
+let rc1: Rc#[i32] = Rc.new(42)
+let rc2: Rc#[i32] = rc1.clone()  // Both point to same data
 
 // rc1.get() == rc2.get() == 42
 ```
@@ -37,10 +37,10 @@ let rc2: Rc[i32] = rc1.clone()  // Both point to same data
 Check how many owners exist:
 
 ```klar
-let rc: Rc[i32] = Rc.new(42)
+let rc: Rc#[i32] = Rc.new(42)
 let count1: i32 = rc.ref_count()  // 1
 
-let clone: Rc[i32] = rc.clone()
+let clone: Rc#[i32] = rc.clone()
 let count2: i32 = rc.ref_count()  // 2
 ```
 
@@ -50,9 +50,9 @@ When an `Rc` is dropped, the reference count decreases. The data is freed when t
 
 ```klar
 fn example() -> void {
-    let rc1: Rc[i32] = Rc.new(42)
+    let rc1: Rc#[i32] = Rc.new(42)
     {
-        let rc2: Rc[i32] = rc1.clone()
+        let rc2: Rc#[i32] = rc1.clone()
         // ref_count is 2
     }
     // rc2 dropped, ref_count is 1
@@ -65,25 +65,25 @@ fn example() -> void {
 ```klar
 struct Node {
     value: i32,
-    next: ?Rc[Node],
+    next: ?Rc#[Node],
 }
 
-fn create_list() -> Rc[Node] {
-    let node3: Rc[Node] = Rc.new(Node { value: 3, next: None })
-    let node2: Rc[Node] = Rc.new(Node { value: 2, next: Some(node3) })
-    let node1: Rc[Node] = Rc.new(Node { value: 1, next: Some(node2) })
+fn create_list() -> Rc#[Node] {
+    let node3: Rc#[Node] = Rc.new(Node { value: 3, next: None })
+    let node2: Rc#[Node] = Rc.new(Node { value: 2, next: Some(node3) })
+    let node1: Rc#[Node] = Rc.new(Node { value: 1, next: Some(node2) })
     return node1
 }
 ```
 
-## Arc[T] - Atomic Reference Counted
+## Arc#[T] - Atomic Reference Counted
 
-`Arc[T]` is like `Rc[T]` but safe for use across threads. Use `Arc` when data needs to be shared between threads.
+`Arc#[T]` is like `Rc#[T]` but safe for use across threads. Use `Arc` when data needs to be shared between threads.
 
 ### Creating Arc
 
 ```klar
-let arc: Arc[i32] = Arc.new(42)
+let arc: Arc#[i32] = Arc.new(42)
 ```
 
 ### Arc Methods
@@ -98,16 +98,16 @@ let arc: Arc[i32] = Arc.new(42)
 ### Example: Thread-Safe Counter
 
 ```klar
-let counter: Arc[i32] = Arc.new(0)
+let counter: Arc#[i32] = Arc.new(0)
 
 // Can be safely shared across threads
-let thread1_counter: Arc[i32] = counter.clone()
-let thread2_counter: Arc[i32] = counter.clone()
+let thread1_counter: Arc#[i32] = counter.clone()
+let thread2_counter: Arc#[i32] = counter.clone()
 ```
 
 ## Rc vs Arc
 
-| Feature | Rc[T] | Arc[T] |
+| Feature | Rc#[T] | Arc#[T] |
 |---------|-------|--------|
 | Thread-safe | No | Yes |
 | Performance | Faster | Slower (atomic ops) |
@@ -121,20 +121,20 @@ Use `Arc` when:
 - Data is shared across threads
 - Thread safety is required
 
-## Cell[T] - Interior Mutability
+## Cell#[T] - Interior Mutability
 
-`Cell[T]` provides interior mutability - the ability to mutate data even through immutable references.
+`Cell#[T]` provides interior mutability - the ability to mutate data even through immutable references.
 
 ### Creating Cell
 
 ```klar
-let cell: Cell[i32] = Cell.new(42)
+let cell: Cell#[i32] = Cell.new(42)
 ```
 
 ### Getting and Setting
 
 ```klar
-let cell: Cell[i32] = Cell.new(42)
+let cell: Cell#[i32] = Cell.new(42)
 
 let value: i32 = cell.get()  // 42
 cell.set(100)
@@ -154,7 +154,7 @@ let new_value: i32 = cell.get()  // 100
 
 ```klar
 struct Counter {
-    count: Cell[i32],
+    count: Cell#[i32],
 }
 
 impl Counter {
@@ -183,47 +183,47 @@ Use `Cell` when you need to:
 
 ```klar
 struct Config {
-    settings: Map[string, string],
-    cache: Cell[?ComputedValue],  // Lazy cached value
+    settings: Map#[string, string],
+    cache: Cell#[?ComputedValue],  // Lazy cached value
 }
 ```
 
 ## Combining Smart Pointers
 
-### Rc[Cell[T]] - Shared Mutable State
+### Rc#[Cell#[T]] - Shared Mutable State
 
 Combine `Rc` and `Cell` for shared mutable state:
 
 ```klar
-let shared: Rc[Cell[i32]] = Rc.new(Cell.new(0))
+let shared: Rc#[Cell#[i32]] = Rc.new(Cell.new(0))
 
-let copy1: Rc[Cell[i32]] = shared.clone()
-let copy2: Rc[Cell[i32]] = shared.clone()
+let copy1: Rc#[Cell#[i32]] = shared.clone()
+let copy2: Rc#[Cell#[i32]] = shared.clone()
 
 // Both can modify the shared value
 copy1.get().set(10)
 let value: i32 = copy2.get().get()  // 10
 ```
 
-### Arc[Cell[T]] - Thread-Safe Shared Mutable State
+### Arc#[Cell#[T]] - Thread-Safe Shared Mutable State
 
 ```klar
-let shared: Arc[Cell[i32]] = Arc.new(Cell.new(0))
+let shared: Arc#[Cell#[i32]] = Arc.new(Cell.new(0))
 
 // Can be safely shared and mutated across threads
-let thread1: Arc[Cell[i32]] = shared.clone()
-let thread2: Arc[Cell[i32]] = shared.clone()
+let thread1: Arc#[Cell#[i32]] = shared.clone()
+let thread2: Arc#[Cell#[i32]] = shared.clone()
 ```
 
 ## Example: Shared Configuration
 
 ```klar
 struct AppConfig {
-    settings: Rc[Map[string, string]],
+    settings: Rc#[Map#[string, string]],
 }
 
 fn create_shared_config() -> (AppConfig, AppConfig) {
-    let settings: Rc[Map[string, string]] = Rc.new(Map.new[string, string]())
+    let settings: Rc#[Map#[string, string]] = Rc.new(Map.new#[string, string]())
 
     settings.get().insert("theme", "dark")
     settings.get().insert("language", "en")
@@ -240,25 +240,25 @@ fn create_shared_config() -> (AppConfig, AppConfig) {
 ```klar
 struct TreeNode {
     value: i32,
-    left: ?Rc[TreeNode],
-    right: ?Rc[TreeNode],
+    left: ?Rc#[TreeNode],
+    right: ?Rc#[TreeNode],
 }
 
-fn create_shared_subtree() -> (Rc[TreeNode], Rc[TreeNode]) {
+fn create_shared_subtree() -> (Rc#[TreeNode], Rc#[TreeNode]) {
     // Shared subtree
-    let shared: Rc[TreeNode] = Rc.new(TreeNode {
+    let shared: Rc#[TreeNode] = Rc.new(TreeNode {
         value: 100,
         left: None,
         right: None,
     })
 
-    let tree1: Rc[TreeNode] = Rc.new(TreeNode {
+    let tree1: Rc#[TreeNode] = Rc.new(TreeNode {
         value: 1,
         left: Some(shared.clone()),
         right: None,
     })
 
-    let tree2: Rc[TreeNode] = Rc.new(TreeNode {
+    let tree2: Rc#[TreeNode] = Rc.new(TreeNode {
         value: 2,
         left: None,
         right: Some(shared),
@@ -279,7 +279,7 @@ Reference cycles cause memory leaks because the count never reaches zero:
 // BAD - creates a cycle
 struct Node {
     value: i32,
-    next: ?Rc[Node],
+    next: ?Rc#[Node],
 }
 
 // To avoid cycles, consider:
@@ -297,7 +297,7 @@ Only use smart pointers when shared ownership is needed:
 let data: MyStruct = MyStruct { ... }
 
 // Only use Rc when sharing is necessary
-let shared: Rc[MyStruct] = Rc.new(MyStruct { ... })
+let shared: Rc#[MyStruct] = Rc.new(MyStruct { ... })
 ```
 
 ## Next Steps

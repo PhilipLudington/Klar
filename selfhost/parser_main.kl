@@ -90,7 +90,7 @@ fn main(args: [String]) -> i32 {
     // File mode: parse and dump JSON
     let arg1: String = args[1]
     let path: string = arg1.as_str()
-    let result: Result[String, IoError] = File.read_to_string(path)
+    let result: Result#[String, IoError] = File.read_to_string(path)
     if not result.is_ok() {
         println("Error: could not read file")
         return 1

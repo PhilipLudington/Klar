@@ -2,14 +2,14 @@
 // When Err: returns Err from the function with the same error
 // When Ok: extracts the value
 
-fn maybe_ok(should_succeed: bool) -> Result[i32, i32] {
+fn maybe_ok(should_succeed: bool) -> Result#[i32, i32] {
     if should_succeed {
         return Ok(42)
     }
     return Err(99)  // Error code 99
 }
 
-fn try_get_result(should_succeed: bool) -> Result[i32, i32] {
+fn try_get_result(should_succeed: bool) -> Result#[i32, i32] {
     // ? on Ok should extract value
     // ? on Err should return Err early with the same error
     let value: i32 = maybe_ok(should_succeed)?
@@ -18,11 +18,11 @@ fn try_get_result(should_succeed: bool) -> Result[i32, i32] {
 
 fn main() -> i32 {
     // Test 1: With Ok value - should get Ok(42 + 10) = Ok(52)
-    let result1: Result[i32, i32] = try_get_result(true)
+    let result1: Result#[i32, i32] = try_get_result(true)
     let val1: i32 = result1!
 
     // Test 2: With Err - should get Err(99) back
-    let result2: Result[i32, i32] = try_get_result(false)
+    let result2: Result#[i32, i32] = try_get_result(false)
 
     // Verify result2 is Err with error code 99
     if result2.is_err() {

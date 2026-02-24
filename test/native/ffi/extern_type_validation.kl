@@ -11,9 +11,9 @@ extern type(8) SizedHandle
 
 extern {
     // VALID: pointer to opaque type
-    fn get_opaque() -> CPtr[OpaqueHandle]
-    fn use_opaque(handle: CPtr[OpaqueHandle]) -> void
-    fn optional_opaque(handle: COptPtr[OpaqueHandle]) -> void
+    fn get_opaque() -> CPtr#[OpaqueHandle]
+    fn use_opaque(handle: CPtr#[OpaqueHandle]) -> void
+    fn optional_opaque(handle: COptPtr#[OpaqueHandle]) -> void
 
     // VALID: sized type by value
     fn get_sized() -> SizedHandle
@@ -22,7 +22,7 @@ extern {
 
 // VALID: extern struct with pointer to opaque
 extern struct ValidStruct {
-    opaque_ptr: CPtr[OpaqueHandle],
+    opaque_ptr: CPtr#[OpaqueHandle],
     sized_val: SizedHandle
 }
 

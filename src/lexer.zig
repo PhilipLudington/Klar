@@ -63,6 +63,7 @@ pub const Lexer = struct {
             '.' => self.handleDot(),
             ':' => self.matchSingle(':', .colon_colon, .colon),
             '@' => self.makeToken(.at),
+            '#' => self.makeToken(.hash),
             '"' => self.string(),
             '\'' => self.char(),
             '\n' => self.handleNewline(),
@@ -598,6 +599,44 @@ test "lexer compound assignment" {
     try std.testing.expectEqual(Token.Kind.star_eq, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.slash_eq, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.percent_eq, lexer.next().kind);
+}
+
+test "lexer hash token" {
+    var lexer = Lexer.init("#[T]");
+
+    try std.testing.expectEqual(Token.Kind.hash, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.l_bracket, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.identifier, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.r_bracket, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.eof, lexer.next().kind);
+}
+
+test "lexer hash in generic context" {
+    var lexer = Lexer.init("fn max#[T: Ordered](a: T) -> T");
+
+    try std.testing.expectEqual(Token.Kind.fn_, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.identifier, lexer.next().kind); // max
+    try std.testing.expectEqual(Token.Kind.hash, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.l_bracket, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.identifier, lexer.next().kind); // T
+    try std.testing.expectEqual(Token.Kind.colon, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.identifier, lexer.next().kind); // Ordered
+    try std.testing.expectEqual(Token.Kind.r_bracket, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.l_paren, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.identifier, lexer.next().kind); // a
+    try std.testing.expectEqual(Token.Kind.colon, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.identifier, lexer.next().kind); // T
+    try std.testing.expectEqual(Token.Kind.r_paren, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.arrow, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.identifier, lexer.next().kind); // T
+    try std.testing.expectEqual(Token.Kind.eof, lexer.next().kind);
+}
+
+test "lexer hash standalone" {
+    var lexer = Lexer.init("# @");
+
+    try std.testing.expectEqual(Token.Kind.hash, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.at, lexer.next().kind);
 }
 
 test "lexer location tracking" {

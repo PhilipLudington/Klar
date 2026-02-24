@@ -1,6 +1,6 @@
-//! Map[K, V] helper utilities for codegen.
+//! Map#[K, V] helper utilities for codegen.
 //!
-//! Provides constants, type constructors, and hash table helpers for Map[K, V]
+//! Provides constants, type constructors, and hash table helpers for Map#[K, V]
 //! code generation. The emission implementation (emitMapNew, emitMapInsert,
 //! etc.) remains in emit.zig.
 //!
@@ -19,7 +19,7 @@
 //! Open addressing with linear probing:
 //!
 //! ```
-//! struct Map[K, V] {
+//! struct Map#[K, V] {
 //!     entries: *Entry,   // Pointer to entry array
 //!     len: i32,          // Current number of elements
 //!     capacity: i32,     // Total slots (power of 2)

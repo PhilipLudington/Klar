@@ -10,7 +10,7 @@ struct Point {
     y: i32,
 }
 
-fn show[T: Displayable](item: T) -> i32 {
+fn show#[T: Displayable](item: T) -> i32 {
     return 42
 }
 

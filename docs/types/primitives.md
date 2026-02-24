@@ -52,7 +52,7 @@ let with_underscore: i64 = 1_000_000
 let x: i32 = -42
 
 // Conversion methods
-let as_i64: i64 = x.as[i64]        // Safe widening conversion
+let as_i64: i64 = x.as#[i64]        // Safe widening conversion
 let as_str: string = x.to_string() // "-42"
 
 // Math operations
@@ -217,31 +217,31 @@ fn print_greeting(name: string) -> void {
 
 ## Type Conversions
 
-### Safe Conversions (.as[T])
+### Safe Conversions (.as#[T])
 
-Use `.as[T]` for safe, lossless conversions:
+Use `.as#[T]` for safe, lossless conversions:
 
 ```klar
 let x: i32 = 42
-let y: i64 = x.as[i64]  // i32 -> i64 is safe
+let y: i64 = x.as#[i64]  // i32 -> i64 is safe
 ```
 
-### Fallible Conversions (.to[T])
+### Fallible Conversions (.to#[T])
 
-Use `.to[T]` for conversions that might fail:
+Use `.to#[T]` for conversions that might fail:
 
 ```klar
 let s: string = "42"
-let n: ?i32 = s.to[i32]  // Returns ?i32
+let n: ?i32 = s.to#[i32]  // Returns ?i32
 ```
 
-### Truncating Conversions (.trunc[T])
+### Truncating Conversions (.trunc#[T])
 
-Use `.trunc[T]` when you know truncation is acceptable:
+Use `.trunc#[T]` when you know truncation is acceptable:
 
 ```klar
 let big: i64 = 300
-let small: i8 = big.trunc[i8]  // Truncates to fit
+let small: i8 = big.trunc#[i8]  // Truncates to fit
 ```
 
 ## Default Values

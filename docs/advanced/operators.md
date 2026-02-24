@@ -177,7 +177,7 @@ for i: i32 in 0..=5 {
 
 ```klar
 // Error propagation
-fn read() -> Result[Data, Error] {
+fn read() -> Result#[Data, Error] {
     let content: string = read_file(path)?  // Returns Err if fails
     return Ok(parse(content))
 }
@@ -215,21 +215,21 @@ let first: i32 = array[0]
 
 | Operator | Description | Example |
 |----------|-------------|---------|
-| `.as[T]` | Safe conversion | `x.as[i64]` |
-| `.to[T]` | Fallible conversion | `s.to[i32]` |
-| `.trunc[T]` | Truncating conversion | `x.trunc[i8]` |
+| `.as#[T]` | Safe conversion | `x.as#[i64]` |
+| `.to#[T]` | Fallible conversion | `s.to#[i32]` |
+| `.trunc#[T]` | Truncating conversion | `x.trunc#[i8]` |
 
 ```klar
 let x: i32 = 42
 
 // Safe widening
-let y: i64 = x.as[i64]
+let y: i64 = x.as#[i64]
 
 // Fallible conversion
-let n: ?i32 = "42".to[i32]
+let n: ?i32 = "42".to#[i32]
 
 // Truncating (may lose data)
-let small: i8 = x.trunc[i8]
+let small: i8 = x.trunc#[i8]
 ```
 
 ## Operator Precedence

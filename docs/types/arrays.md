@@ -147,7 +147,7 @@ for row: [i32; 3] in matrix {
 
 ## Array vs List
 
-| Feature | Array `[T; N]` | List `List[T]` |
+| Feature | Array `[T; N]` | List `List#[T]` |
 |---------|---------------|----------------|
 | Size | Fixed at compile time | Dynamic |
 | Memory | Stack or inline | Heap |
@@ -159,7 +159,7 @@ Use arrays when:
 - You need maximum performance
 - Stack allocation is preferred
 
-Use `List[T]` when:
+Use `List#[T]` when:
 - The size varies at runtime
 - You need to add/remove elements
 - The size might be large
@@ -177,7 +177,7 @@ fn sum(arr: [i32]) -> i32 {
 
 fn average(arr: [i32]) -> f64 {
     let s: i32 = sum(arr)
-    return s.as[f64] / arr.len().as[f64]
+    return s.as#[f64] / arr.len().as#[f64]
 }
 
 fn main() -> i32 {

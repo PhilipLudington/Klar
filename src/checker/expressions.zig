@@ -124,7 +124,7 @@ fn typeToTypeExpr(allocator: std.mem.Allocator, ty: Type) ast.TypeExpr {
             break :blk .{ .tuple = tuple_type };
         },
         .rc => |r| blk: {
-            // Rc[T] -> GenericApply with base "Rc" and arg T
+            // Rc#[T] -> GenericApply with base "Rc" and arg T
             const generic = allocator.create(ast.GenericApply) catch
                 return .{ .named = .{ .name = "unknown", .span = empty_span } };
             var args = allocator.alloc(ast.TypeExpr, 1) catch
@@ -493,7 +493,7 @@ fn checkUnary(tc: anytype, un: *ast.Unary) Type {
             if (tc.futureInnerType(operand_type)) |inner| {
                 return inner;
             }
-            tc.addError(.invalid_operation, un.span, "'await' operand must be Future[T]", .{});
+            tc.addError(.invalid_operation, un.span, "'await' operand must be Future#[T]", .{});
             return tc.type_builder.unknownType();
         },
         .ref => {
@@ -512,7 +512,7 @@ fn checkUnary(tc: anytype, un: *ast.Unary) Type {
         },
         .deref => {
             // Only allow dereferencing reference types (&T, &mut T)
-            // Rc[T] should use .get() or Cell/RefCell patterns instead
+            // Rc#[T] should use .get() or Cell/RefCell patterns instead
             if (operand_type == .reference) {
                 return operand_type.reference.inner;
             } else {
@@ -577,7 +577,7 @@ fn checkPostfix(tc: anytype, post: *ast.Postfix) Type {
                             .from_method_name = from_method_name,
                         }) catch {};
                     } else {
-                        tc.addError(.type_mismatch, post.span, "error type mismatch: cannot convert from '{s}' to '{s}'; consider implementing From[{s}] for {s}", .{
+                        tc.addError(.type_mismatch, post.span, "error type mismatch: cannot convert from '{s}' to '{s}'; consider implementing From#[{s}] for {s}", .{
                             tc.getTypeName(source_err) orelse "unknown",
                             tc.getTypeName(target_err) orelse "unknown",
                             tc.getTypeName(source_err) orelse "unknown",
@@ -716,7 +716,7 @@ fn checkRange(tc: anytype, range: *ast.Range) Type {
         }
     }
 
-    // Range is now a proper Range[T] type
+    // Range is now a proper Range#[T] type
     return tc.type_builder.rangeType(elem_type, range.inclusive) catch tc.type_builder.unknownType();
 }
 
@@ -1136,7 +1136,7 @@ pub fn checkField(tc: anytype, fld: *ast.Field) Type {
             return tc.type_builder.unknownType();
         },
         .applied => |a| {
-            // For applied types like Pair[T], access fields from the base struct
+            // For applied types like Pair#[T], access fields from the base struct
             if (a.base == .struct_) {
                 const s = a.base.struct_;
                 for (s.fields) |field| {

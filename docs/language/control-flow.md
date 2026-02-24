@@ -107,7 +107,7 @@ fn to_hex(c: Color) -> string {
 ### Matching with Payload Extraction
 
 ```klar
-enum Option[T] { Some(T), None }
+enum Option#[T] { Some(T), None }
 
 fn unwrap_or(opt: ?i32, default: i32) -> i32 {
     var result: i32
@@ -158,7 +158,7 @@ for n: i32 in numbers {
 ### List Iteration
 
 ```klar
-var list: List[i32] = List.new[i32]()
+var list: List#[i32] = List.new#[i32]()
 list.push(1)
 list.push(2)
 list.push(3)
@@ -173,7 +173,7 @@ for x: i32 in list {
 Maps iterate as key-value tuples:
 
 ```klar
-var map: Map[string, i32] = Map.new[string, i32]()
+var map: Map#[string, i32] = Map.new#[string, i32]()
 map.insert("a", 1)
 map.insert("b", 2)
 
@@ -185,7 +185,7 @@ for (key, value) in map {
 ### Set Iteration
 
 ```klar
-var set: Set[i32] = Set.new[i32]()
+var set: Set#[i32] = Set.new#[i32]()
 set.insert(10)
 set.insert(20)
 

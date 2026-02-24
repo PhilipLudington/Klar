@@ -15,7 +15,7 @@ impl Size: Scalable {
 }
 
 // Generic function that calls trait method with arguments
-fn scale_by[T: Scalable](item: T, factor: i32) -> i32 {
+fn scale_by#[T: Scalable](item: T, factor: i32) -> i32 {
     return item.scale(factor)
 }
 

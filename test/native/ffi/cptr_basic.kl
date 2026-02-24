@@ -10,8 +10,8 @@ fn main() -> i32 {
     let str_val: string = "hello"
 
     unsafe {
-        // Test CPtr[T] - non-null raw pointer via ref_to_ptr
-        let ptr: CPtr[i32] = ref_to_ptr(ref value)
+        // Test CPtr#[T] - non-null raw pointer via ref_to_ptr
+        let ptr: CPtr#[i32] = ref_to_ptr(ref value)
 
         // Test CStr - null-terminated C string
         let c_string: CStr = str_val.as_cstr()
@@ -33,7 +33,7 @@ fn main() -> i32 {
         write(ptr, 42)
 
         // Test offset (offset by 0 stays at same location)
-        let same_ptr: CPtr[i32] = offset(ptr, 0.as[isize])
+        let same_ptr: CPtr#[i32] = offset(ptr, 0.as#[isize])
         let same_val: i32 = read(same_ptr)
         if same_val != 42 {
             return 3

@@ -1,6 +1,6 @@
-pub async fn fetch_data ( ) -> Future[i32]{let value:i32=await compute( )
+pub async fn fetch_data ( ) -> Future#[i32]{let value:i32=await compute( )
 return value}
 
-async fn compute()->Future[i32]{return 42}
+async fn compute()->Future#[i32]{return 42}
 
 fn main()->i32{return 0}

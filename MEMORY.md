@@ -60,25 +60,25 @@
 | Array (fixed) | `[T; N]` | `let a: [i32; 3] = [1, 2, 3]` |
 | Tuple | `(T1, T2)` | `let t: (i32, string) = (1, "hi")` |
 | Optional | `?T` | `let o: ?i32 = Some(42)` |
-| Result | `Result[T, E]` | `let r: Result[i32, string] = Ok(42)` |
+| Result | `Result#[T, E]` | `let r: Result#[i32, string] = Ok(42)` |
 | Function | `fn(T) -> U` | `let f: fn(i32) -> i32 = \|x: i32\| -> i32 { return x }` |
 
 ### Collection Types
 
 | Type | Constructor | Example |
 |------|-------------|---------|
-| `List[T]` | `List.new[T]()` | `var l: List[i32] = List.new[i32]()` |
-| `Map[K, V]` | `Map.new[K, V]()` | `var m: Map[string, i32] = Map.new[string, i32]()` |
-| `Set[T]` | `Set.new[T]()` | `var s: Set[i32] = Set.new[i32]()` |
-| `Range[T]` | `start..end` | `let r: Range[i32] = 0..10` |
+| `List#[T]` | `List.new#[T]()` | `var l: List#[i32] = List.new#[i32]()` |
+| `Map#[K, V]` | `Map.new#[K, V]()` | `var m: Map#[string, i32] = Map.new#[string, i32]()` |
+| `Set#[T]` | `Set.new#[T]()` | `var s: Set#[i32] = Set.new#[i32]()` |
+| `Range#[T]` | `start..end` | `let r: Range#[i32] = 0..10` |
 
 ### Smart Pointer Types
 
 | Type | Purpose | Constructor |
 |------|---------|-------------|
-| `Rc[T]` | Single-threaded shared ownership | `Rc.new(value)` |
-| `Arc[T]` | Thread-safe shared ownership | `Arc.new(value)` |
-| `Cell[T]` | Interior mutability | `Cell.new(value)` |
+| `Rc#[T]` | Single-threaded shared ownership | `Rc.new(value)` |
+| `Arc#[T]` | Thread-safe shared ownership | `Arc.new(value)` |
+| `Cell#[T]` | Interior mutability | `Cell.new(value)` |
 
 ### I/O Types
 
@@ -94,8 +94,8 @@
 
 | Type | Description |
 |------|-------------|
-| `CPtr[T]` | Non-null C pointer |
-| `COptPtr[T]` | Nullable C pointer |
+| `CPtr#[T]` | Non-null C pointer |
+| `COptPtr#[T]` | Nullable C pointer |
 | `CStr` | Borrowed C string (null-terminated) |
 | `CStrOwned` | Owned C string (auto-freed on drop) |
 
@@ -193,9 +193,9 @@
 
 | Operator | Description | Returns | Example |
 |----------|-------------|---------|---------|
-| `.as[T]` | Safe widening | `T` | `x.as[i64]` |
-| `.to[T]` | Fallible conversion | `?T` | `"42".to[i32]` |
-| `.trunc[T]` | Truncating | `T` | `big.trunc[i8]` |
+| `.as#[T]` | Safe widening | `T` | `x.as#[i64]` |
+| `.to#[T]` | Fallible conversion | `?T` | `"42".to#[i32]` |
+| `.trunc#[T]` | Truncating | `T` | `big.trunc#[i8]` |
 
 ### Operator Precedence (highest to lowest)
 
@@ -253,9 +253,9 @@
 
 `comptime`, `async`, `await`, `Future`
 
-- `async fn` declares an async function; must return `Future[T]`
-- `await expr` suspends until `Future[T]` resolves, yields `T`; only valid inside `async fn`
-- `Future[T]` is the return type wrapper for async functions
+- `async fn` declares an async function; must return `Future#[T]`
+- `await expr` suspends until `Future#[T]` resolves, yields `T`; only valid inside `async fn`
+- `Future#[T]` is the return type wrapper for async functions
 - Async trait/impl methods are not yet supported
 
 Async runtime internals (state tags/layout conventions): `docs/design/async-runtime-internal.md`
@@ -300,7 +300,7 @@ fn greet(name: string) -> void {
 }
 
 // Generic function with trait bound
-fn max[T: Ordered](a: T, b: T) -> T {
+fn max#[T: Ordered](a: T, b: T) -> T {
     if a > b {
         return a
     }
@@ -308,22 +308,22 @@ fn max[T: Ordered](a: T, b: T) -> T {
 }
 
 // Multiple trait bounds
-fn process[T: Eq + Clone](item: T) -> T {
+fn process#[T: Eq + Clone](item: T) -> T {
     return item.clone()
 }
 
 // Comptime parameter
-fn make_array[comptime N: i32]() -> [i32; N] {
+fn make_array#[comptime N: i32]() -> [i32; N] {
     return @repeat(0, N)
 }
 
-// Async function (must return Future[T], body returns T)
-async fn fetch(url: string) -> Future[i32] {
+// Async function (must return Future#[T], body returns T)
+async fn fetch(url: string) -> Future#[i32] {
     return 200
 }
 
-// Awaiting a future (only inside async fn, yields T from Future[T])
-async fn process() -> Future[i32] {
+// Awaiting a future (only inside async fn, yields T from Future#[T])
+async fn process() -> Future#[i32] {
     let status: i32 = await fetch("https://example.com")
     return status
 }
@@ -381,7 +381,7 @@ let p: Point = Point { x: 10, y: 20 }
 let x: i32 = p.x
 
 // Generic struct
-struct Box[T] {
+struct Box#[T] {
     value: T,
 }
 ```
@@ -392,7 +392,7 @@ struct Box[T] {
 impl Point {
     // Takes ownership
     fn distance(self: Point) -> f64 {
-        return sqrt(self.x.as[f64] * self.x.as[f64] + self.y.as[f64] * self.y.as[f64])
+        return sqrt(self.x.as#[f64] * self.x.as#[f64] + self.y.as#[f64] * self.y.as#[f64])
     }
 
     // Read-only borrow
@@ -433,14 +433,14 @@ enum Message {
 }
 
 // Generic enum (Option and Result are built-in)
-enum Option[T] { Some(T), None }
-enum Result[T, E] { Ok(T), Err(E) }
+enum Option#[T] { Some(T), None }
+enum Result#[T, E] { Ok(T), Err(E) }
 
 // Creation
 let c: Color = Color::Red
 let m: Message = Message::Text("hello")
 let o: ?i32 = Some(42)
-let r: Result[i32, string] = Ok(42)
+let r: Result#[i32, string] = Ok(42)
 ```
 
 ### Pattern Matching
@@ -630,11 +630,11 @@ fn find_email(id: i32) -> ?string {
 }
 
 // Result: operation that might fail
-let ok: Result[i32, string] = Ok(42)
-let err: Result[i32, string] = Err("failed")
+let ok: Result#[i32, string] = Ok(42)
+let err: Result#[i32, string] = Err("failed")
 
 // Propagate error in Result-returning function
-fn process() -> Result[i32, string] {
+fn process() -> Result#[i32, string] {
     let data: string = read_file("input.txt")?
     let num: i32 = parse_int(data)?
     return Ok(num * 2)
@@ -672,7 +672,7 @@ pub trait Drawable { fn draw(self: Self) }
 
 ```klar
 // List
-var list: List[i32] = List.new[i32]()
+var list: List#[i32] = List.new#[i32]()
 list.push(1)
 list.push(2)
 let first: i32 = list[0]
@@ -681,7 +681,7 @@ let length: i32 = list.len()
 list.drop()  // free memory
 
 // Map
-var map: Map[string, i32] = Map.new[string, i32]()
+var map: Map#[string, i32] = Map.new#[string, i32]()
 map.insert("key", 42)
 let val: i32 = map.get("key")
 let has: bool = map.contains_key("key")
@@ -689,7 +689,7 @@ map.remove("key")
 map.drop()
 
 // Set
-var set: Set[i32] = Set.new[i32]()
+var set: Set#[i32] = Set.new#[i32]()
 set.insert(10)
 let has: bool = set.contains(10)
 set.remove(10)
@@ -705,24 +705,24 @@ for n: i32 in set { println("{n}") }
 
 ```klar
 // Rc - shared ownership (single-threaded)
-let shared: Rc[i32] = Rc.new(42)
-let copy: Rc[i32] = shared.clone()
+let shared: Rc#[i32] = Rc.new(42)
+let copy: Rc#[i32] = shared.clone()
 let val: i32 = shared.get()
 let refs: i32 = shared.ref_count()
 
 // Arc - shared ownership (thread-safe)
-let shared: Arc[i32] = Arc.new(42)
-let copy: Arc[i32] = shared.clone()
+let shared: Arc#[i32] = Arc.new(42)
+let copy: Arc#[i32] = shared.clone()
 
 // Cell - interior mutability
-let cell: Cell[i32] = Cell.new(0)
+let cell: Cell#[i32] = Cell.new(0)
 cell.set(42)
 let val: i32 = cell.get()
 let old: i32 = cell.swap(100)
 
 // Combined: shared mutable state
-let state: Rc[Cell[i32]] = Rc.new(Cell.new(0))
-let alias: Rc[Cell[i32]] = state.clone()
+let state: Rc#[Cell#[i32]] = Rc.new(Cell.new(0))
+let alias: Rc#[Cell#[i32]] = state.clone()
 alias.get().set(42)
 ```
 
@@ -813,9 +813,9 @@ fn @factorial(n: i32) -> i32 {
 const RESULT: i32 = @factorial(5)  // 120
 
 // Comptime introspection
-let name: string = @typeName[i32]           // "i32"
-let has: bool = @hasField[Point]("x")       // true
-let fields: [FieldInfo] = @fields[Point]    // field metadata
+let name: string = @typeName#[i32]           // "i32"
+let has: bool = @hasField#[Point]("x")       // true
+let fields: [FieldInfo] = @fields#[Point]    // field metadata
 @assert(N > 0, "must be positive")          // compile-time assertion
 @compileError("not supported")              // compile-time error
 
@@ -829,8 +829,8 @@ let zeros: [i32; 10] = @repeat(0, 10)
 // External function declaration
 extern {
     fn puts(s: CStr) -> i32
-    fn malloc(size: u64) -> COptPtr[u8]
-    fn free(ptr: CPtr[void]) -> void
+    fn malloc(size: u64) -> COptPtr#[u8]
+    fn free(ptr: CPtr#[void]) -> void
 }
 
 // External type
@@ -852,9 +852,9 @@ let back: string = cstr.to_string()            // copy to Klar string
 unsafe {
     let val: i32 = read(ptr)                   // dereference
     write(ptr, 42)                             // write through pointer
-    let next: CPtr[i32] = offset(ptr, 1)      // pointer arithmetic
-    let raw: CPtr[i32] = ref_to_ptr(ref x)    // reference to pointer
-    let cast: CPtr[u8] = ptr_cast[u8](ptr)    // type cast
+    let next: CPtr#[i32] = offset(ptr, 1)      // pointer arithmetic
+    let raw: CPtr#[i32] = ref_to_ptr(ref x)    // reference to pointer
+    let cast: CPtr#[u8] = ptr_cast#[u8](ptr)    // type cast
 }
 
 // Null check (safe, no unsafe needed)
@@ -879,20 +879,20 @@ let fp: extern fn(i32) -> i32 = @fn_ptr(my_function)
 | `println(s)` | `fn println(s: string)` | Print with newline |
 | `readline()` | `fn readline() -> string` | Read line from stdin |
 | `assert(c)` | `fn assert(c: bool)` | Panic if false |
-| `assert_eq(a, b)` | `fn assert_eq[T: Eq](a: T, b: T)` | Panic if not equal |
-| `dbg(v)` | `fn dbg[T](v: T) -> T` | Debug print, returns value |
+| `assert_eq(a, b)` | `fn assert_eq#[T: Eq](a: T, b: T)` | Panic if not equal |
+| `dbg(v)` | `fn dbg#[T](v: T) -> T` | Debug print, returns value |
 | `panic(msg)` | `fn panic(msg: string) -> !` | Terminate with message |
-| `len(c)` | `fn len[T](c: T) -> i32` | Collection/string length |
-| `type_name(v)` | `fn type_name[T](v: T) -> string` | Type name as string |
+| `len(c)` | `fn len#[T](c: T) -> i32` | Collection/string length |
+| `type_name(v)` | `fn type_name#[T](v: T) -> string` | Type name as string |
 | `sqrt(x)` | `fn sqrt(x: f64) -> f64` | Square root |
 | `abs(x)` | `fn abs(x: T) -> T` | Absolute value |
-| `min(a, b)` | `fn min[T: Ordered](a: T, b: T) -> T` | Minimum |
-| `max(a, b)` | `fn max[T: Ordered](a: T, b: T) -> T` | Maximum |
-| `drop(v)` | `fn drop[T](v: T)` | Explicitly free value |
+| `min(a, b)` | `fn min#[T: Ordered](a: T, b: T) -> T` | Minimum |
+| `max(a, b)` | `fn max#[T: Ordered](a: T, b: T) -> T` | Maximum |
+| `drop(v)` | `fn drop#[T](v: T)` | Explicitly free value |
 | `Some(v)` | `Some(v: T) -> ?T` | Wrap in optional |
 | `None` | `None -> ?T` | Empty optional |
-| `Ok(v)` | `Ok(v: T) -> Result[T, E]` | Success result |
-| `Err(e)` | `Err(e: E) -> Result[T, E]` | Error result |
+| `Ok(v)` | `Ok(v: T) -> Result#[T, E]` | Success result |
+| `Err(e)` | `Err(e: E) -> Result#[T, E]` | Error result |
 
 ### I/O Functions
 
@@ -909,47 +909,47 @@ let fp: extern fn(i32) -> i32 = @fn_ptr(my_function)
 | `fs_exists(path)` | `bool` | Check if path exists |
 | `fs_is_file(path)` | `bool` | Check if path is file |
 | `fs_is_dir(path)` | `bool` | Check if path is directory |
-| `fs_create_dir(path)` | `Result[void, IoError]` | Create directory |
-| `fs_create_dir_all(path)` | `Result[void, IoError]` | Create directory tree |
-| `fs_remove_file(path)` | `Result[void, IoError]` | Remove file |
-| `fs_remove_dir(path)` | `Result[void, IoError]` | Remove directory |
-| `fs_read_string(path)` | `Result[string, IoError]` | Read file contents |
-| `fs_write_string(path, content)` | `Result[void, IoError]` | Write file contents |
-| `fs_read_dir(path)` | `Result[List[string], IoError]` | List directory |
+| `fs_create_dir(path)` | `Result#[void, IoError]` | Create directory |
+| `fs_create_dir_all(path)` | `Result#[void, IoError]` | Create directory tree |
+| `fs_remove_file(path)` | `Result#[void, IoError]` | Remove file |
+| `fs_remove_dir(path)` | `Result#[void, IoError]` | Remove directory |
+| `fs_read_string(path)` | `Result#[string, IoError]` | Read file contents |
+| `fs_write_string(path, content)` | `Result#[void, IoError]` | Write file contents |
+| `fs_read_dir(path)` | `Result#[List#[string], IoError]` | List directory |
 
 ### File Type
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `File.open(path)` | `Result[File, IoError]` | Open for reading |
-| `File.create(path)` | `Result[File, IoError]` | Create/truncate for writing |
-| `File.append(path)` | `Result[File, IoError]` | Open for appending |
-| `.read_to_string()` | `Result[string, IoError]` | Read entire file |
-| `.read_bytes()` | `Result[bytes, IoError]` | Read as bytes |
-| `.write(s)` | `Result[void, IoError]` | Write string |
-| `.write_bytes(b)` | `Result[void, IoError]` | Write bytes |
+| `File.open(path)` | `Result#[File, IoError]` | Open for reading |
+| `File.create(path)` | `Result#[File, IoError]` | Create/truncate for writing |
+| `File.append(path)` | `Result#[File, IoError]` | Open for appending |
+| `.read_to_string()` | `Result#[string, IoError]` | Read entire file |
+| `.read_bytes()` | `Result#[bytes, IoError]` | Read as bytes |
+| `.write(s)` | `Result#[void, IoError]` | Write string |
+| `.write_bytes(b)` | `Result#[void, IoError]` | Write bytes |
 | `.close()` | `void` | Close handle |
 
 ### FFI Functions (require `unsafe` except `is_null`)
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `is_null(p)` | `fn is_null[T](p: COptPtr[T]) -> bool` | Check null (safe) |
-| `unwrap_ptr(p)` | `fn unwrap_ptr[T](p: COptPtr[T]) -> CPtr[T]` | Nullable to non-null |
-| `read(p)` | `fn read[T](p: CPtr[T]) -> T` | Read at pointer |
-| `write(p, v)` | `fn write[T](p: CPtr[T], v: T)` | Write at pointer |
-| `offset(p, n)` | `fn offset[T](p: CPtr[T], n: isize) -> CPtr[T]` | Pointer arithmetic |
-| `ref_to_ptr(r)` | `fn ref_to_ptr[T](r: ref T) -> CPtr[T]` | Reference to pointer |
-| `ptr_cast[U](p)` | `fn ptr_cast[U, T](p: CPtr[T]) -> CPtr[U]` | Cast pointer type |
+| `is_null(p)` | `fn is_null#[T](p: COptPtr#[T]) -> bool` | Check null (safe) |
+| `unwrap_ptr(p)` | `fn unwrap_ptr#[T](p: COptPtr#[T]) -> CPtr#[T]` | Nullable to non-null |
+| `read(p)` | `fn read#[T](p: CPtr#[T]) -> T` | Read at pointer |
+| `write(p, v)` | `fn write#[T](p: CPtr#[T], v: T)` | Write at pointer |
+| `offset(p, n)` | `fn offset#[T](p: CPtr#[T], n: isize) -> CPtr#[T]` | Pointer arithmetic |
+| `ref_to_ptr(r)` | `fn ref_to_ptr#[T](r: ref T) -> CPtr#[T]` | Reference to pointer |
+| `ptr_cast#[U](p)` | `fn ptr_cast#[U, T](p: CPtr#[T]) -> CPtr#[U]` | Cast pointer type |
 
 ### Comptime Builtins
 
 | Function | Description |
 |----------|-------------|
-| `@typeName[T]` | Type name as string |
-| `@typeInfo[T]` | Type metadata |
-| `@hasField[T](name)` | Check struct has field |
-| `@fields[T]` | Get struct field info |
+| `@typeName#[T]` | Type name as string |
+| `@typeInfo#[T]` | Type metadata |
+| `@hasField#[T](name)` | Check struct has field |
+| `@fields#[T]` | Get struct field info |
 | `@assert(cond, msg)` | Compile-time assertion |
 | `@compileError(msg)` | Emit compile error |
 | `@repeat(value, n)` | Array with repeated value |
@@ -958,7 +958,7 @@ let fp: extern fn(i32) -> i32 = @fn_ptr(my_function)
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `.as[T]` | `T` | Safe widening |
+| `.as#[T]` | `T` | Safe widening |
 | `.to_string()` | `string` | Convert to string |
 | `.abs()` | same type | Absolute value |
 
@@ -1014,20 +1014,20 @@ let fp: extern fn(i32) -> i32 = @fn_ptr(my_function)
 | `.unwrap_or(default)` | `T` | Value or default |
 | `.unwrap_or_else(f)` | `T` | Value or compute |
 
-### Result[T, E] Methods
+### Result#[T, E] Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `.is_ok()` | `bool` | Is success |
 | `.is_err()` | `bool` | Is error |
-| `.map(f)` | `Result[U, E]` | Transform Ok value |
-| `.map_err(f)` | `Result[T, F]` | Transform Err value |
-| `.and_then(f)` | `Result[U, E]` | Chain results |
-| `.or_else(f)` | `Result[T, F]` | Alternative on error |
+| `.map(f)` | `Result#[U, E]` | Transform Ok value |
+| `.map_err(f)` | `Result#[T, F]` | Transform Err value |
+| `.and_then(f)` | `Result#[U, E]` | Chain results |
+| `.or_else(f)` | `Result#[T, F]` | Alternative on error |
 | `.unwrap_or(default)` | `T` | Value or default |
 | `.unwrap_or_else(f)` | `T` | Value or compute |
 
-### List[T] Methods
+### List#[T] Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
@@ -1039,7 +1039,7 @@ let fp: extern fn(i32) -> i32 = @fn_ptr(my_function)
 | `.clear()` | `void` | Remove all |
 | `.drop()` | `void` | Free memory |
 
-### Map[K, V] Methods
+### Map#[K, V] Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
@@ -1050,11 +1050,11 @@ let fp: extern fn(i32) -> i32 = @fn_ptr(my_function)
 | `.len()` | `i32` | Entry count |
 | `.is_empty()` | `bool` | Check if empty |
 | `.clear()` | `void` | Remove all |
-| `.keys()` | `List[K]` | All keys |
-| `.values()` | `List[V]` | All values |
+| `.keys()` | `List#[K]` | All keys |
+| `.values()` | `List#[V]` | All values |
 | `.drop()` | `void` | Free memory |
 
-### Set[T] Methods
+### Set#[T] Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
@@ -1066,23 +1066,23 @@ let fp: extern fn(i32) -> i32 = @fn_ptr(my_function)
 | `.clear()` | `void` | Remove all |
 | `.drop()` | `void` | Free memory |
 
-### Rc[T] Methods
+### Rc#[T] Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `.get()` | `T` | Get inner value |
-| `.clone()` | `Rc[T]` | Increment ref count |
+| `.clone()` | `Rc#[T]` | Increment ref count |
 | `.ref_count()` | `i32` | Current ref count |
 
-### Arc[T] Methods
+### Arc#[T] Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `.get()` | `T` | Get inner value |
-| `.clone()` | `Arc[T]` | Increment ref count |
+| `.clone()` | `Arc#[T]` | Increment ref count |
 | `.ref_count()` | `i32` | Current ref count |
 
-### Cell[T] Methods
+### Cell#[T] Methods
 
 | Method | Returns | Description |
 |--------|---------|-------------|
@@ -1090,7 +1090,7 @@ let fp: extern fn(i32) -> i32 = @fn_ptr(my_function)
 | `.set(v)` | `void` | Set value |
 | `.swap(v)` | `T` | Swap, return old |
 
-### Range[T] Properties
+### Range#[T] Properties
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -1109,14 +1109,14 @@ let fp: extern fn(i32) -> i32 = @fn_ptr(my_function)
 | `Default` | `fn default() -> Self` | Default value |
 | `Hash` | `fn hash(self: Self) -> u64` | Hash value |
 | `Iterator` | `type Item` + `fn next(inout self: Self) -> ?Self.Item` | Iteration |
-| `From[T]` | `fn from(value: T) -> Self` | Conversion from T |
-| `Into[T]` | `fn into(self: Self) -> T` | Conversion to T |
+| `From#[T]` | `fn from(value: T) -> Self` | Conversion from T |
+| `Into#[T]` | `fn into(self: Self) -> T` | Conversion to T |
 
 ---
 
 ## Type Conversion Cheat Sheet
 
-### Safe Widening (.as[T])
+### Safe Widening (.as#[T])
 
 Always succeeds, no data loss:
 
@@ -1134,29 +1134,29 @@ f32 → f64
 
 ```klar
 let x: i32 = 42
-let y: i64 = x.as[i64]      // always safe
-let z: f64 = x.as[f64]      // always safe
+let y: i64 = x.as#[i64]      // always safe
+let z: f64 = x.as#[f64]      // always safe
 ```
 
-### Fallible Conversion (.to[T])
+### Fallible Conversion (.to#[T])
 
 Returns `?T`, None on failure:
 
 ```klar
 let s: string = "42"
-let n: ?i32 = s.to[i32]     // Some(42)
+let n: ?i32 = s.to#[i32]     // Some(42)
 
 let bad: string = "abc"
-let m: ?i32 = bad.to[i32]   // None
+let m: ?i32 = bad.to#[i32]   // None
 ```
 
-### Truncating Conversion (.trunc[T])
+### Truncating Conversion (.trunc#[T])
 
 May lose data, always succeeds:
 
 ```klar
 let big: i64 = 300
-let small: i8 = big.trunc[i8]   // truncates to fit
+let small: i8 = big.trunc#[i8]   // truncates to fit
 ```
 
 ### To String
@@ -1189,7 +1189,7 @@ let b: bool = bool.default()      // false
 | Using `&&` or `\|\|` | Wrong logical operators | Use `and`, `or`, `not` |
 | Using `!x` for negation | Wrong NOT operator | Use `not x` |
 | Using `null` | No null in Klar | Use `None` with `?T` |
-| Implicit conversion | `let y: i64 = x` where x is i32 | `let y: i64 = x.as[i64]` |
+| Implicit conversion | `let y: i64 = x` where x is i32 | `let y: i64 = x.as#[i64]` |
 | Missing `inout` at call site | `mutate(x)` | `mutate(inout x)` |
 | Missing `ref` at call site | `read(x)` for ref param | `read(ref x)` |
 | Wrong enum construction | `Color.Red` | `Color::Red` |
@@ -1262,7 +1262,7 @@ let y: i64 = x
 
 // CORRECT
 let x: i32 = 42
-let y: i64 = x.as[i64]
+let y: i64 = x.as#[i64]
 ```
 
 ### DO NOT use try/catch/throw
@@ -1276,7 +1276,7 @@ try {
 }
 
 // CORRECT
-let result: Result[string, string] = read_file("data.txt")
+let result: Result#[string, string] = read_file("data.txt")
 match result {
     Ok(data) => { println(data) }
     Err(e) => { println(e) }
@@ -1378,8 +1378,8 @@ fn identity<T>(x: T) -> T { return x }
 let list: List<i32> = List.new<i32>()
 
 // CORRECT
-fn identity[T](x: T) -> T { return x }
-let list: List[i32] = List.new[i32]()
+fn identity#[T](x: T) -> T { return x }
+let list: List#[i32] = List.new#[i32]()
 ```
 
 ### DO NOT use `this` keyword
@@ -1406,24 +1406,24 @@ fn double(n: i32) -> void { n = n * 2 }
 fn double(inout n: i32) -> void { n = n * 2 }
 ```
 
-### DO NOT omit `Future[T]` on async functions
+### DO NOT omit `Future#[T]` on async functions
 
 ```klar
-// WRONG — async fn must return Future[T]
+// WRONG — async fn must return Future#[T]
 async fn fetch() -> i32 { return 1 }
 
 // CORRECT
-async fn fetch() -> Future[i32] { return 1 }
+async fn fetch() -> Future#[i32] { return 1 }
 ```
 
-### DO NOT return `Future[T]` from non-async functions
+### DO NOT return `Future#[T]` from non-async functions
 
 ```klar
-// WRONG — only async fn may return Future[T]
-fn fetch() -> Future[i32] { return 1 }
+// WRONG — only async fn may return Future#[T]
+fn fetch() -> Future#[i32] { return 1 }
 
 // CORRECT
-async fn fetch() -> Future[i32] { return 1 }
+async fn fetch() -> Future#[i32] { return 1 }
 ```
 
 ### DO NOT use `await` outside async functions
@@ -1436,7 +1436,7 @@ fn main() -> i32 {
 }
 
 // CORRECT
-async fn process() -> Future[i32] {
+async fn process() -> Future#[i32] {
     return await fetch()
 }
 ```
@@ -1519,7 +1519,7 @@ impl Person {
     }
 }
 
-fn find_oldest(people: List[Person]) -> ?Person {
+fn find_oldest(people: List#[Person]) -> ?Person {
     if people.is_empty() {
         return None
     }
@@ -1533,7 +1533,7 @@ fn find_oldest(people: List[Person]) -> ?Person {
 }
 
 fn main() -> i32 {
-    var people: List[Person] = List.new[Person]()
+    var people: List#[Person] = List.new#[Person]()
     people.push(Person.new("Alice", 30))
     people.push(Person.new("Bob", 25))
     people.push(Person.new("Charlie", 35))

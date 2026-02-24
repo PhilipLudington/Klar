@@ -28,14 +28,14 @@ pub fn isBoolType(tc: anytype, t: Type) bool {
 /// Check if a type is FFI-compatible (can be used in extern structs and extern functions).
 /// FFI-compatible types are:
 /// - Primitive types (i8, i16, i32, i64, u8, u16, u32, u64, isize, usize, f32, f64, bool)
-/// - CPtr[T] and COptPtr[T] (raw pointers)
+/// - CPtr#[T] and COptPtr#[T] (raw pointers)
 /// - CStr (null-terminated C strings)
 /// - Sized extern types (extern type(N) Name)
 /// - Other extern structs
 /// - Extern enums (C-compatible enum layout)
 ///
 /// Note: Unsized/opaque extern types (extern type Name) are NOT FFI-compatible
-/// for direct use - they must be used behind pointers (CPtr[T] or COptPtr[T]).
+/// for direct use - they must be used behind pointers (CPtr#[T] or COptPtr#[T]).
 pub fn isFfiCompatibleType(tc: anytype, t: Type) bool {
     _ = tc;
     return switch (t) {

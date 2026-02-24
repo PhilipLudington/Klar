@@ -4,7 +4,7 @@
 // by using them as generic bounds.
 
 // This function signature verifies Iterator trait exists with Item associated type
-fn count_items[T: Iterator](iter: T) -> i32 {
+fn count_items#[T: Iterator](iter: T) -> i32 {
     // Can't actually implement without codegen support for &mut self
     // But this verifies the trait bound is valid
     return 0

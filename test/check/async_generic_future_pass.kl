@@ -1,11 +1,11 @@
 // Expected: check-pass
 
-async fn id[T](value: T) -> Future[T] {
+async fn id#[T](value: T) -> Future#[T] {
     return value
 }
 
-async fn run() -> Future[i32] {
-    return await id[i32](41)
+async fn run() -> Future#[i32] {
+    return await id#[i32](41)
 }
 
 fn main() -> i32 {

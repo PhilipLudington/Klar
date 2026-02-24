@@ -14,9 +14,9 @@
 //! | generics.zig    | Monomorphization documentation (doc-only)        |
 //! | types_emit.zig  | Type conversion documentation (doc-only)         |
 //! | strings_emit.zig| String type documentation (doc-only)             |
-//! | list.zig        | List[T] documentation (doc-only)                 |
-//! | map.zig         | Map[K,V] documentation (doc-only)                |
-//! | set.zig         | Set[T] documentation (doc-only)                  |
+//! | list.zig        | List#[T] documentation (doc-only)                 |
+//! | map.zig         | Map#[K,V] documentation (doc-only)                |
+//! | set.zig         | Set#[T] documentation (doc-only)                  |
 //! | io.zig          | I/O type documentation (doc-only)                |
 //! | optionals.zig   | Optional/Result documentation (doc-only)         |
 //! | builtins.zig    | Built-in function documentation (doc-only)       |

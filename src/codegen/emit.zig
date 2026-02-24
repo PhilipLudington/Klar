@@ -232,9 +232,9 @@ pub const Emitter = struct {
         llvm_type: llvm.TypeRef,
         is_optional: bool,
         is_result: bool,
-        inner_type: ?llvm.TypeRef, // Non-null if is_optional (the T in Optional[T])
-        ok_type: ?llvm.TypeRef, // Non-null if is_result (the T in Result[T, E])
-        err_type: ?llvm.TypeRef, // Non-null if is_result (the E in Result[T, E])
+        inner_type: ?llvm.TypeRef, // Non-null if is_optional (the T in Optional#[T])
+        ok_type: ?llvm.TypeRef, // Non-null if is_result (the T in Result#[T, E])
+        err_type: ?llvm.TypeRef, // Non-null if is_result (the E in Result#[T, E])
     };
 
     const StructTypeInfo = struct {
@@ -250,7 +250,7 @@ pub const Emitter = struct {
         is_signed: bool,
         /// For struct variables, the name of the struct type for field resolution.
         struct_type_name: ?[]const u8 = null,
-        /// For Rc[T] or Arc[T], the inner type that can be dereferenced.
+        /// For Rc#[T] or Arc#[T], the inner type that can be dereferenced.
         inner_type: ?llvm.TypeRef = null,
         /// True if this is an Arc type (uses atomic operations).
         is_arc: bool = false,
@@ -274,17 +274,17 @@ pub const Emitter = struct {
         is_reference: bool = false,
         /// For reference params, the LLVM type of the pointed-to struct.
         reference_inner_type: ?llvm.TypeRef = null,
-        /// For List[T] types, the element type.
+        /// For List#[T] types, the element type.
         list_element_type: ?types.Type = null,
         /// True if this is a Map type.
         is_map: bool = false,
-        /// For Map[K,V] types, the key type.
+        /// For Map#[K,V] types, the key type.
         map_key_type: ?types.Type = null,
-        /// For Map[K,V] types, the value type.
+        /// For Map#[K,V] types, the value type.
         map_value_type: ?types.Type = null,
         /// True if this is a Set type.
         is_set: bool = false,
-        /// For Set[T] types, the element type.
+        /// For Set#[T] types, the element type.
         set_element_type: ?types.Type = null,
         /// True if this is a File type (FILE* handle).
         is_file: bool = false,
@@ -298,11 +298,11 @@ pub const Emitter = struct {
         is_path: bool = false,
         /// True if this is a BufReader type.
         is_buf_reader: bool = false,
-        /// For BufReader[R], the inner reader type.
+        /// For BufReader#[R], the inner reader type.
         buf_reader_inner_type: ?types.Type = null,
         /// True if this is a BufWriter type.
         is_buf_writer: bool = false,
-        /// For BufWriter[W], the inner writer type.
+        /// For BufWriter#[W], the inner writer type.
         buf_writer_inner_type: ?types.Type = null,
         /// Full semantic type for pattern matching (Result, Optional, etc.)
         semantic_type: ?types.Type = null,
@@ -1438,7 +1438,7 @@ pub const Emitter = struct {
                 const is_opt = rt == .optional or (rt == .generic_apply and
                     rt.generic_apply.base == .named and
                     std.mem.eql(u8, rt.generic_apply.base.named.name, "Option"));
-                // Check for Result[T, E] which is parsed as generic_apply
+                // Check for Result#[T, E] which is parsed as generic_apply
                 const is_res = rt == .result or (rt == .generic_apply and
                     rt.generic_apply.base == .named and
                     std.mem.eql(u8, rt.generic_apply.base.named.name, "Result"));
@@ -1652,7 +1652,7 @@ pub const Emitter = struct {
             const is_opt = rt == .optional or (rt == .generic_apply and
                 rt.generic_apply.base == .named and
                 std.mem.eql(u8, rt.generic_apply.base.named.name, "Option"));
-            // Check for Result[T, E] which is parsed as generic_apply
+            // Check for Result#[T, E] which is parsed as generic_apply
             const is_res = rt == .result or (rt == .generic_apply and
                 rt.generic_apply.base == .named and
                 std.mem.eql(u8, rt.generic_apply.base.named.name, "Result"));
@@ -2454,14 +2454,14 @@ pub const Emitter = struct {
             else => return EmitError.UnsupportedFeature, // Only simple bindings for now
         };
 
-        // Check if iterable is a range literal (fast path) or Range[T] type (iterator protocol)
+        // Check if iterable is a range literal (fast path) or Range#[T] type (iterator protocol)
         switch (loop.iterable) {
             .range => |range| {
                 // Fast path for range literals: for i in start..end { body }
                 try self.emitForLoopRangeLiteral(func, binding_name, range, loop.body);
             },
             else => {
-                // Check if the iterable is a Range[T] type (e.g., a variable of type Range[i32])
+                // Check if the iterable is a Range#[T] type (e.g., a variable of type Range[i32])
                 if (self.isRangeExpr(loop.iterable)) {
                     try self.emitForLoopRangeIterator(func, binding_name, loop.iterable, loop.body);
                 } else if (self.isSliceExpr(loop.iterable)) {
@@ -2591,7 +2591,7 @@ pub const Emitter = struct {
         _ = self.named_values.remove(binding_name);
     }
 
-    /// Emit for-loop for Range[T] types using the iterator protocol.
+    /// Emit for-loop for Range#[T] types using the iterator protocol.
     fn emitForLoopRangeIterator(
         self: *Emitter,
         func: llvm.ValueRef,
@@ -2599,7 +2599,7 @@ pub const Emitter = struct {
         iterable: ast.Expr,
         body: *ast.Block,
     ) EmitError!void {
-        // For Range[T] iteration via iterator protocol:
+        // For Range#[T] iteration via iterator protocol:
         //   var iter = iterable  (or use iterable directly if already a mutable alloca)
         //   loop:
         //     let maybe = iter.next()
@@ -2952,7 +2952,7 @@ pub const Emitter = struct {
         _ = self.named_values.remove(binding_name);
     }
 
-    /// Emit for-loop for List[T] types using index iteration.
+    /// Emit for-loop for List#[T] types using index iteration.
     /// List layout: { ptr: *T, len: i32, capacity: i32 }
     fn emitForLoopList(
         self: *Emitter,
@@ -3141,7 +3141,7 @@ pub const Emitter = struct {
         return EmitError.InvalidAST;
     }
 
-    /// Emit for-loop for Set[T] types using index iteration over entries.
+    /// Emit for-loop for Set#[T] types using index iteration over entries.
     /// Set layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
     /// Entry layout: { state: i8, cached_hash: i32, element: T }
     /// State: 0=EMPTY, 1=OCCUPIED, 2=TOMBSTONE
@@ -3345,7 +3345,7 @@ pub const Emitter = struct {
         return EmitError.InvalidAST;
     }
 
-    /// Emit for-loop over Map[K,V] with tuple pattern: for (k, v) in map { body }
+    /// Emit for-loop over Map#[K,V] with tuple pattern: for (k, v) in map { body }
     fn emitForLoopMap(
         self: *Emitter,
         func: llvm.ValueRef,
@@ -4787,7 +4787,7 @@ pub const Emitter = struct {
     /// Infer the type that results from dereferencing an expression.
     /// Used when the inner type is not explicitly tracked.
     fn inferDerefType(self: *Emitter, expr: ast.Expr) EmitError!llvm.TypeRef {
-        // For Rc[T] method calls, try to determine T
+        // For Rc#[T] method calls, try to determine T
         if (expr == .method_call) {
             const method = expr.method_call;
             if (method.object == .identifier) {
@@ -6173,7 +6173,7 @@ pub const Emitter = struct {
                 return llvm.Types.pointer(self.ctx);
             },
             .result => |res| {
-                // Result[T, E] is a struct of { tag: i1, ok_value: T, err_value: E }
+                // Result#[T, E] is a struct of { tag: i1, ok_value: T, err_value: E }
                 // tag: 1 = Ok, 0 = Err
                 const ok_type = try self.typeExprToLLVM(res.ok_type);
                 const err_type = try self.typeExprToLLVM(res.err_type);
@@ -6185,11 +6185,11 @@ pub const Emitter = struct {
                 return llvm.Types.struct_(self.ctx, &result_fields, false);
             },
             .generic_apply => |g| {
-                // Handle builtin generic types like Result[T, E], ContextError[E], etc.
+                // Handle builtin generic types like Result#[T, E], ContextError#[E], etc.
                 if (g.base == .named) {
                     const base_name = g.base.named.name;
                     if (std.mem.eql(u8, base_name, "Result") and g.args.len == 2) {
-                        // Result[T, E] is a struct of { tag: i1, ok_value: T, err_value: E }
+                        // Result#[T, E] is a struct of { tag: i1, ok_value: T, err_value: E }
                         const ok_type = try self.typeExprToLLVM(g.args[0]);
                         const err_type = try self.typeExprToLLVM(g.args[1]);
                         var result_fields = [_]llvm.TypeRef{
@@ -6200,7 +6200,7 @@ pub const Emitter = struct {
                         return llvm.Types.struct_(self.ctx, &result_fields, false);
                     }
                     if (std.mem.eql(u8, base_name, "ContextError") and g.args.len == 1) {
-                        // ContextError[E] layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
+                        // ContextError#[E] layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
                         const inner_type = try self.typeExprToLLVM(g.args[0]);
                         var context_err_fields = [_]llvm.TypeRef{
                             llvm.Types.pointer(self.ctx), // message
@@ -6227,7 +6227,7 @@ pub const Emitter = struct {
                         };
                         return llvm.Types.struct_(self.ctx, &future_fields, false);
                     }
-                    // List[T] is { ptr, len: i32, capacity: i32 }
+                    // List#[T] is { ptr, len: i32, capacity: i32 }
                     if (std.mem.eql(u8, base_name, "List") and g.args.len == 1) {
                         return self.getListStructType();
                     }
@@ -6384,7 +6384,7 @@ pub const Emitter = struct {
                 return .{ .optional = inner_ptr };
             },
             .generic_apply => |g| {
-                // Check for Result[T, E]
+                // Check for Result#[T, E]
                 if (g.base == .named) {
                     const name = g.base.named.name;
                     if (std.mem.eql(u8, name, "Result") and g.args.len == 2) {
@@ -6395,7 +6395,7 @@ pub const Emitter = struct {
                         self.resolved_type_allocs.append(self.allocator, .{ .result_type = result_ptr }) catch unreachable;
                         return .{ .result = result_ptr };
                     }
-                    // Check for CPtr[T]
+                    // Check for CPtr#[T]
                     if (std.mem.eql(u8, name, "CPtr") and g.args.len == 1) {
                         const inner = self.resolveTypeExprDirect(g.args[0]) orelse return null;
                         const cptr_type = self.allocator.create(types.CptrType) catch return null;
@@ -6403,7 +6403,7 @@ pub const Emitter = struct {
                         self.resolved_type_allocs.append(self.allocator, .{ .cptr_type = cptr_type }) catch unreachable;
                         return .{ .cptr = cptr_type };
                     }
-                    // Check for COptPtr[T]
+                    // Check for COptPtr#[T]
                     if (std.mem.eql(u8, name, "COptPtr") and g.args.len == 1) {
                         const inner = self.resolveTypeExprDirect(g.args[0]) orelse return null;
                         const copt_ptr_type = self.allocator.create(types.CoptPtrType) catch return null;
@@ -6598,7 +6598,7 @@ pub const Emitter = struct {
         }
     }
 
-    /// Get List element type from type expression (e.g., List[i32] -> i32)
+    /// Get List element type from type expression (e.g., List#[i32] -> i32)
     fn getListTypeInfo(self: *Emitter, type_expr: ast.TypeExpr) ?types.Type {
         switch (type_expr) {
             .generic_apply => |g| {
@@ -6852,7 +6852,7 @@ pub const Emitter = struct {
                 // Handle builtin Result constructors: Ok(value) and Err(error)
                 // Use expected_type if available (from type annotation context)
                 if (std.mem.eql(u8, func_name, "Ok")) {
-                    // Ok(value) returns Result[T, E] - use expected type if available
+                    // Ok(value) returns Result#[T, E] - use expected type if available
                     if (call.args.len == 1) {
                         const ok_type = try self.inferExprType(call.args[0]);
                         // Use expected_type's err_type if available
@@ -6868,7 +6868,7 @@ pub const Emitter = struct {
                 }
 
                 if (std.mem.eql(u8, func_name, "Err")) {
-                    // Err(error) returns Result[T, E] - use expected type if available
+                    // Err(error) returns Result#[T, E] - use expected type if available
                     if (call.args.len == 1) {
                         const err_type = try self.inferExprType(call.args[0]);
                         // Use expected_type's ok_type if available
@@ -6967,8 +6967,8 @@ pub const Emitter = struct {
             },
             .postfix => |post| {
                 // Postfix operators (unwrap) return the inner type
-                // For Optional[T] (2-field struct): { i1, T } -> returns T
-                // For Result[T, E] (3-field struct): { i1, T, E } -> returns T (ok_value)
+                // For Optional#[T] (2-field struct): { i1, T } -> returns T
+                // For Result#[T, E] (3-field struct): { i1, T, E } -> returns T (ok_value)
                 const operand_type = try self.inferExprType(post.operand);
                 const type_kind = llvm.getTypeKind(operand_type);
                 if (type_kind == llvm.c.LLVMStructTypeKind) {
@@ -6985,40 +6985,40 @@ pub const Emitter = struct {
                 if (m.object == .identifier) {
                     const obj_name = m.object.identifier.name;
                     if (std.mem.eql(u8, obj_name, "Rc") and std.mem.eql(u8, m.method_name, "new")) {
-                        // Rc.new() returns a pointer (Rc[T])
+                        // Rc.new() returns a pointer (Rc#[T])
                         return llvm.Types.pointer(self.ctx);
                     }
                     if (std.mem.eql(u8, obj_name, "Arc") and std.mem.eql(u8, m.method_name, "new")) {
-                        // Arc.new() returns a pointer (Arc[T])
+                        // Arc.new() returns a pointer (Arc#[T])
                         return llvm.Types.pointer(self.ctx);
                     }
                     if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, m.method_name, "new")) {
-                        // Cell.new() returns a pointer (Cell[T])
+                        // Cell.new() returns a pointer (Cell#[T])
                         return llvm.Types.pointer(self.ctx);
                     }
                     if (std.mem.eql(u8, obj_name, "List") and std.mem.eql(u8, m.method_name, "new")) {
-                        // List.new[T]() returns List struct { ptr, i32, i32 }
+                        // List.new#[T]() returns List struct { ptr, i32, i32 }
                         return self.getListStructType();
                     }
                     if (std.mem.eql(u8, obj_name, "List") and std.mem.eql(u8, m.method_name, "with_capacity")) {
-                        // List.with_capacity[T](n) returns List struct { ptr, i32, i32 }
+                        // List.with_capacity#[T](n) returns List struct { ptr, i32, i32 }
                         return self.getListStructType();
                     }
                     if (std.mem.eql(u8, obj_name, "Map") and std.mem.eql(u8, m.method_name, "new")) {
-                        // Map.new[K,V]() returns Map struct { ptr, i32, i32, i32 }
+                        // Map.new#[K,V]() returns Map struct { ptr, i32, i32, i32 }
                         return self.getMapStructType();
                     }
                     if (std.mem.eql(u8, obj_name, "Map") and std.mem.eql(u8, m.method_name, "with_capacity")) {
-                        // Map.with_capacity[K,V](n) returns Map struct { ptr, i32, i32, i32 }
+                        // Map.with_capacity#[K,V](n) returns Map struct { ptr, i32, i32, i32 }
                         return self.getMapStructType();
                     }
                     // Set static constructors
                     if (std.mem.eql(u8, obj_name, "Set") and std.mem.eql(u8, m.method_name, "new")) {
-                        // Set.new[T]() returns Set struct { ptr, i32, i32, i32 }
+                        // Set.new#[T]() returns Set struct { ptr, i32, i32, i32 }
                         return self.getSetStructType();
                     }
                     if (std.mem.eql(u8, obj_name, "Set") and std.mem.eql(u8, m.method_name, "with_capacity")) {
-                        // Set.with_capacity[T](n) returns Set struct { ptr, i32, i32, i32 }
+                        // Set.with_capacity#[T](n) returns Set struct { ptr, i32, i32, i32 }
                         return self.getSetStructType();
                     }
                     // String static constructors
@@ -7034,23 +7034,23 @@ pub const Emitter = struct {
                         // String.with_capacity(n) returns String struct { ptr, i32, i32 }
                         return self.getStringStructType();
                     }
-                    // File.open(path, mode) -> Result[File, IoError]
+                    // File.open(path, mode) -> Result#[File, IoError]
                     if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, m.method_name, "open")) {
                         return self.getFileResultType();
                     }
-                    // File.read_to_string(path) -> Result[String, IoError]
+                    // File.read_to_string(path) -> Result#[String, IoError]
                     if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, m.method_name, "read_to_string")) {
                         return self.getStringResultType();
                     }
-                    // File.read_all(path) -> Result[List[u8], IoError]
+                    // File.read_all(path) -> Result#[List#[u8], IoError]
                     if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, m.method_name, "read_all")) {
                         return self.getListResultType();
                     }
-                    // BufReader.new[R](reader) -> BufReader[R]
+                    // BufReader.new#[R](reader) -> BufReader#[R]
                     if (std.mem.eql(u8, obj_name, "BufReader") and std.mem.eql(u8, m.method_name, "new")) {
                         return self.getBufReaderStructType();
                     }
-                    // BufWriter.new[W](writer) -> BufWriter[W]
+                    // BufWriter.new#[W](writer) -> BufWriter#[W]
                     if (std.mem.eql(u8, obj_name, "BufWriter") and std.mem.eql(u8, m.method_name, "new")) {
                         return self.getBufWriterStructType();
                     }
@@ -7062,13 +7062,13 @@ pub const Emitter = struct {
                         std.mem.eql(u8, m.method_name, "write") or
                         std.mem.eql(u8, m.method_name, "read"))
                     {
-                        // Returns Result[i32, IoError]
+                        // Returns Result#[i32, IoError]
                         return self.getI32ResultType();
                     }
                     if (std.mem.eql(u8, m.method_name, "close") or
                         std.mem.eql(u8, m.method_name, "flush"))
                     {
-                        // Returns Result[void, IoError]
+                        // Returns Result#[void, IoError]
                         return self.getVoidResultType();
                     }
                 }
@@ -7078,11 +7078,11 @@ pub const Emitter = struct {
                     if (std.mem.eql(u8, m.method_name, "write") or
                         std.mem.eql(u8, m.method_name, "write_string"))
                     {
-                        // Returns Result[i32, IoError]
+                        // Returns Result#[i32, IoError]
                         return self.getI32ResultType();
                     }
                     if (std.mem.eql(u8, m.method_name, "flush")) {
-                        // Returns Result[void, IoError]
+                        // Returns Result#[void, IoError]
                         return self.getVoidResultType();
                     }
                 }
@@ -7090,7 +7090,7 @@ pub const Emitter = struct {
                 // Stdin instance methods
                 if (self.isStdinExpr(m.object)) {
                     if (std.mem.eql(u8, m.method_name, "read")) {
-                        // Returns Result[i32, IoError]
+                        // Returns Result#[i32, IoError]
                         return self.getI32ResultType();
                     }
                 }
@@ -7143,7 +7143,7 @@ pub const Emitter = struct {
                     {
                         return llvm.Types.int1(self.ctx);
                     }
-                    // first(), last(), get() return Optional[T] - struct { i1 tag, T value }
+                    // first(), last(), get() return Optional#[T] - struct { i1 tag, T value }
                     if (std.mem.eql(u8, m.method_name, "first") or
                         std.mem.eql(u8, m.method_name, "last") or
                         std.mem.eql(u8, m.method_name, "get"))
@@ -7179,7 +7179,7 @@ pub const Emitter = struct {
                     {
                         return llvm.Types.int32(self.ctx);
                     }
-                    // pop(), first(), last(), get() return Optional[T]
+                    // pop(), first(), last(), get() return Optional#[T]
                     if (std.mem.eql(u8, m.method_name, "pop") or
                         std.mem.eql(u8, m.method_name, "first") or
                         std.mem.eql(u8, m.method_name, "last") or
@@ -7195,7 +7195,7 @@ pub const Emitter = struct {
                         };
                         return llvm.Types.struct_(self.ctx, &opt_fields, false);
                     }
-                    // clone(), take(), skip(), filter() return List[T]
+                    // clone(), take(), skip(), filter() return List#[T]
                     if (std.mem.eql(u8, m.method_name, "clone") or
                         std.mem.eql(u8, m.method_name, "take") or
                         std.mem.eql(u8, m.method_name, "skip") or
@@ -7203,15 +7203,15 @@ pub const Emitter = struct {
                     {
                         return self.getListStructType();
                     }
-                    // map() returns List[U] (same struct, different element type)
+                    // map() returns List#[U] (same struct, different element type)
                     if (std.mem.eql(u8, m.method_name, "map")) {
                         return self.getListStructType();
                     }
-                    // enumerate() returns List[(i32, T)]
+                    // enumerate() returns List#[(i32, T)]
                     if (std.mem.eql(u8, m.method_name, "enumerate")) {
                         return self.getListStructType();
                     }
-                    // zip() returns List[(T, U)]
+                    // zip() returns List#[(T, U)]
                     if (std.mem.eql(u8, m.method_name, "zip")) {
                         return self.getListStructType();
                     }
@@ -7329,7 +7329,7 @@ pub const Emitter = struct {
                     {
                         return llvm.Types.int32(self.ctx);
                     }
-                    // get(), remove() return Optional[V]
+                    // get(), remove() return Optional#[V]
                     if (std.mem.eql(u8, m.method_name, "get") or
                         std.mem.eql(u8, m.method_name, "remove"))
                     {
@@ -7343,15 +7343,15 @@ pub const Emitter = struct {
                         };
                         return llvm.Types.struct_(self.ctx, &opt_fields, false);
                     }
-                    // keys() returns List[K]
+                    // keys() returns List#[K]
                     if (std.mem.eql(u8, m.method_name, "keys")) {
                         return self.getListStructType();
                     }
-                    // values() returns List[V]
+                    // values() returns List#[V]
                     if (std.mem.eql(u8, m.method_name, "values")) {
                         return self.getListStructType();
                     }
-                    // clone() returns Map[K,V]
+                    // clone() returns Map#[K,V]
                     if (std.mem.eql(u8, m.method_name, "clone")) {
                         return self.getMapStructType();
                     }
@@ -7379,7 +7379,7 @@ pub const Emitter = struct {
                     {
                         return llvm.Types.int32(self.ctx);
                     }
-                    // clone(), union(), intersection(), difference() return Set[T]
+                    // clone(), union(), intersection(), difference() return Set#[T]
                     if (std.mem.eql(u8, m.method_name, "clone") or
                         std.mem.eql(u8, m.method_name, "union") or
                         std.mem.eql(u8, m.method_name, "intersection") or
@@ -7387,7 +7387,7 @@ pub const Emitter = struct {
                     {
                         return self.getSetStructType();
                     }
-                    // take(n), skip(n), filter(fn) return Set[T]
+                    // take(n), skip(n), filter(fn) return Set#[T]
                     if (std.mem.eql(u8, m.method_name, "take") or
                         std.mem.eql(u8, m.method_name, "skip") or
                         std.mem.eql(u8, m.method_name, "filter"))
@@ -7480,7 +7480,7 @@ pub const Emitter = struct {
                 {
                     return llvm.Types.int1(self.ctx);
                 }
-                // Result.ok() returns Optional[T] where Result is Result[T, E]
+                // Result.ok() returns Optional#[T] where Result is Result#[T, E]
                 if (std.mem.eql(u8, m.method_name, "ok")) {
                     // Get the Result type from the object
                     const result_type = try self.inferExprType(m.object);
@@ -7490,7 +7490,7 @@ pub const Emitter = struct {
                     var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type };
                     return llvm.Types.struct_(self.ctx, &opt_fields, false);
                 }
-                // Result.err() returns Optional[E] where Result is Result[T, E]
+                // Result.err() returns Optional#[E] where Result is Result#[T, E]
                 if (std.mem.eql(u8, m.method_name, "err")) {
                     // Get the Result type from the object
                     const result_type = try self.inferExprType(m.object);
@@ -7500,21 +7500,21 @@ pub const Emitter = struct {
                     var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), err_type };
                     return llvm.Types.struct_(self.ctx, &opt_fields, false);
                 }
-                // Result.unwrap_err() returns E directly where Result is Result[T, E]
+                // Result.unwrap_err() returns E directly where Result is Result#[T, E]
                 if (std.mem.eql(u8, m.method_name, "unwrap_err")) {
                     // Get the Result type from the object
                     const result_type = try self.inferExprType(m.object);
                     // err_type is at index 2 in the Result struct {tag, ok_value, err_value}
                     return llvm.c.LLVMStructGetTypeAtIndex(result_type, 2);
                 }
-                // Result.unwrap() returns T directly where Result is Result[T, E]
+                // Result.unwrap() returns T directly where Result is Result#[T, E]
                 if (std.mem.eql(u8, m.method_name, "unwrap")) {
                     // Get the Result type from the object
                     const result_type = try self.inferExprType(m.object);
                     // ok_type is at index 1 in the Result struct {tag, ok_value, err_value}
                     return llvm.c.LLVMStructGetTypeAtIndex(result_type, 1);
                 }
-                // map(f) returns Optional[U] or Result[U, E] where U is the function's return type
+                // map(f) returns Optional#[U] or Result#[U, E] where U is the function's return type
                 if (std.mem.eql(u8, m.method_name, "map")) {
                     // The return type is determined by the function argument's return type
                     // wrapped in Optional or Result
@@ -7549,7 +7549,7 @@ pub const Emitter = struct {
                         return llvm.Types.struct_(self.ctx, &opt_fields, false);
                     }
                 }
-                // map_err(f) returns Result[T, F] where T is unchanged and F is the mapped error type
+                // map_err(f) returns Result#[T, F] where T is unchanged and F is the mapped error type
                 if (std.mem.eql(u8, m.method_name, "map_err")) {
                     // Get the Result type from the object
                     const object_type = try self.inferExprType(m.object);
@@ -7559,7 +7559,7 @@ pub const Emitter = struct {
                     var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type, llvm.Types.int32(self.ctx) };
                     return llvm.Types.struct_(self.ctx, &result_fields, false);
                 }
-                // context(msg) returns Result[T, ContextError[E]] where T and E come from the original Result
+                // context(msg) returns Result#[T, ContextError#[E]] where T and E come from the original Result
                 if (std.mem.eql(u8, m.method_name, "context")) {
                     // Get the Result type from the object
                     const object_type = try self.inferExprType(m.object);
@@ -7567,7 +7567,7 @@ pub const Emitter = struct {
                     const ok_type = llvm.c.LLVMStructGetTypeAtIndex(object_type, 1);
                     // err_type is at index 2
                     const err_type = llvm.c.LLVMStructGetTypeAtIndex(object_type, 2);
-                    // ContextError[E] layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
+                    // ContextError#[E] layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
                     var context_err_fields = [_]llvm.TypeRef{
                         llvm.Types.pointer(self.ctx), // message
                         err_type, // cause
@@ -7576,7 +7576,7 @@ pub const Emitter = struct {
                         llvm.Types.int32(self.ctx), // column
                     };
                     const context_err_type = llvm.Types.struct_(self.ctx, &context_err_fields, false);
-                    // Result[T, ContextError[E]] layout: { tag: i1, ok_value: T, err_value: ContextError[E] }
+                    // Result#[T, ContextError#[E]] layout: { tag: i1, ok_value: T, err_value: ContextError#[E] }
                     var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type, context_err_type };
                     return llvm.Types.struct_(self.ctx, &result_fields, false);
                 }
@@ -9123,7 +9123,7 @@ pub const Emitter = struct {
     // =========================================================================
 
     /// Emit a postfix operator expression (? for safe unwrap, ! for force unwrap).
-    /// Works for both Optional[T] and Result[T, E] types:
+    /// Works for both Optional#[T] and Result#[T, E] types:
     /// - Optional layout: { i1 tag, T value } where tag: 0=None, 1=Some
     /// - Result layout: { i1 tag, T ok_value, E err_value } where tag: 0=Err, 1=Ok
     /// The ! operator traps on None/Err and returns the value/ok_value at index 1.
@@ -9204,7 +9204,7 @@ pub const Emitter = struct {
                     // For Result operand: extract error value from index 2
                     // For Optional operand: this should have been caught by type checker
                     if (num_fields == 3) {
-                        // Operand is Result[T, E] - extract error from index 2
+                        // Operand is Result#[T, E] - extract error from index 2
                         var err_indices = [_]llvm.ValueRef{
                             llvm.Const.int32(self.ctx, 0),
                             llvm.Const.int32(self.ctx, 2),
@@ -9363,7 +9363,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(opt_type, opt_alloca, "none.val");
     }
 
-    /// Create a Result Ok value: Result[T, E] = { tag: 1, ok_value: value, err_value: undef }
+    /// Create a Result Ok value: Result#[T, E] = { tag: 1, ok_value: value, err_value: undef }
     fn emitOk(self: *Emitter, value: llvm.ValueRef, ok_type: llvm.TypeRef, err_type: llvm.TypeRef) llvm.ValueRef {
         // Result type is { i1, T, E }
         var result_fields = [_]llvm.TypeRef{
@@ -9396,7 +9396,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "ok.result");
     }
 
-    /// Create a Result Err value: Result[T, E] = { tag: 0, ok_value: undef, err_value: error }
+    /// Create a Result Err value: Result#[T, E] = { tag: 0, ok_value: undef, err_value: error }
     fn emitErr(self: *Emitter, error_val: llvm.ValueRef, ok_type: llvm.TypeRef, err_type: llvm.TypeRef) llvm.ValueRef {
         // Result type is { i1, T, E }
         var result_fields = [_]llvm.TypeRef{
@@ -9779,32 +9779,32 @@ pub const Emitter = struct {
                 return self.emitDefaultMethod(obj_name);
             }
 
-            // List.new[T]() - creates an empty list
+            // List.new#[T]() - creates an empty list
             if (std.mem.eql(u8, obj_name, "List") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitListNew(method);
             }
 
-            // List.with_capacity[T](n) - creates a list with pre-allocated capacity
+            // List.with_capacity#[T](n) - creates a list with pre-allocated capacity
             if (std.mem.eql(u8, obj_name, "List") and std.mem.eql(u8, method.method_name, "with_capacity")) {
                 return self.emitListWithCapacity(method);
             }
 
-            // Map.new[K,V]() - creates an empty map
+            // Map.new#[K,V]() - creates an empty map
             if (std.mem.eql(u8, obj_name, "Map") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitMapNew(method);
             }
 
-            // Map.with_capacity[K,V](n) - creates a map with pre-allocated capacity
+            // Map.with_capacity#[K,V](n) - creates a map with pre-allocated capacity
             if (std.mem.eql(u8, obj_name, "Map") and std.mem.eql(u8, method.method_name, "with_capacity")) {
                 return self.emitMapWithCapacity(method);
             }
 
-            // Set.new[T]() - creates an empty set
+            // Set.new#[T]() - creates an empty set
             if (std.mem.eql(u8, obj_name, "Set") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitSetNew(method);
             }
 
-            // Set.with_capacity[T](n) - creates a set with pre-allocated capacity
+            // Set.with_capacity#[T](n) - creates a set with pre-allocated capacity
             if (std.mem.eql(u8, obj_name, "Set") and std.mem.eql(u8, method.method_name, "with_capacity")) {
                 return self.emitSetWithCapacity(method);
             }
@@ -9824,27 +9824,27 @@ pub const Emitter = struct {
                 return self.emitStringWithCapacity(method);
             }
 
-            // File.open(path, mode) -> Result[File, IoError]
+            // File.open(path, mode) -> Result#[File, IoError]
             if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "open")) {
                 return self.emitFileOpen(method);
             }
 
-            // File.read_to_string(path) -> Result[String, IoError]
+            // File.read_to_string(path) -> Result#[String, IoError]
             if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "read_to_string")) {
                 return self.emitFileReadToString(method);
             }
 
-            // File.read_all(path) -> Result[List[u8], IoError]
+            // File.read_all(path) -> Result#[List#[u8], IoError]
             if (std.mem.eql(u8, obj_name, "File") and std.mem.eql(u8, method.method_name, "read_all")) {
                 return self.emitFileReadAll(method);
             }
 
-            // BufReader.new[R](reader: R) -> BufReader[R]
+            // BufReader.new#[R](reader: R) -> BufReader#[R]
             if (std.mem.eql(u8, obj_name, "BufReader") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitBufReaderNew(method);
             }
 
-            // BufWriter.new[W](writer: W) -> BufWriter[W]
+            // BufWriter.new#[W](writer: W) -> BufWriter#[W]
             if (std.mem.eql(u8, obj_name, "BufWriter") and std.mem.eql(u8, method.method_name, "new")) {
                 return self.emitBufWriterNew(method);
             }
@@ -10469,7 +10469,7 @@ pub const Emitter = struct {
                 const needle = try self.emitExpr(method.args[0]);
                 return self.emitStringIndexOf(object, needle);
             }
-            // Handle string.to[T] - fallible conversion to numeric types
+            // Handle string.to#[T] - fallible conversion to numeric types
             if (std.mem.eql(u8, method.method_name, "to")) {
                 if (method.type_args) |type_args| {
                     if (type_args.len == 1) {
@@ -11156,7 +11156,7 @@ pub const Emitter = struct {
         // Store the value at the returned pointer (opaque pointer in LLVM 15+)
         _ = self.builder.buildStore(value, ptr);
 
-        // Return the pointer (Rc[T] is represented as a pointer)
+        // Return the pointer (Rc#[T] is represented as a pointer)
         return ptr;
     }
 
@@ -11283,7 +11283,7 @@ pub const Emitter = struct {
         // Store the value at the returned pointer
         _ = self.builder.buildStore(value, ptr);
 
-        // Return the pointer (Arc[T] is represented as a pointer)
+        // Return the pointer (Arc#[T] is represented as a pointer)
         return ptr;
     }
 
@@ -11385,7 +11385,7 @@ pub const Emitter = struct {
         // Store the initial value
         _ = self.builder.buildStore(value, cell_alloca);
 
-        // Return the pointer to the cell (Cell[T] is represented as a pointer)
+        // Return the pointer to the cell (Cell#[T] is represented as a pointer)
         return cell_alloca;
     }
 
@@ -13963,7 +13963,7 @@ pub const Emitter = struct {
     // FFI Pointer Functions
     // =========================================================================
 
-    /// Emit is_null(ptr: COptPtr[T]) -> bool
+    /// Emit is_null(ptr: COptPtr#[T]) -> bool
     /// Compares the pointer to null and returns the result.
     fn emitIsNull(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (call.args.len != 1) {
@@ -13975,7 +13975,7 @@ pub const Emitter = struct {
         return self.builder.buildICmp(llvm.c.LLVMIntEQ, ptr, null_ptr, "is_null");
     }
 
-    /// Emit unwrap_ptr(ptr: COptPtr[T]) -> CPtr[T]
+    /// Emit unwrap_ptr(ptr: COptPtr#[T]) -> CPtr#[T]
     /// Returns the pointer unchanged (assumes caller validated it's not null).
     /// In debug builds, we could add a null check assertion.
     fn emitUnwrapPtr(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
@@ -13987,7 +13987,7 @@ pub const Emitter = struct {
         return try self.emitExpr(call.args[0]);
     }
 
-    /// Emit read(ptr: CPtr[T]) -> T
+    /// Emit read(ptr: CPtr#[T]) -> T
     /// Loads the value at the pointer location.
     fn emitRead(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (call.args.len != 1) {
@@ -14002,7 +14002,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(llvm_type, ptr, "ptr.read");
     }
 
-    /// Emit write(ptr: CPtr[T], value: T) -> void
+    /// Emit write(ptr: CPtr#[T], value: T) -> void
     /// Stores the value at the pointer location.
     fn emitWrite(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (call.args.len != 2) {
@@ -14017,7 +14017,7 @@ pub const Emitter = struct {
         return llvm.c.LLVMGetUndef(llvm.Types.void_(self.ctx));
     }
 
-    /// Emit offset(ptr: CPtr[T], count: isize) -> CPtr[T]
+    /// Emit offset(ptr: CPtr#[T], count: isize) -> CPtr#[T]
     /// Returns a pointer offset by count elements.
     fn emitOffset(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (call.args.len != 2) {
@@ -14035,7 +14035,7 @@ pub const Emitter = struct {
         return llvm.c.LLVMBuildGEP2(self.builder.ref, llvm_type, ptr, &indices, 1, "ptr.offset");
     }
 
-    /// Emit ref_to_ptr(value: ref T) -> CPtr[T]
+    /// Emit ref_to_ptr(value: ref T) -> CPtr#[T]
     /// Converts a Klar reference to a raw pointer.
     fn emitRefToPtr(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (call.args.len != 1) {
@@ -15327,7 +15327,7 @@ pub const Emitter = struct {
         );
     }
 
-    /// Emit string.to[T] - fallible conversion from string to numeric type.
+    /// Emit string.to#[T] - fallible conversion from string to numeric type.
     /// Returns ?T (Some(value) on success, None on failure).
     fn emitStringToNumeric(self: *Emitter, str: llvm.ValueRef, target_type_expr: ast.TypeExpr) EmitError!llvm.ValueRef {
         const target_type = try self.typeExprToLLVM(target_type_expr);
@@ -15877,7 +15877,7 @@ pub const Emitter = struct {
     // Range Methods
     // ========================================================================
 
-    /// Emit Range.next() - returns Optional[T], Some(current) and increments, or None if exhausted.
+    /// Emit Range.next() - returns Optional#[T], Some(current) and increments, or None if exhausted.
     /// Range layout: { start: T, end: T, current: T, inclusive: i1 }
     fn emitRangeNext(self: *Emitter, range_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const i32_type = llvm.Types.int32(self.ctx);
@@ -16063,7 +16063,7 @@ pub const Emitter = struct {
     // List Methods
     // ========================================================================
 
-    /// Emit List.new[T]() - creates an empty list.
+    /// Emit List.new#[T]() - creates an empty list.
     /// Returns a List struct initialized to { ptr: null, len: 0, capacity: 0 }
     fn emitListNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         _ = method;
@@ -16080,7 +16080,7 @@ pub const Emitter = struct {
         return llvm.c.LLVMConstNamedStruct(list_type, &values, 3);
     }
 
-    /// Emit List.with_capacity[T](n) - creates a list with pre-allocated capacity.
+    /// Emit List.with_capacity#[T](n) - creates a list with pre-allocated capacity.
     /// Returns a List struct with allocated memory for n elements.
     /// Implemented inline: allocates memory using malloc, returns { ptr, 0, capacity }.
     fn emitListWithCapacity(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
@@ -16180,7 +16180,7 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
-        // For List[String], promote string literals (raw pointers) to StringHeader
+        // For List#[String], promote string literals (raw pointers) to StringHeader
         var actual_value = value;
         if (element_type == .string_data) {
             const value_ty = llvm.typeOf(value);
@@ -16260,7 +16260,7 @@ pub const Emitter = struct {
         var gep_indices = [_]llvm.ValueRef{offset};
         const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, phi, &gep_indices, 1, "push.elem_ptr");
 
-        // Store the value (use actual_value which may have been promoted for List[String])
+        // Store the value (use actual_value which may have been promoted for List#[String])
         _ = self.builder.buildStore(actual_value, elem_ptr);
 
         // Increment len and store back
@@ -16520,7 +16520,7 @@ pub const Emitter = struct {
     }
 
     /// Emit list.drop() - frees the list's memory.
-    /// For List[String], iterates to free each string's buffer before freeing the list buffer.
+    /// For List#[String], iterates to free each string's buffer before freeing the list buffer.
     /// For other element types, uses inline LLVM codegen.
     fn emitListDrop(self: *Emitter, list_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
@@ -16549,7 +16549,7 @@ pub const Emitter = struct {
         // --- Free block: ptr is not null ---
         self.builder.positionAtEnd(free_bb);
 
-        // For List[String], iterate and free each string's buffer first
+        // For List#[String], iterate and free each string's buffer first
         if (element_type == .string_data) {
             const string_type = self.getStringStructType();
             const i64_type = llvm.Types.int64(self.ctx);
@@ -17806,7 +17806,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Emit Map.new[K,V]() - creates an empty map.
+    /// Emit Map.new#[K,V]() - creates an empty map.
     /// Returns a Map struct with { null, 0, 0, 0 }.
     fn emitMapNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         _ = method; // Type args already validated by checker
@@ -17821,7 +17821,7 @@ pub const Emitter = struct {
         return llvm.c.LLVMConstNamedStruct(map_type, &values, 4);
     }
 
-    /// Emit Map.with_capacity[K,V](n) - creates a map with pre-allocated capacity.
+    /// Emit Map.with_capacity#[K,V](n) - creates a map with pre-allocated capacity.
     fn emitMapWithCapacity(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         // Get key/value types from type_args
         const type_args = method.type_args orelse return EmitError.InvalidAST;
@@ -18621,7 +18621,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(i1_type, result_alloca, "map.contains.result");
     }
 
-    /// Emit map.keys() -> List[K]
+    /// Emit map.keys() -> List#[K]
     fn emitMapKeys(self: *Emitter, map_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         // Get key/value types from stored info or type checker
         const key_type_klar = self.getMapKeyType(method.object) orelse return EmitError.InvalidAST;
@@ -18742,7 +18742,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(list_type, list_alloca, "map.keys.result");
     }
 
-    /// Emit map.values() -> List[V]
+    /// Emit map.values() -> List#[V]
     fn emitMapValues(self: *Emitter, map_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         // Similar to keys() but collects values
         const key_type_klar = self.getMapKeyType(method.object) orelse return EmitError.InvalidAST;
@@ -18887,7 +18887,7 @@ pub const Emitter = struct {
         return llvm.Const.int32(self.ctx, 0);
     }
 
-    /// Emit map.clone() -> Map[K,V] - creates a deep copy.
+    /// Emit map.clone() -> Map#[K,V] - creates a deep copy.
     fn emitMapClone(self: *Emitter, map_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const key_type_klar = self.getMapKeyType(method.object) orelse return EmitError.InvalidAST;
         const value_type_klar = self.getMapValueType(method.object) orelse return EmitError.InvalidAST;
@@ -19500,7 +19500,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Emit Set.new[T]() - creates an empty set.
+    /// Emit Set.new#[T]() - creates an empty set.
     /// Returns a Set struct with { null, 0, 0, 0 }.
     fn emitSetNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         _ = method; // Type args already validated by checker
@@ -19515,7 +19515,7 @@ pub const Emitter = struct {
         return llvm.c.LLVMConstNamedStruct(set_type, &values, 4);
     }
 
-    /// Emit Set.with_capacity[T](n) - creates a set with pre-allocated capacity.
+    /// Emit Set.with_capacity#[T](n) - creates a set with pre-allocated capacity.
     fn emitSetWithCapacity(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         // Get element type from type_args
         const type_args = method.type_args orelse return EmitError.InvalidAST;
@@ -20812,7 +20812,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(list_type, result_alloca, "map.result");
     }
 
-    /// Emit set.enumerate() - returns List[(i32, T)] pairing each element with its index.
+    /// Emit set.enumerate() - returns List#[(i32, T)] pairing each element with its index.
     fn emitSetEnumerate(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
         const element_llvm_type = self.typeToLLVM(element_type_klar);
@@ -20943,7 +20943,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(list_type, result_alloca, "enum.result");
     }
 
-    /// Emit set.zip(other) - returns List[(T, U)] combining two sets element-wise.
+    /// Emit set.zip(other) - returns List#[(T, U)] combining two sets element-wise.
     fn emitSetZip(self: *Emitter, set_ptr: llvm.ValueRef, method: *ast.MethodCall, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const element_type_klar = self.getSetElementType(method.object) orelse return EmitError.InvalidAST;
         const element_llvm_type = self.typeToLLVM(element_type_klar);
@@ -22085,7 +22085,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Get the LLVM struct type for Result[File, IoError]: { tag: i1, file: ptr, error: IoError }
+    /// Get the LLVM struct type for Result#[File, IoError]: { tag: i1, file: ptr, error: IoError }
     fn getFileResultType(self: *Emitter) llvm.TypeRef {
         const io_error_type = self.getIoErrorStructType();
         var fields = [_]llvm.TypeRef{
@@ -22096,7 +22096,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Get the LLVM struct type for Result[i32, IoError]: { tag: i1, value: i32, error: IoError }
+    /// Get the LLVM struct type for Result#[i32, IoError]: { tag: i1, value: i32, error: IoError }
     fn getI32ResultType(self: *Emitter) llvm.TypeRef {
         const io_error_type = self.getIoErrorStructType();
         var fields = [_]llvm.TypeRef{
@@ -22107,7 +22107,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Get the LLVM struct type for Result[void, IoError]: { tag: i1, placeholder: i8, error: IoError }
+    /// Get the LLVM struct type for Result#[void, IoError]: { tag: i1, placeholder: i8, error: IoError }
     /// Uses 3-field layout for consistency with other Result types (ok_value at index 1, err_value at index 2).
     fn getVoidResultType(self: *Emitter) llvm.TypeRef {
         const io_error_type = self.getIoErrorStructType();
@@ -22119,7 +22119,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Get the LLVM struct type for Result[String, IoError]: { tag: i1, string: { ptr, len, cap }, error: IoError }
+    /// Get the LLVM struct type for Result#[String, IoError]: { tag: i1, string: { ptr, len, cap }, error: IoError }
     fn getStringResultType(self: *Emitter) llvm.TypeRef {
         const io_error_type = self.getIoErrorStructType();
         const string_type = self.getStringStructType();
@@ -22131,7 +22131,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Get the LLVM struct type for Result[List[u8], IoError]: { tag: i1, list: List, error: IoError }
+    /// Get the LLVM struct type for Result#[List#[u8], IoError]: { tag: i1, list: List, error: IoError }
     fn getListResultType(self: *Emitter) llvm.TypeRef {
         const io_error_type = self.getIoErrorStructType();
         const list_type = self.getListStructType();
@@ -22143,7 +22143,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Emit File.open(path, mode) -> Result[File, IoError]
+    /// Emit File.open(path, mode) -> Result#[File, IoError]
     fn emitFileOpen(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         if (method.args.len != 2) return EmitError.InvalidAST;
 
@@ -22197,7 +22197,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "file.result_val");
     }
 
-    /// Emit File.read_to_string(path) -> Result[String, IoError]
+    /// Emit File.read_to_string(path) -> Result#[String, IoError]
     /// Opens the file, reads entire content as a null-terminated string, closes file.
     fn emitFileReadToString(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         if (method.args.len != 1) return EmitError.InvalidAST;
@@ -22221,7 +22221,7 @@ pub const Emitter = struct {
         var fopen_args = [_]llvm.ValueRef{ path_val, mode_str };
         const file_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fopen_fn), fopen_fn, &fopen_args, "readstr.file");
 
-        // Build Result[String, IoError] struct
+        // Build Result#[String, IoError] struct
         const result_type = self.getStringResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "readstr.result");
 
@@ -22311,7 +22311,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "readstr.result_val");
     }
 
-    /// Emit File.read_all(path) -> Result[List[u8], IoError]
+    /// Emit File.read_all(path) -> Result#[List#[u8], IoError]
     /// Opens the file, reads entire content as bytes, closes file.
     fn emitFileReadAll(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         if (method.args.len != 1) return EmitError.InvalidAST;
@@ -22335,7 +22335,7 @@ pub const Emitter = struct {
         var fopen_args = [_]llvm.ValueRef{ path_val, mode_str };
         const file_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fopen_fn), fopen_fn, &fopen_args, "readall.file");
 
-        // Build Result[List[u8], IoError] struct
+        // Build Result#[List#[u8], IoError] struct
         const list_type = self.getListStructType();
         const result_type = self.getListResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "readall.result");
@@ -22392,7 +22392,7 @@ pub const Emitter = struct {
         var fclose_args = [_]llvm.ValueRef{file_ptr};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "readall.close");
 
-        // Build List[u8] struct { ptr, len, capacity }
+        // Build List#[u8] struct { ptr, len, capacity }
         // Store ptr (field 0)
         const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readall.list_ptr_field");
         _ = self.builder.buildStore(buffer, list_ptr_field);
@@ -22416,7 +22416,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "readall.result_val");
     }
 
-    /// Emit file.write_string(s) -> Result[i32, IoError]
+    /// Emit file.write_string(s) -> Result#[i32, IoError]
     fn emitFileWriteString(self: *Emitter, file_ptr: llvm.ValueRef, str_val: llvm.ValueRef) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
@@ -22436,7 +22436,7 @@ pub const Emitter = struct {
         var fwrite_args = [_]llvm.ValueRef{ str_val, one_i64, len, file_handle };
         const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "file.written");
 
-        // Build Result[i32, IoError]
+        // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "write.result");
 
@@ -22513,7 +22513,7 @@ pub const Emitter = struct {
         }
     }
 
-    /// Emit file.write(buf) -> Result[i32, IoError]
+    /// Emit file.write(buf) -> Result#[i32, IoError]
     /// buf_expr is needed to determine if we have a slice or array reference
     fn emitFileWrite(self: *Emitter, file_ptr: llvm.ValueRef, buf_ref: llvm.ValueRef, buf_expr: ast.Expr) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
@@ -22534,7 +22534,7 @@ pub const Emitter = struct {
         var fwrite_args = [_]llvm.ValueRef{ buf_ptr, one_i64, buf_len, file_handle };
         const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "file.written");
 
-        // Build Result[i32, IoError]
+        // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "write.result");
 
@@ -22548,7 +22548,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "write.result_val");
     }
 
-    /// Emit file.read(buf) -> Result[i32, IoError]
+    /// Emit file.read(buf) -> Result#[i32, IoError]
     /// buf_expr is needed to determine if we have a slice or array reference
     fn emitFileRead(self: *Emitter, file_ptr: llvm.ValueRef, buf_ref: llvm.ValueRef, buf_expr: ast.Expr) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
@@ -22569,7 +22569,7 @@ pub const Emitter = struct {
         var fread_args = [_]llvm.ValueRef{ buf_ptr, one_i64, buf_len, file_handle };
         const bytes_read = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fread_fn), fread_fn, &fread_args, "file.read");
 
-        // Build Result[i32, IoError]
+        // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "read.result");
 
@@ -22583,7 +22583,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "read.result_val");
     }
 
-    /// Emit file.close() -> Result[void, IoError]
+    /// Emit file.close() -> Result#[void, IoError]
     fn emitFileClose(self: *Emitter, file_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
 
@@ -22595,7 +22595,7 @@ pub const Emitter = struct {
         var fclose_args = [_]llvm.ValueRef{file_handle};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "");
 
-        // Build Result[void, IoError] - always Ok
+        // Build Result#[void, IoError] - always Ok
         const result_type = self.getVoidResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "close.result");
 
@@ -22605,7 +22605,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "close.result_val");
     }
 
-    /// Emit file.flush() -> Result[void, IoError]
+    /// Emit file.flush() -> Result#[void, IoError]
     fn emitFileFlush(self: *Emitter, file_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
 
@@ -22617,7 +22617,7 @@ pub const Emitter = struct {
         var fflush_args = [_]llvm.ValueRef{file_handle};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fflush_fn), fflush_fn, &fflush_args, "");
 
-        // Build Result[void, IoError] - always Ok
+        // Build Result#[void, IoError] - always Ok
         const result_type = self.getVoidResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "flush.result");
 
@@ -22627,7 +22627,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "flush.result_val");
     }
 
-    /// Emit stdout().write_string(s) -> Result[i32, IoError]
+    /// Emit stdout().write_string(s) -> Result#[i32, IoError]
     fn emitStdoutWriteString(self: *Emitter, str_val: llvm.ValueRef) EmitError!llvm.ValueRef {
         const i64_type = llvm.Types.int64(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -22647,7 +22647,7 @@ pub const Emitter = struct {
         var fwrite_args = [_]llvm.ValueRef{ str_val, one_i64, len, stdout_handle };
         const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "stdout.written");
 
-        // Build Result[i32, IoError]
+        // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "stdout.result");
 
@@ -22661,7 +22661,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "stdout.result_val");
     }
 
-    /// Emit stdout().flush() -> Result[void, IoError]
+    /// Emit stdout().flush() -> Result#[void, IoError]
     fn emitStdoutFlush(self: *Emitter) EmitError!llvm.ValueRef {
         // Get stdout handle
         const stdout_fn = self.getOrDeclareStdout();
@@ -22672,7 +22672,7 @@ pub const Emitter = struct {
         var fflush_args = [_]llvm.ValueRef{stdout_handle};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fflush_fn), fflush_fn, &fflush_args, "");
 
-        // Build Result[void, IoError]
+        // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "stdout.flush.result");
 
@@ -22682,7 +22682,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "stdout.flush.result_val");
     }
 
-    /// Emit stdout().write(buf) -> Result[i32, IoError]
+    /// Emit stdout().write(buf) -> Result#[i32, IoError]
     fn emitStdoutWrite(self: *Emitter, buf_ref: llvm.ValueRef, buf_expr: ast.Expr) EmitError!llvm.ValueRef {
         const i64_type = llvm.Types.int64(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -22702,7 +22702,7 @@ pub const Emitter = struct {
         var fwrite_args = [_]llvm.ValueRef{ buf_ptr, one_i64, buf_len, stdout_handle };
         const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "stdout.written");
 
-        // Build Result[i32, IoError]
+        // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "stdout.write.result");
 
@@ -22716,7 +22716,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "stdout.write.result_val");
     }
 
-    /// Emit stderr().write_string(s) -> Result[i32, IoError]
+    /// Emit stderr().write_string(s) -> Result#[i32, IoError]
     fn emitStderrWriteString(self: *Emitter, str_val: llvm.ValueRef) EmitError!llvm.ValueRef {
         const i64_type = llvm.Types.int64(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -22736,7 +22736,7 @@ pub const Emitter = struct {
         var fwrite_args = [_]llvm.ValueRef{ str_val, one_i64, len, stderr_handle };
         const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "stderr.written");
 
-        // Build Result[i32, IoError]
+        // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "stderr.result");
 
@@ -22750,7 +22750,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "stderr.result_val");
     }
 
-    /// Emit stderr().flush() -> Result[void, IoError]
+    /// Emit stderr().flush() -> Result#[void, IoError]
     fn emitStderrFlush(self: *Emitter) EmitError!llvm.ValueRef {
         // Get stderr handle
         const stderr_fn = self.getOrDeclareStderr();
@@ -22761,7 +22761,7 @@ pub const Emitter = struct {
         var fflush_args = [_]llvm.ValueRef{stderr_handle};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fflush_fn), fflush_fn, &fflush_args, "");
 
-        // Build Result[void, IoError]
+        // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "stderr.flush.result");
 
@@ -22771,7 +22771,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "stderr.flush.result_val");
     }
 
-    /// Emit stderr().write(buf) -> Result[i32, IoError]
+    /// Emit stderr().write(buf) -> Result#[i32, IoError]
     fn emitStderrWrite(self: *Emitter, buf_ref: llvm.ValueRef, buf_expr: ast.Expr) EmitError!llvm.ValueRef {
         const i64_type = llvm.Types.int64(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -22791,7 +22791,7 @@ pub const Emitter = struct {
         var fwrite_args = [_]llvm.ValueRef{ buf_ptr, one_i64, buf_len, stderr_handle };
         const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "stderr.written");
 
-        // Build Result[i32, IoError]
+        // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "stderr.write.result");
 
@@ -22805,7 +22805,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "stderr.write.result_val");
     }
 
-    /// Emit stdin().read(buf) -> Result[i32, IoError]
+    /// Emit stdin().read(buf) -> Result#[i32, IoError]
     fn emitStdinRead(self: *Emitter, buf_ref: llvm.ValueRef, buf_expr: ast.Expr) EmitError!llvm.ValueRef {
         const i64_type = llvm.Types.int64(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -22825,7 +22825,7 @@ pub const Emitter = struct {
         var fread_args = [_]llvm.ValueRef{ buf_ptr, one_i64, buf_len, stdin_handle };
         const bytes_read = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fread_fn), fread_fn, &fread_args, "stdin.read");
 
-        // Build Result[i32, IoError]
+        // Build Result#[i32, IoError]
         const result_type = self.getI32ResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "stdin.read.result");
 
@@ -22879,7 +22879,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Get the LLVM struct type for Result[Path, IoError]
+    /// Get the LLVM struct type for Result#[Path, IoError]
     fn getPathResultType(self: *Emitter) llvm.TypeRef {
         const io_error_type = self.getIoErrorStructType();
         const path_type = self.getPathStructType();
@@ -22891,7 +22891,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Get the LLVM struct type for ?Path (Optional[Path])
+    /// Get the LLVM struct type for ?Path (Optional#[Path])
     fn getOptionalPathType(self: *Emitter) llvm.TypeRef {
         const path_type = self.getPathStructType();
         var fields = [_]llvm.TypeRef{
@@ -23586,7 +23586,7 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(done_bb);
     }
 
-    /// Emit fs_create_dir(path: string) -> Result[void, IoError]
+    /// Emit fs_create_dir(path: string) -> Result#[void, IoError]
     fn emitFsCreateDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_create_dir is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
@@ -23602,7 +23602,7 @@ pub const Emitter = struct {
         else
             self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &mkdir_args_posix, "mkdir.result");
 
-        // Build Result[void, IoError]
+        // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "mkdir.res");
 
@@ -23635,7 +23635,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "mkdir.val");
     }
 
-    /// Emit fs_create_dir_all(path: string) -> Result[void, IoError]
+    /// Emit fs_create_dir_all(path: string) -> Result#[void, IoError]
     fn emitFsCreateDirAll(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_create_dir_all is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
@@ -23659,7 +23659,7 @@ pub const Emitter = struct {
         var memcpy_args = [_]llvm.ValueRef{ path_copy, path_val, alloc_size };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
-        // Build Result[void, IoError]
+        // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "dirall.res");
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "dirall.tag_ptr");
@@ -23770,7 +23770,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "dirall.val");
     }
 
-    /// Emit fs_remove_file(path: string) -> Result[void, IoError]
+    /// Emit fs_remove_file(path: string) -> Result#[void, IoError]
     fn emitFsRemoveFile(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_remove_file is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
@@ -23782,7 +23782,7 @@ pub const Emitter = struct {
         var unlink_args = [_]llvm.ValueRef{path_val};
         const result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(unlink_fn), unlink_fn, &unlink_args, "unlink.result");
 
-        // Build Result[void, IoError]
+        // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "unlink.res");
 
@@ -23814,7 +23814,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "unlink.val");
     }
 
-    /// Emit fs_remove_dir(path: string) -> Result[void, IoError]
+    /// Emit fs_remove_dir(path: string) -> Result#[void, IoError]
     fn emitFsRemoveDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_remove_dir is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
@@ -23826,7 +23826,7 @@ pub const Emitter = struct {
         var rmdir_args = [_]llvm.ValueRef{path_val};
         const result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(rmdir_fn), rmdir_fn, &rmdir_args, "rmdir.result");
 
-        // Build Result[void, IoError]
+        // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "rmdir.res");
 
@@ -23858,7 +23858,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "rmdir.val");
     }
 
-    /// Emit fs_read_string(path: string) -> Result[String, IoError]
+    /// Emit fs_read_string(path: string) -> Result#[String, IoError]
     fn emitFsReadString(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_read_string is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
@@ -23883,7 +23883,7 @@ pub const Emitter = struct {
         var fopen_args = [_]llvm.ValueRef{ path_val, mode_str };
         const file_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fopen_fn), fopen_fn, &fopen_args, "fs_readstr.file");
 
-        // Build Result[String, IoError] struct
+        // Build Result#[String, IoError] struct
         const result_type = self.getStringResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "fs_readstr.result");
 
@@ -23964,7 +23964,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "fs_readstr.result_val");
     }
 
-    /// Emit fs_write_string(path: string, content: string) -> Result[void, IoError]
+    /// Emit fs_write_string(path: string, content: string) -> Result#[void, IoError]
     fn emitFsWriteString(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_write_string is not supported on WebAssembly targets");
         if (call.args.len != 2) return EmitError.InvalidAST;
@@ -23985,7 +23985,7 @@ pub const Emitter = struct {
         var fopen_args = [_]llvm.ValueRef{ path_val, mode_str };
         const file_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fopen_fn), fopen_fn, &fopen_args, "fs_write.file");
 
-        // Build Result[void, IoError]
+        // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "fs_write.result");
 
@@ -24033,7 +24033,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "fs_write.val");
     }
 
-    /// Get the LLVM struct type for Result[List[String], IoError]
+    /// Get the LLVM struct type for Result#[List#[String], IoError]
     fn getListStringResultType(self: *Emitter) llvm.TypeRef {
         const io_error_type = self.getIoErrorStructType();
         const list_type = self.getListStructType();
@@ -24045,7 +24045,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Emit fs_read_dir(path: string) -> Result[List[String], IoError]
+    /// Emit fs_read_dir(path: string) -> Result#[List#[String], IoError]
     fn emitFsReadDir(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_read_dir is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
@@ -24055,7 +24055,7 @@ pub const Emitter = struct {
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
-        // Build Result[List[String], IoError]
+        // Build Result#[List#[String], IoError]
         const result_type = self.getListStringResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "readdir.result");
 
@@ -24567,7 +24567,7 @@ pub const Emitter = struct {
         return self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(errno_fn), errno_fn, &[_]llvm.ValueRef{}, "errno.ptr");
     }
 
-    /// Emit BufReader.new[R](reader) -> BufReader[R]
+    /// Emit BufReader.new#[R](reader) -> BufReader#[R]
     fn emitBufReaderNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         if (method.args.len != 1) return EmitError.InvalidAST;
 
@@ -24594,7 +24594,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(br_type, br_alloca, "bufreader.val");
     }
 
-    /// Emit bufreader.read(buf) -> Result[i32, IoError]
+    /// Emit bufreader.read(buf) -> Result#[i32, IoError]
     /// Reads from buffer first, then refills from underlying reader if needed.
     fn emitBufReaderRead(self: *Emitter, br_ptr: llvm.ValueRef, buf_ref: llvm.ValueRef, buf_expr: ast.Expr) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
@@ -24688,7 +24688,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(new_pos, pos_ptr);
         _ = self.builder.buildBr(done_bb);
 
-        // --- Done: return Result[i32, IoError] ---
+        // --- Done: return Result#[i32, IoError] ---
         self.builder.positionAtEnd(done_bb);
         const result_type = self.getI32ResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "br.read.result");
@@ -24702,7 +24702,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "br.read.result_val");
     }
 
-    /// Emit bufreader.read_line() -> Result[String, IoError]
+    /// Emit bufreader.read_line() -> Result#[String, IoError]
     /// Reads until newline or EOF, returning the line including the newline character.
     fn emitBufReaderReadLine(self: *Emitter, br_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
@@ -24838,7 +24838,7 @@ pub const Emitter = struct {
         // String is already null-terminated from initialization or previous appends
         _ = self.builder.buildBr(done_bb);
 
-        // --- Done: build Result[String, IoError] ---
+        // --- Done: build Result#[String, IoError] ---
         self.builder.positionAtEnd(done_bb);
         const result_alloca = self.builder.buildAlloca(result_type, "rl.result");
 
@@ -24951,7 +24951,7 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(end_bb);
     }
 
-    /// Emit bufreader.read_to_string() -> Result[String, IoError]
+    /// Emit bufreader.read_to_string() -> Result#[String, IoError]
     fn emitBufReaderReadToString(self: *Emitter, br_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         // Reuse read_line for now - would need full implementation
         return self.emitBufReaderReadLine(br_ptr);
@@ -25005,7 +25005,7 @@ pub const Emitter = struct {
     // BufWriter Methods
     // ========================================================================
 
-    /// Emit BufWriter.new[W](writer) -> BufWriter[W]
+    /// Emit BufWriter.new#[W](writer) -> BufWriter#[W]
     fn emitBufWriterNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         if (method.args.len != 1) return EmitError.InvalidAST;
 
@@ -25029,7 +25029,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(bw_type, bw_alloca, "bufwriter.val");
     }
 
-    /// Emit bufwriter.write(buf) -> Result[i32, IoError]
+    /// Emit bufwriter.write(buf) -> Result#[i32, IoError]
     fn emitBufWriterWrite(self: *Emitter, bw_ptr: llvm.ValueRef, buf_ref: llvm.ValueRef, buf_expr: ast.Expr) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -25099,7 +25099,7 @@ pub const Emitter = struct {
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &write_args, "bw.direct_write");
         _ = self.builder.buildBr(done_bb);
 
-        // --- Done: return Result[i32, IoError] ---
+        // --- Done: return Result#[i32, IoError] ---
         self.builder.positionAtEnd(done_bb);
         const result_type = self.getI32ResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "bw.write.result");
@@ -25113,7 +25113,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "bw.write.result_val");
     }
 
-    /// Emit bufwriter.write_string(s) -> Result[i32, IoError]
+    /// Emit bufwriter.write_string(s) -> Result#[i32, IoError]
     fn emitBufWriterWriteString(self: *Emitter, bw_ptr: llvm.ValueRef, str_val: llvm.ValueRef) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -25190,7 +25190,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "bw.str.result_val");
     }
 
-    /// Emit bufwriter.flush() -> Result[void, IoError]
+    /// Emit bufwriter.flush() -> Result#[void, IoError]
     fn emitBufWriterFlush(self: *Emitter, bw_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -25221,7 +25221,7 @@ pub const Emitter = struct {
         var fflush_args = [_]llvm.ValueRef{file_handle};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fflush_fn), fflush_fn, &fflush_args, "");
 
-        // Build Result[void, IoError]
+        // Build Result#[void, IoError]
         const result_type = self.getVoidResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "bw.flush.result");
 
@@ -25231,7 +25231,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(result_type, result_alloca, "bw.flush.result_val");
     }
 
-    /// Emit bufwriter.into_inner() -> Result[W, IoError]
+    /// Emit bufwriter.into_inner() -> Result#[W, IoError]
     fn emitBufWriterIntoInner(self: *Emitter, bw_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         // First flush the buffer
         _ = try self.emitBufWriterFlush(bw_ptr);
@@ -25243,7 +25243,7 @@ pub const Emitter = struct {
         const inner_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, bw_type, bw_ptr, 0, "bw.into.inner_ptr");
         const inner_val = self.builder.buildLoad(ptr_type, inner_ptr, "bw.into.inner");
 
-        // Build Result[FILE*, IoError] - always Ok after successful flush
+        // Build Result#[FILE*, IoError] - always Ok after successful flush
         const result_type = self.getFileResultType();
         const result_alloca = self.builder.buildAlloca(result_type, "bw.into.result");
 
@@ -25805,7 +25805,7 @@ pub const Emitter = struct {
         return self.builder.buildICmp(llvm.c.LLVMIntEQ, len, zero, "is_empty");
     }
 
-    /// Emit array.first() - returns Optional[T], Some(first element) or None if empty.
+    /// Emit array.first() - returns Optional#[T], Some(first element) or None if empty.
     fn emitArrayFirst(self: *Emitter, expr: ast.Expr, object: llvm.ValueRef) EmitError!llvm.ValueRef {
         const element_type = self.getArrayElementType(expr) orelse return EmitError.InvalidAST;
         const elem_llvm_type = self.typeToLLVM(element_type);
@@ -25900,7 +25900,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(opt_type, result_ptr, "first_opt");
     }
 
-    /// Emit array.last() - returns Optional[T], Some(last element) or None if empty.
+    /// Emit array.last() - returns Optional#[T], Some(last element) or None if empty.
     fn emitArrayLast(self: *Emitter, expr: ast.Expr, object: llvm.ValueRef) EmitError!llvm.ValueRef {
         const element_type = self.getArrayElementType(expr) orelse return EmitError.InvalidAST;
         const elem_llvm_type = self.typeToLLVM(element_type);
@@ -25993,7 +25993,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(opt_type, result_ptr, "last_opt");
     }
 
-    /// Emit array.get(index) - returns Optional[T], Some(element) if in bounds, None otherwise.
+    /// Emit array.get(index) - returns Optional#[T], Some(element) if in bounds, None otherwise.
     fn emitArrayGet(self: *Emitter, expr: ast.Expr, object: llvm.ValueRef, index: llvm.ValueRef) EmitError!llvm.ValueRef {
         const element_type = self.getArrayElementType(expr) orelse return EmitError.InvalidAST;
         const elem_llvm_type = self.typeToLLVM(element_type);
@@ -27144,7 +27144,7 @@ pub const Emitter = struct {
 
     /// Emit Ok(value) - Result::Ok constructor.
     /// Uses expected_type from context if available (e.g., from type annotation),
-    /// otherwise defaults to Result[T, i32] where T is the value type.
+    /// otherwise defaults to Result#[T, i32] where T is the value type.
     fn emitOkCall(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
         if (args.len != 1) {
             return EmitError.InvalidAST;
@@ -27167,7 +27167,7 @@ pub const Emitter = struct {
 
     /// Emit Err(error) - Result::Err constructor.
     /// Uses expected_type from context if available (e.g., from type annotation),
-    /// otherwise defaults to Result[i32, E] where E is the error type.
+    /// otherwise defaults to Result#[i32, E] where E is the error type.
     fn emitErrCall(self: *Emitter, args: []const ast.Expr) EmitError!llvm.ValueRef {
         if (args.len != 1) {
             return EmitError.InvalidAST;
@@ -27697,7 +27697,7 @@ pub const Emitter = struct {
         return result;
     }
 
-    /// Emit Result.ok() method - converts Result[T, E] to ?T.
+    /// Emit Result.ok() method - converts Result#[T, E] to ?T.
     /// Returns Some(value) if Ok, None if Err.
     fn emitResultOkMethod(self: *Emitter, result_val: llvm.ValueRef, result_type: llvm.TypeRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
@@ -27769,7 +27769,7 @@ pub const Emitter = struct {
         return self.builder.buildLoad(opt_type, opt_alloca, "result.ok.result");
     }
 
-    /// Emit Result.err() method - converts Result[T, E] to ?E.
+    /// Emit Result.err() method - converts Result#[T, E] to ?E.
     /// Returns Some(error) if Err, None if Ok.
     fn emitResultErrMethod(self: *Emitter, result_val: llvm.ValueRef, result_type: llvm.TypeRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
@@ -27842,8 +27842,8 @@ pub const Emitter = struct {
     }
 
     /// Emit Optional.map(f) or Result.map(f) - applies f to inner value.
-    /// For Optional[T].map(f: fn(T) -> U) -> Optional[U]: Some(v) -> Some(f(v)), None -> None
-    /// For Result[T, E].map(f: fn(T) -> U) -> Result[U, E]: Ok(v) -> Ok(f(v)), Err(e) -> Err(e)
+    /// For Optional#[T].map(f: fn(T) -> U) -> Optional#[U]: Some(v) -> Some(f(v)), None -> None
+    /// For Result#[T, E].map(f: fn(T) -> U) -> Result#[U, E]: Ok(v) -> Ok(f(v)), Err(e) -> Err(e)
     fn emitMapMethod(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, func_val: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
@@ -27892,7 +27892,7 @@ pub const Emitter = struct {
         var result_type: llvm.TypeRef = undefined;
 
         if (is_result) {
-            // Result: build Result[U, E] with ok_type = mapped_type, err_type unchanged
+            // Result: build Result#[U, E] with ok_type = mapped_type, err_type unchanged
             const err_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 2);
             var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), mapped_type, err_type };
             result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
@@ -27915,7 +27915,7 @@ pub const Emitter = struct {
 
             some_result = self.builder.buildLoad(result_type, result_alloca, "map.result.ok.val");
         } else {
-            // Optional: build Optional[U]
+            // Optional: build Optional#[U]
             var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), mapped_type };
             result_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
 
@@ -27975,7 +27975,7 @@ pub const Emitter = struct {
     }
 
     /// Emit Result.map_err(f) - applies f to error value.
-    /// For Result[T, E].map_err(f: fn(E) -> F) -> Result[T, F]: Ok(v) -> Ok(v), Err(e) -> Err(f(e))
+    /// For Result#[T, E].map_err(f: fn(E) -> F) -> Result#[T, F]: Ok(v) -> Ok(v), Err(e) -> Err(f(e))
     fn emitMapErrMethod(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, func_val: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
@@ -28029,7 +28029,7 @@ pub const Emitter = struct {
         const mapped_err_val = try self.emitClosureCallWithValue(func_val, err_val, err_type, llvm.Types.int32(self.ctx));
         const mapped_err_type = llvm.c.LLVMTypeOf(mapped_err_val);
 
-        // Build result type: Result[T, F] where T is unchanged, F is the mapped error type
+        // Build result type: Result#[T, F] where T is unchanged, F is the mapped error type
         var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type, mapped_err_type };
         const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
 
@@ -28087,8 +28087,8 @@ pub const Emitter = struct {
     }
 
     /// Emit Optional.and_then(f) or Result.and_then(f) - applies f and flattens.
-    /// For Optional[T].and_then(f: fn(T) -> ?U) -> ?U: Some(v) -> f(v), None -> None
-    /// For Result[T, E].and_then(f: fn(T) -> Result[U, E]) -> Result[U, E]: Ok(v) -> f(v), Err(e) -> Err(e)
+    /// For Optional#[T].and_then(f: fn(T) -> ?U) -> ?U: Some(v) -> f(v), None -> None
+    /// For Result#[T, E].and_then(f: fn(T) -> Result#[U, E]) -> Result#[U, E]: Ok(v) -> f(v), Err(e) -> Err(e)
     fn emitAndThenMethod(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, func_val: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
@@ -28125,17 +28125,17 @@ pub const Emitter = struct {
         _ = self.builder.buildCondBr(tag, some_block, none_block);
 
         // Determine the result type BEFORE branching (for the closure return type)
-        // For and_then, the closure returns Optional[U] or Result[U, E]
+        // For and_then, the closure returns Optional#[U] or Result#[U, E]
         // Since we're in the Some/Ok branch, the result type is the same structure as input
         // but possibly with different inner type U
         var result_type: llvm.TypeRef = undefined;
         if (is_result) {
-            // Result[U, E] - for now assume U is i32 (same as original ok_type)
+            // Result#[U, E] - for now assume U is i32 (same as original ok_type)
             const err_type = llvm.c.LLVMStructGetTypeAtIndex(value_type, 2);
             var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), llvm.Types.int32(self.ctx), err_type };
             result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
         } else {
-            // Optional[U] - for now assume U is i32
+            // Optional#[U] - for now assume U is i32
             var opt_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), llvm.Types.int32(self.ctx) };
             result_type = llvm.Types.struct_(self.ctx, &opt_fields, false);
         }
@@ -28234,7 +28234,7 @@ pub const Emitter = struct {
     }
 
     /// Emit Result.context(msg) - wraps error with context message.
-    /// For Result[T, E].context(msg: string) -> Result[T, ContextError[E]]: Ok(v) -> Ok(v), Err(e) -> Err(ContextError{msg, e})
+    /// For Result#[T, E].context(msg: string) -> Result#[T, ContextError#[E]]: Ok(v) -> Ok(v), Err(e) -> Err(ContextError{msg, e})
     /// In debug mode, captures file:line:column location of the .context() call.
     fn emitContextMethod(self: *Emitter, value: llvm.ValueRef, value_type: llvm.TypeRef, msg_val: llvm.ValueRef, span: ast.Span) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
@@ -28267,7 +28267,7 @@ pub const Emitter = struct {
         };
         const err_ptr = self.builder.buildGEP(value_type, val_alloca, &err_indices, "context.err.ptr");
 
-        // ContextError[E] layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
+        // ContextError#[E] layout: { message: ptr, cause: E, file: ptr, line: i32, column: i32 }
         // In debug mode, file/line/column are populated; in release, file=null, line=0, column=0
         var context_err_fields = [_]llvm.TypeRef{
             llvm.Types.pointer(self.ctx), // message
@@ -28278,7 +28278,7 @@ pub const Emitter = struct {
         };
         const context_err_type = llvm.Types.struct_(self.ctx, &context_err_fields, false);
 
-        // Result[T, ContextError[E]] layout: { tag: i1, ok_value: T, err_value: ContextError[E] }
+        // Result#[T, ContextError#[E]] layout: { tag: i1, ok_value: T, err_value: ContextError#[E] }
         var result_fields = [_]llvm.TypeRef{ llvm.Types.int1(self.ctx), ok_type, context_err_type };
         const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
 
@@ -28734,10 +28734,10 @@ pub const Emitter = struct {
                 // Check if this is Optional (2 fields) or Result (3 fields)
                 const num_fields = llvm.c.LLVMCountStructElementTypes(left_type);
                 if (num_fields == 2) {
-                    // Optional[T] - compare: both None = true, both Some with equal values = true
+                    // Optional#[T] - compare: both None = true, both Some with equal values = true
                     return self.emitOptionalEq(left, right, left_type);
                 } else if (num_fields == 3) {
-                    // Result[T, E] - compare: both Ok with equal values = true, both Err with equal values = true
+                    // Result#[T, E] - compare: both Ok with equal values = true, both Err with equal values = true
                     return self.emitResultEq(left, right, left_type);
                 }
                 // For user-defined structs, we need to call the user-defined eq method
@@ -28880,10 +28880,10 @@ pub const Emitter = struct {
                 // Check if this is Optional (2 fields) or Result (3 fields)
                 const num_fields = llvm.c.LLVMCountStructElementTypes(value_type);
                 if (num_fields == 2) {
-                    // Optional[T] - clone the optional
+                    // Optional#[T] - clone the optional
                     return self.emitOptionalClone(value, value_type);
                 } else if (num_fields == 3) {
-                    // Result[T, E] - clone the result
+                    // Result#[T, E] - clone the result
                     return self.emitResultClone(value, value_type);
                 }
                 // For user-defined structs that implement Clone, we need to call the user-defined clone method
@@ -30136,7 +30136,7 @@ pub const Emitter = struct {
             .extern_function => 8, // raw C function pointer
             .reference => 8, // pointer
             .generic_apply => |g| {
-                // For generic types like List[T], Map[K,V], etc.
+                // For generic types like List#[T], Map#[K,V], etc.
                 if (g.base == .named) {
                     const base_name = g.base.named.name;
                     if (std.mem.eql(u8, base_name, "List")) return 16;

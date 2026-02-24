@@ -4,7 +4,7 @@
 // type casts, closures, block/comptime/unsafe expressions.
 
 import lexer.{Lexer, Token, TokenKind, tag_name}
-import parser.{Parser, new_parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, json_str, json_bool, json_int, get_precedence, binary_op_name, is_right_assoc, can_start_type, is_primitive_type}
+import parser.{Parser, new_parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, json_str, json_bool, json_int, get_precedence, binary_op_name, is_right_assoc}
 import parser_type.{parse_type}
 import parser_stmt.{parse_block}
 
@@ -104,9 +104,14 @@ fn parse_infix(p: Parser, left: string, prec: i32) -> (Parser, string) {
         return parse_call(p, left, "null")
     }
 
-    // Index or type args
+    // Index (array subscript) — '[' is now always indexing
     if k == "l_bracket" {
-        return parse_index_or_type_args(p, left)
+        return parse_index(p, left)
+    }
+
+    // Generic call: expr#[T](...)
+    if k == "hash" {
+        return parse_generic_call(p, left)
     }
 
     // Field access or method call
@@ -136,8 +141,8 @@ fn parse_int_value(text: string) -> string {
     var base: i32 = 10
     var start: i32 = 0
     if text.byte_len() >= 2 {
-        let c0: i32 = text.byte_at(0).as[i32]
-        let c1: i32 = text.byte_at(1).as[i32]
+        let c0: i32 = text.byte_at(0).as#[i32]
+        let c1: i32 = text.byte_at(1).as#[i32]
         if c0 == 48 {
             if c1 == 120 or c1 == 88 { base = 16; start = 2 }
             else if c1 == 98 or c1 == 66 { base = 2; start = 2 }
@@ -150,11 +155,11 @@ fn parse_int_value(text: string) -> string {
         var clean: string = ""
         var i: i32 = 0
         while i < text.byte_len() {
-            let c: i32 = text.byte_at(i).as[i32]
+            let c: i32 = text.byte_at(i).as#[i32]
             if c == 95 { i = i + 1; continue }
             // Stop at type suffix (any letter)
             if (c >= 97 and c <= 122) or (c >= 65 and c <= 90) { break }
-            clean = clean + from_byte(c.as[u8])
+            clean = clean + from_byte(c.as#[u8])
             i = i + 1
         }
         if clean.byte_len() == 0 { return "0" }
@@ -165,7 +170,7 @@ fn parse_int_value(text: string) -> string {
     var result: i64 = 0
     var i: i32 = start
     while i < text.byte_len() {
-        let c: i32 = text.byte_at(i).as[i32]
+        let c: i32 = text.byte_at(i).as#[i32]
         if c == 95 { i = i + 1; continue }
         // Stop at type suffix (letter that's not a hex digit in base 16)
         if c >= 97 and c <= 122 {
@@ -181,7 +186,7 @@ fn parse_int_value(text: string) -> string {
         else if c >= 97 and c <= 102 { digit = c - 97 + 10 }
         else if c >= 65 and c <= 70 { digit = c - 65 + 10 }
         else { break }
-        result = result * base.as[i64] + digit.as[i64]
+        result = result * base.as#[i64] + digit.as#[i64]
         i = i + 1
     }
     return result.to_string().as_str()
@@ -193,11 +198,11 @@ pub fn parse_float_literal(p: Parser) -> (Parser, string) {
     var clean: string = ""
     var i: i32 = 0
     while i < text.byte_len() {
-        let c: i32 = text.byte_at(i).as[i32]
+        let c: i32 = text.byte_at(i).as#[i32]
         if c == 95 { i = i + 1; continue }
         // Stop at 'f' suffix
         if c == 102 and i > 0 { break }
-        clean = clean + from_byte(c.as[u8])
+        clean = clean + from_byte(c.as#[u8])
         i = i + 1
     }
     let p2: Parser = advance(p)
@@ -211,7 +216,7 @@ pub fn parse_string_literal(p: Parser) -> (Parser, string) {
     // Strip outer quotes (handle triple-quoted strings too)
     var content: string = ""
     var quote_len: i32 = 1
-    if raw.byte_len() >= 6 and raw.byte_at(0).as[i32] == 34 and raw.byte_at(1).as[i32] == 34 and raw.byte_at(2).as[i32] == 34 {
+    if raw.byte_len() >= 6 and raw.byte_at(0).as#[i32] == 34 and raw.byte_at(1).as#[i32] == 34 and raw.byte_at(2).as#[i32] == 34 {
         quote_len = 3
     }
     if raw.byte_len() >= quote_len * 2 {
@@ -231,7 +236,7 @@ pub fn parse_string_literal(p: Parser) -> (Parser, string) {
 fn has_unescaped_brace(s: string) -> bool {
     var i: i32 = 0
     while i < s.byte_len() {
-        let c: i32 = s.byte_at(i).as[i32]
+        let c: i32 = s.byte_at(i).as#[i32]
         if c == 92 {
             // Backslash — skip next char
             i = i + 2
@@ -252,20 +257,20 @@ fn parse_interpolated_string_parts(p: Parser, content: string) -> (Parser, strin
     var i: i32 = 0
 
     while i < content.byte_len() {
-        let c: i32 = content.byte_at(i).as[i32]
+        let c: i32 = content.byte_at(i).as#[i32]
 
         // Handle escape sequences
         if c == 92 and i + 1 < content.byte_len() {
-            let next: i32 = content.byte_at(i + 1).as[i32]
+            let next: i32 = content.byte_at(i + 1).as#[i32]
             if next == 123 { text_accum = text_accum + "{"; i = i + 2; continue }
             if next == 125 { text_accum = text_accum + "}"; i = i + 2; continue }
-            if next == 110 { text_accum = text_accum + from_byte(10.as[u8]); i = i + 2; continue }
-            if next == 116 { text_accum = text_accum + from_byte(9.as[u8]); i = i + 2; continue }
-            if next == 114 { text_accum = text_accum + from_byte(13.as[u8]); i = i + 2; continue }
+            if next == 110 { text_accum = text_accum + from_byte(10.as#[u8]); i = i + 2; continue }
+            if next == 116 { text_accum = text_accum + from_byte(9.as#[u8]); i = i + 2; continue }
+            if next == 114 { text_accum = text_accum + from_byte(13.as#[u8]); i = i + 2; continue }
             if next == 92 { text_accum = text_accum + "\\"; i = i + 2; continue }
             if next == 34 { text_accum = text_accum + "\""; i = i + 2; continue }
-            if next == 48 { text_accum = text_accum + from_byte(0.as[u8]); i = i + 2; continue }
-            text_accum = text_accum + from_byte(next.as[u8])
+            if next == 48 { text_accum = text_accum + from_byte(0.as#[u8]); i = i + 2; continue }
+            text_accum = text_accum + from_byte(next.as#[u8])
             i = i + 2
             continue
         }
@@ -284,12 +289,12 @@ fn parse_interpolated_string_parts(p: Parser, content: string) -> (Parser, strin
             var depth: i32 = 1
             let expr_start: i32 = i
             while i < content.byte_len() and depth > 0 {
-                let ec: i32 = content.byte_at(i).as[i32]
+                let ec: i32 = content.byte_at(i).as#[i32]
                 if ec == 34 {
                     // Quote — skip string literal content
                     i = i + 1
                     while i < content.byte_len() {
-                        let sc: i32 = content.byte_at(i).as[i32]
+                        let sc: i32 = content.byte_at(i).as#[i32]
                         if sc == 92 { i = i + 2; continue }  // skip escaped char
                         if sc == 34 { break }  // end of string
                         i = i + 1
@@ -314,7 +319,7 @@ fn parse_interpolated_string_parts(p: Parser, content: string) -> (Parser, strin
         }
 
         // Regular character
-        text_accum = text_accum + from_byte(c.as[u8])
+        text_accum = text_accum + from_byte(c.as#[u8])
         i = i + 1
     }
 
@@ -333,23 +338,23 @@ fn process_string_escapes(s: string) -> string {
     var result: string = ""
     var i: i32 = 0
     while i < s.byte_len() {
-        let c: i32 = s.byte_at(i).as[i32]
+        let c: i32 = s.byte_at(i).as#[i32]
         if c == 92 and i + 1 < s.byte_len() {
-            let next: i32 = s.byte_at(i + 1).as[i32]
-            if next == 110 { result = result + from_byte(10.as[u8]); i = i + 2; continue }
-            if next == 116 { result = result + from_byte(9.as[u8]); i = i + 2; continue }
-            if next == 114 { result = result + from_byte(13.as[u8]); i = i + 2; continue }
+            let next: i32 = s.byte_at(i + 1).as#[i32]
+            if next == 110 { result = result + from_byte(10.as#[u8]); i = i + 2; continue }
+            if next == 116 { result = result + from_byte(9.as#[u8]); i = i + 2; continue }
+            if next == 114 { result = result + from_byte(13.as#[u8]); i = i + 2; continue }
             if next == 92 { result = result + "\\"; i = i + 2; continue }
             if next == 34 { result = result + "\""; i = i + 2; continue }
-            if next == 48 { result = result + from_byte(0.as[u8]); i = i + 2; continue }
+            if next == 48 { result = result + from_byte(0.as#[u8]); i = i + 2; continue }
             if next == 123 { result = result + "{"; i = i + 2; continue }  // \{
             if next == 125 { result = result + "}"; i = i + 2; continue }  // \}
             // Unknown escape — keep as-is
-            result = result + from_byte(next.as[u8])
+            result = result + from_byte(next.as#[u8])
             i = i + 2
             continue
         }
-        result = result + from_byte(c.as[u8])
+        result = result + from_byte(c.as#[u8])
         i = i + 1
     }
     return result
@@ -360,10 +365,10 @@ fn parse_char_literal(p: Parser) -> (Parser, string) {
     // Parse character value as codepoint integer
     var codepoint: i32 = 0
     if raw.byte_len() >= 3 {
-        if raw.byte_at(1).as[i32] == 92 {
+        if raw.byte_at(1).as#[i32] == 92 {
             // Escape sequence
             if raw.byte_len() >= 4 {
-                let esc: i32 = raw.byte_at(2).as[i32]
+                let esc: i32 = raw.byte_at(2).as#[i32]
                 if esc == 110 { codepoint = 10 }      // \n
                 else if esc == 116 { codepoint = 9 }   // \t
                 else if esc == 114 { codepoint = 13 }   // \r
@@ -373,7 +378,7 @@ fn parse_char_literal(p: Parser) -> (Parser, string) {
                 else { codepoint = esc }
             }
         } else {
-            codepoint = raw.byte_at(1).as[i32]
+            codepoint = raw.byte_at(1).as#[i32]
         }
     }
     let p2: Parser = advance(p)
@@ -398,9 +403,10 @@ fn parse_identifier_or_struct(p: Parser) -> (Parser, string) {
 
     let base_type: string = "{\"kind\":\"named\",\"name\":" + json_str(name) + "}"
 
-    // Check for generic type args: Name[T] followed by { or :: or (
-    if tk(p2, "l_bracket") and is_type_args_context(p2) {
-        var p3: Parser = advance(p2) // skip [
+    // Check for generic type args: Name#[T] followed by { or :: or (
+    if tk(p2, "hash") {
+        var p3: Parser = advance(p2) // skip #
+        p3 = consume(p3, "l_bracket", "expected '[' after '#'")
         var type_args: string = ""
         var first: bool = true
         while not tk(p3, "r_bracket") and not tk(p3, "eof") {
@@ -417,23 +423,25 @@ fn parse_identifier_or_struct(p: Parser) -> (Parser, string) {
         let generic_type: string = "{\"kind\":\"generic_apply\",\"base\":" + base_type + ",\"args\":[" + type_args + "]}"
         let ta_json: string = "[" + type_args + "]"
 
-        // Name[T] { ... } — generic struct literal
+        // Name#[T] { ... } — generic struct literal
         if tk(p3, "l_brace") and is_struct_literal_start(p3) {
             return parse_struct_literal(p3, generic_type)
         }
 
-        // Name[T]::Variant — generic enum literal
+        // Name#[T]::Variant — generic enum literal
         if tk(p3, "colon_colon") {
             return parse_enum_literal(p3, generic_type)
         }
 
-        // Name[T](args) — generic function call
+        // Name#[T](args) — generic function call
         if tk(p3, "l_paren") {
             let callee: string = "{\"kind\":\"identifier\",\"name\":" + json_str(name) + "}"
             return parse_call(p3, callee, ta_json)
         }
 
-        // Bare Name[T] — return as call with no args (consistent with existing behavior)
+        // Bare Name#[T] without call or struct/enum literal — emit error but recover
+        let err_result: (Parser, string) = error_and_advance(p3, "expected '(' after type arguments in generic call")
+        p3 = err_result.0
         let callee: string = "{\"kind\":\"identifier\",\"name\":" + json_str(name) + "}"
         return (p3, "{\"kind\":\"call\",\"callee\":" + callee + ",\"args\":[],\"type_args\":" + ta_json + "}")
     }
@@ -677,18 +685,8 @@ fn parse_call(p: Parser, callee: string, type_args: string) -> (Parser, string) 
     return (p2, json)
 }
 
-fn parse_index_or_type_args(p: Parser, left: string) -> (Parser, string) {
-    // [ could be array index or type arguments
-    // Type args: foo[T](...) — type after [ that starts with uppercase or is a known type
-    // Array index: foo[expr]
-    // Heuristic: if content after [ can start a type and is followed by ] then (
-    // try type args first
-
-    if is_type_args_context(p) {
-        return parse_type_args_and_call(p, left)
-    }
-
-    // Array index
+fn parse_index(p: Parser, left: string) -> (Parser, string) {
+    // With #[T] syntax, '[' is ALWAYS array indexing
     var p2: Parser = consume(p, "l_bracket", "expected '['")
     let index_result: (Parser, string) = parse_expression(p2)
     p2 = index_result.0
@@ -697,37 +695,10 @@ fn parse_index_or_type_args(p: Parser, left: string) -> (Parser, string) {
     return (p2, json)
 }
 
-fn is_type_args_context(p: Parser) -> bool {
-    // Lookahead to check if [Type](args) follows
-    // Save lexer state
-    var lex: Lexer = p.lexer
-    // Skip [
-    var tok: Token = lex.next_token()
-    while tag_name(tok.kind) == "newline" { tok = lex.next_token() }
-
-    // Check if first thing after [ looks like a type
-    let k: string = tag_name(tok.kind)
-    if not can_start_type(k) { return false }
-
-    // For identifiers, check if it starts with uppercase (type name convention)
-    if k == "identifier" {
-        if tok.text.byte_len() > 0 {
-            let first_char: i32 = tok.text.byte_at(0).as[i32]
-            // Lowercase names are usually variables, not types
-            // But primitive types (i32, f64, etc.) start with lowercase
-            // Check for known primitive types
-            if first_char >= 97 and first_char <= 122 {
-                if not is_primitive_type(tok.text) {
-                    return false
-                }
-            }
-        }
-    }
-    return true
-}
-
-fn parse_type_args_and_call(p: Parser, left: string) -> (Parser, string) {
-    var p2: Parser = consume(p, "l_bracket", "expected '['")
+fn parse_generic_call(p: Parser, left: string) -> (Parser, string) {
+    // '#' token starts generic type arguments: expr#[T, U](...)
+    var p2: Parser = advance(p) // skip '#'
+    p2 = consume(p2, "l_bracket", "expected '[' after '#'")
     var type_args: string = ""
     var first: bool = true
 
@@ -749,8 +720,9 @@ fn parse_type_args_and_call(p: Parser, left: string) -> (Parser, string) {
         return parse_call(p2, left, ta_json)
     }
 
-    // Type args without call — might be method call context handled elsewhere
-    // For now, treat as a call with no args (error recovery)
+    // Type args without call — emit error but recover
+    let err_result: (Parser, string) = error_and_advance(p2, "expected '(' after type arguments in generic call")
+    p2 = err_result.0
     let json: string = "{\"kind\":\"call\",\"callee\":" + left + ",\"args\":[],\"type_args\":" + ta_json + "}"
     return (p2, json)
 }
@@ -758,7 +730,7 @@ fn parse_type_args_and_call(p: Parser, left: string) -> (Parser, string) {
 fn parse_field_or_method(p: Parser, left: string) -> (Parser, string) {
     var p2: Parser = consume(p, "dot", "expected '.'")
 
-    // Special: .as[T], .to[T], .trunc[T] — type cast
+    // Special: .as#[T], .to#[T], .trunc#[T] — type cast
     if tk(p2, "as") {
         return parse_type_cast(p2, left, false)
     }
@@ -789,10 +761,10 @@ fn parse_field_or_method(p: Parser, left: string) -> (Parser, string) {
         field_name = name_result.1
     }
 
-    // Check for method call: .name[T](args) or .name(args)
-    if tk(p2, "l_bracket") and is_type_args_context(p2) {
-        // Method with type args
-        var p3: Parser = consume(p2, "l_bracket", "expected '['")
+    // Check for method call with generics: .name#[T](args)
+    if tk(p2, "hash") {
+        var p3: Parser = advance(p2) // skip '#'
+        p3 = consume(p3, "l_bracket", "expected '[' after '#'")
         var type_args: string = ""
         var first: bool = true
         while not tk(p3, "r_bracket") and not tk(p3, "eof") {
@@ -839,7 +811,8 @@ fn parse_method_call(p: Parser, obj: string, method: string, type_args: string) 
 
 fn parse_type_cast(p: Parser, expr: string, truncating: bool) -> (Parser, string) {
     var p2: Parser = advance(p) // skip 'as' or 'trunc'
-    p2 = consume(p2, "l_bracket", "expected '['")
+    p2 = consume(p2, "hash", "expected '#' after cast")
+    p2 = consume(p2, "l_bracket", "expected '[' after '#'")
     let type_result: (Parser, string) = parse_type(p2)
     p2 = type_result.0
     p2 = consume(p2, "r_bracket", "expected ']'")
@@ -849,11 +822,12 @@ fn parse_type_cast(p: Parser, expr: string, truncating: bool) -> (Parser, string
 
 fn parse_fallible_conversion(p: Parser, expr: string) -> (Parser, string) {
     var p2: Parser = advance(p) // skip 'to'
-    p2 = consume(p2, "l_bracket", "expected '['")
+    p2 = consume(p2, "hash", "expected '#' after 'to'")
+    p2 = consume(p2, "l_bracket", "expected '[' after '#'")
     let type_result: (Parser, string) = parse_type(p2)
     p2 = type_result.0
     p2 = consume(p2, "r_bracket", "expected ']'")
-    // .to[T] is a fallible conversion (returns Result), distinct from .as[T] (safe widening)
+    // .to#[T] is a fallible conversion (returns Result), distinct from .as#[T] (safe widening)
     let json: string = "{\"kind\":\"type_cast\",\"truncating\":false,\"fallible\":true,\"target_type\":" + type_result.1 + ",\"expr\":" + expr + "}"
     return (p2, json)
 }

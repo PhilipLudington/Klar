@@ -909,8 +909,8 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // Ok(value: T) -> Result[T, E] - Result constructor for success values
-        // For now, use i32 -> Result[i32, i32] as a simple type
+        // Ok(value: T) -> Result#[T, E] - Result constructor for success values
+        // For now, use i32 -> Result#[i32, i32] as a simple type
         // Full generic support would infer T from the argument
         const ok_type = try self.type_builder.functionType(
             &.{self.type_builder.i32Type()},
@@ -924,8 +924,8 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // Err(error: E) -> Result[T, E] - Result constructor for error values
-        // For now, use i32 -> Result[i32, i32] as a simple type
+        // Err(error: E) -> Result#[T, E] - Result constructor for error values
+        // For now, use i32 -> Result#[i32, i32] as a simple type
         const err_type = try self.type_builder.functionType(
             &.{self.type_builder.i32Type()},
             try self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.i32Type()),
@@ -1423,10 +1423,10 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // From trait: trait From[E] { fn from(err: E) -> Self; }
+        // From trait: trait From#[E] { fn from(err: E) -> Self; }
         // Enables automatic error type conversion in the ? operator.
-        // When a function returns Result[T, TargetError] and uses ? on Result[U, SourceError],
-        // the compiler calls TargetError.from(source_error) if impl TargetError: From[SourceError] exists.
+        // When a function returns Result#[T, TargetError] and uses ? on Result#[U, SourceError],
+        // the compiler calls TargetError.from(source_error) if impl TargetError: From#[SourceError] exists.
 
         // Create the trait type first
         const from_trait_type = try self.allocator.create(types.TraitType);
@@ -1486,7 +1486,7 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // Into trait: trait Into[T] { fn into(self) -> T; }
+        // Into trait: trait Into#[T] { fn into(self) -> T; }
         // The inverse of From - converts Self into a target type T.
         // While From constructs Self from another type, Into converts Self to another type.
 
@@ -1549,7 +1549,7 @@ pub const TypeChecker = struct {
         });
 
         // ====================================================================
-        // Write trait: trait Write { fn write(&mut self, buf: &[u8]) -> Result[i32, IoError]; fn flush(&mut self) -> Result[void, IoError]; }
+        // Write trait: trait Write { fn write(inout self, buf: ref [u8]) -> Result#[i32, IoError]; fn flush(inout self) -> Result#[void, IoError]; }
         // ====================================================================
 
         // Create the trait type first
@@ -1571,13 +1571,13 @@ pub const TypeChecker = struct {
         const u8_slice = try self.type_builder.sliceType(u8_type);
         const u8_slice_ref = try self.type_builder.referenceType(u8_slice, false);
 
-        // Create Result[i32, IoError] return type for write
+        // Create Result#[i32, IoError] return type for write
         const write_result_type = try self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType());
 
-        // Create Result[void, IoError] return type for flush
+        // Create Result#[void, IoError] return type for flush
         const flush_result_type = try self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType());
 
-        // Create write(&mut self, buf: &[u8]) -> Result[i32, IoError]
+        // Create write(inout self, buf: ref [u8]) -> Result#[i32, IoError]
         const write_func = try self.type_builder.functionType(&.{ write_self_mut_ref, u8_slice_ref }, write_result_type);
         const write_method = types.TraitMethod{
             .name = "write",
@@ -1585,7 +1585,7 @@ pub const TypeChecker = struct {
             .has_default = false,
         };
 
-        // Create flush(&mut self) -> Result[void, IoError]
+        // Create flush(inout self) -> Result#[void, IoError]
         const flush_func = try self.type_builder.functionType(&.{write_self_mut_ref}, flush_result_type);
         const flush_method = types.TraitMethod{
             .name = "flush",
@@ -1621,7 +1621,7 @@ pub const TypeChecker = struct {
         });
 
         // ====================================================================
-        // Read trait: trait Read { fn read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]; }
+        // Read trait: trait Read { fn read(inout self, buf: inout [u8]) -> Result#[i32, IoError]; }
         // ====================================================================
 
         // Create the trait type first
@@ -1641,7 +1641,7 @@ pub const TypeChecker = struct {
         // Create &mut [u8] type for buffer parameter (mutable reference for reading into)
         const u8_slice_mut_ref = try self.type_builder.referenceType(u8_slice, true);
 
-        // Create read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]
+        // Create read(inout self, buf: inout [u8]) -> Result#[i32, IoError]
         const read_func = try self.type_builder.functionType(&.{ read_self_mut_ref, u8_slice_mut_ref }, write_result_type);
         const read_method = types.TraitMethod{
             .name = "read",
@@ -1798,7 +1798,7 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // fs_create_dir(path: string) -> Result[void, IoError]
+        // fs_create_dir(path: string) -> Result#[void, IoError]
         const fs_create_dir_ret = try self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType());
         const fs_create_dir_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_create_dir_ret);
         try self.current_scope.define(.{
@@ -1809,7 +1809,7 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // fs_create_dir_all(path: string) -> Result[void, IoError]
+        // fs_create_dir_all(path: string) -> Result#[void, IoError]
         const fs_create_dir_all_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_create_dir_ret);
         try self.current_scope.define(.{
             .name = "fs_create_dir_all",
@@ -1819,7 +1819,7 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // fs_remove_file(path: string) -> Result[void, IoError]
+        // fs_remove_file(path: string) -> Result#[void, IoError]
         const fs_remove_file_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_create_dir_ret);
         try self.current_scope.define(.{
             .name = "fs_remove_file",
@@ -1829,7 +1829,7 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // fs_remove_dir(path: string) -> Result[void, IoError]
+        // fs_remove_dir(path: string) -> Result#[void, IoError]
         const fs_remove_dir_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_create_dir_ret);
         try self.current_scope.define(.{
             .name = "fs_remove_dir",
@@ -1839,7 +1839,7 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // fs_read_string(path: string) -> Result[String, IoError]
+        // fs_read_string(path: string) -> Result#[String, IoError]
         const string_type = try self.type_builder.stringDataType();
         const fs_read_string_ret = try self.type_builder.resultType(string_type, self.type_builder.ioErrorType());
         const fs_read_string_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_read_string_ret);
@@ -1851,7 +1851,7 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // fs_write_string(path: string, content: string) -> Result[void, IoError]
+        // fs_write_string(path: string, content: string) -> Result#[void, IoError]
         const fs_write_string_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.stringType() }, fs_create_dir_ret);
         try self.current_scope.define(.{
             .name = "fs_write_string",
@@ -1861,7 +1861,7 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
-        // fs_read_dir(path: string) -> Result[List[String], IoError]
+        // fs_read_dir(path: string) -> Result#[List#[String], IoError]
         const list_string_type = try self.type_builder.listType(string_type);
         const fs_read_dir_ret = try self.type_builder.resultType(list_string_type, self.type_builder.ioErrorType());
         const fs_read_dir_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_read_dir_ret);
@@ -3084,7 +3084,7 @@ pub const TypeChecker = struct {
     // The functions below are called by checkCallImpl and must stay here.
 
     /// Special type checking for Ok/Err constructors that infers Result type from context.
-    /// This enables Result[T, E] to work with any types, not just i32.
+    /// This enables Result#[T, E] to work with any types, not just i32.
     fn checkOkErrCall(self: *TypeChecker, call: *ast.Call, is_ok: bool) Type {
         // Require exactly 1 argument
         if (call.args.len != 1) {
@@ -3116,7 +3116,7 @@ pub const TypeChecker = struct {
             }
         }
 
-        // No expected type context - infer Result[arg_type, i32] for Ok, Result[i32, arg_type] for Err
+        // No expected type context - infer Result#[arg_type, i32] for Ok, Result#[i32, arg_type] for Err
         const i32_type = self.type_builder.i32Type();
         if (is_ok) {
             return self.type_builder.resultType(arg_type, i32_type) catch self.type_builder.unknownType();
@@ -3231,7 +3231,7 @@ pub const TypeChecker = struct {
                 const arg_type = self.checkExpr(call.args[0]);
                 if (arg_type != .result) {
                     const arg_str = types.typeToString(self.allocator, arg_type) catch "unknown";
-                    self.addError(.type_mismatch, call.args[0].span(), "{s} expects Result[T, E], got {s}", .{ func_name, arg_str });
+                    self.addError(.type_mismatch, call.args[0].span(), "{s} expects Result#[T, E], got {s}", .{ func_name, arg_str });
                 }
                 return self.type_builder.voidType();
             }
@@ -3245,7 +3245,7 @@ pub const TypeChecker = struct {
                 const arg_type = self.checkExpr(call.args[0]);
                 if (arg_type != .optional) {
                     const arg_str = types.typeToString(self.allocator, arg_type) catch "unknown";
-                    self.addError(.type_mismatch, call.args[0].span(), "{s} expects Optional[T], got {s}", .{ func_name, arg_str });
+                    self.addError(.type_mismatch, call.args[0].span(), "{s} expects ?T (optional), got {s}", .{ func_name, arg_str });
                 }
                 return self.type_builder.voidType();
             }
@@ -3264,7 +3264,7 @@ pub const TypeChecker = struct {
 
             // FFI Pointer Functions
 
-            // is_null[T](ptr: COptPtr[T]) -> bool - SAFE, no unsafe required
+            // is_null#[T](ptr: COptPtr#[T]) -> bool - SAFE, no unsafe required
             if (std.mem.eql(u8, func_name, "is_null")) {
                 if (call.args.len != 1) {
                     self.addError(.invalid_call, call.span, "is_null requires exactly 1 argument", .{});
@@ -3272,12 +3272,12 @@ pub const TypeChecker = struct {
                 }
                 const arg_type = self.checkExpr(call.args[0]);
                 if (arg_type != .copt_ptr) {
-                    self.addError(.type_mismatch, call.args[0].span(), "is_null expects COptPtr[T], got {s}", .{types.typeToString(self.allocator, arg_type) catch "unknown"});
+                    self.addError(.type_mismatch, call.args[0].span(), "is_null expects COptPtr#[T], got {s}", .{types.typeToString(self.allocator, arg_type) catch "unknown"});
                 }
                 return self.type_builder.boolType();
             }
 
-            // unwrap_ptr[T](ptr: COptPtr[T]) -> CPtr[T] - UNSAFE
+            // unwrap_ptr#[T](ptr: COptPtr#[T]) -> CPtr#[T] - UNSAFE
             if (std.mem.eql(u8, func_name, "unwrap_ptr")) {
                 if (call.args.len != 1) {
                     self.addError(.invalid_call, call.span, "unwrap_ptr requires exactly 1 argument", .{});
@@ -3288,14 +3288,14 @@ pub const TypeChecker = struct {
                 }
                 const arg_type = self.checkExpr(call.args[0]);
                 if (arg_type == .copt_ptr) {
-                    // Return CPtr[T] where T is the inner type of COptPtr[T]
+                    // Return CPtr#[T] where T is the inner type of COptPtr#[T]
                     return self.type_builder.cptrType(arg_type.copt_ptr.inner) catch self.type_builder.unknownType();
                 }
-                self.addError(.type_mismatch, call.args[0].span(), "unwrap_ptr expects COptPtr[T]", .{});
+                self.addError(.type_mismatch, call.args[0].span(), "unwrap_ptr expects COptPtr#[T]", .{});
                 return self.type_builder.unknownType();
             }
 
-            // offset[T](ptr: CPtr[T], count: isize) -> CPtr[T] - UNSAFE
+            // offset#[T](ptr: CPtr#[T], count: isize) -> CPtr#[T] - UNSAFE
             if (std.mem.eql(u8, func_name, "offset")) {
                 if (call.args.len != 2) {
                     self.addError(.invalid_call, call.span, "offset requires exactly 2 arguments (ptr, count)", .{});
@@ -3307,17 +3307,17 @@ pub const TypeChecker = struct {
                 const ptr_type = self.checkExpr(call.args[0]);
                 const count_type = self.checkExpr(call.args[1]);
                 if (ptr_type != .cptr) {
-                    self.addError(.type_mismatch, call.args[0].span(), "offset expects CPtr[T] as first argument", .{});
+                    self.addError(.type_mismatch, call.args[0].span(), "offset expects CPtr#[T] as first argument", .{});
                     return self.type_builder.unknownType();
                 }
                 // count should be isize
                 if (count_type != .primitive or count_type.primitive != .isize_) {
                     self.addError(.type_mismatch, call.args[1].span(), "offset expects isize as second argument", .{});
                 }
-                return ptr_type; // Returns same CPtr[T]
+                return ptr_type; // Returns same CPtr#[T]
             }
 
-            // read[T](ptr: CPtr[T]) -> T - UNSAFE
+            // read#[T](ptr: CPtr#[T]) -> T - UNSAFE
             if (std.mem.eql(u8, func_name, "read")) {
                 if (call.args.len != 1) {
                     self.addError(.invalid_call, call.span, "read requires exactly 1 argument", .{});
@@ -3328,14 +3328,14 @@ pub const TypeChecker = struct {
                 }
                 const ptr_type = self.checkExpr(call.args[0]);
                 if (ptr_type == .cptr) {
-                    // Return T, the inner type of CPtr[T]
+                    // Return T, the inner type of CPtr#[T]
                     return ptr_type.cptr.inner;
                 }
-                self.addError(.type_mismatch, call.args[0].span(), "read expects CPtr[T]", .{});
+                self.addError(.type_mismatch, call.args[0].span(), "read expects CPtr#[T]", .{});
                 return self.type_builder.unknownType();
             }
 
-            // write[T](ptr: CPtr[T], value: T) -> void - UNSAFE
+            // write#[T](ptr: CPtr#[T], value: T) -> void - UNSAFE
             if (std.mem.eql(u8, func_name, "write")) {
                 if (call.args.len != 2) {
                     self.addError(.invalid_call, call.span, "write requires exactly 2 arguments (ptr, value)", .{});
@@ -3347,19 +3347,19 @@ pub const TypeChecker = struct {
                 const ptr_type = self.checkExpr(call.args[0]);
                 const value_type = self.checkExpr(call.args[1]);
                 if (ptr_type == .cptr) {
-                    // Value type must match the inner type of CPtr[T]
+                    // Value type must match the inner type of CPtr#[T]
                     if (!ptr_type.cptr.inner.eql(value_type)) {
                         const expected_str = types.typeToString(self.allocator, ptr_type.cptr.inner) catch "unknown";
                         const got_str = types.typeToString(self.allocator, value_type) catch "unknown";
                         self.addError(.type_mismatch, call.args[1].span(), "write: expected {s}, got {s}", .{ expected_str, got_str });
                     }
                 } else {
-                    self.addError(.type_mismatch, call.args[0].span(), "write expects CPtr[T] as first argument", .{});
+                    self.addError(.type_mismatch, call.args[0].span(), "write expects CPtr#[T] as first argument", .{});
                 }
                 return self.type_builder.voidType();
             }
 
-            // ref_to_ptr[T](value: ref T) -> CPtr[T] - UNSAFE
+            // ref_to_ptr#[T](value: ref T) -> CPtr#[T] - UNSAFE
             if (std.mem.eql(u8, func_name, "ref_to_ptr")) {
                 if (call.args.len != 1) {
                     self.addError(.invalid_call, call.span, "ref_to_ptr requires exactly 1 argument", .{});
@@ -3370,14 +3370,14 @@ pub const TypeChecker = struct {
                 }
                 const arg_type = self.checkExpr(call.args[0]);
                 if (arg_type == .reference) {
-                    // Return CPtr[T] where T is the inner type of ref T
+                    // Return CPtr#[T] where T is the inner type of ref T
                     return self.type_builder.cptrType(arg_type.reference.inner) catch self.type_builder.unknownType();
                 }
                 self.addError(.type_mismatch, call.args[0].span(), "ref_to_ptr expects a reference type", .{});
                 return self.type_builder.unknownType();
             }
 
-            // ptr_cast[U](ptr: CPtr[T]) -> CPtr[U] - UNSAFE
+            // ptr_cast#[U](ptr: CPtr#[T]) -> CPtr#[U] - UNSAFE
             // Cast between pointer types. Requires explicit type argument.
             if (std.mem.eql(u8, func_name, "ptr_cast")) {
                 if (call.args.len != 1) {
@@ -3390,15 +3390,15 @@ pub const TypeChecker = struct {
 
                 // Require explicit type argument: ptr_cast[TargetType](ptr)
                 if (call.type_args == null or call.type_args.?.len != 1) {
-                    self.addError(.invalid_call, call.span, "ptr_cast requires exactly 1 type argument: ptr_cast[TargetType](ptr)", .{});
+                    self.addError(.invalid_call, call.span, "ptr_cast requires exactly 1 type argument: ptr_cast#[TargetType](ptr)", .{});
                     return self.type_builder.unknownType();
                 }
 
                 const arg_type = self.checkExpr(call.args[0]);
 
-                // Argument must be CPtr[T] or COptPtr[T]
+                // Argument must be CPtr#[T] or COptPtr#[T]
                 if (arg_type != .cptr and arg_type != .copt_ptr) {
-                    self.addError(.type_mismatch, call.args[0].span(), "ptr_cast expects CPtr[T] or COptPtr[T]", .{});
+                    self.addError(.type_mismatch, call.args[0].span(), "ptr_cast expects CPtr#[T] or COptPtr#[T]", .{});
                     return self.type_builder.unknownType();
                 }
 
@@ -4152,7 +4152,7 @@ pub const TypeChecker = struct {
         return type_utils.isTypeCompatible(self, target, value);
     }
 
-    /// Returns the inner type if `t` is Future[T], otherwise null.
+    /// Returns the inner type if `t` is Future#[T], otherwise null.
     pub fn futureInnerType(self: *TypeChecker, t: Type) ?Type {
         _ = self;
         if (t != .applied) return null;
@@ -4163,7 +4163,7 @@ pub const TypeChecker = struct {
         return applied.args[0];
     }
 
-    /// Parses async return type annotation and returns the inner T for Future[T].
+    /// Parses async return type annotation and returns the inner T for Future#[T].
     pub fn asyncReturnInnerTypeExpr(self: *TypeChecker, return_type_expr: ast.TypeExpr) ?ast.TypeExpr {
         _ = self;
         if (return_type_expr != .generic_apply) return null;
@@ -4498,16 +4498,16 @@ pub const TypeChecker = struct {
                     if (f.is_async) {
                         if (f.return_type) |rt| {
                             if (self.asyncReturnInnerTypeExpr(rt) == null) {
-                                self.addError(.invalid_operation, rt.span(), "async function return type must be Future[T]", .{});
+                                self.addError(.invalid_operation, rt.span(), "async function return type must be Future#[T]", .{});
                                 return_type = self.type_builder.unknownType();
                             }
                         } else {
-                            self.addError(.invalid_operation, f.span, "async function return type must be Future[T]", .{});
+                            self.addError(.invalid_operation, f.span, "async function return type must be Future#[T]", .{});
                             return_type = self.type_builder.unknownType();
                         }
                     } else if (self.futureInnerType(return_type) != null) {
                         const error_span = if (f.return_type) |rt| rt.span() else f.span;
-                        self.addError(.invalid_operation, error_span, "non-async function return type cannot be Future[T]; declare function as async", .{});
+                        self.addError(.invalid_operation, error_span, "non-async function return type cannot be Future#[T]; declare function as async", .{});
                         return_type = self.type_builder.unknownType();
                     }
 
@@ -4741,16 +4741,16 @@ pub const TypeChecker = struct {
                     if (f.is_async) {
                         if (f.return_type) |rt| {
                             if (self.asyncReturnInnerTypeExpr(rt) == null) {
-                                self.addError(.invalid_operation, rt.span(), "async function return type must be Future[T]", .{});
+                                self.addError(.invalid_operation, rt.span(), "async function return type must be Future#[T]", .{});
                                 return_type = self.type_builder.unknownType();
                             }
                         } else {
-                            self.addError(.invalid_operation, f.span, "async function return type must be Future[T]", .{});
+                            self.addError(.invalid_operation, f.span, "async function return type must be Future#[T]", .{});
                             return_type = self.type_builder.unknownType();
                         }
                     } else if (self.futureInnerType(return_type) != null) {
                         const error_span = if (f.return_type) |rt| rt.span() else f.span;
-                        self.addError(.invalid_operation, error_span, "non-async function return type cannot be Future[T]; declare function as async", .{});
+                        self.addError(.invalid_operation, error_span, "non-async function return type cannot be Future#[T]; declare function as async", .{});
                         return_type = self.type_builder.unknownType();
                     }
 
@@ -5090,7 +5090,7 @@ test "extractScopeAtOffset prefers innermost shadowed binding" {
 test "await validates operand is async call" {
     const testing = std.testing;
     const source =
-        \\async fn task() -> Future[i32] {
+        \\async fn task() -> Future#[i32] {
         \\    let value: i32 = 1
         \\    return await value
         \\}
@@ -5104,17 +5104,17 @@ test "await validates operand is async call" {
     checker.checkModule(parsed.module);
 
     try testing.expect(checker.hasErrors());
-    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be Future[T]"));
+    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be Future#[T]"));
 }
 
 test "await on async call type-checks successfully" {
     const testing = std.testing;
     const source =
-        \\async fn fetch() -> Future[i32] {
+        \\async fn fetch() -> Future#[i32] {
         \\    return 1
         \\}
         \\
-        \\async fn worker() -> Future[i32] {
+        \\async fn worker() -> Future#[i32] {
         \\    return await fetch()
         \\}
     ;
@@ -5132,11 +5132,11 @@ test "await on async call type-checks successfully" {
 test "await uses symbol kind, not just function name" {
     const testing = std.testing;
     const source =
-        \\async fn fetch() -> Future[i32] {
+        \\async fn fetch() -> Future#[i32] {
         \\    return 1
         \\}
         \\
-        \\async fn worker() -> Future[i32] {
+        \\async fn worker() -> Future#[i32] {
         \\    let fetch: i32 = 7
         \\    return await fetch()
         \\}
@@ -5150,18 +5150,18 @@ test "await uses symbol kind, not just function name" {
     checker.checkModule(parsed.module);
 
     try testing.expect(checker.hasErrors());
-    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be Future[T]"));
+    try testing.expect(hasErrorMessage(checker.errors.items, "'await' operand must be Future#[T]"));
 }
 
 test "await accepts future-typed local values" {
     const testing = std.testing;
     const source =
-        \\async fn fetch() -> Future[i32] {
+        \\async fn fetch() -> Future#[i32] {
         \\    return 1
         \\}
         \\
-        \\async fn worker() -> Future[i32] {
-        \\    let pending: Future[i32] = fetch()
+        \\async fn worker() -> Future#[i32] {
+        \\    let pending: Future#[i32] = fetch()
         \\    return await pending
         \\}
     ;

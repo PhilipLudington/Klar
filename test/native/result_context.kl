@@ -1,19 +1,19 @@
 // Test file for Result.context() and ContextError methods
 
 // Helper function that returns an error
-fn fail_with_error(msg: string) -> Result[i32, string] {
+fn fail_with_error(msg: string) -> Result#[i32, string] {
     return Err(msg)
 }
 
 // Helper function that succeeds
-fn succeed_with_value(val: i32) -> Result[i32, string] {
+fn succeed_with_value(val: i32) -> Result#[i32, string] {
     return Ok(val)
 }
 
 // Test basic context wrapping on Err
 fn test_context_on_err() -> void {
-    let result: Result[i32, string] = Err("original error")
-    let with_context: Result[i32, ContextError[string]] = result.context("failed to process")
+    let result: Result#[i32, string] = Err("original error")
+    let with_context: Result#[i32, ContextError#[string]] = result.context("failed to process")
 
     // Should still be an error
     if with_context.is_ok() {
@@ -22,7 +22,7 @@ fn test_context_on_err() -> void {
     }
 
     // Extract the context error
-    let ctx_err: ContextError[string] = with_context.unwrap_err()
+    let ctx_err: ContextError#[string] = with_context.unwrap_err()
 
     // Check message
     let msg: string = ctx_err.message()
@@ -43,8 +43,8 @@ fn test_context_on_err() -> void {
 
 // Test context wrapping on Ok (should preserve Ok)
 fn test_context_on_ok() -> void {
-    let result: Result[i32, string] = Ok(42)
-    let with_context: Result[i32, ContextError[string]] = result.context("should not matter")
+    let result: Result#[i32, string] = Ok(42)
+    let with_context: Result#[i32, ContextError#[string]] = result.context("should not matter")
 
     // Should still be Ok
     if with_context.is_err() {
@@ -64,23 +64,23 @@ fn test_context_on_ok() -> void {
 
 // Test chained context
 fn test_chained_context() -> void {
-    let result: Result[i32, string] = Err("root cause")
-    let first: Result[i32, ContextError[string]] = result.context("first context")
-    let second: Result[i32, ContextError[ContextError[string]]] = first.context("second context")
+    let result: Result#[i32, string] = Err("root cause")
+    let first: Result#[i32, ContextError#[string]] = result.context("first context")
+    let second: Result#[i32, ContextError#[ContextError#[string]]] = first.context("second context")
 
     if second.is_ok() {
         print("FAIL: should be Err")
         return
     }
 
-    let outer: ContextError[ContextError[string]] = second.unwrap_err()
+    let outer: ContextError#[ContextError#[string]] = second.unwrap_err()
     let outer_msg: string = outer.message()
     if outer_msg != "second context" {
         print("FAIL: outer message mismatch")
         return
     }
 
-    let inner: ContextError[string] = outer.cause()
+    let inner: ContextError#[string] = outer.cause()
     let inner_msg: string = inner.message()
     if inner_msg != "first context" {
         print("FAIL: inner message mismatch")
@@ -98,15 +98,15 @@ fn test_chained_context() -> void {
 
 // Test with integer error type
 fn test_integer_error() -> void {
-    let result: Result[string, i32] = Err(404)
-    let with_context: Result[string, ContextError[i32]] = result.context("not found")
+    let result: Result#[string, i32] = Err(404)
+    let with_context: Result#[string, ContextError#[i32]] = result.context("not found")
 
     if with_context.is_ok() {
         print("FAIL: should be Err")
         return
     }
 
-    let ctx_err: ContextError[i32] = with_context.unwrap_err()
+    let ctx_err: ContextError#[i32] = with_context.unwrap_err()
     let msg: string = ctx_err.message()
     if msg != "not found" {
         print("FAIL: message mismatch")

@@ -373,7 +373,7 @@ pub const Formatter = struct {
 
         // Type parameters
         if (func.type_params.len > 0) {
-            try self.writeByte('[');
+            try self.write("#[");
             for (func.type_params, 0..) |tp, i| {
                 if (i > 0) try self.write(", ");
                 try self.write(tp.name);
@@ -451,7 +451,7 @@ pub const Formatter = struct {
 
         // Type parameters
         if (s.type_params.len > 0) {
-            try self.writeByte('[');
+            try self.write("#[");
             for (s.type_params, 0..) |tp, i| {
                 if (i > 0) try self.write(", ");
                 try self.write(tp.name);
@@ -503,7 +503,7 @@ pub const Formatter = struct {
 
         // Type parameters
         if (e.type_params.len > 0) {
-            try self.writeByte('[');
+            try self.write("#[");
             for (e.type_params, 0..) |tp, i| {
                 if (i > 0) try self.write(", ");
                 try self.write(tp.name);
@@ -588,7 +588,7 @@ pub const Formatter = struct {
 
         // Type parameters
         if (t.type_params.len > 0) {
-            try self.writeByte('[');
+            try self.write("#[");
             for (t.type_params, 0..) |tp, i| {
                 if (i > 0) try self.write(", ");
                 try self.write(tp.name);
@@ -667,7 +667,7 @@ pub const Formatter = struct {
 
         // Type parameters
         if (imp.type_params.len > 0) {
-            try self.writeByte('[');
+            try self.write("#[");
             for (imp.type_params, 0..) |tp, i| {
                 if (i > 0) try self.write(", ");
                 try self.write(tp.name);
@@ -750,7 +750,7 @@ pub const Formatter = struct {
         try self.write(ta.name);
 
         if (ta.type_params.len > 0) {
-            try self.writeByte('[');
+            try self.write("#[");
             for (ta.type_params, 0..) |tp, i| {
                 if (i > 0) try self.write(", ");
                 try self.write(tp.name);
@@ -1180,7 +1180,7 @@ pub const Formatter = struct {
     fn formatCall(self: *Formatter, c: *const ast.Call) Error!void {
         try self.formatExpr(c.callee);
         if (c.type_args) |type_args| {
-            try self.writeByte('[');
+            try self.write("#[");
             for (type_args, 0..) |ta, i| {
                 if (i > 0) try self.write(", ");
                 try self.formatTypeExpr(ta);
@@ -1213,7 +1213,7 @@ pub const Formatter = struct {
         try self.writeByte('.');
         try self.write(mc.method_name);
         if (mc.type_args) |type_args| {
-            try self.writeByte('[');
+            try self.write("#[");
             for (type_args, 0..) |ta, i| {
                 if (i > 0) try self.write(", ");
                 try self.formatTypeExpr(ta);
@@ -1338,9 +1338,9 @@ pub const Formatter = struct {
     fn formatTypeCast(self: *Formatter, tc: *const ast.TypeCast) Error!void {
         try self.formatExpr(tc.expr);
         if (tc.truncating) {
-            try self.write(".trunc[");
+            try self.write(".trunc#[");
         } else {
-            try self.write(".as[");
+            try self.write(".as#[");
         }
         try self.formatTypeExpr(tc.target_type);
         try self.writeByte(']');
@@ -1507,7 +1507,7 @@ pub const Formatter = struct {
                 try self.formatTypeExpr(o.inner);
             },
             .result => |r| {
-                try self.write("Result[");
+                try self.write("Result#[");
                 try self.formatTypeExpr(r.ok_type);
                 try self.write(", ");
                 try self.formatTypeExpr(r.err_type);
@@ -1541,7 +1541,7 @@ pub const Formatter = struct {
             },
             .generic_apply => |g| {
                 try self.formatTypeExpr(g.base);
-                try self.writeByte('[');
+                try self.write("#[");
                 for (g.args, 0..) |arg, i| {
                     if (i > 0) try self.write(", ");
                     try self.formatTypeExpr(arg);

@@ -17,7 +17,7 @@ impl Buffer: Writer {
 }
 
 // Generic function that uses a Writer bound with inout parameter
-fn write_to[W: Writer](writer: inout W, data: i32) -> i32 {
+fn write_to#[W: Writer](writer: inout W, data: i32) -> i32 {
     return writer.write(data)
 }
 

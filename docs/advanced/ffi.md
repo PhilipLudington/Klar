@@ -99,8 +99,8 @@ extern {
     fn getpid() -> i32
 
     // Function with pointer parameters
-    fn malloc(size: usize) -> COptPtr[void]
-    fn free(ptr: CPtr[void]) -> void
+    fn malloc(size: usize) -> COptPtr#[void]
+    fn free(ptr: CPtr#[void]) -> void
 
     // Variadic function (like printf)
     fn printf(format: CStr, ...) -> i32
@@ -114,7 +114,7 @@ The `out` modifier indicates a parameter that will be written by the C function:
 ```klar
 extern {
     // The result parameter is written by the function
-    fn get_result(out result: CPtr[i32]) -> i32
+    fn get_result(out result: CPtr#[i32]) -> i32
 }
 ```
 
@@ -122,12 +122,12 @@ extern {
 
 Klar provides three pointer types for FFI:
 
-### CPtr[T] - Non-null Pointer
+### CPtr#[T] - Non-null Pointer
 
 A pointer that is guaranteed to be non-null:
 
 ```klar
-let ptr: CPtr[i32] = ...
+let ptr: CPtr#[i32] = ...
 
 unsafe {
     // Read value at pointer
@@ -137,16 +137,16 @@ unsafe {
     write(ptr, 42)
 
     // Pointer arithmetic
-    let next: CPtr[i32] = offset(ptr, 1)
+    let next: CPtr#[i32] = offset(ptr, 1)
 }
 ```
 
-### COptPtr[T] - Nullable Pointer
+### COptPtr#[T] - Nullable Pointer
 
 A pointer that may be null (like C pointers):
 
 ```klar
-let ptr: COptPtr[i32] = ...
+let ptr: COptPtr#[i32] = ...
 
 // Safe null check (no unsafe needed)
 if is_null(ptr) {
@@ -154,7 +154,7 @@ if is_null(ptr) {
 } else {
     unsafe {
         // Unwrap to non-null pointer
-        let non_null: CPtr[i32] = unwrap_ptr(ptr)
+        let non_null: CPtr#[i32] = unwrap_ptr(ptr)
     }
 }
 ```
@@ -184,12 +184,12 @@ fn main() -> i32 {
 
 | Function | Signature | Unsafe | Description |
 |----------|-----------|--------|-------------|
-| `is_null` | `fn[T](COptPtr[T]) -> bool` | No | Check if pointer is null |
-| `unwrap_ptr` | `fn[T](COptPtr[T]) -> CPtr[T]` | Yes | Convert nullable to non-null |
-| `offset` | `fn[T](CPtr[T], isize) -> CPtr[T]` | Yes | Pointer arithmetic |
-| `read` | `fn[T](CPtr[T]) -> T` | Yes | Dereference pointer |
-| `write` | `fn[T](CPtr[T], T) -> void` | Yes | Write through pointer |
-| `ref_to_ptr` | `fn[T](ref T) -> CPtr[T]` | Yes | Get pointer to reference |
+| `is_null` | `fn#[T](COptPtr#[T]) -> bool` | No | Check if pointer is null |
+| `unwrap_ptr` | `fn#[T](COptPtr#[T]) -> CPtr#[T]` | Yes | Convert nullable to non-null |
+| `offset` | `fn#[T](CPtr#[T], isize) -> CPtr#[T]` | Yes | Pointer arithmetic |
+| `read` | `fn#[T](CPtr#[T]) -> T` | Yes | Dereference pointer |
+| `write` | `fn#[T](CPtr#[T], T) -> void` | Yes | Write through pointer |
+| `ref_to_ptr` | `fn#[T](ref T) -> CPtr#[T]` | Yes | Get pointer to reference |
 
 ## External Types
 
@@ -209,13 +209,13 @@ Usage:
 extern type FILE
 
 extern {
-    fn fopen(path: CStr, mode: CStr) -> COptPtr[FILE]
-    fn fclose(file: CPtr[FILE]) -> i32
+    fn fopen(path: CStr, mode: CStr) -> COptPtr#[FILE]
+    fn fclose(file: CPtr#[FILE]) -> i32
 }
 
 fn main() -> i32 {
     unsafe {
-        let file: COptPtr[FILE] = fopen("/tmp/test.txt".as_cstr(), "w".as_cstr())
+        let file: COptPtr#[FILE] = fopen("/tmp/test.txt".as_cstr(), "w".as_cstr())
         if not is_null(file) {
             fclose(unwrap_ptr(file))
         }
@@ -291,12 +291,12 @@ unsafe {
 
 ```klar
 extern {
-    fn getenv(name: CStr) -> COptPtr[i8]
+    fn getenv(name: CStr) -> COptPtr#[i8]
 }
 
 fn get_home() -> ?String {
     unsafe {
-        let ptr: COptPtr[i8] = getenv("HOME".as_cstr())
+        let ptr: COptPtr#[i8] = getenv("HOME".as_cstr())
         if is_null(ptr) {
             return None
         }
@@ -315,7 +315,7 @@ fn get_home() -> ?String {
 | `to_cstr` | `fn(ref self) -> CStrOwned` | No | Copy to owned C string |
 | `to_string` | `fn(self: CStr) -> String` | Yes | Copy C string to Klar String |
 | `len` | `fn(self: CStr) -> usize` | Yes | Get C string length |
-| `from_ptr` | `fn(CPtr[i8]) -> CStr` | No | Construct from pointer |
+| `from_ptr` | `fn(CPtr#[i8]) -> CStr` | No | Construct from pointer |
 
 ### CStrOwned - Owned C String
 
@@ -364,7 +364,7 @@ The `extern fn` type represents a raw C function pointer (8 bytes), distinct fro
 // Type syntax: extern fn(ParamTypes) -> ReturnType
 let callback: extern fn(i32) -> i32
 let handler: extern fn(i32) -> void
-let comparator: extern fn(CPtr[void], CPtr[void]) -> i32
+let comparator: extern fn(CPtr#[void], CPtr#[void]) -> i32
 ```
 
 ### Creating Function Pointers with `@fn_ptr`
@@ -431,10 +431,10 @@ Declare extern functions that accept or return function pointers:
 extern {
     // qsort callback
     fn qsort(
-        base: CPtr[void],
+        base: CPtr#[void],
         nmemb: usize,
         size: usize,
-        compar: extern fn(CPtr[void], CPtr[void]) -> i32
+        compar: extern fn(CPtr#[void], CPtr#[void]) -> i32
     )
 
     // Signal handler
@@ -480,17 +480,17 @@ A complete example using C's `qsort` function:
 ```klar
 extern {
     fn qsort(
-        base: CPtr[void],
+        base: CPtr#[void],
         nmemb: usize,
         size: usize,
-        compar: extern fn(CPtr[void], CPtr[void]) -> i32
+        compar: extern fn(CPtr#[void], CPtr#[void]) -> i32
     )
 }
 
 // Compare function for ascending order
-fn compare_ascending(a: CPtr[void], b: CPtr[void]) -> i32 {
-    let a_ptr: CPtr[i32] = unsafe { ptr_cast[i32](a) }
-    let b_ptr: CPtr[i32] = unsafe { ptr_cast[i32](b) }
+fn compare_ascending(a: CPtr#[void], b: CPtr#[void]) -> i32 {
+    let a_ptr: CPtr#[i32] = unsafe { ptr_cast#[i32](a) }
+    let b_ptr: CPtr#[i32] = unsafe { ptr_cast#[i32](b) }
     let a_val: i32 = unsafe { read(a_ptr) }
     let b_val: i32 = unsafe { read(b_ptr) }
     return a_val - b_val
@@ -499,13 +499,13 @@ fn compare_ascending(a: CPtr[void], b: CPtr[void]) -> i32 {
 fn main() -> i32 {
     var arr: [i32; 5] = [5, 2, 8, 1, 9]
 
-    let arr_ptr: CPtr[[i32; 5]] = unsafe { ref_to_ptr(ref arr) }
-    let base: CPtr[void] = unsafe { ptr_cast[void](arr_ptr) }
+    let arr_ptr: CPtr#[[i32; 5]] = unsafe { ref_to_ptr(ref arr) }
+    let base: CPtr#[void] = unsafe { ptr_cast#[void](arr_ptr) }
 
-    let cmp: extern fn(CPtr[void], CPtr[void]) -> i32 = @fn_ptr(compare_ascending)
+    let cmp: extern fn(CPtr#[void], CPtr#[void]) -> i32 = @fn_ptr(compare_ascending)
 
     unsafe {
-        qsort(base, 5.as[usize], 4.as[usize], cmp)
+        qsort(base, 5.as#[usize], 4.as#[usize], cmp)
     }
 
     // arr is now [1, 2, 5, 8, 9]

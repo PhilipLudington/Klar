@@ -1,8 +1,8 @@
-// Test List[String].drop() properly frees string element buffers
+// Test List#[String].drop() properly frees string element buffers
 
 fn main() -> i32 {
     // Create a list of strings
-    var list: List[String] = List.new[String]()
+    var list: List#[String] = List.new#[String]()
 
     // Push string literals (each allocates its own heap buffer)
     list.push("hello")

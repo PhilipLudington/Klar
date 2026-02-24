@@ -149,7 +149,7 @@ struct MovieReview {
 
 - **New CLI command** in `src/main.zig`: `klar schema <file> [--type Name]`
 - **Type walker**: traverse AST, extract public structs/enums, emit JSON Schema
-- **Type mapping**: `i32`/`i64` → `integer`, `f64` → `number`, `bool` → `boolean`, `string` → `string`, `?T` → nullable, `List[T]` → array, `enum` → string enum or tagged union
+- **Type mapping**: `i32`/`i64` → `integer`, `f64` → `number`, `bool` → `boolean`, `string` → `string`, `?T` → nullable, `List#[T]` → array, `enum` → string enum or tagged union
 
 ### Effort: Low-Medium | Impact: Medium
 
@@ -305,15 +305,15 @@ let result: string = input |> parse |> validate |> format
 `x |> f` is sugar for `f(x)`. The compiler type-checks that the left side's type matches the function's parameter type:
 
 ```klar
-fn parse(s: string) -> Result[Data, ParseError] { ... }
-fn validate(d: Data) -> Result[Data, ValidationError] { ... }
+fn parse(s: string) -> Result#[Data, ParseError] { ... }
+fn validate(d: Data) -> Result#[Data, ValidationError] { ... }
 fn format(d: Data) -> string { ... }
 
-// Type-checked pipeline: string → Result[Data, ParseError] → ...
+// Type-checked pipeline: string → Result#[Data, ParseError] → ...
 // Compiler verifies each connection
 let output: string = raw_input
-    |> parse       // string → Result[Data, ParseError]
-    |> validate    // Data → Result[Data, ValidationError]  (auto-unwrap with ?)
+    |> parse       // string → Result#[Data, ParseError]
+    |> validate    // Data → Result#[Data, ValidationError]  (auto-unwrap with ?)
     |> format      // Data → string
 ```
 
@@ -322,7 +322,7 @@ let output: string = raw_input
 The pipeline operator composes naturally with `?` for error propagation:
 
 ```klar
-fn process(input: string) -> Result[string, Error] {
+fn process(input: string) -> Result#[string, Error] {
     let result: string = input
         |> parse?       // propagate ParseError
         |> validate?    // propagate ValidationError
@@ -407,7 +407,7 @@ They're complementary: `@example` for quick checks, `test` blocks for thorough t
 **Klar Design:** Allow test blocks to report quality scores, not just pass/fail. This enables AI tools to optimize code quality, not just correctness.
 
 ```klar
-fn sort(arr: List[i32]) -> List[i32] {
+fn sort(arr: List#[i32]) -> List#[i32] {
     // ... sorting implementation
 }
 
@@ -417,9 +417,9 @@ test sort {
     assert_eq(sort(List.from([])), List.from([]))
 
     // Performance metric (scored, 0.0 to 1.0)
-    let large: List[i32] = List.range(0, 10000).reverse()
+    let large: List#[i32] = List.range(0, 10000).reverse()
     let start: i64 = time_ns()
-    let _sorted: List[i32] = sort(large)
+    let _sorted: List#[i32] = sort(large)
     let elapsed: i64 = time_ns() - start
 
     // Report metric: lower time = higher score

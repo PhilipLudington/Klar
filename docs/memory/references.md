@@ -141,8 +141,8 @@ struct Point {
 
 impl Point {
     fn magnitude(ref self: Point) -> f64 {
-        let x: f64 = self.x.as[f64]
-        let y: f64 = self.y.as[f64]
+        let x: f64 = self.x.as#[f64]
+        let y: f64 = self.y.as#[f64]
         return sqrt(x * x + y * y)
     }
 
@@ -210,7 +210,7 @@ fn main() -> i32 {
 - The function is a "query" that doesn't change state
 
 ```klar
-fn contains(ref list: List[i32], target: i32) -> bool {
+fn contains(ref list: List#[i32], target: i32) -> bool {
     for x: i32 in list {
         if x == target {
             return true
@@ -227,7 +227,7 @@ fn contains(ref list: List[i32], target: i32) -> bool {
 - You want to avoid copying large values
 
 ```klar
-fn append_all(inout list: List[i32], items: [i32]) -> void {
+fn append_all(inout list: List#[i32], items: [i32]) -> void {
     for x: i32 in items {
         list.push(x)
     }
@@ -308,7 +308,7 @@ impl Stats {
         if self.count == 0 {
             return 0.0
         }
-        return self.sum.as[f64] / self.count.as[f64]
+        return self.sum.as#[f64] / self.count.as#[f64]
     }
 }
 ```

@@ -5,7 +5,7 @@
 pub enum Token { LBrace, Eof }
 pub struct LexerState { pos: i32 }
 
-fn next_token(chars: [char], state: LexerState) -> (Result[Token, string], LexerState) {
+fn next_token(chars: [char], state: LexerState) -> (Result#[Token, string], LexerState) {
     let new_state: LexerState = LexerState { pos: state.pos + chars.len() }
     if state.pos == 0 {
         return (Ok(Token::LBrace), new_state)
@@ -18,8 +18,8 @@ fn main() -> i32 {
     let state: LexerState = LexerState { pos: 0 }
 
     // First call - should get LBrace
-    let result1: (Result[Token, string], LexerState) = next_token(chars, state)
-    let token_result1: Result[Token, string] = result1.0
+    let result1: (Result#[Token, string], LexerState) = next_token(chars, state)
+    let token_result1: Result#[Token, string] = result1.0
     let state1: LexerState = result1.1
 
     match token_result1 {
@@ -33,8 +33,8 @@ fn main() -> i32 {
     }
 
     // Second call with updated state - should get Eof
-    let result2: (Result[Token, string], LexerState) = next_token(chars, state1)
-    let token_result2: Result[Token, string] = result2.0
+    let result2: (Result#[Token, string], LexerState) = next_token(chars, state1)
+    let token_result2: Result#[Token, string] = result2.0
     let state2: LexerState = result2.1
 
     match token_result2 {

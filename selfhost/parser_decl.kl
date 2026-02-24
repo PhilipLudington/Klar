@@ -67,9 +67,10 @@ fn parse_function_decl(p: Parser, is_pub: bool, is_extern: bool, is_unsafe: bool
     let name_result: (Parser, string) = consume_identifier(p2)
     p2 = name_result.0
 
-    // Type params
+    // Type params: fn name#[T](...)
     var type_params: string = "[]"
-    if tk(p2, "l_bracket") {
+    if tk(p2, "hash") {
+        p2 = advance(p2) // skip '#'
         let tp_result: (Parser, string) = parse_type_params(p2)
         p2 = tp_result.0
         type_params = tp_result.1
@@ -202,9 +203,10 @@ fn parse_struct_decl(p: Parser, is_pub: bool) -> (Parser, string) {
     let name_result: (Parser, string) = consume_identifier(p2)
     p2 = name_result.0
 
-    // Type params
+    // Type params: struct Name#[T] { ... }
     var type_params: string = "[]"
-    if tk(p2, "l_bracket") {
+    if tk(p2, "hash") {
+        p2 = advance(p2) // skip '#'
         let tp_result: (Parser, string) = parse_type_params(p2)
         p2 = tp_result.0
         type_params = tp_result.1
@@ -244,9 +246,10 @@ fn parse_enum_decl(p: Parser, is_pub: bool) -> (Parser, string) {
     let name_result: (Parser, string) = consume_identifier(p2)
     p2 = name_result.0
 
-    // Type params
+    // Type params: enum Name#[T] { ... }
     var type_params: string = "[]"
-    if tk(p2, "l_bracket") {
+    if tk(p2, "hash") {
+        p2 = advance(p2) // skip '#'
         let tp_result: (Parser, string) = parse_type_params(p2)
         p2 = tp_result.0
         type_params = tp_result.1
@@ -452,21 +455,22 @@ fn parse_trait_stub(p: Parser, is_pub: bool) -> (Parser, string) {
 fn parse_impl_stub(p: Parser) -> (Parser, string) {
     var p2: Parser = advance(p) // skip 'impl'
 
-    // Parse type params: impl[T] ...
+    // Parse type params: impl#[T] ...
     var type_params: string = "[]"
-    if tk(p2, "l_bracket") {
+    if tk(p2, "hash") {
+        p2 = advance(p2) // skip '#'
         let tp_result: (Parser, string) = parse_type_params(p2)
         p2 = tp_result.0
         type_params = tp_result.1
     }
 
-    // Parse target type (handles both Pair and Pair[T])
+    // Parse target type (handles both Pair and Pair#[T])
     let target_result: (Parser, string) = parse_type(p2)
     p2 = target_result.0
     let target_json: string = target_result.1
 
     var trait_type: string = "null"
-    // Check for impl Type: Trait or impl Type: Trait[T]
+    // Check for impl Type: Trait or impl Type: Trait#[T]
     if tk(p2, "colon") {
         p2 = advance(p2)
         let trait_result: (Parser, string) = parse_type(p2)
@@ -514,8 +518,9 @@ fn parse_impl_stub(p: Parser) -> (Parser, string) {
     return (p2, json)
 }
 
+// Precondition: caller has already consumed '#'. Parser is positioned at '['.
 fn parse_type_params(p: Parser) -> (Parser, string) {
-    var p2: Parser = advance(p) // skip '['
+    var p2: Parser = consume(p, "l_bracket", "expected '[' after '#' in type parameters")
     var params: string = ""
     var first: bool = true
     while not tk(p2, "r_bracket") and not tk(p2, "eof") {

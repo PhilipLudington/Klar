@@ -15,14 +15,14 @@ const types = @import("../types.zig");
 const Type = types.Type;
 const Span = ast.Span;
 
-/// Check for static constructor calls like Rc.new(), List.new[T](), etc.
+/// Check for static constructor calls like Rc.new(), List.new#[T](), etc.
 /// Returns the result type if this is a static constructor, null otherwise.
 pub fn checkStaticConstructor(tc: anytype, method: *ast.MethodCall) ?Type {
     if (method.object != .identifier) return null;
 
     const obj_name = method.object.identifier.name;
 
-    // Rc.new(value) -> Rc[T] where T is the type of value
+    // Rc.new(value) -> Rc#[T] where T is the type of value
     if (std.mem.eql(u8, obj_name, "Rc") and std.mem.eql(u8, method.method_name, "new")) {
         if (method.args.len != 1) {
             tc.addError(.invalid_call, method.span, "Rc.new() expects exactly 1 argument", .{});
@@ -38,7 +38,7 @@ pub fn checkStaticConstructor(tc: anytype, method: *ast.MethodCall) ?Type {
         return tc.type_builder.unknownType();
     }
 
-    // Arc.new(value) -> Arc[T] where T is the type of value (thread-safe)
+    // Arc.new(value) -> Arc#[T] where T is the type of value (thread-safe)
     if (std.mem.eql(u8, obj_name, "Arc") and std.mem.eql(u8, method.method_name, "new")) {
         if (method.args.len != 1) {
             tc.addError(.invalid_call, method.span, "Arc.new() expects exactly 1 argument", .{});
@@ -54,7 +54,7 @@ pub fn checkStaticConstructor(tc: anytype, method: *ast.MethodCall) ?Type {
         return tc.type_builder.unknownType();
     }
 
-    // Cell.new(value) -> Cell[T] where T is the type of value
+    // Cell.new(value) -> Cell#[T] where T is the type of value
     if (std.mem.eql(u8, obj_name, "Cell") and std.mem.eql(u8, method.method_name, "new")) {
         if (method.args.len != 1) {
             tc.addError(.invalid_call, method.span, "Cell.new() expects exactly 1 argument", .{});
@@ -69,32 +69,32 @@ pub fn checkStaticConstructor(tc: anytype, method: *ast.MethodCall) ?Type {
         return checkDefaultConstructor(tc, method, obj_name);
     }
 
-    // List.new[T]() -> List[T]
+    // List.new#[T]() -> List#[T]
     if (std.mem.eql(u8, obj_name, "List") and std.mem.eql(u8, method.method_name, "new")) {
         return checkListNew(tc, method);
     }
 
-    // List.with_capacity[T](n) -> List[T]
+    // List.with_capacity#[T](n) -> List#[T]
     if (std.mem.eql(u8, obj_name, "List") and std.mem.eql(u8, method.method_name, "with_capacity")) {
         return checkListWithCapacity(tc, method);
     }
 
-    // Map.new[K,V]() -> Map[K,V]
+    // Map.new#[K,V]() -> Map#[K,V]
     if (std.mem.eql(u8, obj_name, "Map") and std.mem.eql(u8, method.method_name, "new")) {
         return checkMapNew(tc, method);
     }
 
-    // Map.with_capacity[K,V](n) -> Map[K,V]
+    // Map.with_capacity#[K,V](n) -> Map#[K,V]
     if (std.mem.eql(u8, obj_name, "Map") and std.mem.eql(u8, method.method_name, "with_capacity")) {
         return checkMapWithCapacity(tc, method);
     }
 
-    // Set.new[T]() -> Set[T]
+    // Set.new#[T]() -> Set#[T]
     if (std.mem.eql(u8, obj_name, "Set") and std.mem.eql(u8, method.method_name, "new")) {
         return checkSetNew(tc, method);
     }
 
-    // Set.with_capacity[T](n) -> Set[T]
+    // Set.with_capacity#[T](n) -> Set#[T]
     if (std.mem.eql(u8, obj_name, "Set") and std.mem.eql(u8, method.method_name, "with_capacity")) {
         return checkSetWithCapacity(tc, method);
     }
@@ -118,12 +118,12 @@ pub fn checkStaticConstructor(tc: anytype, method: *ast.MethodCall) ?Type {
         if (std.mem.eql(u8, method.method_name, "read_all")) return checkFileReadAll(tc, method);
     }
 
-    // BufReader.new[R](reader: R) -> BufReader[R]
+    // BufReader.new#[R](reader: R) -> BufReader#[R]
     if (std.mem.eql(u8, obj_name, "BufReader") and std.mem.eql(u8, method.method_name, "new")) {
         return checkBufReaderNew(tc, method);
     }
 
-    // BufWriter.new[W](writer: W) -> BufWriter[W]
+    // BufWriter.new#[W](writer: W) -> BufWriter#[W]
     if (std.mem.eql(u8, obj_name, "BufWriter") and std.mem.eql(u8, method.method_name, "new")) {
         return checkBufWriterNew(tc, method);
     }
@@ -191,29 +191,29 @@ fn checkDefaultConstructor(tc: anytype, method: *ast.MethodCall, obj_name: []con
 fn checkListNew(tc: anytype, method: *ast.MethodCall) Type {
     if (method.type_args) |type_args| {
         if (type_args.len != 1) {
-            tc.addError(.invalid_call, method.span, "List.new[T]() expects exactly 1 type argument", .{});
+            tc.addError(.invalid_call, method.span, "List.new#[T]() expects exactly 1 type argument", .{});
             return tc.type_builder.unknownType();
         }
         if (method.args.len != 0) {
-            tc.addError(.invalid_call, method.span, "List.new[T]() takes no value arguments", .{});
+            tc.addError(.invalid_call, method.span, "List.new#[T]() takes no value arguments", .{});
         }
         const element_type = tc.resolveTypeExpr(type_args[0]) catch {
             return tc.type_builder.unknownType();
         };
         return tc.type_builder.listType(element_type) catch tc.type_builder.unknownType();
     }
-    tc.addError(.invalid_call, method.span, "List.new() requires a type argument: List.new[i32]()", .{});
+    tc.addError(.invalid_call, method.span, "List.new() requires a type argument: List.new#[i32]()", .{});
     return tc.type_builder.unknownType();
 }
 
 fn checkListWithCapacity(tc: anytype, method: *ast.MethodCall) Type {
     if (method.type_args) |type_args| {
         if (type_args.len != 1) {
-            tc.addError(.invalid_call, method.span, "List.with_capacity[T](n) expects exactly 1 type argument", .{});
+            tc.addError(.invalid_call, method.span, "List.with_capacity#[T](n) expects exactly 1 type argument", .{});
             return tc.type_builder.unknownType();
         }
         if (method.args.len != 1) {
-            tc.addError(.invalid_call, method.span, "List.with_capacity[T](n) takes exactly 1 argument (capacity)", .{});
+            tc.addError(.invalid_call, method.span, "List.with_capacity#[T](n) takes exactly 1 argument (capacity)", .{});
             return tc.type_builder.unknownType();
         }
         const arg_type = tc.checkExpr(method.args[0]);
@@ -225,18 +225,18 @@ fn checkListWithCapacity(tc: anytype, method: *ast.MethodCall) Type {
         };
         return tc.type_builder.listType(element_type) catch tc.type_builder.unknownType();
     }
-    tc.addError(.invalid_call, method.span, "List.with_capacity() requires a type argument: List.with_capacity[i32](10)", .{});
+    tc.addError(.invalid_call, method.span, "List.with_capacity() requires a type argument: List.with_capacity#[i32](10)", .{});
     return tc.type_builder.unknownType();
 }
 
 fn checkMapNew(tc: anytype, method: *ast.MethodCall) Type {
     if (method.type_args) |type_args| {
         if (type_args.len != 2) {
-            tc.addError(.invalid_call, method.span, "Map.new[K,V]() expects exactly 2 type arguments", .{});
+            tc.addError(.invalid_call, method.span, "Map.new#[K,V]() expects exactly 2 type arguments", .{});
             return tc.type_builder.unknownType();
         }
         if (method.args.len != 0) {
-            tc.addError(.invalid_call, method.span, "Map.new[K,V]() takes no value arguments", .{});
+            tc.addError(.invalid_call, method.span, "Map.new#[K,V]() takes no value arguments", .{});
         }
         const key_type = tc.resolveTypeExpr(type_args[0]) catch {
             return tc.type_builder.unknownType();
@@ -247,18 +247,18 @@ fn checkMapNew(tc: anytype, method: *ast.MethodCall) Type {
         _ = tc.typeImplementsHashAndEq(key_type, method.span);
         return tc.type_builder.mapType(key_type, value_type) catch tc.type_builder.unknownType();
     }
-    tc.addError(.invalid_call, method.span, "Map.new() requires type arguments: Map.new[i32, string]()", .{});
+    tc.addError(.invalid_call, method.span, "Map.new() requires type arguments: Map.new#[i32, string]()", .{});
     return tc.type_builder.unknownType();
 }
 
 fn checkMapWithCapacity(tc: anytype, method: *ast.MethodCall) Type {
     if (method.type_args) |type_args| {
         if (type_args.len != 2) {
-            tc.addError(.invalid_call, method.span, "Map.with_capacity[K,V](n) expects exactly 2 type arguments", .{});
+            tc.addError(.invalid_call, method.span, "Map.with_capacity#[K,V](n) expects exactly 2 type arguments", .{});
             return tc.type_builder.unknownType();
         }
         if (method.args.len != 1) {
-            tc.addError(.invalid_call, method.span, "Map.with_capacity[K,V](n) takes exactly 1 argument (capacity)", .{});
+            tc.addError(.invalid_call, method.span, "Map.with_capacity#[K,V](n) takes exactly 1 argument (capacity)", .{});
             return tc.type_builder.unknownType();
         }
         const arg_type = tc.checkExpr(method.args[0]);
@@ -274,18 +274,18 @@ fn checkMapWithCapacity(tc: anytype, method: *ast.MethodCall) Type {
         _ = tc.typeImplementsHashAndEq(key_type, method.span);
         return tc.type_builder.mapType(key_type, value_type) catch tc.type_builder.unknownType();
     }
-    tc.addError(.invalid_call, method.span, "Map.with_capacity() requires type arguments: Map.with_capacity[i32, string](10)", .{});
+    tc.addError(.invalid_call, method.span, "Map.with_capacity() requires type arguments: Map.with_capacity#[i32, string](10)", .{});
     return tc.type_builder.unknownType();
 }
 
 fn checkSetNew(tc: anytype, method: *ast.MethodCall) Type {
     if (method.type_args) |type_args| {
         if (type_args.len != 1) {
-            tc.addError(.invalid_call, method.span, "Set.new[T]() expects exactly 1 type argument", .{});
+            tc.addError(.invalid_call, method.span, "Set.new#[T]() expects exactly 1 type argument", .{});
             return tc.type_builder.unknownType();
         }
         if (method.args.len != 0) {
-            tc.addError(.invalid_call, method.span, "Set.new[T]() takes no value arguments", .{});
+            tc.addError(.invalid_call, method.span, "Set.new#[T]() takes no value arguments", .{});
         }
         const element_type = tc.resolveTypeExpr(type_args[0]) catch {
             return tc.type_builder.unknownType();
@@ -293,18 +293,18 @@ fn checkSetNew(tc: anytype, method: *ast.MethodCall) Type {
         _ = tc.typeImplementsHashAndEq(element_type, method.span);
         return tc.type_builder.setType(element_type) catch tc.type_builder.unknownType();
     }
-    tc.addError(.invalid_call, method.span, "Set.new() requires type arguments: Set.new[i32]()", .{});
+    tc.addError(.invalid_call, method.span, "Set.new() requires type arguments: Set.new#[i32]()", .{});
     return tc.type_builder.unknownType();
 }
 
 fn checkSetWithCapacity(tc: anytype, method: *ast.MethodCall) Type {
     if (method.type_args) |type_args| {
         if (type_args.len != 1) {
-            tc.addError(.invalid_call, method.span, "Set.with_capacity[T](n) expects exactly 1 type argument", .{});
+            tc.addError(.invalid_call, method.span, "Set.with_capacity#[T](n) expects exactly 1 type argument", .{});
             return tc.type_builder.unknownType();
         }
         if (method.args.len != 1) {
-            tc.addError(.invalid_call, method.span, "Set.with_capacity[T](n) takes exactly 1 argument (capacity)", .{});
+            tc.addError(.invalid_call, method.span, "Set.with_capacity#[T](n) takes exactly 1 argument (capacity)", .{});
             return tc.type_builder.unknownType();
         }
         const arg_type = tc.checkExpr(method.args[0]);
@@ -317,7 +317,7 @@ fn checkSetWithCapacity(tc: anytype, method: *ast.MethodCall) Type {
         _ = tc.typeImplementsHashAndEq(element_type, method.span);
         return tc.type_builder.setType(element_type) catch tc.type_builder.unknownType();
     }
-    tc.addError(.invalid_call, method.span, "Set.with_capacity() requires type arguments: Set.with_capacity[i32](10)", .{});
+    tc.addError(.invalid_call, method.span, "Set.with_capacity() requires type arguments: Set.with_capacity#[i32](10)", .{});
     return tc.type_builder.unknownType();
 }
 
@@ -431,11 +431,11 @@ fn checkFileReadAll(tc: anytype, method: *ast.MethodCall) Type {
 fn checkBufReaderNew(tc: anytype, method: *ast.MethodCall) Type {
     if (method.type_args) |type_args| {
         if (type_args.len != 1) {
-            tc.addError(.invalid_call, method.span, "BufReader.new[R]() expects exactly 1 type argument", .{});
+            tc.addError(.invalid_call, method.span, "BufReader.new#[R]() expects exactly 1 type argument", .{});
             return tc.type_builder.unknownType();
         }
         if (method.args.len != 1) {
-            tc.addError(.invalid_call, method.span, "BufReader.new[R](reader) takes exactly 1 argument", .{});
+            tc.addError(.invalid_call, method.span, "BufReader.new#[R](reader) takes exactly 1 argument", .{});
             return tc.type_builder.unknownType();
         }
         const inner_type = tc.resolveTypeExpr(type_args[0]) catch {
@@ -450,18 +450,18 @@ fn checkBufReaderNew(tc: anytype, method: *ast.MethodCall) Type {
         }
         return tc.type_builder.bufReaderType(inner_type) catch tc.type_builder.unknownType();
     }
-    tc.addError(.invalid_call, method.span, "BufReader.new() requires a type argument: BufReader.new[File](file)", .{});
+    tc.addError(.invalid_call, method.span, "BufReader.new() requires a type argument: BufReader.new#[File](file)", .{});
     return tc.type_builder.unknownType();
 }
 
 fn checkBufWriterNew(tc: anytype, method: *ast.MethodCall) Type {
     if (method.type_args) |type_args| {
         if (type_args.len != 1) {
-            tc.addError(.invalid_call, method.span, "BufWriter.new[W]() expects exactly 1 type argument", .{});
+            tc.addError(.invalid_call, method.span, "BufWriter.new#[W]() expects exactly 1 type argument", .{});
             return tc.type_builder.unknownType();
         }
         if (method.args.len != 1) {
-            tc.addError(.invalid_call, method.span, "BufWriter.new[W](writer) takes exactly 1 argument", .{});
+            tc.addError(.invalid_call, method.span, "BufWriter.new#[W](writer) takes exactly 1 argument", .{});
             return tc.type_builder.unknownType();
         }
         const inner_type = tc.resolveTypeExpr(type_args[0]) catch {
@@ -476,7 +476,7 @@ fn checkBufWriterNew(tc: anytype, method: *ast.MethodCall) Type {
         }
         return tc.type_builder.bufWriterType(inner_type) catch tc.type_builder.unknownType();
     }
-    tc.addError(.invalid_call, method.span, "BufWriter.new() requires a type argument: BufWriter.new[File](file)", .{});
+    tc.addError(.invalid_call, method.span, "BufWriter.new() requires a type argument: BufWriter.new#[File](file)", .{});
     return tc.type_builder.unknownType();
 }
 
@@ -491,10 +491,10 @@ fn checkCStrFromPtr(tc: anytype, method: *ast.MethodCall) Type {
     const arg_type = tc.checkExpr(method.args[0]);
     if (arg_type == .cptr) {
         if (arg_type.cptr.inner != .primitive or arg_type.cptr.inner.primitive != .i8_) {
-            tc.addError(.type_mismatch, method.span, "CStr.from_ptr() expects CPtr[i8]", .{});
+            tc.addError(.type_mismatch, method.span, "CStr.from_ptr() expects CPtr#[i8]", .{});
         }
     } else {
-        tc.addError(.type_mismatch, method.span, "CStr.from_ptr() expects CPtr[i8]", .{});
+        tc.addError(.type_mismatch, method.span, "CStr.from_ptr() expects CPtr#[i8]", .{});
     }
     return tc.type_builder.cstrType();
 }
@@ -511,7 +511,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
             if (method.type_args) |type_args| {
                 if (type_args.len == 1) {
                     const target_type = tc.resolveTypeExpr(type_args[0]) catch return tc.type_builder.unknownType();
-                    // .to[T] returns ?T (optional), .as[T] and .trunc[T] return T
+                    // .to#[T] returns ?T (optional), .as#[T] and .trunc#[T] return T
                     if (std.mem.eql(u8, method.method_name, "to")) {
                         return tc.type_builder.optionalType(target_type) catch tc.type_builder.unknownType();
                     }
@@ -1116,7 +1116,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.optionalType(result_type.err_type) catch tc.type_builder.unknownType();
             }
 
-            // map(f: fn(T) -> U) -> Result[U, E]
+            // map(f: fn(T) -> U) -> Result#[U, E]
             if (std.mem.eql(u8, method.method_name, "map")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "map() takes exactly 1 argument (a function)", .{});
@@ -1124,14 +1124,14 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 }
                 const arg_type = tc.checkExpr(method.args[0]);
                 if (arg_type == .function) {
-                    // Return Result[U, E] where U is the function's return type
+                    // Return Result#[U, E] where U is the function's return type
                     return tc.type_builder.resultType(arg_type.function.return_type, result_type.err_type) catch tc.type_builder.unknownType();
                 }
                 tc.addError(.type_mismatch, method.span, "map() argument must be a function", .{});
                 return tc.type_builder.unknownType();
             }
 
-            // and_then(f: fn(T) -> Result[U, E]) -> Result[U, E]
+            // and_then(f: fn(T) -> Result#[U, E]) -> Result#[U, E]
             if (std.mem.eql(u8, method.method_name, "and_then")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "and_then() takes exactly 1 argument (a function)", .{});
@@ -1146,7 +1146,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.unknownType();
             }
 
-            // map_err(f: fn(E) -> F) -> Result[T, F]
+            // map_err(f: fn(E) -> F) -> Result#[T, F]
             if (std.mem.eql(u8, method.method_name, "map_err")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "map_err() takes exactly 1 argument (a function)", .{});
@@ -1154,13 +1154,13 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 }
                 const arg_type = tc.checkExpr(method.args[0]);
                 if (arg_type == .function) {
-                    // Return Result[T, F] where T is unchanged and F is the function's return type
+                    // Return Result#[T, F] where T is unchanged and F is the function's return type
                     return tc.type_builder.resultType(result_type.ok_type, arg_type.function.return_type) catch tc.type_builder.unknownType();
                 }
                 tc.addError(.type_mismatch, method.span, "map_err() argument must be a function", .{});
                 return tc.type_builder.unknownType();
             }
-            // eq(other: Result[T, E]) -> bool (Eq trait for Result)
+            // eq(other: Result#[T, E]) -> bool (Eq trait for Result)
             if (std.mem.eql(u8, method.method_name, "eq")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "eq() expects exactly 1 argument", .{});
@@ -1177,7 +1177,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 }
                 return tc.type_builder.boolType();
             }
-            // clone() -> Result[T, E] (Clone trait for Result)
+            // clone() -> Result#[T, E] (Clone trait for Result)
             if (std.mem.eql(u8, method.method_name, "clone")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "clone() expects no arguments", .{});
@@ -1185,7 +1185,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return object_type;
             }
 
-            // context(msg: string) -> Result[T, ContextError[E]]
+            // context(msg: string) -> Result#[T, ContextError#[E]]
             // Wraps the error type with a context message
             if (std.mem.eql(u8, method.method_name, "context")) {
                 if (method.args.len != 1) {
@@ -1196,7 +1196,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (arg_type != .primitive or arg_type.primitive != .string_) {
                     tc.addError(.type_mismatch, method.span, "context() argument must be a string", .{});
                 }
-                // Return Result[T, ContextError[E]]
+                // Return Result#[T, ContextError#[E]]
                 const context_err_type = tc.type_builder.contextErrorType(result_type.err_type) catch return tc.type_builder.unknownType();
                 return tc.type_builder.resultType(result_type.ok_type, context_err_type) catch tc.type_builder.unknownType();
             }
@@ -1239,7 +1239,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.i32Type();
             }
 
-            // clone() -> Range[T] (Clone trait)
+            // clone() -> Range#[T] (Clone trait)
             if (std.mem.eql(u8, method.method_name, "clone")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "clone() expects no arguments", .{});
@@ -1289,7 +1289,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                     return tc.type_builder.voidType();
                 }
                 const arg_type = tc.checkExpr(method.args[0]);
-                // Allow string literals (primitive.string_) for List[String] (string_data)
+                // Allow string literals (primitive.string_) for List#[String] (string_data)
                 const is_string_compat = element_type == .string_data and
                     arg_type == .primitive and arg_type.primitive == .string_;
                 if (!arg_type.eql(element_type) and !is_string_compat) {
@@ -1384,12 +1384,12 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.i32Type();
             }
 
-            // clone(&self) -> List[T] (creates a deep copy of the list)
+            // clone(&self) -> List#[T] (creates a deep copy of the list)
             if (std.mem.eql(u8, method.method_name, "clone")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
                 }
-                return object_type; // Returns same List[T] type
+                return object_type; // Returns same List#[T] type
             }
 
             // drop(&mut self) -> void (frees list memory)
@@ -1400,7 +1400,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.voidType();
             }
 
-            // take(n: i32) -> List[T] (returns first n elements)
+            // take(n: i32) -> List#[T] (returns first n elements)
             if (std.mem.eql(u8, method.method_name, "take")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "take() expects exactly 1 argument (count)", .{});
@@ -1410,10 +1410,10 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (arg_type != .primitive or arg_type.primitive != .i32_) {
                     tc.addError(.type_mismatch, method.span, "take() argument must be i32", .{});
                 }
-                return object_type; // Returns same List[T] type
+                return object_type; // Returns same List#[T] type
             }
 
-            // skip(n: i32) -> List[T] (skips first n elements)
+            // skip(n: i32) -> List#[T] (skips first n elements)
             if (std.mem.eql(u8, method.method_name, "skip")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "skip() expects exactly 1 argument (count)", .{});
@@ -1423,10 +1423,10 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (arg_type != .primitive or arg_type.primitive != .i32_) {
                     tc.addError(.type_mismatch, method.span, "skip() argument must be i32", .{});
                 }
-                return object_type; // Returns same List[T] type
+                return object_type; // Returns same List#[T] type
             }
 
-            // filter(fn(T) -> bool) -> List[T] (keeps elements where predicate returns true)
+            // filter(fn(T) -> bool) -> List#[T] (keeps elements where predicate returns true)
             if (std.mem.eql(u8, method.method_name, "filter")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "filter() expects exactly 1 argument (predicate)", .{});
@@ -1449,10 +1449,10 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (fn_type.return_type != .primitive or fn_type.return_type.primitive != .bool_) {
                     tc.addError(.type_mismatch, method.span, "filter() predicate must return bool", .{});
                 }
-                return object_type; // Returns same List[T] type
+                return object_type; // Returns same List#[T] type
             }
 
-            // map(fn(T) -> U) -> List[U] (transforms each element)
+            // map(fn(T) -> U) -> List#[U] (transforms each element)
             if (std.mem.eql(u8, method.method_name, "map")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "map() expects exactly 1 argument (transform function)", .{});
@@ -1472,11 +1472,11 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (!fn_type.params[0].eql(element_type)) {
                     tc.addError(.type_mismatch, method.span, "map() transform function parameter type must match list element type", .{});
                 }
-                // Return List[U] where U is the function's return type
+                // Return List#[U] where U is the function's return type
                 return tc.type_builder.listType(fn_type.return_type) catch tc.type_builder.unknownType();
             }
 
-            // enumerate() -> List[(i32, T)] (pairs each element with its index)
+            // enumerate() -> List#[(i32, T)] (pairs each element with its index)
             if (std.mem.eql(u8, method.method_name, "enumerate")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "enumerate() takes no arguments", .{});
@@ -1488,7 +1488,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.listType(tuple_type) catch tc.type_builder.unknownType();
             }
 
-            // zip(other: List[U]) -> List[(T, U)] (combines two lists element-wise)
+            // zip(other: List#[U]) -> List#[(T, U)] (combines two lists element-wise)
             if (std.mem.eql(u8, method.method_name, "zip")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "zip() expects exactly 1 argument (other list)", .{});
@@ -1569,7 +1569,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.boolType();
             }
 
-            // keys(&self) -> List[K]
+            // keys(&self) -> List#[K]
             if (std.mem.eql(u8, method.method_name, "keys")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "keys() takes no arguments", .{});
@@ -1577,7 +1577,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.listType(key_type) catch tc.type_builder.unknownType();
             }
 
-            // values(&self) -> List[V]
+            // values(&self) -> List#[V]
             if (std.mem.eql(u8, method.method_name, "values")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "values() takes no arguments", .{});
@@ -1617,12 +1617,12 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.voidType();
             }
 
-            // clone(&self) -> Map[K,V] (creates a deep copy of the map)
+            // clone(&self) -> Map#[K,V] (creates a deep copy of the map)
             if (std.mem.eql(u8, method.method_name, "clone")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
                 }
-                return object_type; // Returns same Map[K,V] type
+                return object_type; // Returns same Map#[K,V] type
             }
 
             // drop(&mut self) -> void (frees map memory)
@@ -1633,7 +1633,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.voidType();
             }
 
-            // take(n: i32) -> Map[K,V] (returns first n entries)
+            // take(n: i32) -> Map#[K,V] (returns first n entries)
             if (std.mem.eql(u8, method.method_name, "take")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "take() expects exactly 1 argument (count)", .{});
@@ -1643,10 +1643,10 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (arg_type != .primitive or arg_type.primitive != .i32_) {
                     tc.addError(.type_mismatch, method.span, "take() argument must be i32", .{});
                 }
-                return object_type; // Returns same Map[K,V] type
+                return object_type; // Returns same Map#[K,V] type
             }
 
-            // skip(n: i32) -> Map[K,V] (skips first n entries)
+            // skip(n: i32) -> Map#[K,V] (skips first n entries)
             if (std.mem.eql(u8, method.method_name, "skip")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "skip() expects exactly 1 argument (count)", .{});
@@ -1656,10 +1656,10 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (arg_type != .primitive or arg_type.primitive != .i32_) {
                     tc.addError(.type_mismatch, method.span, "skip() argument must be i32", .{});
                 }
-                return object_type; // Returns same Map[K,V] type
+                return object_type; // Returns same Map#[K,V] type
             }
 
-            // filter(fn(K, V) -> bool) -> Map[K,V] (keeps entries where predicate returns true)
+            // filter(fn(K, V) -> bool) -> Map#[K,V] (keeps entries where predicate returns true)
             if (std.mem.eql(u8, method.method_name, "filter")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "filter() expects exactly 1 argument (predicate)", .{});
@@ -1685,10 +1685,10 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (fn_type.return_type != .primitive or fn_type.return_type.primitive != .bool_) {
                     tc.addError(.type_mismatch, method.span, "filter() predicate must return bool", .{});
                 }
-                return object_type; // Returns same Map[K,V] type
+                return object_type; // Returns same Map#[K,V] type
             }
 
-            // map_values(fn(V) -> U) -> Map[K,U] (transforms values, preserves keys)
+            // map_values(fn(V) -> U) -> Map#[K,U] (transforms values, preserves keys)
             if (std.mem.eql(u8, method.method_name, "map_values")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "map_values() expects exactly 1 argument (transform function)", .{});
@@ -1708,7 +1708,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (!fn_type.params[0].eql(value_type)) {
                     tc.addError(.type_mismatch, method.span, "map_values() transform function parameter type must match map value type", .{});
                 }
-                // Return Map[K,U] where U is the function's return type
+                // Return Map#[K,U] where U is the function's return type
                 return tc.type_builder.mapType(key_type, fn_type.return_type) catch tc.type_builder.unknownType();
             }
         }
@@ -1789,12 +1789,12 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.voidType();
             }
 
-            // clone(&self) -> Set[T] (creates a deep copy of the set)
+            // clone(&self) -> Set#[T] (creates a deep copy of the set)
             if (std.mem.eql(u8, method.method_name, "clone")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
                 }
-                return object_type; // Returns same Set[T] type
+                return object_type; // Returns same Set#[T] type
             }
 
             // drop(&mut self) -> void (frees set memory)
@@ -1805,7 +1805,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.voidType();
             }
 
-            // union(&self, other: Set[T]) -> Set[T] (elements in either set)
+            // union(&self, other: Set#[T]) -> Set#[T] (elements in either set)
             if (std.mem.eql(u8, method.method_name, "union")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "union() expects exactly 1 argument", .{});
@@ -1818,7 +1818,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return object_type;
             }
 
-            // intersection(&self, other: Set[T]) -> Set[T] (elements in both sets)
+            // intersection(&self, other: Set#[T]) -> Set#[T] (elements in both sets)
             if (std.mem.eql(u8, method.method_name, "intersection")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "intersection() expects exactly 1 argument", .{});
@@ -1831,7 +1831,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return object_type;
             }
 
-            // difference(&self, other: Set[T]) -> Set[T] (elements in self but not other)
+            // difference(&self, other: Set#[T]) -> Set#[T] (elements in self but not other)
             if (std.mem.eql(u8, method.method_name, "difference")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "difference() expects exactly 1 argument", .{});
@@ -1844,7 +1844,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return object_type;
             }
 
-            // take(n: i32) -> Set[T] (returns first n elements)
+            // take(n: i32) -> Set#[T] (returns first n elements)
             if (std.mem.eql(u8, method.method_name, "take")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "take() expects exactly 1 argument (count)", .{});
@@ -1854,10 +1854,10 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (arg_type != .primitive or arg_type.primitive != .i32_) {
                     tc.addError(.type_mismatch, method.span, "take() argument must be i32", .{});
                 }
-                return object_type; // Returns same Set[T] type
+                return object_type; // Returns same Set#[T] type
             }
 
-            // skip(n: i32) -> Set[T] (skips first n elements)
+            // skip(n: i32) -> Set#[T] (skips first n elements)
             if (std.mem.eql(u8, method.method_name, "skip")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "skip() expects exactly 1 argument (count)", .{});
@@ -1867,10 +1867,10 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (arg_type != .primitive or arg_type.primitive != .i32_) {
                     tc.addError(.type_mismatch, method.span, "skip() argument must be i32", .{});
                 }
-                return object_type; // Returns same Set[T] type
+                return object_type; // Returns same Set#[T] type
             }
 
-            // filter(fn(T) -> bool) -> Set[T] (keeps elements where predicate returns true)
+            // filter(fn(T) -> bool) -> Set#[T] (keeps elements where predicate returns true)
             if (std.mem.eql(u8, method.method_name, "filter")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "filter() expects exactly 1 argument (predicate)", .{});
@@ -1893,10 +1893,10 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (fn_type.return_type != .primitive or fn_type.return_type.primitive != .bool_) {
                     tc.addError(.type_mismatch, method.span, "filter() predicate must return bool", .{});
                 }
-                return object_type; // Returns same Set[T] type
+                return object_type; // Returns same Set#[T] type
             }
 
-            // map(fn(T) -> U) -> List[U] (transforms each element, returns List since U may not be hashable)
+            // map(fn(T) -> U) -> List#[U] (transforms each element, returns List since U may not be hashable)
             if (std.mem.eql(u8, method.method_name, "map")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "map() expects exactly 1 argument (transform function)", .{});
@@ -1916,11 +1916,11 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 if (!fn_type.params[0].eql(element_type)) {
                     tc.addError(.type_mismatch, method.span, "map() transform function parameter type must match set element type", .{});
                 }
-                // Return List[U] where U is the function's return type
+                // Return List#[U] where U is the function's return type
                 return tc.type_builder.listType(fn_type.return_type) catch tc.type_builder.unknownType();
             }
 
-            // enumerate() -> List[(i32, T)] (pairs each element with its index)
+            // enumerate() -> List#[(i32, T)] (pairs each element with its index)
             if (std.mem.eql(u8, method.method_name, "enumerate")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "enumerate() takes no arguments", .{});
@@ -1932,7 +1932,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.listType(tuple_type) catch tc.type_builder.unknownType();
             }
 
-            // zip(other: Set[U]) -> List[(T, U)] (combines two sets element-wise)
+            // zip(other: Set#[U]) -> List#[(T, U)] (combines two sets element-wise)
             if (std.mem.eql(u8, method.method_name, "zip")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "zip() expects exactly 1 argument (other set)", .{});
@@ -2090,15 +2090,15 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
         if (object_type == .rc) {
             const inner_type = object_type.rc.inner;
 
-            // clone() -> Rc[T] (increments reference count)
+            // clone() -> Rc#[T] (increments reference count)
             if (std.mem.eql(u8, method.method_name, "clone")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
                 }
-                return object_type; // Returns same Rc[T] type
+                return object_type; // Returns same Rc#[T] type
             }
 
-            // downgrade() -> Weak[T] (creates weak reference)
+            // downgrade() -> Weak#[T] (creates weak reference)
             if (std.mem.eql(u8, method.method_name, "downgrade")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "downgrade() takes no arguments", .{});
@@ -2130,15 +2130,15 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
         if (object_type == .weak_rc) {
             const inner_type = object_type.weak_rc.inner;
 
-            // clone() -> Weak[T] (increments weak count)
+            // clone() -> Weak#[T] (increments weak count)
             if (std.mem.eql(u8, method.method_name, "clone")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
                 }
-                return object_type; // Returns same Weak[T] type
+                return object_type; // Returns same Weak#[T] type
             }
 
-            // upgrade() -> ?Rc[T] (attempts to get strong reference)
+            // upgrade() -> ?Rc#[T] (attempts to get strong reference)
             if (std.mem.eql(u8, method.method_name, "upgrade")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "upgrade() takes no arguments", .{});
@@ -2168,15 +2168,15 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
         if (object_type == .arc) {
             const inner_type = object_type.arc.inner;
 
-            // clone() -> Arc[T] (atomically increments reference count)
+            // clone() -> Arc#[T] (atomically increments reference count)
             if (std.mem.eql(u8, method.method_name, "clone")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
                 }
-                return object_type; // Returns same Arc[T] type
+                return object_type; // Returns same Arc#[T] type
             }
 
-            // downgrade() -> WeakArc[T] (creates weak reference)
+            // downgrade() -> WeakArc#[T] (creates weak reference)
             if (std.mem.eql(u8, method.method_name, "downgrade")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "downgrade() takes no arguments", .{});
@@ -2208,15 +2208,15 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
         if (object_type == .weak_arc) {
             const inner_type = object_type.weak_arc.inner;
 
-            // clone() -> WeakArc[T] (atomically increments weak count)
+            // clone() -> WeakArc#[T] (atomically increments weak count)
             if (std.mem.eql(u8, method.method_name, "clone")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "clone() takes no arguments", .{});
                 }
-                return object_type; // Returns same WeakArc[T] type
+                return object_type; // Returns same WeakArc#[T] type
             }
 
-            // upgrade() -> ?Arc[T] (attempts to atomically get strong reference)
+            // upgrade() -> ?Arc#[T] (attempts to atomically get strong reference)
             if (std.mem.eql(u8, method.method_name, "upgrade")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "upgrade() takes no arguments", .{});
@@ -2283,7 +2283,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
 
         // File methods
         if (object_type == .file) {
-            // read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]
+            // read(inout self, buf: inout [u8]) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "read")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "read() expects exactly 1 argument (buffer)", .{});
@@ -2304,7 +2304,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.i32Type(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // write(&mut self, buf: &[u8]) -> Result[i32, IoError]
+            // write(inout self, buf: ref [u8]) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "write")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "write() expects exactly 1 argument (buffer)", .{});
@@ -2325,7 +2325,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.i32Type(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // write_string(&mut self, s: string) -> Result[i32, IoError]
+            // write_string(inout self, s: string) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "write_string")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "write_string() expects exactly 1 argument (string)", .{});
@@ -2338,7 +2338,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.i32Type(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // close(self: File) -> Result[void, IoError]
+            // close(self: File) -> Result#[void, IoError]
             if (std.mem.eql(u8, method.method_name, "close")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "close() takes no arguments", .{});
@@ -2346,7 +2346,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.voidType(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // flush(&mut self) -> Result[void, IoError]
+            // flush(inout self) -> Result#[void, IoError]
             if (std.mem.eql(u8, method.method_name, "flush")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "flush() takes no arguments", .{});
@@ -2429,7 +2429,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
 
         // Stdout methods
         if (object_type == .stdout_handle) {
-            // write(&mut self, buf: &[u8]) -> Result[i32, IoError]
+            // write(inout self, buf: ref [u8]) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "write")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "write() expects exactly 1 argument (buffer)", .{});
@@ -2450,7 +2450,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.i32Type(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // write_string(&mut self, s: string) -> Result[i32, IoError]
+            // write_string(inout self, s: string) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "write_string")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "write_string() expects exactly 1 argument (string)", .{});
@@ -2463,7 +2463,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.i32Type(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // flush(&mut self) -> Result[void, IoError]
+            // flush(inout self) -> Result#[void, IoError]
             if (std.mem.eql(u8, method.method_name, "flush")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "flush() takes no arguments", .{});
@@ -2474,7 +2474,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
 
         // Stderr methods
         if (object_type == .stderr_handle) {
-            // write(&mut self, buf: &[u8]) -> Result[i32, IoError]
+            // write(inout self, buf: ref [u8]) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "write")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "write() expects exactly 1 argument (buffer)", .{});
@@ -2495,7 +2495,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.i32Type(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // write_string(&mut self, s: string) -> Result[i32, IoError]
+            // write_string(inout self, s: string) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "write_string")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "write_string() expects exactly 1 argument (string)", .{});
@@ -2508,7 +2508,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.i32Type(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // flush(&mut self) -> Result[void, IoError]
+            // flush(inout self) -> Result#[void, IoError]
             if (std.mem.eql(u8, method.method_name, "flush")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "flush() takes no arguments", .{});
@@ -2519,7 +2519,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
 
         // Stdin methods
         if (object_type == .stdin_handle) {
-            // read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]
+            // read(inout self, buf: inout [u8]) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "read")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "read() expects exactly 1 argument (buffer)", .{});
@@ -2545,7 +2545,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
         if (object_type == .buf_reader) {
             const inner_type = object_type.buf_reader.inner;
 
-            // read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]
+            // read(inout self, buf: inout [u8]) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "read")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "read() expects exactly 1 argument (buffer)", .{});
@@ -2565,7 +2565,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.i32Type(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // read_line(&mut self) -> Result[String, IoError]
+            // read_line(inout self) -> Result#[String, IoError]
             if (std.mem.eql(u8, method.method_name, "read_line")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "read_line() takes no arguments", .{});
@@ -2574,7 +2574,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(string_type, tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // read_to_string(&mut self) -> Result[String, IoError]
+            // read_to_string(&mut self) -> Result#[String, IoError]
             if (std.mem.eql(u8, method.method_name, "read_to_string")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "read_to_string() takes no arguments", .{});
@@ -2583,7 +2583,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(string_type, tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // fill_buf(&mut self) -> Result[[u8], IoError]
+            // fill_buf(inout self) -> Result#[[u8], IoError]
             if (std.mem.eql(u8, method.method_name, "fill_buf")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "fill_buf() takes no arguments", .{});
@@ -2618,7 +2618,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
         if (object_type == .buf_writer) {
             const inner_type = object_type.buf_writer.inner;
 
-            // write(&mut self, buf: &[u8]) -> Result[i32, IoError]
+            // write(inout self, buf: ref [u8]) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "write")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "write() expects exactly 1 argument (buffer)", .{});
@@ -2638,7 +2638,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.i32Type(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // write_string(&mut self, s: string) -> Result[i32, IoError]
+            // write_string(inout self, s: string) -> Result#[i32, IoError]
             if (std.mem.eql(u8, method.method_name, "write_string")) {
                 if (method.args.len != 1) {
                     tc.addError(.invalid_call, method.span, "write_string() expects exactly 1 argument (string)", .{});
@@ -2651,7 +2651,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.i32Type(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // flush(&mut self) -> Result[void, IoError]
+            // flush(inout self) -> Result#[void, IoError]
             if (std.mem.eql(u8, method.method_name, "flush")) {
                 if (method.args.len != 0) {
                     tc.addError(.invalid_call, method.span, "flush() takes no arguments", .{});
@@ -2659,7 +2659,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.resultType(tc.type_builder.voidType(), tc.type_builder.ioErrorType()) catch tc.type_builder.unknownType();
             }
 
-            // into_inner(self) -> Result[W, IoError]
+            // into_inner(self) -> Result#[W, IoError]
             // Flushes buffer and returns the inner writer. Returns error if flush fails.
             if (std.mem.eql(u8, method.method_name, "into_inner")) {
                 if (method.args.len != 0) {

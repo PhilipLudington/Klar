@@ -2,14 +2,14 @@
 // Tests that match expressions with generic enum variant patterns work correctly.
 // Expected exit: 100 (MyNone variant match)
 
-enum MyOption[T] {
+enum MyOption#[T] {
     MySome(T),
     MyNone,
 }
 
 fn main() -> i32 {
     // Test with None value
-    let none_val: MyOption[i32] = MyOption[i32]::MyNone
+    let none_val: MyOption#[i32] = MyOption#[i32]::MyNone
 
     // Pattern match with generic enum type syntax
     var result1: i32 = 0

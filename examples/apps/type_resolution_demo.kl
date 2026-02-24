@@ -1,5 +1,5 @@
 // Type Resolution Demo in Klar
-// Demonstrates: ?T optional types, Result[T, E], force unwrap, null coalescing
+// Demonstrates: ?T optional types, Result#[T, E], force unwrap, null coalescing
 // Regression test for Bug 5: exercises codegen type resolution paths in
 // resolveTypeExprDirect that previously leaked heap-allocated type objects.
 
@@ -10,7 +10,7 @@ fn parse_digit(c: i32) -> ?i32 {
     // Implicit None for non-digits
 }
 
-fn validate_range(value: i32, min: i32, max: i32) -> Result[i32, i32] {
+fn validate_range(value: i32, min: i32, max: i32) -> Result#[i32, i32] {
     if value >= min and value <= max {
         return Ok(value)
     }
@@ -56,14 +56,14 @@ fn main() -> i32 {
 
     // Test Result type with validation
     println("Validation with Result:")
-    let r1: Result[i32, i32] = validate_range(42, 0, 100)
+    let r1: Result#[i32, i32] = validate_range(42, 0, 100)
     if r1.is_ok() {
         print("  validate_range(42, 0, 100) = Ok(")
         print_num(r1!)
         println(")")
     }
 
-    let r2: Result[i32, i32] = validate_range(200, 0, 100)
+    let r2: Result#[i32, i32] = validate_range(200, 0, 100)
     if r2.is_ok() {
         println("  validate_range(200, 0, 100) = Ok")
     } else {
@@ -105,7 +105,7 @@ fn main() -> i32 {
     println("")
     println("Features Demonstrated:")
     println("- Optional ?T return types")
-    println("- Result[T, E] for error handling")
+    println("- Result#[T, E] for error handling")
     println("- Force unwrap with !")
     println("- Null coalescing with ??")
     println("- Nested type resolution in codegen")

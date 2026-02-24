@@ -10,19 +10,19 @@ The `File` type represents an open file handle.
 
 ```klar
 // Open for reading
-let file: Result[File, IoError] = File.open("data.txt")
+let file: Result#[File, IoError] = File.open("data.txt")
 
 // Open for writing (creates or truncates)
-let file: Result[File, IoError] = File.create("output.txt")
+let file: Result#[File, IoError] = File.create("output.txt")
 
 // Open for appending
-let file: Result[File, IoError] = File.append("log.txt")
+let file: Result#[File, IoError] = File.append("log.txt")
 ```
 
 ### Reading Files
 
 ```klar
-fn read_file_contents(path: string) -> Result[string, IoError] {
+fn read_file_contents(path: string) -> Result#[string, IoError] {
     let file: File = File.open(path)?
     let contents: string = file.read_to_string()?
     file.close()
@@ -33,7 +33,7 @@ fn read_file_contents(path: string) -> Result[string, IoError] {
 ### Writing Files
 
 ```klar
-fn write_to_file(path: string, content: string) -> Result[(), IoError] {
+fn write_to_file(path: string, content: string) -> Result#[(), IoError] {
     let file: File = File.create(path)?
     file.write(content)?
     file.close()
@@ -57,7 +57,7 @@ fn write_to_file(path: string, content: string) -> Result[(), IoError] {
 ### Example: Copy File
 
 ```klar
-fn copy_file(src: string, dst: string) -> Result[(), IoError] {
+fn copy_file(src: string, dst: string) -> Result#[(), IoError] {
     let content: string = File.open(src)?.read_to_string()?
     File.create(dst)?.write(content)?
     return Ok(())
@@ -71,7 +71,7 @@ fn copy_file(src: string, dst: string) -> Result[(), IoError] {
 Read from standard input:
 
 ```klar
-fn read_line() -> Result[string, IoError] {
+fn read_line() -> Result#[string, IoError] {
     return Stdin.read_line()
 }
 
@@ -170,7 +170,7 @@ writer.flush()  // Ensure all data is written
 
 ## IoError
 
-I/O operations return `Result[T, IoError]`:
+I/O operations return `Result#[T, IoError]`:
 
 ```klar
 enum IoError {
@@ -186,8 +186,8 @@ enum IoError {
 ### Handling I/O Errors
 
 ```klar
-fn read_config() -> Result[string, string] {
-    let result: Result[File, IoError] = File.open("config.txt")
+fn read_config() -> Result#[string, string] {
+    let result: Result#[File, IoError] = File.open("config.txt")
 
     match result {
         Ok(file) => {
@@ -211,7 +211,7 @@ fn read_config() -> Result[string, string] {
 ## Example: Line-by-Line Processing
 
 ```klar
-fn process_log_file(path: string) -> Result[i32, IoError] {
+fn process_log_file(path: string) -> Result#[i32, IoError] {
     let file: File = File.open(path)?
     let reader: BufReader = BufReader.new(file)
 
@@ -238,7 +238,7 @@ fn process_log_file(path: string) -> Result[i32, IoError] {
 ## Example: Writing Structured Data
 
 ```klar
-fn write_csv(path: string, data: List[(string, i32)]) -> Result[(), IoError] {
+fn write_csv(path: string, data: List#[(string, i32)]) -> Result#[(), IoError] {
     let file: File = File.create(path)?
     let writer: BufWriter = BufWriter.new(file)
 
@@ -268,7 +268,7 @@ fn interactive_menu() -> i32 {
         print("Choice: ")
 
         let input: string = Stdin.read_line() ?? ""
-        let choice: ?i32 = input.trim().to[i32]
+        let choice: ?i32 = input.trim().to#[i32]
 
         match choice {
             Some(1) => { println("Selected A") }
@@ -370,32 +370,32 @@ let is_dir: bool = fs_is_dir("/path/to/directory")
 
 ```klar
 // Create a single directory
-let result: Result[void, IoError] = fs_create_dir("/path/to/new_dir")
+let result: Result#[void, IoError] = fs_create_dir("/path/to/new_dir")
 
 // Create directory and all parent directories
-let result: Result[void, IoError] = fs_create_dir_all("/path/to/deep/nested/dir")
+let result: Result#[void, IoError] = fs_create_dir_all("/path/to/deep/nested/dir")
 
 // Remove an empty directory
-let result: Result[void, IoError] = fs_remove_dir("/path/to/dir")
+let result: Result#[void, IoError] = fs_remove_dir("/path/to/dir")
 
 // Remove a file
-let result: Result[void, IoError] = fs_remove_file("/path/to/file")
+let result: Result#[void, IoError] = fs_remove_file("/path/to/file")
 ```
 
 ### File Content
 
 ```klar
 // Read entire file as string
-let content: Result[String, IoError] = fs_read_string("/path/to/file.txt")
+let content: Result#[String, IoError] = fs_read_string("/path/to/file.txt")
 
 // Write string to file (creates or overwrites)
-let result: Result[void, IoError] = fs_write_string("/path/to/file.txt", "content")
+let result: Result#[void, IoError] = fs_write_string("/path/to/file.txt", "content")
 ```
 
 ### Reading Directory Contents
 
 ```klar
-let entries: Result[List[String], IoError] = fs_read_dir("/path/to/dir")
+let entries: Result#[List#[String], IoError] = fs_read_dir("/path/to/dir")
 
 match entries {
     Ok(list) => {
@@ -414,7 +414,7 @@ match entries {
 
 #### Ownership for fs_read_dir
 
-> **Important:** `fs_read_dir` returns a `List[String]` where:
+> **Important:** `fs_read_dir` returns a `List#[String]` where:
 > - The **List** owns its backing array (freed by `list.drop()`)
 > - Each **String** owns its own heap-allocated filename buffer
 >
@@ -423,7 +423,7 @@ match entries {
 >
 > **Workaround:** For short-lived operations, the memory leak is negligible. For
 > long-running programs that call `fs_read_dir` repeatedly, be aware of this limitation.
-> A future version of Klar will implement proper nested cleanup for `List[String]`.
+> A future version of Klar will implement proper nested cleanup for `List#[String]`.
 
 ### Filesystem Function Reference
 
@@ -432,13 +432,13 @@ match entries {
 | `fs_exists(path) -> bool` | Check if path exists |
 | `fs_is_file(path) -> bool` | Check if path is a regular file |
 | `fs_is_dir(path) -> bool` | Check if path is a directory |
-| `fs_create_dir(path) -> Result[void, IoError]` | Create single directory |
-| `fs_create_dir_all(path) -> Result[void, IoError]` | Create directory tree |
-| `fs_remove_file(path) -> Result[void, IoError]` | Delete a file |
-| `fs_remove_dir(path) -> Result[void, IoError]` | Delete empty directory |
-| `fs_read_string(path) -> Result[String, IoError]` | Read file contents |
-| `fs_write_string(path, content) -> Result[void, IoError]` | Write file contents |
-| `fs_read_dir(path) -> Result[List[String], IoError]` | List directory entries |
+| `fs_create_dir(path) -> Result#[void, IoError]` | Create single directory |
+| `fs_create_dir_all(path) -> Result#[void, IoError]` | Create directory tree |
+| `fs_remove_file(path) -> Result#[void, IoError]` | Delete a file |
+| `fs_remove_dir(path) -> Result#[void, IoError]` | Delete empty directory |
+| `fs_read_string(path) -> Result#[String, IoError]` | Read file contents |
+| `fs_write_string(path, content) -> Result#[void, IoError]` | Write file contents |
+| `fs_read_dir(path) -> Result#[List#[String], IoError]` | List directory entries |
 
 > **Note:** Filesystem operations currently support macOS and Linux only. Windows is not implemented.
 
@@ -464,7 +464,7 @@ let file: File = File.open(path)!
 ### Close Files When Done
 
 ```klar
-fn process_file(path: string) -> Result[(), IoError] {
+fn process_file(path: string) -> Result#[(), IoError] {
     let file: File = File.open(path)?
     // ... do work ...
     file.close()  // Don't forget!

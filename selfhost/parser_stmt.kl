@@ -214,12 +214,12 @@ fn remove_last_entry(csv: string) -> string {
     var depth: i32 = 0
     var i: i32 = 0
     while i < csv.byte_len() {
-        let c: i32 = csv.byte_at(i).as[i32]
+        let c: i32 = csv.byte_at(i).as#[i32]
         // Skip string content FIRST to avoid miscounting braces inside strings
         if c == 34 {
             i = i + 1
             while i < csv.byte_len() {
-                let sc: i32 = csv.byte_at(i).as[i32]
+                let sc: i32 = csv.byte_at(i).as#[i32]
                 if sc == 92 { i = i + 1 }  // skip escaped char
                 else if sc == 34 { break }  // end of string
                 i = i + 1
@@ -441,18 +441,18 @@ fn extract_literal_value(json: string) -> string {
     }
     if not found { return "0" }
     // Check if value is quoted (int/string) or unquoted (float)
-    if pos < json.byte_len() and json.byte_at(pos).as[i32] == 34 {
+    if pos < json.byte_len() and json.byte_at(pos).as#[i32] == 34 {
         // Quoted value — skip opening quote, read until closing quote
         pos = pos + 1
         var end: i32 = pos
-        while end < json.byte_len() and json.byte_at(end).as[i32] != 34 {
+        while end < json.byte_len() and json.byte_at(end).as#[i32] != 34 {
             end = end + 1
         }
         return json.slice(pos, end)
     }
     // Unquoted value (float) — read until } or ,
     var end: i32 = pos
-    while end < json.byte_len() and json.byte_at(end).as[i32] != 125 and json.byte_at(end).as[i32] != 44 {
+    while end < json.byte_len() and json.byte_at(end).as#[i32] != 125 and json.byte_at(end).as#[i32] != 44 {
         end = end + 1
     }
     return json.slice(pos, end)
@@ -487,7 +487,7 @@ fn parse_binding_or_variant(p: Parser) -> (Parser, string) {
     // Check for variant without type qualifier: Some(x), None
     // If name starts with uppercase and is followed by (, it's a variant
     if name.byte_len() > 0 {
-        let first_char: i32 = name.byte_at(0).as[i32]
+        let first_char: i32 = name.byte_at(0).as#[i32]
         if first_char >= 65 and first_char <= 90 {
             // Uppercase — could be variant
             if tk(p2, "l_paren") {

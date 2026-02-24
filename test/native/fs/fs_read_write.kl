@@ -6,13 +6,13 @@ fn main() -> i32 {
     let content: string = "Hello from Klar filesystem test!"
 
     // Write content to file
-    let write_result: Result[void, IoError] = fs_write_string(test_file, content)
+    let write_result: Result#[void, IoError] = fs_write_string(test_file, content)
     if not write_result.is_ok() {
         return 1
     }
 
     // Read content back
-    let read_result: Result[String, IoError] = fs_read_string(test_file)
+    let read_result: Result#[String, IoError] = fs_read_string(test_file)
     if not read_result.is_ok() {
         return 2
     }
@@ -25,7 +25,7 @@ fn main() -> i32 {
     }
 
     // Clean up - remove the test file
-    let remove_result: Result[void, IoError] = fs_remove_file(test_file)
+    let remove_result: Result#[void, IoError] = fs_remove_file(test_file)
     if not remove_result.is_ok() {
         return 4
     }

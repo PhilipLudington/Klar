@@ -691,11 +691,11 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
             return try tc.type_builder.referenceType(inner, r.mutable);
         },
         .generic_apply => |g| {
-            // Check for built-in generic types: Rc[T], Weak[T]
+            // Check for built-in generic types: Rc#[T], Weak#[T]
             if (g.base == .named) {
                 const base_name = g.base.named.name;
 
-                // Rc[T] - reference-counted type
+                // Rc#[T] - reference-counted type
                 if (std.mem.eql(u8, base_name, "Rc")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "Rc expects exactly 1 type argument", .{});
@@ -705,7 +705,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.rcType(inner);
                 }
 
-                // Weak[T] - weak reference type
+                // Weak#[T] - weak reference type
                 if (std.mem.eql(u8, base_name, "Weak")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "Weak expects exactly 1 type argument", .{});
@@ -715,7 +715,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.weakRcType(inner);
                 }
 
-                // Arc[T] - atomic reference-counted type (thread-safe)
+                // Arc#[T] - atomic reference-counted type (thread-safe)
                 if (std.mem.eql(u8, base_name, "Arc")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "Arc expects exactly 1 type argument", .{});
@@ -725,7 +725,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.arcType(inner);
                 }
 
-                // WeakArc[T] - weak atomic reference type (thread-safe)
+                // WeakArc#[T] - weak atomic reference type (thread-safe)
                 if (std.mem.eql(u8, base_name, "WeakArc")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "WeakArc expects exactly 1 type argument", .{});
@@ -735,7 +735,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.weakArcType(inner);
                 }
 
-                // Cell[T] - interior mutability wrapper
+                // Cell#[T] - interior mutability wrapper
                 if (std.mem.eql(u8, base_name, "Cell")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "Cell expects exactly 1 type argument", .{});
@@ -745,7 +745,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.cellType(inner);
                 }
 
-                // Result[T, E] - result type for error handling
+                // Result#[T, E] - result type for error handling
                 if (std.mem.eql(u8, base_name, "Result")) {
                     if (g.args.len != 2) {
                         tc.addError(.type_mismatch, g.span, "Result expects exactly 2 type arguments", .{});
@@ -756,7 +756,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.resultType(ok_type, err_type);
                 }
 
-                // Future[T] - async function return contract
+                // Future#[T] - async function return contract
                 if (std.mem.eql(u8, base_name, "Future")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "Future expects exactly 1 type argument", .{});
@@ -766,7 +766,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.futureType(inner);
                 }
 
-                // ContextError[E] - error wrapper with context message
+                // ContextError#[E] - error wrapper with context message
                 if (std.mem.eql(u8, base_name, "ContextError")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "ContextError expects exactly 1 type argument", .{});
@@ -786,7 +786,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.optionalType(inner);
                 }
 
-                // Range[T] - range iterator type
+                // Range#[T] - range iterator type
                 if (std.mem.eql(u8, base_name, "Range")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "Range expects exactly 1 type argument", .{});
@@ -800,7 +800,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.rangeType(inner, false);
                 }
 
-                // List[T] - growable collection type
+                // List#[T] - growable collection type
                 if (std.mem.eql(u8, base_name, "List")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "List expects exactly 1 type argument", .{});
@@ -810,7 +810,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.listType(inner);
                 }
 
-                // Map[K,V] - hash map type
+                // Map#[K,V] - hash map type
                 if (std.mem.eql(u8, base_name, "Map")) {
                     if (g.args.len != 2) {
                         tc.addError(.type_mismatch, g.span, "Map expects exactly 2 type arguments (key and value types)", .{});
@@ -825,7 +825,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.mapType(key_type, value_type);
                 }
 
-                // Set[T] - hash set type
+                // Set#[T] - hash set type
                 if (std.mem.eql(u8, base_name, "Set")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "Set expects exactly 1 type argument (element type)", .{});
@@ -839,7 +839,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.setType(element_type);
                 }
 
-                // BufReader[R] - buffered reader wrapper (R must implement Read)
+                // BufReader#[R] - buffered reader wrapper (R must implement Read)
                 if (std.mem.eql(u8, base_name, "BufReader")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "BufReader expects exactly 1 type argument (reader type)", .{});
@@ -855,7 +855,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.bufReaderType(inner_type);
                 }
 
-                // BufWriter[W] - buffered writer wrapper (W must implement Write)
+                // BufWriter#[W] - buffered writer wrapper (W must implement Write)
                 if (std.mem.eql(u8, base_name, "BufWriter")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "BufWriter expects exactly 1 type argument (writer type)", .{});
@@ -873,7 +873,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
 
                 // FFI Pointer Types
 
-                // CPtr[T] - non-null raw pointer (FFI)
+                // CPtr#[T] - non-null raw pointer (FFI)
                 if (std.mem.eql(u8, base_name, "CPtr")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "CPtr expects exactly 1 type argument", .{});
@@ -883,7 +883,7 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return try tc.type_builder.cptrType(inner);
                 }
 
-                // COptPtr[T] - nullable raw pointer (FFI)
+                // COptPtr#[T] - nullable raw pointer (FFI)
                 if (std.mem.eql(u8, base_name, "COptPtr")) {
                     if (g.args.len != 1) {
                         tc.addError(.type_mismatch, g.span, "COptPtr expects exactly 1 type argument", .{});

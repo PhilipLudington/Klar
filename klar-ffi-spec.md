@@ -90,7 +90,7 @@ extern type FILE
 
 Opaque types:
 - Have unknown size (cannot be stack-allocated directly)
-- Can only be used behind pointers: `CPtr[FILE]`, `COptPtr[seL4_CPtr]`
+- Can only be used behind pointers: `CPtr#[FILE]`, `COptPtr#[seL4_CPtr]`
 - Cannot be constructed in Klar code
 
 ### Sized External Types
@@ -175,20 +175,20 @@ Warning: Packed structs may cause unaligned access on some architectures.
 
 FFI requires raw pointer types that don't exist in safe Klar:
 
-### CPtr[T] — Non-null Pointer
+### CPtr#[T] — Non-null Pointer
 
 ```klar
-type CPtr[T]    // Equivalent to T* in C, assumed non-null
+type CPtr#[T]    // Equivalent to T* in C, assumed non-null
 ```
 
 - Represents a non-null pointer to T
 - Dereferencing requires `unsafe`
 - Can be obtained from references using `ref_to_ptr`
 
-### COptPtr[T] — Nullable Pointer
+### COptPtr#[T] — Nullable Pointer
 
 ```klar
-type COptPtr[T]    // Equivalent to T* in C, may be null
+type COptPtr#[T]    // Equivalent to T* in C, may be null
 ```
 
 - Represents a potentially null pointer to T
@@ -209,22 +209,22 @@ type CStr    // *const char, null-terminated, borrowed
 
 ```klar
 // Check for null
-fn is_null[T](ptr: COptPtr[T]) -> bool
+fn is_null#[T](ptr: COptPtr#[T]) -> bool
 
 // Convert nullable to non-null (unsafe, caller must verify)
-fn unwrap_ptr[T](ptr: COptPtr[T]) -> CPtr[T]
+fn unwrap_ptr#[T](ptr: COptPtr#[T]) -> CPtr#[T]
 
 // Pointer arithmetic
-fn offset[T](ptr: CPtr[T], count: isize) -> CPtr[T]
+fn offset#[T](ptr: CPtr#[T], count: isize) -> CPtr#[T]
 
 // Dereference (read)
-fn read[T](ptr: CPtr[T]) -> T
+fn read#[T](ptr: CPtr#[T]) -> T
 
 // Dereference (write)
-fn write[T](ptr: CPtr[T], value: T) -> void
+fn write#[T](ptr: CPtr#[T], value: T) -> void
 
 // Cast between pointer types
-fn cast[T, U](ptr: CPtr[T]) -> CPtr[U]
+fn cast#[T, U](ptr: CPtr#[T]) -> CPtr#[U]
 ```
 
 All pointer operations except `is_null` require `unsafe`.
@@ -254,7 +254,7 @@ unsafe {
 Functions that are inherently unsafe can be marked:
 
 ```klar
-unsafe fn dangerous_operation(ptr: CPtr[u8]) -> void {
+unsafe fn dangerous_operation(ptr: CPtr#[u8]) -> void {
     // Entire function body is implicitly unsafe
     write(ptr, 0)
 }
@@ -273,12 +273,12 @@ For traits that have safety invariants the compiler can't check:
 
 ```klar
 unsafe trait RawHandle {
-    fn as_raw(self: ref Self) -> CPtr[void]
+    fn as_raw(self: ref Self) -> CPtr#[void]
 }
 
 // Implementing an unsafe trait requires unsafe impl
 unsafe impl RawHandle for FileDescriptor {
-    fn as_raw(self: ref Self) -> CPtr[void] {
+    fn as_raw(self: ref Self) -> CPtr#[void] {
         // ...
     }
 }
@@ -316,7 +316,7 @@ impl CStr {
 
 ```klar
 extern {
-    fn getenv(name: CStr) -> COptPtr[i8]
+    fn getenv(name: CStr) -> COptPtr#[i8]
 }
 
 fn get_env_var(name: string) -> ?string {
@@ -328,7 +328,7 @@ fn get_env_var(name: string) -> ?string {
         }
 
         // Cast to CStr and convert
-        let cstr = CStr.from_ptr(result.unwrap_ptr().cast[i8]())
+        let cstr = CStr.from_ptr(result.unwrap_ptr().cast#[i8]())
         return some(cstr.to_string())
     }
 }
@@ -342,17 +342,17 @@ fn get_env_var(name: string) -> ?string {
 
 ```klar
 extern {
-    fn malloc(size: usize) -> COptPtr[void]
-    fn free(ptr: CPtr[void]) -> void
+    fn malloc(size: usize) -> COptPtr#[void]
+    fn free(ptr: CPtr#[void]) -> void
 }
 
-fn allocate_buffer(size: usize) -> ?CPtr[u8] {
+fn allocate_buffer(size: usize) -> ?CPtr#[u8] {
     unsafe {
         let ptr = malloc(size)
         if ptr.is_null() {
             return none
         }
-        return some(ptr.unwrap_ptr().cast[u8]())
+        return some(ptr.unwrap_ptr().cast#[u8]())
     }
 }
 ```
@@ -363,7 +363,7 @@ When C needs to hold a pointer to Klar data:
 
 ```klar
 // Pin data in place and get raw pointer
-fn with_pinned[T, R](value: ref T, f: fn(CPtr[T]) -> R) -> R {
+fn with_pinned#[T, R](value: ref T, f: fn(CPtr#[T]) -> R) -> R {
     unsafe {
         let ptr = ref_to_ptr(value)
         f(ptr)
@@ -376,9 +376,9 @@ fn with_pinned[T, R](value: ref T, f: fn(CPtr[T]) -> R) -> R {
 
 ```klar
 // Convert Klar-owned value to C-owned
-fn into_raw[T](value: T) -> CPtr[T] {
+fn into_raw#[T](value: T) -> CPtr#[T] {
     unsafe {
-        let ptr = allocate[T]()
+        let ptr = allocate#[T]()
         write(ptr, value)
         // Klar forgets about value, C now owns it
         return ptr
@@ -386,10 +386,10 @@ fn into_raw[T](value: T) -> CPtr[T] {
 }
 
 // Take ownership back from C
-fn from_raw[T](ptr: CPtr[T]) -> T {
+fn from_raw#[T](ptr: CPtr#[T]) -> T {
     unsafe {
         let value = read(ptr)
-        free(ptr.cast[void]())
+        free(ptr.cast#[void]())
         return value
     }
 }
@@ -448,7 +448,7 @@ extern {
     fn seL4_SetMR(i: i32, value: u64) -> void
 
     // IPC buffer
-    fn seL4_GetIPCBuffer() -> CPtr[seL4_IPCBuffer]
+    fn seL4_GetIPCBuffer() -> CPtr#[seL4_IPCBuffer]
 
     // Debug (if configured)
     fn seL4_DebugPutChar(c: u8) -> void
@@ -510,7 +510,7 @@ impl Message {
         }
     }
 
-    pub fn push(self: inout Self, value: u64) -> Result[void, IpcError] {
+    pub fn push(self: inout Self, value: u64) -> Result#[void, IpcError] {
         if self.len >= 4 {
             return Err(IpcError::MessageFull)
         }
@@ -531,10 +531,10 @@ impl Endpoint {
     pub fn send(self: ref Self, msg: ref Message) -> void {
         unsafe {
             for i in 0..msg.len {
-                seL4_raw::seL4_SetMR(i.as[i32], msg.data[i])
+                seL4_raw::seL4_SetMR(i.as#[i32], msg.data[i])
             }
 
-            let info = seL4_raw::make_message_info(msg.label, msg.len.as[u64])
+            let info = seL4_raw::make_message_info(msg.label, msg.len.as#[u64])
             seL4_raw::seL4_Send(self.cap, info)
         }
     }
@@ -546,11 +546,11 @@ impl Endpoint {
             let info = seL4_raw::seL4_Recv(self.cap, out sender)
 
             let label = seL4_raw::get_label(info)
-            let len = seL4_raw::get_length(info).as[usize]
+            let len = seL4_raw::get_length(info).as#[usize]
 
             let mut data: [u64; 4] = [0, 0, 0, 0]
             for i in 0..len.min(4) {
-                data[i] = seL4_raw::seL4_GetMR(i.as[i32])
+                data[i] = seL4_raw::seL4_GetMR(i.as#[i32])
             }
 
             let msg = Message {
@@ -567,18 +567,18 @@ impl Endpoint {
     pub fn call(self: ref Self, msg: ref Message) -> Message {
         unsafe {
             for i in 0..msg.len {
-                seL4_raw::seL4_SetMR(i.as[i32], msg.data[i])
+                seL4_raw::seL4_SetMR(i.as#[i32], msg.data[i])
             }
 
-            let info = seL4_raw::make_message_info(msg.label, msg.len.as[u64])
+            let info = seL4_raw::make_message_info(msg.label, msg.len.as#[u64])
             let reply_info = seL4_raw::seL4_Call(self.cap, info)
 
             let label = seL4_raw::get_label(reply_info)
-            let len = seL4_raw::get_length(reply_info).as[usize]
+            let len = seL4_raw::get_length(reply_info).as#[usize]
 
             let mut data: [u64; 4] = [0, 0, 0, 0]
             for i in 0..len.min(4) {
-                data[i] = seL4_raw::seL4_GetMR(i.as[i32])
+                data[i] = seL4_raw::seL4_GetMR(i.as#[i32])
             }
 
             return Message {
@@ -640,7 +640,7 @@ The `extern fn` type represents a raw C function pointer:
 // Basic function pointer types
 extern fn(i32) -> i32           // Takes i32, returns i32
 extern fn(i32, i32) -> void     // Takes two i32, returns void
-extern fn(CPtr[void], CPtr[void]) -> i32  // qsort comparator signature
+extern fn(CPtr#[void], CPtr#[void]) -> i32  // qsort comparator signature
 ```
 
 Unlike Klar closures (which are 16-byte structs containing function pointer + environment), `extern fn` is an 8-byte raw pointer compatible with C.
@@ -688,10 +688,10 @@ Extern functions can accept and return function pointers:
 extern {
     // qsort - accepts a comparator callback
     fn qsort(
-        base: CPtr[void],
+        base: CPtr#[void],
         nmemb: usize,
         size: usize,
-        compar: extern fn(CPtr[void], CPtr[void]) -> i32
+        compar: extern fn(CPtr#[void], CPtr#[void]) -> i32
     )
 
     // signal - accepts handler, returns old handler
@@ -727,16 +727,16 @@ fn use_callback() {
 ```klar
 extern {
     fn qsort(
-        base: CPtr[void],
+        base: CPtr#[void],
         nmemb: usize,
         size: usize,
-        compar: extern fn(CPtr[void], CPtr[void]) -> i32
+        compar: extern fn(CPtr#[void], CPtr#[void]) -> i32
     )
 }
 
-fn compare_i32(a: CPtr[void], b: CPtr[void]) -> i32 {
-    let a_ptr: CPtr[i32] = unsafe { ptr_cast[i32](a) }
-    let b_ptr: CPtr[i32] = unsafe { ptr_cast[i32](b) }
+fn compare_i32(a: CPtr#[void], b: CPtr#[void]) -> i32 {
+    let a_ptr: CPtr#[i32] = unsafe { ptr_cast#[i32](a) }
+    let b_ptr: CPtr#[i32] = unsafe { ptr_cast#[i32](b) }
     let a_val: i32 = unsafe { read(a_ptr) }
     let b_val: i32 = unsafe { read(b_ptr) }
     return a_val - b_val
@@ -744,9 +744,9 @@ fn compare_i32(a: CPtr[void], b: CPtr[void]) -> i32 {
 
 fn sort_array() {
     var arr: [i32; 5] = [5, 2, 8, 1, 9]
-    let base: CPtr[void] = unsafe { ptr_cast[void](ref_to_ptr(ref arr)) }
-    let cmp: extern fn(CPtr[void], CPtr[void]) -> i32 = @fn_ptr(compare_i32)
-    unsafe { qsort(base, 5.as[usize], 4.as[usize], cmp) }
+    let base: CPtr#[void] = unsafe { ptr_cast#[void](ref_to_ptr(ref arr)) }
+    let cmp: extern fn(CPtr#[void], CPtr#[void]) -> i32 = @fn_ptr(compare_i32)
+    unsafe { qsort(base, 5.as#[usize], 4.as#[usize], cmp) }
     // arr is now [1, 2, 5, 8, 9]
 }
 ```
@@ -777,7 +777,7 @@ Accessing C global variables:
 ```klar
 extern {
     static errno: i32
-    static mut environ: CPtr[CPtr[i8]]
+    static mut environ: CPtr#[CPtr#[i8]]
 }
 ```
 

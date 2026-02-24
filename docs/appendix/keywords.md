@@ -52,8 +52,8 @@ Reserved keywords in Klar that cannot be used as identifiers.
 | `false` | Boolean false | `let x: bool = false` |
 | `None` | Optional none | `let x: ?i32 = None` |
 | `Some` | Optional some | `let x: ?i32 = Some(42)` |
-| `Ok` | Result success | `let x: Result[i32, E] = Ok(42)` |
-| `Err` | Result error | `let x: Result[T, string] = Err("fail")` |
+| `Ok` | Result success | `let x: Result#[i32, E] = Ok(42)` |
+| `Err` | Result error | `let x: Result#[T, string] = Err("fail")` |
 
 ## Logical Operators
 
@@ -85,13 +85,13 @@ Reserved keywords in Klar that cannot be used as identifiers.
 |---------|-------------|---------|
 | `extern` | External C declaration | `extern { fn puts(s: CStr) -> i32 }` |
 | `unsafe` | Unsafe code block | `unsafe { c_function() }` |
-| `out` | Out parameter modifier | `fn get_result(out ptr: CPtr[i32])` |
+| `out` | Out parameter modifier | `fn get_result(out ptr: CPtr#[i32])` |
 
 ## Comptime Keywords
 
 | Keyword | Description | Example |
 |---------|-------------|---------|
-| `comptime` | Compile-time parameter | `fn f[comptime N: i32]()` |
+| `comptime` | Compile-time parameter | `fn f#[comptime N: i32]()` |
 
 ## Smart Pointer Keywords
 
@@ -105,8 +105,8 @@ Reserved keywords in Klar that cannot be used as identifiers.
 
 | Keyword | Description | Example |
 |---------|-------------|---------|
-| `CPtr` | Non-null C pointer | `CPtr[i32]` |
-| `COptPtr` | Nullable C pointer | `COptPtr[i32]` |
+| `CPtr` | Non-null C pointer | `CPtr#[i32]` |
+| `COptPtr` | Nullable C pointer | `COptPtr#[i32]` |
 | `CStr` | Borrowed C string | `msg.as_cstr()` |
 | `CStrOwned` | Owned C string | `msg.to_cstr()` |
 
@@ -114,23 +114,23 @@ Reserved keywords in Klar that cannot be used as identifiers.
 
 | Keyword | Description | Example |
 |---------|-------------|---------|
-| `List` | Dynamic array | `List.new[i32]()` |
-| `Map` | Hash map | `Map.new[K, V]()` |
-| `Set` | Hash set | `Set.new[T]()` |
+| `List` | Dynamic array | `List.new#[i32]()` |
+| `Map` | Hash map | `Map.new#[K, V]()` |
+| `Set` | Hash set | `Set.new#[T]()` |
 | `Range` | Range type | `0..10` |
 
 ## Result/Option Types
 
 | Keyword | Description | Example |
 |---------|-------------|---------|
-| `Result` | Result type | `Result[T, E]` |
-| `?` | Optional type | `?T` (same as `Option[T]`) |
+| `Result` | Result type | `Result#[T, E]` |
+| `?` | Optional type | `?T` (same as `Option#[T]`) |
 
 ## Async Keywords
 
 | Keyword | Description | Example |
 |---------|-------------|---------|
-| `async` | Asynchronous function modifier | `async fn fetch() -> Future[i32] { ... }` |
+| `async` | Asynchronous function modifier | `async fn fetch() -> Future#[i32] { ... }` |
 | `await` | Await async result inside async functions | `let x: i32 = await task` |
 
 ## Reserved for Future Use

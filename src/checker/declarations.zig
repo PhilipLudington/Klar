@@ -84,18 +84,18 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
                 signature_return_type = tc.resolveTypeExpr(rt) catch tc.type_builder.unknownType();
                 body_return_type = tc.resolveTypeExpr(inner_expr) catch tc.type_builder.unknownType();
             } else {
-                tc.addError(.invalid_operation, rt.span(), "async function return type must be Future[T]", .{});
+                tc.addError(.invalid_operation, rt.span(), "async function return type must be Future#[T]", .{});
                 signature_return_type = tc.type_builder.unknownType();
                 body_return_type = tc.type_builder.unknownType();
             }
         } else {
-            tc.addError(.invalid_operation, func.span, "async function return type must be Future[T]", .{});
+            tc.addError(.invalid_operation, func.span, "async function return type must be Future#[T]", .{});
             signature_return_type = tc.type_builder.unknownType();
             body_return_type = tc.type_builder.unknownType();
         }
     } else if (tc.futureInnerType(return_type) != null) {
         const error_span = if (func.return_type) |rt| rt.span() else func.span;
-        tc.addError(.invalid_operation, error_span, "non-async function return type cannot be Future[T]; declare function as async", .{});
+        tc.addError(.invalid_operation, error_span, "non-async function return type cannot be Future#[T]; declare function as async", .{});
         signature_return_type = tc.type_builder.unknownType();
         body_return_type = tc.type_builder.unknownType();
     }
@@ -206,7 +206,7 @@ fn checkStruct(tc: anytype, struct_decl: *ast.StructDecl) void {
         // Validate FFI-compatible types for extern structs
         if (struct_decl.is_extern and !tc.isFfiCompatibleType(field_type)) {
             if (tc.isUnsizedExternType(field_type)) {
-                tc.addError(.type_mismatch, field.span, "unsized extern type cannot be used in struct field; use CPtr[T] or COptPtr[T] instead", .{});
+                tc.addError(.type_mismatch, field.span, "unsized extern type cannot be used in struct field; use CPtr#[T] or COptPtr#[T] instead", .{});
             } else {
                 tc.addError(.type_mismatch, field.span, "extern struct fields must be FFI-compatible types (primitives, CPtr, COptPtr, CStr, or other extern types)", .{});
             }
@@ -282,7 +282,7 @@ fn checkExternFunction(tc: anytype, func: *ast.FunctionDecl) void {
         // Validate parameter type is FFI-compatible
         if (!tc.isFfiCompatibleType(param_type)) {
             if (tc.isUnsizedExternType(param_type)) {
-                tc.addError(.type_mismatch, param.span, "unsized extern type cannot be passed by value; use CPtr[T] or COptPtr[T] instead", .{});
+                tc.addError(.type_mismatch, param.span, "unsized extern type cannot be passed by value; use CPtr#[T] or COptPtr#[T] instead", .{});
             } else {
                 tc.addError(.type_mismatch, param.span, "extern function parameters must be FFI-compatible types", .{});
             }
@@ -300,7 +300,7 @@ fn checkExternFunction(tc: anytype, func: *ast.FunctionDecl) void {
     if (return_type != .void_ and !tc.isFfiCompatibleType(return_type)) {
         const error_span = if (func.return_type) |rt| rt.span() else func.span;
         if (tc.isUnsizedExternType(return_type)) {
-            tc.addError(.type_mismatch, error_span, "unsized extern type cannot be returned by value; use CPtr[T] or COptPtr[T] instead", .{});
+            tc.addError(.type_mismatch, error_span, "unsized extern type cannot be returned by value; use CPtr#[T] or COptPtr#[T] instead", .{});
         } else {
             tc.addError(.type_mismatch, error_span, "extern function return type must be FFI-compatible", .{});
         }
@@ -346,7 +346,7 @@ fn checkEnum(tc: anytype, enum_decl: *ast.EnumDecl) void {
     }
 
     // Pre-register enum type BEFORE resolving variants to allow recursive types.
-    // This enables patterns like: enum JsonValue { Array(List[JsonValue]) }
+    // This enables patterns like: enum JsonValue { Array(List#[JsonValue]) }
     const enum_type = tc.allocator.create(types.EnumType) catch return;
     enum_type.* = .{
         .name = enum_decl.name,
@@ -594,7 +594,7 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
     };
 
     // Get the type name - we support impl blocks for structs and enums
-    // For generic impls like impl[T] Pair[T], the target_type is an applied type
+    // For generic impls like impl#[T] Pair#[T], the target_type is an applied type
     const struct_name = switch (target_type) {
         .struct_ => |s| s.name,
         .enum_ => |e| e.name,
@@ -617,7 +617,7 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
 
     // Handle trait implementations (impl Type: Trait { ... })
     var trait_info: ?TraitInfo = null;
-    // For generic traits like From[E], store the type arguments
+    // For generic traits like From#[E], store the type arguments
     var trait_type_args: []const Type = &.{};
     if (impl_decl.trait_type) |trait_type_expr| {
         // Check if this is a generic trait application (e.g., From[IoError])

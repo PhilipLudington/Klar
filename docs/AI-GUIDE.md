@@ -75,9 +75,9 @@ Type conversions are always marked:
 
 ```klar
 let x: i32 = 42
-let y: i64 = x.as[i64]     // Safe widening
-let z: i16 = x.to[i16]     // Checked narrowing (may trap)
-let w: i8 = x.trunc[i8]    // Truncating (never traps)
+let y: i64 = x.as#[i64]     // Safe widening
+let z: i16 = x.to#[i16]     // Checked narrowing (may trap)
+let w: i8 = x.trunc#[i8]    // Truncating (never traps)
 
 // ✗ No implicit conversions
 let y: i64 = x  // ERROR
@@ -90,14 +90,14 @@ let y: i64 = x  // ERROR
 ### Pattern: Error Handling with Result
 
 ```klar
-fn read_config(path: string) -> Result[Config, IoError] {
+fn read_config(path: string) -> Result#[Config, IoError] {
     let content: string = fs_read_string(path)?  // Propagates error
     let config: Config = parse_config(content)?
     return Ok(config)
 }
 
 fn main() -> i32 {
-    let config_result: Result[Config, IoError] = read_config("config.json")
+    let config_result: Result#[Config, IoError] = read_config("config.json")
     match config_result {
         Ok(config) => {
             use_config(config)
@@ -155,7 +155,7 @@ for i: i32 in 0..10 {
 }
 
 // List iteration
-var list: List[string] = List.new[string]()
+var list: List#[string] = List.new#[string]()
 list.push("one")
 list.push("two")
 for item: string in list {
@@ -163,7 +163,7 @@ for item: string in list {
 }
 
 // Map iteration
-var map: Map[string, i32] = Map.new[string, i32]()
+var map: Map#[string, i32] = Map.new#[string, i32]()
 map.insert("a", 1)
 map.insert("b", 2)
 for entry: (string, i32) in map {
@@ -205,13 +205,13 @@ fn main() -> i32 {
 ### Pattern: Generic Functions
 
 ```klar
-fn swap[T](a: inout T, b: inout T) {
+fn swap#[T](a: inout T, b: inout T) {
     let temp: T = *a
     *a = *b
     *b = temp
 }
 
-fn max[T: Ordered](a: T, b: T) -> T {
+fn max#[T: Ordered](a: T, b: T) -> T {
     if a > b {
         return a
     }
@@ -241,7 +241,7 @@ var items = List.new()
 
 // ✓ Correct
 let x: i32 = 42
-var items: List[i32] = List.new[i32]()
+var items: List#[i32] = List.new#[i32]()
 ```
 
 ### Mistake 2: Using Symbolic Operators
@@ -277,7 +277,7 @@ let y: i64 = x
 
 // ✓ Correct
 let x: i32 = 42
-let y: i64 = x.as[i64]
+let y: i64 = x.as#[i64]
 ```
 
 ### Mistake 5: Missing Struct Field Types
@@ -325,7 +325,7 @@ klar> double(x)
 ```klar
 fn main() -> i32 {
     // Reading a file
-    let content_result: Result[String, IoError] = fs_read_string("input.txt")
+    let content_result: Result#[String, IoError] = fs_read_string("input.txt")
     match content_result {
         Ok(content) => {
             println("File contents:")
@@ -338,7 +338,7 @@ fn main() -> i32 {
     }
     
     // Writing a file
-    let write_result: Result[void, IoError] = fs_write_string("output.txt", "Hello!")
+    let write_result: Result#[void, IoError] = fs_write_string("output.txt", "Hello!")
     match write_result {
         Ok(_) => { println("File written successfully") }
         Err(e) => { println("Error writing file: {e}") }
@@ -379,7 +379,7 @@ fn main() -> i32 {
 1. **Always provide explicit types** — No inference
 2. **Use `and`/`or`/`not`** — Not `&&`/`||`/`!`
 3. **Use explicit `return`** — Every return is visible
-4. **Use explicit conversions** — `.as[]`, `.to[]`, `.trunc[]`
+4. **Use explicit conversions** — `.as#[]`, `.to#[]`, `.trunc#[]`
 5. **Handle errors with `Result`** — Use `?` for propagation
 6. **Handle nullability with `?T`** — No null pointers
 7. **Test in REPL when unsure** — Verify before presenting
@@ -390,9 +390,9 @@ fn main() -> i32 {
 
 | Conversion | Method | Behavior |
 |------------|--------|----------|
-| Safe widening | `.as[T]` | Always succeeds |
-| Checked narrowing | `.to[T]` | Traps on overflow |
-| Truncating | `.trunc[T]` | Discards high bits |
+| Safe widening | `.as#[T]` | Always succeeds |
+| Checked narrowing | `.to#[T]` | Traps on overflow |
+| Truncating | `.trunc#[T]` | Discards high bits |
 
 ### Arithmetic Operators
 

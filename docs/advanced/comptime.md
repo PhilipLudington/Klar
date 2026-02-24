@@ -68,13 +68,13 @@ fn main() -> i32 {
 Functions can have comptime parameters for generic computation:
 
 ```klar
-fn make_array[comptime N: i32]() -> [i32; N] {
+fn make_array#[comptime N: i32]() -> [i32; N] {
     // N is known at compile time
     return @repeat(0, N)
 }
 
 fn main() -> i32 {
-    let arr: [i32; 5] = make_array[5]()
+    let arr: [i32; 5] = make_array#[5]()
     return arr.len()
 }
 ```
@@ -87,9 +87,9 @@ Get the name of a type as a string:
 
 ```klar
 fn main() -> i32 {
-    let name1: string = @typeName[i32]       // "i32"
-    let name2: string = @typeName[string]    // "string"
-    let name3: string = @typeName[Point]     // "Point"
+    let name1: string = @typeName#[i32]       // "i32"
+    let name2: string = @typeName#[string]    // "string"
+    let name3: string = @typeName#[Point]     // "Point"
 
     println(name1)
     return 0
@@ -108,7 +108,7 @@ struct Point {
 
 fn main() -> i32 {
     // Check if type is a struct
-    let info: TypeInfo = @typeInfo[Point]
+    let info: TypeInfo = @typeInfo#[Point]
 
     match info {
         TypeInfo.Struct(s) => {
@@ -132,8 +132,8 @@ struct User {
 }
 
 fn main() -> i32 {
-    let has_name: bool = @hasField[User]("name")   // true
-    let has_email: bool = @hasField[User]("email") // false
+    let has_name: bool = @hasField#[User]("name")   // true
+    let has_email: bool = @hasField#[User]("email") // false
 
     return 0
 }
@@ -144,15 +144,15 @@ fn main() -> i32 {
 Get field information for a struct:
 
 ```klar
-fn print_fields[T]() {
-    let fields: [FieldInfo] = @fields[T]
+fn print_fields#[T]() {
+    let fields: [FieldInfo] = @fields#[T]
     for field: FieldInfo in fields {
         println("Field: {field.name}, Type: {field.type_name}")
     }
 }
 
 fn main() -> i32 {
-    print_fields[Point]()
+    print_fields#[Point]()
     // Output:
     // Field: x, Type: i32
     // Field: y, Type: i32
@@ -183,7 +183,7 @@ fn main() -> i32 {
 Emit a custom compile-time error:
 
 ```klar
-fn @validate_size[comptime N: i32]() {
+fn @validate_size#[comptime N: i32]() {
     if N <= 0 {
         @compileError("size must be positive")
     }
@@ -269,9 +269,9 @@ fn main() -> i32 {
 ## Example: Generic Serialization
 
 ```klar
-fn serialize_struct[T](value: T) -> string {
+fn serialize_struct#[T](value: T) -> string {
     var result: string = "{"
-    let fields: [FieldInfo] = @fields[T]
+    let fields: [FieldInfo] = @fields#[T]
 
     for (i, field) in fields.enumerate() {
         if i > 0 {
@@ -302,7 +302,7 @@ fn @bad() {
 
 // Invalid - dynamic allocation
 fn @also_bad() {
-    var list: List[i32] = List.new[i32]()  // Error: allocation not allowed
+    var list: List#[i32] = List.new#[i32]()  // Error: allocation not allowed
 }
 ```
 
@@ -329,7 +329,7 @@ const PORT: i32 = @valid_port(8080)
 ### Use Comptime for Code Generation
 
 ```klar
-fn @generate_handler[T]() {
+fn @generate_handler#[T]() {
     // Generate specialized code based on type
 }
 ```

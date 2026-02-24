@@ -10,16 +10,16 @@ impl Wrapper {
     }
 }
 
-async fn fetch() -> Future[Wrapper] {
+async fn fetch() -> Future#[Wrapper] {
     return Wrapper { value: 42 }
 }
 
-async fn process() -> Future[i32] {
+async fn process() -> Future#[i32] {
     let w: Wrapper = await fetch()
     return w.get()
 }
 
 fn main() -> i32 {
-    let _f: Future[i32] = process()
+    let _f: Future#[i32] = process()
     return 0
 }

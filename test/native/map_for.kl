@@ -1,7 +1,7 @@
-// Test for-loop iteration over Map[K,V]
+// Test for-loop iteration over Map#[K,V]
 fn main() -> i32 {
     // Create a map with some key-value pairs
-    var m: Map[i32, i32] = Map.new[i32, i32]()
+    var m: Map#[i32, i32] = Map.new#[i32, i32]()
     m.insert(1, 10)
     m.insert(2, 20)
     m.insert(3, 30)
@@ -39,7 +39,7 @@ fn main() -> i32 {
     }
 
     // Test with empty map
-    var empty: Map[i32, i32] = Map.new[i32, i32]()
+    var empty: Map#[i32, i32] = Map.new#[i32, i32]()
     var empty_count: i32 = 0
     for (k, v) in empty {
         empty_count = empty_count + 1

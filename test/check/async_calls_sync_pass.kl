@@ -4,7 +4,7 @@ fn add(a: i32, b: i32) -> i32 {
     return a + b
 }
 
-async fn compute() -> Future[i32] {
+async fn compute() -> Future#[i32] {
     let x: i32 = add(20, 22)
     return x
 }

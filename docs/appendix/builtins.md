@@ -77,7 +77,7 @@ assert_eq(a, b)         // OK
 assert_eq(a, 100)       // Panic: assertion failed: 42 != 100
 ```
 
-**Signature:** `fn assert_eq[T: Eq](left: T, right: T)`
+**Signature:** `fn assert_eq#[T: Eq](left: T, right: T)`
 
 ## Debugging Functions
 
@@ -91,7 +91,7 @@ let y: i32 = dbg(x + 5)  // Prints: [dbg] x + 5 = 15
 // y is 15
 ```
 
-**Signature:** `fn dbg[T](value: T) -> T`
+**Signature:** `fn dbg#[T](value: T) -> T`
 
 ### panic
 
@@ -122,7 +122,7 @@ let arr: [i32; 3] = [1, 2, 3]
 let m: i32 = len(arr)  // 3
 ```
 
-**Signature:** `fn len[T](collection: T) -> i32`
+**Signature:** `fn len#[T](collection: T) -> i32`
 
 Most collections also have a `.len()` method:
 
@@ -143,7 +143,7 @@ let p: Point = Point { x: 1, y: 2 }
 println(type_name(p))  // "Point"
 ```
 
-**Signature:** `fn type_name[T](value: T) -> string`
+**Signature:** `fn type_name#[T](value: T) -> string`
 
 ## Mathematical Functions
 
@@ -187,8 +187,8 @@ let larger: i32 = max(a, b)   // 20
 ```
 
 **Signatures:**
-- `fn min[T: Ordered](a: T, b: T) -> T`
-- `fn max[T: Ordered](a: T, b: T) -> T`
+- `fn min#[T: Ordered](a: T, b: T) -> T`
+- `fn max#[T: Ordered](a: T, b: T) -> T`
 
 ## Memory Functions
 
@@ -197,13 +197,13 @@ let larger: i32 = max(a, b)   // 20
 Explicitly drop a value (call its Drop implementation).
 
 ```klar
-var list: List[i32] = List.new[i32]()
+var list: List#[i32] = List.new#[i32]()
 list.push(1)
 list.push(2)
 drop(list)  // Explicitly free memory
 ```
 
-**Signature:** `fn drop[T](value: T)`
+**Signature:** `fn drop#[T](value: T)`
 
 Note: Values are automatically dropped when they go out of scope. Use `drop` only when you need to free resources early.
 
@@ -223,8 +223,8 @@ let absent: ?i32 = None
 Create result values.
 
 ```klar
-let success: Result[i32, string] = Ok(42)
-let failure: Result[i32, string] = Err("error message")
+let success: Result#[i32, string] = Ok(42)
+let failure: Result#[i32, string] = Err("error message")
 ```
 
 ## FFI Pointer Functions
@@ -236,13 +236,13 @@ These functions work with C pointers for FFI. Most require `unsafe` blocks.
 Check if a nullable pointer is null. Safe to call without `unsafe`.
 
 ```klar
-let ptr: COptPtr[i32] = get_some_pointer()
+let ptr: COptPtr#[i32] = get_some_pointer()
 if is_null(ptr) {
     println("Pointer is null")
 }
 ```
 
-**Signature:** `fn is_null[T](ptr: COptPtr[T]) -> bool`
+**Signature:** `fn is_null#[T](ptr: COptPtr#[T]) -> bool`
 
 ### unwrap_ptr
 
@@ -250,11 +250,11 @@ Convert a nullable pointer to a non-null pointer. Panics if null.
 
 ```klar
 unsafe {
-    let non_null: CPtr[i32] = unwrap_ptr(ptr)
+    let non_null: CPtr#[i32] = unwrap_ptr(ptr)
 }
 ```
 
-**Signature:** `fn unwrap_ptr[T](ptr: COptPtr[T]) -> CPtr[T]` (unsafe)
+**Signature:** `fn unwrap_ptr#[T](ptr: COptPtr#[T]) -> CPtr#[T]` (unsafe)
 
 ### read
 
@@ -266,7 +266,7 @@ unsafe {
 }
 ```
 
-**Signature:** `fn read[T](ptr: CPtr[T]) -> T` (unsafe)
+**Signature:** `fn read#[T](ptr: CPtr#[T]) -> T` (unsafe)
 
 ### write
 
@@ -278,7 +278,7 @@ unsafe {
 }
 ```
 
-**Signature:** `fn write[T](ptr: CPtr[T], value: T) -> void` (unsafe)
+**Signature:** `fn write#[T](ptr: CPtr#[T], value: T) -> void` (unsafe)
 
 ### offset
 
@@ -286,12 +286,12 @@ Perform pointer arithmetic.
 
 ```klar
 unsafe {
-    let next: CPtr[i32] = offset(ptr, 1)  // Move forward by 1 element
-    let prev: CPtr[i32] = offset(ptr, -1) // Move backward by 1 element
+    let next: CPtr#[i32] = offset(ptr, 1)  // Move forward by 1 element
+    let prev: CPtr#[i32] = offset(ptr, -1) // Move backward by 1 element
 }
 ```
 
-**Signature:** `fn offset[T](ptr: CPtr[T], count: isize) -> CPtr[T]` (unsafe)
+**Signature:** `fn offset#[T](ptr: CPtr#[T], count: isize) -> CPtr#[T]` (unsafe)
 
 ### ref_to_ptr
 
@@ -300,11 +300,11 @@ Convert a reference to a raw pointer.
 ```klar
 var x: i32 = 42
 unsafe {
-    let ptr: CPtr[i32] = ref_to_ptr(ref x)
+    let ptr: CPtr#[i32] = ref_to_ptr(ref x)
 }
 ```
 
-**Signature:** `fn ref_to_ptr[T](r: ref T) -> CPtr[T]` (unsafe)
+**Signature:** `fn ref_to_ptr#[T](r: ref T) -> CPtr#[T]` (unsafe)
 
 ### ptr_cast
 
@@ -312,11 +312,11 @@ Cast a pointer to a different type.
 
 ```klar
 unsafe {
-    let byte_ptr: CPtr[u8] = ptr_cast[u8](int_ptr)
+    let byte_ptr: CPtr#[u8] = ptr_cast#[u8](int_ptr)
 }
 ```
 
-**Signature:** `fn ptr_cast[U, T](ptr: CPtr[T]) -> CPtr[U]` (unsafe)
+**Signature:** `fn ptr_cast#[U, T](ptr: CPtr#[T]) -> CPtr#[U]` (unsafe)
 
 ## Comptime Builtins
 
@@ -324,10 +324,10 @@ These are available only in comptime contexts:
 
 | Function | Description |
 |----------|-------------|
-| `@typeName[T]` | Get type name at compile time |
-| `@typeInfo[T]` | Get type metadata |
-| `@hasField[T](name)` | Check if struct has field |
-| `@fields[T]` | Get struct field information |
+| `@typeName#[T]` | Get type name at compile time |
+| `@typeInfo#[T]` | Get type metadata |
+| `@hasField#[T](name)` | Check if struct has field |
+| `@fields#[T]` | Get struct field information |
 | `@assert(cond, msg)` | Compile-time assertion |
 | `@compileError(msg)` | Emit compile error |
 | `@repeat(value, n)` | Create array with repeated value |
@@ -354,20 +354,20 @@ See [Comptime](../advanced/comptime.md) for details.
 | `drop(val)` | Explicit drop | `void` |
 | `Some(val)` | Create Some | `?T` |
 | `None` | None value | `?T` |
-| `Ok(val)` | Create Ok | `Result[T, E]` |
-| `Err(val)` | Create Err | `Result[T, E]` |
+| `Ok(val)` | Create Ok | `Result#[T, E]` |
+| `Err(val)` | Create Err | `Result#[T, E]` |
 
 ### FFI Functions (require `unsafe`)
 
 | Function | Description | Return Type |
 |----------|-------------|-------------|
 | `is_null(ptr)` | Check if null (safe) | `bool` |
-| `unwrap_ptr(ptr)` | Unwrap nullable pointer | `CPtr[T]` |
+| `unwrap_ptr(ptr)` | Unwrap nullable pointer | `CPtr#[T]` |
 | `read(ptr)` | Read from pointer | `T` |
 | `write(ptr, val)` | Write to pointer | `void` |
-| `offset(ptr, n)` | Pointer arithmetic | `CPtr[T]` |
-| `ref_to_ptr(ref)` | Reference to pointer | `CPtr[T]` |
-| `ptr_cast[U](ptr)` | Cast pointer type | `CPtr[U]` |
+| `offset(ptr, n)` | Pointer arithmetic | `CPtr#[T]` |
+| `ref_to_ptr(ref)` | Reference to pointer | `CPtr#[T]` |
+| `ptr_cast#[U](ptr)` | Cast pointer type | `CPtr#[U]` |
 
 ## Next Steps
 

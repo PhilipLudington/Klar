@@ -56,7 +56,7 @@ MoonBit made specific language design choices to make the sampler effective:
 | Incremental type checking | **None** | Real-time partial checking | **High** |
 | Grammar machine-readability | No spec file | Parseable grammar spec | Medium |
 | Keyword-based syntax | **Yes** (`and`/`or`/`not`) | Yes | None |
-| Explicit type conversions | **Yes** (`.as[T]`, `.to[T]`) | Yes | None |
+| Explicit type conversions | **Yes** (`.as#[T]`, `.to#[T]`) | Yes | None |
 
 Klar already has strong foundations: mandatory variable types, keyword-based operators, explicit conversions, and no implicit behavior. The gaps are in **function signatures**, **incremental checking**, and **tooling for AI integration**.
 
@@ -314,7 +314,7 @@ High effort. This is a significant extension to both the parser and checker. It 
   "type_syntax": {
     "primitives": ["i32", "i64", "f64", "bool", "string", "void"],
     "optional": "?T",
-    "result": "Result[T, E]",
+    "result": "Result#[T, E]",
     "array": "[T; N]",
     "function": "fn(Args) -> Ret"
   },

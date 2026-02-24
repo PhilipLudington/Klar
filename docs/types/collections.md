@@ -1,21 +1,21 @@
 # Collections
 
-Klar provides dynamic collection types: `List[T]`, `Map[K, V]`, `Set[T]`, and `Range[T]`.
+Klar provides dynamic collection types: `List#[T]`, `Map#[K, V]`, `Set#[T]`, and `Range#[T]`.
 
-## List[T]
+## List#[T]
 
 A dynamic, growable array.
 
 ### Creating Lists
 
 ```klar
-var list: List[i32] = List.new[i32]()
+var list: List#[i32] = List.new#[i32]()
 ```
 
 ### Adding Elements
 
 ```klar
-var list: List[i32] = List.new[i32]()
+var list: List#[i32] = List.new#[i32]()
 list.push(10)
 list.push(20)
 list.push(30)
@@ -44,7 +44,7 @@ let second: i32 = list[1]    // 20
 ### Iterating Lists
 
 ```klar
-var numbers: List[i32] = List.new[i32]()
+var numbers: List#[i32] = List.new#[i32]()
 numbers.push(1)
 numbers.push(2)
 numbers.push(3)
@@ -59,8 +59,8 @@ numbers.drop()  // Clean up
 ### Example: Building a List
 
 ```klar
-fn range_list(start: i32, end: i32) -> List[i32] {
-    var result: List[i32] = List.new[i32]()
+fn range_list(start: i32, end: i32) -> List#[i32] {
+    var result: List#[i32] = List.new#[i32]()
     for i: i32 in start..end {
         result.push(i)
     }
@@ -68,20 +68,20 @@ fn range_list(start: i32, end: i32) -> List[i32] {
 }
 ```
 
-## Map[K, V]
+## Map#[K, V]
 
 A hash map storing key-value pairs.
 
 ### Creating Maps
 
 ```klar
-var scores: Map[string, i32] = Map.new[string, i32]()
+var scores: Map#[string, i32] = Map.new#[string, i32]()
 ```
 
 ### Adding and Updating
 
 ```klar
-var map: Map[string, i32] = Map.new[string, i32]()
+var map: Map#[string, i32] = Map.new#[string, i32]()
 map.insert("alice", 100)
 map.insert("bob", 85)
 map.insert("alice", 95)  // Updates existing key
@@ -109,8 +109,8 @@ if map.contains_key("bob") {
 | `len() -> i32` | Number of entries |
 | `is_empty() -> bool` | Check if empty |
 | `clear()` | Remove all entries |
-| `keys() -> List[K]` | Get all keys |
-| `values() -> List[V]` | Get all values |
+| `keys() -> List#[K]` | Get all keys |
+| `values() -> List#[V]` | Get all values |
 | `drop()` | Free the map's memory |
 
 ### Iterating Maps
@@ -118,7 +118,7 @@ if map.contains_key("bob") {
 Maps iterate as `(key, value)` tuples:
 
 ```klar
-var scores: Map[string, i32] = Map.new[string, i32]()
+var scores: Map#[string, i32] = Map.new#[string, i32]()
 scores.insert("alice", 100)
 scores.insert("bob", 85)
 
@@ -132,8 +132,8 @@ scores.drop()
 ### Example: Word Counter
 
 ```klar
-fn count_words(words: List[string]) -> Map[string, i32] {
-    var counts: Map[string, i32] = Map.new[string, i32]()
+fn count_words(words: List#[string]) -> Map#[string, i32] {
+    var counts: Map#[string, i32] = Map.new#[string, i32]()
 
     for word: string in words {
         if counts.contains_key(word) {
@@ -148,20 +148,20 @@ fn count_words(words: List[string]) -> Map[string, i32] {
 }
 ```
 
-## Set[T]
+## Set#[T]
 
 A collection of unique values.
 
 ### Creating Sets
 
 ```klar
-var set: Set[i32] = Set.new[i32]()
+var set: Set#[i32] = Set.new#[i32]()
 ```
 
 ### Adding Elements
 
 ```klar
-var set: Set[i32] = Set.new[i32]()
+var set: Set#[i32] = Set.new#[i32]()
 set.insert(10)
 set.insert(20)
 set.insert(10)  // Duplicate - no effect
@@ -183,7 +183,7 @@ set.insert(10)  // Duplicate - no effect
 ### Iterating Sets
 
 ```klar
-var numbers: Set[i32] = Set.new[i32]()
+var numbers: Set#[i32] = Set.new#[i32]()
 numbers.insert(3)
 numbers.insert(1)
 numbers.insert(4)
@@ -199,9 +199,9 @@ numbers.drop()
 ### Example: Finding Unique Values
 
 ```klar
-fn unique(list: List[i32]) -> List[i32] {
-    var seen: Set[i32] = Set.new[i32]()
-    var result: List[i32] = List.new[i32]()
+fn unique(list: List#[i32]) -> List#[i32] {
+    var seen: Set#[i32] = Set.new#[i32]()
+    var result: List#[i32] = List.new#[i32]()
 
     for n: i32 in list {
         if not seen.contains(n) {
@@ -215,7 +215,7 @@ fn unique(list: List[i32]) -> List[i32] {
 }
 ```
 
-## Range[T]
+## Range#[T]
 
 A range of values, typically used for iteration.
 
@@ -223,16 +223,16 @@ A range of values, typically used for iteration.
 
 ```klar
 // Exclusive range: 0, 1, 2, 3, 4
-let exclusive: Range[i32] = 0..5
+let exclusive: Range#[i32] = 0..5
 
 // Inclusive range: 0, 1, 2, 3, 4, 5
-let inclusive: Range[i32] = 0..=5
+let inclusive: Range#[i32] = 0..=5
 ```
 
 ### Range Properties
 
 ```klar
-let r: Range[i32] = 0..10
+let r: Range#[i32] = 0..10
 
 let start: i32 = r.start    // 0
 let end: i32 = r.end        // 10
@@ -248,7 +248,7 @@ for i: i32 in 0..5 {
 }
 
 // As a variable
-var r: Range[i32] = 1..=3
+var r: Range#[i32] = 1..=3
 for x: i32 in r {
     println("{x}")  // 1, 2, 3
 }
@@ -258,7 +258,7 @@ for x: i32 in r {
 
 ```klar
 // Ranges work with any numeric type
-for i: i64 in 0.as[i64]..100.as[i64] {
+for i: i64 in 0.as#[i64]..100.as#[i64] {
     // ...
 }
 ```
@@ -269,7 +269,7 @@ Collections allocate memory on the heap. Call `drop()` when done:
 
 ```klar
 fn process() -> void {
-    var list: List[i32] = List.new[i32]()
+    var list: List#[i32] = List.new#[i32]()
     list.push(1)
     list.push(2)
 
@@ -289,12 +289,12 @@ allocations owned by elements within the collection.
 | Primitives (`i32`, `bool`, etc.) | Fully cleaned up |
 | Structs (value types) | Fully cleaned up |
 | `String` | **Leaks** - String's buffer not freed |
-| `List[T]` | **Leaks** - Inner list's array not freed |
-| `Rc[T]`, `Arc[T]` | Reference count decremented properly |
+| `List#[T]` | **Leaks** - Inner list's array not freed |
+| `Rc#[T]`, `Arc#[T]` | Reference count decremented properly |
 
 **Example of leak:**
 ```klar
-var names: List[String] = List.new[String]()
+var names: List#[String] = List.new#[String]()
 names.push("alice".to_string())
 names.push("bob".to_string())
 names.drop()  // Frees the List's array, but "alice" and "bob" buffers leak!
@@ -305,20 +305,20 @@ names.drop()  // Frees the List's array, but "alice" and "bob" buffers leak!
 For nested collections, you must manually drop inner elements:
 
 ```klar
-var matrix: List[List[i32]] = List.new[List[i32]]()
+var matrix: List#[List#[i32]] = List.new#[List#[i32]]()
 
-var row1: List[i32] = List.new[i32]()
+var row1: List#[i32] = List.new#[i32]()
 row1.push(1)
 row1.push(2)
 matrix.push(row1)
 
-var row2: List[i32] = List.new[i32]()
+var row2: List#[i32] = List.new#[i32]()
 row2.push(3)
 row2.push(4)
 matrix.push(row2)
 
 // Clean up: iterate and drop each row, then drop matrix
-for row: List[i32] in matrix {
+for row: List#[i32] in matrix {
     row.drop()
 }
 matrix.drop()
@@ -331,19 +331,19 @@ matrix.drop()
 
 ```klar
 struct Graph {
-    edges: Map[i32, List[i32]],
+    edges: Map#[i32, List#[i32]],
 }
 
 impl Graph {
     fn new() -> Graph {
-        return Graph { edges: Map.new[i32, List[i32]]() }
+        return Graph { edges: Map.new#[i32, List#[i32]]() }
     }
 
     fn add_edge(inout self: Graph, from: i32, to: i32) -> void {
         if not self.edges.contains_key(from) {
-            self.edges.insert(from, List.new[i32]())
+            self.edges.insert(from, List.new#[i32]())
         }
-        var neighbors: List[i32] = self.edges.get(from)
+        var neighbors: List#[i32] = self.edges.get(from)
         neighbors.push(to)
     }
 

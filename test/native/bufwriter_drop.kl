@@ -7,15 +7,15 @@ fn main() -> i32 {
     // Scope block to test drop behavior
     {
         // Open file and wrap in BufWriter
-        let open_result: Result[File, IoError] = File.open(path, "w")
+        let open_result: Result#[File, IoError] = File.open(path, "w")
         if not open_result.is_ok() {
             return 1
         }
         var file: File = open_result!
-        var writer: BufWriter[File] = BufWriter.new[File](file)
+        var writer: BufWriter#[File] = BufWriter.new#[File](file)
 
         // Write some data - this should be buffered
-        let write_result: Result[i32, IoError] = writer.write_string("Hello, World!")
+        let write_result: Result#[i32, IoError] = writer.write_string("Hello, World!")
         if not write_result.is_ok() {
             return 2
         }
@@ -26,7 +26,7 @@ fn main() -> i32 {
     }
 
     // Read the file back to verify data was flushed
-    let read_result: Result[String, IoError] = File.read_to_string(path)
+    let read_result: Result#[String, IoError] = File.read_to_string(path)
     if not read_result.is_ok() {
         return 3
     }

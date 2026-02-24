@@ -1,22 +1,22 @@
 // Test deeply nested async call chain: A -> B -> C -> D
 
-async fn d() -> Future[i32] {
+async fn d() -> Future#[i32] {
     return 10
 }
 
-async fn c() -> Future[i32] {
+async fn c() -> Future#[i32] {
     return await d()
 }
 
-async fn b() -> Future[i32] {
+async fn b() -> Future#[i32] {
     return await c()
 }
 
-async fn a() -> Future[i32] {
+async fn a() -> Future#[i32] {
     return await b()
 }
 
 fn main() -> i32 {
-    let _f: Future[i32] = a()
+    let _f: Future#[i32] = a()
     return 0
 }

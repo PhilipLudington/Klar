@@ -28,12 +28,12 @@
 //! | string       | {ptr, i32, i32}    | String struct                      |
 //! | void         | void               |                                    |
 //! | ?T           | {i1, T}            | Optional: has_value + payload      |
-//! | Result[T,E]  | {i1, max(T,E)}     | Result: is_ok + payload            |
+//! | Result#[T,E]  | {i1, max(T,E)}     | Result: is_ok + payload            |
 //! | [T; N]       | [N x T]            | Fixed array                        |
 //! | [T]          | {ptr, i64}         | Slice                              |
 //! | &T           | ptr                | Reference (opaque pointer)         |
-//! | Rc[T]        | ptr                | Reference-counted pointer          |
-//! | Arc[T]       | ptr                | Atomic reference-counted pointer   |
+//! | Rc#[T]        | ptr                | Reference-counted pointer          |
+//! | Arc#[T]       | ptr                | Atomic reference-counted pointer   |
 //! | struct {...} | {field1, field2..} | LLVM struct                        |
 //! | enum {...}   | {i8, [N x i8]}     | Tagged union                       |
 //! | fn(T) -> R   | {ptr, ptr}         | Closure: fn_ptr + env_ptr         |

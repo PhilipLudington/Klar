@@ -84,22 +84,22 @@ impl StringBuilder {
 // ============================================================================
 
 /// Parse a string as an integer.
-pub fn parse_int(s: string) -> Result[i64, ParseError] {
+pub fn parse_int(s: string) -> Result#[i64, ParseError] {
     // Built-in implementation
 }
 
 /// Parse a string as an unsigned integer.
-pub fn parse_uint(s: string) -> Result[u64, ParseError] {
+pub fn parse_uint(s: string) -> Result#[u64, ParseError] {
     // Built-in implementation
 }
 
 /// Parse a string as a float.
-pub fn parse_float(s: string) -> Result[f64, ParseError] {
+pub fn parse_float(s: string) -> Result#[f64, ParseError] {
     // Built-in implementation
 }
 
 /// Parse a string as a boolean.
-pub fn parse_bool(s: string) -> Result[bool, ParseError] {
+pub fn parse_bool(s: string) -> Result#[bool, ParseError] {
     s match {
         "true" | "True" | "TRUE" | "1" => Ok(true)
         "false" | "False" | "FALSE" | "0" => Ok(false)

@@ -1,6 +1,6 @@
 // Test Map resize with many inserts
 fn main() -> i32 {
-    var m: Map[i32, i32] = Map.new[i32, i32]()
+    var m: Map#[i32, i32] = Map.new#[i32, i32]()
 
     // Initial capacity is 8, insert more to trigger resize
     // Insert 20 key-value pairs

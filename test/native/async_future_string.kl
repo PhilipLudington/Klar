@@ -1,14 +1,14 @@
 // Test Future with non-primitive type (string)
 
-async fn greet(name: string) -> Future[string] {
+async fn greet(name: string) -> Future#[string] {
     return "Hello, " + name
 }
 
-async fn build_greeting() -> Future[string] {
+async fn build_greeting() -> Future#[string] {
     return await greet("Klar")
 }
 
 fn main() -> i32 {
-    let _f: Future[string] = build_greeting()
+    let _f: Future#[string] = build_greeting()
     return 0
 }

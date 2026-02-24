@@ -27,28 +27,28 @@ fn test_is_null() -> void {
 }
 
 unsafe fn test_unwrap_ptr() -> void {
-    // unwrap_ptr converts COptPtr[T] -> CPtr[T]
+    // unwrap_ptr converts COptPtr#[T] -> CPtr#[T]
     // Would need actual pointers to test at runtime
     println("  unwrap_ptr: OK (type check only)")
 }
 
 unsafe fn test_read_write() -> void {
-    // read[T](ptr: CPtr[T]) -> T
-    // write[T](ptr: CPtr[T], value: T) -> void
+    // read#[T](ptr: CPtr#[T]) -> T
+    // write#[T](ptr: CPtr#[T], value: T) -> void
     // Would need actual pointers to test at runtime
     println("  read/write: OK (type check only)")
 }
 
 unsafe fn test_offset() -> void {
-    // offset[T](ptr: CPtr[T], count: isize) -> CPtr[T]
+    // offset#[T](ptr: CPtr#[T], count: isize) -> CPtr#[T]
     // Would need actual pointers to test at runtime
     println("  offset: OK (type check only)")
 }
 
 unsafe fn test_ref_to_ptr() -> void {
-    // ref_to_ptr converts ref T -> CPtr[T]
+    // ref_to_ptr converts ref T -> CPtr#[T]
     var x: i32 = 42
-    // ref_to_ptr(&x) would give us CPtr[i32]
+    // ref_to_ptr(&x) would give us CPtr#[i32]
     // Can't test at runtime until codegen is implemented
     println("  ref_to_ptr: OK (type check only)")
 }

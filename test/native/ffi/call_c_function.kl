@@ -21,7 +21,7 @@
 extern {
     fn add_numbers(a: i32, b: i32) -> i32
     fn get_magic_number() -> i32
-    fn double_value(value: CPtr[i32]) -> void
+    fn double_value(value: CPtr#[i32]) -> void
 }
 
 fn main() -> i32 {

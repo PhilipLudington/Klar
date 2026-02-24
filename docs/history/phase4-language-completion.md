@@ -69,17 +69,17 @@ This document contains the detailed implementation status for completed Phase 4 
 - [x] Generate monomorphized functions in codegen (emit.zig)
 
 ### Generic Structs
-- [x] Support generic struct definitions: `struct Pair[A, B] { first: A, second: B }`
+- [x] Support generic struct definitions: `struct Pair#[A, B] { first: A, second: B }`
 - [x] Instantiate generic structs at usage sites
 - [x] Generate monomorphized struct types for codegen
 - [x] Handle generic struct methods
 
 ### Generic Enums
-- [x] Support generic enum definitions: `enum Option[T] { Some(T), None }`
+- [x] Support generic enum definitions: `enum Option#[T] { Some(T), None }`
 - [x] Instantiate generic enums at usage sites (type checker + monomorphization)
 - [x] Generate monomorphized enum types for codegen
-- [x] Parse and type-check generic enum variants in match patterns (Type[T]::Variant syntax)
-- [x] Emit generic enum literal construction in codegen (EnumType[T]::Variant(payload) syntax)
+- [x] Parse and type-check generic enum variants in match patterns (Type#[T]::Variant syntax)
+- [x] Emit generic enum literal construction in codegen (EnumType#[T]::Variant(payload) syntax)
 - [x] Emit match expression codegen for all patterns
 
 ### Type Inference at Call Sites
@@ -131,7 +131,7 @@ This document contains the detailed implementation status for completed Phase 4 
 - [x] Handle impl blocks for generic types
 
 ### Trait Bounds
-- [x] Implement trait bounds on generics: `fn sort[T: Ordered](list: List[T])`
+- [x] Implement trait bounds on generics: `fn sort#[T: Ordered](list: List#[T])`
 - [x] Check that type arguments satisfy trait bounds
 - [x] Support multiple trait bounds: `T: Ordered + Clone`
 - [ ] Handle where clauses for complex bounds
@@ -259,7 +259,7 @@ This document contains the detailed implementation status for completed Phase 4 
 
 **Objective:** Implement core standard library types.
 
-**Status:** ✅ Core Complete. Optional, Result, builtin type methods (integer, string, array), List[T], String, Map[K,V], and Set[T] are all implemented as builtin types. Ordering type and Prelude not yet started (deferred - may not be needed given builtin approach).
+**Status:** ✅ Core Complete. Optional, Result, builtin type methods (integer, string, array), List#[T], String, Map#[K,V], and Set#[T] are all implemented as builtin types. Ordering type and Prelude not yet started (deferred - may not be needed given builtin approach).
 
 ### Option Type (Built-in as `?T`)
 - [x] Built-in `?T` syntax for Optional types
@@ -272,8 +272,8 @@ This document contains the detailed implementation status for completed Phase 4 
 - [x] Implement `and_then(f)` - applies function returning Optional
 - [x] Implement `Eq`, `Clone` for Option
 
-### Result Type (Built-in as `Result[T, E]`)
-- [x] Built-in `Result[T, E]` type with `Ok(T)` and `Err(E)` variants
+### Result Type (Built-in as `Result#[T, E]`)
+- [x] Built-in `Result#[T, E]` type with `Ok(T)` and `Err(E)` variants
 - [x] Implement `is_ok()`, `is_err()`
 - [x] Implement `unwrap()` - panics on Err
 - [x] Implement `unwrap_err()` - panics on Ok
@@ -347,10 +347,10 @@ String is implemented as a builtin type in the compiler with heap-allocated memo
 - `test/native/string_basic.kl` - Basic tests
 
 ### List Type (Builtin)
-List[T] is implemented as a builtin type in the compiler, not in the standard library.
+List#[T] is implemented as a builtin type in the compiler, not in the standard library.
 
 **Implemented:**
-- [x] `List.new[T]()` - Create an empty list
+- [x] `List.new#[T]()` - Create an empty list
 - [x] `push(value)` - Add element to end
 - [x] `pop()` -> ?T - Remove and return last element
 - [x] `get(index)` -> ?T - Get element at index
@@ -369,10 +369,10 @@ List[T] is implemented as a builtin type in the compiler, not in the standard li
 - [x] Drop trait - Proper memory cleanup
 
 ### Map Type (Builtin)
-Map[K, V] is implemented as a builtin type in the compiler with hash-based implementation.
+Map#[K, V] is implemented as a builtin type in the compiler with hash-based implementation.
 
 **Implemented:**
-- [x] `Map.new[K, V]()` - Create an empty map
+- [x] `Map.new#[K, V]()` - Create an empty map
 - [x] `insert(key, value)` - Insert or update key-value pair
 - [x] `get(key)` -> ?V - Get value for key (optional)
 - [x] `remove(key)` -> ?V - Remove and return value
@@ -381,7 +381,7 @@ Map[K, V] is implemented as a builtin type in the compiler with hash-based imple
 - [x] `is_empty()` -> bool - Check if empty
 - [x] `capacity()` -> i32 - Allocated capacity
 - [x] `clear()` - Remove all entries
-- [x] `clone()` -> Map[K, V] - Deep copy
+- [x] `clone()` -> Map#[K, V] - Deep copy
 - [x] `drop()` - Free memory
 - [x] Automatic resizing on insert
 
@@ -392,11 +392,11 @@ Map[K, V] is implemented as a builtin type in the compiler with hash-based imple
 - `test/native/map_resize.kl` - Resize/capacity tests
 
 ### Set Type (Builtin)
-Set[T] is implemented as a builtin type in the compiler with hash-based implementation.
+Set#[T] is implemented as a builtin type in the compiler with hash-based implementation.
 
 **Implemented:**
-- [x] `Set.new[T]()` - Create an empty set
-- [x] `Set.with_capacity[T](n)` - Create with pre-allocated capacity
+- [x] `Set.new#[T]()` - Create an empty set
+- [x] `Set.with_capacity#[T](n)` - Create with pre-allocated capacity
 - [x] `insert(value)` -> bool - Insert element, returns true if new
 - [x] `contains(value)` -> bool - Check membership
 - [x] `remove(value)` -> bool - Remove element, returns true if existed
@@ -404,11 +404,11 @@ Set[T] is implemented as a builtin type in the compiler with hash-based implemen
 - [x] `is_empty()` -> bool - Check if empty
 - [x] `capacity()` -> i32 - Allocated capacity
 - [x] `clear()` - Remove all elements
-- [x] `clone()` -> Set[T] - Deep copy
+- [x] `clone()` -> Set#[T] - Deep copy
 - [x] `drop()` - Free memory
-- [x] `union(other)` -> Set[T] - Set union
-- [x] `intersection(other)` -> Set[T] - Set intersection
-- [x] `difference(other)` -> Set[T] - Set difference
+- [x] `union(other)` -> Set#[T] - Set union
+- [x] `intersection(other)` -> Set#[T] - Set intersection
+- [x] `difference(other)` -> Set#[T] - Set difference
 
 **Files Modified:**
 - `src/checker.zig` - Set type checking and method validation
@@ -440,15 +440,15 @@ Set[T] is implemented as a builtin type in the compiler with hash-based implemen
 std/
 ├── core/
 │   ├── mod.kl          # Re-exports
-│   ├── option.kl       # Option[T]
-│   ├── result.kl       # Result[T, E]
+│   ├── option.kl       # Option#[T]
+│   ├── result.kl       # Result#[T, E]
 │   └── ordering.kl     # Ordering enum
 ├── string.kl           # String type
 ├── collections/
 │   ├── mod.kl
-│   ├── list.kl         # List[T]
-│   ├── map.kl          # Map[K, V]
-│   └── set.kl          # Set[T]
+│   ├── list.kl         # List#[T]
+│   ├── map.kl          # Map#[K, V]
+│   └── set.kl          # Set#[T]
 └── prelude.kl          # Auto-imported types
 ```
 
@@ -461,7 +461,7 @@ std/
 **Status:** 🟡 Read/Write Traits Complete. Mutable buffer I/O with arrays working. Basic file I/O types and stdout/stderr implemented as builtins. Buffered I/O complete. Filesystem operations not yet started.
 
 ### Mutable Buffer Allocation
-- [x] `@repeat(value, count)` builtin for array initialization: `var buf: [u8; 256] = @repeat(0.as[u8], 256)`
+- [x] `@repeat(value, count)` builtin for array initialization: `var buf: [u8; 256] = @repeat(0.as#[u8], 256)`
 - [x] `ref T` syntax for immutable references (replaces `&T`)
 - [x] `inout T` syntax for mutable references (replaces `&mut T`)
 - [x] `ref x` expression for creating references (replaces `&x`, mutability determined by whether x is `var` or `let`)
@@ -470,14 +470,14 @@ std/
 
 ### Read Trait
 - [x] Define `Read` trait as builtin (in checker.zig)
-- [x] Add `read(self: inout Self, buf: [u8]) -> Result[i32, IoError]` (slice by value)
+- [x] Add `read(self: inout Self, buf: [u8]) -> Result#[i32, IoError]` (slice by value)
 - [x] Register `File:Read` implementation
 - [x] Add `File.read_all(path)`, `File.read_to_string(path)` static convenience methods
 
 ### Write Trait
 - [x] Define `Write` trait as builtin (in checker.zig)
-- [x] Add `write(self: inout Self, buf: [u8]) -> Result[i32, IoError]` (slice by value)
-- [x] Add `flush(self: inout Self) -> Result[void, IoError]`
+- [x] Add `write(self: inout Self, buf: [u8]) -> Result#[i32, IoError]` (slice by value)
+- [x] Add `flush(self: inout Self) -> Result#[void, IoError]`
 - [x] Register `File:Write`, `Stdout:Write`, `Stderr:Write` implementations
 - [ ] Add default `write_all()`
 
@@ -503,15 +503,15 @@ std/
 - [x] Implement `stdin()` function returning Stdin type
 - [x] Implement `stdout()` function returning Stdout type
 - [x] Implement `stderr()` function returning Stderr type
-- [x] Implement Read for Stdin (`read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]`)
+- [x] Implement Read for Stdin (`read(&mut self, buf: &mut [u8]) -> Result#[i32, IoError]`)
 - [x] Implement `Stdout.write(buf)`, `Stdout.write_string(s)` and `Stdout.flush()`
 - [x] Implement `Stderr.write(buf)`, `Stderr.write_string(s)` and `Stderr.flush()`
 - [x] Implement Write trait for Stdout and Stderr
 - [x] Platform-specific stdio access (macOS: `__stdoutp`/`__stderrp`/`__stdinp`, Linux: `stdout`/`stderr`/`stdin`)
 
 ### Buffered I/O
-- [x] Implement `BufReader[R: Read]` wrapper
-- [x] Implement `BufWriter[W: Write]` wrapper
+- [x] Implement `BufReader#[R: Read]` wrapper
+- [x] Implement `BufWriter#[W: Write]` wrapper
 - [x] Add buffered read_line() method
 - [x] Handle buffer flushing on drop (BufWriter automatically flushes when going out of scope)
 
@@ -528,10 +528,10 @@ std/
 - [ ] Implement `fs.read_dir(path)` returning iterator
 
 ### Convenience Functions
-- [ ] Implement `fs.read(path) -> Result[List[u8], IoError]`
-- [ ] Implement `fs.read_string(path) -> Result[String, IoError]`
-- [ ] Implement `fs.write(path, data) -> Result[void, IoError]`
-- [ ] Implement `fs.write_string(path, s) -> Result[void, IoError]`
+- [ ] Implement `fs.read(path) -> Result#[List#[u8], IoError]`
+- [ ] Implement `fs.read_string(path) -> Result#[String, IoError]`
+- [ ] Implement `fs.write(path, data) -> Result#[void, IoError]`
+- [ ] Implement `fs.write_string(path, s) -> Result#[void, IoError]`
 
 ### Testing
 - [x] Test: stdout write_string and flush work (stdout_basic.kl)
@@ -576,7 +576,7 @@ std/
 
 **Objective:** Implement iterators and for-loop integration.
 
-**Status:** ✅ Core Complete. For-loops work with Range[T], arrays, List[T], Set[T], and Map[K,V]. Iterator adapter methods implemented on collection types. Lazy iterator types and collect not yet started.
+**Status:** ✅ Core Complete. For-loops work with Range#[T], arrays, List#[T], Set#[T], and Map#[K,V]. Iterator adapter methods implemented on collection types. Lazy iterator types and collect not yet started.
 
 ### Iterator Trait
 - [x] Define `Iterator` trait as builtin (in checker.zig)
@@ -596,15 +596,15 @@ std/
 - [x] Support for-loops over Range literals (`for i in 0..10`)
 - [x] Support for-loops over Range variables (`var r = 0..10; for i in r`)
 - [x] Support for-loops over arrays (`for x in [1, 2, 3]`)
-- [x] Support for-loops over List[T] (`for x in list`, test/native/list_for.kl)
+- [x] Support for-loops over List#[T] (`for x in list`, test/native/list_for.kl)
 - [x] Handle loop variables correctly with proper scoping
 - [x] Support `break` and `continue` in for-loops
-- [x] Support for-loops over Map[K,V] (`for (k, v) in map`, test/native/map_for.kl)
-- [x] Support for-loops over Set[T] (`for x in set`, test/native/set_for.kl)
+- [x] Support for-loops over Map#[K,V] (`for (k, v) in map`, test/native/map_for.kl)
+- [x] Support for-loops over Set#[T] (`for x in set`, test/native/set_for.kl)
 - [ ] Desugar via `into_iter()` for custom types (currently only builtin types supported)
 
 ### Range Iterators
-- [x] Implement `Range[T]` builtin type with `{start, end, current, inclusive}` layout
+- [x] Implement `Range#[T]` builtin type with `{start, end, current, inclusive}` layout
 - [x] Support exclusive ranges: `start..end`
 - [x] Support inclusive ranges: `start..=end`
 - [x] Implement `next()` method for Range iteration
@@ -619,11 +619,11 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 - [x] `map(f)` / `map_values(f)` - List, Set (returns List), Map (map_values)
 - [x] `enumerate()` - List, Set (returns List of tuples)
 - [x] `zip(other)` - List, Set (returns List of tuples)
-- [ ] Lazy iterator types (Map[Self, B], Filter[Self], etc.) - deferred
+- [ ] Lazy iterator types (Map#[Self, B], Filter#[Self], etc.) - deferred
 
 ### Collect
-- [ ] Define `FromIterator[T]` trait
-- [ ] Implement `collect[C: FromIterator[Self.Item]](self) -> C`
+- [ ] Define `FromIterator#[T]` trait
+- [ ] Implement `collect#[C: FromIterator#[Self.Item]](self) -> C`
 - [ ] Implement FromIterator for List
 - [ ] Implement FromIterator for Set
 - [ ] Implement FromIterator for String (from chars)
@@ -673,19 +673,19 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 - [x] Test: `?` on Result propagates Err (result_propagate.kl)
 
 ### From Trait for Error Conversion
-- [x] Define `From[T]` trait as builtin (in checker.zig)
+- [x] Define `From#[T]` trait as builtin (in checker.zig)
 - [x] Implement automatic error conversion in `?`
-- [x] Allow `IoError -> AppError` via `impl AppError: From[IoError]`
+- [x] Allow `IoError -> AppError` via `impl AppError: From#[IoError]`
 - [x] Test: error_from_conversion.kl verifies From::from() is called during `?` propagation
 - [ ] Chain From implementations
 
 ### Error Context
 - [x] Add `.context(msg)` method to Result
-- [x] Add `ContextError[E]` builtin type with message and cause
-- [x] `Result[T, E].context(msg) -> Result[T, ContextError[E]]`
-- [x] `ContextError[E].message() -> string` returns context message
-- [x] `ContextError[E].cause() -> E` returns original error
-- [x] `ContextError[E].display_chain() -> string` formats full error chain
+- [x] Add `ContextError#[E]` builtin type with message and cause
+- [x] `Result#[T, E].context(msg) -> Result#[T, ContextError#[E]]`
+- [x] `ContextError#[E].message() -> string` returns context message
+- [x] `ContextError#[E].cause() -> E` returns original error
+- [x] `ContextError#[E].display_chain() -> string` formats full error chain
 - [x] Support chained error messages (nested ContextError types)
 - [x] Preserve original error for inspection
 - [x] Test: result_context.kl verifies context wrapping, chaining, message/cause extraction
@@ -698,7 +698,7 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 - [x] Omit location in release builds (file=null, line=0, column=0)
 
 ### Into Trait
-- [x] Define `Into[T]` trait (inverse of From)
+- [x] Define `Into#[T]` trait (inverse of From)
 - [x] Method signature: `fn into(self: Self) -> T`
 - [x] Type variable substitution for return types in verifyMethodSignature()
 - [ ] Blanket implement Into when From exists
@@ -712,7 +712,7 @@ Note: Implemented as eager methods on collection types, not lazy iterator types.
 
 **Files Modified:**
 - `src/types.zig` - Added ContextErrorType to Type union ✓
-- `src/checker.zig` - Enhanced `?` operator checking, expected_type context, checkOkErrCall, .context() method, ContextError methods (message, cause, display_chain), ContextError[E] type resolution ✓
+- `src/checker.zig` - Enhanced `?` operator checking, expected_type context, checkOkErrCall, .context() method, ContextError methods (message, cause, display_chain), ContextError#[E] type resolution ✓
 - `src/codegen/emit.zig` - Generate `?` early return code, extended ReturnTypeInfo, expected_type propagation, inferExprType for unwrap_err/unwrap, ContextError codegen, display_chain implementation ✓
 - `src/interpreter.zig` - Added ContextError support, Result methods, ContextError methods (message, cause, display_chain) ✓
 - `src/values.zig` - Added ContextErrorValue ✓

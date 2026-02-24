@@ -1,14 +1,14 @@
-// Test List[T].clone() - creates a deep copy of the list
+// Test List#[T].clone() - creates a deep copy of the list
 
 fn main() -> i32 {
     // Create a list with some values
-    var list: List[i32] = List.new[i32]()
+    var list: List#[i32] = List.new#[i32]()
     list.push(10)
     list.push(20)
     list.push(30)
 
     // Clone the list
-    let cloned: List[i32] = list.clone()
+    let cloned: List#[i32] = list.clone()
 
     // Verify cloned list has same length
     let cloned_len: i32 = cloned.len()
@@ -48,8 +48,8 @@ fn main() -> i32 {
     }
 
     // Test cloning an empty list
-    var empty_list: List[i32] = List.new[i32]()
-    let empty_cloned: List[i32] = empty_list.clone()
+    var empty_list: List#[i32] = List.new#[i32]()
+    let empty_cloned: List#[i32] = empty_list.clone()
     let empty_len: i32 = empty_cloned.len()
     if empty_len != 0 {
         return 7

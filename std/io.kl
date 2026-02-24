@@ -12,13 +12,13 @@ import std.core
 
 /// Types that can be read from.
 trait Read {
-    fn read(self: &mut Self, buf: &mut [u8]) -> Result[usize, IoError]
+    fn read(self: &mut Self, buf: &mut [u8]) -> Result#[usize, IoError]
 }
 
 /// Types that can be written to.
 trait Write {
-    fn write(self: &mut Self, buf: &[u8]) -> Result[usize, IoError]
-    fn flush(self: &mut Self) -> Result[void, IoError]
+    fn write(self: &mut Self, buf: &[u8]) -> Result#[usize, IoError]
+    fn flush(self: &mut Self) -> Result#[void, IoError]
 }
 
 // ============================================================================
@@ -48,7 +48,7 @@ enum IoError {
 struct Stdin {}
 
 impl Stdin: Read {
-    fn read(self: &mut Self, buf: &mut [u8]) -> Result[usize, IoError] {
+    fn read(self: &mut Self, buf: &mut [u8]) -> Result#[usize, IoError] {
         // Built-in implementation
     }
 }
@@ -57,11 +57,11 @@ impl Stdin: Read {
 struct Stdout {}
 
 impl Stdout: Write {
-    fn write(self: &mut Self, buf: &[u8]) -> Result[usize, IoError] {
+    fn write(self: &mut Self, buf: &[u8]) -> Result#[usize, IoError] {
         // Built-in implementation
     }
 
-    fn flush(self: &mut Self) -> Result[void, IoError] {
+    fn flush(self: &mut Self) -> Result#[void, IoError] {
         // Built-in implementation
     }
 }
@@ -70,11 +70,11 @@ impl Stdout: Write {
 struct Stderr {}
 
 impl Stderr: Write {
-    fn write(self: &mut Self, buf: &[u8]) -> Result[usize, IoError] {
+    fn write(self: &mut Self, buf: &[u8]) -> Result#[usize, IoError] {
         // Built-in implementation
     }
 
-    fn flush(self: &mut Self) -> Result[void, IoError] {
+    fn flush(self: &mut Self) -> Result#[void, IoError] {
         // Built-in implementation
     }
 }
@@ -99,7 +99,7 @@ pub fn stderr() -> Stderr {
 // ============================================================================
 
 /// Read a line from stdin.
-pub fn read_line() -> Result[string, IoError] {
+pub fn read_line() -> Result#[string, IoError] {
     // Built-in implementation
 }
 

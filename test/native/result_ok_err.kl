@@ -2,7 +2,7 @@
 
 fn main() -> i32 {
     // Test 1: Ok result -> ok() returns Some
-    let ok_result: Result[i32, i32] = Ok(42)
+    let ok_result: Result#[i32, i32] = Ok(42)
     let ok_opt: ?i32 = ok_result.ok()
     if not ok_opt.is_some() {
         return 1  // Error: Ok.ok() should be Some
@@ -18,7 +18,7 @@ fn main() -> i32 {
     }
 
     // Test 3: Err result -> err() returns Some
-    let err_result: Result[i32, i32] = Err(99)
+    let err_result: Result#[i32, i32] = Err(99)
     let err_opt: ?i32 = err_result.err()
     if not err_opt.is_some() {
         return 4  // Error: Err.err() should be Some

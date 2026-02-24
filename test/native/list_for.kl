@@ -1,7 +1,7 @@
-// Test for-loop iteration over List[T]
+// Test for-loop iteration over List#[T]
 fn main() -> i32 {
     // Create a list with some values
-    var list: List[i32] = List.new[i32]()
+    var list: List#[i32] = List.new#[i32]()
     list.push(10)
     list.push(20)
     list.push(30)
@@ -18,7 +18,7 @@ fn main() -> i32 {
     }
 
     // Test with empty list
-    var empty: List[i32] = List.new[i32]()
+    var empty: List#[i32] = List.new#[i32]()
     var count: i32 = 0
     for y: i32 in empty {
         count = count + 1

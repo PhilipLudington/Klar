@@ -95,7 +95,7 @@ Phase 4 transforms Klar from a working compiler into a complete, usable programm
 - `comptime` blocks (replacing C preprocessor) - stretch goal for Phase 4
 - No macros - design uses `comptime` for metaprogramming instead
 - Word operators (`and`, `or`, `not`) - already implemented ✅
-- Explicit casts (`.as[T]`, `.to[T]`) - already implemented ✅
+- Explicit casts (`.as#[T]`, `.to#[T]`) - already implemented ✅
 
 ---
 
@@ -141,21 +141,21 @@ Phase 4 transforms Klar from a working compiler into a complete, usable programm
 
 **Objective:** Implement full generic type checking with monomorphization.
 
-**Current State:** Parser accepts `fn foo[T](x: T)` syntax, but checker treats type parameters as unknown types.
+**Current State:** Parser accepts `fn foo#[T](x: T)` syntax, but checker treats type parameters as unknown types.
 
 **Deliverables:**
 - [x] Track type parameters in checker scope
 - [ ] Implement type parameter substitution
 - [ ] Implement monomorphization (generate concrete types at call sites)
-- [ ] Support generic structs: `struct Pair[A, B] { first: A, second: B }`
-- [ ] Support generic enums: `enum Option[T] { Some(T), None }`
-- [ ] Support generic functions: `fn swap[T](a: &mut T, b: &mut T)`
+- [ ] Support generic structs: `struct Pair#[A, B] { first: A, second: B }`
+- [ ] Support generic enums: `enum Option#[T] { Some(T), None }`
+- [ ] Support generic functions: `fn swap#[T](inout a: T, inout b: T)`
 - [ ] Implement type inference at call sites
 - [ ] Cache monomorphized instances to avoid duplication
 
 **Type Inference Example:**
 ```klar
-fn identity[T](x: T) -> T { x }
+fn identity#[T](x: T) -> T { x }
 
 let a = identity(42)        // T inferred as i32
 let b = identity("hello")   // T inferred as string
@@ -165,13 +165,13 @@ let c: f64 = identity(3.14) // T inferred as f64 from context
 **Monomorphization Strategy:**
 ```
 Source:
-  fn swap[T](a: &mut T, b: &mut T) { ... }
-  swap(&mut x, &mut y)  // x, y are i32
-  swap(&mut p, &mut q)  // p, q are f64
+  fn swap#[T](inout a: T, inout b: T) { ... }
+  swap(inout x, inout y)  // x, y are i32
+  swap(inout p, inout q)  // p, q are f64
 
 Generated:
-  fn swap_i32(a: &mut i32, b: &mut i32) { ... }
-  fn swap_f64(a: &mut f64, b: &mut f64) { ... }
+  fn swap_i32(inout a: i32, inout b: i32) { ... }
+  fn swap_f64(inout a: f64, inout b: f64) { ... }
 ```
 
 **Files to Modify:**
@@ -195,7 +195,7 @@ src/codegen/emit.zig     # Emit monomorphized functions
 **Deliverables:**
 - [ ] Trait definition parsing (already done) and checking
 - [ ] Trait implementation (`impl Type: Trait { ... }`)
-- [ ] Trait bounds on generics (`fn sort[T: Ordered](list: List[T])`)
+- [ ] Trait bounds on generics (`fn sort#[T: Ordered](list: List#[T])`)
 - [ ] Multiple trait bounds (`T: Ordered + Clone`)
 - [ ] Default method implementations
 - [ ] Associated types (`type Item` in traits)
@@ -217,7 +217,7 @@ trait Clone {
 }
 
 trait Drop {
-    fn drop(self: &mut Self)
+    fn drop(inout self: Self) -> void
 }
 
 trait Default {
@@ -241,7 +241,7 @@ impl i32: Printable {
     }
 }
 
-fn print_value[T: Printable](value: T) {
+fn print_value#[T: Printable](value: T) {
     println(value.to_string())
 }
 
@@ -281,7 +281,7 @@ src/types.zig            # Add trait bounds to type system
 ```
 import std.collections.List
   → Look in: std/collections.kl or std/collections/mod.kl
-  → Find: pub struct List[T] { ... }
+  → Find: pub struct List#[T] { ... }
 
 import .utils
   → Look in: ./utils.kl (relative to current file)
@@ -321,30 +321,30 @@ src/project.zig          # NEW: Project/package handling
 **Objective:** Implement core standard library types.
 
 **Deliverables:**
-- [ ] `Option[T]` - replaces built-in `?T` with stdlib type
-- [ ] `Result[T, E]` - replaces built-in with richer API
+- [ ] `Option#[T]` - replaces built-in `?T` with stdlib type
+- [ ] `Result#[T, E]` - replaces built-in with richer API
 - [ ] `String` - owned, growable string type
-- [ ] `List[T]` - dynamic array (like Vec in Rust)
-- [ ] `Map[K, V]` - hash map
-- [ ] `Set[T]` - hash set
+- [ ] `List#[T]` - dynamic array (like Vec in Rust)
+- [ ] `Map#[K, V]` - hash map
+- [ ] `Set#[T]` - hash set
 - [ ] `Range` - iteration support
 
 **String Type:**
 ```klar
 // std/string.kl
 pub struct String {
-    data: Rc[List[u8]]
+    data: Rc#[List#[u8]]
     len: usize
 }
 
 impl String {
     pub fn new() -> String
-    pub fn from(s: &str) -> String
-    pub fn len(self) -> usize
-    pub fn push(self: &mut Self, c: char)
-    pub fn concat(self, other: &String) -> String
-    pub fn slice(self, start: usize, end: usize) -> &str
-    pub fn chars(self) -> Iterator[char]
+    pub fn from(ref s: string) -> String
+    pub fn len(self) -> i32
+    pub fn push(inout self, c: u8) -> void
+    pub fn concat(self, ref other: String) -> String
+    pub fn slice(self, start: i32, end: i32) -> string
+    pub fn chars(self) -> Iterator#[u8]
 }
 
 impl String: Eq + Clone + Hash + Printable
@@ -353,24 +353,24 @@ impl String: Eq + Clone + Hash + Printable
 **List Type:**
 ```klar
 // std/collections/list.kl
-pub struct List[T] {
-    data: *mut T
-    len: usize
-    capacity: usize
+pub struct List#[T] {
+    data: CPtr#[T]
+    len: i32
+    capacity: i32
 }
 
-impl List[T] {
-    pub fn new() -> List[T]
-    pub fn with_capacity(cap: usize) -> List[T]
-    pub fn push(self: &mut Self, value: T)
-    pub fn pop(self: &mut Self) -> Option[T]
-    pub fn get(self, index: usize) -> Option[&T]
-    pub fn len(self) -> usize
-    pub fn iter(self) -> Iterator[&T]
+impl List#[T] {
+    pub fn new() -> List#[T]
+    pub fn with_capacity(cap: i32) -> List#[T]
+    pub fn push(inout self, value: T) -> void
+    pub fn pop(inout self) -> ?T
+    pub fn get(ref self, index: i32) -> ?T
+    pub fn len(ref self) -> i32
+    pub fn iter(ref self) -> Iterator#[T]
 }
 
-impl List[T]: Clone where T: Clone
-impl List[T]: Drop  // Drops all elements
+impl List#[T]: Clone where T: Clone
+impl List#[T]: Drop  // Drops all elements
 ```
 
 **Files to Create:**
@@ -378,15 +378,15 @@ impl List[T]: Drop  // Drops all elements
 std/
 ├── core/
 │   ├── mod.kl          # Re-exports
-│   ├── option.kl       # Option[T]
-│   ├── result.kl       # Result[T, E]
+│   ├── option.kl       # Option#[T]
+│   ├── result.kl       # Result#[T, E]
 │   └── ordering.kl     # Ordering enum
 ├── string.kl           # String type
 ├── collections/
 │   ├── mod.kl
-│   ├── list.kl         # List[T]
-│   ├── map.kl          # Map[K, V]
-│   └── set.kl          # Set[T]
+│   ├── list.kl         # List#[T]
+│   ├── map.kl          # Map#[K, V]
+│   └── set.kl          # Set#[T]
 └── prelude.kl          # Auto-imported types
 ```
 
@@ -413,12 +413,12 @@ std/
 ```klar
 // std/io/traits.kl
 pub trait Read {
-    fn read(self: &mut Self, buf: &mut [u8]) -> Result[usize, IoError]
+    fn read(inout self, buf: inout [u8]) -> Result#[i32, IoError]
 }
 
 pub trait Write {
-    fn write(self: &mut Self, buf: &[u8]) -> Result[usize, IoError]
-    fn flush(self: &mut Self) -> Result[void, IoError]
+    fn write(inout self, ref buf: [u8]) -> Result#[i32, IoError]
+    fn flush(inout self) -> Result#[void, IoError]
 }
 ```
 
@@ -428,8 +428,8 @@ pub trait Write {
 pub struct File { ... }
 
 impl File {
-    pub fn open(path: &Path) -> Result[File, IoError]
-    pub fn create(path: &Path) -> Result[File, IoError]
+    pub fn open(ref path: string) -> Result#[File, IoError]
+    pub fn create(ref path: string) -> Result#[File, IoError]
 }
 
 impl File: Read + Write
@@ -473,17 +473,17 @@ std/
 ```klar
 pub trait Iterator {
     type Item
-    fn next(self: &mut Self) -> Option[Self.Item]
+    fn next(inout self) -> ?Self.Item
 
     // Default implementations
-    fn map[B](self, f: fn(Self.Item) -> B) -> Map[Self, B]
-    fn filter(self, pred: fn(&Self.Item) -> bool) -> Filter[Self]
-    fn collect[C: FromIterator[Self.Item]](self) -> C
+    fn map#[B](self, f: fn(Self.Item) -> B) -> Map#[Self, B]
+    fn filter(self, pred: fn(ref Self.Item) -> bool) -> Filter#[Self]
+    fn collect#[C: FromIterator#[Self.Item]](self) -> C
 }
 
 pub trait IntoIterator {
     type Item
-    type IntoIter: Iterator[Item = Self.Item]
+    type IntoIter: Iterator#[Item = Self.Item]
     fn into_iter(self) -> Self.IntoIter
 }
 ```
@@ -496,9 +496,13 @@ for x in collection {
 }
 
 // Desugared to
-let mut iter = collection.into_iter()
-while let Some(x) = iter.next() {
-    process(x)
+var iter: Iterator = collection.into_iter()
+loop {
+    let item: ?T = iter.next()
+    match item {
+        Some(x) => { process(x) }
+        None => { break }
+    }
 }
 ```
 
@@ -522,7 +526,7 @@ while let Some(x) = iter.next() {
 
 **Error Propagation:**
 ```klar
-fn read_config() -> Result[Config, Error] {
+fn read_config() -> Result#[Config, Error] {
     let file = File.open("config.toml")?  // Returns Err if fails
     let contents = file.read_to_string()?
     let config = parse_toml(contents)?
@@ -532,15 +536,15 @@ fn read_config() -> Result[Config, Error] {
 
 **Error Conversion:**
 ```klar
-trait From[T] {
+trait From#[T] {
     fn from(value: T) -> Self
 }
 
 // Automatic conversion via ?
-impl Error: From[IoError] { ... }
-impl Error: From[ParseError] { ... }
+impl Error: From#[IoError] { ... }
+impl Error: From#[ParseError] { ... }
 
-fn example() -> Result[void, Error] {
+fn example() -> Result#[void, Error] {
     let file = File.open("x")?  // IoError → Error via From
     Ok(())
 }
@@ -1017,7 +1021,7 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn create(title: &str, width: i32, height: i32) -> Result[Window, SdlError] {
+    pub fn create(ref title: string, width: i32, height: i32) -> Result#[Window, SdlError] {
         let c_title = CString.from(title)
         let ptr = unsafe {
             sdl.CreateWindow(
@@ -1036,13 +1040,13 @@ impl Window {
 }
 
 impl Window: Drop {
-    fn drop(self: &mut Self) {
+    fn drop(inout self: Window) -> void {
         unsafe { sdl.DestroyWindow(self.ptr) }
     }
 }
 
 // Usage - automatically cleaned up
-fn main() -> Result[void, Error] {
+fn main() -> Result#[void, Error] {
     let window = Window.create("My Game", 800, 600)?
     // window.drop() called automatically at end of scope
 }

@@ -22,10 +22,10 @@
 //! | Hash | `hash(&self) -> i64` | Hashing for maps/sets |
 //! | Iterator | `next(&mut self) -> ?Self.Item` | Iteration protocol |
 //! | IntoIterator | `into_iter(self) -> Self.IntoIter` | Convert to iterator |
-//! | From[E] | `from(err: E) -> Self` | Error type conversion |
-//! | Into[T] | `into(self) -> T` | Type conversion |
-//! | Read | `read(&mut self, buf: &mut [u8]) -> Result[i32, IoError]` | Read I/O |
-//! | Write | `write(&mut self, buf: &[u8]) -> Result[i32, IoError]` | Write I/O |
+//! | From#[E] | `from(err: E) -> Self` | Error type conversion |
+//! | Into#[T] | `into(self) -> T` | Type conversion |
+//! | Read | `read(inout self, buf: inout [u8]) -> Result#[i32, IoError]` | Read I/O |
+//! | Write | `write(inout self, buf: ref [u8]) -> Result#[i32, IoError]` | Write I/O |
 //!
 //! ## Type Checking Flow for Traits
 //!
@@ -102,7 +102,7 @@ pub const StructMethod = struct {
 };
 
 /// Information about an error conversion needed for the ? operator.
-/// When a function returns Result[T, TargetError] and uses ? on Result[U, SourceError],
+/// When a function returns Result#[T, TargetError] and uses ? on Result#[U, SourceError],
 /// this records the From[SourceError] conversion to be generated in codegen.
 pub const ErrorConversionInfo = struct {
     /// The source error type (from the operand's Result type)

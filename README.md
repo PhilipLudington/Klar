@@ -34,7 +34,7 @@ Klar takes a different approach: **maximize clarity, minimize surprises**.
 | Null pointer danger | `?T` optional types |
 | Memory unsafety | Ownership + borrows, no dangling references |
 | Header/source split | Modules |
-| Implicit conversions | Explicit `.as[T]`, `.to[T]`, `.trunc[T]` |
+| Implicit conversions | Explicit `.as#[T]`, `.to#[T]`, `.trunc#[T]` |
 | Complex build systems | Convention-based builds |
 
 ## Quick Tour
@@ -55,8 +55,8 @@ let y: i64 = 100        // all types must be declared
 var counter: i32 = 0    // mutable
 
 // No implicit conversions
-let wide: i64 = x.as[i64]    // safe widening
-let narrow: i32 = y.to[i32]  // checked narrowing (traps on overflow)
+let wide: i64 = x.as#[i64]    // safe widening
+let narrow: i32 = y.to#[i32]  // checked narrowing (traps on overflow)
 ```
 
 ### String Interpolation
@@ -112,7 +112,7 @@ fn greet(name: string) {
 }
 
 // Generic functions
-fn max[T: Ordered](a: T, b: T) -> T {
+fn max#[T: Ordered](a: T, b: T) -> T {
     if a > b {
         return a
     }
@@ -145,7 +145,7 @@ struct Point {
     y: f64
 }
 
-enum Option[T] {
+enum Option#[T] {
     Some(T)
     None
 }
@@ -166,7 +166,7 @@ let value: i32 = maybe ?? 0          // default if None
 let forced: i32 = maybe!             // trap if None
 
 // Result types with propagation
-fn read_config() -> Result[Config, Error] {
+fn read_config() -> Result#[Config, Error] {
     let content: string = read_file(path)?   // propagate error
     let parsed: Config = parse(content)?
     return Ok(parsed)

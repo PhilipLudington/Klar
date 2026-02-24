@@ -1,7 +1,7 @@
-// Test List[T].pop() - removes and returns last element
+// Test List#[T].pop() - removes and returns last element
 
 fn main() -> i32 {
-    var list: List[i32] = List.new[i32]()
+    var list: List#[i32] = List.new#[i32]()
 
     // pop() on empty list returns None
     let empty_pop: ?i32 = list.pop()

@@ -83,14 +83,14 @@ fn main() -> i32 {
 ### Using in Generic Functions
 
 ```klar
-fn max[T: Ordered](a: T, b: T) -> T {
+fn max#[T: Ordered](a: T, b: T) -> T {
     if a > b {
         return a
     }
     return b
 }
 
-fn min[T: Ordered](a: T, b: T) -> T {
+fn min#[T: Ordered](a: T, b: T) -> T {
     if a < b {
         return a
     }
@@ -112,12 +112,12 @@ trait Clone {
 
 ```klar
 struct Data {
-    values: List[i32],
+    values: List#[i32],
 }
 
 impl Data: Clone {
     fn clone(self: Data) -> Data {
-        var new_values: List[i32] = List.new[i32]()
+        var new_values: List#[i32] = List.new#[i32]()
         for v: i32 in self.values {
             new_values.push(v)
         }
@@ -126,7 +126,7 @@ impl Data: Clone {
 }
 
 fn main() -> i32 {
-    var original: Data = Data { values: List.new[i32]() }
+    var original: Data = Data { values: List.new#[i32]() }
     original.values.push(1)
     original.values.push(2)
 
@@ -141,7 +141,7 @@ fn main() -> i32 {
 
 - All primitive types (integers, floats, bool, char)
 - `string`
-- `Rc[T]` and `Arc[T]` (shallow clone - shares underlying data)
+- `Rc#[T]` and `Arc#[T]` (shallow clone - shares underlying data)
 
 ## Drop - Cleanup
 
@@ -249,12 +249,12 @@ struct UserId {
 
 impl UserId: Hash {
     fn hash(self: UserId) -> u64 {
-        return self.id.as[u64]
+        return self.id.as#[u64]
     }
 }
 
 // Now UserId can be used as Map key
-var users: Map[UserId, string] = Map.new[UserId, string]()
+var users: Map#[UserId, string] = Map.new#[UserId, string]()
 ```
 
 ### Hash + Eq
@@ -313,10 +313,10 @@ fn main() -> i32 {
 
 ### Types with Built-in Iterator
 
-- `Range[T]`
-- `List[T]`
-- `Set[T]`
-- `Map[K, V]` (iterates as `(K, V)` tuples)
+- `Range#[T]`
+- `List#[T]`
+- `Set#[T]`
+- `Map#[K, V]` (iterates as `(K, V)` tuples)
 - Arrays `[T; N]`
 
 ## Read - Reading
@@ -325,7 +325,7 @@ The `Read` trait enables reading bytes from a source.
 
 ```klar
 trait Read {
-    fn read(inout self: Self, buffer: inout [u8]) -> Result[i32, IoError]
+    fn read(inout self: Self, buffer: inout [u8]) -> Result#[i32, IoError]
 }
 ```
 
@@ -335,8 +335,8 @@ The `Write` trait enables writing bytes to a destination.
 
 ```klar
 trait Write {
-    fn write(inout self: Self, data: [u8]) -> Result[i32, IoError]
-    fn flush(inout self: Self) -> Result[(), IoError]
+    fn write(inout self: Self, data: [u8]) -> Result#[i32, IoError]
+    fn flush(inout self: Self) -> Result#[(), IoError]
 }
 ```
 
@@ -345,7 +345,7 @@ trait Write {
 The `From` trait enables conversion from one type to another.
 
 ```klar
-trait From[T] {
+trait From#[T] {
     fn from(value: T) -> Self
 }
 ```
@@ -361,7 +361,7 @@ struct Fahrenheit {
     value: f64,
 }
 
-impl Celsius: From[Fahrenheit] {
+impl Celsius: From#[Fahrenheit] {
     fn from(f: Fahrenheit) -> Celsius {
         return Celsius { value: (f.value - 32.0) * 5.0 / 9.0 }
     }
@@ -380,12 +380,12 @@ fn main() -> i32 {
 The `Into` trait is the reciprocal of `From`.
 
 ```klar
-trait Into[T] {
+trait Into#[T] {
     fn into(self: Self) -> T
 }
 ```
 
-If `A: From[B]` is implemented, `B: Into[A]` is automatically available.
+If `A: From#[B]` is implemented, `B: Into#[A]` is automatically available.
 
 ## Trait Relationships
 

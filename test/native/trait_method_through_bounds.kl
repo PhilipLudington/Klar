@@ -28,7 +28,7 @@ impl Rectangle: Summable {
 }
 
 // Generic function that calls trait method through the bound
-fn get_sum[T: Summable](item: T) -> i32 {
+fn get_sum#[T: Summable](item: T) -> i32 {
     return item.sum()
 }
 

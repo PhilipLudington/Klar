@@ -148,7 +148,7 @@ pub fn isRefToSelf(t: Type) ?struct { mutable: bool } {
 /// Verify that an impl method signature matches the trait method signature.
 /// Returns true if signatures match, false otherwise.
 /// The trait method uses 'unknown' or type_var "Self" for Self parameter.
-/// For generic traits like From[E], trait_type_params contains [E] and trait_type_args
+/// For generic traits like From#[E], trait_type_params contains [E] and trait_type_args
 /// contains the concrete types [NetworkError]. Type variables in trait_sig are substituted.
 pub fn verifyMethodSignature(
     tc: anytype,
@@ -224,7 +224,7 @@ pub fn verifyMethodSignature(
             continue;
         }
 
-        // Check if trait parameter is a type variable (like E in From[E])
+        // Check if trait parameter is a type variable (like E in From#[E])
         // Substitute with the concrete type from trait_type_args
         var expected_param = trait_param;
         if (trait_param == .type_var) {
@@ -264,7 +264,7 @@ pub fn verifyMethodSignature(
             return false;
         }
     } else if (trait_sig.return_type == .type_var) {
-        // Non-Self type variable (like T in Into[T]) - substitute with concrete type
+        // Non-Self type variable (like T in Into#[T]) - substitute with concrete type
         var expected_return = trait_sig.return_type;
         for (trait_type_params, 0..) |tp, ti| {
             if (tp.id == trait_sig.return_type.type_var.id) {

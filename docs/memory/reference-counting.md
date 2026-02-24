@@ -1,6 +1,6 @@
 # Reference Counting
 
-When values need to be shared between multiple owners, Klar provides reference-counted smart pointers: `Rc[T]` for single-threaded use and `Arc[T]` for multi-threaded use.
+When values need to be shared between multiple owners, Klar provides reference-counted smart pointers: `Rc#[T]` for single-threaded use and `Arc#[T]` for multi-threaded use.
 
 ## When to Use Reference Counting
 
@@ -11,12 +11,12 @@ Use reference counting when:
 - You need shared data structures (graphs, caches, etc.)
 - The exact lifetime of data isn't known at compile time
 
-## Rc[T] - Single-Threaded Shared Ownership
+## Rc#[T] - Single-Threaded Shared Ownership
 
 ### Creating Rc
 
 ```klar
-let data: Rc[i32] = Rc.new(42)
+let data: Rc#[i32] = Rc.new(42)
 ```
 
 ### Sharing Ownership
@@ -24,9 +24,9 @@ let data: Rc[i32] = Rc.new(42)
 Use `.clone()` to create another owner:
 
 ```klar
-let original: Rc[string] = Rc.new("shared data")
-let copy1: Rc[string] = original.clone()
-let copy2: Rc[string] = original.clone()
+let original: Rc#[string] = Rc.new("shared data")
+let copy1: Rc#[string] = original.clone()
+let copy2: Rc#[string] = original.clone()
 
 // All three point to the same string
 println(original.get())  // "shared data"
@@ -40,13 +40,13 @@ The data is freed when the last owner is dropped:
 
 ```klar
 fn example() -> void {
-    let rc1: Rc[i32] = Rc.new(42)
-    let rc2: Rc[i32] = rc1.clone()
+    let rc1: Rc#[i32] = Rc.new(42)
+    let rc2: Rc#[i32] = rc1.clone()
 
     println(rc1.ref_count())  // 2
 
     {
-        let rc3: Rc[i32] = rc1.clone()
+        let rc3: Rc#[i32] = rc1.clone()
         println(rc1.ref_count())  // 3
     }  // rc3 dropped, count = 2
 
@@ -63,12 +63,12 @@ struct Config {
 }
 
 struct Component {
-    config: Rc[Config],
+    config: Rc#[Config],
     name: string,
 }
 
 fn main() -> i32 {
-    let config: Rc[Config] = Rc.new(Config {
+    let config: Rc#[Config] = Rc.new(Config {
         theme: "dark",
         language: "en",
     })
@@ -91,23 +91,23 @@ fn main() -> i32 {
 }
 ```
 
-## Arc[T] - Thread-Safe Shared Ownership
+## Arc#[T] - Thread-Safe Shared Ownership
 
 `Arc` is the atomic version of `Rc`, safe for sharing across threads.
 
 ### Creating Arc
 
 ```klar
-let data: Arc[i32] = Arc.new(42)
+let data: Arc#[i32] = Arc.new(42)
 ```
 
 ### Thread-Safe Sharing
 
 ```klar
-let shared: Arc[Counter] = Arc.new(Counter { value: 0 })
+let shared: Arc#[Counter] = Arc.new(Counter { value: 0 })
 
-let thread1_data: Arc[Counter] = shared.clone()
-let thread2_data: Arc[Counter] = shared.clone()
+let thread1_data: Arc#[Counter] = shared.clone()
+let thread2_data: Arc#[Counter] = shared.clone()
 
 // Can be safely sent to different threads
 ```
@@ -116,22 +116,22 @@ let thread2_data: Arc[Counter] = shared.clone()
 
 | Scenario | Use |
 |----------|-----|
-| Single-threaded program | `Rc[T]` |
-| Sharing within one thread | `Rc[T]` |
-| Sharing across threads | `Arc[T]` |
-| Performance critical, single-threaded | `Rc[T]` |
+| Single-threaded program | `Rc#[T]` |
+| Sharing within one thread | `Rc#[T]` |
+| Sharing across threads | `Arc#[T]` |
+| Performance critical, single-threaded | `Rc#[T]` |
 
 ## Combining with Cell for Mutability
 
-Since `Rc` and `Arc` provide shared ownership, the data they contain is immutable. Use `Cell[T]` for interior mutability.
+Since `Rc` and `Arc` provide shared ownership, the data they contain is immutable. Use `Cell#[T]` for interior mutability.
 
-### Rc[Cell[T]]
+### Rc#[Cell#[T]]
 
 ```klar
-let counter: Rc[Cell[i32]] = Rc.new(Cell.new(0))
+let counter: Rc#[Cell#[i32]] = Rc.new(Cell.new(0))
 
-let ref1: Rc[Cell[i32]] = counter.clone()
-let ref2: Rc[Cell[i32]] = counter.clone()
+let ref1: Rc#[Cell#[i32]] = counter.clone()
+let ref2: Rc#[Cell#[i32]] = counter.clone()
 
 // Both can modify the shared value
 ref1.get().set(10)
@@ -145,12 +145,12 @@ println(ref1.get().get())  // 20
 
 ```klar
 struct GameState {
-    score: Cell[i32],
-    level: Cell[i32],
+    score: Cell#[i32],
+    level: Cell#[i32],
 }
 
 struct Player {
-    state: Rc[GameState],
+    state: Rc#[GameState],
     name: string,
 }
 
@@ -162,7 +162,7 @@ impl Player {
 }
 
 fn main() -> i32 {
-    let state: Rc[GameState] = Rc.new(GameState {
+    let state: Rc#[GameState] = Rc.new(GameState {
         score: Cell.new(0),
         level: Cell.new(1),
     })
@@ -187,12 +187,12 @@ fn main() -> i32 {
 
 ```klar
 struct Cache {
-    data: Rc[Map[string, string]],
+    data: Rc#[Map#[string, string]],
 }
 
 impl Cache {
     fn new() -> Cache {
-        return Cache { data: Rc.new(Map.new[string, string]()) }
+        return Cache { data: Rc.new(Map.new#[string, string]()) }
     }
 
     fn share(ref self: Cache) -> Cache {
@@ -206,19 +206,19 @@ impl Cache {
 ```klar
 struct TreeNode {
     value: i32,
-    children: List[Rc[TreeNode]],
+    children: List#[Rc#[TreeNode]],
 }
 
 fn share_subtree() -> void {
-    let shared: Rc[TreeNode] = Rc.new(TreeNode {
+    let shared: Rc#[TreeNode] = Rc.new(TreeNode {
         value: 100,
-        children: List.new[Rc[TreeNode]](),
+        children: List.new#[Rc#[TreeNode]](),
     })
 
-    var root1_children: List[Rc[TreeNode]] = List.new[Rc[TreeNode]]()
+    var root1_children: List#[Rc#[TreeNode]] = List.new#[Rc#[TreeNode]]()
     root1_children.push(shared.clone())
 
-    var root2_children: List[Rc[TreeNode]] = List.new[Rc[TreeNode]]()
+    var root2_children: List#[Rc#[TreeNode]] = List.new#[Rc#[TreeNode]]()
     root2_children.push(shared.clone())
 
     let root1: TreeNode = TreeNode { value: 1, children: root1_children }
@@ -232,16 +232,16 @@ fn share_subtree() -> void {
 
 ```klar
 struct Observable {
-    observers: List[Rc[Observer]],
+    observers: List#[Rc#[Observer]],
 }
 
 impl Observable {
-    fn subscribe(inout self: Observable, observer: Rc[Observer]) -> void {
+    fn subscribe(inout self: Observable, observer: Rc#[Observer]) -> void {
         self.observers.push(observer)
     }
 
     fn notify(ref self: Observable, event: string) -> void {
-        for obs: Rc[Observer] in self.observers {
+        for obs: Rc#[Observer] in self.observers {
             obs.get().on_event(event)
         }
     }
@@ -258,8 +258,8 @@ Reference cycles cause memory leaks because the count never reaches zero.
 // BAD: Creates a cycle
 struct Node {
     value: i32,
-    next: ?Rc[Node],
-    prev: ?Rc[Node],  // Cycle!
+    next: ?Rc#[Node],
+    prev: ?Rc#[Node],  // Cycle!
 }
 ```
 
@@ -272,7 +272,7 @@ struct Node {
 ```klar
 // Option: Use indices instead of references
 struct NodeList {
-    nodes: List[Node],
+    nodes: List#[Node],
 }
 
 struct Node {
@@ -312,8 +312,8 @@ fn process(ref data: Data) -> void { ... }
 
 ```klar
 // Good - clone only when needed
-let shared: Rc[Data] = Rc.new(data)
-let reference: Rc[Data] = shared.clone()  // Only when sharing
+let shared: Rc#[Data] = Rc.new(data)
+let reference: Rc#[Data] = shared.clone()  // Only when sharing
 
 // Bad - unnecessary clones
 for i: i32 in 0..100 {
@@ -332,7 +332,7 @@ for i: i32 in 0..100 {
 /// Configuration shared across all components.
 /// Modifications visible to all holders.
 struct AppConfig {
-    config: Rc[Cell[ConfigData]],
+    config: Rc#[Cell#[ConfigData]],
 }
 ```
 

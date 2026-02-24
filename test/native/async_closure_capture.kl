@@ -1,16 +1,16 @@
 // Test closure that uses result of await
 
-async fn produce() -> Future[i32] {
+async fn produce() -> Future#[i32] {
     return 42
 }
 
-async fn use_closure() -> Future[i32] {
+async fn use_closure() -> Future#[i32] {
     let val: i32 = await produce()
     let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
     return double(val)
 }
 
 fn main() -> i32 {
-    let _f: Future[i32] = use_closure()
+    let _f: Future#[i32] = use_closure()
     return 0
 }
