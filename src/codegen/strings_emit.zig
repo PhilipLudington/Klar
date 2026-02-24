@@ -15,9 +15,9 @@
 //!
 //! ```
 //! struct String {
-//!     data: *u8,     // Pointer to character data (NOT null-terminated)
-//!     len: i32,      // Current length in bytes
-//!     capacity: i32, // Allocated capacity
+//!     data: *u8,     // Pointer to character data (null-terminated for C interop)
+//!     len: i32,      // Current length in bytes (excludes null terminator)
+//!     capacity: i32, // Allocated capacity (includes space for null terminator)
 //! }
 //! ```
 //!

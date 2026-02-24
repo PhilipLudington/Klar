@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Full 259/259 test file coverage.** 258 AST parity files + 1 error parity file (`missing_return_type.kl`). Selfhost tests: 742/774 passed (32 failures are all from 17 known intermittent files).
+**Full 259/259 test file coverage.** 258 AST parity files + 1 error parity file (`missing_return_type.kl`). Selfhost tests: **789/789 passed** (zero failures).
 
 **Self-hosted parser now enforces mandatory return types** — matching Klar's "No ambiguity. No surprises." philosophy. Both parsers reject `fn greet() { ... }` and require `fn greet() -> void { ... }`.
 
@@ -196,9 +196,9 @@ Expanded selfhost parser parity testing from 18 → 201 files (193 passing in al
 - Rule 6: Float literal `0` vs `0.0` JSON representation (1 file: default_trait_float)
 - Rule 7: Builtin call args `kind:type` → `kind:expr` normalization (4 files: comptime_typename, typeinfo_*)
 
-**Step 4: Re-checked Bucket C** — Found 16 files that parse+parity pass individually but fail in the test runner (intermittent issue with selfhost lexer/parser binaries in test runner context). Added to PARITY_FILES but they have 32 failures (16 lexer + 16 parser phase). **These need investigation.**
+**Step 4: Re-checked Bucket C** — Found 16 files that parse+parity pass individually but fail in the test runner. Root cause identified and fixed in Session 13: missing null terminator in argv string conversion caused `fopen` to fail in bash subprocesses.
 
-The 16 intermittent files: cell_basic, drop_trait, file_error, file_write, io_generic, list_basic, list_clone, local_vars, map_filter, map_resize, map_values, result_err, result_map, set_filter, string_len, test_panic.
+The 16 files: cell_basic, drop_trait, file_error, file_write, io_generic, list_basic, list_clone, local_vars, map_filter, map_resize, map_values, result_err, result_map, set_filter, string_len, test_panic.
 
 ### Session 6: P1 — Async/Await Support (COMPLETE)
 
@@ -337,7 +337,7 @@ Expanded parity from 232 → 258 files (258 out of 259 total). All remaining Buc
 **Files added to PARITY_FILES (11 files):**
 assoc_type_generic, error_from_conversion, into_trait, map_for, match_tuple_element, overflow_add, overflow_mul, overflow_sub, set_operations, string_escape_braces, string_interp
 
-**Test results:** 738/771 selfhost tests passed. 33 failures are all from 17 known intermittent files (pass individually, fail in test runner context).
+**Test results:** 738/771 selfhost tests passed. 33 failures were from 17 files affected by the argv null-termination bug (fixed in Session 13).
 
 ### Session 12: Mandatory Return Types — Full 259/259 Coverage (COMPLETE)
 
@@ -358,7 +358,36 @@ Enforced mandatory return type annotations in the selfhost parser, aligning with
    - `missing_return_type.kl` is the first (and currently only) entry
    - Reports "both reject", "selfhost accepts, zig rejects", etc.
 
-**Test results:** 742/774 selfhost tests passed. 259/259 test files now covered (258 AST parity + 1 error parity).
+**Test results:** 739/772 selfhost tests passed (33 failures from argv null-termination bug, fixed in Session 13). 259/259 test files now covered (258 AST parity + 1 error parity).
+
+**QA review findings addressed (3 of 3):**
+
+1. **Error message now includes line/column** (MODERATE → fixed)
+   - Captures `error_line`/`error_col` from `p2.current` *before* body parsing
+   - Error format now matches all other parse errors: `Parse error at line N, column C: ...`
+   - Comment explains why inline Parser construction is used (to report pre-body position)
+
+2. **Missing error parity files now caught** (MINOR → fixed)
+   - `scripts/run-selfhost-tests.sh` Phase 3c: changed silent `continue` to explicit FAILED diagnostic when a file in `ERROR_PARITY_FILES` doesn't exist
+
+3. **Extern exemption documented as moot** (MINOR → documented)
+   - Added to Known Limitations: Zig parser rejects standalone `extern fn`, so the selfhost exemption has no test coverage
+
+### Session 13: Fix "Intermittent" Selfhost Test Failures — 789/789 (COMPLETE)
+
+Fixed the 33 "intermittent" failures across 17 files that had persisted since Session 5. Root cause was a **missing null terminator in argv-to-String conversion** in the native codegen.
+
+**Root cause:** `emitArgsFromArgvFn` in `src/codegen/emit.zig` allocated `malloc(str_len)` for each command-line argument string and copied `str_len` bytes via `memcpy` — but never wrote a null terminator. When `String.as_str()` returned the raw buffer pointer to C functions like `fopen` (via `File.read_to_string`), `fopen` would read past the allocated buffer looking for `\0`. This is undefined behavior whose outcome depends on heap layout, which differs between shell environments (zsh interactive shell vs bash subprocesses spawned by the test runner).
+
+**Why "intermittent":** The failures were actually deterministic per execution environment. The selfhost test script (`#!/bin/bash`) spawns bash subprocesses whose heap layout consistently left non-zero bytes after the argument buffers, causing `fopen` to read garbage-appended paths and fail. Running the same binaries from an interactive zsh shell happened to have zero bytes after the buffers by luck, so they appeared to pass "individually."
+
+**Fix:** One change in `emitArgsFromArgvFn` (`src/codegen/emit.zig:828`):
+- `malloc(str_len)` → `malloc(str_len + 1)`
+- Added `str_ptr[str_len] = 0` (null terminator write via GEP + store)
+
+This ensures all Klar `String` objects created from `argv` are properly null-terminated, making `as_str()` safe for C interop.
+
+**Test results:** 789/789 selfhost tests passed. 1462/1462 total tests passed.
 
 ### Known Limitations (from QA review, deferred)
 - `parse_int_value`: hex/binary/octal literals still use i64 computation (overflow possible for values > i64 max)
@@ -375,7 +404,7 @@ Enforced mandatory return type annotations in the selfhost parser, aligning with
 | `src/module_resolver.zig` | Modified — cycle-tolerant topoSort |
 | `src/checker/checker.zig` | Modified — two-phase compilation, error handling, duplicate suppression, `lookupSymbolAcrossModules` |
 | `src/main.zig` | Modified — two-phase loops, `warnCircularImports`, 3-phase multi-module codegen (structs, declarations, bodies + wrapper) |
-| `src/codegen/emit.zig` | Modified — cross-module type resolution, split declaration/body emission, `skip_main`, `emitModuleBodies` no longer emits wrapper |
+| `src/codegen/emit.zig` | Modified — cross-module type resolution, split declaration/body emission, `skip_main`, `emitModuleBodies` no longer emits wrapper, argv null-termination fix |
 | `selfhost/lexer.kl` | Modified — `substring` → `slice` for byte-indexed token text extraction (UTF-8 fix) |
 | `selfhost/parser.kl` | Modified — json_str control char escaping, operator name alignment (neq→not_eq, and→and_, or→or_) |
 | `selfhost/parser_decl.kl` | Modified — async/comptime/trait-inheritance, generic impl blocks, generic trait types, mandatory return types |

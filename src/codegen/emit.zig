@@ -825,8 +825,11 @@ pub const Emitter = struct {
             "str_len",
         );
 
-        // malloc(str_len) for string data
-        var str_malloc_args = [_]llvm.ValueRef{str_len};
+        // malloc(str_len + 1) for string data + null terminator
+        // The null terminator is required because as_str() returns the raw ptr
+        // which may be passed to C functions (e.g. fopen) expecting C strings.
+        const str_len_plus_one = llvm.c.LLVMBuildAdd(self.builder.ref, str_len, llvm.Const.int64(self.ctx, 1), "str_len_plus_one");
+        var str_malloc_args = [_]llvm.ValueRef{str_len_plus_one};
         const str_ptr = self.builder.buildCall(
             llvm.Types.function(ptr_type, &[_]llvm.TypeRef{i64_type}, false),
             malloc_fn,
@@ -842,6 +845,12 @@ pub const Emitter = struct {
             &memcpy_args,
             "",
         );
+
+        // Null-terminate the string
+        const i8_type = llvm.Types.int8(self.ctx);
+        var null_idx = [_]llvm.ValueRef{str_len};
+        const null_pos = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, str_ptr, &null_idx, 1, "str_null_pos");
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_pos);
 
         // Get pointer to array[i] (String struct)
         const string_i_ptr = self.builder.buildGEP(string_type, array_ptr, &[_]llvm.ValueRef{i_val}, "string_i");
@@ -21258,7 +21267,7 @@ pub const Emitter = struct {
         var memcpy_args = [_]llvm.ValueRef{ new_ptr, str_literal, alloc_len_i64 };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
-        // Build the String struct: { ptr, len, len } (capacity = len for from())
+        // Build the String struct: { ptr, len, capacity } (capacity = len + 1, includes null byte)
         const string_alloca = self.builder.buildAlloca(string_type, "str.result");
         const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 0, "str.ptr_field");
         const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 1, "str.len_field");
@@ -21266,7 +21275,7 @@ pub const Emitter = struct {
 
         _ = self.builder.buildStore(new_ptr, ptr_field);
         _ = self.builder.buildStore(len_i32, len_field);
-        _ = self.builder.buildStore(len_i32, cap_field); // capacity = len for from()
+        _ = self.builder.buildStore(alloc_len, cap_field); // capacity = len + 1 (includes null byte)
 
         // Load and return the struct value
         return self.builder.buildLoad(string_type, string_alloca, "str.from.result");
@@ -21302,7 +21311,7 @@ pub const Emitter = struct {
         var memcpy_args = [_]llvm.ValueRef{ new_ptr, str_ptr, alloc_len_i64 };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
-        // Build the String struct: { ptr, len, len }
+        // Build the String struct: { ptr, len, capacity } (capacity = len + 1, includes null byte)
         const string_alloca = self.builder.buildAlloca(string_type, "promote.result");
         const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 0, "promote.ptr_field");
         const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 1, "promote.len_field");
@@ -21310,7 +21319,7 @@ pub const Emitter = struct {
 
         _ = self.builder.buildStore(new_ptr, ptr_field);
         _ = self.builder.buildStore(len_i32, len_field);
-        _ = self.builder.buildStore(len_i32, cap_field);
+        _ = self.builder.buildStore(alloc_len, cap_field); // capacity = len + 1 (includes null byte)
 
         return self.builder.buildLoad(string_type, string_alloca, "promote.str_val");
     }
@@ -21335,6 +21344,10 @@ pub const Emitter = struct {
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "str.ptr");
+
+        // Null-terminate at start (empty string) so as_str() is safe before first push
+        const i8_type = llvm.Types.int8(self.ctx);
+        _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), new_ptr);
 
         // Build the String struct: { ptr, 0, capacity }
         const string_alloca = self.builder.buildAlloca(string_type, "str.result");
@@ -22283,9 +22296,10 @@ pub const Emitter = struct {
         const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 1, "readstr.str_len_field");
         _ = self.builder.buildStore(len_i32, str_len_field);
 
-        // Store capacity (field 2) - same as len
+        // Store capacity (field 2) - len + 1 (includes null byte)
+        const cap_i32 = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, llvm.Const.int32(self.ctx, 1), "readstr.cap_i32");
         const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 2, "readstr.str_cap_field");
-        _ = self.builder.buildStore(len_i32, str_cap_field);
+        _ = self.builder.buildStore(cap_i32, str_cap_field);
 
         // Store Ok result
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr); // tag = 1 (Ok)
@@ -23938,8 +23952,9 @@ pub const Emitter = struct {
         const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 1, "fs_readstr.str_len_field");
         _ = self.builder.buildStore(len_i32, str_len_field);
 
+        const fs_cap_i32 = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, llvm.Const.int32(self.ctx, 1), "fs_readstr.cap_i32");
         const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 2, "fs_readstr.str_cap_field");
-        _ = self.builder.buildStore(len_i32, str_cap_field);
+        _ = self.builder.buildStore(fs_cap_i32, str_cap_field);
 
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
         _ = self.builder.buildBr(cont_bb);
