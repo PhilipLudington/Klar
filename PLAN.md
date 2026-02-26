@@ -80,7 +80,7 @@ WebAssembly compilation target is fully working for wasm32 freestanding. `klar b
 
 **Objective:** Implement the Klar compiler front-end (lexer through type checker) in Klar itself, enabling the language to compile its own compiler.
 
-**Status:** In Progress — 9.1-9.8 complete (lexer, AST, parser at full parity: 259/259 files, 789/789 tests; type system definitions). 9.9+ (type checker port) not started.
+**Status:** Paused — 9.1-9.8 complete (lexer, AST, parser at full parity: 259/259 files, 789/789 tests; type system definitions). 9.9+ paused pending Milestone M (Meta Layer).
 
 **Effort:** Very High | **Impact:** Very High | **Dependencies:** Milestones 6, 7, 8
 
@@ -454,6 +454,216 @@ let x: i32 = arr[0]
 - [x] `[` in expression context is ALWAYS parsed as indexing — no disambiguation
 - [x] `#[` is ALWAYS parsed as generics — unambiguous at the token level
 - [x] Documentation reflects new syntax throughout
+
+---
+
+## Milestone M: Meta Layer
+
+**Objective:** Implement the `meta` keyword system for embedding intent, architecture, and design decisions in Klar source code — compiler-validated, CLI-queryable, zero runtime cost.
+
+**Status:** Not Started
+
+**Effort:** High | **Impact:** Very High | **Design Spec:** [docs/design/meta-layer.md](docs/design/meta-layer.md)
+
+### Rationale
+
+AI agents waste tokens and make mistakes because context lives outside the code (CLAUDE.md, comments, external docs). The meta layer moves architectural intent *into* the language where the compiler validates it and tooling queries it. See the design spec for full motivation and philosophy alignment.
+
+### Dependency Chain
+
+```
+M.1 → M.2 → M.3 → M.4
+                 → M.5 → M.6
+                      → M.7
+                 → M.8
+```
+
+### Deferred (not in Milestone M)
+
+- LSP integration (hover tooltips, completion) — post-M stretch goal
+- Selfhost parser/AST updates — handled when 9.9+ resumes
+
+---
+
+### Phase MA: Foundation
+
+#### M.1 — Token, AST, and Declaration Fields
+
+**Effort:** Low
+
+Add the `meta` keyword token, AST node types for meta annotations, and meta fields on declaration structs.
+
+- [ ] **M.1.1** Add `meta` keyword token to `src/token.zig`
+- [ ] **M.1.2** Define `MetaAnnotation` union type in `src/ast.zig` (intent, decision, tag, hint, pure, deprecated, module, guide, related, group_def, group_join, define, custom)
+- [ ] **M.1.3** Add `meta: []const MetaAnnotation` field to function, struct, enum, trait, impl, and field declaration AST nodes
+- [ ] **M.1.4** Add `file_meta: []const MetaAnnotation` to the top-level program/module AST node
+- [ ] **M.1.5** Unit tests for MetaAnnotation construction and field access
+
+**Success Criteria:**
+- [ ] `meta` is a recognized keyword token
+- [ ] MetaAnnotation can represent all 12 annotation kinds from the design spec
+- [ ] All declaration AST nodes carry meta annotation lists
+- [ ] Compiler builds with zero regressions
+
+---
+
+### Phase MB: Parsing
+
+#### M.2 — Simple Annotation Parsing
+
+**Effort:** Medium
+
+Parse the string-based annotations: `meta intent(...)`, `meta decision(...)`, `meta tag(...)`, `meta hint(...)`, `meta deprecated(...)`, `meta pure`.
+
+- [ ] **M.2.1** Add `parseMetaAnnotation()` to `src/parser.zig` — dispatches on the keyword after `meta`
+- [ ] **M.2.2** Parse `meta intent("...")` — string literal argument
+- [ ] **M.2.3** Parse `meta decision("...")` — string literal argument
+- [ ] **M.2.4** Parse `meta tag("...")` — string literal argument
+- [ ] **M.2.5** Parse `meta hint("...")` — string literal argument
+- [ ] **M.2.6** Parse `meta deprecated("...")` — string literal argument
+- [ ] **M.2.7** Parse `meta pure` — no arguments
+- [ ] **M.2.8** Parse stacked annotations (multiple `meta` lines before a declaration)
+- [ ] **M.2.9** Attach parsed meta annotations to the following declaration AST node
+- [ ] **M.2.10** Native test files for each simple annotation kind
+- [ ] **M.2.11** Verify `klar dump-ast` includes meta annotations in JSON output
+
+**Success Criteria:**
+- [ ] All six simple annotation kinds parse correctly
+- [ ] Multiple annotations stack on a single declaration
+- [ ] `dump-ast` round-trips meta annotations
+- [ ] All existing tests pass (zero regressions)
+
+#### M.3 — Block and Group Parsing
+
+**Effort:** Medium
+
+Parse block-form annotations and group definitions/joins.
+
+- [ ] **M.3.1** Parse `meta module { key: value, ... }` — key-value block with string/list values
+- [ ] **M.3.2** Parse `meta guide { key: value, ... }` — same key-value block form
+- [ ] **M.3.3** Parse `meta related(path, path, "description")` — path list with optional trailing string
+- [ ] **M.3.4** Parse `meta group "name" { meta_annotation, ... }` — group definition with nested annotations
+- [ ] **M.3.5** Parse `meta in("name")` — group join
+- [ ] **M.3.6** Handle `in` keyword disambiguation (loop context vs meta context)
+- [ ] **M.3.7** Native test files for block annotations, related paths, and group def/join
+
+**Success Criteria:**
+- [ ] Block annotations parse with arbitrary key-value pairs
+- [ ] `meta related(...)` accepts paths and validates trailing string position
+- [ ] Group definitions contain nested meta annotations
+- [ ] `meta in(...)` correctly joins groups
+- [ ] `in` keyword works correctly in both loop and meta contexts
+
+---
+
+### Phase MC: Backend Passthrough and Tooling
+
+#### M.4 — Backend Passthrough and Formatter
+
+**Effort:** Low-Medium
+
+Verify all three backends (interpreter, bytecode compiler, native codegen) skip meta annotations. Extend `dump-ast` and the formatter.
+
+- [ ] **M.4.1** Verify interpreter skips meta annotations (no codegen for meta nodes)
+- [ ] **M.4.2** Verify bytecode compiler skips meta annotations
+- [ ] **M.4.3** Verify native codegen (`src/codegen/emit.zig`) skips meta annotations — zero runtime cost
+- [ ] **M.4.4** Extend `dump-ast` JSON output to include all meta annotation types
+- [ ] **M.4.5** Extend formatter (`src/formatter.zig`) to preserve meta annotations with correct indentation
+- [ ] **M.4.6** Test: format → parse → format round-trip preserves meta annotations
+
+**Success Criteria:**
+- [ ] Programs with meta annotations produce identical runtime output to programs without
+- [ ] `dump-ast` includes full meta annotation data in JSON
+- [ ] Formatter preserves meta annotations correctly
+- [ ] All existing tests pass (zero regressions)
+
+---
+
+### Phase MD: Checker Validation
+
+#### M.5 — Basic Validation
+
+**Effort:** Medium-High
+
+Validate meta annotations during type checking.
+
+- [ ] **M.5.1** Validate `meta related(...)` — all path targets resolve to existing declarations
+- [ ] **M.5.2** Validate `meta in("group")` — referenced group must be defined in scope
+- [ ] **M.5.3** Validate scope rules — file-level annotations (`meta module`, `meta guide`) only at top of file
+- [ ] **M.5.4** Emit deprecation warnings when calling functions marked `meta deprecated(...)`
+- [ ] **M.5.5** Validate `meta module` and `meta guide` field types (strings, string lists)
+- [ ] **M.5.6** Error messages with source spans for all meta validation failures
+- [ ] **M.5.7** Native test files: positive cases (valid annotations) and negative cases (`test/check/` error tests)
+
+**Success Criteria:**
+- [ ] Invalid `meta related` targets produce clear error messages
+- [ ] Undefined group references are compile errors
+- [ ] Deprecation warnings fire with migration guidance text
+- [ ] All validation errors include file:line:column spans
+
+#### M.6 — Pure Verification
+
+**Effort:** High
+
+Verify that `meta pure` functions have no side effects.
+
+- [ ] **M.6.1** Define "pure" criteria: no mutation, no I/O, no impure function calls
+- [ ] **M.6.2** Implement purity analysis pass in checker (track side effects through call graph)
+- [ ] **M.6.3** Error when `meta pure` function mutates state (var assignment, field mutation)
+- [ ] **M.6.4** Error when `meta pure` function calls impure functions (I/O, println, etc.)
+- [ ] **M.6.5** Allow `meta pure` functions to call other `meta pure` functions
+- [ ] **M.6.6** Native test files: pure functions that are actually pure, and impure functions that falsely claim purity
+
+**Success Criteria:**
+- [ ] Compiler rejects `meta pure` functions that perform side effects
+- [ ] Compiler accepts `meta pure` functions that are genuinely pure
+- [ ] Transitive purity checking works (pure calling pure is OK, pure calling impure is error)
+
+#### M.7 — Custom Annotations
+
+**Effort:** Medium
+
+Implement `meta define`, string union constraints, scope restrictions, and cross-module import.
+
+- [ ] **M.7.1** Parse `meta define name(params)` declarations
+- [ ] **M.7.2** Parse string union type constraints (`"high" | "medium" | "low"`)
+- [ ] **M.7.3** Parse scope restrictions (`for fn`, `for module`, etc.)
+- [ ] **M.7.4** Validate custom annotation usage matches its `meta define` shape
+- [ ] **M.7.5** Validate string union constraint violations (typo → compiler error)
+- [ ] **M.7.6** Validate scope restriction violations (wrong position → compiler error)
+- [ ] **M.7.7** Support importing `meta define` declarations from other modules
+- [ ] **M.7.8** Native test files for custom definitions, constraints, scope restrictions, and imports
+
+**Success Criteria:**
+- [ ] `meta define` creates project-specific annotation vocabulary
+- [ ] String union constraints catch typos at compile time
+- [ ] Scope restrictions prevent annotations in wrong positions
+- [ ] Custom definitions can be imported and used across modules
+
+---
+
+### Phase ME: CLI
+
+#### M.8 — `klar meta` Command
+
+**Effort:** Medium
+
+Add the `klar meta` CLI command for querying meta annotations across a codebase.
+
+- [ ] **M.8.1** Add `meta` subcommand to `src/main.zig` command routing
+- [ ] **M.8.2** Implement `--tag "name"` — find all declarations with a specific tag
+- [ ] **M.8.3** Implement `--module` — list all module descriptions
+- [ ] **M.8.4** Implement `--related fn_name` — follow cross-references for a function
+- [ ] **M.8.5** Implement `--deprecated` — list all deprecated items with migration guidance
+- [ ] **M.8.6** Implement `--hints` — list all AI hints
+- [ ] **M.8.7** Implement `--json` output mode for all commands
+- [ ] **M.8.8** App-level test files for CLI output validation
+
+**Success Criteria:**
+- [ ] All six query modes produce correct, human-readable output
+- [ ] `--json` mode produces structured output matching the design spec format
+- [ ] CLI works across multi-file projects (processes all `.kl` files in directory)
+- [ ] Output is useful for both human developers and AI agents
 
 ---
 
