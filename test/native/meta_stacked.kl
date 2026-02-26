@@ -1,0 +1,24 @@
+// Test: multiple meta annotations stacked on a single declaration
+meta intent("compute the sum of two numbers")
+meta tag("math")
+meta hint("this function is side-effect free")
+meta pure
+fn sum(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+meta tag("data-model")
+meta decision("using flat struct instead of nested for simplicity")
+struct Config {
+    width: i32,
+    height: i32,
+}
+
+fn main() -> i32 {
+    let result: i32 = sum(10, 20)
+    let cfg: Config = Config { width: 800, height: 600 }
+    if result == 30 and cfg.width == 800 {
+        println("ok")
+    }
+    return 0
+}

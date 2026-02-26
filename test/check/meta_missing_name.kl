@@ -1,0 +1,5 @@
+// Expected: check-error expected annotation name after 'meta'
+
+meta fn foo() -> i32 {
+    return 0
+}

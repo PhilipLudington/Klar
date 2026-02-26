@@ -1,0 +1,31 @@
+// Test: meta annotations on methods inside impl blocks
+
+struct Counter {
+    val: i32,
+}
+
+impl Counter {
+    meta pure
+    fn value(self: Counter) -> i32 {
+        return self.val
+    }
+
+    meta deprecated("use value() instead")
+    fn get(self: Counter) -> i32 {
+        return self.val
+    }
+
+    meta intent("increment the counter by one")
+    fn inc(self: Counter) -> Counter {
+        return Counter { val: self.val + 1 }
+    }
+}
+
+fn main() -> i32 {
+    let c: Counter = Counter { val: 10 }
+    let c2: Counter = c.inc()
+    if c.value() == 10 and c2.value() == 11 {
+        println("ok")
+    }
+    return 0
+}

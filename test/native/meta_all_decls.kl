@@ -1,0 +1,54 @@
+// Test: meta annotations on all declaration types
+
+// Meta on enum declaration
+meta tag("state-machine")
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+// Meta on trait
+meta intent("common interface for displayable types")
+trait Displayable {
+    fn display(self: Self) -> string
+}
+
+// Meta on struct
+meta tag("data-model")
+struct Item {
+    name: string,
+    value: i32,
+}
+
+// Meta on impl
+meta decision("simple string representation for now")
+impl Item: Displayable {
+    fn display(self: Item) -> string {
+        return self.name
+    }
+}
+
+// Meta on type alias
+meta hint("use this instead of raw i32 for IDs")
+type ItemId = i32
+
+// Meta on const
+meta tag("config")
+const MAX_ITEMS: i32 = 100
+
+// Meta on test block
+meta tag("smoke-test")
+test item_display {
+    let item: Item = Item { name: "widget", value: 42 }
+    assert(item.display() == "widget")
+}
+
+fn main() -> i32 {
+    let item: Item = Item { name: "test", value: 1 }
+    let id: ItemId = 42
+    if item.value == 1 and id == 42 and MAX_ITEMS == 100 {
+        println("ok")
+    }
+    return 0
+}

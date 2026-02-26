@@ -1,0 +1,24 @@
+// Test: meta annotations on struct fields and enum variants
+struct User {
+    meta tag("primary-key")
+    id: i32,
+    meta hint("display name, not login username")
+    name: string,
+    meta deprecated("use role field instead")
+    is_admin: bool,
+}
+
+enum Status {
+    meta tag("initial-state")
+    Pending,
+    meta tag("terminal-state")
+    Done,
+}
+
+fn main() -> i32 {
+    let u: User = User { id: 1, name: "alice", is_admin: false }
+    if u.id == 1 and u.name == "alice" {
+        println("ok")
+    }
+    return 0
+}

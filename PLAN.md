@@ -461,7 +461,7 @@ let x: i32 = arr[0]
 
 **Objective:** Implement the `meta` keyword system for embedding intent, architecture, and design decisions in Klar source code — compiler-validated, CLI-queryable, zero runtime cost.
 
-**Status:** Not Started
+**Status:** In Progress — M.1 (token, AST, declaration fields) and M.2 (simple annotation parsing) complete
 
 **Effort:** High | **Impact:** Very High | **Design Spec:** [docs/design/meta-layer.md](docs/design/meta-layer.md)
 
@@ -493,17 +493,17 @@ M.1 → M.2 → M.3 → M.4
 
 Add the `meta` keyword token, AST node types for meta annotations, and meta fields on declaration structs.
 
-- [ ] **M.1.1** Add `meta` keyword token to `src/token.zig`
-- [ ] **M.1.2** Define `MetaAnnotation` union type in `src/ast.zig` (intent, decision, tag, hint, pure, deprecated, module, guide, related, group_def, group_join, define, custom)
-- [ ] **M.1.3** Add `meta: []const MetaAnnotation` field to function, struct, enum, trait, impl, and field declaration AST nodes
-- [ ] **M.1.4** Add `file_meta: []const MetaAnnotation` to the top-level program/module AST node
-- [ ] **M.1.5** Unit tests for MetaAnnotation construction and field access
+- [x] **M.1.1** Add `meta` keyword token to `src/token.zig`
+- [x] **M.1.2** Define `MetaAnnotation` union type in `src/ast.zig` (intent, decision, tag, hint, pure, deprecated, module, guide, related, group_def, group_join, define, custom)
+- [x] **M.1.3** Add `meta: []const MetaAnnotation` field to function, struct, enum, trait, impl, and field declaration AST nodes
+- [x] **M.1.4** Add `file_meta: []const MetaAnnotation` to the top-level program/module AST node
+- [x] **M.1.5** Unit tests for MetaAnnotation construction and field access
 
 **Success Criteria:**
-- [ ] `meta` is a recognized keyword token
-- [ ] MetaAnnotation can represent all 12 annotation kinds from the design spec
-- [ ] All declaration AST nodes carry meta annotation lists
-- [ ] Compiler builds with zero regressions
+- [x] `meta` is a recognized keyword token
+- [x] MetaAnnotation can represent all 12 annotation kinds from the design spec
+- [x] All declaration AST nodes carry meta annotation lists
+- [x] Compiler builds with zero regressions
 
 ---
 
@@ -515,23 +515,23 @@ Add the `meta` keyword token, AST node types for meta annotations, and meta fiel
 
 Parse the string-based annotations: `meta intent(...)`, `meta decision(...)`, `meta tag(...)`, `meta hint(...)`, `meta deprecated(...)`, `meta pure`.
 
-- [ ] **M.2.1** Add `parseMetaAnnotation()` to `src/parser.zig` — dispatches on the keyword after `meta`
-- [ ] **M.2.2** Parse `meta intent("...")` — string literal argument
-- [ ] **M.2.3** Parse `meta decision("...")` — string literal argument
-- [ ] **M.2.4** Parse `meta tag("...")` — string literal argument
-- [ ] **M.2.5** Parse `meta hint("...")` — string literal argument
-- [ ] **M.2.6** Parse `meta deprecated("...")` — string literal argument
-- [ ] **M.2.7** Parse `meta pure` — no arguments
-- [ ] **M.2.8** Parse stacked annotations (multiple `meta` lines before a declaration)
-- [ ] **M.2.9** Attach parsed meta annotations to the following declaration AST node
-- [ ] **M.2.10** Native test files for each simple annotation kind
-- [ ] **M.2.11** Verify `klar dump-ast` includes meta annotations in JSON output
+- [x] **M.2.1** Add `parseMetaAnnotation()` to `src/parser.zig` — dispatches on the keyword after `meta`
+- [x] **M.2.2** Parse `meta intent("...")` — string literal argument
+- [x] **M.2.3** Parse `meta decision("...")` — string literal argument
+- [x] **M.2.4** Parse `meta tag("...")` — string literal argument
+- [x] **M.2.5** Parse `meta hint("...")` — string literal argument
+- [x] **M.2.6** Parse `meta deprecated("...")` — string literal argument
+- [x] **M.2.7** Parse `meta pure` — no arguments
+- [x] **M.2.8** Parse stacked annotations (multiple `meta` lines before a declaration)
+- [x] **M.2.9** Attach parsed meta annotations to the following declaration AST node
+- [x] **M.2.10** Native test files for each simple annotation kind
+- [x] **M.2.11** Verify `klar dump-ast` includes meta annotations in JSON output
 
 **Success Criteria:**
-- [ ] All six simple annotation kinds parse correctly
-- [ ] Multiple annotations stack on a single declaration
-- [ ] `dump-ast` round-trips meta annotations
-- [ ] All existing tests pass (zero regressions)
+- [x] All six simple annotation kinds parse correctly
+- [x] Multiple annotations stack on a single declaration
+- [x] `dump-ast` round-trips meta annotations
+- [x] All existing tests pass (zero regressions)
 
 #### M.3 — Block and Group Parsing
 

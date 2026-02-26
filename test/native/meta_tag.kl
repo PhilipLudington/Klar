@@ -1,0 +1,20 @@
+// Test: meta tag annotation on function and struct
+meta tag("utility")
+fn helper() -> i32 {
+    return 42
+}
+
+meta tag("data-model")
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn main() -> i32 {
+    let val: i32 = helper()
+    let p: Point = Point { x: 1, y: 2 }
+    if val == 42 and p.x == 1 {
+        println("ok")
+    }
+    return 0
+}

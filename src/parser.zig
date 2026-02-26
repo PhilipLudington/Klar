@@ -291,6 +291,7 @@ pub const Parser = struct {
             .const_,
             .import,
             .module,
+            .meta,
             => true,
             else => false,
         };
@@ -1652,10 +1653,10 @@ pub const Parser = struct {
             return .empty;
         }
 
-        // Check for declaration keywords first (fn, struct, enum, trait, impl, type, const, pub)
+        // Check for declaration keywords first (fn, struct, enum, trait, impl, type, const, pub, meta)
         if (self.check(.fn_) or self.check(.struct_) or self.check(.enum_) or
             self.check(.trait) or self.check(.impl) or self.check(.type_) or
-            self.check(.const_) or self.check(.pub_))
+            self.check(.const_) or self.check(.pub_) or self.check(.meta))
         {
             const decl = try self.parseDeclaration();
             return .{ .decl = decl };
@@ -2321,6 +2322,9 @@ pub const Parser = struct {
     /// This is enforced by parsing them sequentially — a later modifier appearing
     /// before an earlier one will hit the wrong production rule and error.
     pub fn parseDeclaration(self: *Parser) ParseError!ast.Decl {
+        // Parse stacked meta annotations before the declaration
+        const meta = try self.parseMetaAnnotations();
+
         // Handle visibility modifier
         const is_pub = self.match(.pub_);
 
@@ -2335,6 +2339,10 @@ pub const Parser = struct {
 
         // extern type declarations
         if (is_extern and self.current.kind == .type_) {
+            if (meta.len > 0) {
+                try self.reportError("meta annotations are not supported on extern type declarations");
+                return ParseError.UnexpectedToken;
+            }
             if (is_unsafe) {
                 try self.reportError("'unsafe' modifier is not allowed on extern type declarations");
                 return ParseError.UnexpectedToken;
@@ -2344,6 +2352,10 @@ pub const Parser = struct {
 
         // extern { ... } block for C function declarations
         if (is_extern and self.current.kind == .l_brace) {
+            if (meta.len > 0) {
+                try self.reportError("meta annotations are not supported on extern blocks");
+                return ParseError.UnexpectedToken;
+            }
             if (is_unsafe) {
                 try self.reportError("'unsafe' modifier is not allowed on extern blocks");
                 return ParseError.UnexpectedToken;
@@ -2361,7 +2373,7 @@ pub const Parser = struct {
                     try self.reportError("extern functions must be declared inside 'extern { }' blocks");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseFunctionDecl(is_pub, is_unsafe, is_async);
+                break :blk self.parseFunctionDecl(is_pub, is_unsafe, is_async, meta);
             },
             .test_ => blk: {
                 if (is_pub) {
@@ -2380,7 +2392,7 @@ pub const Parser = struct {
                     try self.reportError("'extern' modifier is not allowed on test declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseTestDecl();
+                break :blk self.parseTestDecl(meta);
             },
             .struct_ => blk: {
                 if (is_async) {
@@ -2391,7 +2403,7 @@ pub const Parser = struct {
                     try self.reportError("'unsafe' modifier is not allowed on struct declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseStructDecl(is_pub, is_extern);
+                break :blk self.parseStructDecl(is_pub, is_extern, meta);
             },
             .enum_ => blk: {
                 if (is_async) {
@@ -2402,7 +2414,7 @@ pub const Parser = struct {
                     try self.reportError("'unsafe' modifier is not allowed on enum declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseEnumDecl(is_pub, is_extern);
+                break :blk self.parseEnumDecl(is_pub, is_extern, meta);
             },
             .trait => blk: {
                 if (is_async) {
@@ -2413,7 +2425,7 @@ pub const Parser = struct {
                     try self.reportError("'extern' modifier is not allowed on trait declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseTraitDecl(is_pub, is_unsafe);
+                break :blk self.parseTraitDecl(is_pub, is_unsafe, meta);
             },
             .impl => blk: {
                 if (is_async) {
@@ -2424,7 +2436,7 @@ pub const Parser = struct {
                     try self.reportError("'extern' modifier is not allowed on impl declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseImplDecl(is_unsafe);
+                break :blk self.parseImplDecl(is_unsafe, meta);
             },
             .type_ => blk: {
                 if (is_async) {
@@ -2436,7 +2448,7 @@ pub const Parser = struct {
                     return ParseError.UnexpectedToken;
                 }
                 // Note: extern type is handled above before the switch
-                break :blk self.parseTypeAlias(is_pub);
+                break :blk self.parseTypeAlias(is_pub, meta);
             },
             .const_ => blk: {
                 if (is_async) {
@@ -2451,9 +2463,13 @@ pub const Parser = struct {
                     try self.reportError("'extern' modifier is not allowed on const declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseConstDecl(is_pub);
+                break :blk self.parseConstDecl(is_pub, meta);
             },
             .import => blk: {
+                if (meta.len > 0) {
+                    try self.reportError("meta annotations are not supported on import declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_async) {
                     try self.reportError("'async' modifier is only allowed on function declarations");
                     return ParseError.UnexpectedToken;
@@ -2469,6 +2485,10 @@ pub const Parser = struct {
                 break :blk self.parseImportDecl();
             },
             .module => blk: {
+                if (meta.len > 0) {
+                    try self.reportError("meta annotations are not supported on module declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_async) {
                     try self.reportError("'async' modifier is only allowed on function declarations");
                     return ParseError.UnexpectedToken;
@@ -2498,7 +2518,72 @@ pub const Parser = struct {
         };
     }
 
-    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool, is_async: bool) ParseError!ast.Decl {
+    /// Parse zero or more stacked meta annotations before a declaration.
+    fn parseMetaAnnotations(self: *Parser) ParseError![]const ast.MetaAnnotation {
+        var annotations = std.ArrayListUnmanaged(ast.MetaAnnotation){};
+        while (self.check(.meta)) {
+            try annotations.append(self.allocator, try self.parseOneMetaAnnotation());
+        }
+        if (annotations.items.len == 0) return &.{};
+        return self.dupeSlice(ast.MetaAnnotation, annotations.items);
+    }
+
+    /// Parse a single meta annotation: meta intent("..."), meta pure, etc.
+    fn parseOneMetaAnnotation(self: *Parser) ParseError!ast.MetaAnnotation {
+        const meta_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'meta'
+
+        if (self.current.kind != .identifier) {
+            try self.reportError("expected annotation name after 'meta'");
+            return ParseError.UnexpectedToken;
+        }
+
+        const name_text = self.tokenText(self.current);
+        const name_span = self.spanFromToken(self.current);
+        self.advance(); // consume the annotation name
+
+        if (std.mem.eql(u8, name_text, "intent")) {
+            return .{ .intent = try self.parseMetaStringArg(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "decision")) {
+            return .{ .decision = try self.parseMetaStringArg(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "tag")) {
+            return .{ .tag = try self.parseMetaStringArg(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "hint")) {
+            return .{ .hint = try self.parseMetaStringArg(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "deprecated")) {
+            return .{ .deprecated = try self.parseMetaStringArg(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "pure")) {
+            return .{ .pure = ast.Span.merge(meta_span, name_span) };
+        } else {
+            try self.reportError("unknown meta annotation");
+            return ParseError.UnexpectedToken;
+        }
+    }
+
+    /// Parse the string argument of a meta annotation: ("string value")
+    fn parseMetaStringArg(self: *Parser, meta_span: ast.Span) ParseError!ast.MetaString {
+        try self.consume(.l_paren, "expected '(' after meta annotation name");
+
+        if (self.current.kind != .string_literal) {
+            try self.reportError("expected string literal in meta annotation");
+            return ParseError.UnexpectedToken;
+        }
+
+        const text = self.tokenText(self.current);
+        const content = if (text.len >= 2) text[1 .. text.len - 1] else text;
+        const processed = processEscapes(self.allocator, content) catch return ParseError.OutOfMemory;
+        self.advance(); // consume string literal
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_paren, "expected ')' after meta annotation string");
+
+        return .{
+            .value = processed,
+            .span = ast.Span.merge(meta_span, end_span),
+        };
+    }
+
+    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool, is_async: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'fn'
 
@@ -2553,11 +2638,12 @@ pub const Parser = struct {
             .is_extern = false,
             .is_variadic = false,
             .span = ast.Span.merge(start_span, end_span),
+            .meta = meta,
         });
         return .{ .function = func };
     }
 
-    fn parseTestDecl(self: *Parser) ParseError!ast.Decl {
+    fn parseTestDecl(self: *Parser, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'test'
 
@@ -2568,6 +2654,7 @@ pub const Parser = struct {
             .name = name,
             .body = body,
             .span = ast.Span.merge(start_span, body.span),
+            .meta = meta,
         });
         return .{ .test_decl = test_decl };
     }
@@ -2681,7 +2768,7 @@ pub const Parser = struct {
         return try self.dupeSlice(ast.WhereConstraint, constraints.items);
     }
 
-    fn parseStructDecl(self: *Parser, is_pub: bool, is_extern: bool) ParseError!ast.Decl {
+    fn parseStructDecl(self: *Parser, is_pub: bool, is_extern: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'struct'
 
@@ -2723,6 +2810,7 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
+            const field_meta = try self.parseMetaAnnotations();
             const field_is_pub = self.match(.pub_);
             const field_span = self.spanFromToken(self.current);
             const field_name = try self.consumeIdentifier();
@@ -2735,6 +2823,7 @@ pub const Parser = struct {
                 .type_ = field_type,
                 .is_pub = field_is_pub,
                 .span = field_span,
+                .meta = field_meta,
             });
 
             _ = self.match(.comma) or self.match(.newline);
@@ -2752,11 +2841,12 @@ pub const Parser = struct {
             .is_extern = is_extern,
             .is_packed = is_packed,
             .span = ast.Span.merge(start_span, end_span),
+            .meta = meta,
         });
         return .{ .struct_decl = struct_decl };
     }
 
-    fn parseEnumDecl(self: *Parser, is_pub: bool, is_extern: bool) ParseError!ast.Decl {
+    fn parseEnumDecl(self: *Parser, is_pub: bool, is_extern: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'enum'
 
@@ -2790,6 +2880,7 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
+            const variant_meta = try self.parseMetaAnnotations();
             const variant_span = self.spanFromToken(self.current);
             const variant_name = try self.consumeIdentifier();
 
@@ -2880,6 +2971,7 @@ pub const Parser = struct {
                 .payload = payload,
                 .value = value,
                 .span = variant_span,
+                .meta = variant_meta,
             });
 
             _ = self.match(.comma) or self.match(.newline);
@@ -2896,11 +2988,12 @@ pub const Parser = struct {
             .is_extern = is_extern,
             .repr_type = repr_type,
             .span = ast.Span.merge(start_span, end_span),
+            .meta = meta,
         });
         return .{ .enum_decl = enum_decl };
     }
 
-    fn parseTraitDecl(self: *Parser, is_pub: bool, is_unsafe: bool) ParseError!ast.Decl {
+    fn parseTraitDecl(self: *Parser, is_pub: bool, is_unsafe: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'trait'
 
@@ -2930,15 +3023,31 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
+            // Parse meta annotations on trait members
+            const member_meta = try self.parseMetaAnnotations();
+
+            // Guard: meta annotation at end of block with no following member
+            if (self.check(.r_brace)) {
+                if (member_meta.len > 0) {
+                    try self.reportError("meta annotation must be followed by a declaration");
+                    return ParseError.UnexpectedToken;
+                }
+                break;
+            }
+
             // Check for associated type declaration: type Item or type Item: Bounds
             if (self.check(.type_)) {
+                if (member_meta.len > 0) {
+                    try self.reportError("meta annotations are not supported on associated type declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 const assoc_type = try self.parseAssociatedTypeDecl();
                 try associated_types.append(self.allocator, assoc_type);
             } else {
                 // Each method in trait is a function signature (potentially without body)
                 // Note: unsafe methods in traits not yet supported
                 const method_is_async = self.match(.async_);
-                const method_decl = try self.parseFunctionDecl(false, false, method_is_async);
+                const method_decl = try self.parseFunctionDecl(false, false, method_is_async, member_meta);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -2957,6 +3066,7 @@ pub const Parser = struct {
             .is_pub = is_pub,
             .is_unsafe = is_unsafe,
             .span = ast.Span.merge(start_span, end_span),
+            .meta = meta,
         });
         return .{ .trait_decl = trait_decl };
     }
@@ -2996,7 +3106,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseImplDecl(self: *Parser, is_unsafe: bool) ParseError!ast.Decl {
+    fn parseImplDecl(self: *Parser, is_unsafe: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'impl'
 
@@ -3024,15 +3134,31 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
+            // Parse meta annotations on impl members
+            const member_meta = try self.parseMetaAnnotations();
+
+            // Guard: meta annotation at end of block with no following member
+            if (self.check(.r_brace)) {
+                if (member_meta.len > 0) {
+                    try self.reportError("meta annotation must be followed by a declaration");
+                    return ParseError.UnexpectedToken;
+                }
+                break;
+            }
+
             // Check for associated type binding: type Item = ConcreteType
             if (self.check(.type_)) {
+                if (member_meta.len > 0) {
+                    try self.reportError("meta annotations are not supported on associated type bindings");
+                    return ParseError.UnexpectedToken;
+                }
                 const assoc_binding = try self.parseAssociatedTypeBinding();
                 try associated_types.append(self.allocator, assoc_binding);
             } else {
                 const is_pub = self.match(.pub_);
                 const method_is_async = self.match(.async_);
                 const method_is_unsafe = self.match(.unsafe_);
-                const method_decl = try self.parseFunctionDecl(is_pub, method_is_unsafe, method_is_async);
+                const method_decl = try self.parseFunctionDecl(is_pub, method_is_unsafe, method_is_async, member_meta);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -3051,6 +3177,7 @@ pub const Parser = struct {
             .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
             .is_unsafe = is_unsafe,
             .span = ast.Span.merge(start_span, end_span),
+            .meta = meta,
         });
         return .{ .impl_decl = impl_decl };
     }
@@ -3074,7 +3201,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseTypeAlias(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseTypeAlias(self: *Parser, is_pub: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'type'
 
@@ -3090,6 +3217,7 @@ pub const Parser = struct {
             .target = target,
             .is_pub = is_pub,
             .span = ast.Span.merge(start_span, target.span()),
+            .meta = meta,
         });
         return .{ .type_alias = type_alias };
     }
@@ -3290,7 +3418,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseConstDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseConstDecl(self: *Parser, is_pub: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'const'
 
@@ -3310,6 +3438,7 @@ pub const Parser = struct {
             .value = value,
             .is_pub = is_pub,
             .span = ast.Span.merge(start_span, value.span()),
+            .meta = meta,
         });
         return .{ .const_decl = const_decl };
     }
