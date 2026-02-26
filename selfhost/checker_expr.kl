@@ -46,7 +46,8 @@ import checker.{
     clear_substitutions, add_substitution, make_type_var,
     mangle_generic_name, substitute_type, unify_types,
     resolve_type_expr_with_type_vars,
-    find_trait_method
+    find_trait_method,
+    bind_pattern
 }
 
 import checker_builtins.{check_builtin_method}
@@ -123,9 +124,17 @@ pub fn check_expr(tc: TypeChecker, eid: ExprId) -> (TypeChecker, KlarType) {
         Expr::InterpolatedString(data) => {
             return check_interpolated_string(tc, data)
         }
+        Expr::Closure(data) => {
+            return check_closure(tc, data)
+        }
+        Expr::IfExpr(data) => {
+            return check_if_expr(tc, data)
+        }
+        Expr::MatchExpr(data) => {
+            return check_match_expr(tc, data)
+        }
         _ => {
-            // IfExpr, MatchExpr, Closure, ComptimeBlock, UnsafeBlock, BuiltinCall
-            // deferred or handled minimally
+            // ComptimeBlock, UnsafeBlock, BuiltinCall — deferred
             return (tc, type_unknown())
         }
     }
@@ -1045,6 +1054,163 @@ fn check_generic_fn_call_impl(tc: TypeChecker, data: CallData, fn_name: string, 
     }
 
     return (c, sr_ret.1)
+}
+
+// ─── Closure ────────────────────────────────────────────────────────
+
+fn check_closure(tc: TypeChecker, data: ClosureData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+
+    // Resolve parameter types
+    let params_start: i32 = c.resolved_types.len()
+    var i: i32 = 0
+    while i < data.params_count {
+        let param: FnParam = c.extra_params[data.params_start + i]
+        let rt: (TypeChecker, KlarType) = resolve_type_expr(c, param.type_expr)
+        c = rt.0
+        let pr: (TypeChecker, i32) = push_type_ref(c, rt.1)
+        c = pr.0
+        i = i + 1
+    }
+
+    // Resolve return type
+    var ret_type: KlarType = type_void()
+    if has_type_expr(data.return_type) {
+        let rr: (TypeChecker, KlarType) = resolve_type_expr(c, data.return_type)
+        c = rr.0
+        ret_type = rr.1
+    }
+    let pr_ret: (TypeChecker, i32) = push_type_ref(c, ret_type)
+    c = pr_ret.0
+
+    // Build function type
+    let fn_idx: i32 = c.type_functions.len()
+    c.type_functions.push(FunctionData {
+        params_start: params_start,
+        params_count: data.params_count,
+        return_type: TypeId { id: pr_ret.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    let fn_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn_idx }
+
+    // Check body in new scope with params defined
+    let saved_ret: KlarType = c.current_return_type
+    c.current_return_type = ret_type
+    c.push_scope()
+
+    var pi: i32 = 0
+    while pi < data.params_count {
+        let param: FnParam = c.extra_params[data.params_start + pi]
+        let param_type: KlarType = get_resolved_type(c, params_start + pi)
+        c.define(param.param_name, SymbolInfo {
+            sym_name: param.param_name,
+            sym_type: param_type,
+            mutable: param.is_mut,
+            kind: SymbolKind::Variable,
+        })
+        pi = pi + 1
+    }
+
+    // Check body expression
+    if has_expr(data.body) {
+        let rb: (TypeChecker, KlarType) = check_expr(c, data.body)
+        c = rb.0
+    }
+
+    c.pop_scope()
+    c.current_return_type = saved_ret
+
+    return (c, fn_type)
+}
+
+// ─── If Expression ──────────────────────────────────────────────────
+
+fn check_if_expr(tc: TypeChecker, data: IfExprData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+
+    // Check condition is bool
+    let r_cond: (TypeChecker, KlarType) = check_expr(c, data.condition)
+    c = r_cond.0
+    let cond_type: KlarType = r_cond.1
+    if not type_eq(cond_type, type_bool()) and not is_error_type(cond_type) {
+        c = add_error(c, data.span,
+            "if condition must be bool, got " + type_display(cond_type))
+    }
+
+    // Check then branch
+    let r_then: (TypeChecker, KlarType) = check_expr(c, data.then_body)
+    c = r_then.0
+    let then_type: KlarType = r_then.1
+
+    // Check else branch
+    if has_expr(data.else_body) {
+        let r_else: (TypeChecker, KlarType) = check_expr(c, data.else_body)
+        c = r_else.0
+        let else_type: KlarType = r_else.1
+
+        // Both branches should return compatible types
+        if not type_compatible(then_type, else_type)
+            and not is_error_type(then_type) and not is_error_type(else_type)
+            and not is_void_type(then_type) and not is_void_type(else_type) {
+            c = add_error(c, data.span,
+                "if expression branches have different types: " +
+                type_display(then_type) + " vs " + type_display(else_type))
+        }
+        return (c, then_type)
+    }
+
+    return (c, then_type)
+}
+
+// ─── Match Expression ───────────────────────────────────────────────
+
+fn check_match_expr(tc: TypeChecker, data: MatchExprData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+
+    // Check subject expression
+    let r_subj: (TypeChecker, KlarType) = check_expr(c, data.subject)
+    c = r_subj.0
+    let subj_type: KlarType = r_subj.1
+
+    var result_type: KlarType = type_unknown()
+    var has_result: bool = false
+
+    // Check each arm
+    var i: i32 = 0
+    while i < data.arms_count {
+        let arm: MatchArm = c.extra_match_arms[data.arms_start + i]
+
+        c.push_scope()
+        c = bind_pattern(c, arm.pattern, subj_type)
+
+        // Check guard if present
+        if has_expr(arm.guard) {
+            let r_guard: (TypeChecker, KlarType) = check_expr(c, arm.guard)
+            c = r_guard.0
+            let guard_type: KlarType = r_guard.1
+            if not type_eq(guard_type, type_bool()) and not is_error_type(guard_type) {
+                c = add_error(c, arm.span,
+                    "match guard must be bool, got " + type_display(guard_type))
+            }
+        }
+
+        // Check body expression
+        if has_expr(arm.body) {
+            let r_body: (TypeChecker, KlarType) = check_expr(c, arm.body)
+            c = r_body.0
+
+            if not has_result {
+                result_type = r_body.1
+                has_result = true
+            }
+        }
+        c.pop_scope()
+
+        i = i + 1
+    }
+
+    return (c, result_type)
 }
 
 // ─── Smoke Test ─────────────────────────────────────────────────────

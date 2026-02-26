@@ -34,7 +34,8 @@ import checker.{
     resolve_type_expr,
     type_eq, type_compatible, is_error_type, is_never_type, is_void_type,
     type_display,
-    push_type_ref, get_resolved_type
+    push_type_ref, get_resolved_type,
+    bind_pattern
 }
 
 import checker_expr.{check_expr}
@@ -447,42 +448,7 @@ fn check_match_stmt(tc: TypeChecker, data: MatchStmtData) -> TypeChecker {
     return c
 }
 
-// Bind variables from a pattern into the current scope
-fn bind_pattern(tc: TypeChecker, pid: PatternId, subject_type: KlarType) -> TypeChecker {
-    var c: TypeChecker = tc
-    if pid.id < 0 { return c }
-
-    let pat: Pattern = c.patterns[pid.id]
-    match pat {
-        Pattern::BindingPat(data) => {
-            c.define(data.binding_name, SymbolInfo {
-                sym_name: data.binding_name,
-                sym_type: subject_type,
-                mutable: data.is_mut,
-                kind: SymbolKind::Variable,
-            })
-        }
-        Pattern::Wildcard(_) => {
-            // Nothing to bind
-        }
-        Pattern::VariantPat(data) => {
-            // Bind inner patterns for variant destructuring
-            // Foundation: handle single binding inside variant
-            var j: i32 = 0
-            while j < data.fields_count {
-                let inner_pid: PatternId = c.extra_pattern_ids[data.fields_start + j]
-                // Inner binding gets unknown type for foundation
-                c = bind_pattern(c, inner_pid, type_unknown())
-                j = j + 1
-            }
-        }
-        _ => {
-            // LiteralPat, TuplePat, OrPat, GuardedPat, StructPat — deferred
-        }
-    }
-
-    return c
-}
+// bind_pattern is now in checker.kl (shared between stmt and expr checking)
 
 // ─── Smoke Test ─────────────────────────────────────────────────────
 

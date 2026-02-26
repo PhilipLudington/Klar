@@ -1510,6 +1510,70 @@ pub fn find_trait_method(tc: TypeChecker, trait_data: TraitData, method_name: st
     // Implicit None return
 }
 
+// ─── Pattern Binding ─────────────────────────────────────────────────
+// Binds variables from a pattern into the current scope.
+// Used by both match statements (checker_stmt.kl) and match expressions (checker_expr.kl).
+
+pub fn bind_pattern(tc: TypeChecker, pid: PatternId, subject_type: KlarType) -> TypeChecker {
+    var c: TypeChecker = tc
+    if pid.id < 0 { return c }
+
+    let pat: Pattern = c.patterns[pid.id]
+    match pat {
+        Pattern::BindingPat(data) => {
+            c.define(data.binding_name, SymbolInfo {
+                sym_name: data.binding_name,
+                sym_type: subject_type,
+                mutable: data.is_mut,
+                kind: SymbolKind::Variable,
+            })
+        }
+        Pattern::Wildcard(_) => {
+            // Nothing to bind
+        }
+        Pattern::VariantPat(data) => {
+            // Determine the inner type for variant destructuring
+            var inner_type: KlarType = type_unknown()
+
+            match subject_type.kind {
+                TypeKind::Optional => {
+                    if data.variant_name == "Some" {
+                        inner_type = unwrap_optional_inner(c, subject_type)
+                    }
+                }
+                TypeKind::Result => {
+                    if data.variant_name == "Ok" {
+                        inner_type = unwrap_result_ok(c, subject_type)
+                    }
+                    if data.variant_name == "Err" {
+                        inner_type = unwrap_result_err(c, subject_type)
+                    }
+                }
+                TypeKind::EnumType => {
+                    // User-defined enum variant payloads: deferred (payload types not yet resolved during registration)
+                }
+                _ => {}
+            }
+
+            // Bind inner patterns with resolved type
+            var j: i32 = 0
+            while j < data.fields_count {
+                let inner_pid: PatternId = c.extra_pattern_ids[data.fields_start + j]
+                c = bind_pattern(c, inner_pid, inner_type)
+                j = j + 1
+            }
+        }
+        Pattern::LiteralPat(_) => {
+            // No bindings for literal patterns
+        }
+        _ => {
+            // TuplePat, OrPat, GuardedPat, StructPat — deferred
+        }
+    }
+
+    return c
+}
+
 // ─── Main + Tests ────────────────────────────────────────────────────
 
 fn main() -> i32 {

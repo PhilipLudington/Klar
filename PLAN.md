@@ -80,7 +80,7 @@ WebAssembly compilation target is fully working for wasm32 freestanding. `klar b
 
 **Objective:** Implement the Klar compiler front-end (lexer through type checker) in Klar itself, enabling the language to compile its own compiler.
 
-**Status:** In Progress — 9.1-9.9 complete (lexer, AST, parser at full parity: 259/259 files, 789/789 tests; type system definitions; type checker foundation with 20 tests passing natively). 9.10+ (advanced type checker) not started.
+**Status:** In Progress — 9.1-9.9 complete (lexer, AST, parser at full parity: 259/259 files, 789/789 tests; type system definitions; type checker foundation). 9.10.1-9.10.2 complete (generics + traits). 9.10.3/9.10.5 Phase B in progress (73 checker tests passing natively).
 
 **Effort:** Very High | **Impact:** Very High | **Dependencies:** Milestones 6, 7, 8
 
@@ -286,11 +286,11 @@ Port the core type checking logic from `src/checker.zig`.
 **Implementation notes:**
 - TypeChecker has 37 fields (~576 bytes), passed by value with move semantics in free functions
 - Split across 4 files: checker.kl (core), checker_expr.kl (expressions), checker_stmt.kl (statements), checker_decl.kl (declarations)
-- checker_main.kl has 20 tests all passing natively
+- checker_main.kl has 73 tests all passing natively
 - Required codegen fixes: grouped expression handling in `isIntegerExpr`/`isCharExpr`, indexed assignment on fields, `inferExprType` for List/Map, LLVM type fallback for integer method dispatch
 
 **Success Criteria:**
-- [x] 20 checker tests pass natively (checker_main.kl)
+- [x] 73 checker tests pass natively (checker_main.kl)
 - [ ] Checker accepts all valid non-generic `test/native/` files (deferred to 9.10+)
 - [ ] Checker rejects all `test/check/` negative test files with correct error messages (deferred to 9.10+)
 - [x] Diagnostics include file:line:column spans
@@ -301,9 +301,9 @@ Port the core type checking logic from `src/checker.zig`.
 
 Port the advanced type system features.
 
-- [ ] **9.10.1** Generic monomorphization (type parameter inference, substitution, caching)
-- [ ] **9.10.2** Trait resolution (trait bounds checking, method dispatch through bounds)
-- [~] **9.10.3** Optional/Result type checking, `?` propagation operator *(Phase A: Some/Ok/Err/None constructors, postfix ?, ??, Optional/Result methods)*
+- [x] **9.10.1** Generic monomorphization (type parameter inference, substitution, caching)
+- [x] **9.10.2** Trait resolution (trait bounds checking, method dispatch through bounds)
+- [~] **9.10.3** Optional/Result type checking, `?` propagation operator *(Phase A: constructors, postfix ?, ??. Phase B: closures, if/match expressions, Optional/Result variant pattern binding)*
 - [ ] **9.10.4** Module import resolution (multi-file type checking)
 - [~] **9.10.5** Builtin function and method type checking *(Phase A: 18 free builtins + builtin methods for string/int/float/array/slice/list/map/set/optional/result in checker_builtins.kl)*
 - [ ] **9.10.6** Full diagnostic parity with Zig checker

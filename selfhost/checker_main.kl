@@ -27,6 +27,7 @@ import ast.{
     BinaryData, UnaryData, PostfixData,
     CallData, MethodCallData, FieldAccessData, IndexData,
     CastData, ClosureData, BlockData,
+    IfExprData, MatchExprData,
     GroupedData, StructLiteralData, ArrayLiteralData,
     EnumVariantData,
     LetDeclData, VarDeclData, AssignmentData,
@@ -38,8 +39,10 @@ import ast.{
     GenericParam,
     FnParam, StructField, EnumVariantDecl,
     NamedTypeData, ArrayTypeData, OptionalTypeData, GenericApplyData,
+    FunctionTypeData,
     InterpolatedStringData,
     MatchArm, FieldInit,
+    BindingPatData, WildcardData, VariantPatData,
     no_expr, has_expr, no_type_expr, has_type_expr, no_span, no_pattern
 }
 
@@ -55,7 +58,8 @@ import checker.{
     unwrap_optional_inner, unwrap_result_ok, unwrap_result_err,
     clear_substitutions, add_substitution, get_substitution, has_substitution,
     make_type_var, make_type_var_with_bounds, mangle_generic_name, type_mangle_name,
-    record_trait_impl, has_trait_impl, find_trait_method
+    record_trait_impl, has_trait_impl, find_trait_method,
+    bind_pattern
 }
 
 import checker_expr.{check_expr}
@@ -3185,6 +3189,440 @@ fn test_trait_impl_wrong_method() -> i32 {
     return 0
 }
 
+// ─── 9.10.3 Phase B: Closure, If Expr, Match Expr Tests ─────────────
+
+fn test_closure_basic() -> i32 {
+    // Closure: |x: i32| -> i32 { return x + 1 }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build closure: |x: i32| -> i32 { <body> }
+    // Parameter: x: i32
+    let t_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32.0
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_i32.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Return type: i32
+    let ret_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = ret_te.0
+
+    // Body: just an int literal (simplified — body is an expression)
+    let r_body: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_body.0
+
+    // Build closure expression
+    let closure_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::Closure(ClosureData {
+        params_start: params_start,
+        params_count: 1,
+        return_type: ret_te.1,
+        body: r_body.1,
+        span: s(),
+    }))
+    let closure_eid: ExprId = ExprId { id: closure_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, closure_eid)
+    tc = re.0
+    if not expect_ok(tc, "closure |x: i32| -> i32") { return 73 }
+    if not expect_kind(re.1, "Function", "closure type is Function") { return 73 }
+
+    return 0
+}
+
+fn test_closure_param_scope() -> i32 {
+    // Closure params should be accessible in body
+    // |name: string| -> string { return name }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Parameter: name: string
+    let t_str: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = t_str.0
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "name", type_expr: t_str.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Return type: string
+    let ret_te: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = ret_te.0
+
+    // Body: identifier "name" (should resolve to string parameter)
+    let r_body: (TypeChecker, ExprId) = add_ident_expr(tc, "name")
+    tc = r_body.0
+
+    let closure_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::Closure(ClosureData {
+        params_start: params_start,
+        params_count: 1,
+        return_type: ret_te.1,
+        body: r_body.1,
+        span: s(),
+    }))
+    let closure_eid: ExprId = ExprId { id: closure_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, closure_eid)
+    tc = re.0
+    if not expect_ok(tc, "closure param in scope") { return 74 }
+
+    return 0
+}
+
+fn test_if_expr_basic() -> i32 {
+    // if true { 1 } else { 2 } → i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let r_cond: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_cond.0
+    let r_then: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_then.0
+    let r_else: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_else.0
+
+    let if_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::IfExpr(IfExprData {
+        condition: r_cond.1,
+        then_body: r_then.1,
+        else_body: r_else.1,
+        span: s(),
+    }))
+    let if_eid: ExprId = ExprId { id: if_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, if_eid)
+    tc = re.0
+    if not expect_ok(tc, "if expr basic") { return 75 }
+    if not expect_type(re.1, type_i32(), "if expr → i32") { return 75 }
+
+    return 0
+}
+
+fn test_if_expr_condition_error() -> i32 {
+    // if 42 { 1 } else { 2 } → error (condition not bool)
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let r_cond: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_cond.0
+    let r_then: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_then.0
+    let r_else: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_else.0
+
+    let if_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::IfExpr(IfExprData {
+        condition: r_cond.1,
+        then_body: r_then.1,
+        else_body: r_else.1,
+        span: s(),
+    }))
+    let if_eid: ExprId = ExprId { id: if_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, if_eid)
+    tc = re.0
+    if not expect_errors(tc, 1, "if expr non-bool condition → error") { return 76 }
+
+    return 0
+}
+
+fn test_match_expr_basic() -> i32 {
+    // match x { 1 => { "one" }, _ => { "other" } } → string
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Define x: i32
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // Subject: x
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_subj.0
+
+    // Arm 1: wildcard pattern => "one"
+    let wild_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let r_body1: (TypeChecker, ExprId) = add_str_expr(tc, "one")
+    tc = r_body1.0
+
+    // Arm 2: wildcard => "other"
+    let wild2_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let r_body2: (TypeChecker, ExprId) = add_str_expr(tc, "other")
+    tc = r_body2.0
+
+    // Build match arms
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: wild_pid },
+        guard: no_expr(),
+        body: r_body1.1,
+        span: s(),
+    })
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: wild2_pid },
+        guard: no_expr(),
+        body: r_body2.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 2,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match expr basic") { return 77 }
+    if not expect_type(re.1, type_string(), "match expr → string") { return 77 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_match_optional_pattern() -> i32 {
+    // match opt { Some(val) => { val }, None => { 0 } }
+    // opt: ?i32 → val should be i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build ?i32 type
+    let opt_r: (TypeChecker, KlarType) = make_optional_type(tc, type_i32())
+    tc = opt_r.0
+    let opt_type: KlarType = opt_r.1
+
+    tc.push_scope()
+    tc.define("opt", SymbolInfo {
+        sym_name: "opt", sym_type: opt_type, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // Subject: opt
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "opt")
+    tc = r_subj.0
+
+    // Arm 1: Some(val) => val
+    // Inner pattern: binding "val"
+    let inner_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "val", is_mut: false, span: s(),
+    }))
+    let inner_start: i32 = tc.extra_pattern_ids.len()
+    tc.extra_pattern_ids.push(PatternId { id: inner_pid })
+
+    let some_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Some",
+        fields_start: inner_start,
+        fields_count: 1,
+        span: s(),
+    }))
+
+    // Body: identifier "val" (should be i32 from pattern binding)
+    let r_val: (TypeChecker, ExprId) = add_ident_expr(tc, "val")
+    tc = r_val.0
+
+    // Arm 2: None => 0
+    let none_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "None",
+        fields_start: 0,
+        fields_count: 0,
+        span: s(),
+    }))
+    let r_zero: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_zero.0
+
+    // Build match arms
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: some_pid },
+        guard: no_expr(),
+        body: r_val.1,
+        span: s(),
+    })
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: none_pid },
+        guard: no_expr(),
+        body: r_zero.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 2,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match ?i32 with Some(val)/None") { return 78 }
+    // First arm body is "val" which should resolve to i32 (inner of ?i32)
+    if not expect_type(re.1, type_i32(), "match ?i32 result → i32") { return 78 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_match_result_pattern() -> i32 {
+    // match res { Ok(v) => { v }, Err(e) => { e } }
+    // res: Result#[i32, string] → Ok arm yields i32, Err arm yields string
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build Result#[i32, string] type
+    let res_r: (TypeChecker, KlarType) = make_result_type(tc, type_i32(), type_string())
+    tc = res_r.0
+    let res_type: KlarType = res_r.1
+
+    tc.push_scope()
+    tc.define("res", SymbolInfo {
+        sym_name: "res", sym_type: res_type, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // Subject: res
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_subj.0
+
+    // Arm 1: Ok(v) => v
+    let ok_inner_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "v", is_mut: false, span: s(),
+    }))
+    let ok_fields_start: i32 = tc.extra_pattern_ids.len()
+    tc.extra_pattern_ids.push(PatternId { id: ok_inner_pid })
+
+    let ok_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Ok",
+        fields_start: ok_fields_start,
+        fields_count: 1,
+        span: s(),
+    }))
+
+    let r_v: (TypeChecker, ExprId) = add_ident_expr(tc, "v")
+    tc = r_v.0
+
+    // Arm 2: Err(e) => e
+    let err_inner_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "e", is_mut: false, span: s(),
+    }))
+    let err_fields_start: i32 = tc.extra_pattern_ids.len()
+    tc.extra_pattern_ids.push(PatternId { id: err_inner_pid })
+
+    let err_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Err",
+        fields_start: err_fields_start,
+        fields_count: 1,
+        span: s(),
+    }))
+
+    let r_e: (TypeChecker, ExprId) = add_ident_expr(tc, "e")
+    tc = r_e.0
+
+    // Build match arms
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: ok_pid },
+        guard: no_expr(),
+        body: r_v.1,
+        span: s(),
+    })
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: err_pid },
+        guard: no_expr(),
+        body: r_e.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 2,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match Result#[i32, string] with Ok/Err") { return 79 }
+    // First arm body is "v" → i32 (Ok inner type)
+    if not expect_type(re.1, type_i32(), "Ok(v) body → i32") { return 79 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_match_binding_pattern() -> i32 {
+    // match x { val => { val + 1 } } — binding pattern gets subject type
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_subj.0
+
+    // Binding pattern: val
+    let bind_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "val", is_mut: false, span: s(),
+    }))
+
+    // Body: val + 1
+    let r_val: (TypeChecker, ExprId) = add_ident_expr(tc, "val")
+    tc = r_val.0
+    let r_one: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_one.0
+    let r_add: (TypeChecker, ExprId) = add_binary_expr(tc, r_val.1, BinaryOp::Add, r_one.1)
+    tc = r_add.0
+
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: bind_pid },
+        guard: no_expr(),
+        body: r_add.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 1,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match binding pattern val + 1") { return 80 }
+    if not expect_type(re.1, type_i32(), "binding val + 1 → i32") { return 80 }
+
+    tc.pop_scope()
+    return 0
+}
+
 // ─── Main ───────────────────────────────────────────────────────────
 
 fn main() -> i32 {
@@ -3389,6 +3827,31 @@ fn main() -> i32 {
     rc = test_trait_impl_wrong_method()
     if rc != 0 { return rc }
 
-    println("checker_main.kl: all tests passed (65 tests)")
+    // 9.10.3 Phase B: Closure, If Expr, Match Expr tests
+    rc = test_closure_basic()
+    if rc != 0 { return rc }
+
+    rc = test_closure_param_scope()
+    if rc != 0 { return rc }
+
+    rc = test_if_expr_basic()
+    if rc != 0 { return rc }
+
+    rc = test_if_expr_condition_error()
+    if rc != 0 { return rc }
+
+    rc = test_match_expr_basic()
+    if rc != 0 { return rc }
+
+    rc = test_match_optional_pattern()
+    if rc != 0 { return rc }
+
+    rc = test_match_result_pattern()
+    if rc != 0 { return rc }
+
+    rc = test_match_binding_pattern()
+    if rc != 0 { return rc }
+
+    println("checker_main.kl: all tests passed (73 tests)")
     return 0
 }
