@@ -1,39 +1,793 @@
-// selfhost/checker.kl — Self-hosted type checker (stub)
-// Milestone 9.3: Bootstrap architecture scaffolding
-// Full implementation: Milestones 9.9–9.10
+// selfhost/checker.kl — Self-hosted type checker core infrastructure
+// Milestone 9.9: Type Checker Foundation
+//
+// Architecture: TypeChecker is the central struct holding:
+// - AST arenas (exprs, stmts, decls, type_exprs, patterns + extras)
+// - Scope stack: List#[Map#[string, SymbolInfo]]
+// - Type arenas: compound type data pools
+// - Error tracking and context flags
+// - Type registries for named types
+//
+// The checker uses inout self for methods that mutate state.
+// Cross-file functions (checker_expr.kl, etc.) take TypeChecker by value
+// and return modified copies, following the parser pattern with move semantics.
 
-import types.{KlarType}
-import ast.{AstModule, Expr}
+import types.{
+    KlarType, TypeKind, TypeId, PrimitiveKind,
+    no_type, has_type,
+    make_primitive, get_primitive_kind,
+    type_i32, type_i64, type_f64, type_bool, type_char, type_string,
+    type_void, type_never, type_unknown, type_error,
+    type_eq_simple, type_to_string_simple,
+    type_is_numeric, type_is_integer, type_is_float, type_is_signed,
+    type_is_primitive,
+    primitive_from_name, primitive_name,
+    ArrayData, SliceData, TupleData, ResultData, FunctionData,
+    ReferenceData, StructData, StructFieldData, EnumData,
+    EnumVariantData, WrapperData, TraitData
+}
+
+import ast.{
+    Span, ExprId, StmtId, DeclId, TypeExprId, PatternId,
+    Expr, Stmt, Decl, TypeExpr, Pattern,
+    BinaryOp, UnaryOp, PostfixOp, AssignOp,
+    FnParam, MatchArm, FieldInit, StructField, EnumVariantDecl,
+    NamedTypeData, ArrayTypeData, SliceTypeData, TupleTypeData,
+    OptionalTypeData, ResultTypeData, FunctionTypeData,
+    ReferenceTypeData, GenericApplyData,
+    AstModule
+}
+
+// ─── SymbolKind ──────────────────────────────────────────────────────
+
+pub enum SymbolKind {
+    Variable,
+    Parameter,
+    Function,
+    TypeDef,
+    Constant,
+}
+
+pub fn symbol_kind_name(k: SymbolKind) -> string {
+    match k {
+        SymbolKind::Variable => { return "variable" }
+        SymbolKind::Parameter => { return "parameter" }
+        SymbolKind::Function => { return "function" }
+        SymbolKind::TypeDef => { return "type" }
+        SymbolKind::Constant => { return "constant" }
+    }
+}
+
+// ─── SymbolInfo ──────────────────────────────────────────────────────
+
+pub struct SymbolInfo {
+    pub sym_name: string,
+    pub sym_type: KlarType,
+    pub mutable: bool,
+    pub kind: SymbolKind,
+}
+
+// ─── MethodInfo ──────────────────────────────────────────────────────
+// Stores method signatures for struct types
+
+pub struct MethodInfo {
+    pub method_name: string,
+    pub method_type: KlarType,
+    pub fn_data_idx: i32,
+}
+
+// ─── TypeChecker ─────────────────────────────────────────────────────
 
 pub struct TypeChecker {
-    error_count: i32,
+    // AST arenas — populated by test harness (9.9) or parser (9.11)
+    pub exprs: List#[Expr],
+    pub stmts: List#[Stmt],
+    pub decls: List#[Decl],
+    pub type_exprs: List#[TypeExpr],
+    pub patterns: List#[Pattern],
+
+    // Extra lists for variable-length children (same as parser arenas)
+    pub extra_expr_ids: List#[ExprId],
+    pub extra_stmt_ids: List#[StmtId],
+    pub extra_type_expr_ids: List#[TypeExprId],
+    pub extra_params: List#[FnParam],
+    pub extra_match_arms: List#[MatchArm],
+    pub extra_field_inits: List#[FieldInit],
+    pub extra_struct_fields: List#[StructField],
+    pub extra_enum_variants: List#[EnumVariantDecl],
+    pub extra_pattern_ids: List#[PatternId],
+
+    // Scope stack: each scope maps names to symbols
+    pub scopes: List#[Map#[string, SymbolInfo]],
+
+    // Type arenas for compound types created during checking
+    pub type_arrays: List#[ArrayData],
+    pub type_functions: List#[FunctionData],
+    pub type_structs: List#[StructData],
+    pub type_enums: List#[EnumData],
+    pub type_slices: List#[SliceData],
+    pub type_tuples: List#[TupleData],
+    pub type_results: List#[ResultData],
+    pub type_references: List#[ReferenceData],
+    pub type_wrappers: List#[WrapperData],
+
+    // Extra type lists for struct fields, enum variants, function params
+    pub type_ids: List#[TypeId],
+    pub struct_fields: List#[StructFieldData],
+    pub enum_variants: List#[EnumVariantData],
+
+    // Type registries: name -> KlarType for user-defined types
+    pub struct_types: Map#[string, KlarType],
+    pub enum_types: Map#[string, KlarType],
+    pub function_types: Map#[string, KlarType],
+
+    // Method registries: "TypeName.methodName" -> MethodInfo
+    pub methods: Map#[string, MethodInfo],
+
+    // Error tracking
+    pub errors: List#[string],
+    pub error_count: i32,
+
+    // Context for current checking state
+    pub current_return_type: KlarType,
+    pub in_loop: bool,
+    pub in_unsafe: bool,
 }
 
 impl TypeChecker {
-    fn new() -> TypeChecker {
-        return TypeChecker {
+    pub fn new() -> TypeChecker {
+        var tc: TypeChecker = TypeChecker {
+            exprs: List.new#[Expr](),
+            stmts: List.new#[Stmt](),
+            decls: List.new#[Decl](),
+            type_exprs: List.new#[TypeExpr](),
+            patterns: List.new#[Pattern](),
+
+            extra_expr_ids: List.new#[ExprId](),
+            extra_stmt_ids: List.new#[StmtId](),
+            extra_type_expr_ids: List.new#[TypeExprId](),
+            extra_params: List.new#[FnParam](),
+            extra_match_arms: List.new#[MatchArm](),
+            extra_field_inits: List.new#[FieldInit](),
+            extra_struct_fields: List.new#[StructField](),
+            extra_enum_variants: List.new#[EnumVariantDecl](),
+            extra_pattern_ids: List.new#[PatternId](),
+
+            scopes: List.new#[Map#[string, SymbolInfo]](),
+
+            type_arrays: List.new#[ArrayData](),
+            type_functions: List.new#[FunctionData](),
+            type_structs: List.new#[StructData](),
+            type_enums: List.new#[EnumData](),
+            type_slices: List.new#[SliceData](),
+            type_tuples: List.new#[TupleData](),
+            type_results: List.new#[ResultData](),
+            type_references: List.new#[ReferenceData](),
+            type_wrappers: List.new#[WrapperData](),
+
+            type_ids: List.new#[TypeId](),
+            struct_fields: List.new#[StructFieldData](),
+            enum_variants: List.new#[EnumVariantData](),
+
+            struct_types: Map.new#[string, KlarType](),
+            enum_types: Map.new#[string, KlarType](),
+            function_types: Map.new#[string, KlarType](),
+            methods: Map.new#[string, MethodInfo](),
+
+            errors: List.new#[string](),
             error_count: 0,
+
+            current_return_type: type_void(),
+            in_loop: false,
+            in_unsafe: false,
         }
+        // Push global scope
+        tc.scopes.push(Map.new#[string, SymbolInfo]())
+        return tc
     }
 
-    // TODO(9.9): Change to mutable self — type checking accumulates errors and state
-    fn check_module(self: TypeChecker, m: AstModule) -> i32 {
-        // Stub: returns 0 errors
-        // Full implementation in Milestones 9.9–9.10
-        return 0
+    pub fn push_scope(self: inout TypeChecker) -> void {
+        self.scopes.push(Map.new#[string, SymbolInfo]())
     }
 
-    fn has_errors(self: TypeChecker) -> bool {
+    pub fn pop_scope(self: inout TypeChecker) -> void {
+        let last: ?Map#[string, SymbolInfo] = self.scopes.pop()
+        // Intentionally discard popped scope
+    }
+
+    pub fn define(self: inout TypeChecker, name: string, info: SymbolInfo) -> void {
+        let depth: i32 = self.scopes.len() - 1
+        if depth < 0 { return }
+        // Access last scope and insert
+        var scope: Map#[string, SymbolInfo] = self.scopes[depth]
+        scope.insert(name, info)
+        self.scopes[depth] = scope
+    }
+
+    pub fn has_errors(self: TypeChecker) -> bool {
         return self.error_count > 0
     }
 }
 
+// ─── Free Functions ──────────────────────────────────────────────────
+// These avoid the self-method-call limitation within impl blocks.
+
+// Lookup a symbol by walking the scope stack from innermost to outermost.
+pub fn lookup(tc: TypeChecker, name: string) -> ?SymbolInfo {
+    var i: i32 = tc.scopes.len() - 1
+    while i >= 0 {
+        let scope: Map#[string, SymbolInfo] = tc.scopes[i]
+        if scope.contains_key(name) {
+            return scope.get(name)
+        }
+        i = i - 1
+    }
+    // Implicit None return
+}
+
+// Add an error message with span info
+pub fn add_error(tc: TypeChecker, span: Span, msg: string) -> TypeChecker {
+    var c: TypeChecker = tc
+    let line_str: string = span.line.to_string().as_str()
+    let col_str: string = span.column.to_string().as_str()
+    let err: string = "Error at line " + line_str + ", col " + col_str + ": " + msg
+    c.errors.push(err)
+    c.error_count = c.error_count + 1
+    return c
+}
+
+// Add an error without span info (for programmatic tests)
+pub fn add_error_msg(tc: TypeChecker, msg: string) -> TypeChecker {
+    var c: TypeChecker = tc
+    c.errors.push(msg)
+    c.error_count = c.error_count + 1
+    return c
+}
+
+// ─── Type Resolution ────────────────────────────────────────────────
+// Convert an AST TypeExpr into a resolved KlarType.
+
+pub fn resolve_type_expr(tc: TypeChecker, te_id: TypeExprId) -> (TypeChecker, KlarType) {
+    if te_id.id < 0 {
+        return (tc, type_void())
+    }
+
+    let te: TypeExpr = tc.type_exprs[te_id.id]
+    match te {
+        TypeExpr::Named(data) => {
+            return resolve_named_type(tc, data)
+        }
+        TypeExpr::Array(data) => {
+            return resolve_array_type(tc, data)
+        }
+        TypeExpr::Slice(data) => {
+            return resolve_slice_type(tc, data)
+        }
+        TypeExpr::Tuple(data) => {
+            return resolve_tuple_type(tc, data)
+        }
+        TypeExpr::Optional(data) => {
+            return resolve_optional_type(tc, data)
+        }
+        TypeExpr::ResultType(data) => {
+            return resolve_result_type(tc, data)
+        }
+        TypeExpr::FunctionType(data) => {
+            return resolve_function_type(tc, data)
+        }
+        TypeExpr::Reference(data) => {
+            return resolve_reference_type(tc, data)
+        }
+        TypeExpr::GenericApply(_) => {
+            // Deferred to 9.10
+            return (tc, type_unknown())
+        }
+        TypeExpr::Qualified(_) => {
+            // Deferred to 9.10
+            return (tc, type_unknown())
+        }
+    }
+}
+
+fn resolve_named_type(tc: TypeChecker, data: NamedTypeData) -> (TypeChecker, KlarType) {
+    let name: string = data.type_name
+
+    // Check primitives first
+    let pk: ?PrimitiveKind = primitive_from_name(name)
+    match pk {
+        Some(p) => { return (tc, make_primitive(p)) }
+        None => {}
+    }
+
+    // Check void/never
+    if name == "void" { return (tc, type_void()) }
+    if name == "never" { return (tc, type_never()) }
+
+    // Check user-defined structs
+    if tc.struct_types.contains_key(name) {
+        let st: ?KlarType = tc.struct_types.get(name)
+        match st {
+            Some(t) => { return (tc, t) }
+            None => {}
+        }
+    }
+
+    // Check user-defined enums
+    if tc.enum_types.contains_key(name) {
+        let et: ?KlarType = tc.enum_types.get(name)
+        match et {
+            Some(t) => { return (tc, t) }
+            None => {}
+        }
+    }
+
+    // Unknown type
+    return add_error_with_type(tc, data.span, "unknown type '" + name + "'")
+}
+
+fn resolve_array_type(tc: TypeChecker, data: ArrayTypeData) -> (TypeChecker, KlarType) {
+    let r: (TypeChecker, KlarType) = resolve_type_expr(tc, data.element)
+    var c: TypeChecker = r.0
+    let elem_type: KlarType = r.1
+
+    // Store element type in type_ids arena
+    let tid_idx: i32 = c.type_ids.len()
+    c.type_ids.push(TypeId { id: tid_idx })
+
+    // Create ArrayData in arena
+    let arr_idx: i32 = c.type_arrays.len()
+    c.type_arrays.push(ArrayData { element: TypeId { id: tid_idx }, size: -1 })
+
+    return (c, KlarType { kind: TypeKind::Array, payload: arr_idx })
+}
+
+fn resolve_slice_type(tc: TypeChecker, data: SliceTypeData) -> (TypeChecker, KlarType) {
+    let r: (TypeChecker, KlarType) = resolve_type_expr(tc, data.element)
+    var c: TypeChecker = r.0
+    let elem_type: KlarType = r.1
+
+    let slice_idx: i32 = c.type_slices.len()
+    c.type_slices.push(SliceData { element: TypeId { id: slice_idx } })
+
+    return (c, KlarType { kind: TypeKind::Slice, payload: slice_idx })
+}
+
+fn resolve_tuple_type(tc: TypeChecker, data: TupleTypeData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let start: i32 = c.type_ids.len()
+    var i: i32 = 0
+    while i < data.elems_count {
+        let te_id: TypeExprId = c.extra_type_expr_ids[data.elems_start + i]
+        let r: (TypeChecker, KlarType) = resolve_type_expr(c, te_id)
+        c = r.0
+        let tid_idx: i32 = c.type_ids.len()
+        c.type_ids.push(TypeId { id: tid_idx })
+        i = i + 1
+    }
+
+    let tup_idx: i32 = c.type_tuples.len()
+    c.type_tuples.push(TupleData { elems_start: start, elems_count: data.elems_count })
+
+    return (c, KlarType { kind: TypeKind::Tuple, payload: tup_idx })
+}
+
+fn resolve_optional_type(tc: TypeChecker, data: OptionalTypeData) -> (TypeChecker, KlarType) {
+    let r: (TypeChecker, KlarType) = resolve_type_expr(tc, data.inner)
+    var c: TypeChecker = r.0
+    let inner_type: KlarType = r.1
+
+    let wrap_idx: i32 = c.type_wrappers.len()
+    let tid_idx: i32 = c.type_ids.len()
+    c.type_ids.push(TypeId { id: tid_idx })
+    c.type_wrappers.push(WrapperData { inner: TypeId { id: tid_idx } })
+
+    return (c, KlarType { kind: TypeKind::Optional, payload: wrap_idx })
+}
+
+fn resolve_result_type(tc: TypeChecker, data: ResultTypeData) -> (TypeChecker, KlarType) {
+    let r1: (TypeChecker, KlarType) = resolve_type_expr(tc, data.ok_type)
+    var c: TypeChecker = r1.0
+    let ok_type: KlarType = r1.1
+
+    let r2: (TypeChecker, KlarType) = resolve_type_expr(c, data.err_type)
+    c = r2.0
+    let err_type: KlarType = r2.1
+
+    let ok_tid: i32 = c.type_ids.len()
+    c.type_ids.push(TypeId { id: ok_tid })
+    let err_tid: i32 = c.type_ids.len()
+    c.type_ids.push(TypeId { id: err_tid })
+
+    let res_idx: i32 = c.type_results.len()
+    c.type_results.push(ResultData { ok_type: TypeId { id: ok_tid }, err_type: TypeId { id: err_tid } })
+
+    return (c, KlarType { kind: TypeKind::Result, payload: res_idx })
+}
+
+fn resolve_function_type(tc: TypeChecker, data: FunctionTypeData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let params_start: i32 = c.type_ids.len()
+    var i: i32 = 0
+    while i < data.params_count {
+        let te_id: TypeExprId = c.extra_type_expr_ids[data.params_start + i]
+        let r: (TypeChecker, KlarType) = resolve_type_expr(c, te_id)
+        c = r.0
+        let tid_idx: i32 = c.type_ids.len()
+        c.type_ids.push(TypeId { id: tid_idx })
+        i = i + 1
+    }
+
+    let r_ret: (TypeChecker, KlarType) = resolve_type_expr(c, data.ret)
+    c = r_ret.0
+    let ret_type: KlarType = r_ret.1
+    let ret_tid: i32 = c.type_ids.len()
+    c.type_ids.push(TypeId { id: ret_tid })
+
+    let fn_idx: i32 = c.type_functions.len()
+    c.type_functions.push(FunctionData {
+        params_start: params_start,
+        params_count: data.params_count,
+        return_type: TypeId { id: ret_tid },
+        is_async: false,
+        is_unsafe: false,
+    })
+
+    return (c, KlarType { kind: TypeKind::Function, payload: fn_idx })
+}
+
+fn resolve_reference_type(tc: TypeChecker, data: ReferenceTypeData) -> (TypeChecker, KlarType) {
+    let r: (TypeChecker, KlarType) = resolve_type_expr(tc, data.inner)
+    var c: TypeChecker = r.0
+    let inner_type: KlarType = r.1
+
+    let tid_idx: i32 = c.type_ids.len()
+    c.type_ids.push(TypeId { id: tid_idx })
+
+    let ref_idx: i32 = c.type_references.len()
+    c.type_references.push(ReferenceData { inner: TypeId { id: tid_idx }, is_mut: data.is_mut })
+
+    return (c, KlarType { kind: TypeKind::Reference, payload: ref_idx })
+}
+
+// Helper: add error and return error type
+fn add_error_with_type(tc: TypeChecker, span: Span, msg: string) -> (TypeChecker, KlarType) {
+    let c: TypeChecker = add_error(tc, span, msg)
+    return (c, type_error())
+}
+
+// ─── Type Equality ──────────────────────────────────────────────────
+// Full type equality including compound types.
+// For 9.9, delegates to type_eq_simple for primitives/singletons.
+
+pub fn type_eq(a: KlarType, b: KlarType) -> bool {
+    // For primitives and singletons, use simple equality
+    return type_eq_simple(a, b)
+}
+
+// ─── Type Compatibility ─────────────────────────────────────────────
+// Check if a value of type `value` can be assigned to a target of type `target`.
+// For 9.9, this is strict equality (no widening, no coercion).
+
+pub fn is_never_type(t: KlarType) -> bool {
+    return type_eq_simple(t, type_never())
+}
+
+pub fn is_error_type(t: KlarType) -> bool {
+    return type_eq_simple(t, type_error())
+}
+
+pub fn is_void_type(t: KlarType) -> bool {
+    return type_eq_simple(t, type_void())
+}
+
+pub fn type_compatible(target: KlarType, value: KlarType) -> bool {
+    // Never is compatible with anything (it doesn't return)
+    if is_never_type(value) { return true }
+    // Error type is compatible with anything (to avoid cascading errors)
+    if is_error_type(value) { return true }
+    if is_error_type(target) { return true }
+    return type_eq(target, value)
+}
+
+// ─── Type Display ───────────────────────────────────────────────────
+// Extended type display that uses arenas when available.
+// For 9.9, delegates to type_to_string_simple.
+
+pub fn type_display(t: KlarType) -> string {
+    return type_to_string_simple(t)
+}
+
+// ─── Register Built-in Functions ────────────────────────────────────
+// Register println, print, assert, assert_eq, etc. in global scope.
+// Deferred to 9.10 for full builtin support. Stub for now.
+
+pub fn register_builtins(tc: TypeChecker) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // println(s: string) -> void
+    c.define("println", SymbolInfo {
+        sym_name: "println",
+        sym_type: type_void(),
+        mutable: false,
+        kind: SymbolKind::Function,
+    })
+
+    // print(s: string) -> void
+    c.define("print", SymbolInfo {
+        sym_name: "print",
+        sym_type: type_void(),
+        mutable: false,
+        kind: SymbolKind::Function,
+    })
+
+    return c
+}
+
+// ─── Main + Tests ────────────────────────────────────────────────────
+
 fn main() -> i32 {
+    // Test 1: Construction
+    var tc: TypeChecker = TypeChecker.new()
+    if tc.error_count != 0 {
+        println("FAIL: initial error count should be 0")
+        return 1
+    }
+    if tc.scopes.len() != 1 {
+        println("FAIL: should have 1 scope (global)")
+        return 1
+    }
+
+    // Test 2: Scope push/pop
+    tc.push_scope()
+    if tc.scopes.len() != 2 {
+        println("FAIL: should have 2 scopes after push")
+        return 2
+    }
+    tc.pop_scope()
+    if tc.scopes.len() != 1 {
+        println("FAIL: should have 1 scope after pop")
+        return 2
+    }
+
+    // Test 3: Define and lookup
+    tc.define("x", SymbolInfo {
+        sym_name: "x",
+        sym_type: type_i32(),
+        mutable: false,
+        kind: SymbolKind::Variable,
+    })
+    let found: ?SymbolInfo = lookup(tc, "x")
+    match found {
+        Some(info) => {
+            if info.sym_name != "x" {
+                println("FAIL: lookup name mismatch")
+                return 3
+            }
+            if not type_eq(info.sym_type, type_i32()) {
+                println("FAIL: lookup type mismatch")
+                return 3
+            }
+            if info.mutable {
+                println("FAIL: x should be immutable")
+                return 3
+            }
+        }
+        None => {
+            println("FAIL: lookup returned None for 'x'")
+            return 3
+        }
+    }
+
+    // Test 4: Lookup not found
+    let not_found: ?SymbolInfo = lookup(tc, "y")
+    match not_found {
+        Some(_) => {
+            println("FAIL: lookup should return None for 'y'")
+            return 4
+        }
+        None => {}
+    }
+
+    // Test 5: Scope nesting — inner shadows outer
+    tc.define("a", SymbolInfo {
+        sym_name: "a",
+        sym_type: type_i32(),
+        mutable: false,
+        kind: SymbolKind::Variable,
+    })
+    tc.push_scope()
+    tc.define("a", SymbolInfo {
+        sym_name: "a",
+        sym_type: type_bool(),
+        mutable: true,
+        kind: SymbolKind::Variable,
+    })
+    let inner_a: ?SymbolInfo = lookup(tc, "a")
+    match inner_a {
+        Some(info) => {
+            if not type_eq(info.sym_type, type_bool()) {
+                println("FAIL: inner 'a' should be bool")
+                return 5
+            }
+        }
+        None => {
+            println("FAIL: inner 'a' not found")
+            return 5
+        }
+    }
+    tc.pop_scope()
+    let outer_a: ?SymbolInfo = lookup(tc, "a")
+    match outer_a {
+        Some(info) => {
+            if not type_eq(info.sym_type, type_i32()) {
+                println("FAIL: outer 'a' should be i32 after pop")
+                return 5
+            }
+        }
+        None => {
+            println("FAIL: outer 'a' not found after pop")
+            return 5
+        }
+    }
+
+    // Test 6: Error reporting
+    let span: Span = Span { line: 1, column: 5, start: 4, end: 10 }
+    tc = add_error(tc, span, "test error")
+    if tc.error_count != 1 {
+        println("FAIL: error count should be 1")
+        return 6
+    }
+    if tc.errors.len() != 1 {
+        println("FAIL: errors list should have 1 entry")
+        return 6
+    }
+
+    // Test 7: Type equality
+    if not type_eq(type_i32(), type_i32()) {
+        println("FAIL: i32 == i32")
+        return 7
+    }
+    if type_eq(type_i32(), type_i64()) {
+        println("FAIL: i32 != i64")
+        return 7
+    }
+    if not type_eq(type_void(), type_void()) {
+        println("FAIL: void == void")
+        return 7
+    }
+
+    // Test 8: Type compatibility
+    if not type_compatible(type_i32(), type_i32()) {
+        println("FAIL: i32 compatible with i32")
+        return 8
+    }
+    if type_compatible(type_i32(), type_bool()) {
+        println("FAIL: i32 not compatible with bool")
+        return 8
+    }
+    // Never is compatible with anything
+    if not type_compatible(type_i32(), type_never()) {
+        println("FAIL: never compatible with i32")
+        return 8
+    }
+    // Error type is compatible with anything
+    if not type_compatible(type_i32(), type_error()) {
+        println("FAIL: error compatible with i32")
+        return 8
+    }
+
+    // Test 9: SymbolKind names
+    if symbol_kind_name(SymbolKind::Variable) != "variable" {
+        println("FAIL: Variable kind name")
+        return 9
+    }
+    if symbol_kind_name(SymbolKind::Function) != "function" {
+        println("FAIL: Function kind name")
+        return 9
+    }
+
+    // Test 10: Type display
+    if type_display(type_i32()) != "i32" {
+        println("FAIL: i32 display")
+        return 10
+    }
+    if type_display(type_void()) != "void" {
+        println("FAIL: void display")
+        return 10
+    }
+
+    // Test 11: TypeExpr resolution — Named types
+    var tc2: TypeChecker = TypeChecker.new()
+    tc2.type_exprs.push(TypeExpr::Named(NamedTypeData { type_name: "i32", span: span }))
+    let r1: (TypeChecker, KlarType) = resolve_type_expr(tc2, TypeExprId { id: 0 })
+    tc2 = r1.0
+    if not type_eq(r1.1, type_i32()) {
+        println("FAIL: resolve Named i32")
+        return 11
+    }
+
+    // Test 12: Resolve void
+    tc2.type_exprs.push(TypeExpr::Named(NamedTypeData { type_name: "void", span: span }))
+    let r2: (TypeChecker, KlarType) = resolve_type_expr(tc2, TypeExprId { id: 1 })
+    tc2 = r2.0
+    if not type_eq(r2.1, type_void()) {
+        println("FAIL: resolve Named void")
+        return 12
+    }
+
+    // Test 13: Resolve unknown type → error
+    tc2.type_exprs.push(TypeExpr::Named(NamedTypeData { type_name: "Nope", span: span }))
+    let r3: (TypeChecker, KlarType) = resolve_type_expr(tc2, TypeExprId { id: 2 })
+    tc2 = r3.0
+    if tc2.error_count != 1 {
+        println("FAIL: unknown type should produce error")
+        return 13
+    }
+
+    // Test 14: Register builtins
+    var tc3: TypeChecker = TypeChecker.new()
+    tc3 = register_builtins(tc3)
+    let println_sym: ?SymbolInfo = lookup(tc3, "println")
+    match println_sym {
+        Some(info) => {
+            if info.sym_name != "println" {
+                println("FAIL: println name")
+                return 14
+            }
+        }
+        None => {
+            println("FAIL: println not found after register_builtins")
+            return 14
+        }
+    }
+
+    println("checker.kl: all tests passed")
     return 0
 }
 
 test main {
-    let checker: TypeChecker = TypeChecker.new()
-    assert_eq(checker.has_errors(), false)
-    assert_eq(checker.error_count, 0)
+    // Basic construction
+    var tc: TypeChecker = TypeChecker.new()
+    assert_eq(tc.error_count, 0)
+    assert_eq(tc.scopes.len(), 1)
+
+    // Scope push/pop
+    tc.push_scope()
+    assert_eq(tc.scopes.len(), 2)
+    tc.pop_scope()
+    assert_eq(tc.scopes.len(), 1)
+
+    // Define and lookup
+    tc.define("x", SymbolInfo {
+        sym_name: "x",
+        sym_type: type_i32(),
+        mutable: false,
+        kind: SymbolKind::Variable,
+    })
+    let found: ?SymbolInfo = lookup(tc, "x")
+    match found {
+        Some(info) => { assert(info.sym_name == "x") }
+        None => { assert(false) }
+    }
+
+    // Lookup miss
+    let miss: ?SymbolInfo = lookup(tc, "nope")
+    match miss {
+        Some(_) => { assert(false) }
+        None => {}
+    }
+
+    // Type equality
+    assert(type_eq(type_i32(), type_i32()))
+    assert(not type_eq(type_i32(), type_bool()))
+
+    // Type compatibility
+    assert(type_compatible(type_i32(), type_i32()))
+    assert(not type_compatible(type_i32(), type_bool()))
+    assert(type_compatible(type_i32(), type_never()))
+    assert(type_compatible(type_i32(), type_error()))
+
+    // SymbolKind
+    assert(symbol_kind_name(SymbolKind::Variable) == "variable")
+    assert(symbol_kind_name(SymbolKind::Function) == "function")
 }
