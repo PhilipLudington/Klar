@@ -1538,6 +1538,12 @@ pub const Emitter = struct {
                 const is_array = param.type_ == .array or param.type_ == .slice;
                 const array_info = self.getArrayTypeInfo(param.type_);
 
+                // Check collection type metadata for List/Map/Set parameters
+                const list_element_type = self.getListTypeInfo(param.type_);
+                const map_info = self.getMapTypeInfo(param.type_);
+                const set_info = self.getSetTypeInfo(param.type_);
+                const is_string_data = self.isTypeStringData(param.type_);
+
                 self.named_values.put(param.name, .{
                     .value = alloca,
                     .is_alloca = true,
@@ -1549,6 +1555,13 @@ pub const Emitter = struct {
                     .is_array = is_array,
                     .array_size = if (array_info) |ai| ai.size else null,
                     .array_element_type = if (array_info) |ai| ai.element_type else null,
+                    .list_element_type = list_element_type,
+                    .is_map = map_info != null,
+                    .map_key_type = if (map_info) |mi| mi.key_type else null,
+                    .map_value_type = if (map_info) |mi| mi.value_type else null,
+                    .is_set = set_info != null,
+                    .set_element_type = set_info,
+                    .is_string_data = is_string_data,
                 }) catch return EmitError.OutOfMemory;
             }
 
@@ -1805,6 +1818,12 @@ pub const Emitter = struct {
             // Check if this is a string type parameter
             const is_string = self.isTypeString(param.type_);
 
+            // Check collection type metadata for List/Map/Set parameters
+            const list_element_type = self.getListTypeInfo(param.type_);
+            const map_info = self.getMapTypeInfo(param.type_);
+            const set_info = self.getSetTypeInfo(param.type_);
+            const is_string_data = self.isTypeStringData(param.type_);
+
             // Resolve semantic type for type checking (needed for char.to_string(), etc.)
             const semantic_type = self.resolveTypeExprDirect(param.type_);
 
@@ -1826,6 +1845,13 @@ pub const Emitter = struct {
                 .is_array = is_array,
                 .array_size = if (array_info) |ai| ai.size else null,
                 .array_element_type = if (array_info) |ai| ai.element_type else null,
+                .list_element_type = list_element_type,
+                .is_map = map_info != null,
+                .map_key_type = if (map_info) |mi| mi.key_type else null,
+                .map_value_type = if (map_info) |mi| mi.value_type else null,
+                .is_set = set_info != null,
+                .set_element_type = set_info,
+                .is_string_data = is_string_data,
                 .is_string = is_string,
                 .semantic_type = semantic_type,
                 .is_extern_fn = is_extern_fn,
@@ -5779,6 +5805,16 @@ pub const Emitter = struct {
                     if (std.mem.eql(u8, pat.variant_name, "Some")) return 1;
                     return EmitError.InvalidAST;
                 }
+                // Regular enum type: look up variant by name
+                if (st == .enum_) {
+                    const enum_def = st.enum_;
+                    for (enum_def.variants, 0..) |v, idx| {
+                        if (std.mem.eql(u8, v.name, pat.variant_name)) {
+                            return @intCast(idx);
+                        }
+                    }
+                    return EmitError.InvalidAST;
+                }
             }
             // No type info and no explicit type - cannot determine variant
             return EmitError.UnsupportedFeature;
@@ -6230,6 +6266,14 @@ pub const Emitter = struct {
                     // List#[T] is { ptr, len: i32, capacity: i32 }
                     if (std.mem.eql(u8, base_name, "List") and g.args.len == 1) {
                         return self.getListStructType();
+                    }
+                    // Map#[K,V] is { entries_ptr, len: i32, capacity: i32, tombstone_count: i32 }
+                    if (std.mem.eql(u8, base_name, "Map") and g.args.len == 2) {
+                        return self.getMapStructType();
+                    }
+                    // Set#[T] is same layout as Map
+                    if (std.mem.eql(u8, base_name, "Set") and g.args.len == 1) {
+                        return self.getMapStructType();
                     }
 
                     // Try to look up user-defined generic struct types
@@ -8818,6 +8862,46 @@ pub const Emitter = struct {
                         // Load and return the element
                         return self.builder.buildLoad(element_llvm_type, elem_ptr, "slice.elem.val");
                     }
+
+                    // List indexing: list[i] — panics on out-of-bounds
+                    if (local.list_element_type != null) {
+                        const element_type = self.typeToLLVM(local.list_element_type.?);
+                        const element_size = self.getLLVMTypeSize(element_type);
+                        const list_type = self.getListStructType();
+                        const i32_type = llvm.Types.int32(self.ctx);
+                        const i64_type = llvm.Types.int64(self.ctx);
+                        const i8_type = llvm.Types.int8(self.ctx);
+
+                        // Load len from list struct (field 1)
+                        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, local.value, 1, "list.len_ptr");
+                        const current_len = self.builder.buildLoad(i32_type, len_ptr, "list.len");
+
+                        // Bounds check: 0 <= index < len
+                        const zero = llvm.Const.int32(self.ctx, 0);
+                        const idx_ge_zero = self.builder.buildICmp(llvm.c.LLVMIntSGE, index_val, zero, "list.idx_ge_zero");
+                        const idx_lt_len = self.builder.buildICmp(llvm.c.LLVMIntSLT, index_val, current_len, "list.idx_lt_len");
+                        const in_bounds = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ge_zero, idx_lt_len, "list.in_bounds");
+
+                        const func = self.current_function orelse return EmitError.InvalidAST;
+                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.ok");
+                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.fail");
+                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+                        // Fail: unreachable (panic)
+                        self.builder.positionAtEnd(fail_block);
+                        _ = self.builder.buildUnreachable();
+
+                        // OK: load element
+                        self.builder.positionAtEnd(ok_block);
+                        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, local.value, 0, "list.ptr_ptr");
+                        const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "list.data_ptr");
+                        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index_val, i64_type, "list.idx_i64");
+                        const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
+                        const offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "list.offset");
+                        var gep_indices = [_]llvm.ValueRef{offset};
+                        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &gep_indices, 1, "list.elem.ptr");
+                        return self.builder.buildLoad(element_type, elem_ptr, "list.elem.val");
+                    }
                 }
             }
         }
@@ -8977,6 +9061,55 @@ pub const Emitter = struct {
 
                 // Load and return the element
                 return self.builder.buildLoad(element_llvm_type, elem_ptr, "slice.elem.val");
+            }
+
+            // List indexing (fallback for non-identifier): 3-field struct { ptr, i32, i32 }
+            if (num_elements == 3) {
+                // Use type checker to get element type
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const obj_klar_type = tc_mut.checkExpr(idx.object);
+                    if (obj_klar_type == .list) {
+                        const element_type = self.typeToLLVM(obj_klar_type.list.element);
+                        const element_size = self.getLLVMTypeSize(element_type);
+                        const list_type = self.getListStructType();
+                        const i32_type = llvm.Types.int32(self.ctx);
+                        const i64_type = llvm.Types.int64(self.ctx);
+                        const i8_type = llvm.Types.int8(self.ctx);
+
+                        // Store to temp alloca for GEP
+                        const list_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                        _ = self.builder.buildStore(obj, list_alloca);
+
+                        // Load len from list struct (field 1)
+                        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, "list.len_ptr");
+                        const current_len = self.builder.buildLoad(i32_type, len_ptr, "list.len");
+
+                        // Bounds check: 0 <= index < len
+                        const zero = llvm.Const.int32(self.ctx, 0);
+                        const idx_ge_zero = self.builder.buildICmp(llvm.c.LLVMIntSGE, index_val, zero, "list.idx_ge_zero");
+                        const idx_lt_len = self.builder.buildICmp(llvm.c.LLVMIntSLT, index_val, current_len, "list.idx_lt_len");
+                        const in_bounds = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ge_zero, idx_lt_len, "list.in_bounds");
+
+                        const func = self.current_function orelse return EmitError.InvalidAST;
+                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.ok");
+                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.fail");
+                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+                        self.builder.positionAtEnd(fail_block);
+                        _ = self.builder.buildUnreachable();
+
+                        self.builder.positionAtEnd(ok_block);
+                        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "list.ptr_ptr");
+                        const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "list.data_ptr");
+                        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index_val, i64_type, "list.idx_i64");
+                        const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
+                        const offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "list.offset");
+                        var gep_indices = [_]llvm.ValueRef{offset};
+                        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &gep_indices, 1, "list.elem.ptr");
+                        return self.builder.buildLoad(element_type, elem_ptr, "list.elem.val");
+                    }
+                }
             }
         }
 
@@ -9914,14 +10047,27 @@ pub const Emitter = struct {
         // Check for List methods (BEFORE Cell methods which also have .get())
         if (self.isListExpr(method.object)) {
             // For List methods, we need the alloca pointer, not the loaded value
-            const list_ptr_early = if (method.object == .identifier) blk: {
+            // If object is an identifier, get its alloca directly
+            // Otherwise, emit the expression and store to a temporary alloca
+            const list_ptr_early: llvm.ValueRef = if (method.object == .identifier) blk: {
                 if (self.named_values.get(method.object.identifier.name)) |local| {
-                    break :blk local.value; // This is the alloca pointer
+                    break :blk local.value;
                 }
-                break :blk null;
-            } else null;
+                const obj_val = try self.emitExpr(method.object);
+                const list_type = self.getListStructType();
+                const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                const obj_val = try self.emitExpr(method.object);
+                const list_type = self.getListStructType();
+                const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
 
-            if (list_ptr_early) |ptr| {
+            {
+                const ptr = list_ptr_early;
                 if (std.mem.eql(u8, method.method_name, "get")) {
                     if (method.args.len != 1) return EmitError.InvalidAST;
                     const index = try self.emitExpr(method.args[0]);
@@ -10546,14 +10692,27 @@ pub const Emitter = struct {
         // Check for List methods
         if (self.isListExpr(method.object)) {
             // For List methods, we need the alloca pointer, not the loaded value
-            const list_ptr = if (method.object == .identifier) blk: {
+            // If object is an identifier, get its alloca directly
+            // Otherwise, emit the expression and store to a temporary alloca
+            const list_ptr: llvm.ValueRef = if (method.object == .identifier) blk: {
                 if (self.named_values.get(method.object.identifier.name)) |local| {
-                    break :blk local.value; // This is the alloca pointer
+                    break :blk local.value;
                 }
-                break :blk null;
-            } else null;
+                const obj_val = try self.emitExpr(method.object);
+                const list_type = self.getListStructType();
+                const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                const obj_val = try self.emitExpr(method.object);
+                const list_type = self.getListStructType();
+                const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
 
-            if (list_ptr) |ptr| {
+            {
+                const ptr = list_ptr;
                 if (std.mem.eql(u8, method.method_name, "len")) {
                     return self.emitListLen(ptr);
                 }
@@ -10598,14 +10757,27 @@ pub const Emitter = struct {
         const is_map = self.isMapExpr(method.object);
         if (is_map) {
             // For Map methods, we need the alloca pointer, not the loaded value
-            const map_ptr = if (method.object == .identifier) blk: {
+            // If object is an identifier, get its alloca directly
+            // Otherwise, emit the expression and store to a temporary alloca
+            const map_ptr: llvm.ValueRef = if (method.object == .identifier) blk: {
                 if (self.named_values.get(method.object.identifier.name)) |local| {
-                    break :blk local.value; // This is the alloca pointer
+                    break :blk local.value;
                 }
-                break :blk null;
-            } else null;
+                const obj_val = try self.emitExpr(method.object);
+                const map_type = self.getMapStructType();
+                const tmp_alloca = self.builder.buildAlloca(map_type, "map.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                const obj_val = try self.emitExpr(method.object);
+                const map_type = self.getMapStructType();
+                const tmp_alloca = self.builder.buildAlloca(map_type, "map.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
 
-            if (map_ptr) |ptr| {
+            {
+                const ptr = map_ptr;
                 if (std.mem.eql(u8, method.method_name, "len")) {
                     return self.emitMapLen(ptr);
                 }
@@ -10678,14 +10850,27 @@ pub const Emitter = struct {
         // Check for Set methods
         if (self.isSetExpr(method.object)) {
             // For Set methods, we need the alloca pointer, not the loaded value
-            const set_ptr = if (method.object == .identifier) blk: {
+            // If object is an identifier, get its alloca directly
+            // Otherwise, emit the expression and store to a temporary alloca
+            const set_ptr: llvm.ValueRef = if (method.object == .identifier) blk: {
                 if (self.named_values.get(method.object.identifier.name)) |local| {
-                    break :blk local.value; // This is the alloca pointer
+                    break :blk local.value;
                 }
-                break :blk null;
-            } else null;
+                const obj_val = try self.emitExpr(method.object);
+                const set_type = self.getMapStructType();
+                const tmp_alloca = self.builder.buildAlloca(set_type, "set.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else blk: {
+                const obj_val = try self.emitExpr(method.object);
+                const set_type = self.getMapStructType();
+                const tmp_alloca = self.builder.buildAlloca(set_type, "set.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            };
 
-            if (set_ptr) |ptr| {
+            {
+                const ptr = set_ptr;
                 if (std.mem.eql(u8, method.method_name, "len")) {
                     return self.emitSetLen(ptr);
                 }
@@ -30068,6 +30253,21 @@ pub const Emitter = struct {
                 }
                 return false;
             },
+            // Generic types like Map#[K,V], Set#[T], List#[T]
+            .generic_apply => |g| {
+                if (g.base == .named) {
+                    const base_name = g.base.named.name;
+                    if (std.mem.eql(u8, base_name, "Map") or std.mem.eql(u8, base_name, "Set")) {
+                        return true; // 20 bytes, always use sret
+                    }
+                    if (std.mem.eql(u8, base_name, "List")) {
+                        const size = self.getSizeOfTypeExpr(type_expr);
+                        return size > self.abi.maxRegisterReturnSize();
+                    }
+                }
+                const size = self.getSizeOfTypeExpr(type_expr);
+                return size > self.abi.maxRegisterReturnSize();
+            },
             // Other types can generally be returned in registers
             else => false,
         };
@@ -30895,6 +31095,14 @@ pub const Emitter = struct {
             } else null;
 
             const is_signed = self.isCheckerTypeSigned(concrete_param_type);
+
+            // Check collection type metadata from checker types
+            const list_element_type: ?types.Type = if (concrete_param_type == .list) concrete_param_type.list.element else null;
+            const map_key_type: ?types.Type = if (concrete_param_type == .map) concrete_param_type.map.key else null;
+            const map_value_type: ?types.Type = if (concrete_param_type == .map) concrete_param_type.map.value else null;
+            const set_element_type: ?types.Type = if (concrete_param_type == .set) concrete_param_type.set.element else null;
+            const is_string_data = concrete_param_type == .string_data;
+
             self.named_values.put(param.name, .{
                 .value = alloca,
                 .is_alloca = true,
@@ -30903,6 +31111,13 @@ pub const Emitter = struct {
                 .struct_type_name = param_struct_name,
                 .is_reference = is_ref,
                 .reference_inner_type = ref_inner_type,
+                .list_element_type = list_element_type,
+                .is_map = concrete_param_type == .map,
+                .map_key_type = map_key_type,
+                .map_value_type = map_value_type,
+                .is_set = concrete_param_type == .set,
+                .set_element_type = set_element_type,
+                .is_string_data = is_string_data,
             }) catch return EmitError.OutOfMemory;
         }
 
@@ -31106,6 +31321,14 @@ pub const Emitter = struct {
             };
 
             const is_signed = self.isCheckerTypeSigned(concrete_param_type);
+
+            // Check collection type metadata from checker types
+            const mono_list_element_type: ?types.Type = if (concrete_param_type == .list) concrete_param_type.list.element else null;
+            const mono_map_key_type: ?types.Type = if (concrete_param_type == .map) concrete_param_type.map.key else null;
+            const mono_map_value_type: ?types.Type = if (concrete_param_type == .map) concrete_param_type.map.value else null;
+            const mono_set_element_type: ?types.Type = if (concrete_param_type == .set) concrete_param_type.set.element else null;
+            const mono_is_string_data = concrete_param_type == .string_data;
+
             self.named_values.put(param.name, .{
                 .value = alloca,
                 .is_alloca = true,
@@ -31114,6 +31337,13 @@ pub const Emitter = struct {
                 .struct_type_name = param_struct_name,
                 .is_reference = is_ref,
                 .reference_inner_type = ref_inner_type,
+                .list_element_type = mono_list_element_type,
+                .is_map = concrete_param_type == .map,
+                .map_key_type = mono_map_key_type,
+                .map_value_type = mono_map_value_type,
+                .is_set = concrete_param_type == .set,
+                .set_element_type = mono_set_element_type,
+                .is_string_data = mono_is_string_data,
             }) catch return EmitError.OutOfMemory;
         }
 
