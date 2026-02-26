@@ -1,0 +1,11 @@
+// Expected: check-error meta module
+// meta module with depends as a string instead of a list should be an error
+
+meta module {
+    name: "auth",
+    depends: "not_a_list"
+}
+
+fn main() -> i32 {
+    return 0
+}

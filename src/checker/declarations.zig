@@ -13,6 +13,7 @@ const traits_mod = @import("traits.zig");
 const TraitInfo = traits_mod.TraitInfo;
 const AssociatedTypeBinding = traits_mod.AssociatedTypeBinding;
 const StructMethod = traits_mod.StructMethod;
+const meta_validation = @import("meta_validation.zig");
 
 // ============================================================================
 // Declaration Checking
@@ -36,6 +37,8 @@ pub fn checkDecl(tc: anytype, decl: ast.Decl) void {
 }
 
 fn checkTestDecl(tc: anytype, test_decl: *ast.TestDecl) void {
+    meta_validation.validateDeclMeta(tc, test_decl.meta, .test_);
+
     const referenced = tc.current_scope.lookup(test_decl.name) orelse {
         tc.addError(.undefined_function, test_decl.span, "test '{s}' references missing function '{s}'", .{ test_decl.name, test_decl.name });
         return;
@@ -50,6 +53,8 @@ fn checkTestDecl(tc: anytype, test_decl: *ast.TestDecl) void {
 }
 
 fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
+    meta_validation.validateDeclMeta(tc, func.meta, .function);
+
     // Push type parameters into scope if this is a generic function
     const has_type_params = func.type_params.len > 0;
     if (has_type_params) {
@@ -189,6 +194,8 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
 }
 
 fn checkStruct(tc: anytype, struct_decl: *ast.StructDecl) void {
+    meta_validation.validateDeclMeta(tc, struct_decl.meta, .struct_);
+
     // Push type parameters into scope if this is a generic struct
     const has_type_params = struct_decl.type_params.len > 0;
     var struct_type_params: []const types.TypeVar = &.{};
@@ -320,6 +327,8 @@ fn checkExternFunction(tc: anytype, func: *ast.FunctionDecl) void {
 }
 
 fn checkEnum(tc: anytype, enum_decl: *ast.EnumDecl) void {
+    meta_validation.validateDeclMeta(tc, enum_decl.meta, .enum_);
+
     // Push type parameters into scope if this is a generic enum
     const has_type_params = enum_decl.type_params.len > 0;
     var enum_type_params: []const types.TypeVar = &.{};
@@ -431,6 +440,8 @@ fn checkEnum(tc: anytype, enum_decl: *ast.EnumDecl) void {
 }
 
 fn checkTrait(tc: anytype, trait_decl: *ast.TraitDecl) void {
+    meta_validation.validateDeclMeta(tc, trait_decl.meta, .trait_);
+
     // Check for duplicate trait definition
     if (tc.trait_registry.get(trait_decl.name) != null) {
         tc.addError(.duplicate_definition, trait_decl.span, "duplicate trait definition '{s}'", .{trait_decl.name});
@@ -579,6 +590,8 @@ fn checkTrait(tc: anytype, trait_decl: *ast.TraitDecl) void {
 }
 
 fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
+    meta_validation.validateDeclMeta(tc, impl_decl.meta, .impl_);
+
     // Push type parameters into scope if this is a generic impl
     const has_type_params = impl_decl.type_params.len > 0;
     var impl_type_params: []const types.TypeVar = &.{};
@@ -886,6 +899,8 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
 }
 
 fn checkTypeAlias(tc: anytype, alias: *ast.TypeAlias) void {
+    meta_validation.validateDeclMeta(tc, alias.meta, .type_alias);
+
     const target_type = tc.resolveTypeExpr(alias.target) catch return;
 
     tc.current_scope.define(.{
@@ -898,6 +913,8 @@ fn checkTypeAlias(tc: anytype, alias: *ast.TypeAlias) void {
 }
 
 fn checkConst(tc: anytype, const_decl: *ast.ConstDecl) void {
+    meta_validation.validateDeclMeta(tc, const_decl.meta, .const_);
+
     const value_type = tc.checkExpr(const_decl.value);
 
     const declared_type = if (const_decl.type_) |t|

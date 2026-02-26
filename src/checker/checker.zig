@@ -34,6 +34,7 @@ const methods = @import("methods.zig");
 const type_resolution = @import("type_resolution.zig");
 const trait_checking = @import("trait_checking.zig");
 const method_calls = @import("method_calls.zig");
+const meta_validation = @import("meta_validation.zig");
 
 // Re-export types from submodules
 pub const MonomorphizedFunction = generics.MonomorphizedFunction;
@@ -99,6 +100,10 @@ pub const CheckError = struct {
         comptime_error,
         // Unsafe errors
         unsafe_trait_requires_unsafe_impl,
+        // Meta validation errors
+        meta_error,
+        // Meta warnings (don't block compilation)
+        meta_warning,
     };
 
     pub fn format(self: CheckError, allocator: Allocator) ![]u8 {
@@ -408,6 +413,16 @@ pub const TypeChecker = struct {
     /// Disabled for normal run/build flows so test-only failures are skipped.
     check_test_decls: bool,
 
+    // Meta validation fields
+    /// Maps function name -> deprecation message for functions annotated with meta deprecated.
+    deprecated_functions: std.StringHashMapUnmanaged([]const u8),
+    /// Set of group names defined via meta group at file level.
+    meta_group_names: std.StringHashMapUnmanaged(void),
+    /// Count of real errors (excludes meta_warning). Avoids O(n) scan in hasErrors().
+    error_count: usize,
+    /// Count of meta warnings. Avoids O(n) scan in hasWarnings().
+    warning_count: usize,
+
     const CaptureInfo = struct {
         is_mutable: bool,
         type_: Type,
@@ -473,6 +488,10 @@ pub const TypeChecker = struct {
             .current_async_context = false,
             .debug_call_types = .{},
             .check_test_decls = false,
+            .deprecated_functions = .{},
+            .meta_group_names = .{},
+            .error_count = 0,
+            .warning_count = 0,
         };
         checker.initBuiltins() catch @panic("Failed to initialize builtin types");
         return checker;
@@ -729,6 +748,10 @@ pub const TypeChecker = struct {
 
         // Clean up debug call types (no values to free, just the map)
         self.debug_call_types.deinit(self.allocator);
+
+        // Clean up meta validation maps (no values to free, just the maps)
+        self.deprecated_functions.deinit(self.allocator);
+        self.meta_group_names.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -1959,10 +1982,27 @@ pub const TypeChecker = struct {
             .span = span,
             .message = message,
         }) catch {};
+        self.error_count += 1;
+    }
+
+    /// Add a warning (same as addError but with meta_warning kind). Warnings don't block compilation.
+    pub fn addWarning(self: *TypeChecker, span: Span, comptime fmt: []const u8, args: anytype) void {
+        const message = std.fmt.allocPrint(self.allocator, fmt, args) catch "error formatting message";
+        self.errors.append(self.allocator, .{
+            .kind = .meta_warning,
+            .span = span,
+            .message = message,
+        }) catch {};
+        self.warning_count += 1;
     }
 
     pub fn hasErrors(self: *const TypeChecker) bool {
-        return self.errors.items.len > 0;
+        return self.error_count > 0;
+    }
+
+    /// Returns true if there are any meta warnings in the error list.
+    pub fn hasWarnings(self: *const TypeChecker) bool {
+        return self.warning_count > 0;
     }
 
     /// Clear all accumulated errors (useful for REPL after reporting)
@@ -1974,6 +2014,8 @@ pub const TypeChecker = struct {
             }
         }
         self.errors.clearRetainingCapacity();
+        self.error_count = 0;
+        self.warning_count = 0;
     }
 
     /// Resolve a type expression to a Type, returning void on error
@@ -3413,6 +3455,8 @@ pub const TypeChecker = struct {
                 }
             }
 
+            // Check if calling a deprecated function
+            meta_validation.checkDeprecatedCall(self, func_name, call.span);
         }
 
         const callee_type = self.checkExpr(call.callee);
@@ -4452,6 +4496,10 @@ pub const TypeChecker = struct {
         self.processImports(module);
         self.skip_missing_modules = false;
 
+        // Collect meta group names and validate file-level meta before checking declarations
+        meta_validation.collectGroupNames(self, module.file_meta);
+        meta_validation.validateFileMeta(self, module.file_meta);
+
         // Pass 1: register all type declarations
         for (module.declarations) |decl| {
             switch (decl) {
@@ -4565,6 +4613,9 @@ pub const TypeChecker = struct {
                     if (f.is_comptime) {
                         self.comptime_functions.put(self.allocator, f.name, f) catch {};
                     }
+
+                    // Register deprecated functions for call-site warnings
+                    meta_validation.registerDeprecatedFunction(self, f.name, f.meta);
                 },
                 .const_decl => self.checkDecl(decl),
                 .extern_block => self.checkDecl(decl),
@@ -4594,10 +4645,16 @@ pub const TypeChecker = struct {
         self.processImports(module);
         self.skip_existing_imports = false;
 
-        // Pass 3: check function bodies
+        // Re-collect group names for this module (may differ from previous module in multi-file builds)
+        meta_validation.collectGroupNames(self, module.file_meta);
+
+        // Pass 3: validate meta annotations and check function bodies
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
+                    // Validate meta annotations (all functions are in scope by now)
+                    meta_validation.validateDeclMeta(self, f.meta, .function);
+
                     if (f.body) |body| {
                         // Push type parameters for generic functions
                         const has_type_params = f.type_params.len > 0;
@@ -4694,6 +4751,10 @@ pub const TypeChecker = struct {
 
         // Process imports first (for multi-file compilation)
         self.processImports(module);
+
+        // Collect meta group names and validate file-level meta before checking declarations
+        meta_validation.collectGroupNames(self, module.file_meta);
+        meta_validation.validateFileMeta(self, module.file_meta);
 
         // First pass: register all type declarations
         for (module.declarations) |decl| {
@@ -4807,6 +4868,9 @@ pub const TypeChecker = struct {
                     if (f.is_comptime) {
                         self.comptime_functions.put(self.allocator, f.name, f) catch {};
                     }
+
+                    // Register deprecated functions for call-site warnings
+                    meta_validation.registerDeprecatedFunction(self, f.name, f.meta);
                 },
                 .const_decl => self.checkDecl(decl),
                 .extern_block => self.checkDecl(decl),
@@ -4814,10 +4878,13 @@ pub const TypeChecker = struct {
             }
         }
 
-        // Third pass: check function bodies
+        // Third pass: validate meta annotations and check function bodies
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
+                    // Validate meta annotations (all functions are in scope by now)
+                    meta_validation.validateDeclMeta(self, f.meta, .function);
+
                     if (f.body) |body| {
                         // Push type parameters for generic functions
                         const has_type_params = f.type_params.len > 0;

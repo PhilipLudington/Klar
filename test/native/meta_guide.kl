@@ -1,4 +1,4 @@
-// Test: meta guide block annotation on a function
+// Test: meta guide block annotation at file level
 meta guide {
     pattern: "factory",
     prefer: "constructor over static method",

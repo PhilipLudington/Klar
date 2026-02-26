@@ -1,0 +1,45 @@
+// Test: comprehensive meta validation — all valid annotations
+// Valid meta module with correct field types
+meta module {
+    name: "validation_test",
+    purpose: "test meta validation",
+    depends: ["core", "utils"]
+}
+
+// Valid meta group definition and usage
+meta group "helpers" {
+    meta tag("utility")
+}
+
+// Valid meta guide at file level
+meta guide {
+    pattern: "functional",
+    prefer: "pure functions"
+}
+
+// Valid meta related — functions reference each other
+meta related(helper, "used by process")
+fn process(x: i32) -> i32 {
+    return helper(x) + 1
+}
+
+meta related(process)
+meta in("helpers")
+fn helper(x: i32) -> i32 {
+    return x * 2
+}
+
+// Valid meta deprecated — compiles fine, just a warning at call sites
+meta deprecated("use helper() instead")
+fn old_helper(x: i32) -> i32 {
+    return x
+}
+
+fn main() -> i32 {
+    let a: i32 = process(5)
+    let b: i32 = old_helper(3)
+    if a == 11 and b == 3 {
+        println("ok")
+    }
+    return 0
+}

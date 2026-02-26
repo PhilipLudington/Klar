@@ -163,6 +163,22 @@ fn parseLineColumn(value: []const u8) !LineColumn {
     return .{ .line = line, .column = column };
 }
 
+/// Print meta warnings (deprecation notices, etc.) to stderr.
+/// Warnings don't block compilation but inform the user of potential issues.
+fn printMetaWarnings(checker: *const TypeChecker, stderr: anytype) !void {
+    if (!checker.hasWarnings()) return;
+    var buf: [512]u8 = undefined;
+    for (checker.errors.items) |check_err| {
+        if (check_err.kind != .meta_warning) continue;
+        const warn_msg = std.fmt.bufPrint(&buf, "  warning: {d}:{d} {s}\n", .{
+            check_err.span.line,
+            check_err.span.column,
+            check_err.message,
+        }) catch continue;
+        try stderr.writeAll(warn_msg);
+    }
+}
+
 fn sourceOffsetFromLineColumn(source: []const u8, line: usize, column: usize) ?usize {
     var current_line: usize = 1;
     var line_start: usize = 0;
@@ -1018,6 +1034,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
             try stderr.writeAll(header);
 
             for (checker.errors.items) |check_err| {
+                if (check_err.kind == .meta_warning) continue;
                 const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                     check_err.span.line,
                     check_err.span.column,
@@ -1025,8 +1042,10 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
                 }) catch continue;
                 try stderr.writeAll(err_msg);
             }
+            try printMetaWarnings(&checker, stderr);
             return;
         }
+        try printMetaWarnings(&checker, stderr);
 
         // Multi-module execution: create per-module interpreters in dependency order
         var module_interpreters = std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter){};
@@ -1120,6 +1139,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         try stderr.writeAll(header);
 
         for (checker.errors.items) |check_err| {
+            if (check_err.kind == .meta_warning) continue;
             const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                 check_err.span.line,
                 check_err.span.column,
@@ -1127,8 +1147,10 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        try printMetaWarnings(&checker, stderr);
         return;
     }
+    try printMetaWarnings(&checker, stderr);
 
     // Single-module execution
     var interp = Interpreter.init(allocator) catch {
@@ -2808,6 +2830,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try stderr.writeAll(header);
 
         for (checker.errors.items) |check_err| {
+            if (check_err.kind == .meta_warning) continue;
             const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                 check_err.span.line,
                 check_err.span.column,
@@ -2815,8 +2838,10 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        try printMetaWarnings(&checker, stderr);
         return;
     }
+    try printMetaWarnings(&checker, stderr);
 
     // Initialize LLVM targets
     codegen.llvm.initializeNativeTarget();
@@ -4023,10 +4048,11 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
 
     const has_type_errors = checker.hasErrors();
     if (has_type_errors) {
-        const header = std.fmt.bufPrint(&buf, "Type check failed with {d} error(s):\n", .{checker.errors.items.len}) catch "Type check failed:\n";
+        const header = std.fmt.bufPrint(&buf, "Type check failed with {d} error(s):\n", .{checker.error_count}) catch "Type check failed:\n";
         try stderr.writeAll(header);
 
         for (checker.errors.items) |check_err| {
+            if (check_err.kind == .meta_warning) continue;
             const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d} [{s}]: {s}\n", .{
                 check_err.span.line,
                 check_err.span.column,
@@ -4035,6 +4061,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        try printMetaWarnings(&checker, stderr);
         if (options.scope_line == null and options.expected_line == null) return; // Query modes can proceed for tooling.
     }
 
@@ -4173,6 +4200,9 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     } else {
         const msg = std.fmt.bufPrint(&buf, "All checks passed for '{s}'\n", .{path}) catch "All checks passed\n";
         try stdout.writeAll(msg);
+
+        // Print meta warnings (don't block checks, but inform the user)
+        try printMetaWarnings(&checker, stderr);
 
         // Print some stats
         const decl_count = module.declarations.len;
@@ -4847,7 +4877,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
         if (checker.hasErrors()) {
             if (options.json_output) {
-                const compile_errors = try allocator.alloc(JsonCompileError, checker.errors.items.len);
+                const compile_errors = try allocator.alloc(JsonCompileError, checker.error_count);
                 var compile_errors_initialized: usize = 0;
                 errdefer {
                     for (compile_errors[0..compile_errors_initialized]) |compile_error| {
@@ -4855,8 +4885,9 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                     }
                     allocator.free(compile_errors);
                 }
-                for (checker.errors.items, 0..) |check_err, idx| {
-                    compile_errors[idx] = .{
+                for (checker.errors.items) |check_err| {
+                    if (check_err.kind == .meta_warning) continue;
+                    compile_errors[compile_errors_initialized] = .{
                         .stage = "type_check",
                         .message = try allocator.dupe(u8, check_err.message),
                         .line = check_err.span.line,
@@ -4879,6 +4910,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             try stderr.writeAll(header);
 
             for (checker.errors.items) |check_err| {
+                if (check_err.kind == .meta_warning) continue;
                 const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                     check_err.span.line,
                     check_err.span.column,
@@ -5169,7 +5201,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
         if (checker.hasErrors()) {
             if (options.json_output) {
-                const compile_errors = try allocator.alloc(JsonCompileError, checker.errors.items.len);
+                const compile_errors = try allocator.alloc(JsonCompileError, checker.error_count);
                 var compile_errors_initialized: usize = 0;
                 errdefer {
                     for (compile_errors[0..compile_errors_initialized]) |compile_error| {
@@ -5177,8 +5209,9 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                     }
                     allocator.free(compile_errors);
                 }
-                for (checker.errors.items, 0..) |check_err, idx| {
-                    compile_errors[idx] = .{
+                for (checker.errors.items) |check_err| {
+                    if (check_err.kind == .meta_warning) continue;
+                    compile_errors[compile_errors_initialized] = .{
                         .stage = "type_check",
                         .message = try allocator.dupe(u8, check_err.message),
                         .line = check_err.span.line,
@@ -5201,6 +5234,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             try stderr.writeAll(header);
 
             for (checker.errors.items) |check_err| {
+                if (check_err.kind == .meta_warning) continue;
                 const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                     check_err.span.line,
                     check_err.span.column,
@@ -5578,6 +5612,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         try stderr.writeAll(header);
 
         for (checker.errors.items) |check_err| {
+            if (check_err.kind == .meta_warning) continue;
             const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                 check_err.span.line,
                 check_err.span.column,
@@ -5585,8 +5620,10 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        try printMetaWarnings(&checker, stderr);
         return;
     }
+    try printMetaWarnings(&checker, stderr);
 
     // Compile to bytecode
     var compiler = Compiler.init(allocator);
@@ -5723,6 +5760,7 @@ fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
         try stderr.writeAll(header);
 
         for (checker.errors.items) |check_err| {
+            if (check_err.kind == .meta_warning) continue;
             const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                 check_err.span.line,
                 check_err.span.column,
@@ -5730,8 +5768,10 @@ fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        try printMetaWarnings(&checker, stderr);
         return;
     }
+    try printMetaWarnings(&checker, stderr);
 
     // Compile to bytecode
     var compiler = Compiler.init(allocator);

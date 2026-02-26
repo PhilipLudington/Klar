@@ -3,11 +3,11 @@ meta module {
     owner: "security-team",
     tags: ["critical", "v2"]
 }
-
 meta guide {
     pattern: "factory",
     prefer: "constructor over static method"
 }
+
 fn main() -> i32 {
     return 0
 }

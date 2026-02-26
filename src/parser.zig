@@ -3832,7 +3832,7 @@ pub const Parser = struct {
         if (next.kind == .module) return true;
         if (next.kind == .identifier) {
             const text = self.source[next.loc.start..next.loc.end];
-            return std.mem.eql(u8, text, "group");
+            return std.mem.eql(u8, text, "group") or std.mem.eql(u8, text, "guide");
         }
         return false;
     }
