@@ -144,6 +144,7 @@ The following keywords are reserved and may be used in future versions:
 | `where` | Additional trait bounds |
 | `dyn` | Dynamic dispatch |
 | `move` | Move semantics |
+| `meta` | Code metadata and annotations ([design](../design/meta-layer.md)) |
 | `mut` | Mutability (alternative to `var`) |
 | `static` | Static variables |
 | `union` | Union types |
