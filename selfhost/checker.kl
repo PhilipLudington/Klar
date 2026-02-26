@@ -24,7 +24,8 @@ import types.{
     primitive_from_name, primitive_name,
     ArrayData, SliceData, TupleData, ResultData, FunctionData,
     ReferenceData, StructData, StructFieldData, EnumData,
-    EnumVariantInfo, WrapperData, MapData, TraitData
+    EnumVariantInfo, WrapperData, MapData, TraitData,
+    TypeVarData
 }
 
 import ast.{
@@ -32,6 +33,7 @@ import ast.{
     Expr, Stmt, Decl, TypeExpr, Pattern,
     BinaryOp, UnaryOp, PostfixOp, AssignOp,
     FnParam, MatchArm, FieldInit, StructField, EnumVariantDecl,
+    GenericParam, FunctionDeclData, StructDeclData, EnumDeclData,
     NamedTypeData, ArrayTypeData, SliceTypeData, TupleTypeData,
     OptionalTypeData, ResultTypeData, FunctionTypeData,
     ReferenceTypeData, GenericApplyData,
@@ -135,6 +137,20 @@ pub struct TypeChecker {
     pub current_return_type: KlarType,
     pub in_loop: bool,
     pub in_unsafe: bool,
+
+    // Generic infrastructure (Milestone 9.10.1)
+    pub extra_generic_params: List#[GenericParam],
+    pub type_vars: List#[TypeVarData],
+    pub substitution_keys: List#[i32],
+    pub substitution_values: List#[KlarType],
+    pub mono_functions: Map#[string, KlarType],
+    pub mono_structs: Map#[string, KlarType],
+    pub generic_fn_decls: Map#[string, i32],
+    pub generic_fn_data: List#[FunctionDeclData],
+    pub generic_struct_decls: Map#[string, i32],
+    pub generic_struct_data: List#[StructDeclData],
+    pub generic_enum_decls: Map#[string, i32],
+    pub generic_enum_data: List#[EnumDeclData],
 }
 
 impl TypeChecker {
@@ -185,6 +201,19 @@ impl TypeChecker {
             current_return_type: type_void(),
             in_loop: false,
             in_unsafe: false,
+
+            extra_generic_params: List.new#[GenericParam](),
+            type_vars: List.new#[TypeVarData](),
+            substitution_keys: List.new#[i32](),
+            substitution_values: List.new#[KlarType](),
+            mono_functions: Map.new#[string, KlarType](),
+            mono_structs: Map.new#[string, KlarType](),
+            generic_fn_decls: Map.new#[string, i32](),
+            generic_fn_data: List.new#[FunctionDeclData](),
+            generic_struct_decls: Map.new#[string, i32](),
+            generic_struct_data: List.new#[StructDeclData](),
+            generic_enum_decls: Map.new#[string, i32](),
+            generic_enum_data: List.new#[EnumDeclData](),
         }
         // Push global scope
         tc.scopes.push(Map.new#[string, SymbolInfo]())
@@ -543,13 +572,114 @@ fn resolve_generic_apply(tc: TypeChecker, data: GenericApplyData) -> (TypeChecke
                 let rr: (TypeChecker, KlarType) = make_result_type(c, ok_type, err_type)
                 return rr
             }
-            // User-defined generics — deferred to generics phase
+            // User-defined generic structs
+            if tc.generic_struct_decls.contains_key(name) {
+                return resolve_user_generic_struct(tc, data, name)
+            }
+            // User-defined generic enums (deferred to 9.10.2+)
             return (tc, type_unknown())
         }
         _ => {
             return (tc, type_unknown())
         }
     }
+}
+
+// ─── User-Defined Generic Struct Resolution ─────────────────────────
+
+fn resolve_user_generic_struct(tc: TypeChecker, data: GenericApplyData, name: string) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+
+    let opt_idx: ?i32 = c.generic_struct_decls.get(name)
+    match opt_idx {
+        Some(idx) => {
+            let struct_decl: StructDeclData = c.generic_struct_data[idx]
+            return resolve_user_generic_struct_impl(c, data, name, struct_decl)
+        }
+        None => {
+            return (c, type_unknown())
+        }
+    }
+}
+
+fn resolve_user_generic_struct_impl(tc: TypeChecker, data: GenericApplyData, name: string, struct_decl: StructDeclData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+
+    // Validate type argument count
+    if data.args_count != struct_decl.generics_count {
+        return add_error_with_type(c, data.span,
+            "generic struct '" + name + "' expects " + struct_decl.generics_count.to_string().as_str() +
+            " type argument(s), got " + data.args_count.to_string().as_str())
+    }
+
+    // Clear substitutions and create type vars
+    c = clear_substitutions(c)
+    let tvar_start: i32 = c.type_vars.len()
+    var gi: i32 = 0
+    while gi < struct_decl.generics_count {
+        let gp: GenericParam = c.extra_generic_params[struct_decl.generics_start + gi]
+        let tvr: (TypeChecker, KlarType) = make_type_var(c, gi, gp.param_name)
+        c = tvr.0
+        gi = gi + 1
+    }
+
+    // Resolve type args and add to substitution map
+    var ti: i32 = 0
+    while ti < data.args_count {
+        let ta_te: TypeExprId = c.extra_type_expr_ids[data.args_start + ti]
+        let tar: (TypeChecker, KlarType) = resolve_type_expr(c, ta_te)
+        c = tar.0
+        c = add_substitution(c, ti, tar.1)
+        ti = ti + 1
+    }
+
+    // Compute mangled name and check cache
+    let mangled: string = mangle_generic_name(c, name, 0, struct_decl.generics_count)
+    if c.mono_structs.contains_key(mangled) {
+        let opt_cached: ?KlarType = c.mono_structs.get(mangled)
+        match opt_cached {
+            Some(cached) => { return (c, cached) }
+            None => {}
+        }
+    }
+
+    // Create monomorphized struct with substituted field types
+    let fields_start: i32 = c.struct_fields.len()
+    var fi: i32 = 0
+    while fi < struct_decl.fields_count {
+        let field: StructField = c.extra_struct_fields[struct_decl.fields_start + fi]
+        let fr: (TypeChecker, KlarType) = resolve_type_expr_with_type_vars(c, field.type_expr, tvar_start, struct_decl.generics_count)
+        c = fr.0
+        let sr: (TypeChecker, KlarType) = substitute_type(c, fr.1)
+        c = sr.0
+        let pr: (TypeChecker, i32) = push_type_ref(c, sr.1)
+        c = pr.0
+        c.struct_fields.push(StructFieldData {
+            name: field.field_name,
+            field_type: TypeId { id: pr.1 },
+            is_pub: true,
+        })
+        fi = fi + 1
+    }
+
+    let struct_idx: i32 = c.type_structs.len()
+    c.type_structs.push(StructData {
+        name: mangled,
+        type_params_start: 0,
+        type_params_count: 0,
+        fields_start: fields_start,
+        fields_count: struct_decl.fields_count,
+        is_copy: false,
+        is_extern: struct_decl.is_extern,
+        is_packed: struct_decl.is_packed,
+    })
+
+    let struct_type: KlarType = KlarType { kind: TypeKind::StructType, payload: struct_idx }
+    c.mono_structs.insert(mangled, struct_type)
+    // Register mangled name in struct_types so field access works
+    c.struct_types.insert(mangled, struct_type)
+
+    return (c, struct_type)
 }
 
 // Helper: add error and return error type
@@ -633,6 +763,285 @@ pub fn type_compatible(target: KlarType, value: KlarType) -> bool {
 
 pub fn type_display(t: KlarType) -> string {
     return type_to_string_simple(t)
+}
+
+// ─── Generic Infrastructure (Milestone 9.10.1) ─────────────────────
+// Substitution map helpers, type variable creation, name mangling,
+// type substitution, unification, and type-var-aware resolution.
+
+pub fn clear_substitutions(tc: TypeChecker) -> TypeChecker {
+    var c: TypeChecker = tc
+    c.substitution_keys = List.new#[i32]()
+    c.substitution_values = List.new#[KlarType]()
+    return c
+}
+
+pub fn add_substitution(tc: TypeChecker, var_id: i32, concrete: KlarType) -> TypeChecker {
+    var c: TypeChecker = tc
+    c.substitution_keys.push(var_id)
+    c.substitution_values.push(concrete)
+    return c
+}
+
+pub fn get_substitution(tc: TypeChecker, var_id: i32) -> KlarType {
+    var i: i32 = 0
+    while i < tc.substitution_keys.len() {
+        if tc.substitution_keys[i] == var_id {
+            return tc.substitution_values[i]
+        }
+        i = i + 1
+    }
+    return type_unknown()
+}
+
+pub fn has_substitution(tc: TypeChecker, var_id: i32) -> bool {
+    var i: i32 = 0
+    while i < tc.substitution_keys.len() {
+        if tc.substitution_keys[i] == var_id {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Type variable creation
+pub fn make_type_var(tc: TypeChecker, var_id: i32, name: string) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.type_vars.len()
+    c.type_vars.push(TypeVarData {
+        var_id: var_id,
+        name: name,
+        bounds_start: 0,
+        bounds_count: 0,
+    })
+    return (c, KlarType { kind: TypeKind::TypeVar, payload: idx })
+}
+
+// Name mangling for monomorphized generics
+pub fn type_mangle_name(t: KlarType) -> string {
+    match t.kind {
+        TypeKind::Primitive => {
+            let pk: ?PrimitiveKind = get_primitive_kind(t)
+            match pk {
+                Some(p) => { return primitive_name(p) }
+                None => { return "unknown" }
+            }
+        }
+        TypeKind::Void => { return "void" }
+        TypeKind::Never => { return "never" }
+        TypeKind::StructType => { return "s" + t.payload.to_string().as_str() }
+        TypeKind::EnumType => { return "e" + t.payload.to_string().as_str() }
+        TypeKind::Array => { return "arr" + t.payload.to_string().as_str() }
+        TypeKind::Optional => { return "opt" + t.payload.to_string().as_str() }
+        TypeKind::Result => { return "res" + t.payload.to_string().as_str() }
+        TypeKind::ListType => { return "list" + t.payload.to_string().as_str() }
+        TypeKind::MapType => { return "map" + t.payload.to_string().as_str() }
+        _ => { return "t" + t.payload.to_string().as_str() }
+    }
+}
+
+pub fn mangle_generic_name(tc: TypeChecker, base_name: string, var_id_start: i32, var_count: i32) -> string {
+    var result: string = base_name + "$"
+    var i: i32 = 0
+    while i < var_count {
+        if i > 0 {
+            result = result + "_"
+        }
+        let concrete: KlarType = get_substitution(tc, var_id_start + i)
+        result = result + type_mangle_name(concrete)
+        i = i + 1
+    }
+    return result
+}
+
+// Type substitution: replace TypeVars using the substitution map
+pub fn substitute_type(tc: TypeChecker, t: KlarType) -> (TypeChecker, KlarType) {
+    match t.kind {
+        TypeKind::TypeVar => {
+            let tv: TypeVarData = tc.type_vars[t.payload]
+            if has_substitution(tc, tv.var_id) {
+                return (tc, get_substitution(tc, tv.var_id))
+            }
+            return (tc, t)
+        }
+        TypeKind::Function => {
+            var c: TypeChecker = tc
+            let fn_data: FunctionData = c.type_functions[t.payload]
+            let new_params_start: i32 = c.resolved_types.len()
+            var i: i32 = 0
+            while i < fn_data.params_count {
+                let param_type: KlarType = get_resolved_type(c, fn_data.params_start + i)
+                let sr: (TypeChecker, KlarType) = substitute_type(c, param_type)
+                c = sr.0
+                let pr: (TypeChecker, i32) = push_type_ref(c, sr.1)
+                c = pr.0
+                i = i + 1
+            }
+            let ret_type: KlarType = get_resolved_type(c, fn_data.return_type.id)
+            let sr_ret: (TypeChecker, KlarType) = substitute_type(c, ret_type)
+            c = sr_ret.0
+            let pr_ret: (TypeChecker, i32) = push_type_ref(c, sr_ret.1)
+            c = pr_ret.0
+            let new_fn_idx: i32 = c.type_functions.len()
+            c.type_functions.push(FunctionData {
+                params_start: new_params_start,
+                params_count: fn_data.params_count,
+                return_type: TypeId { id: pr_ret.1 },
+                is_async: fn_data.is_async,
+                is_unsafe: fn_data.is_unsafe,
+            })
+            return (c, KlarType { kind: TypeKind::Function, payload: new_fn_idx })
+        }
+        TypeKind::Optional => {
+            var c: TypeChecker = tc
+            let inner: KlarType = unwrap_optional_inner(c, t)
+            let sr: (TypeChecker, KlarType) = substitute_type(c, inner)
+            c = sr.0
+            let mr: (TypeChecker, KlarType) = make_optional_type(c, sr.1)
+            return mr
+        }
+        TypeKind::Result => {
+            var c: TypeChecker = tc
+            let ok_t: KlarType = unwrap_result_ok(c, t)
+            let err_t: KlarType = unwrap_result_err(c, t)
+            let sr_ok: (TypeChecker, KlarType) = substitute_type(c, ok_t)
+            c = sr_ok.0
+            let sr_err: (TypeChecker, KlarType) = substitute_type(c, err_t)
+            c = sr_err.0
+            let mr: (TypeChecker, KlarType) = make_result_type(c, sr_ok.1, sr_err.1)
+            return mr
+        }
+        TypeKind::Array => {
+            var c: TypeChecker = tc
+            let arr: ArrayData = c.type_arrays[t.payload]
+            let elem: KlarType = get_resolved_type(c, arr.element.id)
+            let sr: (TypeChecker, KlarType) = substitute_type(c, elem)
+            c = sr.0
+            let pr: (TypeChecker, i32) = push_type_ref(c, sr.1)
+            c = pr.0
+            let arr_idx: i32 = c.type_arrays.len()
+            c.type_arrays.push(ArrayData { element: TypeId { id: pr.1 }, size: arr.size })
+            return (c, KlarType { kind: TypeKind::Array, payload: arr_idx })
+        }
+        TypeKind::ListType => {
+            var c: TypeChecker = tc
+            let elem: KlarType = unwrap_list_element(c, t)
+            let sr: (TypeChecker, KlarType) = substitute_type(c, elem)
+            c = sr.0
+            let mr: (TypeChecker, KlarType) = make_list_type(c, sr.1)
+            return mr
+        }
+        _ => {
+            return (tc, t)
+        }
+    }
+}
+
+// Type unification: match a pattern (with TypeVars) against a concrete type
+pub fn unify_types(tc: TypeChecker, pattern: KlarType, concrete: KlarType) -> (TypeChecker, bool) {
+    match pattern.kind {
+        TypeKind::TypeVar => {
+            let tv: TypeVarData = tc.type_vars[pattern.payload]
+            if has_substitution(tc, tv.var_id) {
+                let bound: KlarType = get_substitution(tc, tv.var_id)
+                return (tc, type_eq_simple(bound, concrete))
+            }
+            let c: TypeChecker = add_substitution(tc, tv.var_id, concrete)
+            return (c, true)
+        }
+        _ => {}
+    }
+
+    if type_eq_simple(pattern, concrete) {
+        return (tc, true)
+    }
+
+    match pattern.kind {
+        TypeKind::Optional => {
+            match concrete.kind {
+                TypeKind::Optional => {
+                    let p_inner: KlarType = unwrap_optional_inner(tc, pattern)
+                    let c_inner: KlarType = unwrap_optional_inner(tc, concrete)
+                    return unify_types(tc, p_inner, c_inner)
+                }
+                _ => { return (tc, false) }
+            }
+        }
+        TypeKind::Array => {
+            match concrete.kind {
+                TypeKind::Array => {
+                    let p_arr: ArrayData = tc.type_arrays[pattern.payload]
+                    let c_arr: ArrayData = tc.type_arrays[concrete.payload]
+                    let p_elem: KlarType = get_resolved_type(tc, p_arr.element.id)
+                    let c_elem: KlarType = get_resolved_type(tc, c_arr.element.id)
+                    return unify_types(tc, p_elem, c_elem)
+                }
+                _ => { return (tc, false) }
+            }
+        }
+        TypeKind::Result => {
+            match concrete.kind {
+                TypeKind::Result => {
+                    let p_ok: KlarType = unwrap_result_ok(tc, pattern)
+                    let c_ok: KlarType = unwrap_result_ok(tc, concrete)
+                    let ur_ok: (TypeChecker, bool) = unify_types(tc, p_ok, c_ok)
+                    if not ur_ok.1 {
+                        return ur_ok
+                    }
+                    let p_err: KlarType = unwrap_result_err(ur_ok.0, pattern)
+                    let c_err: KlarType = unwrap_result_err(ur_ok.0, concrete)
+                    return unify_types(ur_ok.0, p_err, c_err)
+                }
+                _ => { return (tc, false) }
+            }
+        }
+        _ => {
+            return (tc, false)
+        }
+    }
+}
+
+// Resolve a type expression with type variable awareness
+// Checks if Named types match type parameters before delegating to normal resolution
+pub fn resolve_type_expr_with_type_vars(tc: TypeChecker, te_id: TypeExprId, tvar_start: i32, tvar_count: i32) -> (TypeChecker, KlarType) {
+    if te_id.id < 0 {
+        return (tc, type_void())
+    }
+
+    let te: TypeExpr = tc.type_exprs[te_id.id]
+    match te {
+        TypeExpr::Named(data) => {
+            // Check if name matches a type parameter
+            var i: i32 = 0
+            while i < tvar_count {
+                let tv: TypeVarData = tc.type_vars[tvar_start + i]
+                if tv.name == data.type_name {
+                    return (tc, KlarType { kind: TypeKind::TypeVar, payload: tvar_start + i })
+                }
+                i = i + 1
+            }
+            return resolve_named_type(tc, data)
+        }
+        TypeExpr::Array(data) => {
+            let r: (TypeChecker, KlarType) = resolve_type_expr_with_type_vars(tc, data.element, tvar_start, tvar_count)
+            var c: TypeChecker = r.0
+            let pr: (TypeChecker, i32) = push_type_ref(c, r.1)
+            c = pr.0
+            let arr_idx: i32 = c.type_arrays.len()
+            c.type_arrays.push(ArrayData { element: TypeId { id: pr.1 }, size: -1 })
+            return (c, KlarType { kind: TypeKind::Array, payload: arr_idx })
+        }
+        TypeExpr::Optional(data) => {
+            let r: (TypeChecker, KlarType) = resolve_type_expr_with_type_vars(tc, data.inner, tvar_start, tvar_count)
+            var c: TypeChecker = r.0
+            let mr: (TypeChecker, KlarType) = make_optional_type(c, r.1)
+            return mr
+        }
+        _ => {
+            return resolve_type_expr(tc, te_id)
+        }
+    }
 }
 
 // ─── Register Built-in Functions ────────────────────────────────────

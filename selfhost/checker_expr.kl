@@ -29,6 +29,7 @@ import ast.{
     EnumVariantData,
     GroupedData, InterpolatedStringData,
     FnParam, MatchArm, FieldInit,
+    FunctionDeclData, GenericParam,
     no_expr, has_expr, no_type_expr, has_type_expr
 }
 
@@ -40,7 +41,10 @@ import checker.{
     type_display,
     push_type_ref, get_resolved_type,
     make_optional_type, make_result_type,
-    unwrap_optional_inner, unwrap_result_ok
+    unwrap_optional_inner, unwrap_result_ok,
+    clear_substitutions, add_substitution, make_type_var,
+    mangle_generic_name, substitute_type, unify_types,
+    resolve_type_expr_with_type_vars
 }
 
 import checker_builtins.{check_builtin_method}
@@ -115,7 +119,7 @@ pub fn check_expr(tc: TypeChecker, eid: ExprId) -> (TypeChecker, KlarType) {
             return check_tuple_literal(tc, data)
         }
         Expr::InterpolatedString(data) => {
-            return (tc, type_string())
+            return check_interpolated_string(tc, data)
         }
         _ => {
             // IfExpr, MatchExpr, Closure, ComptimeBlock, UnsafeBlock, BuiltinCall
@@ -135,6 +139,20 @@ fn check_int_literal(tc: TypeChecker, data: IntLiteralData) -> (TypeChecker, Kla
 fn check_float_literal(tc: TypeChecker, data: FloatLiteralData) -> (TypeChecker, KlarType) {
     // Default float literals to f64
     return (tc, type_f64())
+}
+
+// ─── Interpolated String ────────────────────────────────────────────
+
+fn check_interpolated_string(tc: TypeChecker, data: InterpolatedStringData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    var i: i32 = 0
+    while i < data.parts_count {
+        let part_eid: ExprId = c.extra_expr_ids[data.parts_start + i]
+        let r: (TypeChecker, KlarType) = check_expr(c, part_eid)
+        c = r.0
+        i = i + 1
+    }
+    return (c, type_string())
 }
 
 // ─── Identifier ─────────────────────────────────────────────────────
@@ -406,6 +424,10 @@ fn check_named_call(tc: TypeChecker, data: CallData, id_data: IdentifierData) ->
             return check_call_with_info(tc, data, info)
         }
         None => {
+            // Check generic function declarations
+            if tc.generic_fn_decls.contains_key(name) {
+                return check_generic_fn_call(tc, data, name)
+            }
             // Enum variant constructors: Some, None, Ok, Err
             if name == "Some" and data.args_count == 1 {
                 return check_some_call(tc, data)
@@ -827,6 +849,158 @@ fn check_tuple_literal(tc: TypeChecker, data: TupleLiteralData) -> (TypeChecker,
     let tup_idx: i32 = c.type_tuples.len()
     c.type_tuples.push(TupleData { elems_start: start, elems_count: data.elems_count })
     return (c, KlarType { kind: TypeKind::Tuple, payload: tup_idx })
+}
+
+// ─── Generic Function Call Checking (Milestone 9.10.1) ──────────────
+
+fn check_generic_fn_call(tc: TypeChecker, data: CallData, fn_name: string) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let opt_idx: ?i32 = c.generic_fn_decls.get(fn_name)
+    match opt_idx {
+        Some(idx) => {
+            let fn_decl: FunctionDeclData = c.generic_fn_data[idx]
+            return check_generic_fn_call_impl(c, data, fn_name, fn_decl)
+        }
+        None => {
+            return add_error_with_type(c, data.span, "undefined generic function '" + fn_name + "'")
+        }
+    }
+}
+
+fn check_generic_fn_call_impl(tc: TypeChecker, data: CallData, fn_name: string, fn_decl: FunctionDeclData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+
+    // Check argument count
+    if data.args_count != fn_decl.params_count {
+        return add_error_with_type(c, data.span,
+            "function '" + fn_name + "' expects " + fn_decl.params_count.to_string().as_str() +
+            " argument(s), got " + data.args_count.to_string().as_str())
+    }
+
+    // Clear substitution map and create TypeVars for each generic parameter
+    c = clear_substitutions(c)
+    let tvar_start: i32 = c.type_vars.len()
+    var gi: i32 = 0
+    while gi < fn_decl.generics_count {
+        let gp: GenericParam = c.extra_generic_params[fn_decl.generics_start + gi]
+        let tvr: (TypeChecker, KlarType) = make_type_var(c, gi, gp.param_name)
+        c = tvr.0
+        gi = gi + 1
+    }
+    let tvar_count: i32 = fn_decl.generics_count
+
+    if data.type_args_count > 0 {
+        // Explicit type arguments
+        if data.type_args_count != fn_decl.generics_count {
+            return add_error_with_type(c, data.span,
+                "generic function '" + fn_name + "' expects " + fn_decl.generics_count.to_string().as_str() +
+                " type argument(s), got " + data.type_args_count.to_string().as_str())
+        }
+        var ti: i32 = 0
+        while ti < data.type_args_count {
+            let ta_te: TypeExprId = c.extra_type_expr_ids[data.type_args_start + ti]
+            let tar: (TypeChecker, KlarType) = resolve_type_expr(c, ta_te)
+            c = tar.0
+            c = add_substitution(c, ti, tar.1)
+            ti = ti + 1
+        }
+    } else {
+        // Implicit inference: check each arg and unify against param type with TypeVars
+        var ai: i32 = 0
+        while ai < data.args_count {
+            let arg_eid: ExprId = c.extra_expr_ids[data.args_start + ai]
+            let ar: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+            c = ar.0
+            let arg_type: KlarType = ar.1
+
+            let param: FnParam = c.extra_params[fn_decl.params_start + ai]
+            let pr: (TypeChecker, KlarType) = resolve_type_expr_with_type_vars(c, param.type_expr, tvar_start, tvar_count)
+            c = pr.0
+
+            if not is_error_type(arg_type) {
+                let ur: (TypeChecker, bool) = unify_types(c, pr.1, arg_type)
+                c = ur.0
+            }
+            ai = ai + 1
+        }
+    }
+
+    // Compute mangled name and check mono cache
+    let mangled: string = mangle_generic_name(c, fn_name, 0, tvar_count)
+    if c.mono_functions.contains_key(mangled) {
+        let opt_cached: ?KlarType = c.mono_functions.get(mangled)
+        match opt_cached {
+            Some(cached_fn_type) => {
+                // For explicit type args, still check arg expressions
+                if data.type_args_count > 0 {
+                    var vi: i32 = 0
+                    while vi < data.args_count {
+                        let arg_eid: ExprId = c.extra_expr_ids[data.args_start + vi]
+                        let vr: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+                        c = vr.0
+                        vi = vi + 1
+                    }
+                }
+                let fn_data: FunctionData = c.type_functions[cached_fn_type.payload]
+                let ret: KlarType = get_resolved_type(c, fn_data.return_type.id)
+                return (c, ret)
+            }
+            None => {}
+        }
+    }
+
+    // Build monomorphized function type
+    let mono_params_start: i32 = c.resolved_types.len()
+    var pi: i32 = 0
+    while pi < fn_decl.params_count {
+        let param: FnParam = c.extra_params[fn_decl.params_start + pi]
+        let pr: (TypeChecker, KlarType) = resolve_type_expr_with_type_vars(c, param.type_expr, tvar_start, tvar_count)
+        c = pr.0
+        let sr: (TypeChecker, KlarType) = substitute_type(c, pr.1)
+        c = sr.0
+        let ref_r: (TypeChecker, i32) = push_type_ref(c, sr.1)
+        c = ref_r.0
+        pi = pi + 1
+    }
+
+    let rr: (TypeChecker, KlarType) = resolve_type_expr_with_type_vars(c, fn_decl.return_type, tvar_start, tvar_count)
+    c = rr.0
+    let sr_ret: (TypeChecker, KlarType) = substitute_type(c, rr.1)
+    c = sr_ret.0
+    let pr_ret: (TypeChecker, i32) = push_type_ref(c, sr_ret.1)
+    c = pr_ret.0
+
+    let fn_idx: i32 = c.type_functions.len()
+    c.type_functions.push(FunctionData {
+        params_start: mono_params_start,
+        params_count: fn_decl.params_count,
+        return_type: TypeId { id: pr_ret.1 },
+        is_async: false,
+        is_unsafe: fn_decl.is_unsafe,
+    })
+    let mono_fn_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn_idx }
+    c.mono_functions.insert(mangled, mono_fn_type)
+
+    // For explicit type args, check arg expressions and validate types
+    if data.type_args_count > 0 {
+        var vi: i32 = 0
+        while vi < data.args_count {
+            let arg_eid: ExprId = c.extra_expr_ids[data.args_start + vi]
+            let vr: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+            c = vr.0
+            if vi < fn_decl.params_count and not is_error_type(vr.1) {
+                let param_type: KlarType = get_resolved_type(c, mono_params_start + vi)
+                if not type_compatible(param_type, vr.1) {
+                    c = add_error(c, data.span,
+                        "argument " + (vi + 1).to_string().as_str() + " of '" + fn_name +
+                        "': expected " + type_display(param_type) + ", got " + type_display(vr.1))
+                }
+            }
+            vi = vi + 1
+        }
+    }
+
+    return (c, sr_ret.1)
 }
 
 // ─── Smoke Test ─────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 // selfhost/checker_decl.kl — Declaration type checking (two-pass)
-// Milestone 9.9.4, 9.9.6
+// Milestone 9.9.4, 9.9.6, 9.10.1 (generic registration)
 //
 // Two-pass architecture:
 //   Pass 1: register_declarations — register struct types, enum types,
@@ -100,8 +100,11 @@ pub fn check_declarations(tc: TypeChecker, start: i32, count: i32) -> TypeChecke
 fn register_function(tc: TypeChecker, data: FunctionDeclData) -> TypeChecker {
     var c: TypeChecker = tc
 
-    // Skip generic functions (deferred to 9.10)
+    // Generic functions: store in generic registry, skip normal registration
     if data.generics_count > 0 {
+        let idx: i32 = c.generic_fn_data.len()
+        c.generic_fn_data.push(data)
+        c.generic_fn_decls.insert(data.fn_name, idx)
         return c
     }
 
@@ -160,8 +163,11 @@ fn register_function(tc: TypeChecker, data: FunctionDeclData) -> TypeChecker {
 fn register_struct(tc: TypeChecker, data: StructDeclData) -> TypeChecker {
     var c: TypeChecker = tc
 
-    // Skip generic structs (deferred to 9.10)
+    // Generic structs: store in generic registry, skip normal registration
     if data.generics_count > 0 {
+        let idx: i32 = c.generic_struct_data.len()
+        c.generic_struct_data.push(data)
+        c.generic_struct_decls.insert(data.struct_name, idx)
         return c
     }
 
@@ -216,8 +222,11 @@ fn register_struct(tc: TypeChecker, data: StructDeclData) -> TypeChecker {
 fn register_enum(tc: TypeChecker, data: EnumDeclData) -> TypeChecker {
     var c: TypeChecker = tc
 
-    // Skip generic enums (deferred to 9.10)
+    // Generic enums: store in generic registry, skip normal registration
     if data.generics_count > 0 {
+        let idx: i32 = c.generic_enum_data.len()
+        c.generic_enum_data.push(data)
+        c.generic_enum_decls.insert(data.enum_name, idx)
         return c
     }
 

@@ -33,8 +33,10 @@ import ast.{
     ForLoopData, WhileLoopData, LoopStmtData,
     IfStmtData, MatchStmtData,
     FunctionDeclData, StructDeclData, EnumDeclData,
+    GenericParam,
     FnParam, StructField, EnumVariantDecl,
     NamedTypeData, ArrayTypeData, OptionalTypeData, GenericApplyData,
+    InterpolatedStringData,
     MatchArm, FieldInit,
     no_expr, has_expr, no_type_expr, has_type_expr, no_span, no_pattern
 }
@@ -48,7 +50,9 @@ import checker.{
     register_builtins,
     push_type_ref, get_resolved_type,
     make_optional_type, make_result_type, make_list_type, make_map_type,
-    unwrap_optional_inner, unwrap_result_ok, unwrap_result_err
+    unwrap_optional_inner, unwrap_result_ok, unwrap_result_err,
+    clear_substitutions, add_substitution, get_substitution, has_substitution,
+    make_type_var, mangle_generic_name, type_mangle_name
 }
 
 import checker_expr.{check_expr}
@@ -1752,6 +1756,553 @@ fn test_generic_apply_option() -> i32 {
     return 0
 }
 
+// ─── 9.10.1 Helpers ──────────────────────────────────────────────────
+
+fn add_generic_param(tc: TypeChecker, name: string) -> (TypeChecker, i32) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.extra_generic_params.len()
+    c.extra_generic_params.push(GenericParam {
+        param_name: name,
+        bound: no_type_expr(),
+        span: s(),
+    })
+    return (c, idx)
+}
+
+fn add_call_expr_generic(tc: TypeChecker, callee: ExprId, args_start: i32, args_count: i32,
+    ta_start: i32, ta_count: i32) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::Call(CallData {
+        callee: callee,
+        args_start: args_start,
+        args_count: args_count,
+        type_args_start: ta_start,
+        type_args_count: ta_count,
+        span: s(),
+    }))
+    return (c, ExprId { id: idx })
+}
+
+fn register_generic_fn(tc: TypeChecker, name: string, data: FunctionDeclData) -> TypeChecker {
+    var c: TypeChecker = tc
+    let idx: i32 = c.generic_fn_data.len()
+    c.generic_fn_data.push(data)
+    c.generic_fn_decls.insert(name, idx)
+    return c
+}
+
+fn register_generic_struct(tc: TypeChecker, name: string, data: StructDeclData) -> TypeChecker {
+    var c: TypeChecker = tc
+    let idx: i32 = c.generic_struct_data.len()
+    c.generic_struct_data.push(data)
+    c.generic_struct_decls.insert(name, idx)
+    return c
+}
+
+// ─── 9.10.1 Generic Monomorphization Tests ──────────────────────────
+
+fn test_generic_fn_explicit() -> i32 {
+    // fn identity#[T](x: T) -> T
+    // identity#[i32](42) → i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // GenericParam "T"
+    let gp_r: (TypeChecker, i32) = add_generic_param(tc, "T")
+    tc = gp_r.0
+    let gp_start: i32 = gp_r.1
+
+    // Type expressions for param and return (both "T")
+    let t_T1: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T1.0
+    let t_T2: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T2.0
+
+    // Param: x: T
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_T1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Register generic function directly
+    tc = register_generic_fn(tc, "identity", FunctionDeclData {
+        fn_name: "identity",
+        generics_start: gp_start, generics_count: 1,
+        params_start: params_start, params_count: 1,
+        return_type: t_T2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // Build call: identity#[i32](42)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_arg.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+
+    // Type arg: i32
+    let ta_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = ta_te.0
+    let ta_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(ta_te.1)
+
+    let r_call: (TypeChecker, ExprId) = add_call_expr_generic(tc, r_callee.1, args_start, 1, ta_start, 1)
+    tc = r_call.0
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "identity#[i32](42) → i32") { return 50 }
+    if not expect_ok(tc, "generic fn explicit") { return 50 }
+
+    return 0
+}
+
+fn test_generic_fn_inferred() -> i32 {
+    // fn identity#[T](x: T) -> T
+    // identity(42) infers T=i32 → returns i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let gp_r: (TypeChecker, i32) = add_generic_param(tc, "T")
+    tc = gp_r.0
+    let gp_start: i32 = gp_r.1
+
+    let t_T1: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T1.0
+    let t_T2: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T2.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_T1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    tc = register_generic_fn(tc, "identity", FunctionDeclData {
+        fn_name: "identity",
+        generics_start: gp_start, generics_count: 1,
+        params_start: params_start, params_count: 1,
+        return_type: t_T2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // Build call: identity(42) — no type args, inferred
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_arg.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_start, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "identity(42) inferred → i32") { return 51 }
+    if not expect_ok(tc, "generic fn inferred") { return 51 }
+
+    return 0
+}
+
+fn test_generic_fn_cache() -> i32 {
+    // Two calls with same type args should use cached monomorphization
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let gp_r: (TypeChecker, i32) = add_generic_param(tc, "T")
+    tc = gp_r.0
+    let gp_start: i32 = gp_r.1
+
+    let t_T1: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T1.0
+    let t_T2: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T2.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_T1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    tc = register_generic_fn(tc, "identity", FunctionDeclData {
+        fn_name: "identity",
+        generics_start: gp_start, generics_count: 1,
+        params_start: params_start, params_count: 1,
+        return_type: t_T2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // First call: identity(42)
+    let r_c1: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_c1.0
+    let r_a1: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_a1.0
+    let as1: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_a1.1)
+    let r_call1: (TypeChecker, ExprId) = add_call_expr(tc, r_c1.1, as1, 1)
+    tc = r_call1.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_call1.1)
+    tc = re1.0
+
+    let fns_after_first: i32 = tc.mono_functions.len()
+
+    // Second call: identity(99) — same type, should hit cache
+    let r_c2: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_c2.0
+    let r_a2: (TypeChecker, ExprId) = add_int_expr(tc, "99")
+    tc = r_a2.0
+    let as2: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_a2.1)
+    let r_call2: (TypeChecker, ExprId) = add_call_expr(tc, r_c2.1, as2, 1)
+    tc = r_call2.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_call2.1)
+    tc = re2.0
+
+    if not expect_type(re1.1, type_i32(), "first call → i32") { return 52 }
+    if not expect_type(re2.1, type_i32(), "second call → i32 (cached)") { return 52 }
+    // Cache size should not grow
+    if tc.mono_functions.len() != fns_after_first {
+        println("FAIL: test_generic_fn_cache — cache should not grow for same type args")
+        return 52
+    }
+    if not expect_ok(tc, "generic fn cache") { return 52 }
+
+    return 0
+}
+
+fn test_generic_fn_two_params() -> i32 {
+    // fn first#[A, B](a: A, b: B) -> A
+    // first#[i32, string](42, "hello") → i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let gp_a: (TypeChecker, i32) = add_generic_param(tc, "A")
+    tc = gp_a.0
+    let gp_start: i32 = gp_a.1
+    let gp_b: (TypeChecker, i32) = add_generic_param(tc, "B")
+    tc = gp_b.0
+
+    let t_A1: (TypeChecker, TypeExprId) = add_type_named(tc, "A")
+    tc = t_A1.0
+    let t_B1: (TypeChecker, TypeExprId) = add_type_named(tc, "B")
+    tc = t_B1.0
+    let t_A2: (TypeChecker, TypeExprId) = add_type_named(tc, "A")
+    tc = t_A2.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "a", type_expr: t_A1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+    tc.extra_params.push(FnParam {
+        param_name: "b", type_expr: t_B1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    tc = register_generic_fn(tc, "first", FunctionDeclData {
+        fn_name: "first",
+        generics_start: gp_start, generics_count: 2,
+        params_start: params_start, params_count: 2,
+        return_type: t_A2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // Build call with explicit type args: first#[i32, string](42, "hello")
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "first")
+    tc = r_callee.0
+    let r_a1: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_a1.0
+    let r_a2: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_a2.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_a1.1)
+    tc.extra_expr_ids.push(r_a2.1)
+
+    let ta_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = ta_i32.0
+    let ta_str: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = ta_str.0
+    let ta_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(ta_i32.1)
+    tc.extra_type_expr_ids.push(ta_str.1)
+
+    let r_call: (TypeChecker, ExprId) = add_call_expr_generic(tc, r_callee.1, args_start, 2, ta_start, 2)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "first#[i32, string](42, \"hello\") → i32") { return 53 }
+    if not expect_ok(tc, "generic fn two params") { return 53 }
+
+    return 0
+}
+
+fn test_generic_fn_wrong_args() -> i32 {
+    // fn identity#[T](x: T) -> T
+    // identity(1, 2) → error (wrong arg count)
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let gp_r: (TypeChecker, i32) = add_generic_param(tc, "T")
+    tc = gp_r.0
+    let gp_start: i32 = gp_r.1
+
+    let t_T1: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T1.0
+    let t_T2: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T2.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_T1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    tc = register_generic_fn(tc, "identity", FunctionDeclData {
+        fn_name: "identity",
+        generics_start: gp_start, generics_count: 1,
+        params_start: params_start, params_count: 1,
+        return_type: t_T2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // Call with wrong arg count: identity(1, 2)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_callee.0
+    let r_a1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_a1.0
+    let r_a2: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_a2.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_a1.1)
+    tc.extra_expr_ids.push(r_a2.1)
+
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_start, 2)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "identity(1, 2) → wrong arg count error") { return 54 }
+
+    return 0
+}
+
+fn test_generic_struct_instantiation() -> i32 {
+    // struct Pair#[A, B] { first: A, second: B }
+    // Pair#[i32, string] → StructType
+    var tc: TypeChecker = TypeChecker.new()
+
+    let gp_a: (TypeChecker, i32) = add_generic_param(tc, "A")
+    tc = gp_a.0
+    let gp_start: i32 = gp_a.1
+    let gp_b: (TypeChecker, i32) = add_generic_param(tc, "B")
+    tc = gp_b.0
+
+    let t_A: (TypeChecker, TypeExprId) = add_type_named(tc, "A")
+    tc = t_A.0
+    let t_B: (TypeChecker, TypeExprId) = add_type_named(tc, "B")
+    tc = t_B.0
+
+    let fields_start: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, span: s() })
+
+    tc = register_generic_struct(tc, "Pair", StructDeclData {
+        struct_name: "Pair",
+        generics_start: gp_start, generics_count: 2,
+        fields_start: fields_start, fields_count: 2,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    })
+
+    // Build type expr: Pair#[i32, string]
+    let t_base: (TypeChecker, TypeExprId) = add_type_named(tc, "Pair")
+    tc = t_base.0
+    let t_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32.0
+    let t_str: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = t_str.0
+
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(t_i32.1)
+    tc.extra_type_expr_ids.push(t_str.1)
+
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, t_base.1, te_args_start, 2)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    if not expect_kind(res.1, "StructType", "Pair#[i32, string] → StructType") { return 55 }
+    if not expect_ok(tc, "generic struct instantiation") { return 55 }
+
+    return 0
+}
+
+fn test_generic_struct_field_access() -> i32 {
+    // struct Pair#[A, B] { first: A, second: B }
+    // p: Pair#[i32, string]; p.first → i32, p.second → string
+    var tc: TypeChecker = TypeChecker.new()
+
+    let gp_a: (TypeChecker, i32) = add_generic_param(tc, "A")
+    tc = gp_a.0
+    let gp_start: i32 = gp_a.1
+    let gp_b: (TypeChecker, i32) = add_generic_param(tc, "B")
+    tc = gp_b.0
+
+    let t_A: (TypeChecker, TypeExprId) = add_type_named(tc, "A")
+    tc = t_A.0
+    let t_B: (TypeChecker, TypeExprId) = add_type_named(tc, "B")
+    tc = t_B.0
+
+    let fields_start: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, span: s() })
+
+    tc = register_generic_struct(tc, "Pair", StructDeclData {
+        struct_name: "Pair",
+        generics_start: gp_start, generics_count: 2,
+        fields_start: fields_start, fields_count: 2,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    })
+
+    // Resolve Pair#[i32, string]
+    let t_base: (TypeChecker, TypeExprId) = add_type_named(tc, "Pair")
+    tc = t_base.0
+    let t_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32.0
+    let t_str: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = t_str.0
+
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(t_i32.1)
+    tc.extra_type_expr_ids.push(t_str.1)
+
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, t_base.1, te_args_start, 2)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    let pair_type: KlarType = res.1
+
+    // Define variable p of this type
+    tc.push_scope()
+    tc.define("p", SymbolInfo {
+        sym_name: "p", sym_type: pair_type, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // p.first → i32
+    let r_p1: (TypeChecker, ExprId) = add_ident_expr(tc, "p")
+    tc = r_p1.0
+    let r_first: (TypeChecker, ExprId) = add_field_expr(tc, r_p1.1, "first")
+    tc = r_first.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_first.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "Pair.first → i32") { return 56 }
+
+    // p.second → string
+    let r_p2: (TypeChecker, ExprId) = add_ident_expr(tc, "p")
+    tc = r_p2.0
+    let r_second: (TypeChecker, ExprId) = add_field_expr(tc, r_p2.1, "second")
+    tc = r_second.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_second.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_string(), "Pair.second → string") { return 56 }
+
+    if not expect_ok(tc, "generic struct field access") { return 56 }
+
+    return 0
+}
+
+fn test_generic_struct_cache() -> i32 {
+    // Same type args should reuse cached struct
+    var tc: TypeChecker = TypeChecker.new()
+
+    let gp_a: (TypeChecker, i32) = add_generic_param(tc, "A")
+    tc = gp_a.0
+    let gp_start: i32 = gp_a.1
+    let gp_b: (TypeChecker, i32) = add_generic_param(tc, "B")
+    tc = gp_b.0
+
+    let t_A: (TypeChecker, TypeExprId) = add_type_named(tc, "A")
+    tc = t_A.0
+    let t_B: (TypeChecker, TypeExprId) = add_type_named(tc, "B")
+    tc = t_B.0
+
+    let fields_start: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, span: s() })
+
+    tc = register_generic_struct(tc, "Pair", StructDeclData {
+        struct_name: "Pair",
+        generics_start: gp_start, generics_count: 2,
+        fields_start: fields_start, fields_count: 2,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    })
+
+    // First resolution: Pair#[i32, string]
+    let t_base1: (TypeChecker, TypeExprId) = add_type_named(tc, "Pair")
+    tc = t_base1.0
+    let t_i32_1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_1.0
+    let t_str_1: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = t_str_1.0
+    let te_as1: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(t_i32_1.1)
+    tc.extra_type_expr_ids.push(t_str_1.1)
+    let r_ga1: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, t_base1.1, te_as1, 2)
+    tc = r_ga1.0
+    let res1: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga1.1)
+    tc = res1.0
+
+    let structs_after_first: i32 = tc.mono_structs.len()
+
+    // Second resolution: Pair#[i32, string] (same args)
+    let t_base2: (TypeChecker, TypeExprId) = add_type_named(tc, "Pair")
+    tc = t_base2.0
+    let t_i32_2: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_2.0
+    let t_str_2: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = t_str_2.0
+    let te_as2: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(t_i32_2.1)
+    tc.extra_type_expr_ids.push(t_str_2.1)
+    let r_ga2: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, t_base2.1, te_as2, 2)
+    tc = r_ga2.0
+    let res2: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga2.1)
+    tc = res2.0
+
+    // Both should be StructType
+    if not expect_kind(res1.1, "StructType", "first Pair#[i32, string]") { return 57 }
+    if not expect_kind(res2.1, "StructType", "second Pair#[i32, string]") { return 57 }
+
+    // Cache should not grow
+    if tc.mono_structs.len() != structs_after_first {
+        println("FAIL: test_generic_struct_cache — cache should not grow for same type args")
+        return 57
+    }
+
+    // Both should have same payload (same struct index)
+    if res1.1.payload != res2.1.payload {
+        println("FAIL: test_generic_struct_cache — cached struct should have same payload")
+        return 57
+    }
+
+    if not expect_ok(tc, "generic struct cache") { return 57 }
+    return 0
+}
+
 fn test_postfix_try_error_on_non_optional() -> i32 {
     var tc: TypeChecker = TypeChecker.new()
     tc.push_scope()
@@ -1767,6 +2318,88 @@ fn test_postfix_try_error_on_non_optional() -> i32 {
     let re: (TypeChecker, KlarType) = check_expr(tc, r_try.1)
     tc = re.0
     if not expect_errors(tc, 1, "postfix ? on i32 → error") { return 40 }
+
+    return 0
+}
+
+fn test_generic_fn_explicit_wrong_arg_type() -> i32 {
+    // fn identity#[T](x: T) -> T
+    // identity#[i32]("hello") → error (expected i32, got string)
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let gp_r: (TypeChecker, i32) = add_generic_param(tc, "T")
+    tc = gp_r.0
+    let gp_start: i32 = gp_r.1
+
+    let t_T1: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T1.0
+    let t_T2: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T2.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_T1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    tc = register_generic_fn(tc, "identity", FunctionDeclData {
+        fn_name: "identity",
+        generics_start: gp_start, generics_count: 1,
+        params_start: params_start, params_count: 1,
+        return_type: t_T2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // Build call: identity#[i32]("hello") — type arg says i32, but arg is string
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_arg.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+
+    let ta_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = ta_te.0
+    let ta_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(ta_te.1)
+
+    let r_call: (TypeChecker, ExprId) = add_call_expr_generic(tc, r_callee.1, args_start, 1, ta_start, 1)
+    tc = r_call.0
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "identity#[i32](\"hello\") → type mismatch error") { return 58 }
+
+    return 0
+}
+
+fn test_interpolated_string_checks_parts() -> i32 {
+    // "hello {undefined_var}" → should catch undefined variable in interpolation part
+    var tc: TypeChecker = TypeChecker.new()
+
+    // Build parts: string literal "hello ", then identifier "undefined_var"
+    let r_s: (TypeChecker, ExprId) = add_str_expr(tc, "hello ")
+    tc = r_s.0
+    let r_bad: (TypeChecker, ExprId) = add_ident_expr(tc, "undefined_var")
+    tc = r_bad.0
+
+    let parts_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_s.1)
+    tc.extra_expr_ids.push(r_bad.1)
+
+    let interp_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::InterpolatedString(InterpolatedStringData {
+        parts_start: parts_start, parts_count: 2, span: s(),
+    }))
+    let interp_eid: ExprId = ExprId { id: interp_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, interp_eid)
+    tc = re.0
+    if not expect_errors(tc, 1, "interpolated string with undefined var → error") { return 59 }
+    if not expect_type(re.1, type_string(), "interpolated string → string") { return 59 }
 
     return 0
 }
@@ -1904,6 +2537,37 @@ fn main() -> i32 {
     rc = test_generic_apply_option()
     if rc != 0 { return rc }
 
-    println("checker_main.kl: all tests passed (42 tests)")
+    // 9.10.1 Generic Monomorphization tests
+    rc = test_generic_fn_explicit()
+    if rc != 0 { return rc }
+
+    rc = test_generic_fn_inferred()
+    if rc != 0 { return rc }
+
+    rc = test_generic_fn_cache()
+    if rc != 0 { return rc }
+
+    rc = test_generic_fn_two_params()
+    if rc != 0 { return rc }
+
+    rc = test_generic_fn_wrong_args()
+    if rc != 0 { return rc }
+
+    rc = test_generic_struct_instantiation()
+    if rc != 0 { return rc }
+
+    rc = test_generic_struct_field_access()
+    if rc != 0 { return rc }
+
+    rc = test_generic_struct_cache()
+    if rc != 0 { return rc }
+
+    rc = test_generic_fn_explicit_wrong_arg_type()
+    if rc != 0 { return rc }
+
+    rc = test_interpolated_string_checks_parts()
+    if rc != 0 { return rc }
+
+    println("checker_main.kl: all tests passed (52 tests)")
     return 0
 }
