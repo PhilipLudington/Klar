@@ -1,0 +1,492 @@
+// selfhost/checker_stmt.kl — Statement type checking
+// Milestone 9.9.4, 9.9.5
+//
+// Main entry points:
+//   check_stmt(tc, sid) -> TypeChecker
+//   check_stmts(tc, start, count) -> TypeChecker
+//
+// Handles let/var declarations, assignments, return, break/continue,
+// if/else, while, for, loop, match, expression statements.
+
+import types.{
+    KlarType, TypeKind, TypeId, PrimitiveKind,
+    type_i32, type_i64, type_f64, type_bool, type_char, type_string,
+    type_void, type_never, type_unknown, type_error,
+    type_is_numeric, type_is_integer,
+    FunctionData
+}
+
+import ast.{
+    Span, ExprId, StmtId, DeclId, TypeExprId, PatternId,
+    Expr, Stmt, Decl, TypeExpr, Pattern,
+    BinaryOp, UnaryOp, PostfixOp, AssignOp,
+    LetDeclData, VarDeclData, AssignmentData,
+    ExprStmtData, ReturnStmtData, BreakStmtData, ContinueStmtData,
+    ForLoopData, WhileLoopData, LoopStmtData,
+    IfStmtData, MatchStmtData,
+    MatchArm, IdentifierData,
+    no_expr, has_expr, no_type_expr, has_type_expr
+}
+
+import checker.{
+    TypeChecker, SymbolInfo, SymbolKind,
+    lookup, lookup_in_current, add_error, add_error_msg, add_error_with_type,
+    resolve_type_expr,
+    type_eq, type_compatible, is_error_type, is_never_type, is_void_type,
+    type_display,
+    push_type_ref, get_resolved_type
+}
+
+import checker_expr.{check_expr}
+
+// ─── Statement Dispatch ─────────────────────────────────────────────
+
+pub fn check_stmt(tc: TypeChecker, sid: StmtId) -> TypeChecker {
+    if sid.id < 0 {
+        return tc
+    }
+
+    let stmt: Stmt = tc.stmts[sid.id]
+    match stmt {
+        Stmt::LetDecl(data) => {
+            return check_let_decl(tc, data)
+        }
+        Stmt::VarDecl(data) => {
+            return check_var_decl(tc, data)
+        }
+        Stmt::Assignment(data) => {
+            return check_assignment(tc, data)
+        }
+        Stmt::ExprStmt(data) => {
+            return check_expr_stmt(tc, data)
+        }
+        Stmt::ReturnStmt(data) => {
+            return check_return(tc, data)
+        }
+        Stmt::BreakStmt(data) => {
+            return check_break(tc, data)
+        }
+        Stmt::ContinueStmt(data) => {
+            return check_continue(tc, data)
+        }
+        Stmt::ForLoop(data) => {
+            return check_for_loop(tc, data)
+        }
+        Stmt::WhileLoop(data) => {
+            return check_while_loop(tc, data)
+        }
+        Stmt::LoopStmt(data) => {
+            return check_loop_stmt(tc, data)
+        }
+        Stmt::IfStmt(data) => {
+            return check_if_stmt(tc, data)
+        }
+        Stmt::MatchStmt(data) => {
+            return check_match_stmt(tc, data)
+        }
+    }
+}
+
+// Check a range of statements in extra_stmt_ids[start..start+count]
+pub fn check_stmts(tc: TypeChecker, start: i32, count: i32) -> TypeChecker {
+    var c: TypeChecker = tc
+    var i: i32 = 0
+    while i < count {
+        let sid: StmtId = c.extra_stmt_ids[start + i]
+        c = check_stmt(c, sid)
+        i = i + 1
+    }
+    return c
+}
+
+// ─── Let/Var Declarations ───────────────────────────────────────────
+
+fn check_let_decl(tc: TypeChecker, data: LetDeclData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Resolve declared type
+    let rt: (TypeChecker, KlarType) = resolve_type_expr(c, data.type_expr)
+    c = rt.0
+    let declared_type: KlarType = rt.1
+
+    // Check initializer if present
+    var init_type: KlarType = type_void()
+    if has_expr(data.value) {
+        let ri: (TypeChecker, KlarType) = check_expr(c, data.value)
+        c = ri.0
+        init_type = ri.1
+    }
+
+    // Check type compatibility
+    if has_expr(data.value) and has_type_expr(data.type_expr) {
+        if not type_compatible(declared_type, init_type) {
+            c = add_error(c, data.span,
+                "type mismatch in let: declared " + type_display(declared_type) +
+                ", got " + type_display(init_type))
+        }
+    }
+
+    // Check for duplicate in current scope
+    if not data.is_shadow and lookup_in_current(c, data.decl_name) {
+        c = add_error(c, data.span,
+            "redefinition of '" + data.decl_name + "' in same scope (use 'shadow let' to shadow)")
+    }
+
+    // Determine the variable's type
+    var var_type: KlarType = declared_type
+    if not has_type_expr(data.type_expr) and has_expr(data.value) {
+        var_type = init_type
+    }
+
+    // Define in current scope
+    c.define(data.decl_name, SymbolInfo {
+        sym_name: data.decl_name,
+        sym_type: var_type,
+        mutable: false,
+        kind: SymbolKind::Variable,
+    })
+
+    return c
+}
+
+fn check_var_decl(tc: TypeChecker, data: VarDeclData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Resolve declared type
+    let rt: (TypeChecker, KlarType) = resolve_type_expr(c, data.type_expr)
+    c = rt.0
+    let declared_type: KlarType = rt.1
+
+    // Check initializer if present
+    var init_type: KlarType = type_void()
+    if has_expr(data.value) {
+        let ri: (TypeChecker, KlarType) = check_expr(c, data.value)
+        c = ri.0
+        init_type = ri.1
+    }
+
+    // Check type compatibility
+    if has_expr(data.value) and has_type_expr(data.type_expr) {
+        if not type_compatible(declared_type, init_type) {
+            c = add_error(c, data.span,
+                "type mismatch in var: declared " + type_display(declared_type) +
+                ", got " + type_display(init_type))
+        }
+    }
+
+    // Check for duplicate in current scope
+    if not data.is_shadow and lookup_in_current(c, data.decl_name) {
+        c = add_error(c, data.span,
+            "redefinition of '" + data.decl_name + "' in same scope (use 'shadow var' to shadow)")
+    }
+
+    // Determine the variable's type
+    var var_type: KlarType = declared_type
+    if not has_type_expr(data.type_expr) and has_expr(data.value) {
+        var_type = init_type
+    }
+
+    // Define in current scope (mutable)
+    c.define(data.decl_name, SymbolInfo {
+        sym_name: data.decl_name,
+        sym_type: var_type,
+        mutable: true,
+        kind: SymbolKind::Variable,
+    })
+
+    return c
+}
+
+// ─── Assignment ─────────────────────────────────────────────────────
+
+fn check_assignment(tc: TypeChecker, data: AssignmentData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Check target expression
+    let rt: (TypeChecker, KlarType) = check_expr(c, data.target)
+    c = rt.0
+    let target_type: KlarType = rt.1
+
+    // Check value expression
+    let rv: (TypeChecker, KlarType) = check_expr(c, data.value)
+    c = rv.0
+    let value_type: KlarType = rv.1
+
+    // Check mutability (only for simple identifier targets)
+    let target_expr: Expr = c.exprs[data.target.id]
+    match target_expr {
+        Expr::Identifier(id_data) => {
+            let found: ?SymbolInfo = lookup(c, id_data.ident_name)
+            match found {
+                Some(info) => {
+                    if not info.mutable {
+                        c = add_error(c, data.span,
+                            "cannot assign to immutable variable '" + id_data.ident_name + "'")
+                    }
+                }
+                None => {
+                    // Already reported by check_expr
+                }
+            }
+        }
+        _ => {
+            // Field access, index — mutability check deferred
+        }
+    }
+
+    // For compound assignment ops (+=, -=, etc.), check arithmetic compatibility
+    match data.op {
+        AssignOp::Plain => {
+            // Simple assignment: check type compatibility
+            if not type_compatible(target_type, value_type) and not is_error_type(target_type) and not is_error_type(value_type) {
+                c = add_error(c, data.span,
+                    "assignment type mismatch: target is " + type_display(target_type) +
+                    ", value is " + type_display(value_type))
+            }
+        }
+        _ => {
+            // Compound assignment: both must be compatible numeric types (or strings for ++=)
+            if not type_compatible(target_type, value_type) and not is_error_type(target_type) and not is_error_type(value_type) {
+                c = add_error(c, data.span,
+                    "compound assignment type mismatch: " + type_display(target_type) +
+                    " vs " + type_display(value_type))
+            }
+        }
+    }
+
+    return c
+}
+
+// ─── Expression Statement ───────────────────────────────────────────
+
+fn check_expr_stmt(tc: TypeChecker, data: ExprStmtData) -> TypeChecker {
+    let r: (TypeChecker, KlarType) = check_expr(tc, data.expr)
+    return r.0
+}
+
+// ─── Return ─────────────────────────────────────────────────────────
+
+fn check_return(tc: TypeChecker, data: ReturnStmtData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    if has_expr(data.value) {
+        let r: (TypeChecker, KlarType) = check_expr(c, data.value)
+        c = r.0
+        let ret_type: KlarType = r.1
+
+        // Check against expected return type
+        if not type_compatible(c.current_return_type, ret_type) {
+            c = add_error(c, data.span,
+                "return type mismatch: expected " + type_display(c.current_return_type) +
+                ", got " + type_display(ret_type))
+        }
+    } else {
+        // Bare return: expected return type must be void
+        if not is_void_type(c.current_return_type) {
+            c = add_error(c, data.span,
+                "missing return value, expected " + type_display(c.current_return_type))
+        }
+    }
+
+    return c
+}
+
+// ─── Break / Continue ───────────────────────────────────────────────
+
+fn check_break(tc: TypeChecker, data: BreakStmtData) -> TypeChecker {
+    if not tc.in_loop {
+        return add_error(tc, data.span, "'break' outside of loop")
+    }
+    return tc
+}
+
+fn check_continue(tc: TypeChecker, data: ContinueStmtData) -> TypeChecker {
+    if not tc.in_loop {
+        return add_error(tc, data.span, "'continue' outside of loop")
+    }
+    return tc
+}
+
+// ─── If Statement ───────────────────────────────────────────────────
+
+fn check_if_stmt(tc: TypeChecker, data: IfStmtData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Check condition is bool
+    let r_cond: (TypeChecker, KlarType) = check_expr(c, data.condition)
+    c = r_cond.0
+    let cond_type: KlarType = r_cond.1
+    if not type_eq(cond_type, type_bool()) and not is_error_type(cond_type) {
+        c = add_error(c, data.span,
+            "if condition must be bool, got " + type_display(cond_type))
+    }
+
+    // Check then branch
+    c.push_scope()
+    c = check_stmts(c, data.then_start, data.then_count)
+    c.pop_scope()
+
+    // Check else branch (if present)
+    if data.else_count > 0 {
+        c.push_scope()
+        c = check_stmts(c, data.else_start, data.else_count)
+        c.pop_scope()
+    }
+
+    return c
+}
+
+// ─── While Loop ─────────────────────────────────────────────────────
+
+fn check_while_loop(tc: TypeChecker, data: WhileLoopData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Check condition is bool
+    let r_cond: (TypeChecker, KlarType) = check_expr(c, data.condition)
+    c = r_cond.0
+    let cond_type: KlarType = r_cond.1
+    if not type_eq(cond_type, type_bool()) and not is_error_type(cond_type) {
+        c = add_error(c, data.span,
+            "while condition must be bool, got " + type_display(cond_type))
+    }
+
+    // Check body in loop context
+    let was_in_loop: bool = c.in_loop
+    c.in_loop = true
+    c.push_scope()
+    c = check_stmts(c, data.body_start, data.body_count)
+    c.pop_scope()
+    c.in_loop = was_in_loop
+
+    return c
+}
+
+// ─── For Loop ───────────────────────────────────────────────────────
+
+fn check_for_loop(tc: TypeChecker, data: ForLoopData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Check iterable expression
+    let r_iter: (TypeChecker, KlarType) = check_expr(c, data.iterable)
+    c = r_iter.0
+    let iter_type: KlarType = r_iter.1
+
+    // Resolve binding type annotation
+    var binding_type: KlarType = type_i32()
+    if has_type_expr(data.binding_type) {
+        let rt: (TypeChecker, KlarType) = resolve_type_expr(c, data.binding_type)
+        c = rt.0
+        binding_type = rt.1
+    } else {
+        // Infer from iterable: for ranges, the element type is i32 (default)
+        // For arrays/slices, it would be the element type
+        // Foundation: use i32 for range iteration
+        binding_type = type_i32()
+    }
+
+    // Check body in loop context with binding defined
+    let was_in_loop: bool = c.in_loop
+    c.in_loop = true
+    c.push_scope()
+    c.define(data.binding, SymbolInfo {
+        sym_name: data.binding,
+        sym_type: binding_type,
+        mutable: false,
+        kind: SymbolKind::Variable,
+    })
+    c = check_stmts(c, data.body_start, data.body_count)
+    c.pop_scope()
+    c.in_loop = was_in_loop
+
+    return c
+}
+
+// ─── Loop Statement ─────────────────────────────────────────────────
+
+fn check_loop_stmt(tc: TypeChecker, data: LoopStmtData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    let was_in_loop: bool = c.in_loop
+    c.in_loop = true
+    c.push_scope()
+    c = check_stmts(c, data.body_start, data.body_count)
+    c.pop_scope()
+    c.in_loop = was_in_loop
+
+    return c
+}
+
+// ─── Match Statement ────────────────────────────────────────────────
+
+fn check_match_stmt(tc: TypeChecker, data: MatchStmtData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Check subject expression
+    let r_subj: (TypeChecker, KlarType) = check_expr(c, data.subject)
+    c = r_subj.0
+    let subj_type: KlarType = r_subj.1
+
+    // Check each arm
+    var i: i32 = 0
+    while i < data.arms_count {
+        let arm: MatchArm = c.extra_match_arms[data.arms_start + i]
+
+        // Check arm body (it's an ExprId)
+        if has_expr(arm.body) {
+            c.push_scope()
+            // Bind pattern variables (basic: just binding patterns)
+            c = bind_pattern(c, arm.pattern, subj_type)
+            let r_body: (TypeChecker, KlarType) = check_expr(c, arm.body)
+            c = r_body.0
+            c.pop_scope()
+        }
+
+        i = i + 1
+    }
+
+    return c
+}
+
+// Bind variables from a pattern into the current scope
+fn bind_pattern(tc: TypeChecker, pid: PatternId, subject_type: KlarType) -> TypeChecker {
+    var c: TypeChecker = tc
+    if pid.id < 0 { return c }
+
+    let pat: Pattern = c.patterns[pid.id]
+    match pat {
+        Pattern::BindingPat(data) => {
+            c.define(data.binding_name, SymbolInfo {
+                sym_name: data.binding_name,
+                sym_type: subject_type,
+                mutable: data.is_mut,
+                kind: SymbolKind::Variable,
+            })
+        }
+        Pattern::Wildcard(_) => {
+            // Nothing to bind
+        }
+        Pattern::VariantPat(data) => {
+            // Bind inner patterns for variant destructuring
+            // Foundation: handle single binding inside variant
+            var j: i32 = 0
+            while j < data.fields_count {
+                let inner_pid: PatternId = c.extra_pattern_ids[data.fields_start + j]
+                // Inner binding gets unknown type for foundation
+                c = bind_pattern(c, inner_pid, type_unknown())
+                j = j + 1
+            }
+        }
+        _ => {
+            // LiteralPat, TuplePat, OrPat, GuardedPat, StructPat — deferred
+        }
+    }
+
+    return c
+}
+
+// ─── Smoke Test ─────────────────────────────────────────────────────
+
+fn main() -> i32 {
+    println("checker_stmt.kl: loaded (run tests via checker_main.kl)")
+    return 0
+}

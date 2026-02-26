@@ -21,7 +21,7 @@ pub struct Span {
     end: i32,
 }
 
-fn no_span() -> Span {
+pub fn no_span() -> Span {
     return Span { line: 0, column: 0, start: 0, end: 0 }
 }
 
@@ -33,17 +33,17 @@ pub struct TypeExprId { id: i32 }
 pub struct PatternId { id: i32 }
 
 // Sentinel values (-1 = no node)
-fn no_expr() -> ExprId { return ExprId { id: -1 } }
-fn no_stmt() -> StmtId { return StmtId { id: -1 } }
-fn no_decl() -> DeclId { return DeclId { id: -1 } }
-fn no_type_expr() -> TypeExprId { return TypeExprId { id: -1 } }
-fn no_pattern() -> PatternId { return PatternId { id: -1 } }
+pub fn no_expr() -> ExprId { return ExprId { id: -1 } }
+pub fn no_stmt() -> StmtId { return StmtId { id: -1 } }
+pub fn no_decl() -> DeclId { return DeclId { id: -1 } }
+pub fn no_type_expr() -> TypeExprId { return TypeExprId { id: -1 } }
+pub fn no_pattern() -> PatternId { return PatternId { id: -1 } }
 
-fn has_expr(eid: ExprId) -> bool { return eid.id >= 0 }
-fn has_stmt(sid: StmtId) -> bool { return sid.id >= 0 }
-fn has_decl(did: DeclId) -> bool { return did.id >= 0 }
-fn has_type_expr(tid: TypeExprId) -> bool { return tid.id >= 0 }
-fn has_pattern(pid: PatternId) -> bool { return pid.id >= 0 }
+pub fn has_expr(eid: ExprId) -> bool { return eid.id >= 0 }
+pub fn has_stmt(sid: StmtId) -> bool { return sid.id >= 0 }
+pub fn has_decl(did: DeclId) -> bool { return did.id >= 0 }
+pub fn has_type_expr(tid: TypeExprId) -> bool { return tid.id >= 0 }
+pub fn has_pattern(pid: PatternId) -> bool { return pid.id >= 0 }
 
 // ─── Operator Enums ───────────────────────────────────────────────────
 

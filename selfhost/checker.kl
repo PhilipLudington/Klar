@@ -24,7 +24,7 @@ import types.{
     primitive_from_name, primitive_name,
     ArrayData, SliceData, TupleData, ResultData, FunctionData,
     ReferenceData, StructData, StructFieldData, EnumData,
-    EnumVariantData, WrapperData, TraitData
+    EnumVariantInfo, WrapperData, TraitData
 }
 
 import ast.{
@@ -35,7 +35,8 @@ import ast.{
     NamedTypeData, ArrayTypeData, SliceTypeData, TupleTypeData,
     OptionalTypeData, ResultTypeData, FunctionTypeData,
     ReferenceTypeData, GenericApplyData,
-    AstModule
+    AstModule,
+    no_expr, has_expr, no_type_expr, has_type_expr
 }
 
 // ─── SymbolKind ──────────────────────────────────────────────────────
@@ -113,8 +114,9 @@ pub struct TypeChecker {
 
     // Extra type lists for struct fields, enum variants, function params
     pub type_ids: List#[TypeId],
+    pub resolved_types: List#[KlarType],
     pub struct_fields: List#[StructFieldData],
-    pub enum_variants: List#[EnumVariantData],
+    pub enum_variants: List#[EnumVariantInfo],
 
     // Type registries: name -> KlarType for user-defined types
     pub struct_types: Map#[string, KlarType],
@@ -166,8 +168,9 @@ impl TypeChecker {
             type_wrappers: List.new#[WrapperData](),
 
             type_ids: List.new#[TypeId](),
+            resolved_types: List.new#[KlarType](),
             struct_fields: List.new#[StructFieldData](),
-            enum_variants: List.new#[EnumVariantData](),
+            enum_variants: List.new#[EnumVariantInfo](),
 
             struct_types: Map.new#[string, KlarType](),
             enum_types: Map.new#[string, KlarType](),
@@ -217,8 +220,9 @@ pub fn lookup(tc: TypeChecker, name: string) -> ?SymbolInfo {
     var i: i32 = tc.scopes.len() - 1
     while i >= 0 {
         let scope: Map#[string, SymbolInfo] = tc.scopes[i]
-        if scope.contains_key(name) {
-            return scope.get(name)
+        let result: ?SymbolInfo = scope.get(name)
+        if result.is_some() {
+            return result
         }
         i = i - 1
     }
@@ -330,11 +334,10 @@ fn resolve_array_type(tc: TypeChecker, data: ArrayTypeData) -> (TypeChecker, Kla
     var c: TypeChecker = r.0
     let elem_type: KlarType = r.1
 
-    // Store element type in type_ids arena
-    let tid_idx: i32 = c.type_ids.len()
-    c.type_ids.push(TypeId { id: tid_idx })
+    let pr: (TypeChecker, i32) = push_type_ref(c, elem_type)
+    c = pr.0
+    let tid_idx: i32 = pr.1
 
-    // Create ArrayData in arena
     let arr_idx: i32 = c.type_arrays.len()
     c.type_arrays.push(ArrayData { element: TypeId { id: tid_idx }, size: -1 })
 
@@ -346,22 +349,26 @@ fn resolve_slice_type(tc: TypeChecker, data: SliceTypeData) -> (TypeChecker, Kla
     var c: TypeChecker = r.0
     let elem_type: KlarType = r.1
 
+    let pr: (TypeChecker, i32) = push_type_ref(c, elem_type)
+    c = pr.0
+    let tid_idx: i32 = pr.1
+
     let slice_idx: i32 = c.type_slices.len()
-    c.type_slices.push(SliceData { element: TypeId { id: slice_idx } })
+    c.type_slices.push(SliceData { element: TypeId { id: tid_idx } })
 
     return (c, KlarType { kind: TypeKind::Slice, payload: slice_idx })
 }
 
 fn resolve_tuple_type(tc: TypeChecker, data: TupleTypeData) -> (TypeChecker, KlarType) {
     var c: TypeChecker = tc
-    let start: i32 = c.type_ids.len()
+    let start: i32 = c.resolved_types.len()
     var i: i32 = 0
     while i < data.elems_count {
         let te_id: TypeExprId = c.extra_type_expr_ids[data.elems_start + i]
         let r: (TypeChecker, KlarType) = resolve_type_expr(c, te_id)
         c = r.0
-        let tid_idx: i32 = c.type_ids.len()
-        c.type_ids.push(TypeId { id: tid_idx })
+        let pr: (TypeChecker, i32) = push_type_ref(c, r.1)
+        c = pr.0
         i = i + 1
     }
 
@@ -376,9 +383,11 @@ fn resolve_optional_type(tc: TypeChecker, data: OptionalTypeData) -> (TypeChecke
     var c: TypeChecker = r.0
     let inner_type: KlarType = r.1
 
+    let pr: (TypeChecker, i32) = push_type_ref(c, inner_type)
+    c = pr.0
+    let tid_idx: i32 = pr.1
+
     let wrap_idx: i32 = c.type_wrappers.len()
-    let tid_idx: i32 = c.type_ids.len()
-    c.type_ids.push(TypeId { id: tid_idx })
     c.type_wrappers.push(WrapperData { inner: TypeId { id: tid_idx } })
 
     return (c, KlarType { kind: TypeKind::Optional, payload: wrap_idx })
@@ -393,10 +402,13 @@ fn resolve_result_type(tc: TypeChecker, data: ResultTypeData) -> (TypeChecker, K
     c = r2.0
     let err_type: KlarType = r2.1
 
-    let ok_tid: i32 = c.type_ids.len()
-    c.type_ids.push(TypeId { id: ok_tid })
-    let err_tid: i32 = c.type_ids.len()
-    c.type_ids.push(TypeId { id: err_tid })
+    let pr1: (TypeChecker, i32) = push_type_ref(c, ok_type)
+    c = pr1.0
+    let ok_tid: i32 = pr1.1
+
+    let pr2: (TypeChecker, i32) = push_type_ref(c, err_type)
+    c = pr2.0
+    let err_tid: i32 = pr2.1
 
     let res_idx: i32 = c.type_results.len()
     c.type_results.push(ResultData { ok_type: TypeId { id: ok_tid }, err_type: TypeId { id: err_tid } })
@@ -406,22 +418,23 @@ fn resolve_result_type(tc: TypeChecker, data: ResultTypeData) -> (TypeChecker, K
 
 fn resolve_function_type(tc: TypeChecker, data: FunctionTypeData) -> (TypeChecker, KlarType) {
     var c: TypeChecker = tc
-    let params_start: i32 = c.type_ids.len()
+    let params_start: i32 = c.resolved_types.len()
     var i: i32 = 0
     while i < data.params_count {
         let te_id: TypeExprId = c.extra_type_expr_ids[data.params_start + i]
         let r: (TypeChecker, KlarType) = resolve_type_expr(c, te_id)
         c = r.0
-        let tid_idx: i32 = c.type_ids.len()
-        c.type_ids.push(TypeId { id: tid_idx })
+        let pr: (TypeChecker, i32) = push_type_ref(c, r.1)
+        c = pr.0
         i = i + 1
     }
 
     let r_ret: (TypeChecker, KlarType) = resolve_type_expr(c, data.ret)
     c = r_ret.0
     let ret_type: KlarType = r_ret.1
-    let ret_tid: i32 = c.type_ids.len()
-    c.type_ids.push(TypeId { id: ret_tid })
+    let pr_ret: (TypeChecker, i32) = push_type_ref(c, ret_type)
+    c = pr_ret.0
+    let ret_tid: i32 = pr_ret.1
 
     let fn_idx: i32 = c.type_functions.len()
     c.type_functions.push(FunctionData {
@@ -440,8 +453,9 @@ fn resolve_reference_type(tc: TypeChecker, data: ReferenceTypeData) -> (TypeChec
     var c: TypeChecker = r.0
     let inner_type: KlarType = r.1
 
-    let tid_idx: i32 = c.type_ids.len()
-    c.type_ids.push(TypeId { id: tid_idx })
+    let pr: (TypeChecker, i32) = push_type_ref(c, inner_type)
+    c = pr.0
+    let tid_idx: i32 = pr.1
 
     let ref_idx: i32 = c.type_references.len()
     c.type_references.push(ReferenceData { inner: TypeId { id: tid_idx }, is_mut: data.is_mut })
@@ -450,9 +464,37 @@ fn resolve_reference_type(tc: TypeChecker, data: ReferenceTypeData) -> (TypeChec
 }
 
 // Helper: add error and return error type
-fn add_error_with_type(tc: TypeChecker, span: Span, msg: string) -> (TypeChecker, KlarType) {
+pub fn add_error_with_type(tc: TypeChecker, span: Span, msg: string) -> (TypeChecker, KlarType) {
     let c: TypeChecker = add_error(tc, span, msg)
     return (c, type_error())
+}
+
+// ─── Type Store Helpers ─────────────────────────────────────────────
+// Push a KlarType into resolved_types (parallel to type_ids), return index.
+
+pub fn push_type_ref(tc: TypeChecker, kt: KlarType) -> (TypeChecker, i32) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.resolved_types.len()
+    c.type_ids.push(TypeId { id: idx })
+    c.resolved_types.push(kt)
+    return (c, idx)
+}
+
+pub fn get_resolved_type(tc: TypeChecker, idx: i32) -> KlarType {
+    if idx < 0 or idx >= tc.resolved_types.len() {
+        return type_error()
+    }
+    return tc.resolved_types[idx]
+}
+
+// ─── Scope Helpers ──────────────────────────────────────────────────
+
+// Check if a name exists in the current (innermost) scope only.
+pub fn lookup_in_current(tc: TypeChecker, name: string) -> bool {
+    let depth: i32 = tc.scopes.len() - 1
+    if depth < 0 { return false }
+    let scope: Map#[string, SymbolInfo] = tc.scopes[depth]
+    return scope.contains_key(name)
 }
 
 // ─── Type Equality ──────────────────────────────────────────────────
@@ -501,21 +543,90 @@ pub fn type_display(t: KlarType) -> string {
 // Register println, print, assert, assert_eq, etc. in global scope.
 // Deferred to 9.10 for full builtin support. Stub for now.
 
+// Helper: build a function type with given param types and return type.
+pub fn make_fn_type_1(tc: TypeChecker, p1: KlarType, ret: KlarType) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let params_start: i32 = c.resolved_types.len()
+    let pr1: (TypeChecker, i32) = push_type_ref(c, p1)
+    c = pr1.0
+    let pr_ret: (TypeChecker, i32) = push_type_ref(c, ret)
+    c = pr_ret.0
+    let fn_idx: i32 = c.type_functions.len()
+    c.type_functions.push(FunctionData {
+        params_start: params_start,
+        params_count: 1,
+        return_type: TypeId { id: pr_ret.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    return (c, KlarType { kind: TypeKind::Function, payload: fn_idx })
+}
+
+pub fn make_fn_type_0(tc: TypeChecker, ret: KlarType) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let params_start: i32 = c.resolved_types.len()
+    let pr_ret: (TypeChecker, i32) = push_type_ref(c, ret)
+    c = pr_ret.0
+    let fn_idx: i32 = c.type_functions.len()
+    c.type_functions.push(FunctionData {
+        params_start: params_start,
+        params_count: 0,
+        return_type: TypeId { id: pr_ret.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    return (c, KlarType { kind: TypeKind::Function, payload: fn_idx })
+}
+
+pub fn make_fn_type_2(tc: TypeChecker, p1: KlarType, p2: KlarType, ret: KlarType) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let params_start: i32 = c.resolved_types.len()
+    let pr1: (TypeChecker, i32) = push_type_ref(c, p1)
+    c = pr1.0
+    let pr2: (TypeChecker, i32) = push_type_ref(c, p2)
+    c = pr2.0
+    let pr_ret: (TypeChecker, i32) = push_type_ref(c, ret)
+    c = pr_ret.0
+    let fn_idx: i32 = c.type_functions.len()
+    c.type_functions.push(FunctionData {
+        params_start: params_start,
+        params_count: 2,
+        return_type: TypeId { id: pr_ret.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    return (c, KlarType { kind: TypeKind::Function, payload: fn_idx })
+}
+
 pub fn register_builtins(tc: TypeChecker) -> TypeChecker {
     var c: TypeChecker = tc
 
     // println(s: string) -> void
+    let r1: (TypeChecker, KlarType) = make_fn_type_1(c, type_string(), type_void())
+    c = r1.0
     c.define("println", SymbolInfo {
         sym_name: "println",
-        sym_type: type_void(),
+        sym_type: r1.1,
         mutable: false,
         kind: SymbolKind::Function,
     })
 
     // print(s: string) -> void
+    let r2: (TypeChecker, KlarType) = make_fn_type_1(c, type_string(), type_void())
+    c = r2.0
     c.define("print", SymbolInfo {
         sym_name: "print",
-        sym_type: type_void(),
+        sym_type: r2.1,
+        mutable: false,
+        kind: SymbolKind::Function,
+    })
+
+    // assert(cond: bool) -> void
+    let r3: (TypeChecker, KlarType) = make_fn_type_1(c, type_bool(), type_void())
+    c = r3.0
+    c.define("assert", SymbolInfo {
+        sym_name: "assert",
+        sym_type: r3.1,
         mutable: false,
         kind: SymbolKind::Function,
     })
@@ -734,11 +845,43 @@ fn main() -> i32 {
                 println("FAIL: println name")
                 return 14
             }
+            // println should have Function type (payload >= 0)
+            if info.sym_type.payload < 0 {
+                println("FAIL: println should have valid function payload")
+                return 14
+            }
         }
         None => {
             println("FAIL: println not found after register_builtins")
             return 14
         }
+    }
+
+    // Test 15: push_type_ref / get_resolved_type
+    var tc4: TypeChecker = TypeChecker.new()
+    let ptr: (TypeChecker, i32) = push_type_ref(tc4, type_i32())
+    tc4 = ptr.0
+    let got: KlarType = get_resolved_type(tc4, ptr.1)
+    if not type_eq(got, type_i32()) {
+        println("FAIL: get_resolved_type should return i32")
+        return 15
+    }
+
+    // Test 16: lookup_in_current
+    var tc5: TypeChecker = TypeChecker.new()
+    tc5.define("x", SymbolInfo {
+        sym_name: "x",
+        sym_type: type_i32(),
+        mutable: false,
+        kind: SymbolKind::Variable,
+    })
+    if not lookup_in_current(tc5, "x") {
+        println("FAIL: x should be in current scope")
+        return 16
+    }
+    if lookup_in_current(tc5, "y") {
+        println("FAIL: y should not be in current scope")
+        return 16
     }
 
     println("checker.kl: all tests passed")

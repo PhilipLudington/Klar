@@ -1,0 +1,735 @@
+// selfhost/checker_expr.kl — Expression type checking
+// Milestone 9.9.2, 9.9.3, 9.9.6 (partial)
+//
+// Main entry point: check_expr(tc, eid) -> (TypeChecker, KlarType)
+// Dispatches on Expr variant, returns the type of the expression.
+// Uses pass-by-value-and-return pattern (same as parser modules).
+
+import types.{
+    KlarType, TypeKind, TypeId, PrimitiveKind,
+    type_i32, type_i64, type_f64, type_bool, type_char, type_string,
+    type_void, type_never, type_unknown, type_error,
+    type_eq_simple, type_to_string_simple,
+    type_is_numeric, type_is_integer, type_is_float, type_is_signed,
+    type_is_primitive, get_primitive_kind,
+    ArrayData, SliceData, TupleData,
+    FunctionData, StructData, StructFieldData, EnumData
+}
+
+import ast.{
+    Span, ExprId, StmtId, DeclId, TypeExprId, PatternId,
+    Expr, Stmt, Decl, TypeExpr, Pattern,
+    BinaryOp, UnaryOp, PostfixOp, AssignOp,
+    IntLiteralData, FloatLiteralData, StringLiteralData,
+    CharLiteralData, BoolLiteralData, IdentifierData,
+    BinaryData, UnaryData, PostfixData,
+    CallData, MethodCallData, FieldAccessData, IndexData,
+    CastData, ClosureData, BlockData, IfExprData, MatchExprData,
+    TupleLiteralData, ArrayLiteralData, StructLiteralData,
+    EnumVariantData,
+    GroupedData, InterpolatedStringData,
+    FnParam, MatchArm, FieldInit,
+    no_expr, has_expr, no_type_expr, has_type_expr
+}
+
+import checker.{
+    TypeChecker, SymbolInfo, SymbolKind, MethodInfo,
+    lookup, add_error, add_error_msg, add_error_with_type,
+    resolve_type_expr,
+    type_eq, type_compatible, is_error_type, is_never_type, is_void_type,
+    type_display,
+    push_type_ref, get_resolved_type
+}
+
+// ─── Main Expression Dispatch ───────────────────────────────────────
+
+pub fn check_expr(tc: TypeChecker, eid: ExprId) -> (TypeChecker, KlarType) {
+    if eid.id < 0 {
+        return (tc, type_void())
+    }
+
+    let expr: Expr = tc.exprs[eid.id]
+    match expr {
+        Expr::IntLiteral(data) => {
+            return check_int_literal(tc, data)
+        }
+        Expr::FloatLiteral(data) => {
+            return check_float_literal(tc, data)
+        }
+        Expr::StringLiteral(data) => {
+            return (tc, type_string())
+        }
+        Expr::CharLiteral(data) => {
+            return (tc, type_char())
+        }
+        Expr::BoolLiteral(data) => {
+            return (tc, type_bool())
+        }
+        Expr::Identifier(data) => {
+            return check_identifier(tc, data)
+        }
+        Expr::Binary(data) => {
+            return check_binary(tc, data)
+        }
+        Expr::Unary(data) => {
+            return check_unary(tc, data)
+        }
+        Expr::Postfix(data) => {
+            return check_postfix(tc, data)
+        }
+        Expr::Call(data) => {
+            return check_call(tc, data)
+        }
+        Expr::MethodCall(data) => {
+            return check_method_call(tc, data)
+        }
+        Expr::FieldAccess(data) => {
+            return check_field_access(tc, data)
+        }
+        Expr::Index(data) => {
+            return check_index(tc, data)
+        }
+        Expr::Cast(data) => {
+            return check_cast(tc, data)
+        }
+        Expr::Grouped(data) => {
+            return check_expr(tc, data.inner)
+        }
+        Expr::Block(data) => {
+            return check_block(tc, data)
+        }
+        Expr::StructLiteral(data) => {
+            return check_struct_literal(tc, data)
+        }
+        Expr::EnumVariant(data) => {
+            return check_enum_variant(tc, data)
+        }
+        Expr::ArrayLiteral(data) => {
+            return check_array_literal(tc, data)
+        }
+        Expr::TupleLiteral(data) => {
+            return check_tuple_literal(tc, data)
+        }
+        Expr::InterpolatedString(data) => {
+            return (tc, type_string())
+        }
+        _ => {
+            // IfExpr, MatchExpr, Closure, ComptimeBlock, UnsafeBlock, BuiltinCall
+            // deferred or handled minimally
+            return (tc, type_unknown())
+        }
+    }
+}
+
+// ─── Literal Checking ───────────────────────────────────────────────
+
+fn check_int_literal(tc: TypeChecker, data: IntLiteralData) -> (TypeChecker, KlarType) {
+    // Default integer literals to i32
+    return (tc, type_i32())
+}
+
+fn check_float_literal(tc: TypeChecker, data: FloatLiteralData) -> (TypeChecker, KlarType) {
+    // Default float literals to f64
+    return (tc, type_f64())
+}
+
+// ─── Identifier ─────────────────────────────────────────────────────
+
+fn check_identifier(tc: TypeChecker, data: IdentifierData) -> (TypeChecker, KlarType) {
+    let found: ?SymbolInfo = lookup(tc, data.ident_name)
+    match found {
+        Some(info) => {
+            return (tc, info.sym_type)
+        }
+        None => {
+            return add_error_with_type(tc, data.span, "undefined variable '" + data.ident_name + "'")
+        }
+    }
+}
+
+// ─── Binary Operators ───────────────────────────────────────────────
+
+fn check_binary(tc: TypeChecker, data: BinaryData) -> (TypeChecker, KlarType) {
+    let r_left: (TypeChecker, KlarType) = check_expr(tc, data.left)
+    var c: TypeChecker = r_left.0
+    let left_type: KlarType = r_left.1
+
+    let r_right: (TypeChecker, KlarType) = check_expr(c, data.right)
+    c = r_right.0
+    let right_type: KlarType = r_right.1
+
+    // Propagate errors
+    if is_error_type(left_type) or is_error_type(right_type) {
+        return (c, type_error())
+    }
+
+    match data.op {
+        // Arithmetic: both operands must be same numeric type
+        BinaryOp::Add => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+        BinaryOp::Sub => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+        BinaryOp::Mul => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+        BinaryOp::Div => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+        BinaryOp::Mod => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+        BinaryOp::AddWrap => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+        BinaryOp::SubWrap => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+        BinaryOp::MulWrap => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+        BinaryOp::AddSat => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+        BinaryOp::SubSat => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+        BinaryOp::MulSat => { return check_arithmetic_op(c, data.span, left_type, right_type) }
+
+        // Comparison: both operands same type, returns bool
+        BinaryOp::Eq => { return check_comparison_op(c, data.span, left_type, right_type) }
+        BinaryOp::Neq => { return check_comparison_op(c, data.span, left_type, right_type) }
+        BinaryOp::Lt => { return check_ordered_op(c, data.span, left_type, right_type) }
+        BinaryOp::Gt => { return check_ordered_op(c, data.span, left_type, right_type) }
+        BinaryOp::LtEq => { return check_ordered_op(c, data.span, left_type, right_type) }
+        BinaryOp::GtEq => { return check_ordered_op(c, data.span, left_type, right_type) }
+
+        // Logical: both bool, returns bool
+        BinaryOp::And => { return check_logical_op(c, data.span, left_type, right_type) }
+        BinaryOp::Or => { return check_logical_op(c, data.span, left_type, right_type) }
+
+        // Bitwise: both integer, returns same type
+        BinaryOp::BitAnd => { return check_bitwise_op(c, data.span, left_type, right_type) }
+        BinaryOp::BitOr => { return check_bitwise_op(c, data.span, left_type, right_type) }
+        BinaryOp::BitXor => { return check_bitwise_op(c, data.span, left_type, right_type) }
+        BinaryOp::Shl => { return check_bitwise_op(c, data.span, left_type, right_type) }
+        BinaryOp::Shr => { return check_bitwise_op(c, data.span, left_type, right_type) }
+
+        // String concat: both strings
+        BinaryOp::Concat => {
+            if not type_eq(left_type, type_string()) or not type_eq(right_type, type_string()) {
+                return add_error_with_type(c, data.span,
+                    "++ requires string operands, got " + type_display(left_type) + " and " + type_display(right_type))
+            }
+            return (c, type_string())
+        }
+
+        // Null coalesce: left must be optional
+        BinaryOp::NullCoalesce => {
+            // Foundation: return left type (simplified)
+            return (c, left_type)
+        }
+
+        _ => {
+            // Range, Pipe, Is — deferred to 9.10
+            return (c, type_unknown())
+        }
+    }
+}
+
+fn check_arithmetic_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
+    // String + string is allowed (concat via Add)
+    if type_eq(left, type_string()) and type_eq(right, type_string()) {
+        return (tc, type_string())
+    }
+    if not type_is_numeric(left) {
+        return add_error_with_type(tc, span,
+            "arithmetic requires numeric operands, got " + type_display(left))
+    }
+    if not type_eq(left, right) {
+        return add_error_with_type(tc, span,
+            "operand type mismatch: " + type_display(left) + " vs " + type_display(right))
+    }
+    return (tc, left)
+}
+
+fn check_comparison_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
+    if not type_eq(left, right) {
+        return add_error_with_type(tc, span,
+            "comparison type mismatch: " + type_display(left) + " vs " + type_display(right))
+    }
+    return (tc, type_bool())
+}
+
+fn check_ordered_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
+    if not type_eq(left, right) {
+        return add_error_with_type(tc, span,
+            "comparison type mismatch: " + type_display(left) + " vs " + type_display(right))
+    }
+    if not type_is_numeric(left) and not type_eq(left, type_string()) and not type_eq(left, type_char()) {
+        return add_error_with_type(tc, span,
+            "ordered comparison requires numeric/string/char type, got " + type_display(left))
+    }
+    return (tc, type_bool())
+}
+
+fn check_logical_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
+    if not type_eq(left, type_bool()) {
+        return add_error_with_type(tc, span,
+            "'and'/'or' requires bool operands, got " + type_display(left))
+    }
+    if not type_eq(right, type_bool()) {
+        return add_error_with_type(tc, span,
+            "'and'/'or' requires bool operands, got " + type_display(right))
+    }
+    return (tc, type_bool())
+}
+
+fn check_bitwise_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
+    if not type_is_integer(left) {
+        return add_error_with_type(tc, span,
+            "bitwise op requires integer operands, got " + type_display(left))
+    }
+    if not type_eq(left, right) {
+        return add_error_with_type(tc, span,
+            "bitwise op type mismatch: " + type_display(left) + " vs " + type_display(right))
+    }
+    return (tc, left)
+}
+
+// ─── Unary Operators ────────────────────────────────────────────────
+
+fn check_unary(tc: TypeChecker, data: UnaryData) -> (TypeChecker, KlarType) {
+    let r: (TypeChecker, KlarType) = check_expr(tc, data.operand)
+    var c: TypeChecker = r.0
+    let op_type: KlarType = r.1
+
+    if is_error_type(op_type) {
+        return (c, type_error())
+    }
+
+    match data.op {
+        UnaryOp::Negate => {
+            if not type_is_numeric(op_type) {
+                return add_error_with_type(c, data.span,
+                    "negation requires numeric type, got " + type_display(op_type))
+            }
+            return (c, op_type)
+        }
+        UnaryOp::Not => {
+            if not type_eq(op_type, type_bool()) {
+                return add_error_with_type(c, data.span,
+                    "'not' requires bool, got " + type_display(op_type))
+            }
+            return (c, type_bool())
+        }
+        UnaryOp::BitNot => {
+            if not type_is_integer(op_type) {
+                return add_error_with_type(c, data.span,
+                    "bitwise not requires integer, got " + type_display(op_type))
+            }
+            return (c, op_type)
+        }
+        _ => {
+            // Deref, MakeRef, MakeRefMut — deferred
+            return (c, type_unknown())
+        }
+    }
+}
+
+// ─── Postfix Operators ──────────────────────────────────────────────
+
+fn check_postfix(tc: TypeChecker, data: PostfixData) -> (TypeChecker, KlarType) {
+    let r: (TypeChecker, KlarType) = check_expr(tc, data.operand)
+    var c: TypeChecker = r.0
+    let op_type: KlarType = r.1
+
+    if is_error_type(op_type) {
+        return (c, type_error())
+    }
+
+    // ? (try) and .? (unwrap) — foundation returns unknown
+    return (c, type_unknown())
+}
+
+// ─── Function Call ──────────────────────────────────────────────────
+
+fn check_call(tc: TypeChecker, data: CallData) -> (TypeChecker, KlarType) {
+    // Get callee expression
+    let callee_expr: Expr = tc.exprs[data.callee.id]
+
+    // Only handle identifier callees for foundation
+    match callee_expr {
+        Expr::Identifier(id_data) => {
+            return check_named_call(tc, data, id_data)
+        }
+        _ => {
+            // Indirect calls (closures, field methods) — deferred
+            return (tc, type_unknown())
+        }
+    }
+}
+
+fn check_named_call(tc: TypeChecker, data: CallData, id_data: IdentifierData) -> (TypeChecker, KlarType) {
+    let name: string = id_data.ident_name
+
+    // Look up function in scope
+    let found: ?SymbolInfo = lookup(tc, name)
+    match found {
+        Some(info) => {
+            return check_call_with_info(tc, data, info)
+        }
+        None => {
+            // Check if it's an enum variant constructor (Some, None, Ok, Err)
+            if name == "Some" or name == "Ok" or name == "Err" {
+                // Foundation: accept and return unknown type
+                return check_args_only(tc, data)
+            }
+            return add_error_with_type(tc, data.span, "undefined function '" + name + "'")
+        }
+    }
+}
+
+fn check_call_with_info(tc: TypeChecker, data: CallData, info: SymbolInfo) -> (TypeChecker, KlarType) {
+    // Check that the symbol is callable (Function kind)
+    match info.sym_type.kind {
+        TypeKind::Function => {
+            let fn_data: FunctionData = tc.type_functions[info.sym_type.payload]
+            return check_fn_call_args(tc, data, fn_data, info.sym_name)
+        }
+        _ => {
+            // Not a function type — might be a variable holding a closure
+            // For foundation, accept and return unknown
+            return check_args_only(tc, data)
+        }
+    }
+}
+
+fn check_fn_call_args(tc: TypeChecker, data: CallData, fn_data: FunctionData, fn_name: string) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+
+    // Check argument count
+    if data.args_count != fn_data.params_count {
+        c = add_error(c, data.span,
+            "function '" + fn_name + "' expects " + fn_data.params_count.to_string().as_str() +
+            " argument(s), got " + data.args_count.to_string().as_str())
+        // Still check args for additional errors
+    }
+
+    // Check each argument type
+    var i: i32 = 0
+    let check_count: i32 = data.args_count
+    while i < check_count {
+        let arg_eid: ExprId = c.extra_expr_ids[data.args_start + i]
+        let r: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+        c = r.0
+        let arg_type: KlarType = r.1
+
+        // Check type compatibility if within param range
+        if i < fn_data.params_count {
+            let param_type: KlarType = get_resolved_type(c, fn_data.params_start + i)
+            if not type_compatible(param_type, arg_type) {
+                c = add_error(c, data.span,
+                    "argument " + (i + 1).to_string().as_str() + " of '" + fn_name +
+                    "': expected " + type_display(param_type) + ", got " + type_display(arg_type))
+            }
+        }
+
+        i = i + 1
+    }
+
+    // Return the function's return type
+    let ret_type: KlarType = get_resolved_type(c, fn_data.return_type.id)
+    return (c, ret_type)
+}
+
+// Check args without type checking params (for unknown callees)
+fn check_args_only(tc: TypeChecker, data: CallData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    var i: i32 = 0
+    while i < data.args_count {
+        let arg_eid: ExprId = c.extra_expr_ids[data.args_start + i]
+        let r: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+        c = r.0
+        i = i + 1
+    }
+    return (c, type_unknown())
+}
+
+// ─── Method Call ────────────────────────────────────────────────────
+
+fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, KlarType) {
+    // Check receiver
+    let r: (TypeChecker, KlarType) = check_expr(tc, data.receiver)
+    var c: TypeChecker = r.0
+    let recv_type: KlarType = r.1
+
+    if is_error_type(recv_type) {
+        return (c, type_error())
+    }
+
+    // Special-case: .to_string() on any type returns string
+    if data.method_name == "to_string" and data.args_count == 0 {
+        return (c, type_string())
+    }
+
+    // Special-case: .as_str() on String returns string
+    if data.method_name == "as_str" and data.args_count == 0 {
+        return (c, type_string())
+    }
+
+    // Look up method in methods registry ("TypeName.method")
+    match recv_type.kind {
+        TypeKind::StructType => {
+            let struct_data: StructData = c.type_structs[recv_type.payload]
+            let key: string = struct_data.name + "." + data.method_name
+            if c.methods.contains_key(key) {
+                let mi: ?MethodInfo = c.methods.get(key)
+                match mi {
+                    Some(method_info) => {
+                        // For foundation: return the method's return type
+                        let fn_data: FunctionData = c.type_functions[method_info.fn_data_idx]
+                        let ret: KlarType = get_resolved_type(c, fn_data.return_type.id)
+                        return (c, ret)
+                    }
+                    None => {}
+                }
+            }
+            return add_error_with_type(c, data.span,
+                "no method '" + data.method_name + "' on struct '" + struct_data.name + "'")
+        }
+        _ => {
+            // Methods on primitives/other types — deferred to 9.10
+            return (c, type_unknown())
+        }
+    }
+}
+
+// ─── Field Access ───────────────────────────────────────────────────
+
+fn check_field_access(tc: TypeChecker, data: FieldAccessData) -> (TypeChecker, KlarType) {
+    let r: (TypeChecker, KlarType) = check_expr(tc, data.object)
+    var c: TypeChecker = r.0
+    let obj_type: KlarType = r.1
+
+    if is_error_type(obj_type) {
+        return (c, type_error())
+    }
+
+    match obj_type.kind {
+        TypeKind::StructType => {
+            let struct_data: StructData = c.type_structs[obj_type.payload]
+            // Search fields
+            var i: i32 = 0
+            while i < struct_data.fields_count {
+                let field: StructFieldData = c.struct_fields[struct_data.fields_start + i]
+                if field.name == data.field_name {
+                    let field_type: KlarType = get_resolved_type(c, field.field_type.id)
+                    return (c, field_type)
+                }
+                i = i + 1
+            }
+            return add_error_with_type(c, data.span,
+                "no field '" + data.field_name + "' on struct '" + struct_data.name + "'")
+        }
+        TypeKind::Tuple => {
+            // Tuple field access: .0, .1, etc.
+            // Foundation: return unknown
+            return (c, type_unknown())
+        }
+        _ => {
+            return add_error_with_type(c, data.span,
+                "cannot access field '" + data.field_name + "' on type " + type_display(obj_type))
+        }
+    }
+}
+
+// ─── Index Access ───────────────────────────────────────────────────
+
+fn check_index(tc: TypeChecker, data: IndexData) -> (TypeChecker, KlarType) {
+    let r_obj: (TypeChecker, KlarType) = check_expr(tc, data.object)
+    var c: TypeChecker = r_obj.0
+    let obj_type: KlarType = r_obj.1
+
+    let r_idx: (TypeChecker, KlarType) = check_expr(c, data.index)
+    c = r_idx.0
+    let idx_type: KlarType = r_idx.1
+
+    if is_error_type(obj_type) {
+        return (c, type_error())
+    }
+
+    // Index must be integer
+    if not type_is_integer(idx_type) and not is_error_type(idx_type) {
+        c = add_error(c, data.span,
+            "index must be integer, got " + type_display(idx_type))
+    }
+
+    match obj_type.kind {
+        TypeKind::Array => {
+            let arr: ArrayData = c.type_arrays[obj_type.payload]
+            let elem: KlarType = get_resolved_type(c, arr.element.id)
+            return (c, elem)
+        }
+        TypeKind::Slice => {
+            let sl: SliceData = c.type_slices[obj_type.payload]
+            let elem: KlarType = get_resolved_type(c, sl.element.id)
+            return (c, elem)
+        }
+        _ => {
+            // For foundation, other indexable types return unknown
+            return (c, type_unknown())
+        }
+    }
+}
+
+// ─── Cast ───────────────────────────────────────────────────────────
+
+fn check_cast(tc: TypeChecker, data: CastData) -> (TypeChecker, KlarType) {
+    // Check the expression being cast
+    let r: (TypeChecker, KlarType) = check_expr(tc, data.expr)
+    var c: TypeChecker = r.0
+
+    // Resolve target type
+    let rt: (TypeChecker, KlarType) = resolve_type_expr(c, data.target)
+    c = rt.0
+    let target_type: KlarType = rt.1
+
+    return (c, target_type)
+}
+
+// ─── Block ──────────────────────────────────────────────────────────
+
+fn check_block(tc: TypeChecker, data: BlockData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    c.push_scope()
+
+    var i: i32 = 0
+    while i < data.stmts_count {
+        let sid: StmtId = c.extra_stmt_ids[data.stmts_start + i]
+        // Block statements are checked by checker_stmt.kl
+        // For now, just check expression statements inline
+        let stmt: Stmt = c.stmts[sid.id]
+        match stmt {
+            Stmt::ExprStmt(es_data) => {
+                let r: (TypeChecker, KlarType) = check_expr(c, es_data.expr)
+                c = r.0
+            }
+            _ => {
+                // Non-expression statements (let, var, etc.) are skipped here.
+                // Full statement checking happens via check_stmts in function bodies.
+            }
+        }
+        i = i + 1
+    }
+
+    c.pop_scope()
+    // Blocks in Klar are statement-based; the block type is void
+    return (c, type_void())
+}
+
+// ─── Struct Literal ─────────────────────────────────────────────────
+
+fn check_struct_literal(tc: TypeChecker, data: StructLiteralData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+
+    // Look up struct type
+    if not c.struct_types.contains_key(data.struct_name) {
+        return add_error_with_type(c, data.span, "unknown struct '" + data.struct_name + "'")
+    }
+
+    let st: ?KlarType = c.struct_types.get(data.struct_name)
+    var struct_type: KlarType = type_error()
+    match st {
+        Some(t) => { struct_type = t }
+        None => { return add_error_with_type(c, data.span, "unknown struct '" + data.struct_name + "'") }
+    }
+
+    // Check field initializers
+    var i: i32 = 0
+    while i < data.fields_count {
+        let fi: FieldInit = c.extra_field_inits[data.fields_start + i]
+        let r: (TypeChecker, KlarType) = check_expr(c, fi.value)
+        c = r.0
+        // Field type checking against struct definition deferred to full impl
+        i = i + 1
+    }
+
+    return (c, struct_type)
+}
+
+// ─── Enum Variant ───────────────────────────────────────────────────
+
+fn check_enum_variant(tc: TypeChecker, data: EnumVariantData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+
+    // Look up enum type
+    if not c.enum_types.contains_key(data.type_name) {
+        return add_error_with_type(c, data.span, "unknown enum '" + data.type_name + "'")
+    }
+
+    let et: ?KlarType = c.enum_types.get(data.type_name)
+    var enum_type: KlarType = type_error()
+    match et {
+        Some(t) => { enum_type = t }
+        None => { return add_error_with_type(c, data.span, "unknown enum '" + data.type_name + "'") }
+    }
+
+    // Check payload args
+    var i: i32 = 0
+    while i < data.args_count {
+        let arg_eid: ExprId = c.extra_expr_ids[data.args_start + i]
+        let r: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+        c = r.0
+        i = i + 1
+    }
+
+    return (c, enum_type)
+}
+
+// ─── Array Literal ──────────────────────────────────────────────────
+
+fn check_array_literal(tc: TypeChecker, data: ArrayLiteralData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+
+    if data.elems_count == 0 {
+        // Empty array literal — type unknown without context
+        return (c, type_unknown())
+    }
+
+    // Check first element to get array element type
+    let first_eid: ExprId = c.extra_expr_ids[data.elems_start]
+    let r_first: (TypeChecker, KlarType) = check_expr(c, first_eid)
+    c = r_first.0
+    let elem_type: KlarType = r_first.1
+
+    // Check remaining elements match
+    var i: i32 = 1
+    while i < data.elems_count {
+        let eid: ExprId = c.extra_expr_ids[data.elems_start + i]
+        let r: (TypeChecker, KlarType) = check_expr(c, eid)
+        c = r.0
+        if not type_compatible(elem_type, r.1) and not is_error_type(r.1) {
+            c = add_error(c, data.span,
+                "array element type mismatch: expected " + type_display(elem_type) +
+                ", got " + type_display(r.1))
+        }
+        i = i + 1
+    }
+
+    // Build array type
+    let pr: (TypeChecker, i32) = push_type_ref(c, elem_type)
+    c = pr.0
+    let arr_idx: i32 = c.type_arrays.len()
+    c.type_arrays.push(ArrayData { element: TypeId { id: pr.1 }, size: data.elems_count })
+    return (c, KlarType { kind: TypeKind::Array, payload: arr_idx })
+}
+
+// ─── Tuple Literal ──────────────────────────────────────────────────
+
+fn check_tuple_literal(tc: TypeChecker, data: TupleLiteralData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let start: i32 = c.resolved_types.len()
+
+    var i: i32 = 0
+    while i < data.elems_count {
+        let eid: ExprId = c.extra_expr_ids[data.elems_start + i]
+        let r: (TypeChecker, KlarType) = check_expr(c, eid)
+        c = r.0
+        let pr: (TypeChecker, i32) = push_type_ref(c, r.1)
+        c = pr.0
+        i = i + 1
+    }
+
+    let tup_idx: i32 = c.type_tuples.len()
+    c.type_tuples.push(TupleData { elems_start: start, elems_count: data.elems_count })
+    return (c, KlarType { kind: TypeKind::Tuple, payload: tup_idx })
+}
+
+// ─── Smoke Test ─────────────────────────────────────────────────────
+
+fn main() -> i32 {
+    println("checker_expr.kl: loaded (run tests via checker_main.kl)")
+    return 0
+}

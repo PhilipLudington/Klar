@@ -88,6 +88,12 @@ pub const EmitError = error{
     LLVMError,
 };
 
+/// Returns UnsupportedFeature error with source location for diagnostics.
+fn unsupportedFeatureDebug(src: std.builtin.SourceLocation) EmitError {
+    _ = src;
+    return EmitError.UnsupportedFeature;
+}
+
 /// LLVM IR emitter.
 pub const Emitter = struct {
     // Internal Future runtime state tag used by native codegen await/wrapping paths.
@@ -612,7 +618,9 @@ pub const Emitter = struct {
                         try self.emitFunction(f);
                     }
                 },
-                .impl_decl => |i| try self.emitImplMethods(i),
+                .impl_decl => |i| {
+                    try self.emitImplMethods(i);
+                },
                 else => {},
             }
         }
@@ -2379,18 +2387,16 @@ pub const Emitter = struct {
                 _ = try self.emitExpr(expr_stmt.expr);
             },
             .assignment => |assign| {
-                // Handle assignment statements (legacy path - parser now uses binary with .assign op)
-                const value = try self.emitExpr(assign.value);
-                switch (assign.target) {
-                    .identifier => |id| {
-                        if (self.named_values.get(id.name)) |local| {
-                            if (local.is_alloca) {
-                                _ = self.builder.buildStore(value, local.value);
-                            }
-                        }
-                    },
-                    else => {},
-                }
+                // Delegate to emitAssignment which handles all target types:
+                // .index (arr[i] = val, self.field[i] = val),
+                // .field (s.field = val), .unary (deref), .identifier
+                var synthetic_bin = ast.Binary{
+                    .left = assign.target,
+                    .right = assign.value,
+                    .op = assign.op,
+                    .span = assign.span,
+                };
+                _ = try self.emitAssignment(&synthetic_bin);
             },
             .while_loop => |loop| {
                 try self.emitWhileLoop(loop);
@@ -2436,7 +2442,20 @@ pub const Emitter = struct {
 
         // Emit condition
         self.builder.positionAtEnd(cond_bb);
-        const cond = try self.emitExpr(loop.condition);
+        const cond_raw = try self.emitExpr(loop.condition);
+        // Ensure condition is i1 (bool) type
+        const cond = blk: {
+            const cond_type = llvm.c.LLVMTypeOf(cond_raw);
+            const type_kind = llvm.getTypeKind(cond_type);
+            if (type_kind == llvm.c.LLVMIntegerTypeKind and llvm.c.LLVMGetIntTypeWidth(cond_type) == 1) {
+                break :blk cond_raw;
+            }
+            if (type_kind == llvm.c.LLVMIntegerTypeKind) {
+                const zero = llvm.c.LLVMConstInt(cond_type, 0, 0);
+                break :blk self.builder.buildICmp(llvm.c.LLVMIntNE, cond_raw, zero, "while.cond.coerce");
+            }
+            break :blk llvm.c.LLVMBuildTrunc(self.builder.ref, cond_raw, llvm.Types.int1(self.ctx), "while.cond.trunc");
+        };
         _ = self.builder.buildCondBr(cond, body_bb, end_bb);
 
         // Emit body with loop scope for drop tracking
@@ -2471,13 +2490,13 @@ pub const Emitter = struct {
                 try self.emitForLoopMap(func, loop.pattern.tuple_pattern, loop.iterable, loop.body);
                 return;
             }
-            return EmitError.UnsupportedFeature; // Tuple patterns only for Map for now
+            return unsupportedFeatureDebug(@src()); // Tuple patterns only for Map for now
         }
 
         // Get the binding name from the pattern
         const binding_name = switch (loop.pattern) {
             .binding => |b| b.name,
-            else => return EmitError.UnsupportedFeature, // Only simple bindings for now
+            else => return unsupportedFeatureDebug(@src()), // Only simple bindings for now
         };
 
         // Check if iterable is a range literal (fast path) or Range#[T] type (iterator protocol)
@@ -2503,7 +2522,7 @@ pub const Emitter = struct {
                     // Set iteration: for x in set { body }
                     try self.emitForLoopSet(func, binding_name, loop.iterable, loop.body);
                 } else {
-                    return EmitError.UnsupportedFeature;
+                    return unsupportedFeatureDebug(@src());
                 }
             },
         }
@@ -2541,7 +2560,7 @@ pub const Emitter = struct {
         const end_val = if (range.end) |e|
             try self.emitExpr(e)
         else
-            return EmitError.UnsupportedFeature; // End is required for for loops
+            return unsupportedFeatureDebug(@src()); // End is required for for loops
         const iter_ty = llvm.Types.int32(self.ctx);
 
         // Allocate loop variable
@@ -3381,17 +3400,17 @@ pub const Emitter = struct {
     ) EmitError!void {
         // Tuple pattern must have exactly 2 elements: (key, value)
         if (tuple_pattern.elements.len != 2) {
-            return EmitError.UnsupportedFeature;
+            return unsupportedFeatureDebug(@src());
         }
 
         // Get binding names from tuple pattern elements
         const key_binding = switch (tuple_pattern.elements[0]) {
             .binding => |b| b.name,
-            else => return EmitError.UnsupportedFeature,
+            else => return unsupportedFeatureDebug(@src()),
         };
         const value_binding = switch (tuple_pattern.elements[1]) {
             .binding => |b| b.name,
-            else => return EmitError.UnsupportedFeature,
+            else => return unsupportedFeatureDebug(@src()),
         };
 
         // Get the map alloca and key/value types
@@ -3777,7 +3796,7 @@ pub const Emitter = struct {
         const end_val = if (range.end) |e|
             try self.emitExpr(e)
         else
-            return EmitError.UnsupportedFeature;
+            return unsupportedFeatureDebug(@src());
 
         // Create the Range struct type
         var fields = [_]llvm.TypeRef{
@@ -4231,7 +4250,7 @@ pub const Emitter = struct {
         // Get the target variable for simple identifier assignment
         const target_id = switch (bin.left) {
             .identifier => |id| id,
-            else => return EmitError.UnsupportedFeature,
+            else => return unsupportedFeatureDebug(@src()),
         };
 
         const local = self.named_values.get(target_id.name) orelse
@@ -4293,11 +4312,53 @@ pub const Emitter = struct {
     fn emitIndexAssignment(self: *Emitter, bin: *ast.Binary) EmitError!llvm.ValueRef {
         const idx = bin.left.index;
 
+        // Handle field access objects (e.g., self.scopes[i] = val)
+        if (idx.object == .field) {
+            const field_expr = idx.object.field;
+            // Get the parent struct's alloca
+            if (field_expr.object == .identifier) {
+                const parent_id = field_expr.object.identifier;
+                if (self.named_values.get(parent_id.name)) |parent_local| {
+                    if (parent_local.is_alloca) {
+                        if (parent_local.struct_type_name) |struct_name| {
+                            // GEP to the field within the struct to get the list pointer
+                            if (self.lookupFieldIndex(struct_name, field_expr.field_name)) |field_idx| {
+                                // Handle reference (inout) parameters
+                                const base_ptr = if (parent_local.is_reference)
+                                    self.builder.buildLoad(parent_local.ty, parent_local.value, "ref.load")
+                                else
+                                    parent_local.value;
+
+                                const gep_type = if (parent_local.is_reference)
+                                    parent_local.reference_inner_type.?
+                                else
+                                    parent_local.ty;
+
+                                var indices = [_]llvm.ValueRef{
+                                    llvm.Const.int32(self.ctx, 0),
+                                    llvm.Const.int32(self.ctx, @intCast(field_idx)),
+                                };
+                                const field_ptr = self.builder.buildGEP(gep_type, base_ptr, &indices, "field.list.ptr");
+
+                                // Check if this field is a list type
+                                if (self.getListElementType(idx.object)) |_| {
+                                    const index_val = try self.emitExpr(idx.index);
+                                    const rhs = try self.emitExpr(bin.right);
+                                    _ = try self.emitListSetInline(field_ptr, idx.object, index_val, rhs);
+                                    return rhs;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // For simple assignment, we need the array variable's alloca
         // The array must be a variable (identifier) for assignment to work
         const arr_id = switch (idx.object) {
             .identifier => |id| id,
-            else => return EmitError.UnsupportedFeature, // Only support arr[i] = v, not (expr)[i] = v
+            else => return unsupportedFeatureDebug(@src()), // Only support arr[i] = v, not (expr)[i] = v
         };
 
         const local = self.named_values.get(arr_id.name) orelse
@@ -4319,7 +4380,7 @@ pub const Emitter = struct {
                 _ = try self.emitListSetInline(local.value, idx.object, index_val, rhs);
                 return rhs;
             }
-            return EmitError.UnsupportedFeature;
+            return unsupportedFeatureDebug(@src());
         }
 
         // Emit the index expression
@@ -4419,7 +4480,7 @@ pub const Emitter = struct {
         // The struct must be a variable (identifier) for assignment to work
         const struct_id = switch (field.object) {
             .identifier => |id| id,
-            else => return EmitError.UnsupportedFeature,
+            else => return unsupportedFeatureDebug(@src()),
         };
 
         const local = self.named_values.get(struct_id.name) orelse
@@ -5468,7 +5529,23 @@ pub const Emitter = struct {
     fn emitIfStmt(self: *Emitter, if_stmt: *ast.IfStmt) EmitError!void {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const cond = try self.emitExpr(if_stmt.condition);
+        const cond_raw = try self.emitExpr(if_stmt.condition);
+
+        // Ensure condition is i1 (bool) type - coerce if needed
+        const cond = blk: {
+            const cond_type = llvm.c.LLVMTypeOf(cond_raw);
+            const type_kind = llvm.getTypeKind(cond_type);
+            if (type_kind == llvm.c.LLVMIntegerTypeKind and llvm.c.LLVMGetIntTypeWidth(cond_type) == 1) {
+                break :blk cond_raw;
+            }
+            // Coerce to i1: non-zero = true
+            if (type_kind == llvm.c.LLVMIntegerTypeKind) {
+                const zero = llvm.c.LLVMConstInt(cond_type, 0, 0);
+                break :blk self.builder.buildICmp(llvm.c.LLVMIntNE, cond_raw, zero, "cond.coerce");
+            }
+            // Fallback: truncate to i1
+            break :blk llvm.c.LLVMBuildTrunc(self.builder.ref, cond_raw, llvm.Types.int1(self.ctx), "cond.trunc");
+        };
 
         // Create blocks
         const then_bb = llvm.appendBasicBlock(self.ctx, func, "then");
@@ -5817,7 +5894,7 @@ pub const Emitter = struct {
                 }
             }
             // No type info and no explicit type - cannot determine variant
-            return EmitError.UnsupportedFeature;
+            return unsupportedFeatureDebug(@src());
         }
 
         // Get the enum type name from the pattern
@@ -6156,9 +6233,9 @@ pub const Emitter = struct {
                                 }
                             }
                         }
-                        return EmitError.UnsupportedFeature;
+                        return unsupportedFeatureDebug(@src());
                     },
-                    else => return EmitError.UnsupportedFeature, // Non-constant array size
+                    else => return unsupportedFeatureDebug(@src()), // Non-constant array size
                 };
                 return llvm.Types.array(elem_type, size);
             },
@@ -6882,6 +6959,14 @@ pub const Emitter = struct {
                 const type_kind = llvm.getTypeKind(base_ty);
                 if (type_kind == llvm.c.LLVMArrayTypeKind) {
                     return llvm.c.LLVMGetElementType(base_ty);
+                }
+                // List index: return element type
+                if (self.getListElementType(i.object)) |elem_type| {
+                    return self.typeToLLVM(elem_type);
+                }
+                // Map index: return value type
+                if (self.getMapValueType(i.object)) |val_type| {
+                    return self.typeToLLVM(val_type);
                 }
                 return llvm.Types.int32(self.ctx);
             },
@@ -8427,7 +8512,7 @@ pub const Emitter = struct {
                 // We need to reconstruct the mangled name here
                 const base_name = switch (g.base) {
                     .named => |n| n.name,
-                    else => return EmitError.UnsupportedFeature,
+                    else => return unsupportedFeatureDebug(@src()),
                 };
                 // Build mangled name: BaseName$Type1$Type2...
                 var mangled = std.ArrayListUnmanaged(u8){};
@@ -8439,7 +8524,7 @@ pub const Emitter = struct {
                 }
                 break :blk mangled.toOwnedSlice(self.allocator) catch return EmitError.OutOfMemory;
             },
-            else => return EmitError.UnsupportedFeature,
+            else => return unsupportedFeatureDebug(@src()),
         };
 
         // Check if we have a registered struct type (from struct declaration)
@@ -8689,7 +8774,7 @@ pub const Emitter = struct {
                         }
                     }
 
-                    return EmitError.UnsupportedFeature;
+                    return unsupportedFeatureDebug(@src());
                 }
             }
         }
@@ -8730,11 +8815,11 @@ pub const Emitter = struct {
                         return self.builder.buildLoad(field_type, field_ptr, "field.val");
                     }
                 }
-                return EmitError.UnsupportedFeature;
+                return unsupportedFeatureDebug(@src());
             }
         }
 
-        return EmitError.UnsupportedFeature;
+        return unsupportedFeatureDebug(@src());
     }
 
     /// Emit array/slice index access expression (e.g., arr[i]).
@@ -8906,6 +8991,85 @@ pub const Emitter = struct {
             }
         }
 
+        // Handle field access on identifier (e.g., tc.type_exprs[i]) by GEP-ing to the list field
+        if (idx.object == .field) {
+            const field_expr = idx.object.field;
+            if (field_expr.object == .identifier) {
+                const parent_id = field_expr.object.identifier;
+                if (self.named_values.get(parent_id.name)) |parent_local| {
+                    if (parent_local.is_alloca) {
+                        if (parent_local.struct_type_name) |struct_name| {
+                            if (self.lookupFieldIndex(struct_name, field_expr.field_name)) |field_idx| {
+                                // Check if this field is a list
+                                if (self.getListElementType(idx.object)) |elem_klar_type| {
+                                    const element_type = self.typeToLLVM(elem_klar_type);
+                                    const element_size = self.getLLVMTypeSize(element_type);
+                                    const i32_type = llvm.Types.int32(self.ctx);
+                                    const i64_type = llvm.Types.int64(self.ctx);
+                                    const i8_type = llvm.Types.int8(self.ctx);
+
+                                    // Handle reference (inout) parameters: load the pointer first
+                                    const base_ptr = if (parent_local.is_reference)
+                                        self.builder.buildLoad(parent_local.ty, parent_local.value, "ref.load")
+                                    else
+                                        parent_local.value;
+
+                                    const gep_type = if (parent_local.is_reference)
+                                        (parent_local.reference_inner_type orelse return EmitError.InvalidAST)
+                                    else
+                                        parent_local.ty;
+
+                                    // Load the list struct from the field, then use it for indexing
+                                    // Get the field's LLVM type directly from the struct layout
+                                    const field_llvm_type = llvm.c.LLVMStructGetTypeAtIndex(gep_type, field_idx);
+                                    const list_type = self.getListStructType();
+
+                                    // GEP to the list field within the parent struct
+                                    var field_indices = [_]llvm.ValueRef{
+                                        llvm.Const.int32(self.ctx, 0),
+                                        llvm.Const.int32(self.ctx, @intCast(field_idx)),
+                                    };
+                                    const field_ptr = self.builder.buildGEP(gep_type, base_ptr, &field_indices, "field.list.ptr");
+
+                                    // Load the list value, store to a properly-typed temp alloca
+                                    const list_val = self.builder.buildLoad(field_llvm_type, field_ptr, "list.val");
+                                    const list_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                                    _ = self.builder.buildStore(list_val, list_alloca);
+
+                                    // Bounds check using the list_type alloca
+                                    const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, "list.len_ptr");
+                                    const current_len = self.builder.buildLoad(i32_type, len_ptr, "list.len");
+
+                                    const zero = llvm.Const.int32(self.ctx, 0);
+                                    const idx_ge_zero = self.builder.buildICmp(llvm.c.LLVMIntSGE, index_val, zero, "list.idx_ge_zero");
+                                    const idx_lt_len = self.builder.buildICmp(llvm.c.LLVMIntSLT, index_val, current_len, "list.idx_lt_len");
+                                    const in_bounds = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ge_zero, idx_lt_len, "list.in_bounds");
+
+                                    const func = self.current_function orelse return EmitError.InvalidAST;
+                                    const ok_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.ok");
+                                    const fail_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.fail");
+                                    _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+                                    self.builder.positionAtEnd(fail_block);
+                                    _ = self.builder.buildUnreachable();
+
+                                    self.builder.positionAtEnd(ok_block);
+                                    const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "list.ptr_ptr");
+                                    const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "list.data_ptr");
+                                    const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index_val, i64_type, "list.idx_i64");
+                                    const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
+                                    const offset2 = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "list.offset");
+                                    var gep_indices2 = [_]llvm.ValueRef{offset2};
+                                    const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &gep_indices2, 1, "list.elem.ptr");
+                                    return self.builder.buildLoad(element_type, elem_ptr, "list.elem.val");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Fallback: emit the object expression (may produce a loaded array value)
         const obj = try self.emitExpr(idx.object);
         const obj_type = llvm.typeOf(obj);
@@ -8972,9 +9136,9 @@ pub const Emitter = struct {
             // Pointer/slice access
             // For slices, we'd need to bounds check and extract the data pointer
             // For now, treat as raw pointer indexing
-            return EmitError.UnsupportedFeature;
+            return unsupportedFeatureDebug(@src());
         } else if (obj_type_kind == llvm.c.LLVMStructTypeKind) {
-            // Could be a slice struct { ptr, len }
+            // Could be a slice struct { ptr, len } or list struct { ptr, len, cap }
             // Verify this is actually a slice by checking:
             // 1. Exactly 2 elements
             // 2. First element is a pointer type
@@ -8991,7 +9155,7 @@ pub const Emitter = struct {
 
                 if (!first_is_ptr or !second_is_i64) {
                     // Not a slice struct, fall through to UnsupportedFeature
-                    return EmitError.UnsupportedFeature;
+                    return unsupportedFeatureDebug(@src());
                 }
 
                 // Verified slice struct { ptr, i64 } - store to temp and do slice indexing
@@ -9065,55 +9229,73 @@ pub const Emitter = struct {
 
             // List indexing (fallback for non-identifier): 3-field struct { ptr, i32, i32 }
             if (num_elements == 3) {
-                // Use type checker to get element type
+                // Try to determine list element type
+                var list_klar_type: ?types.Type = null;
+
+                // Method 1: Use type checker checkExpr
                 if (self.type_checker) |tc| {
                     const tc_mut = @constCast(tc);
                     const obj_klar_type = tc_mut.checkExpr(idx.object);
                     if (obj_klar_type == .list) {
-                        const element_type = self.typeToLLVM(obj_klar_type.list.element);
-                        const element_size = self.getLLVMTypeSize(element_type);
-                        const list_type = self.getListStructType();
-                        const i32_type = llvm.Types.int32(self.ctx);
-                        const i64_type = llvm.Types.int64(self.ctx);
-                        const i8_type = llvm.Types.int8(self.ctx);
-
-                        // Store to temp alloca for GEP
-                        const list_alloca = self.builder.buildAlloca(list_type, "list.tmp");
-                        _ = self.builder.buildStore(obj, list_alloca);
-
-                        // Load len from list struct (field 1)
-                        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, "list.len_ptr");
-                        const current_len = self.builder.buildLoad(i32_type, len_ptr, "list.len");
-
-                        // Bounds check: 0 <= index < len
-                        const zero = llvm.Const.int32(self.ctx, 0);
-                        const idx_ge_zero = self.builder.buildICmp(llvm.c.LLVMIntSGE, index_val, zero, "list.idx_ge_zero");
-                        const idx_lt_len = self.builder.buildICmp(llvm.c.LLVMIntSLT, index_val, current_len, "list.idx_lt_len");
-                        const in_bounds = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ge_zero, idx_lt_len, "list.in_bounds");
-
-                        const func = self.current_function orelse return EmitError.InvalidAST;
-                        const ok_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.ok");
-                        const fail_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.fail");
-                        _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
-
-                        self.builder.positionAtEnd(fail_block);
-                        _ = self.builder.buildUnreachable();
-
-                        self.builder.positionAtEnd(ok_block);
-                        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "list.ptr_ptr");
-                        const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "list.data_ptr");
-                        const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index_val, i64_type, "list.idx_i64");
-                        const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
-                        const offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "list.offset");
-                        var gep_indices = [_]llvm.ValueRef{offset};
-                        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &gep_indices, 1, "list.elem.ptr");
-                        return self.builder.buildLoad(element_type, elem_ptr, "list.elem.val");
+                        list_klar_type = obj_klar_type;
                     }
+                }
+
+                // Method 2: For field access expressions, look up the field's type in the struct registry
+                if (list_klar_type == null and idx.object == .field) {
+                    const field_expr = idx.object.field;
+                    if (self.getStructTypeNameFromExpr(field_expr.object)) |parent_struct_name| {
+                        if (self.getFieldType(parent_struct_name, field_expr.field_name)) |field_klar_type| {
+                            if (field_klar_type == .list) {
+                                list_klar_type = field_klar_type;
+                            }
+                        }
+                    }
+                }
+
+                if (list_klar_type != null and list_klar_type.? == .list) {
+                    const element_type = self.typeToLLVM(list_klar_type.?.list.element);
+                    const element_size = self.getLLVMTypeSize(element_type);
+                    const i32_type = llvm.Types.int32(self.ctx);
+                    const i64_type = llvm.Types.int64(self.ctx);
+                    const i8_type = llvm.Types.int8(self.ctx);
+
+                    // Store to temp alloca for GEP — use obj_type for type consistency
+                    const list_alloca = self.builder.buildAlloca(obj_type, "list.tmp");
+                    _ = self.builder.buildStore(obj, list_alloca);
+
+                    // Load len from list struct (field 1)
+                    const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, obj_type, list_alloca, 1, "list.len_ptr");
+                    const current_len = self.builder.buildLoad(i32_type, len_ptr, "list.len");
+
+                    // Bounds check: 0 <= index < len
+                    const zero = llvm.Const.int32(self.ctx, 0);
+                    const idx_ge_zero = self.builder.buildICmp(llvm.c.LLVMIntSGE, index_val, zero, "list.idx_ge_zero");
+                    const idx_lt_len = self.builder.buildICmp(llvm.c.LLVMIntSLT, index_val, current_len, "list.idx_lt_len");
+                    const in_bounds = llvm.c.LLVMBuildAnd(self.builder.ref, idx_ge_zero, idx_lt_len, "list.in_bounds");
+
+                    const func = self.current_function orelse return EmitError.InvalidAST;
+                    const ok_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.ok");
+                    const fail_block = llvm.appendBasicBlock(self.ctx, func, "list.bounds.fail");
+                    _ = self.builder.buildCondBr(in_bounds, ok_block, fail_block);
+
+                    self.builder.positionAtEnd(fail_block);
+                    _ = self.builder.buildUnreachable();
+
+                    self.builder.positionAtEnd(ok_block);
+                    const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, obj_type, list_alloca, 0, "list.ptr_ptr");
+                    const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "list.data_ptr");
+                    const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index_val, i64_type, "list.idx_i64");
+                    const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
+                    const offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, elem_size_val, "list.offset");
+                    var gep_indices = [_]llvm.ValueRef{offset};
+                    const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &gep_indices, 1, "list.elem.ptr");
+                    return self.builder.buildLoad(element_type, elem_ptr, "list.elem.val");
                 }
             }
         }
 
-        return EmitError.UnsupportedFeature;
+        return unsupportedFeatureDebug(@src());
     }
 
     /// Emit the address of an array/slice element (for ref arr[idx]).
@@ -9248,7 +9430,7 @@ pub const Emitter = struct {
         //
         // Invalid pattern (would cause UB):
         //   let ptr: CPtr[i32] = unsafe { ref_to_ptr(ref get_array()[0]) }
-        return EmitError.UnsupportedFeature;
+        return unsupportedFeatureDebug(@src());
     }
 
     // =========================================================================
@@ -9269,7 +9451,7 @@ pub const Emitter = struct {
         // First, check if operand is a struct type (our optional/result representation)
         const type_kind = llvm.getTypeKind(operand_type);
         if (type_kind != llvm.c.LLVMStructTypeKind) {
-            return EmitError.UnsupportedFeature;
+            return unsupportedFeatureDebug(@src());
         }
 
         // Store the optional to a temp for GEP access
@@ -9591,9 +9773,9 @@ pub const Emitter = struct {
             .named => |n| n.name,
             .generic_apply => |g| switch (g.base) {
                 .named => |n| n.name,
-                else => return EmitError.UnsupportedFeature,
+                else => return unsupportedFeatureDebug(@src()),
             },
-            else => return EmitError.UnsupportedFeature,
+            else => return unsupportedFeatureDebug(@src()),
         };
 
         // Check if this is a struct static method call
@@ -9616,7 +9798,7 @@ pub const Emitter = struct {
             if (self.struct_types.get(base_name)) |info| {
                 return self.emitEnumLiteralWithInfo(lit, info, base_name);
             }
-            return EmitError.UnsupportedFeature;
+            return unsupportedFeatureDebug(@src());
         };
 
         return self.emitEnumLiteralWithInfo(lit, enum_info, mangled_name);
@@ -9676,7 +9858,7 @@ pub const Emitter = struct {
         for (enum_type.variants) |variant| {
             if (std.mem.eql(u8, variant.name, variant_name)) {
                 const value = variant.value orelse return EmitError.InvalidAST;
-                const repr = enum_type.repr_type orelse return EmitError.UnsupportedFeature;
+                const repr = enum_type.repr_type orelse return unsupportedFeatureDebug(@src());
                 const llvm_type = self.typeToLLVM(repr);
 
                 // Check if it's a signed or unsigned type
@@ -9843,7 +10025,7 @@ pub const Emitter = struct {
             .generic_apply => |g| blk: {
                 const base_name = switch (g.base) {
                     .named => |n| n.name,
-                    else => return EmitError.UnsupportedFeature,
+                    else => return unsupportedFeatureDebug(@src()),
                 };
 
                 // Build mangled name: EnumName$Arg1$Arg2
@@ -9863,7 +10045,7 @@ pub const Emitter = struct {
                 self.mangled_enum_names.append(self.allocator, mangled_name) catch return EmitError.OutOfMemory;
                 break :blk mangled_name;
             },
-            else => return EmitError.UnsupportedFeature,
+            else => return unsupportedFeatureDebug(@src()),
         };
     }
 
@@ -10634,7 +10816,12 @@ pub const Emitter = struct {
         }
 
         // Check for integer methods
-        if (self.isIntegerExpr(method.object)) {
+        // Use AST-based check first, then LLVM type as fallback for cases like
+        // (i + 1).to_string() where grouped/binary expressions can't be resolved
+        // without the type checker. Char check above ensures this won't misidentify chars.
+        if (self.isIntegerExpr(method.object) or
+            llvm.c.LLVMGetTypeKind(llvm.c.LLVMTypeOf(object)) == llvm.c.LLVMIntegerTypeKind)
+        {
             if (std.mem.eql(u8, method.method_name, "abs")) {
                 return self.emitIntAbs(object);
             }
@@ -10703,6 +10890,39 @@ pub const Emitter = struct {
                 const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
+            } else if (method.object == .field) blk: {
+                // Field access (e.g., tc.exprs): GEP into parent struct to get
+                // field pointer directly, so mutations (push, pop, set) modify
+                // the actual field, not a temp copy.
+                const field = method.object.field;
+                if (field.object == .identifier) {
+                    const id = field.object.identifier;
+                    if (self.named_values.get(id.name)) |local| {
+                        if (local.struct_type_name) |struct_name| {
+                            if (self.lookupFieldIndex(struct_name, field.field_name)) |idx| {
+                                const base_ptr = if (local.is_reference)
+                                    self.builder.buildLoad(local.ty, local.value, "ref.load")
+                                else
+                                    local.value;
+                                const gep_type = if (local.is_reference)
+                                    local.reference_inner_type.?
+                                else
+                                    local.ty;
+                                var indices = [_]llvm.ValueRef{
+                                    llvm.Const.int32(self.ctx, 0),
+                                    llvm.Const.int32(self.ctx, @intCast(idx)),
+                                };
+                                break :blk self.builder.buildGEP(gep_type, base_ptr, &indices, "list.field.ptr");
+                            }
+                        }
+                    }
+                }
+                // Fallback: emit and store to temp (read-only methods only)
+                const obj_val = try self.emitExpr(method.object);
+                const list_type = self.getListStructType();
+                const tmp_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
             } else blk: {
                 const obj_val = try self.emitExpr(method.object);
                 const list_type = self.getListStructType();
@@ -10763,6 +10983,38 @@ pub const Emitter = struct {
                 if (self.named_values.get(method.object.identifier.name)) |local| {
                     break :blk local.value;
                 }
+                const obj_val = try self.emitExpr(method.object);
+                const map_type = self.getMapStructType();
+                const tmp_alloca = self.builder.buildAlloca(map_type, "map.tmp");
+                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                break :blk tmp_alloca;
+            } else if (method.object == .field) blk: {
+                // Field access (e.g., tc.struct_types): GEP into parent struct
+                // to get field pointer directly for mutation support
+                const field = method.object.field;
+                if (field.object == .identifier) {
+                    const id = field.object.identifier;
+                    if (self.named_values.get(id.name)) |local| {
+                        if (local.struct_type_name) |struct_name| {
+                            if (self.lookupFieldIndex(struct_name, field.field_name)) |idx| {
+                                const base_ptr = if (local.is_reference)
+                                    self.builder.buildLoad(local.ty, local.value, "ref.load")
+                                else
+                                    local.value;
+                                const gep_type = if (local.is_reference)
+                                    local.reference_inner_type.?
+                                else
+                                    local.ty;
+                                var indices = [_]llvm.ValueRef{
+                                    llvm.Const.int32(self.ctx, 0),
+                                    llvm.Const.int32(self.ctx, @intCast(idx)),
+                                };
+                                break :blk self.builder.buildGEP(gep_type, base_ptr, &indices, "map.field.ptr");
+                            }
+                        }
+                    }
+                }
+                // Fallback: emit and store to temp
                 const obj_val = try self.emitExpr(method.object);
                 const map_type = self.getMapStructType();
                 const tmp_alloca = self.builder.buildAlloca(map_type, "map.tmp");
@@ -14479,6 +14731,9 @@ pub const Emitter = struct {
             .literal => |lit| {
                 return lit.kind == .int;
             },
+            .grouped => |g| {
+                return self.isIntegerExpr(g.expr);
+            },
             .identifier => |id| {
                 if (self.named_values.get(id.name)) |local| {
                     // Check if the LLVM type is an integer type
@@ -14539,6 +14794,9 @@ pub const Emitter = struct {
         switch (expr) {
             .literal => |lit| {
                 return lit.kind == .char;
+            },
+            .grouped => |g| {
+                return self.isCharExpr(g.expr);
             },
             .identifier => |id| {
                 // Check stored semantic type in named_values
@@ -14656,6 +14914,21 @@ pub const Emitter = struct {
                 }
                 return false;
             },
+            // For field access, look up the field's type in the struct registry
+            .field => |fld| {
+                if (self.getStructTypeNameFromExpr(fld.object)) |parent_struct_name| {
+                    if (self.getFieldType(parent_struct_name, fld.field_name)) |field_klar_type| {
+                        return field_klar_type == .list;
+                    }
+                }
+                // Fallback: check via type checker
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const expr_type = tc_mut.checkExpr(expr);
+                    return expr_type == .list;
+                }
+                return false;
+            },
             else => {
                 // For other expressions, check via type checker
                 if (self.type_checker) |tc| {
@@ -14735,6 +15008,22 @@ pub const Emitter = struct {
                         const expr_type = tc_mut.checkExpr(expr);
                         return expr_type == .map;
                     }
+                }
+                return false;
+            },
+            .field => |fld| {
+                // For field access (e.g., tc.struct_types), look up the field's type
+                // in the parent struct to determine if it's a Map
+                if (self.getStructTypeNameFromExpr(fld.object)) |parent_struct_name| {
+                    if (self.getFieldType(parent_struct_name, fld.field_name)) |field_klar_type| {
+                        return field_klar_type == .map;
+                    }
+                }
+                // Fallback: check via type checker
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const expr_type = tc_mut.checkExpr(expr);
+                    return expr_type == .map;
                 }
                 return false;
             },
@@ -15086,6 +15375,16 @@ pub const Emitter = struct {
                     }
                 }
             },
+            // For field access, look up the field's type in the struct registry
+            .field => |fld| {
+                if (self.getStructTypeNameFromExpr(fld.object)) |parent_struct_name| {
+                    if (self.getFieldType(parent_struct_name, fld.field_name)) |field_klar_type| {
+                        if (field_klar_type == .list) {
+                            return field_klar_type.list.element;
+                        }
+                    }
+                }
+            },
             else => {},
         }
         // Fallback: use type checker to get the list element type
@@ -15109,6 +15408,16 @@ pub const Emitter = struct {
                     }
                 }
             },
+            // For field access, look up the field's type in the struct registry
+            .field => |fld| {
+                if (self.getStructTypeNameFromExpr(fld.object)) |parent_struct_name| {
+                    if (self.getFieldType(parent_struct_name, fld.field_name)) |field_klar_type| {
+                        if (field_klar_type == .map) {
+                            return field_klar_type.map.key;
+                        }
+                    }
+                }
+            },
             else => {},
         }
         // Fallback: use type checker
@@ -15129,6 +15438,16 @@ pub const Emitter = struct {
                 if (self.named_values.get(id.name)) |local| {
                     if (local.map_value_type) |value_type| {
                         return value_type;
+                    }
+                }
+            },
+            // For field access, look up the field's type in the struct registry
+            .field => |fld| {
+                if (self.getStructTypeNameFromExpr(fld.object)) |parent_struct_name| {
+                    if (self.getFieldType(parent_struct_name, fld.field_name)) |field_klar_type| {
+                        if (field_klar_type == .map) {
+                            return field_klar_type.map.value;
+                        }
                     }
                 }
             },
@@ -17079,7 +17398,7 @@ pub const Emitter = struct {
 
             // Get original param types
             var orig_param_types: [16]llvm.TypeRef = undefined;
-            if (orig_param_count > 16) return EmitError.UnsupportedFeature;
+            if (orig_param_count > 16) return unsupportedFeatureDebug(@src());
             llvm.c.LLVMGetParamTypes(orig_fn_type, &orig_param_types);
             for (0..orig_param_count) |i| {
                 wrapper_param_types.append(self.allocator, orig_param_types[i]) catch return EmitError.OutOfMemory;

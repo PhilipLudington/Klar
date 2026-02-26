@@ -319,7 +319,7 @@ pub struct EnumData {
     is_extern: bool,
 }
 
-pub struct EnumVariantData {
+pub struct EnumVariantInfo {
     name: string,
     payload_start: i32,
     payload_count: i32,
