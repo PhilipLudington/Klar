@@ -432,15 +432,26 @@ fn check_match_stmt(tc: TypeChecker, data: MatchStmtData) -> TypeChecker {
     while i < data.arms_count {
         let arm: MatchArm = c.extra_match_arms[data.arms_start + i]
 
-        // Check arm body (it's an ExprId)
+        c.push_scope()
+        c = bind_pattern(c, arm.pattern, subj_type)
+
+        // Check guard if present
+        if has_expr(arm.guard) {
+            let r_guard: (TypeChecker, KlarType) = check_expr(c, arm.guard)
+            c = r_guard.0
+            let guard_type: KlarType = r_guard.1
+            if not type_eq(guard_type, type_bool()) and not is_error_type(guard_type) {
+                c = add_error(c, arm.span,
+                    "match guard must be bool, got " + type_display(guard_type))
+            }
+        }
+
+        // Check arm body
         if has_expr(arm.body) {
-            c.push_scope()
-            // Bind pattern variables (basic: just binding patterns)
-            c = bind_pattern(c, arm.pattern, subj_type)
             let r_body: (TypeChecker, KlarType) = check_expr(c, arm.body)
             c = r_body.0
-            c.pop_scope()
         }
+        c.pop_scope()
 
         i = i + 1
     }

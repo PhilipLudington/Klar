@@ -1107,7 +1107,7 @@ fn check_closure(tc: TypeChecker, data: ClosureData) -> (TypeChecker, KlarType) 
             sym_name: param.param_name,
             sym_type: param_type,
             mutable: param.is_mut,
-            kind: SymbolKind::Variable,
+            kind: SymbolKind::Parameter,
         })
         pi = pi + 1
     }
@@ -1152,6 +1152,7 @@ fn check_if_expr(tc: TypeChecker, data: IfExprData) -> (TypeChecker, KlarType) {
         // Both branches should return compatible types
         if not type_compatible(then_type, else_type)
             and not is_error_type(then_type) and not is_error_type(else_type)
+            and not is_never_type(then_type) and not is_never_type(else_type)
             and not is_void_type(then_type) and not is_void_type(else_type) {
             c = add_error(c, data.span,
                 "if expression branches have different types: " +
@@ -1160,7 +1161,8 @@ fn check_if_expr(tc: TypeChecker, data: IfExprData) -> (TypeChecker, KlarType) {
         return (c, then_type)
     }
 
-    return (c, then_type)
+    // If expression without else branch produces void
+    return (c, type_void())
 }
 
 // ─── Match Expression ───────────────────────────────────────────────
@@ -1203,6 +1205,15 @@ fn check_match_expr(tc: TypeChecker, data: MatchExprData) -> (TypeChecker, KlarT
             if not has_result {
                 result_type = r_body.1
                 has_result = true
+            } else {
+                let arm_type: KlarType = r_body.1
+                if not type_compatible(result_type, arm_type)
+                    and not is_error_type(arm_type) and not is_error_type(result_type)
+                    and not is_never_type(arm_type) and not is_never_type(result_type) {
+                    c = add_error(c, arm.span,
+                        "match arm type mismatch: expected " + type_display(result_type) +
+                        ", got " + type_display(arm_type))
+                }
             }
         }
         c.pop_scope()

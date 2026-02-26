@@ -3477,8 +3477,8 @@ fn test_match_optional_pattern() -> i32 {
 }
 
 fn test_match_result_pattern() -> i32 {
-    // match res { Ok(v) => { v }, Err(e) => { e } }
-    // res: Result#[i32, string] → Ok arm yields i32, Err arm yields string
+    // match res { Ok(v) => { v }, Err(_) => { -1 } }
+    // res: Result#[i32, string] → both arms yield i32
     var tc: TypeChecker = TypeChecker.new()
     tc = register_builtins(tc)
 
@@ -3496,7 +3496,7 @@ fn test_match_result_pattern() -> i32 {
     let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
     tc = r_subj.0
 
-    // Arm 1: Ok(v) => v
+    // Arm 1: Ok(v) => v (i32)
     let ok_inner_pid: i32 = tc.patterns.len()
     tc.patterns.push(Pattern::BindingPat(BindingPatData {
         binding_name: "v", is_mut: false, span: s(),
@@ -3516,13 +3516,11 @@ fn test_match_result_pattern() -> i32 {
     let r_v: (TypeChecker, ExprId) = add_ident_expr(tc, "v")
     tc = r_v.0
 
-    // Arm 2: Err(e) => e
-    let err_inner_pid: i32 = tc.patterns.len()
-    tc.patterns.push(Pattern::BindingPat(BindingPatData {
-        binding_name: "e", is_mut: false, span: s(),
-    }))
+    // Arm 2: Err(_) => -1 (i32, consistent with Ok arm)
+    let err_wild_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
     let err_fields_start: i32 = tc.extra_pattern_ids.len()
-    tc.extra_pattern_ids.push(PatternId { id: err_inner_pid })
+    tc.extra_pattern_ids.push(PatternId { id: err_wild_pid })
 
     let err_pid: i32 = tc.patterns.len()
     tc.patterns.push(Pattern::VariantPat(VariantPatData {
@@ -3533,8 +3531,8 @@ fn test_match_result_pattern() -> i32 {
         span: s(),
     }))
 
-    let r_e: (TypeChecker, ExprId) = add_ident_expr(tc, "e")
-    tc = r_e.0
+    let r_default: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_default.0
 
     // Build match arms
     let arms_start: i32 = tc.extra_match_arms.len()
@@ -3547,7 +3545,7 @@ fn test_match_result_pattern() -> i32 {
     tc.extra_match_arms.push(MatchArm {
         pattern: PatternId { id: err_pid },
         guard: no_expr(),
-        body: r_e.1,
+        body: r_default.1,
         span: s(),
     })
 
@@ -3563,7 +3561,7 @@ fn test_match_result_pattern() -> i32 {
     let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
     tc = re.0
     if not expect_ok(tc, "match Result#[i32, string] with Ok/Err") { return 79 }
-    // First arm body is "v" → i32 (Ok inner type)
+    // Both arms yield i32
     if not expect_type(re.1, type_i32(), "Ok(v) body → i32") { return 79 }
 
     tc.pop_scope()
@@ -3618,6 +3616,309 @@ fn test_match_binding_pattern() -> i32 {
     tc = re.0
     if not expect_ok(tc, "match binding pattern val + 1") { return 80 }
     if not expect_type(re.1, type_i32(), "binding val + 1 → i32") { return 80 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_if_expr_mismatched_branches() -> i32 {
+    // if true { 1 } else { "hello" } → error (branch type mismatch)
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let r_cond: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_cond.0
+    let r_then: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_then.0
+    let r_else: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_else.0
+
+    let if_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::IfExpr(IfExprData {
+        condition: r_cond.1,
+        then_body: r_then.1,
+        else_body: r_else.1,
+        span: s(),
+    }))
+    let if_eid: ExprId = ExprId { id: if_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, if_eid)
+    tc = re.0
+    if not expect_errors(tc, 1, "if expr mismatched branches → error") { return 81 }
+
+    return 0
+}
+
+fn test_match_expr_mismatched_arms() -> i32 {
+    // match x { _ => { 1 }, _ => { "hello" } } → error (arm type mismatch)
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_subj.0
+
+    // Arm 1: _ => 1 (i32)
+    let w1: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let r_body1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_body1.0
+
+    // Arm 2: _ => "hello" (string)
+    let w2: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let r_body2: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_body2.0
+
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: w1 },
+        guard: no_expr(),
+        body: r_body1.1,
+        span: s(),
+    })
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: w2 },
+        guard: no_expr(),
+        body: r_body2.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 2,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_errors(tc, 1, "match expr mismatched arms → error") { return 82 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_match_expr_guard() -> i32 {
+    // match x { val when val > 0 => { val } } — valid guard
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_subj.0
+
+    // Binding pattern: val
+    let bind_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "val", is_mut: false, span: s(),
+    }))
+
+    // Guard: true (bool — valid)
+    let r_guard: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_guard.0
+
+    // Body: val
+    let r_val: (TypeChecker, ExprId) = add_ident_expr(tc, "val")
+    tc = r_val.0
+
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: bind_pid },
+        guard: r_guard.1,
+        body: r_val.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 1,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match with valid bool guard") { return 83 }
+    if not expect_type(re.1, type_i32(), "guarded match → i32") { return 83 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_match_expr_guard_error() -> i32 {
+    // match x { val when 42 => { val } } — non-bool guard → error
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_subj.0
+
+    let bind_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "val", is_mut: false, span: s(),
+    }))
+
+    // Guard: 42 (i32 — invalid, not bool)
+    let r_guard: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_guard.0
+
+    let r_val: (TypeChecker, ExprId) = add_ident_expr(tc, "val")
+    tc = r_val.0
+
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: bind_pid },
+        guard: r_guard.1,
+        body: r_val.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 1,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_errors(tc, 1, "match with non-bool guard → error") { return 84 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_closure_no_params() -> i32 {
+    // Closure: || -> i32 { 42 }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let ret_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = ret_te.0
+
+    let r_body: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_body.0
+
+    let closure_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::Closure(ClosureData {
+        params_start: 0,
+        params_count: 0,
+        return_type: ret_te.1,
+        body: r_body.1,
+        span: s(),
+    }))
+    let closure_eid: ExprId = ExprId { id: closure_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, closure_eid)
+    tc = re.0
+    if not expect_ok(tc, "closure || -> i32") { return 85 }
+    if not expect_kind(re.1, "Function", "zero-param closure is Function") { return 85 }
+
+    return 0
+}
+
+fn test_match_result_err_binding() -> i32 {
+    // match res { Ok(_) => { 0 }, Err(e) => { e } }
+    // res: Result#[i32, string] → Err arm binds e as string
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let res_r: (TypeChecker, KlarType) = make_result_type(tc, type_i32(), type_string())
+    tc = res_r.0
+    let res_type: KlarType = res_r.1
+
+    tc.push_scope()
+    tc.define("res", SymbolInfo {
+        sym_name: "res", sym_type: res_type, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_subj.0
+
+    // Arm 1: Ok(_) => 0
+    let ok_wild_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let ok_fields_start: i32 = tc.extra_pattern_ids.len()
+    tc.extra_pattern_ids.push(PatternId { id: ok_wild_pid })
+
+    let ok_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Ok",
+        fields_start: ok_fields_start,
+        fields_count: 1,
+        span: s(),
+    }))
+    let r_zero: (TypeChecker, ExprId) = add_str_expr(tc, "fallback")
+    tc = r_zero.0
+
+    // Arm 2: Err(e) => e (should be string)
+    let err_inner_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "e", is_mut: false, span: s(),
+    }))
+    let err_fields_start: i32 = tc.extra_pattern_ids.len()
+    tc.extra_pattern_ids.push(PatternId { id: err_inner_pid })
+
+    let err_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Err",
+        fields_start: err_fields_start,
+        fields_count: 1,
+        span: s(),
+    }))
+    let r_e: (TypeChecker, ExprId) = add_ident_expr(tc, "e")
+    tc = r_e.0
+
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: ok_pid },
+        guard: no_expr(),
+        body: r_zero.1,
+        span: s(),
+    })
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: err_pid },
+        guard: no_expr(),
+        body: r_e.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 2,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match Result Err(e) binding") { return 86 }
+    // First arm returns "fallback" (string), second returns e (string)
+    if not expect_type(re.1, type_string(), "Err(e) binding → string") { return 86 }
 
     tc.pop_scope()
     return 0
@@ -3852,6 +4153,24 @@ fn main() -> i32 {
     rc = test_match_binding_pattern()
     if rc != 0 { return rc }
 
-    println("checker_main.kl: all tests passed (73 tests)")
+    rc = test_if_expr_mismatched_branches()
+    if rc != 0 { return rc }
+
+    rc = test_match_expr_mismatched_arms()
+    if rc != 0 { return rc }
+
+    rc = test_match_expr_guard()
+    if rc != 0 { return rc }
+
+    rc = test_match_expr_guard_error()
+    if rc != 0 { return rc }
+
+    rc = test_closure_no_params()
+    if rc != 0 { return rc }
+
+    rc = test_match_result_err_binding()
+    if rc != 0 { return rc }
+
+    println("checker_main.kl: all tests passed (79 tests)")
     return 0
 }
