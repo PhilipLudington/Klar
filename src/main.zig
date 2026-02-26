@@ -1293,6 +1293,174 @@ fn dumpAstFile(allocator: std.mem.Allocator, path: []const u8) !void {
     try out.writeAll("\n");
 }
 
+fn dumpMetaAnnotations(out: std.fs.File, annotations: []const ast.MetaAnnotation) anyerror!void {
+    if (annotations.len == 0) return;
+    try out.writeAll(",\"meta\":[");
+    for (annotations, 0..) |ann, i| {
+        if (i > 0) try out.writeAll(",");
+        try dumpOneMetaAnnotation(out, ann);
+    }
+    try out.writeAll("]");
+}
+
+fn dumpOneMetaAnnotation(out: std.fs.File, ann: ast.MetaAnnotation) anyerror!void {
+    switch (ann) {
+        .intent => |s| {
+            try out.writeAll("{\"kind\":\"intent\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .decision => |s| {
+            try out.writeAll("{\"kind\":\"decision\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .tag => |s| {
+            try out.writeAll("{\"kind\":\"tag\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .hint => |s| {
+            try out.writeAll("{\"kind\":\"hint\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .deprecated => |s| {
+            try out.writeAll("{\"kind\":\"deprecated\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .pure => {
+            try out.writeAll("{\"kind\":\"pure\"}");
+        },
+        .module_meta => |b| {
+            try out.writeAll("{\"kind\":\"module\"");
+            try dumpMetaBlockEntries(out, b.entries);
+            try out.writeAll("}");
+        },
+        .guide => |b| {
+            try out.writeAll("{\"kind\":\"guide\"");
+            try dumpMetaBlockEntries(out, b.entries);
+            try out.writeAll("}");
+        },
+        .related => |r| {
+            try out.writeAll("{\"kind\":\"related\",\"paths\":[");
+            for (r.paths, 0..) |p, j| {
+                if (j > 0) try out.writeAll(",");
+                try dumpMetaPath(out, p);
+            }
+            try out.writeAll("],\"description\":");
+            if (r.description) |desc| {
+                try writeJsonEscaped(out, desc);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .group_def => |g| {
+            try out.writeAll("{\"kind\":\"group\",\"name\":");
+            try writeJsonEscaped(out, g.name);
+            try out.writeAll(",\"annotations\":[");
+            for (g.annotations, 0..) |nested, j| {
+                if (j > 0) try out.writeAll(",");
+                try dumpOneMetaAnnotation(out, nested);
+            }
+            try out.writeAll("]}");
+        },
+        .group_join => |s| {
+            try out.writeAll("{\"kind\":\"in\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .define => |d| {
+            try out.writeAll("{\"kind\":\"define\",\"name\":");
+            try writeJsonEscaped(out, d.name);
+            try out.writeAll(",\"params\":[");
+            for (d.params, 0..) |p, j| {
+                if (j > 0) try out.writeAll(",");
+                try out.writeAll("{\"name\":");
+                try writeJsonEscaped(out, p.name);
+                try out.writeAll(",\"type\":");
+                switch (p.type_constraint) {
+                    .string_type => try out.writeAll("\"string\""),
+                    .string_union => |vals| {
+                        try out.writeAll("[");
+                        for (vals, 0..) |v, k| {
+                            if (k > 0) try out.writeAll(",");
+                            try writeJsonEscaped(out, v);
+                        }
+                        try out.writeAll("]");
+                    },
+                }
+                try out.writeAll("}");
+            }
+            try out.writeAll("],\"scope\":");
+            if (d.scope) |scope| {
+                try writeJsonEscaped(out, metaScopeString(scope));
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .custom => |c| {
+            try out.writeAll("{\"kind\":\"custom\",\"name\":");
+            try writeJsonEscaped(out, c.name);
+            try out.writeAll(",\"args\":[");
+            for (c.args, 0..) |arg, j| {
+                if (j > 0) try out.writeAll(",");
+                switch (arg) {
+                    .string => |s| try writeJsonEscaped(out, s),
+                    .path => |p| try dumpMetaPath(out, p),
+                }
+            }
+            try out.writeAll("]}");
+        },
+    }
+}
+
+fn metaScopeString(scope: ast.MetaScope) []const u8 {
+    return switch (scope) {
+        .fn_scope => "fn",
+        .module_scope => "module",
+        .struct_scope => "struct",
+        .enum_scope => "enum",
+        .trait_scope => "trait",
+        .field_scope => "field",
+    };
+}
+
+fn dumpMetaBlockEntries(out: std.fs.File, entries: []const ast.MetaKeyValue) anyerror!void {
+    try out.writeAll(",\"entries\":[");
+    for (entries, 0..) |entry, i| {
+        if (i > 0) try out.writeAll(",");
+        try out.writeAll("{\"key\":");
+        try writeJsonEscaped(out, entry.key);
+        try out.writeAll(",\"value\":");
+        switch (entry.value) {
+            .string => |s| try writeJsonEscaped(out, s),
+            .string_list => |list| {
+                try out.writeAll("[");
+                for (list, 0..) |item, j| {
+                    if (j > 0) try out.writeAll(",");
+                    try writeJsonEscaped(out, item);
+                }
+                try out.writeAll("]");
+            },
+        }
+        try out.writeAll("}");
+    }
+    try out.writeAll("]");
+}
+
+fn dumpMetaPath(out: std.fs.File, path: ast.MetaPath) anyerror!void {
+    try out.writeAll("{\"segments\":[");
+    for (path.segments, 0..) |seg, i| {
+        if (i > 0) try out.writeAll(",");
+        try writeJsonEscaped(out, seg);
+    }
+    try out.writeAll("]}");
+}
+
 fn dumpModule(out: std.fs.File, module: ast.Module) anyerror!void {
     try out.writeAll("{\"module_decl\":");
     if (module.module_decl) |md| {
@@ -1310,7 +1478,9 @@ fn dumpModule(out: std.fs.File, module: ast.Module) anyerror!void {
         if (i > 0) try out.writeAll(",");
         try dumpDecl(out, decl);
     }
-    try out.writeAll("]}");
+    try out.writeAll("]");
+    try dumpMetaAnnotations(out, module.file_meta);
+    try out.writeAll("}");
 }
 
 fn dumpModuleDecl(out: std.fs.File, md: ast.ModuleDecl) anyerror!void {
@@ -1398,6 +1568,7 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
             } else {
                 try out.writeAll("null");
             }
+            try dumpMetaAnnotations(out, f.meta);
             try out.writeAll("}");
         },
         .test_decl => |t| {
@@ -1405,6 +1576,7 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
             try writeJsonEscaped(out, t.name);
             try out.writeAll(",\"body\":");
             try dumpBlock(out, t.body);
+            try dumpMetaAnnotations(out, t.meta);
             try out.writeAll("}");
         },
         .struct_decl => |s| {
@@ -1427,7 +1599,9 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
                 if (i > 0) try out.writeAll(",");
                 try dumpTypeExpr(out, tr);
             }
-            try out.writeAll("]}");
+            try out.writeAll("]");
+            try dumpMetaAnnotations(out, s.meta);
+            try out.writeAll("}");
         },
         .enum_decl => |e| {
             try out.writeAll("{\"kind\":\"enum_decl\",\"name\":");
@@ -1448,7 +1622,9 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
                 if (i > 0) try out.writeAll(",");
                 try dumpEnumVariant(out, v);
             }
-            try out.writeAll("]}");
+            try out.writeAll("]");
+            try dumpMetaAnnotations(out, e.meta);
+            try out.writeAll("}");
         },
         .trait_decl => |t| {
             try out.writeAll("{\"kind\":\"trait_decl\",\"name\":");
@@ -1486,7 +1662,9 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
                 if (i > 0) try out.writeAll(",");
                 try dumpFunctionDeclInline(out, m);
             }
-            try out.writeAll("]}");
+            try out.writeAll("]");
+            try dumpMetaAnnotations(out, t.meta);
+            try out.writeAll("}");
         },
         .impl_decl => |imp| {
             try out.writeAll("{\"kind\":\"impl_decl\",\"is_unsafe\":");
@@ -1520,7 +1698,9 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
                 if (i > 0) try out.writeAll(",");
                 try dumpFunctionDeclInline(out, m);
             }
-            try out.writeAll("]}");
+            try out.writeAll("]");
+            try dumpMetaAnnotations(out, imp.meta);
+            try out.writeAll("}");
         },
         .type_alias => |t| {
             try out.writeAll("{\"kind\":\"type_alias\",\"name\":");
@@ -1530,6 +1710,7 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
             try dumpTypeParams(out, t.type_params);
             try out.writeAll(",\"target\":");
             try dumpTypeExpr(out, t.target);
+            try dumpMetaAnnotations(out, t.meta);
             try out.writeAll("}");
         },
         .const_decl => |c| {
@@ -1545,6 +1726,7 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
             }
             try out.writeAll(",\"value\":");
             try dumpExpr(out, c.value);
+            try dumpMetaAnnotations(out, c.meta);
             try out.writeAll("}");
         },
         .import_decl => |imp| {
@@ -1620,6 +1802,7 @@ fn dumpFunctionDeclInline(out: std.fs.File, f: ast.FunctionDecl) anyerror!void {
     } else {
         try out.writeAll("null");
     }
+    try dumpMetaAnnotations(out, f.meta);
     try out.writeAll("}");
 }
 
@@ -1685,6 +1868,7 @@ fn dumpStructField(out: std.fs.File, field: ast.StructField) anyerror!void {
     try dumpTypeExpr(out, field.type_);
     try out.writeAll(",\"is_pub\":");
     try writeJsonBool(out, field.is_pub);
+    try dumpMetaAnnotations(out, field.meta);
     try out.writeAll("}");
 }
 
@@ -1722,6 +1906,7 @@ fn dumpEnumVariant(out: std.fs.File, v: ast.EnumVariant) anyerror!void {
     } else {
         try out.writeAll("null");
     }
+    try dumpMetaAnnotations(out, v.meta);
     try out.writeAll("}");
 }
 
