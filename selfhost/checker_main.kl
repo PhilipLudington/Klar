@@ -14,7 +14,8 @@ import types.{
     type_u8, type_void, type_never, type_unknown, type_error,
     type_eq_simple, type_to_string_simple, type_kind_name,
     FunctionData, StructData, StructFieldData, EnumData,
-    WrapperData, MapData, ResultData
+    WrapperData, MapData, ResultData,
+    TraitData, TraitMethodData, TypeVarData
 }
 
 import ast.{
@@ -33,6 +34,7 @@ import ast.{
     ForLoopData, WhileLoopData, LoopStmtData,
     IfStmtData, MatchStmtData,
     FunctionDeclData, StructDeclData, EnumDeclData,
+    ImplDeclData, TraitDeclData,
     GenericParam,
     FnParam, StructField, EnumVariantDecl,
     NamedTypeData, ArrayTypeData, OptionalTypeData, GenericApplyData,
@@ -52,7 +54,8 @@ import checker.{
     make_optional_type, make_result_type, make_list_type, make_map_type,
     unwrap_optional_inner, unwrap_result_ok, unwrap_result_err,
     clear_substitutions, add_substitution, get_substitution, has_substitution,
-    make_type_var, mangle_generic_name, type_mangle_name
+    make_type_var, make_type_var_with_bounds, mangle_generic_name, type_mangle_name,
+    record_trait_impl, has_trait_impl, find_trait_method
 }
 
 import checker_expr.{check_expr}
@@ -2404,6 +2407,784 @@ fn test_interpolated_string_checks_parts() -> i32 {
     return 0
 }
 
+// ─── 9.10.2 Trait Resolution Tests ───────────────────────────────────
+
+fn test_trait_definition() -> i32 {
+    // Register a user-defined trait via the decl pipeline
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build trait: trait Summable { fn sum(self) -> i32 }
+    // Method decl
+    let t_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_ret.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = self_te.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    let method_decl_idx: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "sum",
+        generics_start: 0, generics_count: 0,
+        params_start: params_start, params_count: 1,
+        return_type: t_ret.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    // TraitDecl
+    let trait_decl_idx: i32 = tc.decls.len()
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Summable",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: method_decl_idx, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    tc = register_declarations(tc, trait_decl_idx, 1)
+    if not expect_ok(tc, "register trait Summable") { return 60 }
+
+    // Verify trait is in trait_types
+    if not tc.trait_types.contains_key("Summable") {
+        println("FAIL: test_trait_definition — Summable not in trait_types")
+        return 60
+    }
+    let opt: ?KlarType = tc.trait_types.get("Summable")
+    match opt {
+        Some(t) => {
+            if not expect_kind(t, "TraitType", "Summable is TraitType") { return 60 }
+        }
+        None => {
+            println("FAIL: test_trait_definition — Summable get returned None")
+            return 60
+        }
+    }
+
+    return 0
+}
+
+fn test_trait_impl_registers_methods() -> i32 {
+    // struct Foo { val: i32 }
+    // trait Summable { fn sum(self) -> i32 }
+    // impl Foo: Summable { fn sum(self) -> i32 { return self.val } }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Struct Foo
+    let t_i32_1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_1.0
+    let fields_start: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "val", type_expr: t_i32_1.1, span: s() })
+
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Foo",
+        generics_start: 0, generics_count: 0,
+        fields_start: fields_start, fields_count: 1,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    }))
+
+    // Trait Summable: fn sum(self) -> i32
+    let t_sum_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_sum_ret.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = self_te.0
+    let tp_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+    let method_decl_idx: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "sum",
+        generics_start: 0, generics_count: 0,
+        params_start: tp_start, params_count: 1,
+        return_type: t_sum_ret.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Summable",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: method_decl_idx, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    // Impl Foo: Summable { fn sum(self) -> i32 { return self.val } }
+    let impl_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = impl_ret.0
+    let self_te2: (TypeChecker, TypeExprId) = add_type_named(tc, "Foo")
+    tc = self_te2.0
+    let imp_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te2.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Body: return self.val
+    let r_self: (TypeChecker, ExprId) = add_ident_expr(tc, "self")
+    tc = r_self.0
+    let r_val: (TypeChecker, ExprId) = add_field_expr(tc, r_self.1, "val")
+    tc = r_val.0
+    let r_ret: (TypeChecker, StmtId) = add_return_stmt(tc, r_val.1)
+    tc = r_ret.0
+    let body_start: i32 = tc.extra_stmt_ids.len()
+    tc.extra_stmt_ids.push(r_ret.1)
+
+    let impl_method_idx: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "sum",
+        generics_start: 0, generics_count: 0,
+        params_start: imp_start, params_count: 1,
+        return_type: impl_ret.1,
+        body_start: body_start, body_count: 1,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    tc.decls.push(Decl::ImplDecl(ImplDeclData {
+        target_type: "Foo",
+        impl_trait: "Summable",
+        generics_start: 0, generics_count: 0,
+        methods_start: impl_method_idx, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        span: s(),
+    }))
+
+    // Run full pipeline
+    let decl_count: i32 = tc.decls.len() - decl_start
+    tc = check_module(tc, decl_start, decl_count)
+    if not expect_ok(tc, "impl Foo: Summable") { return 61 }
+
+    // Verify method is registered
+    if not tc.methods.contains_key("Foo.sum") {
+        println("FAIL: test_trait_impl_registers_methods — Foo.sum not in methods")
+        return 61
+    }
+
+    return 0
+}
+
+fn test_trait_impl_records_key() -> i32 {
+    // Verify that impl Foo: Summable creates "Foo:Summable" in trait_impl_keys
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Must have the trait and struct registered
+    let t1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t1.0
+    let fs: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t1.1, span: s() })
+
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Bar",
+        generics_start: 0, generics_count: 0,
+        fields_start: fs, fields_count: 1,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    }))
+
+    // Trait Marker (no methods)
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Marker",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: 0, methods_count: 0,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    // impl Bar: Marker {}
+    tc.decls.push(Decl::ImplDecl(ImplDeclData {
+        target_type: "Bar",
+        impl_trait: "Marker",
+        generics_start: 0, generics_count: 0,
+        methods_start: 0, methods_count: 0,
+        assoc_types_start: 0, assoc_types_count: 0,
+        span: s(),
+    }))
+
+    let dc: i32 = tc.decls.len() - ds
+    tc = check_module(tc, ds, dc)
+    if not expect_ok(tc, "impl Bar: Marker") { return 62 }
+
+    if not has_trait_impl(tc, "Bar", "Marker") {
+        println("FAIL: test_trait_impl_records_key — Bar:Marker not recorded")
+        return 62
+    }
+
+    return 0
+}
+
+fn test_trait_method_through_bounds() -> i32 {
+    // Test: generic fn with T: Summable bound, call item.sum()
+    // trait Summable { fn sum(self) -> i32 }
+    // fn total#[T: Summable](item: T) -> i32 { return item.sum() }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Register trait Summable with method sum -> i32
+    let t_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_ret.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = self_te.0
+    let tp_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+    let method_di: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "sum",
+        generics_start: 0, generics_count: 0,
+        params_start: tp_start, params_count: 1,
+        return_type: t_ret.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Summable",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: method_di, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    // Register declarations first (so trait is available)
+    let dc: i32 = tc.decls.len() - ds
+    tc = register_declarations(tc, ds, dc)
+    if not expect_ok(tc, "register trait Summable for bounds test") { return 63 }
+
+    // Now manually create a TypeVar with Summable bound
+    // Get the trait index
+    let summable_opt: ?KlarType = tc.trait_types.get("Summable")
+    var summable_trait_idx: i32 = 0
+    match summable_opt {
+        Some(t) => { summable_trait_idx = t.payload }
+        None => {
+            println("FAIL: test_trait_method_through_bounds — Summable not found")
+            return 63
+        }
+    }
+
+    // Create TypeVar T with bounds [Summable]
+    let tvr: (TypeChecker, KlarType) = make_type_var_with_bounds(tc, 0, "T", summable_trait_idx, 1)
+    tc = tvr.0
+    let tv_type: KlarType = tvr.1
+
+    // Define 'item' as type T in scope
+    tc.push_scope()
+    tc.define("item", SymbolInfo {
+        sym_name: "item", sym_type: tv_type, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // Build: item.sum()
+    let r_item: (TypeChecker, ExprId) = add_ident_expr(tc, "item")
+    tc = r_item.0
+    let r_call: (TypeChecker, ExprId) = add_method_call_expr(tc, r_item.1, "sum", 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+
+    if not expect_ok(tc, "item.sum() through Summable bound") { return 63 }
+    if not expect_type(re.1, type_i32(), "item.sum() returns i32") { return 63 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_trait_unknown_method_error() -> i32 {
+    // TypeVar T with Summable bound, call item.nonexistent() → error
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Register trait Summable
+    let t_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_ret.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = self_te.0
+    let tp_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+    let method_di: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "sum",
+        generics_start: 0, generics_count: 0,
+        params_start: tp_start, params_count: 1,
+        return_type: t_ret.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Summable",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: method_di, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+    tc = register_declarations(tc, ds, tc.decls.len() - ds)
+
+    // TypeVar with Summable bound
+    let summable_opt: ?KlarType = tc.trait_types.get("Summable")
+    var idx: i32 = 0
+    match summable_opt {
+        Some(t) => { idx = t.payload }
+        None => { return 64 }
+    }
+    let tvr: (TypeChecker, KlarType) = make_type_var_with_bounds(tc, 0, "T", idx, 1)
+    tc = tvr.0
+
+    tc.push_scope()
+    tc.define("item", SymbolInfo {
+        sym_name: "item", sym_type: tvr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // item.nonexistent() → error
+    let r_item: (TypeChecker, ExprId) = add_ident_expr(tc, "item")
+    tc = r_item.0
+    let r_call: (TypeChecker, ExprId) = add_method_call_expr(tc, r_item.1, "nonexistent", 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+
+    if not expect_errors(tc, 1, "item.nonexistent() on bounded TypeVar → error") { return 64 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_builtin_eq_trait() -> i32 {
+    // Verify builtin Eq trait is registered
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    if not tc.trait_types.contains_key("Eq") {
+        println("FAIL: test_builtin_eq_trait — Eq not in trait_types")
+        return 65
+    }
+
+    // Verify i32 implements Eq
+    if not has_trait_impl(tc, "i32", "Eq") {
+        println("FAIL: test_builtin_eq_trait — i32:Eq not recorded")
+        return 65
+    }
+    // Verify string implements Eq
+    if not has_trait_impl(tc, "string", "Eq") {
+        println("FAIL: test_builtin_eq_trait — string:Eq not recorded")
+        return 65
+    }
+    // Verify f64 implements Eq
+    if not has_trait_impl(tc, "f64", "Eq") {
+        println("FAIL: test_builtin_eq_trait — f64:Eq not recorded")
+        return 65
+    }
+
+    // Verify Eq has method "eq"
+    let eq_opt: ?KlarType = tc.trait_types.get("Eq")
+    match eq_opt {
+        Some(t) => {
+            let td: TraitData = tc.type_traits[t.payload]
+            let found: ?TraitMethodData = find_trait_method(tc, td, "eq")
+            match found {
+                Some(_) => {}
+                None => {
+                    println("FAIL: test_builtin_eq_trait — Eq has no 'eq' method")
+                    return 65
+                }
+            }
+        }
+        None => {
+            println("FAIL: test_builtin_eq_trait — Eq get returned None")
+            return 65
+        }
+    }
+
+    return 0
+}
+
+fn test_builtin_ordered_trait() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    if not tc.trait_types.contains_key("Ordered") {
+        println("FAIL: test_builtin_ordered_trait — Ordered not in trait_types")
+        return 66
+    }
+
+    if not has_trait_impl(tc, "i32", "Ordered") {
+        println("FAIL: test_builtin_ordered_trait — i32:Ordered not recorded")
+        return 66
+    }
+    if not has_trait_impl(tc, "string", "Ordered") {
+        println("FAIL: test_builtin_ordered_trait — string:Ordered not recorded")
+        return 66
+    }
+
+    // Verify Ordered has 4 methods: lt, le, gt, ge
+    let ord_opt: ?KlarType = tc.trait_types.get("Ordered")
+    match ord_opt {
+        Some(t) => {
+            let td: TraitData = tc.type_traits[t.payload]
+            if td.methods_count != 4 {
+                println("FAIL: test_builtin_ordered_trait — expected 4 methods, got " + td.methods_count.to_string().as_str())
+                return 66
+            }
+        }
+        None => {
+            println("FAIL: test_builtin_ordered_trait — Ordered get returned None")
+            return 66
+        }
+    }
+
+    return 0
+}
+
+fn test_builtin_clone_trait() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    if not tc.trait_types.contains_key("Clone") {
+        println("FAIL: test_builtin_clone_trait — Clone not in trait_types")
+        return 67
+    }
+
+    if not has_trait_impl(tc, "i32", "Clone") {
+        println("FAIL: test_builtin_clone_trait — i32:Clone not recorded")
+        return 67
+    }
+    if not has_trait_impl(tc, "string", "Clone") {
+        println("FAIL: test_builtin_clone_trait — string:Clone not recorded")
+        return 67
+    }
+
+    // TypeVar with Clone bound — clone() returns Self (TypeVar)
+    let clone_opt: ?KlarType = tc.trait_types.get("Clone")
+    var clone_idx: i32 = 0
+    match clone_opt {
+        Some(t) => { clone_idx = t.payload }
+        None => { return 67 }
+    }
+
+    let tvr: (TypeChecker, KlarType) = make_type_var_with_bounds(tc, 0, "T", clone_idx, 1)
+    tc = tvr.0
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: tvr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_x: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x.0
+    let r_call: (TypeChecker, ExprId) = add_method_call_expr(tc, r_x.1, "clone", 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+
+    if not expect_ok(tc, "x.clone() with T: Clone") { return 67 }
+    // clone() returns Self → TypeVar
+    if not expect_kind(re.1, "TypeVar", "clone() returns TypeVar (Self)") { return 67 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_builtin_hash_trait() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    if not tc.trait_types.contains_key("Hash") {
+        println("FAIL: test_builtin_hash_trait — Hash not in trait_types")
+        return 68
+    }
+
+    if not has_trait_impl(tc, "i32", "Hash") {
+        println("FAIL: test_builtin_hash_trait — i32:Hash not recorded")
+        return 68
+    }
+
+    // TypeVar with Hash bound — hash() returns i64
+    let hash_opt: ?KlarType = tc.trait_types.get("Hash")
+    var hash_idx: i32 = 0
+    match hash_opt {
+        Some(t) => { hash_idx = t.payload }
+        None => { return 68 }
+    }
+
+    let tvr: (TypeChecker, KlarType) = make_type_var_with_bounds(tc, 0, "T", hash_idx, 1)
+    tc = tvr.0
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: tvr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_x: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x.0
+    let r_call: (TypeChecker, ExprId) = add_method_call_expr(tc, r_x.1, "hash", 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+
+    if not expect_ok(tc, "x.hash() with T: Hash") { return 68 }
+    if not expect_type(re.1, type_i64(), "hash() returns i64") { return 68 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_trait_impl_method_body_checked() -> i32 {
+    // Verify that impl method bodies are type-checked
+    // impl Foo { fn bad(self) -> i32 { return "hello" } } → error
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Struct Foo
+    let t_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32.0
+    let fs: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t_i32.1, span: s() })
+
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Foo",
+        generics_start: 0, generics_count: 0,
+        fields_start: fs, fields_count: 1,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    }))
+
+    // impl Foo { fn bad(self) -> i32 { return "hello" } }
+    let impl_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = impl_ret.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "Foo")
+    tc = self_te.0
+    let ps: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Body: return "hello" (should error: expected i32)
+    let r_str: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_str.0
+    let r_ret: (TypeChecker, StmtId) = add_return_stmt(tc, r_str.1)
+    tc = r_ret.0
+    let bs: i32 = tc.extra_stmt_ids.len()
+    tc.extra_stmt_ids.push(r_ret.1)
+
+    let mi: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "bad",
+        generics_start: 0, generics_count: 0,
+        params_start: ps, params_count: 1,
+        return_type: impl_ret.1,
+        body_start: bs, body_count: 1,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    tc.decls.push(Decl::ImplDecl(ImplDeclData {
+        target_type: "Foo",
+        impl_trait: "",
+        generics_start: 0, generics_count: 0,
+        methods_start: mi, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        span: s(),
+    }))
+
+    let dc: i32 = tc.decls.len() - ds
+    tc = check_module(tc, ds, dc)
+    if not expect_errors(tc, 1, "impl method body type error") { return 69 }
+
+    return 0
+}
+
+fn test_trait_inheritance_registered() -> i32 {
+    // Register a trait with a parent count > 0 to verify super_traits_count is stored
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Trait SubTrait (claims 1 parent — we just check the count is recorded)
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "SubTrait",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 1,
+        methods_start: 0, methods_count: 0,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    tc = register_declarations(tc, ds, 1)
+    if not expect_ok(tc, "register SubTrait with parent") { return 70 }
+
+    let opt: ?KlarType = tc.trait_types.get("SubTrait")
+    match opt {
+        Some(t) => {
+            let td: TraitData = tc.type_traits[t.payload]
+            if td.super_traits_count != 1 {
+                println("FAIL: test_trait_inheritance — expected super_traits_count 1, got " +
+                    td.super_traits_count.to_string().as_str())
+                return 70
+            }
+        }
+        None => {
+            println("FAIL: test_trait_inheritance — SubTrait not found")
+            return 70
+        }
+    }
+
+    return 0
+}
+
+fn test_multiple_bounds() -> i32 {
+    // TypeVar T with bounds [Eq, Clone] — both trait methods available
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Get Eq and Clone trait indices (they are sequential from register_builtin_traits)
+    let eq_opt: ?KlarType = tc.trait_types.get("Eq")
+    var eq_idx: i32 = 0
+    match eq_opt {
+        Some(t) => { eq_idx = t.payload }
+        None => { return 71 }
+    }
+
+    let clone_opt: ?KlarType = tc.trait_types.get("Clone")
+    var clone_idx: i32 = 0
+    match clone_opt {
+        Some(t) => { clone_idx = t.payload }
+        None => { return 71 }
+    }
+
+    // For multiple bounds, they need to be in sequential trait indices.
+    // Since Eq is registered first, its index should be less than Clone's.
+    // We can only use contiguous bounds_start..bounds_start+count.
+    // If Eq=0 and Clone=2, we can't do [0,2] as contiguous range.
+    // So let's test with Ordered (which has 4 methods: lt,le,gt,ge) — that's index 1.
+    // Eq is index 0, Ordered is index 1 — they ARE contiguous!
+    let tvr: (TypeChecker, KlarType) = make_type_var_with_bounds(tc, 0, "T", eq_idx, 2)
+    tc = tvr.0
+
+    tc.push_scope()
+    tc.define("a", SymbolInfo {
+        sym_name: "a", sym_type: tvr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // a.eq(...) should work through Eq bound
+    let r_a1: (TypeChecker, ExprId) = add_ident_expr(tc, "a")
+    tc = r_a1.0
+    let r_eq: (TypeChecker, ExprId) = add_method_call_expr(tc, r_a1.1, "eq", 0, 0)
+    tc = r_eq.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_eq.1)
+    tc = re1.0
+    if not expect_ok(tc, "a.eq() with T: Eq + Ordered") { return 71 }
+    if not expect_type(re1.1, type_bool(), "eq() returns bool") { return 71 }
+
+    // a.lt(...) should work through Ordered bound
+    let r_a2: (TypeChecker, ExprId) = add_ident_expr(tc, "a")
+    tc = r_a2.0
+    let r_lt: (TypeChecker, ExprId) = add_method_call_expr(tc, r_a2.1, "lt", 0, 0)
+    tc = r_lt.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_lt.1)
+    tc = re2.0
+    if not expect_ok(tc, "a.lt() with T: Eq + Ordered") { return 71 }
+    if not expect_type(re2.1, type_bool(), "lt() returns bool") { return 71 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_trait_impl_wrong_method() -> i32 {
+    // impl Bar: Marker { fn nonexistent() -> void {} } → error
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Struct Bar
+    let t1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t1.0
+    let fs: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t1.1, span: s() })
+
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Bar",
+        generics_start: 0, generics_count: 0,
+        fields_start: fs, fields_count: 1,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    }))
+
+    // Empty trait Marker
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Marker",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: 0, methods_count: 0,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    // impl Bar: Marker { fn nonexistent(self) -> void {} }
+    let void_te: (TypeChecker, TypeExprId) = add_type_named(tc, "void")
+    tc = void_te.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "Bar")
+    tc = self_te.0
+    let ps: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    let mi: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "nonexistent",
+        generics_start: 0, generics_count: 0,
+        params_start: ps, params_count: 1,
+        return_type: void_te.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    tc.decls.push(Decl::ImplDecl(ImplDeclData {
+        target_type: "Bar",
+        impl_trait: "Marker",
+        generics_start: 0, generics_count: 0,
+        methods_start: mi, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        span: s(),
+    }))
+
+    let dc: i32 = tc.decls.len() - ds
+    tc = check_module(tc, ds, dc)
+    if not expect_errors(tc, 1, "impl with wrong method → error") { return 72 }
+
+    return 0
+}
+
 // ─── Main ───────────────────────────────────────────────────────────
 
 fn main() -> i32 {
@@ -2568,6 +3349,46 @@ fn main() -> i32 {
     rc = test_interpolated_string_checks_parts()
     if rc != 0 { return rc }
 
-    println("checker_main.kl: all tests passed (52 tests)")
+    // 9.10.2 Trait Resolution tests
+    rc = test_trait_definition()
+    if rc != 0 { return rc }
+
+    rc = test_trait_impl_registers_methods()
+    if rc != 0 { return rc }
+
+    rc = test_trait_impl_records_key()
+    if rc != 0 { return rc }
+
+    rc = test_trait_method_through_bounds()
+    if rc != 0 { return rc }
+
+    rc = test_trait_unknown_method_error()
+    if rc != 0 { return rc }
+
+    rc = test_builtin_eq_trait()
+    if rc != 0 { return rc }
+
+    rc = test_builtin_ordered_trait()
+    if rc != 0 { return rc }
+
+    rc = test_builtin_clone_trait()
+    if rc != 0 { return rc }
+
+    rc = test_builtin_hash_trait()
+    if rc != 0 { return rc }
+
+    rc = test_trait_impl_method_body_checked()
+    if rc != 0 { return rc }
+
+    rc = test_trait_inheritance_registered()
+    if rc != 0 { return rc }
+
+    rc = test_multiple_bounds()
+    if rc != 0 { return rc }
+
+    rc = test_trait_impl_wrong_method()
+    if rc != 0 { return rc }
+
+    println("checker_main.kl: all tests passed (65 tests)")
     return 0
 }

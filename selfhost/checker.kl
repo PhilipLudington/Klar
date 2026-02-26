@@ -25,7 +25,7 @@ import types.{
     ArrayData, SliceData, TupleData, ResultData, FunctionData,
     ReferenceData, StructData, StructFieldData, EnumData,
     EnumVariantInfo, WrapperData, MapData, TraitData,
-    TypeVarData
+    TraitMethodData, AssocTypeData, TypeVarData
 }
 
 import ast.{
@@ -151,6 +151,13 @@ pub struct TypeChecker {
     pub generic_struct_data: List#[StructDeclData],
     pub generic_enum_decls: Map#[string, i32],
     pub generic_enum_data: List#[EnumDeclData],
+
+    // Trait infrastructure (Milestone 9.10.2)
+    pub type_traits: List#[TraitData],
+    pub trait_methods_data: List#[TraitMethodData],
+    pub trait_assoc_types: List#[AssocTypeData],
+    pub trait_types: Map#[string, KlarType],
+    pub trait_impl_keys: Map#[string, bool],
 }
 
 impl TypeChecker {
@@ -214,6 +221,12 @@ impl TypeChecker {
             generic_struct_data: List.new#[StructDeclData](),
             generic_enum_decls: Map.new#[string, i32](),
             generic_enum_data: List.new#[EnumDeclData](),
+
+            type_traits: List.new#[TraitData](),
+            trait_methods_data: List.new#[TraitMethodData](),
+            trait_assoc_types: List.new#[AssocTypeData](),
+            trait_types: Map.new#[string, KlarType](),
+            trait_impl_keys: Map.new#[string, bool](),
         }
         // Push global scope
         tc.scopes.push(Map.new#[string, SymbolInfo]())
@@ -818,6 +831,20 @@ pub fn make_type_var(tc: TypeChecker, var_id: i32, name: string) -> (TypeChecker
     return (c, KlarType { kind: TypeKind::TypeVar, payload: idx })
 }
 
+// Type variable creation with trait bounds
+pub fn make_type_var_with_bounds(tc: TypeChecker, var_id: i32, name: string,
+    bounds_start: i32, bounds_count: i32) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.type_vars.len()
+    c.type_vars.push(TypeVarData {
+        var_id: var_id,
+        name: name,
+        bounds_start: bounds_start,
+        bounds_count: bounds_count,
+    })
+    return (c, KlarType { kind: TypeKind::TypeVar, payload: idx })
+}
+
 // Name mangling for monomorphized generics
 pub fn type_mangle_name(t: KlarType) -> string {
     match t.kind {
@@ -1304,7 +1331,183 @@ pub fn register_builtins(tc: TypeChecker) -> TypeChecker {
     c = r18.0
     c = define_builtin(c, "sqrt", r18.1)
 
+    // ─── Builtin Traits (Milestone 9.10.2) ──────────────────────────
+    c = register_builtin_traits(c)
+
     return c
+}
+
+// Register a single builtin trait with its method signatures.
+// Return types use type_unknown() as placeholder for Self.
+fn register_builtin_trait_entry(tc: TypeChecker, trait_name: string,
+    method_names: List#[string], method_ret_types: List#[KlarType]) -> TypeChecker {
+    var c: TypeChecker = tc
+    let methods_start: i32 = c.trait_methods_data.len()
+    var i: i32 = 0
+    let method_count: i32 = method_names.len()
+    while i < method_count {
+        let pr: (TypeChecker, i32) = push_type_ref(c, method_ret_types[i])
+        c = pr.0
+        c.trait_methods_data.push(TraitMethodData {
+            name: method_names[i],
+            signature: TypeId { id: pr.1 },
+            has_default: false,
+        })
+        i = i + 1
+    }
+
+    let trait_idx: i32 = c.type_traits.len()
+    c.type_traits.push(TraitData {
+        name: trait_name,
+        type_params_start: 0,
+        type_params_count: 0,
+        methods_start: methods_start,
+        methods_count: method_count,
+        super_traits_start: 0,
+        super_traits_count: 0,
+        assoc_types_start: 0,
+        assoc_types_count: 0,
+    })
+
+    let trait_type: KlarType = KlarType { kind: TypeKind::TraitType, payload: trait_idx }
+    c.trait_types.insert(trait_name, trait_type)
+
+    // Define trait name in scope as TypeDef
+    c.define(trait_name, SymbolInfo {
+        sym_name: trait_name,
+        sym_type: trait_type,
+        mutable: false,
+        kind: SymbolKind::TypeDef,
+    })
+
+    return c
+}
+
+fn register_builtin_traits(tc: TypeChecker) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Eq: eq(self, other) -> bool
+    var eq_names: List#[string] = List.new#[string]()
+    eq_names.push("eq")
+    var eq_rets: List#[KlarType] = List.new#[KlarType]()
+    eq_rets.push(type_bool())
+    c = register_builtin_trait_entry(c, "Eq", eq_names, eq_rets)
+
+    // Ordered: lt, le, gt, ge — all (self, other) -> bool
+    var ord_names: List#[string] = List.new#[string]()
+    ord_names.push("lt")
+    ord_names.push("le")
+    ord_names.push("gt")
+    ord_names.push("ge")
+    var ord_rets: List#[KlarType] = List.new#[KlarType]()
+    ord_rets.push(type_bool())
+    ord_rets.push(type_bool())
+    ord_rets.push(type_bool())
+    ord_rets.push(type_bool())
+    c = register_builtin_trait_entry(c, "Ordered", ord_names, ord_rets)
+
+    // Clone: clone(self) -> Self (use unknown as placeholder for Self)
+    var clone_names: List#[string] = List.new#[string]()
+    clone_names.push("clone")
+    var clone_rets: List#[KlarType] = List.new#[KlarType]()
+    clone_rets.push(type_unknown())
+    c = register_builtin_trait_entry(c, "Clone", clone_names, clone_rets)
+
+    // Hash: hash(self) -> i64
+    var hash_names: List#[string] = List.new#[string]()
+    hash_names.push("hash")
+    var hash_rets: List#[KlarType] = List.new#[KlarType]()
+    hash_rets.push(type_i64())
+    c = register_builtin_trait_entry(c, "Hash", hash_names, hash_rets)
+
+    // Default: default() -> Self (static, use unknown)
+    var def_names: List#[string] = List.new#[string]()
+    def_names.push("default")
+    var def_rets: List#[KlarType] = List.new#[KlarType]()
+    def_rets.push(type_unknown())
+    c = register_builtin_trait_entry(c, "Default", def_names, def_rets)
+
+    // Drop: drop(self) -> void
+    var drop_names: List#[string] = List.new#[string]()
+    drop_names.push("drop")
+    var drop_rets: List#[KlarType] = List.new#[KlarType]()
+    drop_rets.push(type_void())
+    c = register_builtin_trait_entry(c, "Drop", drop_names, drop_rets)
+
+    // Register primitive trait impls
+    c = register_primitive_trait_impls(c)
+
+    return c
+}
+
+fn register_primitive_trait_impls(tc: TypeChecker) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // i32: Eq, Ordered, Clone, Hash, Default
+    c = record_trait_impl(c, "i32", "Eq")
+    c = record_trait_impl(c, "i32", "Ordered")
+    c = record_trait_impl(c, "i32", "Clone")
+    c = record_trait_impl(c, "i32", "Hash")
+    c = record_trait_impl(c, "i32", "Default")
+
+    // i64: Eq, Ordered, Clone, Hash, Default
+    c = record_trait_impl(c, "i64", "Eq")
+    c = record_trait_impl(c, "i64", "Ordered")
+    c = record_trait_impl(c, "i64", "Clone")
+    c = record_trait_impl(c, "i64", "Hash")
+    c = record_trait_impl(c, "i64", "Default")
+
+    // f64: Eq, Ordered, Clone, Default
+    c = record_trait_impl(c, "f64", "Eq")
+    c = record_trait_impl(c, "f64", "Ordered")
+    c = record_trait_impl(c, "f64", "Clone")
+    c = record_trait_impl(c, "f64", "Default")
+
+    // bool: Eq, Clone, Hash, Default
+    c = record_trait_impl(c, "bool", "Eq")
+    c = record_trait_impl(c, "bool", "Clone")
+    c = record_trait_impl(c, "bool", "Hash")
+    c = record_trait_impl(c, "bool", "Default")
+
+    // string: Eq, Ordered, Clone, Hash, Default
+    c = record_trait_impl(c, "string", "Eq")
+    c = record_trait_impl(c, "string", "Ordered")
+    c = record_trait_impl(c, "string", "Clone")
+    c = record_trait_impl(c, "string", "Hash")
+    c = record_trait_impl(c, "string", "Default")
+
+    // char: Eq, Ordered, Clone, Hash
+    c = record_trait_impl(c, "char", "Eq")
+    c = record_trait_impl(c, "char", "Ordered")
+    c = record_trait_impl(c, "char", "Clone")
+    c = record_trait_impl(c, "char", "Hash")
+
+    return c
+}
+
+pub fn record_trait_impl(tc: TypeChecker, type_name: string, trait_name: string) -> TypeChecker {
+    var c: TypeChecker = tc
+    let key: string = type_name + ":" + trait_name
+    c.trait_impl_keys.insert(key, true)
+    return c
+}
+
+pub fn has_trait_impl(tc: TypeChecker, type_name: string, trait_name: string) -> bool {
+    let key: string = type_name + ":" + trait_name
+    return tc.trait_impl_keys.contains_key(key)
+}
+
+// Look up a trait method by name in a TraitData
+pub fn find_trait_method(tc: TypeChecker, trait_data: TraitData, method_name: string) -> ?TraitMethodData {
+    var i: i32 = 0
+    while i < trait_data.methods_count {
+        let m: TraitMethodData = tc.trait_methods_data[trait_data.methods_start + i]
+        if m.name == method_name {
+            return Some(m)
+        }
+        i = i + 1
+    }
+    // Implicit None return
 }
 
 // ─── Main + Tests ────────────────────────────────────────────────────

@@ -13,7 +13,8 @@ import types.{
     type_is_numeric, type_is_integer, type_is_float, type_is_signed,
     type_is_primitive, get_primitive_kind,
     ArrayData, SliceData, TupleData,
-    FunctionData, StructData, StructFieldData, EnumData
+    FunctionData, StructData, StructFieldData, EnumData,
+    TraitData, TraitMethodData, TypeVarData
 }
 
 import ast.{
@@ -44,7 +45,8 @@ import checker.{
     unwrap_optional_inner, unwrap_result_ok,
     clear_substitutions, add_substitution, make_type_var,
     mangle_generic_name, substitute_type, unify_types,
-    resolve_type_expr_with_type_vars
+    resolve_type_expr_with_type_vars,
+    find_trait_method
 }
 
 import checker_builtins.{check_builtin_method}
@@ -603,11 +605,53 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
             return add_error_with_type(c, data.span,
                 "no method '" + data.method_name + "' on struct '" + struct_data.name + "'")
         }
+        TypeKind::TypeVar => {
+            return check_type_var_method(c, recv_type, data)
+        }
         _ => {
             // Dispatch to builtin method resolution
             return check_builtin_method(c, recv_type, data.method_name, data.args_count, data.span)
         }
     }
+}
+
+// ─── TypeVar Method Resolution (Trait Bounds) ──────────────────────
+
+fn check_type_var_method(tc: TypeChecker, recv_type: KlarType, data: MethodCallData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let tv: TypeVarData = c.type_vars[recv_type.payload]
+
+    // Search each bound for the method
+    var bi: i32 = 0
+    while bi < tv.bounds_count {
+        let bound_trait_idx: i32 = tv.bounds_start + bi
+        if bound_trait_idx < c.type_traits.len() {
+            let trait_data: TraitData = c.type_traits[bound_trait_idx]
+            let found: ?TraitMethodData = find_trait_method(c, trait_data, data.method_name)
+            match found {
+                Some(method) => {
+                    // Return the method's return type
+                    // For methods returning Self, we return the TypeVar itself
+                    let ret: KlarType = get_resolved_type(c, method.signature.id)
+                    match ret.kind {
+                        TypeKind::Unknown => {
+                            // Unknown is placeholder for Self — return the TypeVar type
+                            return (c, recv_type)
+                        }
+                        _ => {
+                            return (c, ret)
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+        bi = bi + 1
+    }
+
+    return add_error_with_type(c, data.span,
+        "no method '" + data.method_name + "' on type variable '" + tv.name +
+        "' (not provided by any trait bound)")
 }
 
 // ─── Field Access ───────────────────────────────────────────────────
