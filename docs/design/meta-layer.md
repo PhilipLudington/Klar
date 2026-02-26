@@ -20,9 +20,9 @@ AI agents working on Klar codebases waste tokens and make mistakes because conte
 
 When an AI generates or modifies code, it needs to know *why* things are the way they are — not just *what* the code does. Types tell you what. The meta layer tells you why.
 
-### Updated Philosophy
+### Design Philosophy
 
-The meta layer extends Klar's design philosophy from one principle to three:
+Klar's design philosophy has three principles (see [PHILOSOPHY.md](../PHILOSOPHY.md)):
 
 1. **"No ambiguity. No surprises."** — Syntax is self-describing. Every construct is parseable at a glance without surrounding context.
 2. **"The code explains itself."** — Code carries its own intent, architecture, and decisions. No external document needed to understand why.
@@ -82,6 +82,8 @@ Klar prefers keywords over symbols: `and`/`or`/`not`, `let`/`var`, `fn`/`struct`
 
 You see `meta`, you know it's metadata. Zero ambiguity. No overlap with any existing syntax.
 
+**Note on `in`:** The `in` keyword is already used in `for` loops (`for x: i32 in list`). In the meta layer, `in` only appears immediately after `meta` as `meta in("group")`. The parser disambiguates by context — `in` after `meta` is always a group join, `in` after a loop variable is always iteration.
+
 ### Grammar
 
 ```
@@ -96,6 +98,7 @@ meta_kind = module_meta
           | hint_meta
           | pure_meta
           | deprecated_meta
+          | define_meta
           | group_def
           | group_join
           | custom_meta
@@ -104,15 +107,21 @@ module_meta     = "module" "{" key_value_list "}"
 intent_meta     = "intent" "(" string_literal ")"
 decision_meta   = "decision" "(" string_literal ")"
 tag_meta        = "tag" "(" string_literal ")"
-related_meta    = "related" "(" path ("," (path | string_literal))* ")"
+related_meta    = "related" "(" path ("," path)* ("," string_literal)? ")"
 guide_meta      = "guide" "{" key_value_list "}"
 hint_meta       = "hint" "(" string_literal ")"
 pure_meta       = "pure"
 deprecated_meta = "deprecated" "(" string_literal ")"
+define_meta     = "define" identifier "(" typed_params ")" ("for" scope_target)?
 group_def       = "group" string_literal "{" meta_annotation* "}"
 group_join      = "in" "(" string_literal ")"
-custom_meta     = identifier "(" arg_list ")"
+custom_meta     = identifier "(" expression_list ")"
 
+typed_params    = typed_param ("," typed_param)*
+typed_param     = identifier ":" (type_name | string_union)
+string_union    = string_literal ("|" string_literal)*
+scope_target    = "fn" | "module" | "struct" | "enum" | "trait" | "field"
+expression_list = expression ("," expression)*
 path            = identifier ("::" identifier)*
 key_value_list  = (identifier ":" expression ("," identifier ":" expression)* ","?)?
 ```
@@ -137,7 +146,7 @@ fn parse_expr(self) -> Expr { ... }
 
 // Inline chaining (Tier 1 style)
 meta tag("parsing") meta pure
-fn parse_expr(self) -> Expr { ... }
+fn token_length(tok: Token) -> i32 { ... }
 ```
 
 ---
@@ -146,17 +155,17 @@ fn parse_expr(self) -> Expr { ... }
 
 The meta layer has a small built-in vocabulary. Every Klar project speaks the same meta language, which is itself a token-saver for AI moving between projects.
 
-| Annotation | Level | Purpose |
-|-----------|-------|---------|
-| `meta module { ... }` | File | Architecture role, purpose, dependencies |
-| `meta intent("...")` | Function/type | Why it exists, when to use it |
-| `meta decision("...")` | Any | Why a choice was made |
-| `meta tag("...")` | Any | Cross-file grouping |
-| `meta related(...)` | Any | Explicit cross-references |
-| `meta guide { ... }` | File/impl | Conventions and patterns |
-| `meta hint("...")` | Any | AI code generation guidance |
-| `meta pure` | Function | No side effects (compiler-verifiable) |
-| `meta deprecated("...")` | Any | Migration guidance |
+| Annotation | Level | Tier | Purpose |
+|-----------|-------|------|---------|
+| `meta module { ... }` | File | 3 | Architecture role, purpose, dependencies |
+| `meta guide { ... }` | File/impl | 3 | Conventions and patterns |
+| `meta intent("...")` | Function/type | 2 | Why it exists, when to use it |
+| `meta decision("...")` | Any | 2 | Why a choice was made |
+| `meta related(...)` | Any | 2 | Explicit cross-references |
+| `meta hint("...")` | Any | 2 | AI code generation guidance |
+| `meta tag("...")` | Any | 1 | Cross-file grouping |
+| `meta pure` | Function | 1 | No side effects (compiler-verifiable) |
+| `meta deprecated("...")` | Any | 1 | Migration guidance |
 
 ### `meta module { ... }` — File-level purpose and architecture
 
@@ -166,7 +175,7 @@ Describes a file's role in the system. Read once for orientation.
 meta module {
     purpose: "Recursive descent parser - transforms token stream into AST",
     role: "frontend",
-    depends: [lexer, ast, token],
+    depends: ["lexer", "ast", "token"],
     owns: "All parsing logic and error recovery"
 }
 ```
@@ -186,7 +195,7 @@ meta module {
 |-------|------|-------------|
 | `purpose` | string | What this file/module does |
 | `role` | string | Architecture layer (e.g., "frontend", "codegen", "runtime") |
-| `depends` | list of paths | Modules this depends on |
+| `depends` | list of strings | Module names this depends on |
 | `owns` | string | What this module is responsible for |
 
 ### `meta intent("...")` — Why something exists
@@ -239,19 +248,24 @@ Tag names are strings — unambiguous, compiler-validated, and consistent with t
 
 ### `meta related(...)` — Explicit cross-references
 
-Makes dependencies between distant code explicit. The compiler validates that targets exist.
+Makes dependencies between distant code explicit. The compiler validates that all path targets (functions, types, or any named declaration) actually exist.
+
+Arguments are one or more paths, with an optional description string **always last**:
 
 ```klar
+// Paths + description (string is always the last argument)
 meta related(checker::resolve_type, "This emits the LLVM for types that checker resolves")
 fn emit_type(self, ty: Type) -> LLVMTypeRef { ... }
 ```
 
 ```klar
+// Multiple paths, no description
 meta related(checker::register_generic, codegen::emit_type)
 fn monomorphize(self, ty: GenericType, args: [Type]) -> Type { ... }
 ```
 
 ```klar
+// Paths can reference functions or types
 meta related(lexer::next_token, ast::Expr)
 fn parse_expr(self) -> Expr { ... }
 ```
@@ -270,6 +284,18 @@ meta guide {
 }
 ```
 
+**Fields:** All fields are optional. Common conventions:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `style` | string | Coding style conventions |
+| `errors` | string | Error handling conventions |
+| `testing` | string | Testing requirements |
+| `patterns` | list of strings | Design patterns used in this scope |
+| `strictness` | string | Opt-in compiler strictness level (see [Compiler Validation](#optional-strictness-levels)) |
+
+The field set is open — projects can add any key-value pairs. The fields above are conventions, not a closed schema.
+
 ### `meta hint("...")` — AI code generation guidance
 
 Direct instructions for AI generating code in this context. These are things a human might tell an AI collaborator.
@@ -285,8 +311,10 @@ meta hint("Prefer returning Result over panicking")
 Marks a function as pure (no side effects, no mutation). The compiler can verify this.
 
 ```klar
-meta tag("parsing") meta pure
-fn parse_expr(self) -> Expr { ... }
+meta pure
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
 ```
 
 **Compiler-verifiable:** The compiler can check that a `meta pure` function:
@@ -348,13 +376,13 @@ Using `meta priority(...)` on a struct when it's defined `for fn` is a compiler 
 
 ### Importing custom definitions from modules
 
-Custom meta definitions are just code — they live in modules and are imported like anything else:
+Custom meta definitions are just code — they live in modules and are imported with Klar's standard import syntax:
 
 ```klar
-import meta { priority, owner } from "project_meta"
+import project_meta.{ priority, owner }
 ```
 
-This fits Klar's existing module system. A team defines their meta vocabulary once, imports it everywhere.
+A team defines their meta vocabulary once in a shared module, imports it everywhere. The compiler recognizes imported `meta define` declarations and makes them available as valid meta annotations in the importing file.
 
 ---
 
@@ -390,8 +418,8 @@ Three inheritance models were considered:
 
 ```klar
 meta group "parser_visitor" {
-    guide { errors: "Use KlarError enum" },
-    tag("ast_traversal")
+    meta guide { errors: "Use KlarError enum" },
+    meta tag("ast_traversal")
 }
 ```
 
@@ -487,8 +515,7 @@ klar meta --tag "parsing" --json
       "kind": "function",
       "meta": {
         "tag": ["parsing"],
-        "intent": "Entry point for expression parsing",
-        "pure": true
+        "intent": "Entry point for expression parsing"
       }
     },
     {
@@ -522,7 +549,7 @@ Read when scanning a file. Compact markers that categorize code.
 
 ```klar
 meta tag("parsing") meta pure
-fn parse_expr(self) -> Expr { ... }
+fn token_length(tok: Token) -> i32 { ... }
 ```
 
 ### Tier 2: Understanding-level (function-attached, detailed)
@@ -583,7 +610,7 @@ This is token-efficient — the AI can stop early. It reads the module descripti
 meta module {
     purpose: "Recursive descent parser - transforms token stream into AST",
     role: "frontend",
-    depends: [lexer, ast, token],
+    depends: ["lexer", "ast", "token"],
     owns: "All parsing logic and error recovery"
 }
 
@@ -596,8 +623,8 @@ meta guide {
 }
 
 meta group "parser_entry" {
-    tag("parsing"),
-    hint("These functions are the public API of the parser")
+    meta tag("parsing"),
+    meta hint("These functions are the public API of the parser")
 }
 
 struct Parser {
@@ -731,7 +758,7 @@ The two are complementary and non-overlapping.
 
 ### Parsing
 
-The `meta` keyword introduces a new statement/annotation form in the parser. Since `meta` is not currently a keyword or reserved word in the lexer, it must be added.
+The `meta` keyword introduces a new statement/annotation form in the parser. `meta` is reserved for future use (see `docs/appendix/keywords.md`) but not yet implemented in the lexer — it must be added as a recognized keyword when this feature is built.
 
 ### Type checking
 
@@ -756,4 +783,4 @@ Meta annotations are stored in the AST during parsing and available to all compi
 - **LSP integration**: IDE tooltips showing meta annotations on hover
 - **Meta inheritance across modules**: Importing a module inherits its guide conventions
 - **Meta coverage reporting**: What percentage of public API has intent annotations
-- **AI-optimized output**: `klar meta --context fn_name` dumps everything an AI needs to modify a function (its meta, related functions' meta, module context)
+- **AI-optimized output** (not in initial CLI): `klar meta --context fn_name` would dump everything an AI needs to modify a function (its meta, related functions' meta, module context)
