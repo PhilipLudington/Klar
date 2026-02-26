@@ -303,9 +303,9 @@ Port the advanced type system features.
 
 - [ ] **9.10.1** Generic monomorphization (type parameter inference, substitution, caching)
 - [ ] **9.10.2** Trait resolution (trait bounds checking, method dispatch through bounds)
-- [ ] **9.10.3** Optional/Result type checking, `?` propagation operator
+- [~] **9.10.3** Optional/Result type checking, `?` propagation operator *(Phase A: Some/Ok/Err/None constructors, postfix ?, ??, Optional/Result methods)*
 - [ ] **9.10.4** Module import resolution (multi-file type checking)
-- [ ] **9.10.5** Builtin function and method type checking (all 100+ builtins)
+- [~] **9.10.5** Builtin function and method type checking *(Phase A: 18 free builtins + builtin methods for string/int/float/array/slice/list/map/set/optional/result in checker_builtins.kl)*
 - [ ] **9.10.6** Full diagnostic parity with Zig checker
 
 **Success Criteria:**

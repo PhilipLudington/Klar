@@ -1,0 +1,447 @@
+// selfhost/checker_builtins.kl — Builtin method type resolution
+// Milestone 9.10 Phase A: Builtin Methods
+//
+// Resolves method calls on primitive types (string, int, float),
+// collection types (array, slice, list, map, set), and wrapper types
+// (optional, result). Returns the result type of the method call.
+//
+// Main entry point: check_builtin_method(tc, recv_type, method_name, args_count, span)
+
+import types.{
+    KlarType, TypeKind, TypeId, PrimitiveKind,
+    type_i32, type_i64, type_f64, type_bool, type_char, type_string,
+    type_u8, type_void, type_never, type_unknown, type_error,
+    type_eq_simple, type_to_string_simple,
+    type_is_numeric, type_is_integer, type_is_float, type_is_signed,
+    type_is_primitive, get_primitive_kind,
+    ArrayData, SliceData, WrapperData, MapData, ResultData
+}
+
+import ast.{Span}
+
+import checker.{
+    TypeChecker, SymbolInfo, SymbolKind,
+    add_error, add_error_with_type,
+    type_eq, type_display,
+    push_type_ref, get_resolved_type,
+    make_optional_type, make_list_type,
+    unwrap_optional_inner, unwrap_list_element,
+    unwrap_result_ok, unwrap_result_err,
+    unwrap_map_key, unwrap_map_value
+}
+
+// ─── Main Dispatch ──────────────────────────────────────────────────
+
+pub fn check_builtin_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    match recv_type.kind {
+        TypeKind::Primitive => {
+            return check_primitive_method(tc, recv_type, method_name, args_count, span)
+        }
+        TypeKind::Array => {
+            return check_array_method(tc, recv_type, method_name, args_count, span)
+        }
+        TypeKind::Slice => {
+            return check_slice_method(tc, recv_type, method_name, args_count, span)
+        }
+        TypeKind::ListType => {
+            return check_list_method(tc, recv_type, method_name, args_count, span)
+        }
+        TypeKind::MapType => {
+            return check_map_method(tc, recv_type, method_name, args_count, span)
+        }
+        TypeKind::SetType => {
+            return check_set_method(tc, recv_type, method_name, args_count, span)
+        }
+        TypeKind::Optional => {
+            return check_optional_method(tc, recv_type, method_name, args_count, span)
+        }
+        TypeKind::Result => {
+            return check_result_method(tc, recv_type, method_name, args_count, span)
+        }
+        _ => {
+            return add_error_with_type(tc, span,
+                "no method '" + method_name + "' on type " + type_display(recv_type))
+        }
+    }
+}
+
+// ─── Primitive Methods ──────────────────────────────────────────────
+
+fn check_primitive_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    let pk: ?PrimitiveKind = get_primitive_kind(recv_type)
+    match pk {
+        Some(p) => {
+            if type_eq(recv_type, type_string()) {
+                return check_string_method(tc, method_name, args_count, span)
+            }
+            if type_is_integer(recv_type) {
+                return check_integer_method(tc, recv_type, method_name, args_count, span)
+            }
+            if type_is_float(recv_type) {
+                return check_float_method(tc, recv_type, method_name, args_count, span)
+            }
+            if type_eq(recv_type, type_bool()) {
+                // bool has no builtin methods beyond to_string (handled in caller)
+                return add_error_with_type(tc, span,
+                    "no method '" + method_name + "' on bool")
+            }
+            if type_eq(recv_type, type_char()) {
+                return check_char_method(tc, method_name, args_count, span)
+            }
+            return add_error_with_type(tc, span,
+                "no method '" + method_name + "' on type " + type_display(recv_type))
+        }
+        None => {
+            return add_error_with_type(tc, span,
+                "no method '" + method_name + "' on type " + type_display(recv_type))
+        }
+    }
+}
+
+// ─── String Methods ─────────────────────────────────────────────────
+
+fn check_string_method(tc: TypeChecker, method_name: string,
+    args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    // () -> i32
+    if method_name == "len" and args_count == 0 { return (tc, type_i32()) }
+    if method_name == "byte_len" and args_count == 0 { return (tc, type_i32()) }
+
+    // () -> bool
+    if method_name == "is_empty" and args_count == 0 { return (tc, type_bool()) }
+
+    // (string) -> bool
+    if method_name == "contains" and args_count == 1 { return (tc, type_bool()) }
+    if method_name == "starts_with" and args_count == 1 { return (tc, type_bool()) }
+    if method_name == "ends_with" and args_count == 1 { return (tc, type_bool()) }
+
+    // () -> string
+    if method_name == "trim" and args_count == 0 { return (tc, type_string()) }
+    if method_name == "trim_start" and args_count == 0 { return (tc, type_string()) }
+    if method_name == "trim_end" and args_count == 0 { return (tc, type_string()) }
+    if method_name == "to_uppercase" and args_count == 0 { return (tc, type_string()) }
+    if method_name == "to_lowercase" and args_count == 0 { return (tc, type_string()) }
+
+    // (i32, i32) -> string
+    if method_name == "slice" and args_count == 2 { return (tc, type_string()) }
+    if method_name == "substring" and args_count == 2 { return (tc, type_string()) }
+
+    // (i32) -> u8
+    if method_name == "byte_at" and args_count == 1 { return (tc, type_u8()) }
+
+    // (string) -> ?i32
+    if method_name == "index_of" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, type_i32())
+        return r
+    }
+
+    // (string) -> string (replace takes 2 args)
+    if method_name == "replace" and args_count == 2 { return (tc, type_string()) }
+
+    // (i32) -> string
+    if method_name == "repeat" and args_count == 1 { return (tc, type_string()) }
+
+    // (string) -> List#[string]
+    if method_name == "split" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_list_type(tc, type_string())
+        return r
+    }
+
+    // () -> List#[char]
+    if method_name == "chars" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_list_type(tc, type_char())
+        return r
+    }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on string")
+}
+
+// ─── Integer Methods ────────────────────────────────────────────────
+
+fn check_integer_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    // () -> same type
+    if method_name == "abs" and args_count == 0 { return (tc, recv_type) }
+
+    // (T) -> same type
+    if method_name == "min" and args_count == 1 { return (tc, recv_type) }
+    if method_name == "max" and args_count == 1 { return (tc, recv_type) }
+
+    // () -> string (already handled by caller for to_string, but include for completeness)
+    if method_name == "to_string" and args_count == 0 { return (tc, type_string()) }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on " + type_display(recv_type))
+}
+
+// ─── Float Methods ──────────────────────────────────────────────────
+
+fn check_float_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    // () -> same type
+    if method_name == "abs" and args_count == 0 { return (tc, recv_type) }
+    if method_name == "sqrt" and args_count == 0 { return (tc, recv_type) }
+    if method_name == "floor" and args_count == 0 { return (tc, recv_type) }
+    if method_name == "ceil" and args_count == 0 { return (tc, recv_type) }
+    if method_name == "round" and args_count == 0 { return (tc, recv_type) }
+
+    // (T) -> same type
+    if method_name == "min" and args_count == 1 { return (tc, recv_type) }
+    if method_name == "max" and args_count == 1 { return (tc, recv_type) }
+
+    // () -> string
+    if method_name == "to_string" and args_count == 0 { return (tc, type_string()) }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on " + type_display(recv_type))
+}
+
+// ─── Char Methods ───────────────────────────────────────────────────
+
+fn check_char_method(tc: TypeChecker, method_name: string,
+    args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    if method_name == "is_alpha" and args_count == 0 { return (tc, type_bool()) }
+    if method_name == "is_digit" and args_count == 0 { return (tc, type_bool()) }
+    if method_name == "is_whitespace" and args_count == 0 { return (tc, type_bool()) }
+    if method_name == "to_uppercase" and args_count == 0 { return (tc, type_char()) }
+    if method_name == "to_lowercase" and args_count == 0 { return (tc, type_char()) }
+    if method_name == "to_string" and args_count == 0 { return (tc, type_string()) }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on char")
+}
+
+// ─── Array Methods ──────────────────────────────────────────────────
+
+fn check_array_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    if method_name == "len" and args_count == 0 { return (tc, type_i32()) }
+    if method_name == "is_empty" and args_count == 0 { return (tc, type_bool()) }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on array")
+}
+
+// ─── Slice Methods ──────────────────────────────────────────────────
+
+fn check_slice_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    if method_name == "len" and args_count == 0 { return (tc, type_i32()) }
+    if method_name == "is_empty" and args_count == 0 { return (tc, type_bool()) }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on slice")
+}
+
+// ─── List Methods ───────────────────────────────────────────────────
+
+fn check_list_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    let elem: KlarType = unwrap_list_element(tc, recv_type)
+
+    // () -> i32
+    if method_name == "len" and args_count == 0 { return (tc, type_i32()) }
+
+    // () -> bool
+    if method_name == "is_empty" and args_count == 0 { return (tc, type_bool()) }
+
+    // (T) -> void
+    if method_name == "push" and args_count == 1 { return (tc, type_void()) }
+
+    // () -> ?T
+    if method_name == "pop" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+        return r
+    }
+
+    // (i32) -> ?T
+    if method_name == "get" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+        return r
+    }
+
+    // (i32, T) -> void
+    if method_name == "set" and args_count == 2 { return (tc, type_void()) }
+
+    // () -> ?T
+    if method_name == "last" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+        return r
+    }
+    if method_name == "first" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+        return r
+    }
+
+    // () -> void
+    if method_name == "clear" and args_count == 0 { return (tc, type_void()) }
+
+    // (T) -> bool
+    if method_name == "contains" and args_count == 1 { return (tc, type_bool()) }
+
+    // (i32) -> T
+    if method_name == "remove" and args_count == 1 { return (tc, elem) }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on List")
+}
+
+// ─── Map Methods ────────────────────────────────────────────────────
+
+fn check_map_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    let key_type: KlarType = unwrap_map_key(tc, recv_type)
+    let val_type: KlarType = unwrap_map_value(tc, recv_type)
+
+    // () -> i32
+    if method_name == "len" and args_count == 0 { return (tc, type_i32()) }
+
+    // () -> bool
+    if method_name == "is_empty" and args_count == 0 { return (tc, type_bool()) }
+
+    // (K, V) -> void
+    if method_name == "insert" and args_count == 2 { return (tc, type_void()) }
+
+    // (K) -> ?V
+    if method_name == "get" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, val_type)
+        return r
+    }
+
+    // (K) -> ?V
+    if method_name == "remove" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, val_type)
+        return r
+    }
+
+    // (K) -> bool
+    if method_name == "contains_key" and args_count == 1 { return (tc, type_bool()) }
+
+    // () -> List#[K]
+    if method_name == "keys" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_list_type(tc, key_type)
+        return r
+    }
+
+    // () -> List#[V]
+    if method_name == "values" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_list_type(tc, val_type)
+        return r
+    }
+
+    // () -> void
+    if method_name == "clear" and args_count == 0 { return (tc, type_void()) }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on Map")
+}
+
+// ─── Set Methods ────────────────────────────────────────────────────
+
+fn check_set_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    // () -> i32
+    if method_name == "len" and args_count == 0 { return (tc, type_i32()) }
+
+    // () -> bool
+    if method_name == "is_empty" and args_count == 0 { return (tc, type_bool()) }
+
+    // (T) -> bool
+    if method_name == "insert" and args_count == 1 { return (tc, type_bool()) }
+
+    // (T) -> bool
+    if method_name == "remove" and args_count == 1 { return (tc, type_bool()) }
+
+    // (T) -> bool
+    if method_name == "contains" and args_count == 1 { return (tc, type_bool()) }
+
+    // () -> void
+    if method_name == "clear" and args_count == 0 { return (tc, type_void()) }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on Set")
+}
+
+// ─── Optional Methods ───────────────────────────────────────────────
+
+fn check_optional_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    let inner: KlarType = unwrap_optional_inner(tc, recv_type)
+
+    // () -> bool
+    if method_name == "is_some" and args_count == 0 { return (tc, type_bool()) }
+    if method_name == "is_none" and args_count == 0 { return (tc, type_bool()) }
+
+    // () -> T
+    if method_name == "unwrap" and args_count == 0 { return (tc, inner) }
+
+    // (T) -> T
+    if method_name == "unwrap_or" and args_count == 1 { return (tc, inner) }
+
+    // (string) -> T
+    if method_name == "expect" and args_count == 1 { return (tc, inner) }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on Optional")
+}
+
+// ─── Result Methods ─────────────────────────────────────────────────
+
+fn check_result_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    let ok_type: KlarType = unwrap_result_ok(tc, recv_type)
+    let err_type: KlarType = unwrap_result_err(tc, recv_type)
+
+    // () -> bool
+    if method_name == "is_ok" and args_count == 0 { return (tc, type_bool()) }
+    if method_name == "is_err" and args_count == 0 { return (tc, type_bool()) }
+
+    // () -> T
+    if method_name == "unwrap" and args_count == 0 { return (tc, ok_type) }
+
+    // () -> E
+    if method_name == "unwrap_err" and args_count == 0 { return (tc, err_type) }
+
+    // (T) -> T
+    if method_name == "unwrap_or" and args_count == 1 { return (tc, ok_type) }
+
+    // (string) -> T
+    if method_name == "expect" and args_count == 1 { return (tc, ok_type) }
+
+    // () -> ?T
+    if method_name == "ok" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, ok_type)
+        return r
+    }
+
+    // () -> ?E
+    if method_name == "err" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, err_type)
+        return r
+    }
+
+    return add_error_with_type(tc, span,
+        "no method '" + method_name + "' on Result")
+}
+
+// ─── Smoke Test ─────────────────────────────────────────────────────
+
+fn main() -> i32 {
+    println("checker_builtins.kl: loaded (run tests via checker_main.kl)")
+    return 0
+}

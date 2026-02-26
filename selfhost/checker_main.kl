@@ -11,9 +11,10 @@
 import types.{
     KlarType, TypeKind, TypeId, PrimitiveKind,
     type_i32, type_i64, type_f64, type_bool, type_char, type_string,
-    type_void, type_never, type_unknown, type_error,
-    type_eq_simple, type_to_string_simple,
-    FunctionData, StructData, StructFieldData, EnumData
+    type_u8, type_void, type_never, type_unknown, type_error,
+    type_eq_simple, type_to_string_simple, type_kind_name,
+    FunctionData, StructData, StructFieldData, EnumData,
+    WrapperData, MapData, ResultData
 }
 
 import ast.{
@@ -25,7 +26,7 @@ import ast.{
     BinaryData, UnaryData, PostfixData,
     CallData, MethodCallData, FieldAccessData, IndexData,
     CastData, ClosureData, BlockData,
-    GroupedData, StructLiteralData,
+    GroupedData, StructLiteralData, ArrayLiteralData,
     EnumVariantData,
     LetDeclData, VarDeclData, AssignmentData,
     ExprStmtData, ReturnStmtData, BreakStmtData, ContinueStmtData,
@@ -33,7 +34,7 @@ import ast.{
     IfStmtData, MatchStmtData,
     FunctionDeclData, StructDeclData, EnumDeclData,
     FnParam, StructField, EnumVariantDecl,
-    NamedTypeData, ArrayTypeData,
+    NamedTypeData, ArrayTypeData, OptionalTypeData, GenericApplyData,
     MatchArm, FieldInit,
     no_expr, has_expr, no_type_expr, has_type_expr, no_span, no_pattern
 }
@@ -45,7 +46,9 @@ import checker.{
     type_eq, type_compatible, is_error_type, is_void_type,
     type_display,
     register_builtins,
-    push_type_ref, get_resolved_type
+    push_type_ref, get_resolved_type,
+    make_optional_type, make_result_type, make_list_type, make_map_type,
+    unwrap_optional_inner, unwrap_result_ok, unwrap_result_err
 }
 
 import checker_expr.{check_expr}
@@ -135,6 +138,53 @@ fn add_grouped_expr(tc: TypeChecker, inner: ExprId) -> (TypeChecker, ExprId) {
     let idx: i32 = c.exprs.len()
     c.exprs.push(Expr::Grouped(GroupedData { inner: inner, span: s() }))
     return (c, ExprId { id: idx })
+}
+
+fn add_float_expr(tc: TypeChecker, val: string) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::FloatLiteral(FloatLiteralData { text: val, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_method_call_expr(tc: TypeChecker, recv: ExprId, method: string,
+    args_start: i32, args_count: i32) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::MethodCall(MethodCallData {
+        receiver: recv,
+        method_name: method,
+        args_start: args_start,
+        args_count: args_count,
+        type_args_start: 0,
+        type_args_count: 0,
+        span: s(),
+    }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_postfix_expr(tc: TypeChecker, op: PostfixOp, operand: ExprId) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::Postfix(PostfixData { op: op, operand: operand, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_type_optional(tc: TypeChecker, inner: TypeExprId) -> (TypeChecker, TypeExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.type_exprs.len()
+    c.type_exprs.push(TypeExpr::Optional(OptionalTypeData { inner: inner, span: s() }))
+    return (c, TypeExprId { id: idx })
+}
+
+fn add_type_generic_apply(tc: TypeChecker, base: TypeExprId,
+    args_start: i32, args_count: i32) -> (TypeChecker, TypeExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.type_exprs.len()
+    c.type_exprs.push(TypeExpr::GenericApply(GenericApplyData {
+        base: base, args_start: args_start, args_count: args_count, span: s(),
+    }))
+    return (c, TypeExprId { id: idx })
 }
 
 // Add a statement and return its ID
@@ -242,6 +292,15 @@ fn expect_type(actual: KlarType, expected: KlarType, test_name: string) -> bool 
     if not type_eq_simple(actual, expected) {
         println("FAIL: " + test_name + " — expected type " + type_to_string_simple(expected) +
             ", got " + type_to_string_simple(actual))
+        return false
+    }
+    return true
+}
+
+fn expect_kind(actual: KlarType, kind_name: string, test_name: string) -> bool {
+    let actual_name: string = type_kind_name(actual.kind)
+    if actual_name != kind_name {
+        println("FAIL: " + test_name + " — expected kind " + kind_name + ", got " + actual_name)
         return false
     }
     return true
@@ -921,6 +980,797 @@ fn test_user_function_call() -> i32 {
     return 0
 }
 
+// ─── 9.10 Phase A Tests ─────────────────────────────────────────────
+
+fn test_expanded_builtins() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_eq(1, 2) → void (no error, polymorphic)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_eq")
+    tc = r_callee.0
+    let r_a1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_a1.0
+    let r_a2: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_a2.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_a1.1)
+    tc.extra_expr_ids.push(r_a2.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 2)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_type(re.1, type_void(), "assert_eq returns void") { return 21 }
+    if not expect_ok(tc, "assert_eq(1, 2)") { return 21 }
+
+    // panic("msg") → never
+    let r_panic: (TypeChecker, ExprId) = add_ident_expr(tc, "panic")
+    tc = r_panic.0
+    let r_msg: (TypeChecker, ExprId) = add_str_expr(tc, "error")
+    tc = r_msg.0
+    let args_p: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_msg.1)
+    let r_call2: (TypeChecker, ExprId) = add_call_expr(tc, r_panic.1, args_p, 1)
+    tc = r_call2.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_call2.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_never(), "panic returns never") { return 21 }
+
+    // exit(0) → never
+    let r_exit: (TypeChecker, ExprId) = add_ident_expr(tc, "exit")
+    tc = r_exit.0
+    let r_code: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_code.0
+    let args_e: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_code.1)
+    let r_call3: (TypeChecker, ExprId) = add_call_expr(tc, r_exit.1, args_e, 1)
+    tc = r_call3.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_call3.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_never(), "exit returns never") { return 21 }
+
+    // sqrt(1.0) → f64
+    let r_sqrt: (TypeChecker, ExprId) = add_ident_expr(tc, "sqrt")
+    tc = r_sqrt.0
+    let r_fv: (TypeChecker, ExprId) = add_float_expr(tc, "1.0")
+    tc = r_fv.0
+    let args_sq: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_fv.1)
+    let r_call4: (TypeChecker, ExprId) = add_call_expr(tc, r_sqrt.1, args_sq, 1)
+    tc = r_call4.0
+    let re4: (TypeChecker, KlarType) = check_expr(tc, r_call4.1)
+    tc = re4.0
+    if not expect_type(re4.1, type_f64(), "sqrt returns f64") { return 21 }
+
+    // readline() → string
+    let r_rl: (TypeChecker, ExprId) = add_ident_expr(tc, "readline")
+    tc = r_rl.0
+    let r_call5: (TypeChecker, ExprId) = add_call_expr(tc, r_rl.1, 0, 0)
+    tc = r_call5.0
+    let re5: (TypeChecker, KlarType) = check_expr(tc, r_call5.1)
+    tc = re5.0
+    if not expect_type(re5.1, type_string(), "readline returns string") { return 21 }
+
+    if not expect_ok(tc, "expanded builtins") { return 21 }
+    return 0
+}
+
+fn test_string_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // "hello".len() → i32
+    let r_s: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_s.0
+    let r_len: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s.1, "len", 0, 0)
+    tc = r_len.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_len.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "string.len() → i32") { return 22 }
+
+    // "hello".is_empty() → bool
+    let r_s2: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_s2.0
+    let r_ie: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s2.1, "is_empty", 0, 0)
+    tc = r_ie.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_ie.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_bool(), "string.is_empty() → bool") { return 22 }
+
+    // "hello".contains("ell") → bool
+    let r_s3: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_s3.0
+    let r_arg: (TypeChecker, ExprId) = add_str_expr(tc, "ell")
+    tc = r_arg.0
+    let c_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_con: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s3.1, "contains", c_args, 1)
+    tc = r_con.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_con.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_bool(), "string.contains() → bool") { return 22 }
+
+    // "hello".trim() → string
+    let r_s4: (TypeChecker, ExprId) = add_str_expr(tc, " hello ")
+    tc = r_s4.0
+    let r_trim: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s4.1, "trim", 0, 0)
+    tc = r_trim.0
+    let re4: (TypeChecker, KlarType) = check_expr(tc, r_trim.1)
+    tc = re4.0
+    if not expect_type(re4.1, type_string(), "string.trim() → string") { return 22 }
+
+    // "hello".split(",") → List#[string]
+    let r_s5: (TypeChecker, ExprId) = add_str_expr(tc, "a,b")
+    tc = r_s5.0
+    let r_delim: (TypeChecker, ExprId) = add_str_expr(tc, ",")
+    tc = r_delim.0
+    let sp_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_delim.1)
+    let r_split: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s5.1, "split", sp_args, 1)
+    tc = r_split.0
+    let re5: (TypeChecker, KlarType) = check_expr(tc, r_split.1)
+    tc = re5.0
+    if not expect_kind(re5.1, "ListType", "string.split() → List") { return 22 }
+
+    // "hello".byte_at(0) → u8
+    let r_s6: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_s6.0
+    let r_idx: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_idx.0
+    let ba_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_idx.1)
+    let r_ba: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s6.1, "byte_at", ba_args, 1)
+    tc = r_ba.0
+    let re6: (TypeChecker, KlarType) = check_expr(tc, r_ba.1)
+    tc = re6.0
+    if not expect_type(re6.1, type_u8(), "string.byte_at() → u8") { return 22 }
+
+    if not expect_ok(tc, "string methods") { return 22 }
+    return 0
+}
+
+fn test_integer_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+    tc.define("x", SymbolInfo { sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable })
+
+    // x.abs() → i32
+    let r_x: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x.0
+    let r_abs: (TypeChecker, ExprId) = add_method_call_expr(tc, r_x.1, "abs", 0, 0)
+    tc = r_abs.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_abs.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "i32.abs() → i32") { return 23 }
+
+    // x.min(other) → i32
+    let r_x2: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x2.0
+    let r_other: (TypeChecker, ExprId) = add_int_expr(tc, "5")
+    tc = r_other.0
+    let min_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_other.1)
+    let r_min: (TypeChecker, ExprId) = add_method_call_expr(tc, r_x2.1, "min", min_args, 1)
+    tc = r_min.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_min.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_i32(), "i32.min() → i32") { return 23 }
+
+    if not expect_ok(tc, "integer methods") { return 23 }
+    return 0
+}
+
+fn test_float_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // 3.14.sqrt() → f64
+    let r_f: (TypeChecker, ExprId) = add_float_expr(tc, "3.14")
+    tc = r_f.0
+    let r_sqrt: (TypeChecker, ExprId) = add_method_call_expr(tc, r_f.1, "sqrt", 0, 0)
+    tc = r_sqrt.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_sqrt.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_f64(), "f64.sqrt() → f64") { return 24 }
+
+    // 3.14.floor() → f64
+    let r_f2: (TypeChecker, ExprId) = add_float_expr(tc, "3.14")
+    tc = r_f2.0
+    let r_floor: (TypeChecker, ExprId) = add_method_call_expr(tc, r_f2.1, "floor", 0, 0)
+    tc = r_floor.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_floor.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_f64(), "f64.floor() → f64") { return 24 }
+
+    // 3.14.ceil() → f64
+    let r_f3: (TypeChecker, ExprId) = add_float_expr(tc, "3.14")
+    tc = r_f3.0
+    let r_ceil: (TypeChecker, ExprId) = add_method_call_expr(tc, r_f3.1, "ceil", 0, 0)
+    tc = r_ceil.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_ceil.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_f64(), "f64.ceil() → f64") { return 24 }
+
+    if not expect_ok(tc, "float methods") { return 24 }
+    return 0
+}
+
+fn test_array_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // [1, 2, 3].len() → i32
+    let r_e1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_e1.0
+    let r_e2: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_e2.0
+    let r_e3: (TypeChecker, ExprId) = add_int_expr(tc, "3")
+    tc = r_e3.0
+    let arr_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_e1.1)
+    tc.extra_expr_ids.push(r_e2.1)
+    tc.extra_expr_ids.push(r_e3.1)
+    let arr_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::ArrayLiteral(ArrayLiteralData {
+        elems_start: arr_start, elems_count: 3, span: s(),
+    }))
+    let arr_eid: ExprId = ExprId { id: arr_idx }
+
+    let r_len: (TypeChecker, ExprId) = add_method_call_expr(tc, arr_eid, "len", 0, 0)
+    tc = r_len.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_len.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "array.len() → i32") { return 25 }
+
+    if not expect_ok(tc, "array methods") { return 25 }
+    return 0
+}
+
+fn test_generic_apply_list() -> i32 {
+    // Build TypeExpr for List#[i32] and resolve it
+    var tc: TypeChecker = TypeChecker.new()
+
+    // TypeExpr::Named("List") for the base
+    let r_base: (TypeChecker, TypeExprId) = add_type_named(tc, "List")
+    tc = r_base.0
+
+    // TypeExpr::Named("i32") for the type arg
+    let r_arg: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = r_arg.0
+
+    // Store type arg in extra_type_expr_ids
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(r_arg.1)
+
+    // GenericApply: List#[i32]
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, r_base.1, te_args_start, 1)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    if not expect_kind(res.1, "ListType", "List#[i32] resolves to ListType") { return 26 }
+    if not expect_ok(tc, "GenericApply List#[i32]") { return 26 }
+
+    return 0
+}
+
+fn test_generic_apply_map() -> i32 {
+    // Build TypeExpr for Map#[string, i32] and resolve it
+    var tc: TypeChecker = TypeChecker.new()
+
+    let r_base: (TypeChecker, TypeExprId) = add_type_named(tc, "Map")
+    tc = r_base.0
+
+    let r_k: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = r_k.0
+    let r_v: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = r_v.0
+
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(r_k.1)
+    tc.extra_type_expr_ids.push(r_v.1)
+
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, r_base.1, te_args_start, 2)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    if not expect_kind(res.1, "MapType", "Map#[string, i32] resolves to MapType") { return 27 }
+    if not expect_ok(tc, "GenericApply Map#[string, i32]") { return 27 }
+
+    return 0
+}
+
+fn test_list_methods() -> i32 {
+    // Create a List#[i32] variable and test method types
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build List#[i32] type programmatically
+    let lr: (TypeChecker, KlarType) = make_list_type(tc, type_i32())
+    tc = lr.0
+    let list_type: KlarType = lr.1
+
+    tc.define("items", SymbolInfo {
+        sym_name: "items", sym_type: list_type, mutable: true, kind: SymbolKind::Variable,
+    })
+
+    // items.len() → i32
+    let r_items: (TypeChecker, ExprId) = add_ident_expr(tc, "items")
+    tc = r_items.0
+    let r_len: (TypeChecker, ExprId) = add_method_call_expr(tc, r_items.1, "len", 0, 0)
+    tc = r_len.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_len.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "List.len() → i32") { return 28 }
+
+    // items.push(42) → void
+    let r_items2: (TypeChecker, ExprId) = add_ident_expr(tc, "items")
+    tc = r_items2.0
+    let r_val: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_val.0
+    let push_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_val.1)
+    let r_push: (TypeChecker, ExprId) = add_method_call_expr(tc, r_items2.1, "push", push_args, 1)
+    tc = r_push.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_push.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_void(), "List.push() → void") { return 28 }
+
+    // items.pop() → ?i32
+    let r_items3: (TypeChecker, ExprId) = add_ident_expr(tc, "items")
+    tc = r_items3.0
+    let r_pop: (TypeChecker, ExprId) = add_method_call_expr(tc, r_items3.1, "pop", 0, 0)
+    tc = r_pop.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_pop.1)
+    tc = re3.0
+    if not expect_kind(re3.1, "Optional", "List.pop() → Optional") { return 28 }
+
+    // items.contains(1) → bool
+    let r_items4: (TypeChecker, ExprId) = add_ident_expr(tc, "items")
+    tc = r_items4.0
+    let r_cv: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_cv.0
+    let con_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_cv.1)
+    let r_con: (TypeChecker, ExprId) = add_method_call_expr(tc, r_items4.1, "contains", con_args, 1)
+    tc = r_con.0
+    let re4: (TypeChecker, KlarType) = check_expr(tc, r_con.1)
+    tc = re4.0
+    if not expect_type(re4.1, type_bool(), "List.contains() → bool") { return 28 }
+
+    if not expect_ok(tc, "list methods") { return 28 }
+    return 0
+}
+
+fn test_map_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build Map#[string, i32] type
+    let mr: (TypeChecker, KlarType) = make_map_type(tc, type_string(), type_i32())
+    tc = mr.0
+    let map_type: KlarType = mr.1
+
+    tc.define("scores", SymbolInfo {
+        sym_name: "scores", sym_type: map_type, mutable: true, kind: SymbolKind::Variable,
+    })
+
+    // scores.len() → i32
+    let r_m: (TypeChecker, ExprId) = add_ident_expr(tc, "scores")
+    tc = r_m.0
+    let r_len: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m.1, "len", 0, 0)
+    tc = r_len.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_len.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "Map.len() → i32") { return 29 }
+
+    // scores.contains_key("alice") → bool
+    let r_m2: (TypeChecker, ExprId) = add_ident_expr(tc, "scores")
+    tc = r_m2.0
+    let r_key: (TypeChecker, ExprId) = add_str_expr(tc, "alice")
+    tc = r_key.0
+    let ck_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_key.1)
+    let r_ck: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m2.1, "contains_key", ck_args, 1)
+    tc = r_ck.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_ck.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_bool(), "Map.contains_key() → bool") { return 29 }
+
+    // scores.get("alice") → ?i32
+    let r_m3: (TypeChecker, ExprId) = add_ident_expr(tc, "scores")
+    tc = r_m3.0
+    let r_key2: (TypeChecker, ExprId) = add_str_expr(tc, "alice")
+    tc = r_key2.0
+    let g_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_key2.1)
+    let r_get: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m3.1, "get", g_args, 1)
+    tc = r_get.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_get.1)
+    tc = re3.0
+    if not expect_kind(re3.1, "Optional", "Map.get() → Optional") { return 29 }
+
+    // scores.keys() → List#[string]
+    let r_m4: (TypeChecker, ExprId) = add_ident_expr(tc, "scores")
+    tc = r_m4.0
+    let r_keys: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m4.1, "keys", 0, 0)
+    tc = r_keys.0
+    let re4: (TypeChecker, KlarType) = check_expr(tc, r_keys.1)
+    tc = re4.0
+    if not expect_kind(re4.1, "ListType", "Map.keys() → ListType") { return 29 }
+
+    if not expect_ok(tc, "map methods") { return 29 }
+    return 0
+}
+
+fn test_some_constructor() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // Some(42) → ?i32
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Some")
+    tc = r_callee.0
+    let r_val: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_val.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_val.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "Optional", "Some(42) → Optional") { return 30 }
+
+    // Verify inner type is i32
+    let inner: KlarType = unwrap_optional_inner(tc, re.1)
+    if not expect_type(inner, type_i32(), "Some(42) inner is i32") { return 30 }
+
+    if not expect_ok(tc, "Some constructor") { return 30 }
+    return 0
+}
+
+fn test_ok_err_constructor() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // Ok(42) → Result#[i32, ?]
+    let r_ok_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Ok")
+    tc = r_ok_callee.0
+    let r_val: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_val.0
+    let ok_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_val.1)
+    let r_ok_call: (TypeChecker, ExprId) = add_call_expr(tc, r_ok_callee.1, ok_args, 1)
+    tc = r_ok_call.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_ok_call.1)
+    tc = re1.0
+    if not expect_kind(re1.1, "Result", "Ok(42) → Result") { return 31 }
+    let ok_inner: KlarType = unwrap_result_ok(tc, re1.1)
+    if not expect_type(ok_inner, type_i32(), "Ok(42) ok type is i32") { return 31 }
+
+    // Err("msg") → Result#[?, string]
+    let r_err_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Err")
+    tc = r_err_callee.0
+    let r_msg: (TypeChecker, ExprId) = add_str_expr(tc, "error")
+    tc = r_msg.0
+    let err_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_msg.1)
+    let r_err_call: (TypeChecker, ExprId) = add_call_expr(tc, r_err_callee.1, err_args, 1)
+    tc = r_err_call.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_err_call.1)
+    tc = re2.0
+    if not expect_kind(re2.1, "Result", "Err(\"msg\") → Result") { return 31 }
+    let err_inner: KlarType = unwrap_result_err(tc, re2.1)
+    if not expect_type(err_inner, type_string(), "Err(\"msg\") err type is string") { return 31 }
+
+    if not expect_ok(tc, "Ok/Err constructors") { return 31 }
+    return 0
+}
+
+fn test_postfix_try() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build ?i32 variable
+    let otr: (TypeChecker, KlarType) = make_optional_type(tc, type_i32())
+    tc = otr.0
+    tc.define("maybe", SymbolInfo {
+        sym_name: "maybe", sym_type: otr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // maybe? → i32
+    let r_m: (TypeChecker, ExprId) = add_ident_expr(tc, "maybe")
+    tc = r_m.0
+    let r_try: (TypeChecker, ExprId) = add_postfix_expr(tc, PostfixOp::Try, r_m.1)
+    tc = r_try.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_try.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "?i32 ? → i32") { return 32 }
+
+    if not expect_ok(tc, "postfix try") { return 32 }
+    return 0
+}
+
+fn test_postfix_try_result() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build Result#[i32, string] variable
+    let rr: (TypeChecker, KlarType) = make_result_type(tc, type_i32(), type_string())
+    tc = rr.0
+    tc.define("result", SymbolInfo {
+        sym_name: "result", sym_type: rr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // result? → i32
+    let r_res: (TypeChecker, ExprId) = add_ident_expr(tc, "result")
+    tc = r_res.0
+    let r_try: (TypeChecker, ExprId) = add_postfix_expr(tc, PostfixOp::Try, r_res.1)
+    tc = r_try.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_try.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "Result? → i32 (ok type)") { return 33 }
+
+    if not expect_ok(tc, "postfix try on result") { return 33 }
+    return 0
+}
+
+fn test_null_coalesce() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build ?i32 variable
+    let otr: (TypeChecker, KlarType) = make_optional_type(tc, type_i32())
+    tc = otr.0
+    tc.define("maybe", SymbolInfo {
+        sym_name: "maybe", sym_type: otr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // maybe ?? 0 → i32
+    let r_m: (TypeChecker, ExprId) = add_ident_expr(tc, "maybe")
+    tc = r_m.0
+    let r_default: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_default.0
+    let r_nc: (TypeChecker, ExprId) = add_binary_expr(tc, r_m.1, BinaryOp::NullCoalesce, r_default.1)
+    tc = r_nc.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_nc.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "?i32 ?? 0 → i32") { return 34 }
+
+    if not expect_ok(tc, "null coalesce") { return 34 }
+    return 0
+}
+
+fn test_optional_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build ?i32 variable
+    let otr: (TypeChecker, KlarType) = make_optional_type(tc, type_i32())
+    tc = otr.0
+    tc.define("maybe", SymbolInfo {
+        sym_name: "maybe", sym_type: otr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // maybe.is_some() → bool
+    let r_m: (TypeChecker, ExprId) = add_ident_expr(tc, "maybe")
+    tc = r_m.0
+    let r_is: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m.1, "is_some", 0, 0)
+    tc = r_is.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_is.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_bool(), "Optional.is_some() → bool") { return 35 }
+
+    // maybe.unwrap() → i32
+    let r_m2: (TypeChecker, ExprId) = add_ident_expr(tc, "maybe")
+    tc = r_m2.0
+    let r_uw: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m2.1, "unwrap", 0, 0)
+    tc = r_uw.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_uw.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_i32(), "Optional.unwrap() → i32") { return 35 }
+
+    // maybe.unwrap_or(0) → i32
+    let r_m3: (TypeChecker, ExprId) = add_ident_expr(tc, "maybe")
+    tc = r_m3.0
+    let r_def: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_def.0
+    let uo_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_def.1)
+    let r_uo: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m3.1, "unwrap_or", uo_args, 1)
+    tc = r_uo.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_uo.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_i32(), "Optional.unwrap_or() → i32") { return 35 }
+
+    if not expect_ok(tc, "optional methods") { return 35 }
+    return 0
+}
+
+fn test_result_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build Result#[i32, string] variable
+    let rr: (TypeChecker, KlarType) = make_result_type(tc, type_i32(), type_string())
+    tc = rr.0
+    tc.define("res", SymbolInfo {
+        sym_name: "res", sym_type: rr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // res.is_ok() → bool
+    let r_r: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_r.0
+    let r_iok: (TypeChecker, ExprId) = add_method_call_expr(tc, r_r.1, "is_ok", 0, 0)
+    tc = r_iok.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_iok.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_bool(), "Result.is_ok() → bool") { return 36 }
+
+    // res.unwrap() → i32
+    let r_r2: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_r2.0
+    let r_uw: (TypeChecker, ExprId) = add_method_call_expr(tc, r_r2.1, "unwrap", 0, 0)
+    tc = r_uw.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_uw.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_i32(), "Result.unwrap() → i32") { return 36 }
+
+    // res.unwrap_err() → string
+    let r_r3: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_r3.0
+    let r_ue: (TypeChecker, ExprId) = add_method_call_expr(tc, r_r3.1, "unwrap_err", 0, 0)
+    tc = r_ue.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_ue.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_string(), "Result.unwrap_err() → string") { return 36 }
+
+    // res.ok() → ?i32
+    let r_r4: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_r4.0
+    let r_ok: (TypeChecker, ExprId) = add_method_call_expr(tc, r_r4.1, "ok", 0, 0)
+    tc = r_ok.0
+    let re4: (TypeChecker, KlarType) = check_expr(tc, r_ok.1)
+    tc = re4.0
+    if not expect_kind(re4.1, "Optional", "Result.ok() → Optional") { return 36 }
+
+    if not expect_ok(tc, "result methods") { return 36 }
+    return 0
+}
+
+fn test_parse_int_builtin() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // parse_int("42") → ?i32
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "parse_int")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_str_expr(tc, "42")
+    tc = r_arg.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "Optional", "parse_int() → Optional") { return 37 }
+
+    // Verify inner is i32
+    let inner: KlarType = unwrap_optional_inner(tc, re.1)
+    if not expect_type(inner, type_i32(), "parse_int inner is i32") { return 37 }
+
+    if not expect_ok(tc, "parse_int builtin") { return 37 }
+    return 0
+}
+
+fn test_none_constructor() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // None → ?unknown (no-arg call treated as None constructor)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "None")
+    tc = r_callee.0
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "Optional", "None → Optional") { return 38 }
+
+    if not expect_ok(tc, "None constructor") { return 38 }
+    return 0
+}
+
+fn test_generic_apply_result() -> i32 {
+    // Build TypeExpr for Result#[i32, string] and resolve it
+    var tc: TypeChecker = TypeChecker.new()
+
+    let r_base: (TypeChecker, TypeExprId) = add_type_named(tc, "Result")
+    tc = r_base.0
+    let r_ok: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = r_ok.0
+    let r_err: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = r_err.0
+
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(r_ok.1)
+    tc.extra_type_expr_ids.push(r_err.1)
+
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, r_base.1, te_args_start, 2)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    if not expect_kind(res.1, "Result", "Result#[i32, string] resolves to Result") { return 39 }
+
+    // Verify inner types
+    let ok_t: KlarType = unwrap_result_ok(tc, res.1)
+    if not expect_type(ok_t, type_i32(), "Result ok type is i32") { return 39 }
+    let err_t: KlarType = unwrap_result_err(tc, res.1)
+    if not expect_type(err_t, type_string(), "Result err type is string") { return 39 }
+
+    if not expect_ok(tc, "GenericApply Result#[i32, string]") { return 39 }
+    return 0
+}
+
+fn test_method_call_arg_checking() -> i32 {
+    // "hello".contains(undefined_var) → should catch undefined variable in arg
+    var tc: TypeChecker = TypeChecker.new()
+
+    let r_s: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_s.0
+    let r_bad: (TypeChecker, ExprId) = add_ident_expr(tc, "undefined_var")
+    tc = r_bad.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_bad.1)
+    let r_call: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s.1, "contains", args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "method arg with undefined var → error") { return 41 }
+
+    return 0
+}
+
+fn test_generic_apply_option() -> i32 {
+    // Build TypeExpr for Option#[i32] and resolve it
+    var tc: TypeChecker = TypeChecker.new()
+
+    let r_base: (TypeChecker, TypeExprId) = add_type_named(tc, "Option")
+    tc = r_base.0
+    let r_arg: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = r_arg.0
+
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(r_arg.1)
+
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, r_base.1, te_args_start, 1)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    if not expect_kind(res.1, "Optional", "Option#[i32] resolves to Optional") { return 42 }
+
+    // Verify inner type is i32
+    let inner: KlarType = unwrap_optional_inner(tc, res.1)
+    if not expect_type(inner, type_i32(), "Option#[i32] inner is i32") { return 42 }
+
+    if not expect_ok(tc, "GenericApply Option#[i32]") { return 42 }
+    return 0
+}
+
+fn test_postfix_try_error_on_non_optional() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // x: i32, x? → error
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+    let r_x: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x.0
+    let r_try: (TypeChecker, ExprId) = add_postfix_expr(tc, PostfixOp::Try, r_x.1)
+    tc = r_try.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_try.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "postfix ? on i32 → error") { return 40 }
+
+    return 0
+}
+
 // ─── Main ───────────────────────────────────────────────────────────
 
 fn main() -> i32 {
@@ -987,6 +1837,73 @@ fn main() -> i32 {
     rc = test_user_function_call()
     if rc != 0 { return rc }
 
-    println("checker_main.kl: all tests passed")
+    // 9.10 Phase A tests
+    rc = test_expanded_builtins()
+    if rc != 0 { return rc }
+
+    rc = test_string_methods()
+    if rc != 0 { return rc }
+
+    rc = test_integer_methods()
+    if rc != 0 { return rc }
+
+    rc = test_float_methods()
+    if rc != 0 { return rc }
+
+    rc = test_array_methods()
+    if rc != 0 { return rc }
+
+    rc = test_generic_apply_list()
+    if rc != 0 { return rc }
+
+    rc = test_generic_apply_map()
+    if rc != 0 { return rc }
+
+    rc = test_list_methods()
+    if rc != 0 { return rc }
+
+    rc = test_map_methods()
+    if rc != 0 { return rc }
+
+    rc = test_some_constructor()
+    if rc != 0 { return rc }
+
+    rc = test_ok_err_constructor()
+    if rc != 0 { return rc }
+
+    rc = test_postfix_try()
+    if rc != 0 { return rc }
+
+    rc = test_postfix_try_result()
+    if rc != 0 { return rc }
+
+    rc = test_null_coalesce()
+    if rc != 0 { return rc }
+
+    rc = test_optional_methods()
+    if rc != 0 { return rc }
+
+    rc = test_result_methods()
+    if rc != 0 { return rc }
+
+    rc = test_parse_int_builtin()
+    if rc != 0 { return rc }
+
+    rc = test_none_constructor()
+    if rc != 0 { return rc }
+
+    rc = test_generic_apply_result()
+    if rc != 0 { return rc }
+
+    rc = test_postfix_try_error_on_non_optional()
+    if rc != 0 { return rc }
+
+    rc = test_method_call_arg_checking()
+    if rc != 0 { return rc }
+
+    rc = test_generic_apply_option()
+    if rc != 0 { return rc }
+
+    println("checker_main.kl: all tests passed (42 tests)")
     return 0
 }

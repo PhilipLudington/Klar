@@ -38,8 +38,12 @@ import checker.{
     resolve_type_expr,
     type_eq, type_compatible, is_error_type, is_never_type, is_void_type,
     type_display,
-    push_type_ref, get_resolved_type
+    push_type_ref, get_resolved_type,
+    make_optional_type, make_result_type,
+    unwrap_optional_inner, unwrap_result_ok
 }
+
+import checker_builtins.{check_builtin_method}
 
 // ─── Main Expression Dispatch ───────────────────────────────────────
 
@@ -205,10 +209,18 @@ fn check_binary(tc: TypeChecker, data: BinaryData) -> (TypeChecker, KlarType) {
             return (c, type_string())
         }
 
-        // Null coalesce: left must be optional
+        // Null coalesce: left must be optional, result is inner type
         BinaryOp::NullCoalesce => {
-            // Foundation: return left type (simplified)
-            return (c, left_type)
+            match left_type.kind {
+                TypeKind::Optional => {
+                    let inner: KlarType = unwrap_optional_inner(c, left_type)
+                    return (c, inner)
+                }
+                _ => {
+                    // If left isn't Optional, return left type (permissive for unknown types)
+                    return (c, left_type)
+                }
+            }
         }
 
         _ => {
@@ -329,8 +341,41 @@ fn check_postfix(tc: TypeChecker, data: PostfixData) -> (TypeChecker, KlarType) 
         return (c, type_error())
     }
 
-    // ? (try) and .? (unwrap) — foundation returns unknown
-    return (c, type_unknown())
+    match data.op {
+        PostfixOp::Try => {
+            // ? on Optional(T) → T, on Result(T, E) → T
+            match op_type.kind {
+                TypeKind::Optional => {
+                    let inner: KlarType = unwrap_optional_inner(c, op_type)
+                    return (c, inner)
+                }
+                TypeKind::Result => {
+                    let ok: KlarType = unwrap_result_ok(c, op_type)
+                    return (c, ok)
+                }
+                _ => {
+                    return add_error_with_type(c, data.span,
+                        "postfix '?' requires Optional or Result, got " + type_display(op_type))
+                }
+            }
+        }
+        PostfixOp::Unwrap => {
+            // .? on Optional(T) → T
+            match op_type.kind {
+                TypeKind::Optional => {
+                    let inner: KlarType = unwrap_optional_inner(c, op_type)
+                    return (c, inner)
+                }
+                _ => {
+                    return add_error_with_type(c, data.span,
+                        "postfix '.?' requires Optional, got " + type_display(op_type))
+                }
+            }
+        }
+        _ => {
+            return (c, type_unknown())
+        }
+    }
 }
 
 // ─── Function Call ──────────────────────────────────────────────────
@@ -361,10 +406,19 @@ fn check_named_call(tc: TypeChecker, data: CallData, id_data: IdentifierData) ->
             return check_call_with_info(tc, data, info)
         }
         None => {
-            // Check if it's an enum variant constructor (Some, None, Ok, Err)
-            if name == "Some" or name == "Ok" or name == "Err" {
-                // Foundation: accept and return unknown type
-                return check_args_only(tc, data)
+            // Enum variant constructors: Some, None, Ok, Err
+            if name == "Some" and data.args_count == 1 {
+                return check_some_call(tc, data)
+            }
+            if name == "None" and data.args_count == 0 {
+                let r: (TypeChecker, KlarType) = make_optional_type(tc, type_unknown())
+                return r
+            }
+            if name == "Ok" and data.args_count == 1 {
+                return check_ok_call(tc, data)
+            }
+            if name == "Err" and data.args_count == 1 {
+                return check_err_call(tc, data)
             }
             return add_error_with_type(tc, data.span, "undefined function '" + name + "'")
         }
@@ -437,7 +491,52 @@ fn check_args_only(tc: TypeChecker, data: CallData) -> (TypeChecker, KlarType) {
     return (c, type_unknown())
 }
 
+// ─── Some/Ok/Err Constructors ───────────────────────────────────────
+
+fn check_some_call(tc: TypeChecker, data: CallData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let arg_eid: ExprId = c.extra_expr_ids[data.args_start]
+    let r: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+    c = r.0
+    let arg_type: KlarType = r.1
+    let opt_r: (TypeChecker, KlarType) = make_optional_type(c, arg_type)
+    return opt_r
+}
+
+fn check_ok_call(tc: TypeChecker, data: CallData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let arg_eid: ExprId = c.extra_expr_ids[data.args_start]
+    let r: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+    c = r.0
+    let arg_type: KlarType = r.1
+    let res_r: (TypeChecker, KlarType) = make_result_type(c, arg_type, type_unknown())
+    return res_r
+}
+
+fn check_err_call(tc: TypeChecker, data: CallData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let arg_eid: ExprId = c.extra_expr_ids[data.args_start]
+    let r: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+    c = r.0
+    let arg_type: KlarType = r.1
+    let res_r: (TypeChecker, KlarType) = make_result_type(c, type_unknown(), arg_type)
+    return res_r
+}
+
 // ─── Method Call ────────────────────────────────────────────────────
+
+// Check method arguments for expression-level errors (undefined vars, bad ops, etc.)
+fn check_method_args(tc: TypeChecker, data: MethodCallData) -> TypeChecker {
+    var c: TypeChecker = tc
+    var i: i32 = 0
+    while i < data.args_count {
+        let arg_eid: ExprId = c.extra_expr_ids[data.args_start + i]
+        let r: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+        c = r.0
+        i = i + 1
+    }
+    return c
+}
 
 fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, KlarType) {
     // Check receiver
@@ -458,6 +557,9 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
     if data.method_name == "as_str" and data.args_count == 0 {
         return (c, type_string())
     }
+
+    // Check method arguments for expression-level errors
+    c = check_method_args(c, data)
 
     // Look up method in methods registry ("TypeName.method")
     match recv_type.kind {
@@ -480,8 +582,8 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
                 "no method '" + data.method_name + "' on struct '" + struct_data.name + "'")
         }
         _ => {
-            // Methods on primitives/other types — deferred to 9.10
-            return (c, type_unknown())
+            // Dispatch to builtin method resolution
+            return check_builtin_method(c, recv_type, data.method_name, data.args_count, data.span)
         }
     }
 }
