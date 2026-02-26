@@ -415,7 +415,7 @@ pub const Formatter = struct {
 
     fn formatMetaPath(self: *Formatter, path: ast.MetaPath) Error!void {
         for (path.segments, 0..) |seg, i| {
-            if (i > 0) try self.writeByte('.');
+            if (i > 0) try self.write("::");
             try self.write(seg);
         }
     }
@@ -429,6 +429,7 @@ pub const Formatter = struct {
                 '\n' => try self.write("\\n"),
                 '\r' => try self.write("\\r"),
                 '\t' => try self.write("\\t"),
+                0 => try self.write("\\0"),
                 else => try self.writeByte(c),
             }
         }
@@ -481,6 +482,7 @@ pub const Formatter = struct {
         // File-level meta annotations (meta module, meta group)
         if (module.file_meta.len > 0) {
             for (module.file_meta) |annotation| {
+                try self.flushCommentsBefore(annotation.span().start);
                 try self.formatOneMetaAnnotation(annotation);
                 try self.newline();
             }
