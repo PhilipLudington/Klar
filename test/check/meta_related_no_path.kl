@@ -1,0 +1,5 @@
+// Expected: check-error meta related requires at least one path
+meta related("description only")
+fn main() -> i32 {
+    return 0
+}

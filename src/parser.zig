@@ -2528,10 +2528,20 @@ pub const Parser = struct {
         return self.dupeSlice(ast.MetaAnnotation, annotations.items);
     }
 
-    /// Parse a single meta annotation: meta intent("..."), meta pure, etc.
+    /// Parse a single meta annotation: meta intent("..."), meta pure, meta module { ... }, etc.
     fn parseOneMetaAnnotation(self: *Parser) ParseError!ast.MetaAnnotation {
         const meta_span = self.spanFromToken(self.current);
         self.advance(); // consume 'meta'
+
+        // Handle keyword tokens that aren't identifiers
+        if (self.current.kind == .module) {
+            self.advance(); // consume 'module'
+            return .{ .module_meta = try self.parseMetaBlock(meta_span) };
+        }
+        if (self.current.kind == .in) {
+            self.advance(); // consume 'in'
+            return .{ .group_join = try self.parseMetaStringArg(meta_span) };
+        }
 
         if (self.current.kind != .identifier) {
             try self.reportError("expected annotation name after 'meta'");
@@ -2554,6 +2564,12 @@ pub const Parser = struct {
             return .{ .deprecated = try self.parseMetaStringArg(meta_span) };
         } else if (std.mem.eql(u8, name_text, "pure")) {
             return .{ .pure = ast.Span.merge(meta_span, name_span) };
+        } else if (std.mem.eql(u8, name_text, "guide")) {
+            return .{ .guide = try self.parseMetaBlock(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "related")) {
+            return .{ .related = try self.parseMetaRelated(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "group")) {
+            return .{ .group_def = try self.parseMetaGroupDef(meta_span) };
         } else {
             try self.reportError("unknown meta annotation");
             return ParseError.UnexpectedToken;
@@ -2581,6 +2597,195 @@ pub const Parser = struct {
             .value = processed,
             .span = ast.Span.merge(meta_span, end_span),
         };
+    }
+
+    /// Parse a meta block: { key: value, key: value, ... }
+    /// Values are either string literals or string lists: [str, str, ...]
+    fn parseMetaBlock(self: *Parser, meta_span: ast.Span) ParseError!*ast.MetaBlock {
+        try self.consume(.l_brace, "expected '{' after meta block annotation name");
+
+        var entries = std.ArrayListUnmanaged(ast.MetaKeyValue){};
+
+        while (!self.check(.r_brace) and self.current.kind != .eof) {
+            // Parse key (identifier)
+            if (self.current.kind != .identifier) {
+                try self.reportError("expected identifier key in meta block");
+                return ParseError.UnexpectedToken;
+            }
+            const key_text = self.tokenText(self.current);
+            const key_span = self.spanFromToken(self.current);
+            self.advance(); // consume key
+
+            try self.consume(.colon, "expected ':' after meta block key");
+
+            // Parse value: string literal or string list
+            const value: ast.MetaValue = if (self.check(.l_bracket)) blk: {
+                self.advance(); // consume '['
+                var items = std.ArrayListUnmanaged([]const u8){};
+                if (!self.check(.r_bracket)) {
+                    // First item
+                    if (self.current.kind != .string_literal) {
+                        try self.reportError("expected string literal in meta block list");
+                        return ParseError.UnexpectedToken;
+                    }
+                    const first_text = self.tokenText(self.current);
+                    const first_content = if (first_text.len >= 2) first_text[1 .. first_text.len - 1] else first_text;
+                    const first_processed = processEscapes(self.allocator, first_content) catch return ParseError.OutOfMemory;
+                    try items.append(self.allocator, first_processed);
+                    self.advance();
+
+                    while (self.match(.comma)) {
+                        if (self.check(.r_bracket)) break; // trailing comma
+                        if (self.current.kind != .string_literal) {
+                            try self.reportError("expected string literal in meta block list");
+                            return ParseError.UnexpectedToken;
+                        }
+                        const item_text = self.tokenText(self.current);
+                        const item_content = if (item_text.len >= 2) item_text[1 .. item_text.len - 1] else item_text;
+                        const item_processed = processEscapes(self.allocator, item_content) catch return ParseError.OutOfMemory;
+                        try items.append(self.allocator, item_processed);
+                        self.advance();
+                    }
+                }
+                try self.consume(.r_bracket, "expected ']' after meta block list");
+                break :blk .{ .string_list = try self.dupeSlice([]const u8, items.items) };
+            } else blk: {
+                if (self.current.kind != .string_literal) {
+                    try self.reportError("expected string literal or list in meta block value");
+                    return ParseError.UnexpectedToken;
+                }
+                const val_text = self.tokenText(self.current);
+                const val_content = if (val_text.len >= 2) val_text[1 .. val_text.len - 1] else val_text;
+                const val_processed = processEscapes(self.allocator, val_content) catch return ParseError.OutOfMemory;
+                self.advance();
+                break :blk .{ .string = val_processed };
+            };
+
+            const entry_span = ast.Span.merge(key_span, self.spanFromToken(self.previous));
+            try entries.append(self.allocator, .{
+                .key = key_text,
+                .value = value,
+                .span = entry_span,
+            });
+
+            // Optional comma between entries
+            if (!self.match(.comma)) break;
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_brace, "expected '}' to close meta block");
+
+        return self.create(ast.MetaBlock, .{
+            .entries = try self.dupeSlice(ast.MetaKeyValue, entries.items),
+            .span = ast.Span.merge(meta_span, end_span),
+        });
+    }
+
+    /// Parse meta related(path, path, ..., "optional description")
+    fn parseMetaRelated(self: *Parser, meta_span: ast.Span) ParseError!*ast.MetaRelated {
+        try self.consume(.l_paren, "expected '(' after 'related'");
+
+        var paths = std.ArrayListUnmanaged(ast.MetaPath){};
+        var description: ?[]const u8 = null;
+
+        // First token must be a path, not a description
+        if (self.current.kind == .string_literal) {
+            try self.reportError("meta related requires at least one path before the optional description");
+            return ParseError.UnexpectedToken;
+        }
+
+        // Parse first path (required)
+        const first_path = try self.parseMetaPath();
+        try paths.append(self.allocator, first_path);
+
+        while (self.match(.comma)) {
+            if (self.check(.r_paren)) break; // trailing comma
+            // Check if next token is a string literal (description) or identifier (path)
+            if (self.current.kind == .string_literal) {
+                const desc_text = self.tokenText(self.current);
+                const desc_content = if (desc_text.len >= 2) desc_text[1 .. desc_text.len - 1] else desc_text;
+                description = processEscapes(self.allocator, desc_content) catch return ParseError.OutOfMemory;
+                self.advance();
+                break; // description must be last
+            } else {
+                const path = try self.parseMetaPath();
+                try paths.append(self.allocator, path);
+            }
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_paren, "expected ')' after meta related annotation");
+
+        return self.create(ast.MetaRelated, .{
+            .paths = try self.dupeSlice(ast.MetaPath, paths.items),
+            .description = description,
+            .span = ast.Span.merge(meta_span, end_span),
+        });
+    }
+
+    /// Parse a dotted/scoped path: identifier (:: identifier)*
+    fn parseMetaPath(self: *Parser) ParseError!ast.MetaPath {
+        var segments = std.ArrayListUnmanaged([]const u8){};
+        const start_span = self.spanFromToken(self.current);
+
+        if (self.current.kind != .identifier) {
+            try self.reportError("expected identifier in meta path");
+            return ParseError.UnexpectedToken;
+        }
+        try segments.append(self.allocator, self.tokenText(self.current));
+        var end_span = self.spanFromToken(self.current);
+        self.advance();
+
+        while (self.check(.colon_colon)) {
+            self.advance(); // consume '::'
+            if (self.current.kind != .identifier) {
+                try self.reportError("expected identifier after '::' in meta path");
+                return ParseError.UnexpectedToken;
+            }
+            try segments.append(self.allocator, self.tokenText(self.current));
+            end_span = self.spanFromToken(self.current);
+            self.advance();
+        }
+
+        return .{
+            .segments = try self.dupeSlice([]const u8, segments.items),
+            .span = ast.Span.merge(start_span, end_span),
+        };
+    }
+
+    /// Parse meta group "name" { meta_annotation* }
+    fn parseMetaGroupDef(self: *Parser, meta_span: ast.Span) ParseError!*ast.MetaGroupDef {
+        // Parse group name (string literal)
+        if (self.current.kind != .string_literal) {
+            try self.reportError("expected string literal for group name");
+            return ParseError.UnexpectedToken;
+        }
+        const name_text = self.tokenText(self.current);
+        const name_content = if (name_text.len >= 2) name_text[1 .. name_text.len - 1] else name_text;
+        const group_name = processEscapes(self.allocator, name_content) catch return ParseError.OutOfMemory;
+        self.advance();
+
+        try self.consume(.l_brace, "expected '{' after group name");
+
+        // Parse nested meta annotations
+        var annotations = std.ArrayListUnmanaged(ast.MetaAnnotation){};
+        while (self.check(.meta)) {
+            try annotations.append(self.allocator, try self.parseOneMetaAnnotation());
+        }
+
+        if (!self.check(.r_brace)) {
+            try self.reportError("expected 'meta' annotation or '}' inside group definition");
+            return ParseError.UnexpectedToken;
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        self.advance(); // consume '}'
+
+        return self.create(ast.MetaGroupDef, .{
+            .name = group_name,
+            .annotations = try self.dupeSlice(ast.MetaAnnotation, annotations.items),
+            .span = ast.Span.merge(meta_span, end_span),
+        });
     }
 
     fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool, is_async: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
@@ -3552,6 +3757,7 @@ pub const Parser = struct {
         var module_decl: ?ast.ModuleDecl = null;
         var imports = std.ArrayListUnmanaged(ast.ImportDecl){};
         var declarations = std.ArrayListUnmanaged(ast.Decl){};
+        var file_meta = std.ArrayListUnmanaged(ast.MetaAnnotation){};
 
         // Skip leading newlines
         while (self.match(.newline)) {}
@@ -3580,6 +3786,19 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.eof)) break;
 
+            // Check for file-level meta annotations (meta module { ... }, meta group "..." { ... })
+            if (self.check(.meta) and self.isFileLevelMeta()) {
+                const ann = self.parseOneMetaAnnotation() catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => {
+                        self.synchronizeTopLevel();
+                        continue;
+                    },
+                };
+                try file_meta.append(self.allocator, ann);
+                continue;
+            }
+
             const decl = self.parseDeclaration() catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 else => {
@@ -3602,7 +3821,20 @@ pub const Parser = struct {
             .module_decl = module_decl,
             .imports = try self.dupeSlice(ast.ImportDecl, imports.items),
             .declarations = try self.dupeSlice(ast.Decl, declarations.items),
+            .file_meta = try self.dupeSlice(ast.MetaAnnotation, file_meta.items),
         };
+    }
+
+    /// Check if the current `meta` token begins a file-level annotation.
+    /// File-level: `meta module { ... }` and `meta group "..." { ... }`.
+    fn isFileLevelMeta(self: *Parser) bool {
+        const next = self.peekNext();
+        if (next.kind == .module) return true;
+        if (next.kind == .identifier) {
+            const text = self.source[next.loc.start..next.loc.end];
+            return std.mem.eql(u8, text, "group");
+        }
+        return false;
     }
 
     /// Parse a complete module (file).

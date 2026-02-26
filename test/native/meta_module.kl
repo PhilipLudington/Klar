@@ -1,0 +1,10 @@
+// Test: meta module block annotation with string and list values
+meta module {
+    name: "auth",
+    owner: "security-team",
+    tags: ["critical", "v2"]
+}
+fn main() -> i32 {
+    println("ok")
+    return 0
+}

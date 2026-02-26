@@ -1,0 +1,7 @@
+// Expected: check-error expected 'meta' annotation or '}' inside group definition
+meta group "bad" {
+    fn not_allowed() -> void {}
+}
+fn main() -> i32 {
+    return 0
+}

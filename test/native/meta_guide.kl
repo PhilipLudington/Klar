@@ -1,0 +1,19 @@
+// Test: meta guide block annotation on a function
+meta guide {
+    pattern: "factory",
+    prefer: "constructor over static method",
+    examples: ["Widget::new()", "Widget::from_config()"]
+}
+fn create_widget() -> i32 {
+    return 42
+}
+// Test: empty block
+meta guide {
+}
+fn helper() -> i32 {
+    return 0
+}
+fn main() -> i32 {
+    println("ok")
+    return 0
+}

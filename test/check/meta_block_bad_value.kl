@@ -1,0 +1,7 @@
+// Expected: check-error expected string literal or list in meta block value
+meta guide {
+    pattern: 42
+}
+fn main() -> i32 {
+    return 0
+}

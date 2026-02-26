@@ -1,0 +1,20 @@
+// Test: meta related annotation with various forms
+// Single path with description
+meta related(validate_input, "helper for process")
+fn process(x: i32) -> i32 {
+    return validate_input(x) + 1
+}
+// Multiple paths, no description
+meta related(process, login)
+fn validate_input(x: i32) -> i32 {
+    return x
+}
+// Single path, no description
+meta related(validate_input)
+fn login() -> i32 {
+    return 1
+}
+fn main() -> i32 {
+    println("ok")
+    return 0
+}
