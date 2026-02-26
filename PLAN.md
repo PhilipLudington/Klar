@@ -461,7 +461,7 @@ let x: i32 = arr[0]
 
 **Objective:** Implement the `meta` keyword system for embedding intent, architecture, and design decisions in Klar source code — compiler-validated, CLI-queryable, zero runtime cost.
 
-**Status:** In Progress — M.1 (token, AST, declaration fields) and M.2 (simple annotation parsing) complete
+**Status:** In Progress — M.1–M.4 complete (token, AST, parsing, backend passthrough, formatter)
 
 **Effort:** High | **Impact:** Very High | **Design Spec:** [docs/design/meta-layer.md](docs/design/meta-layer.md)
 
@@ -539,20 +539,20 @@ Parse the string-based annotations: `meta intent(...)`, `meta decision(...)`, `m
 
 Parse block-form annotations and group definitions/joins.
 
-- [ ] **M.3.1** Parse `meta module { key: value, ... }` — key-value block with string/list values
-- [ ] **M.3.2** Parse `meta guide { key: value, ... }` — same key-value block form
-- [ ] **M.3.3** Parse `meta related(path, path, "description")` — path list with optional trailing string
-- [ ] **M.3.4** Parse `meta group "name" { meta_annotation, ... }` — group definition with nested annotations
-- [ ] **M.3.5** Parse `meta in("name")` — group join
-- [ ] **M.3.6** Handle `in` keyword disambiguation (loop context vs meta context)
-- [ ] **M.3.7** Native test files for block annotations, related paths, and group def/join
+- [x] **M.3.1** Parse `meta module { key: value, ... }` — key-value block with string/list values
+- [x] **M.3.2** Parse `meta guide { key: value, ... }` — same key-value block form
+- [x] **M.3.3** Parse `meta related(path, path, "description")` — path list with optional trailing string
+- [x] **M.3.4** Parse `meta group "name" { meta_annotation, ... }` — group definition with nested annotations
+- [x] **M.3.5** Parse `meta in("name")` — group join
+- [x] **M.3.6** Handle `in` keyword disambiguation (loop context vs meta context)
+- [x] **M.3.7** Native test files for block annotations, related paths, and group def/join
 
 **Success Criteria:**
-- [ ] Block annotations parse with arbitrary key-value pairs
-- [ ] `meta related(...)` accepts paths and validates trailing string position
-- [ ] Group definitions contain nested meta annotations
-- [ ] `meta in(...)` correctly joins groups
-- [ ] `in` keyword works correctly in both loop and meta contexts
+- [x] Block annotations parse with arbitrary key-value pairs
+- [x] `meta related(...)` accepts paths and validates trailing string position
+- [x] Group definitions contain nested meta annotations
+- [x] `meta in(...)` correctly joins groups
+- [x] `in` keyword works correctly in both loop and meta contexts
 
 ---
 
@@ -564,18 +564,18 @@ Parse block-form annotations and group definitions/joins.
 
 Verify all three backends (interpreter, bytecode compiler, native codegen) skip meta annotations. Extend `dump-ast` and the formatter.
 
-- [ ] **M.4.1** Verify interpreter skips meta annotations (no codegen for meta nodes)
-- [ ] **M.4.2** Verify bytecode compiler skips meta annotations
-- [ ] **M.4.3** Verify native codegen (`src/codegen/emit.zig`) skips meta annotations — zero runtime cost
-- [ ] **M.4.4** Extend `dump-ast` JSON output to include all meta annotation types
-- [ ] **M.4.5** Extend formatter (`src/formatter.zig`) to preserve meta annotations with correct indentation
-- [ ] **M.4.6** Test: format → parse → format round-trip preserves meta annotations
+- [x] **M.4.1** Verify interpreter skips meta annotations (no codegen for meta nodes)
+- [x] **M.4.2** Verify bytecode compiler skips meta annotations
+- [x] **M.4.3** Verify native codegen (`src/codegen/emit.zig`) skips meta annotations — zero runtime cost
+- [x] **M.4.4** Extend `dump-ast` JSON output to include all meta annotation types
+- [x] **M.4.5** Extend formatter (`src/formatter.zig`) to preserve meta annotations with correct indentation
+- [x] **M.4.6** Test: format → parse → format round-trip preserves meta annotations
 
 **Success Criteria:**
-- [ ] Programs with meta annotations produce identical runtime output to programs without
-- [ ] `dump-ast` includes full meta annotation data in JSON
-- [ ] Formatter preserves meta annotations correctly
-- [ ] All existing tests pass (zero regressions)
+- [x] Programs with meta annotations produce identical runtime output to programs without
+- [x] `dump-ast` includes full meta annotation data in JSON
+- [x] Formatter preserves meta annotations correctly
+- [x] All existing tests pass (zero regressions)
 
 ---
 

@@ -1,0 +1,19 @@
+struct Counter {
+    val: i32
+}
+
+impl Counter {
+    meta pure
+    fn value(self: Counter) -> i32 {
+        return self.val
+    }
+
+    meta deprecated("use value() instead")
+    fn get(self: Counter) -> i32 {
+        return self.val
+    }
+}
+
+fn main() -> i32 {
+    return 0
+}

@@ -1,0 +1,40 @@
+meta tag("state-machine")
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+meta intent("common interface")
+trait Displayable {
+    fn display(self: Self) -> string
+}
+
+meta tag("data-model")
+struct Item {
+    name: string
+    value: i32
+}
+
+meta decision("simple string for now")
+impl Item: Displayable {
+    fn display(self: Item) -> string {
+        return self.name
+    }
+}
+
+meta hint("use this instead of raw i32")
+type ItemId = i32
+
+meta tag("config")
+const MAX_ITEMS: i32 = 100
+
+meta tag("smoke-test")
+test item_display {
+    let item: Item = Item { name: "w", value: 42 }
+    assert(item.display() == "w")
+}
+
+fn main() -> i32 {
+    return 0
+}

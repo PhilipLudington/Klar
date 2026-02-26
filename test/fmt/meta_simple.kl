@@ -1,0 +1,15 @@
+meta   intent("compute the sum")
+meta   tag("math")
+meta   pure
+fn   add(a:  i32,  b:  i32)  ->  i32  {
+    return  a  +  b
+}
+
+meta   deprecated("use add instead")
+fn   old_add(a:  i32,  b:  i32)  ->  i32  {
+    return  a  +  b
+}
+
+fn  main()  ->  i32  {
+    return  0
+}
