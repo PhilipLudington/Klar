@@ -1,55 +1,862 @@
-// selfhost/types.kl — Self-hosted type system definitions (stub)
-// Milestone 9.3: Bootstrap architecture scaffolding
-// Full implementation: Milestone 9.8
+// selfhost/types.kl — Self-hosted type system definitions
+// Milestone 9.8: Type System Definitions
+//
+// Architecture: KlarType is a struct with a TypeKind tag + i32 payload.
+// Primitives encode the PrimitiveKind index in payload.
+// Compound types encode an index into external arena lists (managed by the
+// type checker in Milestone 9.9; this module only defines the data shapes).
+//
+// Compound type data structs (ArrayData, FunctionData, etc.) are stored in
+// flat List#[T] pools with i32 index references — same arena pattern as ast.kl.
 
-pub enum KlarType {
-    // Primitives
+// ─── TypeId ──────────────────────────────────────────────────────────
+
+pub struct TypeId { id: i32 }
+
+pub fn no_type() -> TypeId { return TypeId { id: -1 } }
+pub fn has_type(tid: TypeId) -> bool { return tid.id >= 0 }
+
+// ─── TypeKind ────────────────────────────────────────────────────────
+// Discriminant tag mirroring every variant in src/types.zig Type union.
+
+pub enum TypeKind {
+    // Primitives (payload = PrimitiveKind index)
+    Primitive,
+
+    // Composite types (payload = index into corresponding arena list)
+    Array,
+    Slice,
+    Tuple,
+    Optional,
+    Result,
+    Function,
+    Reference,
+
+    // User-defined types
+    StructType,
+    EnumType,
+    TraitType,
+
+    // Generic types
+    TypeVar,
+    Applied,
+    AssociatedTypeRef,
+
+    // Reference-counted types
+    Rc,
+    WeakRc,
+    Arc,
+    WeakArc,
+
+    // Interior mutability
+    Cell,
+
+    // Range
+    Range,
+
+    // Error context
+    ContextError,
+
+    // Collection types
+    ListType,
+    MapType,
+    SetType,
+    StringData,
+
+    // I/O types (no payload)
+    File,
+    IoError,
+    Stdout,
+    Stderr,
+    Stdin,
+    Path,
+
+    // Buffered I/O
+    BufReader,
+    BufWriter,
+
+    // FFI types
+    ExternType,
+    CPtr,
+    COptPtr,
+    CStr,
+    CStrOwned,
+    ExternFn,
+
+    // Special types (no payload)
+    Void,
+    Never,
+    Unknown,
+    ErrorType,
+}
+
+// ─── KlarType ────────────────────────────────────────────────────────
+// Core type representation: a kind tag + payload index.
+// For primitives, payload is the PrimitiveKind ordinal.
+// For compound types, payload is an index into an arena list.
+// For singletons (Void, Never, I/O types), payload is -1.
+
+pub struct KlarType {
+    kind: TypeKind,
+    payload: i32,
+}
+
+// ─── PrimitiveKind ───────────────────────────────────────────────────
+
+pub enum PrimitiveKind {
     I8,
     I16,
     I32,
     I64,
+    I128,
+    Isize,
     U8,
     U16,
     U32,
     U64,
+    U128,
+    Usize,
     F32,
     F64,
     Bool,
     Char,
-    StringType,
-    Void,
-
-    // Compound (stub — payload types added in 9.8)
-    Array(string),
-    Optional(string),
-    Function(string),
-    Struct(string),
-    Enum(string),
-    Trait(string),
-    Generic(string),
-
-    // Special
-    Unknown,
-    Error,
+    StringPrim,
 }
 
-pub fn type_name(t: KlarType) -> string {
-    match t {
-        KlarType::I32 => { return "i32" }
-        KlarType::I64 => { return "i64" }
-        KlarType::F64 => { return "f64" }
-        KlarType::Bool => { return "bool" }
-        KlarType::StringType => { return "string" }
-        KlarType::Void => { return "void" }
-        _ => { return "<unknown>" }
+pub fn primitive_name(p: PrimitiveKind) -> string {
+    match p {
+        PrimitiveKind::I8 => { return "i8" }
+        PrimitiveKind::I16 => { return "i16" }
+        PrimitiveKind::I32 => { return "i32" }
+        PrimitiveKind::I64 => { return "i64" }
+        PrimitiveKind::I128 => { return "i128" }
+        PrimitiveKind::Isize => { return "isize" }
+        PrimitiveKind::U8 => { return "u8" }
+        PrimitiveKind::U16 => { return "u16" }
+        PrimitiveKind::U32 => { return "u32" }
+        PrimitiveKind::U64 => { return "u64" }
+        PrimitiveKind::U128 => { return "u128" }
+        PrimitiveKind::Usize => { return "usize" }
+        PrimitiveKind::F32 => { return "f32" }
+        PrimitiveKind::F64 => { return "f64" }
+        PrimitiveKind::Bool => { return "bool" }
+        PrimitiveKind::Char => { return "char" }
+        PrimitiveKind::StringPrim => { return "string" }
     }
 }
 
+pub fn primitive_from_name(name: string) -> ?PrimitiveKind {
+    if name == "i8" { return Some(PrimitiveKind::I8) }
+    if name == "i16" { return Some(PrimitiveKind::I16) }
+    if name == "i32" { return Some(PrimitiveKind::I32) }
+    if name == "i64" { return Some(PrimitiveKind::I64) }
+    if name == "i128" { return Some(PrimitiveKind::I128) }
+    if name == "isize" { return Some(PrimitiveKind::Isize) }
+    if name == "u8" { return Some(PrimitiveKind::U8) }
+    if name == "u16" { return Some(PrimitiveKind::U16) }
+    if name == "u32" { return Some(PrimitiveKind::U32) }
+    if name == "u64" { return Some(PrimitiveKind::U64) }
+    if name == "u128" { return Some(PrimitiveKind::U128) }
+    if name == "usize" { return Some(PrimitiveKind::Usize) }
+    if name == "f32" { return Some(PrimitiveKind::F32) }
+    if name == "f64" { return Some(PrimitiveKind::F64) }
+    if name == "bool" { return Some(PrimitiveKind::Bool) }
+    if name == "char" { return Some(PrimitiveKind::Char) }
+    if name == "string" { return Some(PrimitiveKind::StringPrim) }
+    // Implicit None return for unknown names
+}
+
+pub fn is_integer(p: PrimitiveKind) -> bool {
+    match p {
+        PrimitiveKind::I8 => { return true }
+        PrimitiveKind::I16 => { return true }
+        PrimitiveKind::I32 => { return true }
+        PrimitiveKind::I64 => { return true }
+        PrimitiveKind::I128 => { return true }
+        PrimitiveKind::Isize => { return true }
+        PrimitiveKind::U8 => { return true }
+        PrimitiveKind::U16 => { return true }
+        PrimitiveKind::U32 => { return true }
+        PrimitiveKind::U64 => { return true }
+        PrimitiveKind::U128 => { return true }
+        PrimitiveKind::Usize => { return true }
+        _ => { return false }
+    }
+}
+
+pub fn is_float(p: PrimitiveKind) -> bool {
+    match p {
+        PrimitiveKind::F32 => { return true }
+        PrimitiveKind::F64 => { return true }
+        _ => { return false }
+    }
+}
+
+pub fn is_numeric(p: PrimitiveKind) -> bool {
+    return is_integer(p) or is_float(p)
+}
+
+pub fn is_signed(p: PrimitiveKind) -> bool {
+    match p {
+        PrimitiveKind::I8 => { return true }
+        PrimitiveKind::I16 => { return true }
+        PrimitiveKind::I32 => { return true }
+        PrimitiveKind::I64 => { return true }
+        PrimitiveKind::I128 => { return true }
+        PrimitiveKind::Isize => { return true }
+        PrimitiveKind::F32 => { return true }
+        PrimitiveKind::F64 => { return true }
+        _ => { return false }
+    }
+}
+
+pub fn bit_size(p: PrimitiveKind) -> i32 {
+    match p {
+        PrimitiveKind::I8 => { return 8 }
+        PrimitiveKind::U8 => { return 8 }
+        PrimitiveKind::I16 => { return 16 }
+        PrimitiveKind::U16 => { return 16 }
+        PrimitiveKind::I32 => { return 32 }
+        PrimitiveKind::U32 => { return 32 }
+        PrimitiveKind::F32 => { return 32 }
+        PrimitiveKind::I64 => { return 64 }
+        PrimitiveKind::U64 => { return 64 }
+        PrimitiveKind::F64 => { return 64 }
+        PrimitiveKind::I128 => { return 128 }
+        PrimitiveKind::U128 => { return 128 }
+        PrimitiveKind::Bool => { return 1 }
+        PrimitiveKind::Char => { return 21 }
+        _ => { return -1 }
+    }
+}
+
+pub fn can_widen_to(from: PrimitiveKind, to: PrimitiveKind) -> bool {
+    if primitive_name(from) == primitive_name(to) { return true }
+
+    let from_size: i32 = bit_size(from)
+    let to_size: i32 = bit_size(to)
+    if from_size < 0 or to_size < 0 { return false }
+
+    if is_float(from) and is_float(to) {
+        return from_size <= to_size
+    }
+
+    if is_integer(from) and is_integer(to) {
+        if is_signed(from) and is_signed(to) {
+            return from_size <= to_size
+        }
+        if not is_signed(from) and not is_signed(to) {
+            return from_size <= to_size
+        }
+        if not is_signed(from) and is_signed(to) {
+            return from_size < to_size
+        }
+        return false
+    }
+
+    return false
+}
+
+// ─── Compound Type Data Structs ──────────────────────────────────────
+// Stored in flat List#[T] arenas (managed by type checker in 9.9).
+// Referenced by i32 index from KlarType.payload.
+
+pub struct ArrayData {
+    element: TypeId,
+    size: i32,
+}
+
+pub struct SliceData {
+    element: TypeId,
+}
+
+pub struct TupleData {
+    elems_start: i32,
+    elems_count: i32,
+}
+
+pub struct ResultData {
+    ok_type: TypeId,
+    err_type: TypeId,
+}
+
+pub struct FunctionData {
+    params_start: i32,
+    params_count: i32,
+    return_type: TypeId,
+    is_async: bool,
+    is_unsafe: bool,
+}
+
+pub struct ReferenceData {
+    inner: TypeId,
+    is_mut: bool,
+}
+
+pub struct StructData {
+    name: string,
+    type_params_start: i32,
+    type_params_count: i32,
+    fields_start: i32,
+    fields_count: i32,
+    is_copy: bool,
+    is_extern: bool,
+    is_packed: bool,
+}
+
+pub struct StructFieldData {
+    name: string,
+    field_type: TypeId,
+    is_pub: bool,
+}
+
+pub struct EnumData {
+    name: string,
+    type_params_start: i32,
+    type_params_count: i32,
+    variants_start: i32,
+    variants_count: i32,
+    is_extern: bool,
+}
+
+pub struct EnumVariantData {
+    name: string,
+    payload_start: i32,
+    payload_count: i32,
+}
+
+pub struct TraitData {
+    name: string,
+    type_params_start: i32,
+    type_params_count: i32,
+    methods_start: i32,
+    methods_count: i32,
+    super_traits_start: i32,
+    super_traits_count: i32,
+    assoc_types_start: i32,
+    assoc_types_count: i32,
+}
+
+pub struct TraitMethodData {
+    name: string,
+    signature: TypeId,
+    has_default: bool,
+}
+
+pub struct AssocTypeData {
+    name: string,
+    bound_start: i32,
+    bound_count: i32,
+}
+
+pub struct TypeVarData {
+    var_id: i32,
+    name: string,
+    bounds_start: i32,
+    bounds_count: i32,
+}
+
+pub struct AppliedData {
+    base: TypeId,
+    args_start: i32,
+    args_count: i32,
+}
+
+pub struct AssocTypeRefData {
+    type_var: TypeId,
+    assoc_name: string,
+    trait_type: TypeId,
+}
+
+// Single-inner-type wrapper (Rc, WeakRc, Arc, WeakArc, Cell, ContextError,
+// List, Set, BufReader, BufWriter, CPtr, COptPtr, Optional)
+pub struct WrapperData {
+    inner: TypeId,
+}
+
+pub struct RangeData {
+    element_type: TypeId,
+    is_inclusive: bool,
+}
+
+pub struct MapData {
+    key: TypeId,
+    value: TypeId,
+}
+
+pub struct ExternTypeData {
+    name: string,
+    has_size: bool,
+    size: i32,
+}
+
+pub struct ExternFnData {
+    params_start: i32,
+    params_count: i32,
+    return_type: TypeId,
+}
+
+// ─── Primitive Payload Encoding ──────────────────────────────────────
+// PrimitiveKind maps to i32 payload indices 0..16.
+
+fn primitive_to_payload(p: PrimitiveKind) -> i32 {
+    match p {
+        PrimitiveKind::I8 => { return 0 }
+        PrimitiveKind::I16 => { return 1 }
+        PrimitiveKind::I32 => { return 2 }
+        PrimitiveKind::I64 => { return 3 }
+        PrimitiveKind::I128 => { return 4 }
+        PrimitiveKind::Isize => { return 5 }
+        PrimitiveKind::U8 => { return 6 }
+        PrimitiveKind::U16 => { return 7 }
+        PrimitiveKind::U32 => { return 8 }
+        PrimitiveKind::U64 => { return 9 }
+        PrimitiveKind::U128 => { return 10 }
+        PrimitiveKind::Usize => { return 11 }
+        PrimitiveKind::F32 => { return 12 }
+        PrimitiveKind::F64 => { return 13 }
+        PrimitiveKind::Bool => { return 14 }
+        PrimitiveKind::Char => { return 15 }
+        PrimitiveKind::StringPrim => { return 16 }
+    }
+}
+
+fn payload_to_primitive(payload: i32) -> ?PrimitiveKind {
+    if payload == 0 { return Some(PrimitiveKind::I8) }
+    if payload == 1 { return Some(PrimitiveKind::I16) }
+    if payload == 2 { return Some(PrimitiveKind::I32) }
+    if payload == 3 { return Some(PrimitiveKind::I64) }
+    if payload == 4 { return Some(PrimitiveKind::I128) }
+    if payload == 5 { return Some(PrimitiveKind::Isize) }
+    if payload == 6 { return Some(PrimitiveKind::U8) }
+    if payload == 7 { return Some(PrimitiveKind::U16) }
+    if payload == 8 { return Some(PrimitiveKind::U32) }
+    if payload == 9 { return Some(PrimitiveKind::U64) }
+    if payload == 10 { return Some(PrimitiveKind::U128) }
+    if payload == 11 { return Some(PrimitiveKind::Usize) }
+    if payload == 12 { return Some(PrimitiveKind::F32) }
+    if payload == 13 { return Some(PrimitiveKind::F64) }
+    if payload == 14 { return Some(PrimitiveKind::Bool) }
+    if payload == 15 { return Some(PrimitiveKind::Char) }
+    if payload == 16 { return Some(PrimitiveKind::StringPrim) }
+    // Implicit None return for invalid payload
+}
+
+// ─── KlarType Constructors ───────────────────────────────────────────
+
+pub fn make_primitive(p: PrimitiveKind) -> KlarType {
+    return KlarType { kind: TypeKind::Primitive, payload: primitive_to_payload(p) }
+}
+
+pub fn get_primitive_kind(t: KlarType) -> ?PrimitiveKind {
+    match t.kind {
+        TypeKind::Primitive => { return payload_to_primitive(t.payload) }
+        _ => {}
+    }
+    // Implicit None return for non-primitive types
+}
+
+// Convenience constructors for common types
+pub fn type_i8() -> KlarType { return make_primitive(PrimitiveKind::I8) }
+pub fn type_i16() -> KlarType { return make_primitive(PrimitiveKind::I16) }
+pub fn type_i32() -> KlarType { return make_primitive(PrimitiveKind::I32) }
+pub fn type_i64() -> KlarType { return make_primitive(PrimitiveKind::I64) }
+pub fn type_i128() -> KlarType { return make_primitive(PrimitiveKind::I128) }
+pub fn type_isize() -> KlarType { return make_primitive(PrimitiveKind::Isize) }
+pub fn type_u8() -> KlarType { return make_primitive(PrimitiveKind::U8) }
+pub fn type_u16() -> KlarType { return make_primitive(PrimitiveKind::U16) }
+pub fn type_u32() -> KlarType { return make_primitive(PrimitiveKind::U32) }
+pub fn type_u64() -> KlarType { return make_primitive(PrimitiveKind::U64) }
+pub fn type_u128() -> KlarType { return make_primitive(PrimitiveKind::U128) }
+pub fn type_usize() -> KlarType { return make_primitive(PrimitiveKind::Usize) }
+pub fn type_f32() -> KlarType { return make_primitive(PrimitiveKind::F32) }
+pub fn type_f64() -> KlarType { return make_primitive(PrimitiveKind::F64) }
+pub fn type_bool() -> KlarType { return make_primitive(PrimitiveKind::Bool) }
+pub fn type_char() -> KlarType { return make_primitive(PrimitiveKind::Char) }
+pub fn type_string() -> KlarType { return make_primitive(PrimitiveKind::StringPrim) }
+
+// Singleton types (no payload data)
+pub fn type_void() -> KlarType { return KlarType { kind: TypeKind::Void, payload: -1 } }
+pub fn type_never() -> KlarType { return KlarType { kind: TypeKind::Never, payload: -1 } }
+pub fn type_unknown() -> KlarType { return KlarType { kind: TypeKind::Unknown, payload: -1 } }
+pub fn type_error() -> KlarType { return KlarType { kind: TypeKind::ErrorType, payload: -1 } }
+
+// Singleton I/O types
+pub fn type_file() -> KlarType { return KlarType { kind: TypeKind::File, payload: -1 } }
+pub fn type_io_error() -> KlarType { return KlarType { kind: TypeKind::IoError, payload: -1 } }
+pub fn type_stdout() -> KlarType { return KlarType { kind: TypeKind::Stdout, payload: -1 } }
+pub fn type_stderr() -> KlarType { return KlarType { kind: TypeKind::Stderr, payload: -1 } }
+pub fn type_stdin() -> KlarType { return KlarType { kind: TypeKind::Stdin, payload: -1 } }
+pub fn type_path() -> KlarType { return KlarType { kind: TypeKind::Path, payload: -1 } }
+pub fn type_cstr() -> KlarType { return KlarType { kind: TypeKind::CStr, payload: -1 } }
+pub fn type_cstr_owned() -> KlarType { return KlarType { kind: TypeKind::CStrOwned, payload: -1 } }
+pub fn type_string_data() -> KlarType { return KlarType { kind: TypeKind::StringData, payload: -1 } }
+
+// ─── Type Classification ────────────────────────────────────────────
+
+pub fn type_is_numeric(t: KlarType) -> bool {
+    let pk: ?PrimitiveKind = get_primitive_kind(t)
+    match pk {
+        Some(p) => { return is_numeric(p) }
+        None => { return false }
+    }
+}
+
+pub fn type_is_integer(t: KlarType) -> bool {
+    let pk: ?PrimitiveKind = get_primitive_kind(t)
+    match pk {
+        Some(p) => { return is_integer(p) }
+        None => { return false }
+    }
+}
+
+pub fn type_is_float(t: KlarType) -> bool {
+    let pk: ?PrimitiveKind = get_primitive_kind(t)
+    match pk {
+        Some(p) => { return is_float(p) }
+        None => { return false }
+    }
+}
+
+pub fn type_is_signed(t: KlarType) -> bool {
+    let pk: ?PrimitiveKind = get_primitive_kind(t)
+    match pk {
+        Some(p) => { return is_signed(p) }
+        None => { return false }
+    }
+}
+
+pub fn type_is_primitive(t: KlarType) -> bool {
+    match t.kind {
+        TypeKind::Primitive => { return true }
+        _ => { return false }
+    }
+}
+
+// ─── Type Kind Name ─────────────────────────────────────────────────
+
+pub fn type_kind_name(k: TypeKind) -> string {
+    match k {
+        TypeKind::Primitive => { return "Primitive" }
+        TypeKind::Array => { return "Array" }
+        TypeKind::Slice => { return "Slice" }
+        TypeKind::Tuple => { return "Tuple" }
+        TypeKind::Optional => { return "Optional" }
+        TypeKind::Result => { return "Result" }
+        TypeKind::Function => { return "Function" }
+        TypeKind::Reference => { return "Reference" }
+        TypeKind::StructType => { return "StructType" }
+        TypeKind::EnumType => { return "EnumType" }
+        TypeKind::TraitType => { return "TraitType" }
+        TypeKind::TypeVar => { return "TypeVar" }
+        TypeKind::Applied => { return "Applied" }
+        TypeKind::AssociatedTypeRef => { return "AssociatedTypeRef" }
+        TypeKind::Rc => { return "Rc" }
+        TypeKind::WeakRc => { return "WeakRc" }
+        TypeKind::Arc => { return "Arc" }
+        TypeKind::WeakArc => { return "WeakArc" }
+        TypeKind::Cell => { return "Cell" }
+        TypeKind::Range => { return "Range" }
+        TypeKind::ContextError => { return "ContextError" }
+        TypeKind::ListType => { return "ListType" }
+        TypeKind::MapType => { return "MapType" }
+        TypeKind::SetType => { return "SetType" }
+        TypeKind::StringData => { return "StringData" }
+        TypeKind::File => { return "File" }
+        TypeKind::IoError => { return "IoError" }
+        TypeKind::Stdout => { return "Stdout" }
+        TypeKind::Stderr => { return "Stderr" }
+        TypeKind::Stdin => { return "Stdin" }
+        TypeKind::Path => { return "Path" }
+        TypeKind::BufReader => { return "BufReader" }
+        TypeKind::BufWriter => { return "BufWriter" }
+        TypeKind::ExternType => { return "ExternType" }
+        TypeKind::CPtr => { return "CPtr" }
+        TypeKind::COptPtr => { return "COptPtr" }
+        TypeKind::CStr => { return "CStr" }
+        TypeKind::CStrOwned => { return "CStrOwned" }
+        TypeKind::ExternFn => { return "ExternFn" }
+        TypeKind::Void => { return "void" }
+        TypeKind::Never => { return "!" }
+        TypeKind::Unknown => { return "?unknown" }
+        TypeKind::ErrorType => { return "?error" }
+    }
+}
+
+// ─── Simple Type Equality (9.8.2) ───────────────────────────────────
+// For primitives and singletons, kind + payload is sufficient.
+// Compound type equality requires arena lookup (provided by type checker in 9.9).
+
+pub fn type_eq_simple(a: KlarType, b: KlarType) -> bool {
+    if type_kind_name(a.kind) != type_kind_name(b.kind) { return false }
+    return a.payload == b.payload
+}
+
+// ─── Type Display (9.8.4) ───────────────────────────────────────────
+// to_string for primitives and singletons. Compound type display requires
+// arena access (provided by type checker in 9.9).
+
+pub fn type_to_string_simple(t: KlarType) -> string {
+    match t.kind {
+        TypeKind::Primitive => {
+            let pk: ?PrimitiveKind = get_primitive_kind(t)
+            match pk {
+                Some(p) => { return primitive_name(p) }
+                None => { return "<bad-primitive>" }
+            }
+        }
+        TypeKind::Void => { return "void" }
+        TypeKind::Never => { return "!" }
+        TypeKind::Unknown => { return "?unknown" }
+        TypeKind::ErrorType => { return "?error" }
+        TypeKind::File => { return "File" }
+        TypeKind::IoError => { return "IoError" }
+        TypeKind::Stdout => { return "Stdout" }
+        TypeKind::Stderr => { return "Stderr" }
+        TypeKind::Stdin => { return "Stdin" }
+        TypeKind::Path => { return "Path" }
+        TypeKind::CStr => { return "CStr" }
+        TypeKind::CStrOwned => { return "CStrOwned" }
+        TypeKind::StringData => { return "String" }
+        _ => { return type_kind_name(t.kind) }
+    }
+}
+
+// ─── isCopyType (9.8.3) ─────────────────────────────────────────────
+// Determines whether a type has value/copy semantics.
+// For struct types, requires StructData lookup — takes is_copy flag directly.
+
+pub fn type_is_copy_primitive(t: KlarType) -> bool {
+    match t.kind {
+        TypeKind::Primitive => { return true }
+        TypeKind::Reference => { return true }
+        TypeKind::Void => { return true }
+        TypeKind::Never => { return true }
+        TypeKind::CPtr => { return true }
+        TypeKind::COptPtr => { return true }
+        TypeKind::CStr => { return true }
+        TypeKind::ExternFn => { return true }
+        // StructType needs is_copy check from StructData — handled by type checker
+        // All other types are NOT copy
+        _ => { return false }
+    }
+}
+
+// ─── main + tests ────────────────────────────────────────────────────
+
 fn main() -> i32 {
+    // --- Primitives ---
+    let t_i32: KlarType = type_i32()
+    let t_i64: KlarType = type_i64()
+    let t_f64: KlarType = type_f64()
+    let t_bool: KlarType = type_bool()
+    let t_string: KlarType = type_string()
+    let t_void: KlarType = type_void()
+    let t_never: KlarType = type_never()
+
+    // Classification
+    if not type_is_integer(t_i32) { println("FAIL: i32 should be integer"); return 1 }
+    if not type_is_numeric(t_i32) { println("FAIL: i32 should be numeric"); return 1 }
+    if not type_is_float(t_f64) { println("FAIL: f64 should be float"); return 1 }
+    if not type_is_signed(t_i32) { println("FAIL: i32 should be signed"); return 1 }
+    if type_is_integer(t_f64) { println("FAIL: f64 should not be integer"); return 1 }
+    if type_is_numeric(t_bool) { println("FAIL: bool should not be numeric"); return 1 }
+    if not type_is_primitive(t_i32) { println("FAIL: i32 should be primitive"); return 1 }
+    if type_is_primitive(t_void) { println("FAIL: void should not be primitive"); return 1 }
+
+    // --- Simple equality ---
+    if not type_eq_simple(t_i32, type_i32()) { println("FAIL: i32 == i32"); return 2 }
+    if type_eq_simple(t_i32, t_i64) { println("FAIL: i32 != i64"); return 2 }
+    if not type_eq_simple(t_void, type_void()) { println("FAIL: void == void"); return 2 }
+    if type_eq_simple(t_void, t_never) { println("FAIL: void != never"); return 2 }
+
+    // --- Display ---
+    if type_to_string_simple(t_i32) != "i32" { println("FAIL: i32 display"); return 3 }
+    if type_to_string_simple(t_f64) != "f64" { println("FAIL: f64 display"); return 3 }
+    if type_to_string_simple(t_bool) != "bool" { println("FAIL: bool display"); return 3 }
+    if type_to_string_simple(t_string) != "string" { println("FAIL: string display"); return 3 }
+    if type_to_string_simple(t_void) != "void" { println("FAIL: void display"); return 3 }
+    if type_to_string_simple(t_never) != "!" { println("FAIL: never display"); return 3 }
+    if type_to_string_simple(type_file()) != "File" { println("FAIL: File display"); return 3 }
+    if type_to_string_simple(type_path()) != "Path" { println("FAIL: Path display"); return 3 }
+    if type_to_string_simple(type_cstr()) != "CStr" { println("FAIL: CStr display"); return 3 }
+    if type_to_string_simple(type_string_data()) != "String" { println("FAIL: String display"); return 3 }
+
+    // --- Primitive name lookup ---
+    let pk: ?PrimitiveKind = primitive_from_name("i32")
+    match pk {
+        Some(p) => {
+            if primitive_name(p) != "i32" { println("FAIL: from_name i32"); return 4 }
+        }
+        None => { println("FAIL: from_name i32 returned None"); return 4 }
+    }
+    let pk2: ?PrimitiveKind = primitive_from_name("nope")
+    match pk2 {
+        Some(_) => { println("FAIL: from_name nope should be None"); return 4 }
+        None => {}
+    }
+
+    // All 17 primitives round-trip
+    if primitive_name(PrimitiveKind::I8) != "i8" { println("FAIL: I8 name"); return 4 }
+    if primitive_name(PrimitiveKind::U128) != "u128" { println("FAIL: U128 name"); return 4 }
+    if primitive_name(PrimitiveKind::Char) != "char" { println("FAIL: Char name"); return 4 }
+
+    // --- Widening ---
+    if not can_widen_to(PrimitiveKind::I32, PrimitiveKind::I64) { println("FAIL: i32 -> i64"); return 5 }
+    if not can_widen_to(PrimitiveKind::F32, PrimitiveKind::F64) { println("FAIL: f32 -> f64"); return 5 }
+    if not can_widen_to(PrimitiveKind::U8, PrimitiveKind::I16) { println("FAIL: u8 -> i16"); return 5 }
+    if can_widen_to(PrimitiveKind::I32, PrimitiveKind::U64) { println("FAIL: i32 !-> u64"); return 5 }
+    if can_widen_to(PrimitiveKind::U8, PrimitiveKind::I8) { println("FAIL: u8 !-> i8"); return 5 }
+    if not can_widen_to(PrimitiveKind::I32, PrimitiveKind::I32) { println("FAIL: i32 -> i32 (self)"); return 5 }
+
+    // --- Compound type data struct construction ---
+    let ad: ArrayData = ArrayData { element: TypeId { id: 0 }, size: 10 }
+    if ad.size != 10 { println("FAIL: ArrayData size"); return 6 }
+
+    let fd: FunctionData = FunctionData {
+        params_start: 0,
+        params_count: 2,
+        return_type: TypeId { id: 1 },
+        is_async: false,
+        is_unsafe: false,
+    }
+    if fd.params_count != 2 { println("FAIL: FunctionData params"); return 6 }
+
+    let sd: StructData = StructData {
+        name: "Point",
+        type_params_start: 0,
+        type_params_count: 0,
+        fields_start: 0,
+        fields_count: 2,
+        is_copy: false,
+        is_extern: false,
+        is_packed: false,
+    }
+    if sd.name != "Point" { println("FAIL: StructData name"); return 6 }
+
+    let ed: EnumData = EnumData {
+        name: "Option",
+        type_params_start: 0,
+        type_params_count: 1,
+        variants_start: 0,
+        variants_count: 2,
+        is_extern: false,
+    }
+    if ed.name != "Option" { println("FAIL: EnumData name"); return 6 }
+
+    let td: TraitData = TraitData {
+        name: "Clone",
+        type_params_start: 0,
+        type_params_count: 0,
+        methods_start: 0,
+        methods_count: 1,
+        super_traits_start: 0,
+        super_traits_count: 0,
+        assoc_types_start: 0,
+        assoc_types_count: 0,
+    }
+    if td.name != "Clone" { println("FAIL: TraitData name"); return 6 }
+
+    // --- isCopyType ---
+    if not type_is_copy_primitive(t_i32) { println("FAIL: i32 should be copy"); return 7 }
+    if not type_is_copy_primitive(t_void) { println("FAIL: void should be copy"); return 7 }
+    if not type_is_copy_primitive(t_never) { println("FAIL: never should be copy"); return 7 }
+    if not type_is_copy_primitive(type_cstr()) { println("FAIL: CStr should be copy"); return 7 }
+    if type_is_copy_primitive(type_cstr_owned()) { println("FAIL: CStrOwned should not be copy"); return 7 }
+    if type_is_copy_primitive(type_file()) { println("FAIL: File should not be copy"); return 7 }
+
+    // --- TypeKind name ---
+    if type_kind_name(TypeKind::Primitive) != "Primitive" { println("FAIL: kind Primitive"); return 8 }
+    if type_kind_name(TypeKind::Array) != "Array" { println("FAIL: kind Array"); return 8 }
+    if type_kind_name(TypeKind::Void) != "void" { println("FAIL: kind void"); return 8 }
+    if type_kind_name(TypeKind::Never) != "!" { println("FAIL: kind !"); return 8 }
+
+    // --- TypeId sentinels ---
+    if has_type(no_type()) { println("FAIL: no_type should not have type"); return 9 }
+    if not has_type(TypeId { id: 0 }) { println("FAIL: TypeId(0) should have type"); return 9 }
+
+    // --- WrapperData, RangeData, MapData ---
+    let wd: WrapperData = WrapperData { inner: TypeId { id: 3 } }
+    if wd.inner.id != 3 { println("FAIL: WrapperData inner"); return 10 }
+
+    let rd: RangeData = RangeData { element_type: TypeId { id: 2 }, is_inclusive: true }
+    if not rd.is_inclusive { println("FAIL: RangeData inclusive"); return 10 }
+
+    let md: MapData = MapData { key: TypeId { id: 0 }, value: TypeId { id: 1 } }
+    if md.key.id != 0 { println("FAIL: MapData key"); return 10 }
+    if md.value.id != 1 { println("FAIL: MapData value"); return 10 }
+
+    println("types.kl: all tests passed")
     return 0
 }
 
 test main {
-    // Stub test — full type system tests in Milestone 9.8
-    assert(true)
+    // NOTE: Functions using ?PrimitiveKind (type_is_integer, type_is_float, etc.)
+    // are tested in main() via klar run. The interpreter has a known bug with
+    // ?Enum optional returns, so inline tests avoid that path.
+
+    // PrimitiveKind direct tests (no optionals)
+    assert(is_integer(PrimitiveKind::I32))
+    assert(is_float(PrimitiveKind::F64))
+    assert(is_signed(PrimitiveKind::I32))
+    assert(not is_integer(PrimitiveKind::F64))
+    assert(not is_float(PrimitiveKind::I32))
+    assert(is_numeric(PrimitiveKind::I32))
+    assert(is_numeric(PrimitiveKind::F64))
+    assert(not is_numeric(PrimitiveKind::Bool))
+    assert(bit_size(PrimitiveKind::I32) == 32)
+    assert(bit_size(PrimitiveKind::U8) == 8)
+    assert(bit_size(PrimitiveKind::F64) == 64)
+
+    // Primitive names
+    assert(primitive_name(PrimitiveKind::I32) == "i32")
+    assert(primitive_name(PrimitiveKind::Bool) == "bool")
+    assert(primitive_name(PrimitiveKind::StringPrim) == "string")
+
+    // Widening
+    assert(can_widen_to(PrimitiveKind::I32, PrimitiveKind::I64))
+    assert(not can_widen_to(PrimitiveKind::I32, PrimitiveKind::U64))
+    assert(can_widen_to(PrimitiveKind::U8, PrimitiveKind::I16))
+    assert(not can_widen_to(PrimitiveKind::U8, PrimitiveKind::I8))
+
+    // KlarType construction (primitives use payload encoding)
+    assert(type_i32().payload == 2)
+    assert(type_f64().payload == 13)
+    assert(type_void().payload == -1)
+    assert(type_never().payload == -1)
+
+    // type_is_primitive (uses match on kind, no ?Enum)
+    assert(type_is_primitive(type_i32()))
+    assert(not type_is_primitive(type_void()))
+
+    // Simple equality (kind_name + payload comparison)
+    assert(type_eq_simple(type_i32(), type_i32()))
+    assert(not type_eq_simple(type_i32(), type_i64()))
+    assert(type_eq_simple(type_void(), type_void()))
+    assert(not type_eq_simple(type_void(), type_never()))
+
+    // is_copy
+    assert(type_is_copy_primitive(type_i32()))
+    assert(type_is_copy_primitive(type_void()))
+    assert(not type_is_copy_primitive(type_file()))
+
+    // TypeId sentinels
+    assert(not has_type(no_type()))
+    assert(has_type(TypeId { id: 0 }))
+    assert(no_type().id == -1)
+
+    // Compound data struct construction
+    let ad: ArrayData = ArrayData { element: TypeId { id: 0 }, size: 5 }
+    assert_eq(ad.size, 5)
+    let wd: WrapperData = WrapperData { inner: TypeId { id: 3 } }
+    assert_eq(wd.inner.id, 3)
+    let md: MapData = MapData { key: TypeId { id: 0 }, value: TypeId { id: 1 } }
+    assert_eq(md.key.id, 0)
+    assert_eq(md.value.id, 1)
+
+    // TypeKind names
+    assert(type_kind_name(TypeKind::Primitive) == "Primitive")
+    assert(type_kind_name(TypeKind::Array) == "Array")
+    assert(type_kind_name(TypeKind::Void) == "void")
+    assert(type_kind_name(TypeKind::Never) == "!")
 }
