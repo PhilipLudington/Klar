@@ -274,7 +274,13 @@ fn read_config() -> Result#[Config, Error] {
 
 ## Development Guidelines
 
-CarbideZig standards apply - see `carbide/CARBIDE.md` and `carbide/STANDARDS.md`.
+### Zig 0.15 Gotchas
+
+- `ArrayListUnmanaged`: zero-init with `{}`, not `.init()`. Pass allocator to every method (`append`, `deinit`, `toOwnedSlice`).
+- `root_source_file` is deprecated in build.zig — use `root_module` pattern instead.
+- `var x: u32 = undefined; x += 1;` is a compile error — initialize before arithmetic.
+- `File.Writer` has no `.print()` — use `std.fmt.bufPrint()` + `writeAll()`.
+- `usingnamespace` is removed — use explicit imports.
 
 ### When Adding Language Features
 

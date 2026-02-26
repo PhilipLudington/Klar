@@ -131,7 +131,7 @@ docs(readme): update installation instructions
 
 ### Zig Code
 
-The compiler uses CarbideZig standards (see `carbide/CARBIDE.md`):
+The compiler follows these Zig conventions:
 
 - 4-space indentation
 - Max line length: 120 characters

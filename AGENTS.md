@@ -23,7 +23,7 @@ For any testing task, always run `./run-tests.sh` (not individual suite scripts)
 Run `./run-tests.sh` before opening a PR.
 
 ## Coding Style & Naming Conventions
-- Follow CarbideZig standards (`carbide/CARBIDE.md`): 4-space indentation, max ~120 columns, prefer `const`, explicit error handling.
+- Follow Zig conventions: 4-space indentation, max ~120 columns, prefer `const`, explicit error handling.
 - Keep compiler code split by concern (e.g., checker logic in `src/checker/*`, codegen in `src/codegen/*`).
 - Klar examples/tests should be explicit and readable; function declarations require explicit return types (use `-> void` when applicable).
 - Test file names use descriptive snake_case, e.g., `result_map_err.kl`, `missing_return_type.kl`.
