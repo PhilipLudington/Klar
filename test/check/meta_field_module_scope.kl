@@ -1,0 +1,10 @@
+// Expected: check-error meta module can only appear at file level
+
+struct Config {
+    meta module { purpose: "bad" }
+    name: string,
+}
+
+fn main() -> i32 {
+    return 0
+}

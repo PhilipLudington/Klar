@@ -1,4 +1,4 @@
-// Expected: check-error pure function cannot call non-pure method
+// Expected: check-error cannot call non-pure method
 // Pure function calling non-pure impl method should be an error
 
 struct Logger { prefix: string }

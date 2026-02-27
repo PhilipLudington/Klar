@@ -257,7 +257,13 @@ fn metaQueryFile(
 
     var lexer = Lexer.init(source);
     var parser = Parser.init(allocator, &lexer, source);
-    const module = parser.parseModule() catch return; // skip files with parse errors
+    const module = parser.parseModule() catch {
+        const stderr = getStdErr();
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "warning: skipping {s} (parse error)\n", .{path}) catch "warning: skipping file (parse error)\n";
+        stderr.writeAll(msg) catch {};
+        return;
+    };
 
     switch (mode) {
         .tag => |tag_name| metaCollectTag(allocator, path, module, tag_name, matches),
@@ -706,6 +712,36 @@ fn metaCollectHints(
             }) catch {};
         }
 
+        // Descend into struct fields
+        if (decl == .struct_decl) {
+            for (decl.struct_decl.fields) |field| {
+                if (hasHintViaGroup(field.meta, module.file_meta)) {
+                    matches.append(allocator, .{
+                        .path = path,
+                        .name = field.name,
+                        .kind = .struct_field,
+                        .line = field.span.line,
+                        .meta = collectExpandedMeta(allocator, field.meta, module.file_meta),
+                    }) catch {};
+                }
+            }
+        }
+
+        // Descend into enum variants
+        if (decl == .enum_decl) {
+            for (decl.enum_decl.variants) |variant| {
+                if (hasHintViaGroup(variant.meta, module.file_meta)) {
+                    matches.append(allocator, .{
+                        .path = path,
+                        .name = variant.name,
+                        .kind = .enum_variant,
+                        .line = variant.span.line,
+                        .meta = collectExpandedMeta(allocator, variant.meta, module.file_meta),
+                    }) catch {};
+                }
+            }
+        }
+
         // Descend into impl/trait methods
         const methods = switch (decl) {
             .impl_decl => |impl_d| impl_d.methods,
@@ -919,7 +955,7 @@ fn metaOutputHuman(mode: MetaQueryMode, matches: []const MetaMatch) !void {
             try out.writeAll(tag_name);
             try out.writeAll("\"\n");
         },
-        .module => try out.writeAll(""),
+        .module => {},
         .deprecated => try out.writeAll("Deprecated items:\n"),
         .hints => try out.writeAll("AI Hints:\n"),
         .related => |fn_name| {

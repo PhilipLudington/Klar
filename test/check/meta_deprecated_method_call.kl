@@ -1,0 +1,23 @@
+// Expected: check-pass
+// Calling a deprecated method emits a warning but does not fail checks
+
+struct Greeter {
+    name: string,
+}
+
+impl Greeter {
+    meta deprecated("use greet_v2 instead")
+    fn greet(self: Greeter) -> string {
+        return self.name
+    }
+
+    fn greet_v2(self: Greeter) -> string {
+        return self.name
+    }
+}
+
+fn main() -> i32 {
+    let g: Greeter = Greeter { name: "world" }
+    let _msg: string = g.greet()
+    return 0
+}

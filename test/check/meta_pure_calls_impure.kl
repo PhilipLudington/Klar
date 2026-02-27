@@ -1,4 +1,4 @@
-// Expected: check-error pure function cannot call non-pure function
+// Expected: check-error cannot call non-pure function
 // Pure function calling non-pure user function should be an error
 
 fn helper() -> i32 {

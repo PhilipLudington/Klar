@@ -1,4 +1,4 @@
-// Expected: check-error pure function cannot call impure builtin
+// Expected: check-error cannot call impure builtin
 // Pure function calling filesystem builtin should be an error
 
 meta pure

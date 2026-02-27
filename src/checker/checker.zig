@@ -2007,15 +2007,9 @@ pub const TypeChecker = struct {
         }
     }
 
-    /// Add a warning (same as addError but with meta_warning kind). Warnings don't block compilation.
+    /// Add a warning (delegates to addError with meta_warning kind). Warnings don't block compilation.
     pub fn addWarning(self: *TypeChecker, span: Span, comptime fmt: []const u8, args: anytype) void {
-        const message = std.fmt.allocPrint(self.allocator, fmt, args) catch "error formatting message";
-        self.errors.append(self.allocator, .{
-            .kind = .meta_warning,
-            .span = span,
-            .message = message,
-        }) catch {};
-        self.warning_count += 1;
+        self.addError(.meta_warning, span, fmt, args);
     }
 
     pub fn hasErrors(self: *const TypeChecker) bool {
@@ -3760,10 +3754,17 @@ pub const TypeChecker = struct {
         if (object_type == .struct_) {
             const struct_type = object_type.struct_;
             if (self.lookupStructMethod(struct_type.name, method.method_name)) |struct_method| {
+                // Check if calling a deprecated method
+                meta_validation.checkDeprecatedMethodCall(self, struct_type.name, method.method_name, method.span);
+
                 // Check purity constraints for user-defined method calls
                 if (self.in_pure_function) {
                     if (meta_validation.hasPureAnnotation(struct_method.decl.meta) == null) {
-                        self.addError(.meta_error, method.span, "pure function cannot call non-pure method '{s}.{s}'", .{ struct_type.name, method.method_name });
+                        if (self.pure_function_span) |ps| {
+                            self.addError(.meta_error, method.span, "pure function (declared at line {d}) cannot call non-pure method '{s}.{s}'", .{ ps.line, struct_type.name, method.method_name });
+                        } else {
+                            self.addError(.meta_error, method.span, "pure function cannot call non-pure method '{s}.{s}'", .{ struct_type.name, method.method_name });
+                        }
                     }
                 }
 
@@ -3827,10 +3828,17 @@ pub const TypeChecker = struct {
         if (object_type == .enum_) {
             const enum_type = object_type.enum_;
             if (self.lookupStructMethod(enum_type.name, method.method_name)) |enum_method| {
+                // Check if calling a deprecated method
+                meta_validation.checkDeprecatedMethodCall(self, enum_type.name, method.method_name, method.span);
+
                 // Check purity constraints for user-defined method calls
                 if (self.in_pure_function) {
                     if (meta_validation.hasPureAnnotation(enum_method.decl.meta) == null) {
-                        self.addError(.meta_error, method.span, "pure function cannot call non-pure method '{s}.{s}'", .{ enum_type.name, method.method_name });
+                        if (self.pure_function_span) |ps| {
+                            self.addError(.meta_error, method.span, "pure function (declared at line {d}) cannot call non-pure method '{s}.{s}'", .{ ps.line, enum_type.name, method.method_name });
+                        } else {
+                            self.addError(.meta_error, method.span, "pure function cannot call non-pure method '{s}.{s}'", .{ enum_type.name, method.method_name });
+                        }
                     }
                 }
 

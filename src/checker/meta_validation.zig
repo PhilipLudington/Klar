@@ -166,6 +166,29 @@ pub fn checkDeprecatedCall(tc: anytype, func_name: []const u8, call_span: ast.Sp
     }
 }
 
+/// Register a method as deprecated using a qualified key "TypeName::method_name".
+pub fn registerDeprecatedMethod(tc: anytype, type_name: []const u8, method_name: []const u8, meta: []const ast.MetaAnnotation) void {
+    for (meta) |annotation| {
+        switch (annotation) {
+            .deprecated => |dep| {
+                const key = std.fmt.allocPrint(tc.allocator, "{s}::{s}", .{ type_name, method_name }) catch return;
+                tc.deprecated_functions.put(tc.allocator, key, dep.value) catch {};
+                return;
+            },
+            else => {},
+        }
+    }
+}
+
+/// Check if a method call target is deprecated and emit a warning if so.
+pub fn checkDeprecatedMethodCall(tc: anytype, type_name: []const u8, method_name: []const u8, call_span: ast.Span) void {
+    const key = std.fmt.allocPrint(tc.allocator, "{s}::{s}", .{ type_name, method_name }) catch return;
+    defer tc.allocator.free(key);
+    if (tc.deprecated_functions.get(key)) |message| {
+        tc.addWarning(call_span, "call to deprecated method '{s}.{s}': {s}", .{ type_name, method_name, message });
+    }
+}
+
 /// Validate meta module block fields.
 /// Known field 'depends' must be a string list. Other fields accept any value type.
 fn validateModuleMetaFields(tc: anytype, block: *ast.MetaBlock) void {
@@ -205,7 +228,11 @@ pub fn registerPureFunction(tc: anytype, name: []const u8, meta: []const ast.Met
 pub fn checkPureCall(tc: anytype, func_name: []const u8, call_span: ast.Span) void {
     // Check if calling a known-impure builtin
     if (isImpureBuiltin(func_name)) {
-        tc.addError(.meta_error, call_span, "pure function cannot call impure builtin '{s}'", .{func_name});
+        if (tc.pure_function_span) |ps| {
+            tc.addError(.meta_error, call_span, "pure function (declared at line {d}) cannot call impure builtin '{s}'", .{ ps.line, func_name });
+        } else {
+            tc.addError(.meta_error, call_span, "pure function cannot call impure builtin '{s}'", .{func_name});
+        }
         return;
     }
     // Skip constructors — always pure
@@ -222,7 +249,11 @@ pub fn checkPureCall(tc: anytype, func_name: []const u8, call_span: ast.Span) vo
     }
     // User function — must be marked meta pure
     if (!tc.pure_functions.contains(func_name)) {
-        tc.addError(.meta_error, call_span, "pure function cannot call non-pure function '{s}'", .{func_name});
+        if (tc.pure_function_span) |ps| {
+            tc.addError(.meta_error, call_span, "pure function (declared at line {d}) cannot call non-pure function '{s}'", .{ ps.line, func_name });
+        } else {
+            tc.addError(.meta_error, call_span, "pure function cannot call non-pure function '{s}'", .{func_name});
+        }
     }
 }
 
@@ -343,15 +374,25 @@ fn validateCustomAnnotation(tc: anytype, cust: *ast.MetaCustom, decl_kind: ?Decl
 }
 
 /// Join meta path segments with "::" for error messages.
+/// Returns an allocated slice owned by the caller (or a static/borrowed fallback on error).
 fn joinMetaPath(allocator: std.mem.Allocator, segments: []const []const u8) []const u8 {
     if (segments.len == 0) return "?";
     if (segments.len == 1) return segments[0];
     var list = std.ArrayListUnmanaged(u8){};
     for (segments, 0..) |seg, i| {
-        if (i > 0) list.appendSlice(allocator, "::") catch return segments[0];
-        list.appendSlice(allocator, seg) catch return segments[0];
+        if (i > 0) list.appendSlice(allocator, "::") catch {
+            list.deinit(allocator);
+            return segments[0];
+        };
+        list.appendSlice(allocator, seg) catch {
+            list.deinit(allocator);
+            return segments[0];
+        };
     }
-    return list.items;
+    return list.toOwnedSlice(allocator) catch {
+        list.deinit(allocator);
+        return segments[0];
+    };
 }
 
 /// Validate that a custom annotation is used on the correct kind of declaration.

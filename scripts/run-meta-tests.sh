@@ -174,6 +174,23 @@ check_output "path separator: uses ::" "lexer::next_token" "$output"
 output=$("$KLAR" meta --tag "parsing" test/meta/project/parser.kl --json 2>&1)
 check_output "json path separator: uses ::" "lexer::next_token" "$output"
 
+# --- Test 24: --hints on struct fields ---
+output=$("$KLAR" meta --hints test/meta/hints_on_fields.kl 2>&1)
+check_output "--hints fields: finds host" "host" "$output"
+check_output "--hints fields: finds port" "port" "$output"
+check_output "--hints fields: shows field kind" "field" "$output"
+check_exact_count "--hints fields: 4 matches (2 struct fields + 2 enum variants)" "4" "$output"
+
+# --- Test 25: --hints on enum variants ---
+output=$("$KLAR" meta --hints test/meta/hints_on_fields.kl --json 2>&1)
+check_output "--json hints fields: has host" '"host"' "$output"
+check_output "--json hints fields: has Debug variant" '"Debug"' "$output"
+
+# --- Test 26: parse error warning on stderr ---
+output=$("$KLAR" meta --tag "anything" test/meta/parse_error.kl 2>&1)
+check_output "parse error: warning on stderr" "warning: skipping" "$output"
+check_output "parse error: 0 matches" "0 matches found" "$output"
+
 # Summary
 echo ""
 echo "Meta command tests: $PASS/$TOTAL passed, $FAIL failed"

@@ -218,6 +218,8 @@ fn checkStruct(tc: anytype, struct_decl: *ast.StructDecl) void {
     defer fields.deinit(tc.allocator);
 
     for (struct_decl.fields) |field| {
+        meta_validation.validateDeclMeta(tc, field.meta, .field);
+
         const field_type = tc.resolveTypeExpr(field.type_) catch tc.type_builder.unknownType();
 
         // Validate FFI-compatible types for extern structs
@@ -392,6 +394,8 @@ fn checkEnum(tc: anytype, enum_decl: *ast.EnumDecl) void {
     defer variants.deinit(tc.allocator);
 
     for (enum_decl.variants) |variant| {
+        meta_validation.validateDeclMeta(tc, variant.meta, .variant);
+
         // For extern enums, validate variant constraints
         if (enum_decl.is_extern) {
             // Payload should already be forbidden by parser, but double-check
@@ -736,6 +740,11 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
     for (impl_decl.methods) |*method_decl_const| {
         // Need to cast to mutable pointer for registration
         const method_decl = @constCast(method_decl_const);
+
+        // Register deprecated methods with qualified key "TypeName::method"
+        meta_validation.registerDeprecatedMethod(tc, struct_name, method_decl.name, method_decl.meta);
+        // Register pure methods
+        meta_validation.registerPureFunction(tc, method_decl.name, method_decl.meta);
 
         if (method_decl.is_async) {
             tc.addError(.invalid_operation, method_decl.span, "async methods are not yet supported", .{});
