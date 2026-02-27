@@ -25,7 +25,8 @@ import types.{
     ArrayData, SliceData, TupleData, ResultData, FunctionData,
     ReferenceData, StructData, StructFieldData, EnumData,
     EnumVariantInfo, WrapperData, MapData, TraitData,
-    TraitMethodData, AssocTypeData, TypeVarData
+    TraitMethodData, AssocTypeData, TypeVarData,
+    ErrorKind, error_kind_name
 }
 
 import ast.{
@@ -166,6 +167,12 @@ pub struct TypeChecker {
     pub module_export_kinds: List#[i32],
     pub module_starts: Map#[string, i32],
     pub module_counts: Map#[string, i32],
+
+    // Structured error tracking (Milestone 9.10.6)
+    pub error_kinds: List#[ErrorKind],
+    pub error_lines: List#[i32],
+    pub error_cols: List#[i32],
+    pub error_msgs: List#[string],
 }
 
 impl TypeChecker {
@@ -242,6 +249,11 @@ impl TypeChecker {
             module_export_kinds: List.new#[i32](),
             module_starts: Map.new#[string, i32](),
             module_counts: Map.new#[string, i32](),
+
+            error_kinds: List.new#[ErrorKind](),
+            error_lines: List.new#[i32](),
+            error_cols: List.new#[i32](),
+            error_msgs: List.new#[string](),
         }
         // Push global scope
         tc.scopes.push(Map.new#[string, SymbolInfo]())
@@ -305,6 +317,49 @@ pub fn add_error_msg(tc: TypeChecker, msg: string) -> TypeChecker {
     c.errors.push(msg)
     c.error_count = c.error_count + 1
     return c
+}
+
+// ─── Structured Error Functions (Milestone 9.10.6) ──────────────────
+
+pub fn add_typed_error(tc: TypeChecker, kind: ErrorKind, span: Span, msg: string) -> TypeChecker {
+    var c: TypeChecker = tc
+    c.error_kinds.push(kind)
+    c.error_lines.push(span.line)
+    c.error_cols.push(span.column)
+    c.error_msgs.push(msg)
+    c = add_error(c, span, msg)
+    return c
+}
+
+pub fn add_typed_error_with_type(tc: TypeChecker, kind: ErrorKind, span: Span, msg: string) -> (TypeChecker, KlarType) {
+    let c: TypeChecker = add_typed_error(tc, kind, span, msg)
+    return (c, type_error())
+}
+
+pub fn format_error(tc: TypeChecker, idx: i32) -> string {
+    if idx < 0 or idx >= tc.error_kinds.len() {
+        return "<invalid error index " + idx.to_string().as_str() + ">"
+    }
+    let line: i32 = tc.error_lines[idx]
+    let col: i32 = tc.error_cols[idx]
+    let kind: ErrorKind = tc.error_kinds[idx]
+    let msg: string = tc.error_msgs[idx]
+    return line.to_string().as_str() + ":" + col.to_string().as_str() +
+        " [" + error_kind_name(kind) + "]: " + msg
+}
+
+pub fn format_all_errors(tc: TypeChecker) -> string {
+    let count: i32 = tc.error_kinds.len()
+    if count == 0 {
+        return "No errors"
+    }
+    var result: string = "Found " + count.to_string().as_str() + " error(s):\n"
+    var i: i32 = 0
+    while i < count {
+        result = result + format_error(tc, i) + "\n"
+        i = i + 1
+    }
+    return result
 }
 
 // ─── Type Resolution ────────────────────────────────────────────────
@@ -384,7 +439,7 @@ fn resolve_named_type(tc: TypeChecker, data: NamedTypeData) -> (TypeChecker, Kla
     }
 
     // Unknown type
-    return add_error_with_type(tc, data.span, "unknown type '" + name + "'")
+    return add_typed_error_with_type(tc, ErrorKind::UndefinedType, data.span, "unknown type '" + name + "'")
 }
 
 fn resolve_array_type(tc: TypeChecker, data: ArrayTypeData) -> (TypeChecker, KlarType) {
@@ -635,7 +690,7 @@ fn resolve_user_generic_struct_impl(tc: TypeChecker, data: GenericApplyData, nam
 
     // Validate type argument count
     if data.args_count != struct_decl.generics_count {
-        return add_error_with_type(c, data.span,
+        return add_typed_error_with_type(c, ErrorKind::WrongNumberOfArgs, data.span,
             "generic struct '" + name + "' expects " + struct_decl.generics_count.to_string().as_str() +
             " type argument(s), got " + data.args_count.to_string().as_str())
     }

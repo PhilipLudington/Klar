@@ -13,7 +13,8 @@ import types.{
     type_i32, type_i64, type_f64, type_bool, type_char, type_string,
     type_void, type_never, type_unknown, type_error,
     type_is_numeric, type_is_integer,
-    FunctionData
+    FunctionData,
+    ErrorKind
 }
 
 import ast.{
@@ -31,6 +32,7 @@ import ast.{
 import checker.{
     TypeChecker, SymbolInfo, SymbolKind,
     lookup, lookup_in_current, add_error, add_error_msg, add_error_with_type,
+    add_typed_error, add_typed_error_with_type,
     resolve_type_expr,
     type_eq, type_compatible, is_error_type, is_never_type, is_void_type,
     type_display,
@@ -121,7 +123,7 @@ fn check_let_decl(tc: TypeChecker, data: LetDeclData) -> TypeChecker {
     // Check type compatibility
     if has_expr(data.value) and has_type_expr(data.type_expr) {
         if not type_compatible(declared_type, init_type) {
-            c = add_error(c, data.span,
+            c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                 "type mismatch in let: declared " + type_display(declared_type) +
                 ", got " + type_display(init_type))
         }
@@ -129,7 +131,7 @@ fn check_let_decl(tc: TypeChecker, data: LetDeclData) -> TypeChecker {
 
     // Check for duplicate in current scope
     if not data.is_shadow and lookup_in_current(c, data.decl_name) {
-        c = add_error(c, data.span,
+        c = add_typed_error(c, ErrorKind::DuplicateDefinition, data.span,
             "redefinition of '" + data.decl_name + "' in same scope (use 'shadow let' to shadow)")
     }
 
@@ -169,7 +171,7 @@ fn check_var_decl(tc: TypeChecker, data: VarDeclData) -> TypeChecker {
     // Check type compatibility
     if has_expr(data.value) and has_type_expr(data.type_expr) {
         if not type_compatible(declared_type, init_type) {
-            c = add_error(c, data.span,
+            c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                 "type mismatch in var: declared " + type_display(declared_type) +
                 ", got " + type_display(init_type))
         }
@@ -177,7 +179,7 @@ fn check_var_decl(tc: TypeChecker, data: VarDeclData) -> TypeChecker {
 
     // Check for duplicate in current scope
     if not data.is_shadow and lookup_in_current(c, data.decl_name) {
-        c = add_error(c, data.span,
+        c = add_typed_error(c, ErrorKind::DuplicateDefinition, data.span,
             "redefinition of '" + data.decl_name + "' in same scope (use 'shadow var' to shadow)")
     }
 
@@ -221,7 +223,7 @@ fn check_assignment(tc: TypeChecker, data: AssignmentData) -> TypeChecker {
             match found {
                 Some(info) => {
                     if not info.mutable {
-                        c = add_error(c, data.span,
+                        c = add_typed_error(c, ErrorKind::MutabilityError, data.span,
                             "cannot assign to immutable variable '" + id_data.ident_name + "'")
                     }
                 }
@@ -240,7 +242,7 @@ fn check_assignment(tc: TypeChecker, data: AssignmentData) -> TypeChecker {
         AssignOp::Plain => {
             // Simple assignment: check type compatibility
             if not type_compatible(target_type, value_type) and not is_error_type(target_type) and not is_error_type(value_type) {
-                c = add_error(c, data.span,
+                c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                     "assignment type mismatch: target is " + type_display(target_type) +
                     ", value is " + type_display(value_type))
             }
@@ -248,7 +250,7 @@ fn check_assignment(tc: TypeChecker, data: AssignmentData) -> TypeChecker {
         _ => {
             // Compound assignment: both must be compatible numeric types (or strings for ++=)
             if not type_compatible(target_type, value_type) and not is_error_type(target_type) and not is_error_type(value_type) {
-                c = add_error(c, data.span,
+                c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                     "compound assignment type mismatch: " + type_display(target_type) +
                     " vs " + type_display(value_type))
             }
@@ -277,14 +279,14 @@ fn check_return(tc: TypeChecker, data: ReturnStmtData) -> TypeChecker {
 
         // Check against expected return type
         if not type_compatible(c.current_return_type, ret_type) {
-            c = add_error(c, data.span,
+            c = add_typed_error(c, ErrorKind::ReturnTypeMismatch, data.span,
                 "return type mismatch: expected " + type_display(c.current_return_type) +
                 ", got " + type_display(ret_type))
         }
     } else {
         // Bare return: expected return type must be void
         if not is_void_type(c.current_return_type) {
-            c = add_error(c, data.span,
+            c = add_typed_error(c, ErrorKind::MissingReturn, data.span,
                 "missing return value, expected " + type_display(c.current_return_type))
         }
     }
@@ -296,14 +298,14 @@ fn check_return(tc: TypeChecker, data: ReturnStmtData) -> TypeChecker {
 
 fn check_break(tc: TypeChecker, data: BreakStmtData) -> TypeChecker {
     if not tc.in_loop {
-        return add_error(tc, data.span, "'break' outside of loop")
+        return add_typed_error(tc, ErrorKind::BreakOutsideLoop, data.span, "'break' outside of loop")
     }
     return tc
 }
 
 fn check_continue(tc: TypeChecker, data: ContinueStmtData) -> TypeChecker {
     if not tc.in_loop {
-        return add_error(tc, data.span, "'continue' outside of loop")
+        return add_typed_error(tc, ErrorKind::ContinueOutsideLoop, data.span, "'continue' outside of loop")
     }
     return tc
 }
@@ -318,7 +320,7 @@ fn check_if_stmt(tc: TypeChecker, data: IfStmtData) -> TypeChecker {
     c = r_cond.0
     let cond_type: KlarType = r_cond.1
     if not type_eq(cond_type, type_bool()) and not is_error_type(cond_type) {
-        c = add_error(c, data.span,
+        c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
             "if condition must be bool, got " + type_display(cond_type))
     }
 
@@ -347,7 +349,7 @@ fn check_while_loop(tc: TypeChecker, data: WhileLoopData) -> TypeChecker {
     c = r_cond.0
     let cond_type: KlarType = r_cond.1
     if not type_eq(cond_type, type_bool()) and not is_error_type(cond_type) {
-        c = add_error(c, data.span,
+        c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
             "while condition must be bool, got " + type_display(cond_type))
     }
 
@@ -441,7 +443,7 @@ fn check_match_stmt(tc: TypeChecker, data: MatchStmtData) -> TypeChecker {
             c = r_guard.0
             let guard_type: KlarType = r_guard.1
             if not type_eq(guard_type, type_bool()) and not is_error_type(guard_type) {
-                c = add_error(c, arm.span,
+                c = add_typed_error(c, ErrorKind::TypeMismatch, arm.span,
                     "match guard must be bool, got " + type_display(guard_type))
             }
         }

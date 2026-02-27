@@ -13,9 +13,10 @@ import types.{
     type_i32, type_i64, type_f64, type_bool, type_char, type_string,
     type_u8, type_void, type_never, type_unknown, type_error,
     type_eq_simple, type_to_string_simple, type_kind_name,
-    FunctionData, StructData, StructFieldData, EnumData,
+    ArrayData, FunctionData, StructData, StructFieldData, EnumData,
     WrapperData, MapData, ResultData,
-    TraitData, TraitMethodData, TypeVarData
+    TraitData, TraitMethodData, TypeVarData,
+    ErrorKind, error_kind_name
 }
 
 import ast.{
@@ -49,6 +50,8 @@ import ast.{
 import checker.{
     TypeChecker, SymbolInfo, SymbolKind,
     lookup, add_error, add_error_msg,
+    add_typed_error, add_typed_error_with_type,
+    format_error, format_all_errors,
     resolve_type_expr,
     type_eq, type_compatible, is_error_type, is_void_type,
     type_display,
@@ -319,6 +322,21 @@ fn expect_kind(actual: KlarType, kind_name: string, test_name: string) -> bool {
     return true
 }
 
+fn expect_error_kind(tc: TypeChecker, idx: i32, expected_kind: ErrorKind, test_name: string) -> bool {
+    if idx >= tc.error_kinds.len() {
+        println("FAIL: " + test_name + " — error index " + idx.to_string().as_str() + " out of range (have " + tc.error_kinds.len().to_string().as_str() + ")")
+        return false
+    }
+    let actual: ErrorKind = tc.error_kinds[idx]
+    let actual_name: string = error_kind_name(actual)
+    let expected_name: string = error_kind_name(expected_kind)
+    if actual_name != expected_name {
+        println("FAIL: " + test_name + " — expected error kind " + expected_name + ", got " + actual_name)
+        return false
+    }
+    return true
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 fn test_literal_types() -> i32 {
@@ -371,6 +389,7 @@ fn test_identifier_lookup() -> i32 {
     let re2: (TypeChecker, KlarType) = check_expr(tc, r2.1)
     tc = re2.0
     if not expect_errors(tc, 1, "undefined variable error") { return 2 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedVariable, "undefined variable kind") { return 2 }
 
     return 0
 }
@@ -429,6 +448,7 @@ fn test_binary_type_errors() -> i32 {
     let re: (TypeChecker, KlarType) = check_expr(tc, r_bad.1)
     tc = re.0
     if not expect_errors(tc, 1, "i32 + string → error") { return 4 }
+    if not expect_error_kind(tc, 0, ErrorKind::TypeMismatch, "binary type error kind") { return 4 }
 
     return 0
 }
@@ -512,6 +532,7 @@ fn test_let_type_mismatch() -> i32 {
     tc = rs.0
     tc = check_stmt(tc, rs.1)
     if not expect_errors(tc, 1, "let x: i32 = \"hello\" → type mismatch") { return 7 }
+    if not expect_error_kind(tc, 0, ErrorKind::TypeMismatch, "let type mismatch kind") { return 7 }
 
     return 0
 }
@@ -561,6 +582,7 @@ fn test_assign_to_immutable() -> i32 {
     tc = r_assign.0
     tc = check_stmt(tc, r_assign.1)
     if not expect_errors(tc, 1, "assign to immutable x → error") { return 9 }
+    if not expect_error_kind(tc, 0, ErrorKind::MutabilityError, "assign to immutable kind") { return 9 }
 
     return 0
 }
@@ -586,6 +608,7 @@ fn test_return_type_check() -> i32 {
     tc = rs2.0
     tc = check_stmt(tc, rs2.1)
     if not expect_errors(tc, 1, "return \"hello\" in i32 function → error") { return 10 }
+    if not expect_error_kind(tc, 0, ErrorKind::ReturnTypeMismatch, "return type mismatch kind") { return 10 }
 
     return 0
 }
@@ -642,6 +665,54 @@ fn test_break_outside_loop() -> i32 {
     tc = r_break.0
     tc = check_stmt(tc, r_break.1)
     if not expect_errors(tc, 1, "break outside loop → error") { return 13 }
+    if not expect_error_kind(tc, 0, ErrorKind::BreakOutsideLoop, "break outside loop kind") { return 13 }
+
+    return 0
+}
+
+fn test_continue_outside_loop() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // continue outside loop → error
+    let idx: i32 = tc.stmts.len()
+    tc.stmts.push(Stmt::ContinueStmt(ContinueStmtData { span: s() }))
+    let stmt_id: StmtId = StmtId { id: idx }
+    tc = check_stmt(tc, stmt_id)
+    if not expect_errors(tc, 1, "continue outside loop → error") { return 13 }
+    if not expect_error_kind(tc, 0, ErrorKind::ContinueOutsideLoop, "continue outside loop kind") { return 13 }
+
+    return 0
+}
+
+fn test_invalid_index() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Create an array variable: let arr: [i32; 3]
+    // Push element type into resolved_types arena, then create ArrayData
+    let elem_ref: i32 = tc.resolved_types.len()
+    tc.resolved_types.push(type_i32())
+    let arr_idx: i32 = tc.type_arrays.len()
+    tc.type_arrays.push(ArrayData { element: TypeId { id: elem_ref }, size: 3 })
+    tc.define("arr", SymbolInfo {
+        sym_name: "arr",
+        sym_type: KlarType { kind: TypeKind::Array, payload: arr_idx },
+        mutable: false,
+        kind: SymbolKind::Variable,
+    })
+
+    // Index with a bool (invalid) — arr[true]
+    let r_arr: (TypeChecker, ExprId) = add_ident_expr(tc, "arr")
+    tc = r_arr.0
+    let r_idx: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_idx.0
+    let idx2: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::Index(IndexData { object: r_arr.1, index: r_idx.1, span: s() }))
+    let index_expr: ExprId = ExprId { id: idx2 }
+    let r: (TypeChecker, KlarType) = check_expr(tc, index_expr)
+    tc = r.0
+    if not expect_errors(tc, 1, "index with bool → error") { return 14 }
+    if not expect_error_kind(tc, 0, ErrorKind::InvalidIndex, "index with bool kind") { return 14 }
 
     return 0
 }
@@ -684,6 +755,7 @@ fn test_function_wrong_arg_type() -> i32 {
     let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
     tc = re.0
     if not expect_errors(tc, 1, "println(42) → wrong arg type") { return 15 }
+    if not expect_error_kind(tc, 0, ErrorKind::TypeMismatch, "wrong arg type kind") { return 15 }
 
     return 0
 }
@@ -700,6 +772,7 @@ fn test_function_wrong_arg_count() -> i32 {
     let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
     tc = re.0
     if not expect_errors(tc, 1, "println() → wrong arg count") { return 16 }
+    if not expect_error_kind(tc, 0, ErrorKind::WrongNumberOfArgs, "wrong arg count kind") { return 16 }
 
     return 0
 }
@@ -900,6 +973,7 @@ fn test_struct_unknown_field() -> i32 {
 
     tc = check_module(tc, decl_start, 2)
     if not expect_errors(tc, 1, "p.z → unknown field error") { return 19 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedField, "unknown field kind") { return 19 }
 
     return 0
 }
@@ -2102,6 +2176,7 @@ fn test_generic_fn_wrong_args() -> i32 {
     let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
     tc = re.0
     if not expect_errors(tc, 1, "identity(1, 2) → wrong arg count error") { return 54 }
+    if not expect_error_kind(tc, 0, ErrorKind::WrongNumberOfArgs, "generic fn wrong args kind") { return 54 }
 
     return 0
 }
@@ -2327,6 +2402,7 @@ fn test_postfix_try_error_on_non_optional() -> i32 {
     let re: (TypeChecker, KlarType) = check_expr(tc, r_try.1)
     tc = re.0
     if not expect_errors(tc, 1, "postfix ? on i32 → error") { return 40 }
+    if not expect_error_kind(tc, 0, ErrorKind::InvalidOperation, "postfix try on non-optional kind") { return 40 }
 
     return 0
 }
@@ -2776,6 +2852,7 @@ fn test_trait_unknown_method_error() -> i32 {
     tc = re.0
 
     if not expect_errors(tc, 1, "item.nonexistent() on bounded TypeVar → error") { return 64 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedMethod, "trait unknown method kind") { return 64 }
 
     tc.pop_scope()
     return 0
@@ -3187,6 +3264,7 @@ fn test_trait_impl_wrong_method() -> i32 {
     let dc: i32 = tc.decls.len() - ds
     tc = check_module(tc, ds, dc)
     if not expect_errors(tc, 1, "impl with wrong method → error") { return 72 }
+    if not expect_error_kind(tc, 0, ErrorKind::TraitNotImplemented, "trait impl wrong method kind") { return 72 }
 
     return 0
 }
@@ -4146,6 +4224,7 @@ fn test_import_unknown_module() -> i32 {
     tc = process_imports(tc, decl_start, 1)
 
     if not expect_errors(tc, 1, "import unknown module") { return 93 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedModule, "import unknown module kind") { return 93 }
     return 0
 }
 
@@ -4172,6 +4251,7 @@ fn test_import_unknown_symbol() -> i32 {
     tc = process_imports(tc, decl_start, 1)
 
     if not expect_errors(tc, 1, "import unknown symbol") { return 94 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedExport, "import unknown symbol kind") { return 94 }
     return 0
 }
 
@@ -4791,6 +4871,100 @@ fn test_assert_wrong_arg_count() -> i32 {
     return 0
 }
 
+// ─── 9.10.6 Error Kind Tests ─────────────────────────────────────────
+
+fn test_error_kind_undefined_function() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Call undefined function → UndefinedFunction
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "no_such_func")
+    tc = r_callee.0
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "undefined function error") { return 111 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedFunction, "undefined function kind") { return 111 }
+    return 0
+}
+
+fn test_error_kind_undefined_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // resolve type "NoSuchType" → UndefinedType
+    let rt: (TypeChecker, TypeExprId) = add_type_named(tc, "NoSuchType")
+    tc = rt.0
+    let rr: (TypeChecker, KlarType) = resolve_type_expr(tc, rt.1)
+    tc = rr.0
+    if not expect_errors(tc, 1, "undefined type error") { return 112 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedType, "undefined type kind") { return 112 }
+    return 0
+}
+
+fn test_error_kind_duplicate_definition() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // let x: i32 = 1; let x: i32 = 2 → DuplicateDefinition
+    let rt1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = rt1.0
+    let rv1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = rv1.0
+    let rs1: (TypeChecker, StmtId) = add_let_stmt(tc, "x", rt1.1, rv1.1)
+    tc = rs1.0
+    tc = check_stmt(tc, rs1.1)
+    if not expect_ok(tc, "first let x") { return 113 }
+
+    let rt2: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = rt2.0
+    let rv2: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = rv2.0
+    let rs2: (TypeChecker, StmtId) = add_let_stmt(tc, "x", rt2.1, rv2.1)
+    tc = rs2.0
+    tc = check_stmt(tc, rs2.1)
+    if not expect_errors(tc, 1, "duplicate let x → error") { return 113 }
+    if not expect_error_kind(tc, 0, ErrorKind::DuplicateDefinition, "duplicate definition kind") { return 113 }
+    return 0
+}
+
+fn test_error_kind_missing_return() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // return (bare) when expecting i32 → MissingReturn
+    tc.current_return_type = type_i32()
+    let rs: (TypeChecker, StmtId) = add_return_stmt(tc, no_expr())
+    tc = rs.0
+    tc = check_stmt(tc, rs.1)
+    if not expect_errors(tc, 1, "bare return in i32 fn → error") { return 114 }
+    if not expect_error_kind(tc, 0, ErrorKind::MissingReturn, "missing return kind") { return 114 }
+    return 0
+}
+
+fn test_error_kind_format_output() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // Produce an error at a known span
+    let span: Span = Span { line: 5, column: 10, start: 0, end: 10 }
+    tc = add_typed_error(tc, ErrorKind::TypeMismatch, span, "expected i32, got string")
+
+    // Verify format_error produces Zig-compatible output
+    let formatted: string = format_error(tc, 0)
+    let expected: string = "5:10 [type_mismatch]: expected i32, got string"
+    if formatted != expected {
+        println("FAIL: format_error — expected '" + expected + "', got '" + formatted + "'")
+        return 115
+    }
+
+    // Verify format_all_errors header
+    let all: string = format_all_errors(tc)
+    if not all.starts_with("Found 1 error(s):") {
+        println("FAIL: format_all_errors header — got: " + all)
+        return 115
+    }
+
+    return 0
+}
+
 // ─── Main ───────────────────────────────────────────────────────────
 
 fn main() -> i32 {
@@ -4834,6 +5008,12 @@ fn main() -> i32 {
     if rc != 0 { return rc }
 
     rc = test_break_outside_loop()
+    if rc != 0 { return rc }
+
+    rc = test_continue_outside_loop()
+    if rc != 0 { return rc }
+
+    rc = test_invalid_index()
     if rc != 0 { return rc }
 
     rc = test_function_call()
@@ -5100,6 +5280,22 @@ fn main() -> i32 {
     rc = test_assert_wrong_arg_count()
     if rc != 0 { return rc }
 
-    println("checker_main.kl: all tests passed (99 tests)")
+    // 9.10.6 Error Kind tests
+    rc = test_error_kind_undefined_function()
+    if rc != 0 { return rc }
+
+    rc = test_error_kind_undefined_type()
+    if rc != 0 { return rc }
+
+    rc = test_error_kind_duplicate_definition()
+    if rc != 0 { return rc }
+
+    rc = test_error_kind_missing_return()
+    if rc != 0 { return rc }
+
+    rc = test_error_kind_format_output()
+    if rc != 0 { return rc }
+
+    println("checker_main.kl: all tests passed (106 tests)")
     return 0
 }

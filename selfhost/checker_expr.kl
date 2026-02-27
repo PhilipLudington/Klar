@@ -14,7 +14,8 @@ import types.{
     type_is_primitive, get_primitive_kind,
     ArrayData, SliceData, TupleData,
     FunctionData, StructData, StructFieldData, EnumData,
-    TraitData, TraitMethodData, TypeVarData
+    TraitData, TraitMethodData, TypeVarData,
+    ErrorKind
 }
 
 import ast.{
@@ -37,6 +38,7 @@ import ast.{
 import checker.{
     TypeChecker, SymbolInfo, SymbolKind, MethodInfo,
     lookup, add_error, add_error_msg, add_error_with_type,
+    add_typed_error, add_typed_error_with_type,
     resolve_type_expr,
     type_eq, type_compatible, is_error_type, is_never_type, is_void_type,
     type_display,
@@ -175,7 +177,7 @@ fn check_identifier(tc: TypeChecker, data: IdentifierData) -> (TypeChecker, Klar
             return (tc, info.sym_type)
         }
         None => {
-            return add_error_with_type(tc, data.span, "undefined variable '" + data.ident_name + "'")
+            return add_typed_error_with_type(tc, ErrorKind::UndefinedVariable, data.span, "undefined variable '" + data.ident_name + "'")
         }
     }
 }
@@ -232,7 +234,7 @@ fn check_binary(tc: TypeChecker, data: BinaryData) -> (TypeChecker, KlarType) {
         // String concat: both strings
         BinaryOp::Concat => {
             if not type_eq(left_type, type_string()) or not type_eq(right_type, type_string()) {
-                return add_error_with_type(c, data.span,
+                return add_typed_error_with_type(c, ErrorKind::InvalidOperation, data.span,
                     "++ requires string operands, got " + type_display(left_type) + " and " + type_display(right_type))
             }
             return (c, type_string())
@@ -265,11 +267,11 @@ fn check_arithmetic_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarT
         return (tc, type_string())
     }
     if not type_is_numeric(left) {
-        return add_error_with_type(tc, span,
+        return add_typed_error_with_type(tc, ErrorKind::InvalidOperation, span,
             "arithmetic requires numeric operands, got " + type_display(left))
     }
     if not type_eq(left, right) {
-        return add_error_with_type(tc, span,
+        return add_typed_error_with_type(tc, ErrorKind::TypeMismatch, span,
             "operand type mismatch: " + type_display(left) + " vs " + type_display(right))
     }
     return (tc, left)
@@ -277,7 +279,7 @@ fn check_arithmetic_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarT
 
 fn check_comparison_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
     if not type_eq(left, right) {
-        return add_error_with_type(tc, span,
+        return add_typed_error_with_type(tc, ErrorKind::TypeMismatch, span,
             "comparison type mismatch: " + type_display(left) + " vs " + type_display(right))
     }
     return (tc, type_bool())
@@ -285,11 +287,11 @@ fn check_comparison_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarT
 
 fn check_ordered_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
     if not type_eq(left, right) {
-        return add_error_with_type(tc, span,
+        return add_typed_error_with_type(tc, ErrorKind::TypeMismatch, span,
             "comparison type mismatch: " + type_display(left) + " vs " + type_display(right))
     }
     if not type_is_numeric(left) and not type_eq(left, type_string()) and not type_eq(left, type_char()) {
-        return add_error_with_type(tc, span,
+        return add_typed_error_with_type(tc, ErrorKind::InvalidOperation, span,
             "ordered comparison requires numeric/string/char type, got " + type_display(left))
     }
     return (tc, type_bool())
@@ -297,11 +299,11 @@ fn check_ordered_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType
 
 fn check_logical_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
     if not type_eq(left, type_bool()) {
-        return add_error_with_type(tc, span,
+        return add_typed_error_with_type(tc, ErrorKind::TypeMismatch, span,
             "'and'/'or' requires bool operands, got " + type_display(left))
     }
     if not type_eq(right, type_bool()) {
-        return add_error_with_type(tc, span,
+        return add_typed_error_with_type(tc, ErrorKind::TypeMismatch, span,
             "'and'/'or' requires bool operands, got " + type_display(right))
     }
     return (tc, type_bool())
@@ -309,11 +311,11 @@ fn check_logical_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType
 
 fn check_bitwise_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
     if not type_is_integer(left) {
-        return add_error_with_type(tc, span,
+        return add_typed_error_with_type(tc, ErrorKind::InvalidOperation, span,
             "bitwise op requires integer operands, got " + type_display(left))
     }
     if not type_eq(left, right) {
-        return add_error_with_type(tc, span,
+        return add_typed_error_with_type(tc, ErrorKind::TypeMismatch, span,
             "bitwise op type mismatch: " + type_display(left) + " vs " + type_display(right))
     }
     return (tc, left)
@@ -333,21 +335,21 @@ fn check_unary(tc: TypeChecker, data: UnaryData) -> (TypeChecker, KlarType) {
     match data.op {
         UnaryOp::Negate => {
             if not type_is_numeric(op_type) {
-                return add_error_with_type(c, data.span,
+                return add_typed_error_with_type(c, ErrorKind::InvalidOperation, data.span,
                     "negation requires numeric type, got " + type_display(op_type))
             }
             return (c, op_type)
         }
         UnaryOp::Not => {
             if not type_eq(op_type, type_bool()) {
-                return add_error_with_type(c, data.span,
+                return add_typed_error_with_type(c, ErrorKind::TypeMismatch, data.span,
                     "'not' requires bool, got " + type_display(op_type))
             }
             return (c, type_bool())
         }
         UnaryOp::BitNot => {
             if not type_is_integer(op_type) {
-                return add_error_with_type(c, data.span,
+                return add_typed_error_with_type(c, ErrorKind::InvalidOperation, data.span,
                     "bitwise not requires integer, got " + type_display(op_type))
             }
             return (c, op_type)
@@ -383,7 +385,7 @@ fn check_postfix(tc: TypeChecker, data: PostfixData) -> (TypeChecker, KlarType) 
                     return (c, ok)
                 }
                 _ => {
-                    return add_error_with_type(c, data.span,
+                    return add_typed_error_with_type(c, ErrorKind::InvalidOperation, data.span,
                         "postfix '?' requires Optional or Result, got " + type_display(op_type))
                 }
             }
@@ -396,7 +398,7 @@ fn check_postfix(tc: TypeChecker, data: PostfixData) -> (TypeChecker, KlarType) 
                     return (c, inner)
                 }
                 _ => {
-                    return add_error_with_type(c, data.span,
+                    return add_typed_error_with_type(c, ErrorKind::InvalidOperation, data.span,
                         "postfix '.?' requires Optional, got " + type_display(op_type))
                 }
             }
@@ -460,7 +462,7 @@ fn check_named_call(tc: TypeChecker, data: CallData, id_data: IdentifierData) ->
             if name == "Err" and data.args_count == 1 {
                 return check_err_call(tc, data)
             }
-            return add_error_with_type(tc, data.span, "undefined function '" + name + "'")
+            return add_typed_error_with_type(tc, ErrorKind::UndefinedFunction, data.span, "undefined function '" + name + "'")
         }
     }
 }
@@ -485,7 +487,7 @@ fn check_fn_call_args(tc: TypeChecker, data: CallData, fn_data: FunctionData, fn
 
     // Check argument count
     if data.args_count != fn_data.params_count {
-        c = add_error(c, data.span,
+        c = add_typed_error(c, ErrorKind::WrongNumberOfArgs, data.span,
             "function '" + fn_name + "' expects " + fn_data.params_count.to_string().as_str() +
             " argument(s), got " + data.args_count.to_string().as_str())
         // Still check args for additional errors
@@ -504,7 +506,7 @@ fn check_fn_call_args(tc: TypeChecker, data: CallData, fn_data: FunctionData, fn
         if i < fn_data.params_count {
             let param_type: KlarType = get_resolved_type(c, fn_data.params_start + i)
             if not type_compatible(param_type, arg_type) {
-                c = add_error(c, data.span,
+                c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                     "argument " + (i + 1).to_string().as_str() + " of '" + fn_name +
                     "': expected " + type_display(param_type) + ", got " + type_display(arg_type))
             }
@@ -569,7 +571,7 @@ fn check_assert_typed_call(tc: TypeChecker, data: CallData, name: string,
         expected_kind: string, expected_desc: string) -> (TypeChecker, KlarType) {
     var c: TypeChecker = tc
     if data.args_count != 1 {
-        c = add_error(c, data.span,
+        c = add_typed_error(c, ErrorKind::WrongNumberOfArgs, data.span,
             name + " requires exactly 1 argument, got " + data.args_count.to_string().as_str())
         return (c, type_void())
     }
@@ -579,7 +581,7 @@ fn check_assert_typed_call(tc: TypeChecker, data: CallData, name: string,
     let arg_type: KlarType = r.1
     let arg_kn: string = type_kind_name(arg_type.kind)
     if arg_kn != expected_kind and arg_kn != "unknown" {
-        c = add_error(c, data.span,
+        c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
             name + " expects " + expected_desc + ", got " + type_display(arg_type))
     }
     return (c, type_void())
@@ -648,7 +650,7 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
                     None => {}
                 }
             }
-            return add_error_with_type(c, data.span,
+            return add_typed_error_with_type(c, ErrorKind::UndefinedMethod, data.span,
                 "no method '" + data.method_name + "' on struct '" + struct_data.name + "'")
         }
         TypeKind::TypeVar => {
@@ -695,7 +697,7 @@ fn check_type_var_method(tc: TypeChecker, recv_type: KlarType, data: MethodCallD
         bi = bi + 1
     }
 
-    return add_error_with_type(c, data.span,
+    return add_typed_error_with_type(c, ErrorKind::UndefinedMethod, data.span,
         "no method '" + data.method_name + "' on type variable '" + tv.name +
         "' (not provided by any trait bound)")
 }
@@ -724,7 +726,7 @@ fn check_field_access(tc: TypeChecker, data: FieldAccessData) -> (TypeChecker, K
                 }
                 i = i + 1
             }
-            return add_error_with_type(c, data.span,
+            return add_typed_error_with_type(c, ErrorKind::UndefinedField, data.span,
                 "no field '" + data.field_name + "' on struct '" + struct_data.name + "'")
         }
         TypeKind::Tuple => {
@@ -733,7 +735,7 @@ fn check_field_access(tc: TypeChecker, data: FieldAccessData) -> (TypeChecker, K
             return (c, type_unknown())
         }
         _ => {
-            return add_error_with_type(c, data.span,
+            return add_typed_error_with_type(c, ErrorKind::UndefinedField, data.span,
                 "cannot access field '" + data.field_name + "' on type " + type_display(obj_type))
         }
     }
@@ -756,7 +758,7 @@ fn check_index(tc: TypeChecker, data: IndexData) -> (TypeChecker, KlarType) {
 
     // Index must be integer
     if not type_is_integer(idx_type) and not is_error_type(idx_type) {
-        c = add_error(c, data.span,
+        c = add_typed_error(c, ErrorKind::InvalidIndex, data.span,
             "index must be integer, got " + type_display(idx_type))
     }
 
@@ -830,14 +832,14 @@ fn check_struct_literal(tc: TypeChecker, data: StructLiteralData) -> (TypeChecke
 
     // Look up struct type
     if not c.struct_types.contains_key(data.struct_name) {
-        return add_error_with_type(c, data.span, "unknown struct '" + data.struct_name + "'")
+        return add_typed_error_with_type(c, ErrorKind::UndefinedType, data.span, "unknown struct '" + data.struct_name + "'")
     }
 
     let st: ?KlarType = c.struct_types.get(data.struct_name)
     var struct_type: KlarType = type_error()
     match st {
         Some(t) => { struct_type = t }
-        None => { return add_error_with_type(c, data.span, "unknown struct '" + data.struct_name + "'") }
+        None => { return add_typed_error_with_type(c, ErrorKind::UndefinedType, data.span, "unknown struct '" + data.struct_name + "'") }
     }
 
     // Check field initializers
@@ -860,14 +862,14 @@ fn check_enum_variant(tc: TypeChecker, data: EnumVariantData) -> (TypeChecker, K
 
     // Look up enum type
     if not c.enum_types.contains_key(data.type_name) {
-        return add_error_with_type(c, data.span, "unknown enum '" + data.type_name + "'")
+        return add_typed_error_with_type(c, ErrorKind::UndefinedType, data.span, "unknown enum '" + data.type_name + "'")
     }
 
     let et: ?KlarType = c.enum_types.get(data.type_name)
     var enum_type: KlarType = type_error()
     match et {
         Some(t) => { enum_type = t }
-        None => { return add_error_with_type(c, data.span, "unknown enum '" + data.type_name + "'") }
+        None => { return add_typed_error_with_type(c, ErrorKind::UndefinedType, data.span, "unknown enum '" + data.type_name + "'") }
     }
 
     // Check payload args
@@ -905,7 +907,7 @@ fn check_array_literal(tc: TypeChecker, data: ArrayLiteralData) -> (TypeChecker,
         let r: (TypeChecker, KlarType) = check_expr(c, eid)
         c = r.0
         if not type_compatible(elem_type, r.1) and not is_error_type(r.1) {
-            c = add_error(c, data.span,
+            c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                 "array element type mismatch: expected " + type_display(elem_type) +
                 ", got " + type_display(r.1))
         }
@@ -952,7 +954,7 @@ fn check_generic_fn_call(tc: TypeChecker, data: CallData, fn_name: string) -> (T
             return check_generic_fn_call_impl(c, data, fn_name, fn_decl)
         }
         None => {
-            return add_error_with_type(c, data.span, "undefined generic function '" + fn_name + "'")
+            return add_typed_error_with_type(c, ErrorKind::UndefinedFunction, data.span, "undefined generic function '" + fn_name + "'")
         }
     }
 }
@@ -962,7 +964,7 @@ fn check_generic_fn_call_impl(tc: TypeChecker, data: CallData, fn_name: string, 
 
     // Check argument count
     if data.args_count != fn_decl.params_count {
-        return add_error_with_type(c, data.span,
+        return add_typed_error_with_type(c, ErrorKind::WrongNumberOfArgs, data.span,
             "function '" + fn_name + "' expects " + fn_decl.params_count.to_string().as_str() +
             " argument(s), got " + data.args_count.to_string().as_str())
     }
@@ -982,7 +984,7 @@ fn check_generic_fn_call_impl(tc: TypeChecker, data: CallData, fn_name: string, 
     if data.type_args_count > 0 {
         // Explicit type arguments
         if data.type_args_count != fn_decl.generics_count {
-            return add_error_with_type(c, data.span,
+            return add_typed_error_with_type(c, ErrorKind::WrongNumberOfArgs, data.span,
                 "generic function '" + fn_name + "' expects " + fn_decl.generics_count.to_string().as_str() +
                 " type argument(s), got " + data.type_args_count.to_string().as_str())
         }
@@ -1081,7 +1083,7 @@ fn check_generic_fn_call_impl(tc: TypeChecker, data: CallData, fn_name: string, 
             if vi < fn_decl.params_count and not is_error_type(vr.1) {
                 let param_type: KlarType = get_resolved_type(c, mono_params_start + vi)
                 if not type_compatible(param_type, vr.1) {
-                    c = add_error(c, data.span,
+                    c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                         "argument " + (vi + 1).to_string().as_str() + " of '" + fn_name +
                         "': expected " + type_display(param_type) + ", got " + type_display(vr.1))
                 }
@@ -1171,7 +1173,7 @@ fn check_if_expr(tc: TypeChecker, data: IfExprData) -> (TypeChecker, KlarType) {
     c = r_cond.0
     let cond_type: KlarType = r_cond.1
     if not type_eq(cond_type, type_bool()) and not is_error_type(cond_type) {
-        c = add_error(c, data.span,
+        c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
             "if condition must be bool, got " + type_display(cond_type))
     }
 
@@ -1191,7 +1193,7 @@ fn check_if_expr(tc: TypeChecker, data: IfExprData) -> (TypeChecker, KlarType) {
             and not is_error_type(then_type) and not is_error_type(else_type)
             and not is_never_type(then_type) and not is_never_type(else_type)
             and not is_void_type(then_type) and not is_void_type(else_type) {
-            c = add_error(c, data.span,
+            c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                 "if expression branches have different types: " +
                 type_display(then_type) + " vs " + type_display(else_type))
         }
@@ -1229,7 +1231,7 @@ fn check_match_expr(tc: TypeChecker, data: MatchExprData) -> (TypeChecker, KlarT
             c = r_guard.0
             let guard_type: KlarType = r_guard.1
             if not type_eq(guard_type, type_bool()) and not is_error_type(guard_type) {
-                c = add_error(c, arm.span,
+                c = add_typed_error(c, ErrorKind::TypeMismatch, arm.span,
                     "match guard must be bool, got " + type_display(guard_type))
             }
         }
@@ -1247,7 +1249,7 @@ fn check_match_expr(tc: TypeChecker, data: MatchExprData) -> (TypeChecker, KlarT
                 if not type_compatible(result_type, arm_type)
                     and not is_error_type(arm_type) and not is_error_type(result_type)
                     and not is_never_type(arm_type) and not is_never_type(result_type) {
-                    c = add_error(c, arm.span,
+                    c = add_typed_error(c, ErrorKind::TypeMismatch, arm.span,
                         "match arm type mismatch: expected " + type_display(result_type) +
                         ", got " + type_display(arm_type))
                 }
