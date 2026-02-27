@@ -306,12 +306,14 @@ Port the advanced type system features.
 - [x] **9.10.3** Optional/Result type checking, `?` propagation operator *(Phase A: constructors, postfix ?, ??. Phase B: closures, if/match expressions, Optional/Result variant pattern binding)*
 - [x] **9.10.4** Module import resolution (module registry, import processing, symbol import)
 - [x] **9.10.5** Builtin function and method type checking *(22 free builtins including assert_ok/err/some/none with call-site validation + builtin methods for string/int/float/array/slice/list/map/set/optional/result in checker_builtins.kl)*
-- [ ] **9.10.6** Full diagnostic parity with Zig checker
+- [x] **9.10.6** Structured error kinds *(ErrorKind enum with 23 variants, parallel-list tracking, add_typed_error/format_error, all ~76 call sites refactored, 106 tests)*
+- [ ] **9.10.7** Full diagnostic parity with Zig checker *(run selfhost checker against test/native/ and test/check/ suites, compare accept/reject decisions and error messages with Zig checker)*
 
 **Success Criteria:**
-- [ ] Checker produces identical accept/reject decisions on entire test suite
-- [ ] Error messages match Zig checker output (content, not necessarily formatting)
-- [ ] Monomorphization produces identical instantiation sets
+- [x] Structured error kinds with typed error tracking (9.10.6)
+- [ ] Checker produces identical accept/reject decisions on entire test suite (9.10.7)
+- [ ] Error messages match Zig checker output (content, not necessarily formatting) (9.10.7)
+- [ ] Monomorphization produces identical instantiation sets (9.10.7)
 
 ---
 
