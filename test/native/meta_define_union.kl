@@ -1,0 +1,20 @@
+// Test: string union constraint in custom meta annotation
+meta define status(state: "draft" | "review" | "stable" | "deprecated")
+
+meta status("stable")
+fn core_logic() -> i32 {
+    return 10
+}
+
+meta status("draft")
+fn experimental() -> i32 {
+    return 5
+}
+
+fn main() -> i32 {
+    let total: i32 = core_logic() + experimental()
+    if total == 15 {
+        return 0
+    }
+    return 1
+}

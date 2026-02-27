@@ -1,0 +1,8 @@
+// Expected: check-error expects 1 argument(s), got 2
+
+meta define priority(level: "high" | "medium" | "low")
+
+meta priority("high", "extra")
+fn foo() -> i32 {
+    return 0
+}

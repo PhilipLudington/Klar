@@ -1,0 +1,14 @@
+// Expected: check-error can only appear on file-level declarations
+// Note: the parser attaches custom annotations to the next declaration,
+// so a `for module` annotation on a function correctly errors.
+
+meta define owner(team: string) for module
+
+meta owner("platform-team")
+fn get_data() -> i32 {
+    return 0
+}
+
+fn main() -> i32 {
+    return 0
+}

@@ -186,6 +186,29 @@ else
     echo "⊘ sibling (test not found, skipping)"
 fi
 
+# Test 8: Meta annotation import
+echo "--- meta_import: Import custom meta annotations ---"
+temp_bin="/tmp/klar_module_meta_import"
+if [ -d "$TEST_DIR/meta_import" ]; then
+    if $KLAR build $TEST_DIR/meta_import/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ meta_import (exit: $result)"
+            record_success "meta_import"
+        else
+            echo "✗ meta_import (expected: 0, got: $result)"
+            record_failure "meta_import" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ meta_import (build failed)"
+        record_failure "meta_import" "build failed"
+    fi
+else
+    echo "⊘ meta_import (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON

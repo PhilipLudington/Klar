@@ -428,6 +428,11 @@ pub const TypeChecker = struct {
     pure_function_span: ?ast.Span,
     /// Set of function names declared `meta pure`.
     pure_functions: std.StringHashMapUnmanaged(void),
+    /// Registry of custom meta annotation definitions (meta define).
+    meta_definitions: std.StringHashMapUnmanaged(*ast.MetaDefine),
+    /// When true, skip custom annotation validation (Phase 1 of two-phase checking
+    /// may have incomplete imports, so custom validation is deferred to Phase 2).
+    lenient_custom_meta: bool,
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -501,6 +506,8 @@ pub const TypeChecker = struct {
             .in_pure_function = false,
             .pure_function_span = null,
             .pure_functions = .{},
+            .meta_definitions = .{},
+            .lenient_custom_meta = false,
         };
         checker.initBuiltins() catch @panic("Failed to initialize builtin types");
         return checker;
@@ -762,6 +769,7 @@ pub const TypeChecker = struct {
         self.deprecated_functions.deinit(self.allocator);
         self.meta_group_names.deinit(self.allocator);
         self.pure_functions.deinit(self.allocator);
+        self.meta_definitions.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -4364,6 +4372,22 @@ pub const TypeChecker = struct {
                     else => {},
                 }
             }
+
+            // Also export meta define entries from file-level meta
+            for (module_ast.file_meta) |annotation| {
+                switch (annotation) {
+                    .define => |def| {
+                        try symbols.symbols.put(self.allocator, def.name, .{
+                            .name = def.name,
+                            .kind = .meta_define,
+                            .type_ = null,
+                            .is_pub = true,
+                            .meta_define_ptr = def,
+                        });
+                    },
+                    else => {},
+                }
+            }
         }
 
         // Store in registry using duplicated canonical name
@@ -4453,11 +4477,24 @@ pub const TypeChecker = struct {
                 continue;
             }
 
+            // Meta defines go into meta_definitions registry, not scope
+            if (sym.kind == .meta_define) {
+                if (sym.meta_define_ptr) |def| {
+                    if (!self.skip_existing_imports and self.meta_definitions.contains(def.name)) {
+                        self.addError(.meta_error, span, "duplicate meta define '{s}' from import", .{def.name});
+                    } else {
+                        self.meta_definitions.put(self.allocator, def.name, def) catch {};
+                    }
+                }
+                continue;
+            }
+
             // Add to scope based on symbol kind
             const symbol_kind: Symbol.Kind = switch (sym.kind) {
                 .function => .function,
                 .struct_type, .enum_type, .trait_type, .type_alias => .type_,
                 .constant => .constant,
+                .meta_define => unreachable, // handled above
             };
 
             self.current_scope.define(.{
@@ -4494,11 +4531,24 @@ pub const TypeChecker = struct {
             return;
         }
 
+        // Meta defines go into meta_definitions registry, not scope
+        if (sym.kind == .meta_define) {
+            if (item.alias != null) {
+                self.addError(.meta_error, item.span, "meta define '{s}' cannot be aliased", .{item.name});
+                return;
+            }
+            if (sym.meta_define_ptr) |def| {
+                self.meta_definitions.put(self.allocator, def.name, def) catch {};
+            }
+            return;
+        }
+
         // Add to scope
         const symbol_kind: Symbol.Kind = switch (sym.kind) {
             .function => .function,
             .struct_type, .enum_type, .trait_type, .type_alias => .type_,
             .constant => .constant,
+            .meta_define => unreachable, // handled above
         };
 
         self.current_scope.define(.{
@@ -4521,13 +4571,21 @@ pub const TypeChecker = struct {
     pub fn checkModuleDeclarations(self: *TypeChecker, module: ast.Module) void {
         self.async_function_names.clearRetainingCapacity();
 
+        // Skip custom annotation validation in Phase 1 — imports may be incomplete.
+        // Custom annotations are validated in Phase 2 (checkModuleBodies) when all imports are resolved.
+        self.lenient_custom_meta = true;
+
+        // Clear meta definitions before processing imports (imports may add definitions)
+        meta_validation.clearMetaDefinitions(self);
+
         // Process imports leniently — modules not yet registered are skipped
         self.skip_missing_modules = true;
         self.processImports(module);
         self.skip_missing_modules = false;
 
-        // Collect meta group names and validate file-level meta before checking declarations
+        // Collect meta group names, definitions, and validate file-level meta before checking declarations
         meta_validation.collectGroupNames(self, module.file_meta);
+        meta_validation.collectMetaDefinitions(self, module.file_meta);
         meta_validation.validateFileMeta(self, module.file_meta);
 
         // Pass 1: register all type declarations
@@ -4672,13 +4730,23 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Clear meta definitions before re-processing imports
+        meta_validation.clearMetaDefinitions(self);
+
         // Re-process imports — all exports now available, skip already-imported symbols
         self.skip_existing_imports = true;
         self.processImports(module);
         self.skip_existing_imports = false;
 
-        // Re-collect group names for this module (may differ from previous module in multi-file builds)
+        // Re-collect group names and definitions for this module (may differ from previous module in multi-file builds)
         meta_validation.collectGroupNames(self, module.file_meta);
+        meta_validation.collectMetaDefinitions(self, module.file_meta);
+
+        // All imports resolved — enable custom annotation validation (was deferred from Phase 1)
+        self.lenient_custom_meta = false;
+
+        // Validate custom annotations at file level (deferred from Phase 1 when imports were incomplete)
+        meta_validation.validateFileMetaCustomOnly(self, module.file_meta);
 
         // Pass 3: validate meta annotations and check function bodies
         for (module.declarations) |decl| {
@@ -4763,6 +4831,12 @@ pub const TypeChecker = struct {
                     }
                 },
                 .impl_decl => self.checkDecl(decl),
+                // Re-validate custom meta annotations on types (deferred from Phase 1)
+                .struct_decl => |s| meta_validation.validateDeclMetaCustomOnly(self, s.meta, .struct_),
+                .enum_decl => |e| meta_validation.validateDeclMetaCustomOnly(self, e.meta, .enum_),
+                .trait_decl => |t| meta_validation.validateDeclMetaCustomOnly(self, t.meta, .trait_),
+                .type_alias => |a| meta_validation.validateDeclMetaCustomOnly(self, a.meta, .type_alias),
+                .const_decl => |c| meta_validation.validateDeclMetaCustomOnly(self, c.meta, .const_),
                 else => {},
             }
         }
@@ -4791,11 +4865,15 @@ pub const TypeChecker = struct {
     pub fn checkModule(self: *TypeChecker, module: ast.Module) void {
         self.async_function_names.clearRetainingCapacity();
 
+        // Clear meta definitions before processing imports (imports may add definitions)
+        meta_validation.clearMetaDefinitions(self);
+
         // Process imports first (for multi-file compilation)
         self.processImports(module);
 
-        // Collect meta group names and validate file-level meta before checking declarations
+        // Collect meta group names, definitions, and validate file-level meta before checking declarations
         meta_validation.collectGroupNames(self, module.file_meta);
+        meta_validation.collectMetaDefinitions(self, module.file_meta);
         meta_validation.validateFileMeta(self, module.file_meta);
 
         // First pass: register all type declarations

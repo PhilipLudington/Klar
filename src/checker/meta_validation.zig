@@ -39,12 +39,67 @@ pub fn collectGroupNames(tc: anytype, file_meta: []const ast.MetaAnnotation) voi
     }
 }
 
-/// Validate file-level meta annotations (meta module field types, etc).
+/// Collect custom meta annotation definitions from file-level meta annotations.
+/// Must be called after processImports (which may add imported definitions).
+/// Does NOT clear — use clearMetaDefinitions() before processImports to reset.
+pub fn collectMetaDefinitions(tc: anytype, file_meta: []const ast.MetaAnnotation) void {
+    for (file_meta) |annotation| {
+        switch (annotation) {
+            .define => |def| {
+                if (tc.meta_definitions.contains(def.name)) {
+                    tc.addError(.meta_error, def.span, "duplicate meta define '{s}'", .{def.name});
+                } else {
+                    tc.meta_definitions.put(tc.allocator, def.name, def) catch {};
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+/// Clear the meta definitions registry. Call before processImports when switching modules.
+pub fn clearMetaDefinitions(tc: anytype) void {
+    tc.meta_definitions.clearRetainingCapacity();
+}
+
+/// Validate only custom meta annotations at file level.
+/// Used in Phase 2 of two-phase checking when custom annotations were deferred.
+pub fn validateFileMetaCustomOnly(tc: anytype, file_meta: []const ast.MetaAnnotation) void {
+    for (file_meta) |annotation| {
+        switch (annotation) {
+            .custom => |cust| {
+                validateCustomAnnotation(tc, cust, null);
+            },
+            else => {},
+        }
+    }
+}
+
+/// Validate file-level meta annotations (meta module field types, custom annotations, etc).
 pub fn validateFileMeta(tc: anytype, file_meta: []const ast.MetaAnnotation) void {
     for (file_meta) |annotation| {
         switch (annotation) {
             .module_meta => |block| {
                 validateModuleMetaFields(tc, block);
+            },
+            .custom => |cust| {
+                if (!tc.lenient_custom_meta) {
+                    validateCustomAnnotation(tc, cust, null);
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+/// Validate only custom meta annotations on a declaration.
+/// Used in Phase 2 of two-phase checking to validate custom annotations that
+/// were deferred from Phase 1 (when imports may have been incomplete).
+pub fn validateDeclMetaCustomOnly(tc: anytype, meta: []const ast.MetaAnnotation, decl_kind: DeclKind) void {
+    for (meta) |annotation| {
+        switch (annotation) {
+            .custom => |cust| {
+                validateCustomAnnotation(tc, cust, decl_kind);
             },
             else => {},
         }
@@ -74,8 +129,16 @@ pub fn validateDeclMeta(tc: anytype, meta: []const ast.MetaAnnotation, decl_kind
             .group_def => {
                 tc.addError(.meta_error, annotation.span(), "meta group can only appear at file level", .{});
             },
+            .define => {
+                tc.addError(.meta_error, annotation.span(), "meta define can only appear at file level", .{});
+            },
+            .custom => |cust| {
+                if (!tc.lenient_custom_meta) {
+                    validateCustomAnnotation(tc, cust, decl_kind);
+                }
+            },
             else => {
-                // intent, decision, tag, hint, deprecated, pure, define, custom — all valid on declarations
+                // intent, decision, tag, hint, deprecated, pure — all valid on declarations
             },
         }
     }
@@ -209,6 +272,101 @@ fn isPureBuiltin(name: []const u8) bool {
     if (std.mem.eql(u8, name, "ref_to_ptr")) return true;
     if (std.mem.eql(u8, name, "ptr_cast")) return true;
     return false;
+}
+
+/// Validate a custom meta annotation against its definition.
+/// `decl_kind` is null for file-level annotations.
+fn validateCustomAnnotation(tc: anytype, cust: *ast.MetaCustom, decl_kind: ?DeclKind) void {
+    const def = tc.meta_definitions.get(cust.name) orelse {
+        tc.addError(.meta_error, cust.span, "unknown custom meta annotation '{s}'", .{cust.name});
+        return;
+    };
+
+    // Check argument count
+    if (cust.args.len != def.params.len) {
+        tc.addError(.meta_error, cust.span, "meta {s} expects {d} argument(s), got {d}", .{ cust.name, def.params.len, cust.args.len });
+        return;
+    }
+
+    // Validate each argument against its parameter's type constraint
+    for (cust.args, 0..) |arg, i| {
+        const param = def.params[i];
+        switch (param.type_constraint) {
+            .string_type => {
+                // string_type accepts both string literals and path identifiers
+                // (paths are treated as symbolic references, not validated further)
+                switch (arg) {
+                    .string => {},
+                    .path => {},
+                }
+            },
+            .string_union => |allowed| {
+                // Arg must be a string and its value must be in the allowed set
+                switch (arg) {
+                    .string => |value| {
+                        var found = false;
+                        for (allowed) |valid| {
+                            if (std.mem.eql(u8, value, valid)) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            tc.addError(.meta_error, cust.span, "meta {s}: argument '{s}' is not a valid value for parameter '{s}'", .{ cust.name, value, param.name });
+                        }
+                    },
+                    .path => |p| {
+                        // Path args don't match string union constraints
+                        const path_name = if (p.segments.len > 0) p.segments[0] else "?";
+                        tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, path_name });
+                    },
+                }
+            },
+        }
+    }
+
+    // Validate scope restriction
+    if (def.scope) |scope| {
+        validateCustomScope(tc, cust, scope, decl_kind);
+    }
+}
+
+/// Validate that a custom annotation is used on the correct kind of declaration.
+fn validateCustomScope(tc: anytype, cust: *ast.MetaCustom, scope: ast.MetaScope, decl_kind: ?DeclKind) void {
+    const dk = decl_kind orelse {
+        // File-level usage — only valid if scope is module_scope
+        if (scope != .module_scope) {
+            const scope_name = scopeName(scope);
+            tc.addError(.meta_error, cust.span, "meta {s} can only appear on {s} declarations", .{ cust.name, scope_name });
+        }
+        return;
+    };
+
+    const matches = switch (scope) {
+        .fn_scope => dk == .function,
+        .module_scope => false, // module_scope means file-level only
+        .struct_scope => dk == .struct_,
+        .enum_scope => dk == .enum_,
+        .trait_scope => dk == .trait_,
+        .field_scope => dk == .field,
+    };
+
+    if (!matches) {
+        const scope_name = if (scope == .module_scope) "file-level" else scopeName(scope);
+        tc.addError(.meta_error, cust.span, "meta {s} can only appear on {s} declarations", .{ cust.name, scope_name });
+    }
+}
+
+/// Convert a MetaScope to a human-readable name.
+fn scopeName(scope: ast.MetaScope) []const u8 {
+    return switch (scope) {
+        .fn_scope => "fn",
+        .module_scope => "module",
+        .struct_scope => "struct",
+        .enum_scope => "enum",
+        .trait_scope => "trait",
+        .field_scope => "field",
+    };
 }
 
 /// Validate paths in a meta related annotation.

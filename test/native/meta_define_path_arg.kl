@@ -1,0 +1,18 @@
+// Test: custom annotation with path argument (string_type accepts paths)
+meta define related_to(target: string)
+
+fn helper() -> i32 {
+    return 10
+}
+
+meta related_to(helper)
+fn process() -> i32 {
+    return helper() + 5
+}
+
+fn main() -> i32 {
+    if process() == 15 {
+        return 0
+    }
+    return 1
+}

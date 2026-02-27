@@ -1,0 +1,8 @@
+// Expected: check-error not a valid value
+
+meta define priority(level: "high" | "medium" | "low")
+
+meta priority("urgent")
+fn foo() -> i32 {
+    return 0
+}

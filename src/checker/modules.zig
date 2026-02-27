@@ -26,6 +26,7 @@
 //! 4. `processImports()`: Resolve imports in dependent modules
 
 const std = @import("std");
+const ast = @import("../ast.zig");
 const types = @import("../types.zig");
 const Type = types.Type;
 const module_resolver = @import("../module_resolver.zig");
@@ -49,6 +50,8 @@ pub const ModuleSymbol = struct {
     type_: ?Type,
     /// Whether the symbol is public.
     is_pub: bool,
+    /// Pointer to MetaDefine AST node (only for meta_define kind).
+    meta_define_ptr: ?*ast.MetaDefine = null,
 
     pub const Kind = enum {
         function,
@@ -57,5 +60,6 @@ pub const ModuleSymbol = struct {
         trait_type,
         type_alias,
         constant,
+        meta_define,
     };
 };

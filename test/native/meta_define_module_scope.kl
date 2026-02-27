@@ -1,0 +1,9 @@
+// Test: meta define with module scope parses and compiles (definition only)
+// Note: `for module` custom annotations cannot currently be used because
+// the parser attaches unknown annotation names to the next declaration.
+// The definition itself is valid and can be imported by other modules.
+meta define owner(team: string) for module
+
+fn main() -> i32 {
+    return 0
+}

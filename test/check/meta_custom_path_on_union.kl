@@ -1,0 +1,12 @@
+// Expected: check-error expected string literal for parameter
+
+meta define priority(level: "high" | "medium" | "low")
+
+meta priority(some_var)
+fn foo() -> i32 {
+    return 0
+}
+
+fn main() -> i32 {
+    return 0
+}

@@ -1,0 +1,12 @@
+// Expected: check-error expects 2 argument(s), got 0
+
+meta define endpoint(method: "GET" | "POST", path: string)
+
+meta endpoint()
+fn handler() -> i32 {
+    return 0
+}
+
+fn main() -> i32 {
+    return 0
+}

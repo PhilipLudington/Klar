@@ -461,7 +461,7 @@ let x: i32 = arr[0]
 
 **Objective:** Implement the `meta` keyword system for embedding intent, architecture, and design decisions in Klar source code — compiler-validated, CLI-queryable, zero runtime cost.
 
-**Status:** In Progress — M.1–M.4 complete (token, AST, parsing, backend passthrough, formatter)
+**Status:** In Progress — M.1–M.7 complete (token, AST, parsing, backend passthrough, formatter, validation, pure verification, custom annotations)
 
 **Effort:** High | **Impact:** Very High | **Design Spec:** [docs/design/meta-layer.md](docs/design/meta-layer.md)
 
@@ -581,19 +581,19 @@ Verify all three backends (interpreter, bytecode compiler, native codegen) skip 
 
 ### Phase MD: Checker Validation
 
-#### M.5 — Basic Validation
+#### M.5 — Basic Validation ✅
 
 **Effort:** Medium-High
 
 Validate meta annotations during type checking.
 
-- [ ] **M.5.1** Validate `meta related(...)` — all path targets resolve to existing declarations
-- [ ] **M.5.2** Validate `meta in("group")` — referenced group must be defined in scope
-- [ ] **M.5.3** Validate scope rules — file-level annotations (`meta module`, `meta guide`) only at top of file
-- [ ] **M.5.4** Emit deprecation warnings when calling functions marked `meta deprecated(...)`
-- [ ] **M.5.5** Validate `meta module` and `meta guide` field types (strings, string lists)
-- [ ] **M.5.6** Error messages with source spans for all meta validation failures
-- [ ] **M.5.7** Native test files: positive cases (valid annotations) and negative cases (`test/check/` error tests)
+- [x] **M.5.1** Validate `meta related(...)` — all path targets resolve to existing declarations
+- [x] **M.5.2** Validate `meta in("group")` — referenced group must be defined in scope
+- [x] **M.5.3** Validate scope rules — file-level annotations (`meta module`, `meta guide`) only at top of file
+- [x] **M.5.4** Emit deprecation warnings when calling functions marked `meta deprecated(...)`
+- [x] **M.5.5** Validate `meta module` and `meta guide` field types (strings, string lists)
+- [x] **M.5.6** Error messages with source spans for all meta validation failures
+- [x] **M.5.7** Native test files: positive cases (valid annotations) and negative cases (`test/check/` error tests)
 
 **Success Criteria:**
 - [ ] Invalid `meta related` targets produce clear error messages
@@ -619,20 +619,20 @@ Verify that `meta pure` functions have no side effects. Pragmatic purity model: 
 - [x] Compiler accepts `meta pure` functions that are genuinely pure
 - [x] Transitive purity checking works (pure calling pure is OK, pure calling impure is error)
 
-#### M.7 — Custom Annotations
+#### M.7 — Custom Annotations ✅
 
 **Effort:** Medium
 
 Implement `meta define`, string union constraints, scope restrictions, and cross-module import.
 
-- [ ] **M.7.1** Parse `meta define name(params)` declarations
-- [ ] **M.7.2** Parse string union type constraints (`"high" | "medium" | "low"`)
-- [ ] **M.7.3** Parse scope restrictions (`for fn`, `for module`, etc.)
-- [ ] **M.7.4** Validate custom annotation usage matches its `meta define` shape
-- [ ] **M.7.5** Validate string union constraint violations (typo → compiler error)
-- [ ] **M.7.6** Validate scope restriction violations (wrong position → compiler error)
-- [ ] **M.7.7** Support importing `meta define` declarations from other modules
-- [ ] **M.7.8** Native test files for custom definitions, constraints, scope restrictions, and imports
+- [x] **M.7.1** Parse `meta define name(params)` declarations
+- [x] **M.7.2** Parse string union type constraints (`"high" | "medium" | "low"`)
+- [x] **M.7.3** Parse scope restrictions (`for fn`, `for module`, etc.)
+- [x] **M.7.4** Validate custom annotation usage matches its `meta define` shape
+- [x] **M.7.5** Validate string union constraint violations (typo → compiler error)
+- [x] **M.7.6** Validate scope restriction violations (wrong position → compiler error)
+- [x] **M.7.7** Support importing `meta define` declarations from other modules
+- [x] **M.7.8** Native test files for custom definitions, constraints, scope restrictions, and imports
 
 **Success Criteria:**
 - [ ] `meta define` creates project-specific annotation vocabulary

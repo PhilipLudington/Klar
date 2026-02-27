@@ -1,0 +1,12 @@
+// Expected: check-error can only appear on fn declarations
+
+meta define api_version(version: string) for fn
+
+meta api_version("v1")
+struct Foo {
+    x: i32,
+}
+
+fn main() -> i32 {
+    return 0
+}
