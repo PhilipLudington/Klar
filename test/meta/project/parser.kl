@@ -1,0 +1,22 @@
+// Test fixture: parser module
+meta module {
+    purpose: "Recursive descent parser",
+    role: "frontend",
+    depends: ["lexer", "ast"]
+}
+
+meta tag("parsing")
+meta intent("Entry point for expression parsing")
+fn parse_expr(input: i32) -> i32 {
+    return input + 1
+}
+
+meta tag("parsing")
+meta related(lexer::next_token, "Delegates to next_token for scanning")
+fn parse_stmt(input: i32) -> i32 {
+    return parse_expr(input)
+}
+
+fn main() -> i32 {
+    return 0
+}

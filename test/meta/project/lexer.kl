@@ -1,0 +1,20 @@
+// Test fixture: lexer module
+meta module {
+    purpose: "Tokenizer for Klar source",
+    role: "frontend"
+}
+
+meta tag("parsing")
+meta deprecated("Use new_tokenizer instead")
+fn next_token(pos: i32) -> i32 {
+    return pos + 1
+}
+
+meta hint("Always call after whitespace skip")
+fn skip_whitespace(pos: i32) -> i32 {
+    return pos
+}
+
+fn main() -> i32 {
+    return 0
+}

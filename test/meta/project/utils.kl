@@ -1,0 +1,26 @@
+// Test fixture: utility module with groups
+meta group "helpers" {
+    meta tag("utility")
+    meta hint("Pure helper functions")
+}
+
+meta in("helpers")
+meta pure
+fn clamp(x: i32) -> i32 {
+    if x < 0 {
+        return 0
+    }
+    return x
+}
+
+meta in("helpers")
+fn abs_val(x: i32) -> i32 {
+    if x < 0 {
+        return 0 - x
+    }
+    return x
+}
+
+fn main() -> i32 {
+    return 0
+}

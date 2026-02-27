@@ -1,0 +1,20 @@
+// Test fixture: deprecated at various levels (struct, field, function)
+meta deprecated("Legacy config struct")
+struct Config {
+    meta deprecated("Use timeout_ms instead")
+    timeout: i32,
+    timeout_ms: i64,
+}
+
+meta deprecated("Use new_init instead")
+fn old_init(x: i32) -> i32 {
+    return x
+}
+
+fn new_init(x: i32) -> i32 {
+    return x + 1
+}
+
+fn main() -> i32 {
+    return 0
+}
