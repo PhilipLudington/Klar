@@ -447,11 +447,8 @@ fn collectExpandedMeta(
 }
 
 fn shouldSkipPath(path: []const u8) bool {
-    // Skip hidden directories
-    if (std.mem.startsWith(u8, path, ".")) return true;
-
     // Skip known directories
-    const skip_dirs = [_][]const u8{ "build/", "zig-out/", "scratch/", "zig-cache/", ".zig-cache/" };
+    const skip_dirs = [_][]const u8{ "build/", "zig-out/", "scratch/", "zig-cache/" };
     for (skip_dirs) |skip| {
         if (std.mem.startsWith(u8, path, skip)) return true;
     }
@@ -777,6 +774,20 @@ fn metaCollectRelated(
         const info = getDeclNameAndMeta(decl);
         metaCheckRelated(allocator, path, info.name, info.kind, info.line, info.meta, fn_name, matches);
 
+        // Descend into struct fields
+        if (decl == .struct_decl) {
+            for (decl.struct_decl.fields) |field| {
+                metaCheckRelated(allocator, path, field.name, .struct_field, field.span.line, field.meta, fn_name, matches);
+            }
+        }
+
+        // Descend into enum variants
+        if (decl == .enum_decl) {
+            for (decl.enum_decl.variants) |variant| {
+                metaCheckRelated(allocator, path, variant.name, .enum_variant, variant.span.line, variant.meta, fn_name, matches);
+            }
+        }
+
         // Descend into impl/trait methods
         const methods = switch (decl) {
             .impl_decl => |impl_d| impl_d.methods,
@@ -894,24 +905,7 @@ fn metaWritePath(out: std.fs.File, p: ast.MetaPath) !void {
 
 fn writeJsonEscaped(out: std.fs.File, s: []const u8) !void {
     try out.writeAll("\"");
-    for (s) |c| {
-        switch (c) {
-            '"' => try out.writeAll("\\\""),
-            '\\' => try out.writeAll("\\\\"),
-            '\n' => try out.writeAll("\\n"),
-            '\r' => try out.writeAll("\\r"),
-            '\t' => try out.writeAll("\\t"),
-            else => {
-                if (c < 0x20) {
-                    var esc_buf: [6]u8 = undefined;
-                    const esc = std.fmt.bufPrint(&esc_buf, "\\u{x:0>4}", .{@as(u16, c)}) catch unreachable;
-                    try out.writeAll(esc);
-                } else {
-                    try out.writeAll(&[_]u8{c});
-                }
-            },
-        }
-    }
+    try writeJsonEscapedRaw(out, s);
     try out.writeAll("\"");
 }
 
@@ -955,7 +949,7 @@ fn metaOutputHuman(mode: MetaQueryMode, matches: []const MetaMatch) !void {
             try out.writeAll(tag_name);
             try out.writeAll("\"\n");
         },
-        .module => {},
+        .module => try out.writeAll("Module descriptions:\n"),
         .deprecated => try out.writeAll("Deprecated items:\n"),
         .hints => try out.writeAll("AI Hints:\n"),
         .related => |fn_name| {
@@ -1034,7 +1028,7 @@ fn metaOutputHuman(mode: MetaQueryMode, matches: []const MetaMatch) !void {
                     try out.writeAll("\"\n");
                 },
                 .custom => |c| {
-                    try out.writeAll("    @");
+                    try out.writeAll("    meta ");
                     try out.writeAll(c.name);
                     if (c.args.len > 0) {
                         try out.writeAll("(");
@@ -1169,51 +1163,79 @@ fn metaOutputJsonMeta(out: std.fs.File, meta: []const ast.MetaAnnotation) !void 
         wrote_field = true;
     }
 
-    // Scalar fields
+    // Scalar fields (first-wins to avoid duplicate JSON keys)
+    var wrote_intent = false;
+    var wrote_decision = false;
+    var wrote_hint = false;
+    var wrote_deprecated = false;
+    var wrote_pure = false;
+    var wrote_module = false;
+    var wrote_guide = false;
     for (meta) |ann| {
         switch (ann) {
             .intent => |s| {
-                if (wrote_field) try out.writeAll(",");
-                try out.writeAll("\"intent\":");
-                try writeJsonEscaped(out, s.value);
-                wrote_field = true;
+                if (!wrote_intent) {
+                    if (wrote_field) try out.writeAll(",");
+                    try out.writeAll("\"intent\":");
+                    try writeJsonEscaped(out, s.value);
+                    wrote_field = true;
+                    wrote_intent = true;
+                }
             },
             .decision => |s| {
-                if (wrote_field) try out.writeAll(",");
-                try out.writeAll("\"decision\":");
-                try writeJsonEscaped(out, s.value);
-                wrote_field = true;
+                if (!wrote_decision) {
+                    if (wrote_field) try out.writeAll(",");
+                    try out.writeAll("\"decision\":");
+                    try writeJsonEscaped(out, s.value);
+                    wrote_field = true;
+                    wrote_decision = true;
+                }
             },
             .hint => |s| {
-                if (wrote_field) try out.writeAll(",");
-                try out.writeAll("\"hint\":");
-                try writeJsonEscaped(out, s.value);
-                wrote_field = true;
+                if (!wrote_hint) {
+                    if (wrote_field) try out.writeAll(",");
+                    try out.writeAll("\"hint\":");
+                    try writeJsonEscaped(out, s.value);
+                    wrote_field = true;
+                    wrote_hint = true;
+                }
             },
             .deprecated => |s| {
-                if (wrote_field) try out.writeAll(",");
-                try out.writeAll("\"deprecated\":");
-                try writeJsonEscaped(out, s.value);
-                wrote_field = true;
+                if (!wrote_deprecated) {
+                    if (wrote_field) try out.writeAll(",");
+                    try out.writeAll("\"deprecated\":");
+                    try writeJsonEscaped(out, s.value);
+                    wrote_field = true;
+                    wrote_deprecated = true;
+                }
             },
             .pure => {
-                if (wrote_field) try out.writeAll(",");
-                try out.writeAll("\"pure\":true");
-                wrote_field = true;
+                if (!wrote_pure) {
+                    if (wrote_field) try out.writeAll(",");
+                    try out.writeAll("\"pure\":true");
+                    wrote_field = true;
+                    wrote_pure = true;
+                }
             },
             .module_meta => |b| {
-                if (wrote_field) try out.writeAll(",");
-                try out.writeAll("\"module\":{");
-                try metaOutputJsonBlock(out, b);
-                try out.writeAll("}");
-                wrote_field = true;
+                if (!wrote_module) {
+                    if (wrote_field) try out.writeAll(",");
+                    try out.writeAll("\"module\":{");
+                    try metaOutputJsonBlock(out, b);
+                    try out.writeAll("}");
+                    wrote_field = true;
+                    wrote_module = true;
+                }
             },
             .guide => |b| {
-                if (wrote_field) try out.writeAll(",");
-                try out.writeAll("\"guide\":{");
-                try metaOutputJsonBlock(out, b);
-                try out.writeAll("}");
-                wrote_field = true;
+                if (!wrote_guide) {
+                    if (wrote_field) try out.writeAll(",");
+                    try out.writeAll("\"guide\":{");
+                    try metaOutputJsonBlock(out, b);
+                    try out.writeAll("}");
+                    wrote_field = true;
+                    wrote_guide = true;
+                }
             },
             .related, .custom, .tag, .group_join, .group_def, .define => {},
         }

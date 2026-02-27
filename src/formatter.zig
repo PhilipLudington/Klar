@@ -431,7 +431,16 @@ pub const Formatter = struct {
                 '\r' => try self.write("\\r"),
                 '\t' => try self.write("\\t"),
                 0 => try self.write("\\0"),
-                else => try self.writeByte(c),
+                else => {
+                    if (c < 0x20) {
+                        // Escape remaining control characters
+                        var esc_buf: [6]u8 = undefined;
+                        const esc = std.fmt.bufPrint(&esc_buf, "\\u{x:0>4}", .{@as(u16, c)}) catch "\\u0000";
+                        try self.write(esc);
+                    } else {
+                        try self.writeByte(c);
+                    }
+                },
             }
         }
         try self.writeByte('"');

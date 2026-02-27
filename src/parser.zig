@@ -4006,6 +4006,8 @@ pub const Parser = struct {
 
     /// Check if the current `meta` token begins a file-level annotation.
     /// File-level: `meta module { ... }`, `meta group "..." { ... }`, `meta guide { ... }`, `meta define name(...)`.
+    /// Note: `meta guide` is always parsed as file-level. When it appears before an `impl` block,
+    /// it is stored in file_meta (not attached to the impl). The checker allows guide at file level.
     fn isFileLevelMeta(self: *Parser) bool {
         const next = self.peekNext();
         if (next.kind == .module) return true;

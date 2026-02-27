@@ -77,12 +77,17 @@ pub fn validateFileMetaCustomOnly(tc: anytype, file_meta: []const ast.MetaAnnota
     }
 }
 
-/// Validate file-level meta annotations (meta module field types, custom annotations, etc).
+/// Validate file-level meta annotations (meta module field types, custom annotations, group joins, etc).
 pub fn validateFileMeta(tc: anytype, file_meta: []const ast.MetaAnnotation) void {
     for (file_meta) |annotation| {
         switch (annotation) {
             .module_meta => |block| {
                 validateModuleMetaFields(tc, block);
+            },
+            .group_join => |gj| {
+                if (!tc.meta_group_names.contains(gj.value)) {
+                    tc.addError(.meta_error, gj.span, "meta in: group '{s}' is not defined", .{gj.value});
+                }
             },
             .custom => |cust| {
                 if (!tc.lenient_custom_meta) {
@@ -225,6 +230,8 @@ pub fn registerPureFunction(tc: anytype, name: []const u8, meta: []const ast.Met
 
 /// Check if a function call violates purity constraints.
 /// Called from checkCallImpl when in_pure_function is true.
+/// TODO: Method calls (e.g., obj.method()) are not yet checked for purity.
+/// A pure function can currently call impure methods without triggering an error.
 pub fn checkPureCall(tc: anytype, func_name: []const u8, call_span: ast.Span) void {
     // Check if calling a known-impure builtin
     if (isImpureBuiltin(func_name)) {
@@ -330,6 +337,7 @@ fn validateCustomAnnotation(tc: anytype, cust: *ast.MetaCustom, decl_kind: ?Decl
                     .string => {},
                     .path => |p| {
                         const path_str = joinMetaPath(tc.allocator, p.segments);
+                        defer if (p.segments.len > 1) tc.allocator.free(path_str);
                         tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, path_str });
                     },
                 }
@@ -360,6 +368,7 @@ fn validateCustomAnnotation(tc: anytype, cust: *ast.MetaCustom, decl_kind: ?Decl
                     .path => |p| {
                         // Path args don't match string union constraints
                         const path_str = joinMetaPath(tc.allocator, p.segments);
+                        defer if (p.segments.len > 1) tc.allocator.free(path_str);
                         tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, path_str });
                     },
                 }

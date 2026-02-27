@@ -1,6 +1,6 @@
 # Meta Layer: Self-Describing Code
 
-> **Status:** Design spec (not yet implemented)
+> **Status:** Implemented (Milestones M.1–M.8 complete)
 > Klar's meta layer embeds intent, architecture, and conventions directly in the language — where the compiler can validate them and tooling can query them.
 
 ---
@@ -759,7 +759,7 @@ The two are complementary and non-overlapping.
 
 ### Parsing
 
-The `meta` keyword introduces a new statement/annotation form in the parser. `meta` is reserved for future use (see `docs/appendix/keywords.md`) but not yet implemented in the lexer — it must be added as a recognized keyword when this feature is built.
+The `meta` keyword introduces a new statement/annotation form in the parser. It is a recognized keyword in the lexer (`src/lexer.zig`) and parser (`src/parser.zig`). Meta annotations are parsed before declarations and stored in the AST.
 
 ### Type checking
 

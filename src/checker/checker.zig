@@ -765,7 +765,14 @@ pub const TypeChecker = struct {
         // Clean up debug call types (no values to free, just the map)
         self.debug_call_types.deinit(self.allocator);
 
-        // Clean up meta validation maps (no values to free, just the maps)
+        // Clean up meta validation maps
+        // Free allocated keys for deprecated methods (format "TypeName::method_name")
+        var dep_key_iter = self.deprecated_functions.keyIterator();
+        while (dep_key_iter.next()) |key| {
+            if (std.mem.indexOf(u8, key.*, "::") != null) {
+                self.allocator.free(key.*);
+            }
+        }
         self.deprecated_functions.deinit(self.allocator);
         self.meta_group_names.deinit(self.allocator);
         self.pure_functions.deinit(self.allocator);
@@ -4587,8 +4594,10 @@ pub const TypeChecker = struct {
         // Custom annotations are validated in Phase 2 (checkModuleBodies) when all imports are resolved.
         self.lenient_custom_meta = true;
 
-        // Clear meta definitions before processing imports (imports may add definitions)
+        // Clear meta state before processing imports (imports may add definitions)
         meta_validation.clearMetaDefinitions(self);
+        self.deprecated_functions.clearRetainingCapacity();
+        self.pure_functions.clearRetainingCapacity();
 
         // Process imports leniently — modules not yet registered are skipped
         self.skip_missing_modules = true;
@@ -4742,8 +4751,10 @@ pub const TypeChecker = struct {
             }
         }
 
-        // Clear meta definitions before re-processing imports
+        // Clear meta state before re-processing imports
         meta_validation.clearMetaDefinitions(self);
+        self.deprecated_functions.clearRetainingCapacity();
+        self.pure_functions.clearRetainingCapacity();
 
         // Re-process imports — all exports now available, skip already-imported symbols
         self.skip_existing_imports = true;
@@ -4877,8 +4888,10 @@ pub const TypeChecker = struct {
     pub fn checkModule(self: *TypeChecker, module: ast.Module) void {
         self.async_function_names.clearRetainingCapacity();
 
-        // Clear meta definitions before processing imports (imports may add definitions)
+        // Clear meta state before processing imports (imports may add definitions)
         meta_validation.clearMetaDefinitions(self);
+        self.deprecated_functions.clearRetainingCapacity();
+        self.pure_functions.clearRetainingCapacity();
 
         // Process imports first (for multi-file compilation)
         self.processImports(module);

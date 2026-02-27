@@ -487,7 +487,7 @@ M.1 → M.2 → M.3 → M.4
 
 ### Phase MA: Foundation
 
-#### M.1 — Token, AST, and Declaration Fields
+#### M.1 — Token, AST, and Declaration Fields ✅
 
 **Effort:** Low
 
@@ -501,7 +501,7 @@ Add the `meta` keyword token, AST node types for meta annotations, and meta fiel
 
 **Success Criteria:**
 - [x] `meta` is a recognized keyword token
-- [x] MetaAnnotation can represent all 12 annotation kinds from the design spec
+- [x] MetaAnnotation can represent all 13 annotation kinds from the design spec
 - [x] All declaration AST nodes carry meta annotation lists
 - [x] Compiler builds with zero regressions
 
@@ -509,7 +509,7 @@ Add the `meta` keyword token, AST node types for meta annotations, and meta fiel
 
 ### Phase MB: Parsing
 
-#### M.2 — Simple Annotation Parsing
+#### M.2 — Simple Annotation Parsing ✅
 
 **Effort:** Medium
 
@@ -533,7 +533,7 @@ Parse the string-based annotations: `meta intent(...)`, `meta decision(...)`, `m
 - [x] `dump-ast` round-trips meta annotations
 - [x] All existing tests pass (zero regressions)
 
-#### M.3 — Block and Group Parsing
+#### M.3 — Block and Group Parsing ✅
 
 **Effort:** Medium
 
@@ -558,7 +558,7 @@ Parse block-form annotations and group definitions/joins.
 
 ### Phase MC: Backend Passthrough and Tooling
 
-#### M.4 — Backend Passthrough and Formatter
+#### M.4 — Backend Passthrough and Formatter ✅
 
 **Effort:** Low-Medium
 
@@ -644,7 +644,7 @@ Implement `meta define`, string union constraints, scope restrictions, and cross
 
 ### Phase ME: CLI
 
-#### M.8 — `klar meta` Command
+#### M.8 — `klar meta` Command ✅
 
 **Effort:** Medium
 
@@ -657,7 +657,7 @@ Add the `klar meta` CLI command for querying meta annotations across a codebase.
 - [x] **M.8.5** Implement `--deprecated` — list all deprecated items with migration guidance
 - [x] **M.8.6** Implement `--hints` — list all AI hints
 - [x] **M.8.7** Implement `--json` output mode for all commands
-- [x] **M.8.8** App-level test files for CLI output validation (54 tests in `scripts/run-meta-tests.sh`)
+- [x] **M.8.8** App-level test files for CLI output validation (62 tests in `scripts/run-meta-tests.sh`)
 
 **Success Criteria:**
 - [x] All six query modes produce correct, human-readable output
