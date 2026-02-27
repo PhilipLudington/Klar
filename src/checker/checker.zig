@@ -1889,7 +1889,8 @@ pub const TypeChecker = struct {
         });
 
         // env_set(name: string, value: string) -> Result#[void, IoError]
-        const env_set_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.stringType() }, fs_create_dir_ret);
+        const void_io_result = fs_create_dir_ret; // Result#[void, IoError] computed above
+        const env_set_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.stringType() }, void_io_result);
         try self.current_scope.define(.{
             .name = "env_set",
             .type_ = env_set_fn_type,
@@ -1945,6 +1946,7 @@ pub const TypeChecker = struct {
         });
 
         // ProcessOutput struct type: { stdout: string, stderr: string, exit_code: i32 }
+        // Note: stderr is always empty in current implementation (stdout-only capture via popen).
         const process_output_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
             .{ .name = "stdout", .type_ = self.type_builder.stringType(), .is_pub = true },
             .{ .name = "stderr", .type_ = self.type_builder.stringType(), .is_pub = true },
@@ -1969,6 +1971,8 @@ pub const TypeChecker = struct {
         });
 
         // process_run(cmd: string, args: List#[string]) -> Result#[ProcessOutput, IoError]
+        // Uses popen() internally — cmd+args are concatenated into a shell command string.
+        // Callers are responsible for sanitizing inputs to avoid shell injection.
         const process_args_type = try self.type_builder.listType(self.type_builder.stringType());
         const process_run_ret = try self.type_builder.resultType(process_output_type, self.type_builder.ioErrorType());
         const process_run_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), process_args_type }, process_run_ret);

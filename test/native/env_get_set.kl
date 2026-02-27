@@ -19,10 +19,14 @@ fn main() -> i32 {
         return 3  // Set failed
     }
 
-    // Read it back
+    // Read it back and verify the value
     let val: ?string = env_get("KLAR_TEST_VAR")
     if val.is_none() {
         return 4  // Should exist after set
+    }
+    let actual: string = val ?? ""
+    if actual != "hello_klar" {
+        return 5  // Value should match what was set
     }
 
     return 42

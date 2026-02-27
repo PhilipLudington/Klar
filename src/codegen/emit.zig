@@ -1088,9 +1088,6 @@ pub const Emitter = struct {
         return if (is_main_with_args) "_klar_user_main" else func_name;
     }
 
-    /// Register a struct declaration for later field name resolution.
-    /// Public for multi-module compilation where struct registration is done
-    /// as a separate phase before function declaration.
     /// Register built-in struct types (FileStat, ProcessOutput) so field access works.
     fn registerBuiltinStructTypes(self: *Emitter) EmitError!void {
         // FileStat: { size: i64, modified_epoch: i64, is_dir: bool, is_file: bool }
@@ -1118,6 +1115,9 @@ pub const Emitter = struct {
         }
     }
 
+    /// Register a struct declaration for later field name resolution.
+    /// Public for multi-module compilation where struct registration is done
+    /// as a separate phase before function declaration.
     pub fn registerStructDecl(self: *Emitter, struct_decl: *ast.StructDecl) EmitError!void {
         // Skip if already registered
         if (self.struct_types.contains(struct_decl.name)) {

@@ -2855,7 +2855,7 @@ fn builtinStubIO(_: Allocator, _: []const Value) RuntimeError!Value {
 
 fn builtinTimestampNow(_: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 0) return RuntimeError.InvalidOperation;
-    const now: i128 = std.time.timestamp();
+    const now: i128 = @intCast(std.time.timestamp());
     return .{ .int = .{ .value = now, .type_ = .i64_ } };
 }
 
