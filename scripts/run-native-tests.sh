@@ -83,6 +83,10 @@ get_expected() {
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
         list_nested_basic) echo 42 ;;
+        env_get_set) echo 42 ;;
+        fs_stat) echo 42 ;;
+        process_run) echo 42 ;;
+        timestamp_now) echo 42 ;;
         *) echo -1 ;;  # -1 means accept any result
     esac
 }

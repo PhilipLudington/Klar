@@ -363,6 +363,27 @@ pub const Interpreter = struct {
         const parse_float_fn = try self.allocator.create(values.BuiltinFunction);
         parse_float_fn.* = .{ .name = "parse_float", .func = &builtinParseFloat };
         try self.global_env.define("parse_float", .{ .builtin = parse_float_fn }, false);
+
+        // Phase 0: environment, process, stat, timestamp
+        const env_get_fn = try self.allocator.create(values.BuiltinFunction);
+        env_get_fn.* = .{ .name = "env_get", .func = &builtinStubIO };
+        try self.global_env.define("env_get", .{ .builtin = env_get_fn }, false);
+
+        const env_set_fn = try self.allocator.create(values.BuiltinFunction);
+        env_set_fn.* = .{ .name = "env_set", .func = &builtinStubIO };
+        try self.global_env.define("env_set", .{ .builtin = env_set_fn }, false);
+
+        const timestamp_now_fn = try self.allocator.create(values.BuiltinFunction);
+        timestamp_now_fn.* = .{ .name = "timestamp_now", .func = &builtinTimestampNow };
+        try self.global_env.define("timestamp_now", .{ .builtin = timestamp_now_fn }, false);
+
+        const fs_stat_fn = try self.allocator.create(values.BuiltinFunction);
+        fs_stat_fn.* = .{ .name = "fs_stat", .func = &builtinStubIO };
+        try self.global_env.define("fs_stat", .{ .builtin = fs_stat_fn }, false);
+
+        const process_run_fn = try self.allocator.create(values.BuiltinFunction);
+        process_run_fn.* = .{ .name = "process_run", .func = &builtinStubIO };
+        try self.global_env.define("process_run", .{ .builtin = process_run_fn }, false);
     }
 
     // ========================================================================
@@ -2821,6 +2842,21 @@ fn builtinParseFloat(allocator: Allocator, args: []const Value) RuntimeError!Val
         opt.* = .{ .value = null };
         return .{ .optional = opt };
     }
+}
+
+// ============================================================================
+// Phase 0: Environment, Process, Stat, Timestamp
+// ============================================================================
+
+/// Stub for builtins not supported in the interpreter (use native build).
+fn builtinStubIO(_: Allocator, _: []const Value) RuntimeError!Value {
+    return RuntimeError.IOError;
+}
+
+fn builtinTimestampNow(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 0) return RuntimeError.InvalidOperation;
+    const now: i128 = std.time.timestamp();
+    return .{ .int = .{ .value = now, .type_ = .i64_ } };
 }
 
 // ============================================================================

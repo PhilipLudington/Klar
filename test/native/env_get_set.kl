@@ -1,0 +1,29 @@
+// Test env_get and env_set builtins
+// Expected exit code: 42
+fn main() -> i32 {
+    // env_get for a well-known variable (PATH should always exist)
+    let path: ?string = env_get("PATH")
+    if path.is_none() {
+        return 1  // PATH should exist
+    }
+
+    // env_get for a non-existent variable
+    let missing: ?string = env_get("KLAR_TEST_NONEXISTENT_12345")
+    if missing.is_some() {
+        return 2  // Should not exist
+    }
+
+    // env_set a new variable
+    let set_result: Result#[void, IoError] = env_set("KLAR_TEST_VAR", "hello_klar")
+    if not set_result.is_ok() {
+        return 3  // Set failed
+    }
+
+    // Read it back
+    let val: ?string = env_get("KLAR_TEST_VAR")
+    if val.is_none() {
+        return 4  // Should exist after set
+    }
+
+    return 42
+}

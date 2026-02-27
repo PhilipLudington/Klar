@@ -75,6 +75,13 @@ pub const builtins = [_]NativeDesc{
     .{ .name = "from_byte", .arity = 1, .function = nativeFromByte },
     .{ .name = "parse_int", .arity = 1, .function = nativeParseInt },
     .{ .name = "parse_float", .arity = 1, .function = nativeParseFloat },
+
+    // Environment, process, stat, timestamp
+    .{ .name = "env_get", .arity = 1, .function = nativeEnvGet },
+    .{ .name = "env_set", .arity = 2, .function = nativeEnvSet },
+    .{ .name = "timestamp_now", .arity = 0, .function = nativeTimestampNow },
+    .{ .name = "fs_stat", .arity = 1, .function = nativeFsStat },
+    .{ .name = "process_run", .arity = 2, .function = nativeProcessRun },
 };
 
 // ============================================================================
@@ -594,6 +601,39 @@ fn nativeParseFloat(_: Allocator, args: []const Value) RuntimeError!Value {
         const none = ObjOptional.createNoneGC(gc) catch return RuntimeError.OutOfMemory;
         return .{ .optional = none };
     }
+}
+
+// ============================================================================
+// Environment, Process, Stat, Timestamp Functions
+// ============================================================================
+
+fn nativeEnvGet(_: Allocator, args: []const Value) RuntimeError!Value {
+    // VM: env_get not supported in bytecode VM (use native build)
+    _ = args;
+    return RuntimeError.IOError;
+}
+
+fn nativeEnvSet(_: Allocator, args: []const Value) RuntimeError!Value {
+    // VM: env_set not supported in bytecode VM (use native build)
+    _ = args;
+    return RuntimeError.IOError;
+}
+
+fn nativeTimestampNow(_: Allocator, _: []const Value) RuntimeError!Value {
+    const now: i128 = @intCast(std.time.timestamp());
+    return Value.fromInt(now);
+}
+
+fn nativeFsStat(_: Allocator, args: []const Value) RuntimeError!Value {
+    // VM: fs_stat not supported in bytecode VM (use native build)
+    _ = args;
+    return RuntimeError.IOError;
+}
+
+fn nativeProcessRun(_: Allocator, args: []const Value) RuntimeError!Value {
+    // VM: process_run not supported in bytecode VM (use native build)
+    _ = args;
+    return RuntimeError.IOError;
 }
 
 // ============================================================================

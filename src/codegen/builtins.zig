@@ -19,6 +19,9 @@
 //! Introspection: `type_name`, `len`
 //! String: `from_byte`, `parse_int`, `parse_float`
 //! Comptime: `repeat`, `comptime_print`
+//! Environment: `env_get`, `env_set`
+//! Filesystem: `fs_stat`
+//! Process: `process_run`, `timestamp_now`
 
 const std = @import("std");
 const llvm = @import("llvm.zig");
@@ -43,6 +46,12 @@ pub const BuiltinName = struct {
     pub const from_byte = "from_byte";
     pub const parse_int = "parse_int";
     pub const parse_float = "parse_float";
+    // Phase 0: environment, process, stat, timestamp
+    pub const env_get = "env_get";
+    pub const env_set = "env_set";
+    pub const fs_stat = "fs_stat";
+    pub const timestamp_now = "timestamp_now";
+    pub const process_run = "process_run";
 };
 
 /// Check if a function name is a built-in.
@@ -64,7 +73,12 @@ pub fn isBuiltin(name: []const u8) bool {
         std.mem.eql(u8, name, BuiltinName.comptime_print) or
         std.mem.eql(u8, name, BuiltinName.from_byte) or
         std.mem.eql(u8, name, BuiltinName.parse_int) or
-        std.mem.eql(u8, name, BuiltinName.parse_float);
+        std.mem.eql(u8, name, BuiltinName.parse_float) or
+        std.mem.eql(u8, name, BuiltinName.env_get) or
+        std.mem.eql(u8, name, BuiltinName.env_set) or
+        std.mem.eql(u8, name, BuiltinName.fs_stat) or
+        std.mem.eql(u8, name, BuiltinName.timestamp_now) or
+        std.mem.eql(u8, name, BuiltinName.process_run);
 }
 
 /// Check if a built-in is a print function.

@@ -1874,6 +1874,113 @@ pub const TypeChecker = struct {
         });
 
         // ====================================================================
+        // Register environment, process, stat, and timestamp builtins
+        // ====================================================================
+
+        // env_get(name: string) -> ?string
+        const env_get_ret = try self.type_builder.optionalType(self.type_builder.stringType());
+        const env_get_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, env_get_ret);
+        try self.current_scope.define(.{
+            .name = "env_get",
+            .type_ = env_get_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // env_set(name: string, value: string) -> Result#[void, IoError]
+        const env_set_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.stringType() }, fs_create_dir_ret);
+        try self.current_scope.define(.{
+            .name = "env_set",
+            .type_ = env_set_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // timestamp_now() -> i64
+        const timestamp_now_fn_type = try self.type_builder.functionType(&.{}, self.type_builder.i64Type());
+        try self.current_scope.define(.{
+            .name = "timestamp_now",
+            .type_ = timestamp_now_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // FileStat struct type: { size: i64, modified_epoch: i64, is_dir: bool, is_file: bool }
+        const file_stat_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "size", .type_ = self.type_builder.i64Type(), .is_pub = true },
+            .{ .name = "modified_epoch", .type_ = self.type_builder.i64Type(), .is_pub = true },
+            .{ .name = "is_dir", .type_ = self.type_builder.boolType(), .is_pub = true },
+            .{ .name = "is_file", .type_ = self.type_builder.boolType(), .is_pub = true },
+        });
+        const file_stat_struct = try self.allocator.create(types.StructType);
+        file_stat_struct.* = .{
+            .name = "FileStat",
+            .type_params = &.{},
+            .fields = file_stat_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, file_stat_struct);
+        const file_stat_type: types.Type = .{ .struct_ = file_stat_struct };
+        try self.current_scope.define(.{
+            .name = "FileStat",
+            .type_ = file_stat_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_stat(path: string) -> Result#[FileStat, IoError]
+        const fs_stat_ret = try self.type_builder.resultType(file_stat_type, self.type_builder.ioErrorType());
+        const fs_stat_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_stat_ret);
+        try self.current_scope.define(.{
+            .name = "fs_stat",
+            .type_ = fs_stat_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ProcessOutput struct type: { stdout: string, stderr: string, exit_code: i32 }
+        const process_output_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "stdout", .type_ = self.type_builder.stringType(), .is_pub = true },
+            .{ .name = "stderr", .type_ = self.type_builder.stringType(), .is_pub = true },
+            .{ .name = "exit_code", .type_ = self.type_builder.i32Type(), .is_pub = true },
+        });
+        const process_output_struct = try self.allocator.create(types.StructType);
+        process_output_struct.* = .{
+            .name = "ProcessOutput",
+            .type_params = &.{},
+            .fields = process_output_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, process_output_struct);
+        const process_output_type: types.Type = .{ .struct_ = process_output_struct };
+        try self.current_scope.define(.{
+            .name = "ProcessOutput",
+            .type_ = process_output_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // process_run(cmd: string, args: List#[string]) -> Result#[ProcessOutput, IoError]
+        const process_args_type = try self.type_builder.listType(self.type_builder.stringType());
+        const process_run_ret = try self.type_builder.resultType(process_output_type, self.type_builder.ioErrorType());
+        const process_run_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), process_args_type }, process_run_ret);
+        try self.current_scope.define(.{
+            .name = "process_run",
+            .type_ = process_run_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
         // Register builtin trait implementations for I/O types
         // ====================================================================
 
