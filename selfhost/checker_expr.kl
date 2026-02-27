@@ -9,7 +9,7 @@ import types.{
     KlarType, TypeKind, TypeId, PrimitiveKind,
     type_i32, type_i64, type_f64, type_bool, type_char, type_string,
     type_void, type_never, type_unknown, type_error,
-    type_eq_simple, type_to_string_simple,
+    type_eq_simple, type_to_string_simple, type_kind_name,
     type_is_numeric, type_is_integer, type_is_float, type_is_signed,
     type_is_primitive, get_primitive_kind,
     ArrayData, SliceData, TupleData,
@@ -432,6 +432,13 @@ fn check_named_call(tc: TypeChecker, data: CallData, id_data: IdentifierData) ->
     let found: ?SymbolInfo = lookup(tc, name)
     match found {
         Some(info) => {
+            // Special handling for assertion builtins (match Zig checker parity)
+            if name == "assert_ok" or name == "assert_err" {
+                return check_assert_result_call(tc, data, name)
+            }
+            if name == "assert_some" or name == "assert_none" {
+                return check_assert_optional_call(tc, data, name)
+            }
             return check_call_with_info(tc, data, info)
         }
         None => {
@@ -554,6 +561,36 @@ fn check_err_call(tc: TypeChecker, data: CallData) -> (TypeChecker, KlarType) {
     let arg_type: KlarType = r.1
     let res_r: (TypeChecker, KlarType) = make_result_type(c, type_unknown(), arg_type)
     return res_r
+}
+
+// ─── Assertion Builtins (Special Call-Site Validation) ──────────────
+
+fn check_assert_typed_call(tc: TypeChecker, data: CallData, name: string,
+        expected_kind: string, expected_desc: string) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    if data.args_count != 1 {
+        c = add_error(c, data.span,
+            name + " requires exactly 1 argument, got " + data.args_count.to_string().as_str())
+        return (c, type_void())
+    }
+    let arg_eid: ExprId = c.extra_expr_ids[data.args_start]
+    let r: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+    c = r.0
+    let arg_type: KlarType = r.1
+    let arg_kn: string = type_kind_name(arg_type.kind)
+    if arg_kn != expected_kind and arg_kn != "unknown" {
+        c = add_error(c, data.span,
+            name + " expects " + expected_desc + ", got " + type_display(arg_type))
+    }
+    return (c, type_void())
+}
+
+fn check_assert_result_call(tc: TypeChecker, data: CallData, name: string) -> (TypeChecker, KlarType) {
+    return check_assert_typed_call(tc, data, name, "Result", "Result#[T, E]")
+}
+
+fn check_assert_optional_call(tc: TypeChecker, data: CallData, name: string) -> (TypeChecker, KlarType) {
+    return check_assert_typed_call(tc, data, name, "Optional", "?T (optional)")
 }
 
 // ─── Method Call ────────────────────────────────────────────────────

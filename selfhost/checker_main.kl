@@ -1663,9 +1663,9 @@ fn test_parse_int_builtin() -> i32 {
     tc = re.0
     if not expect_kind(re.1, "Optional", "parse_int() → Optional") { return 37 }
 
-    // Verify inner is i32
+    // Verify inner is i64 (Zig checker parity)
     let inner: KlarType = unwrap_optional_inner(tc, re.1)
-    if not expect_type(inner, type_i32(), "parse_int inner is i32") { return 37 }
+    if not expect_type(inner, type_i64(), "parse_int inner is i64") { return 37 }
 
     if not expect_ok(tc, "parse_int builtin") { return 37 }
     return 0
@@ -4560,6 +4560,237 @@ fn test_import_trait() -> i32 {
     return 0
 }
 
+// ─── 9.10.5 Assertion Builtin Tests ─────────────────────────────────
+
+fn test_assert_ok_builtin() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_ok(Ok(42)) → void (valid: arg is Result)
+    let r_ok_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Ok")
+    tc = r_ok_callee.0
+    let r_ok_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_ok_arg.0
+    let ok_args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_ok_arg.1)
+    let r_ok_call: (TypeChecker, ExprId) = add_call_expr(tc, r_ok_callee.1, ok_args_s, 1)
+    tc = r_ok_call.0
+
+    // Now call assert_ok with that Ok(42) result
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_ok")
+    tc = r_callee.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_ok_call.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "void", "assert_ok returns void") { return 101 }
+    if not expect_ok(tc, "assert_ok with Result arg") { return 101 }
+
+    return 0
+}
+
+fn test_assert_ok_wrong_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_ok(42) → error (arg is i32, not Result)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_ok")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_arg.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "assert_ok(i32) → type error") { return 102 }
+
+    return 0
+}
+
+fn test_assert_some_builtin() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_some(Some(42)) → void (valid: arg is Optional)
+    let r_some_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Some")
+    tc = r_some_callee.0
+    let r_some_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_some_arg.0
+    let some_args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_some_arg.1)
+    let r_some_call: (TypeChecker, ExprId) = add_call_expr(tc, r_some_callee.1, some_args_s, 1)
+    tc = r_some_call.0
+
+    // Now call assert_some with that Some(42) optional
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_some")
+    tc = r_callee.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_some_call.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "void", "assert_some returns void") { return 103 }
+    if not expect_ok(tc, "assert_some with Optional arg") { return 103 }
+
+    return 0
+}
+
+fn test_assert_err_builtin() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_err(Err(42)) → void (valid: arg is Result)
+    let r_err_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Err")
+    tc = r_err_callee.0
+    let r_err_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_err_arg.0
+    let err_args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_err_arg.1)
+    let r_err_call: (TypeChecker, ExprId) = add_call_expr(tc, r_err_callee.1, err_args_s, 1)
+    tc = r_err_call.0
+
+    // Now call assert_err with that Err(42) result
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_err")
+    tc = r_callee.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_err_call.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "void", "assert_err returns void") { return 105 }
+    if not expect_ok(tc, "assert_err with Result arg") { return 105 }
+
+    return 0
+}
+
+fn test_assert_err_wrong_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_err(true) → error (arg is bool, not Result)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_err")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_arg.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "assert_err(bool) → type error") { return 106 }
+
+    return 0
+}
+
+fn test_assert_none_builtin() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_none(None) → void (valid: arg is Optional)
+    // Build None call (0 args)
+    let r_none_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "None")
+    tc = r_none_callee.0
+    let none_args_s: i32 = tc.extra_expr_ids.len()
+    let r_none_call: (TypeChecker, ExprId) = add_call_expr(tc, r_none_callee.1, none_args_s, 0)
+    tc = r_none_call.0
+
+    // Now call assert_none with that None optional
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_none")
+    tc = r_callee.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_none_call.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "void", "assert_none returns void") { return 107 }
+    if not expect_ok(tc, "assert_none with Optional arg") { return 107 }
+
+    return 0
+}
+
+fn test_assert_some_wrong_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_some(3.14) → error (arg is f64, not Optional)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_some")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_float_expr(tc, "3.14")
+    tc = r_arg.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "assert_some(f64) → type error") { return 108 }
+
+    return 0
+}
+
+fn test_assert_none_wrong_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_none("hello") → error (arg is string, not Optional)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_none")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_arg.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "assert_none(string) → type error") { return 109 }
+
+    return 0
+}
+
+fn test_assert_wrong_arg_count() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_ok() → error (0 args)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_ok")
+    tc = r_callee.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "assert_ok() → arg count error") { return 110 }
+
+    // assert_some with 2 args → error
+    var tc2: TypeChecker = TypeChecker.new()
+    tc2 = register_builtins(tc2)
+    let r_callee2: (TypeChecker, ExprId) = add_ident_expr(tc2, "assert_some")
+    tc2 = r_callee2.0
+    let r_arg1: (TypeChecker, ExprId) = add_int_expr(tc2, "1")
+    tc2 = r_arg1.0
+    let r_arg2: (TypeChecker, ExprId) = add_int_expr(tc2, "2")
+    tc2 = r_arg2.0
+    let args_s2: i32 = tc2.extra_expr_ids.len()
+    tc2.extra_expr_ids.push(r_arg1.1)
+    tc2.extra_expr_ids.push(r_arg2.1)
+    let r_call2: (TypeChecker, ExprId) = add_call_expr(tc2, r_callee2.1, args_s2, 2)
+    tc2 = r_call2.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc2, r_call2.1)
+    tc2 = re2.0
+    if not expect_errors(tc2, 1, "assert_some(1, 2) → arg count error") { return 110 }
+
+    return 0
+}
+
 // ─── Main ───────────────────────────────────────────────────────────
 
 fn main() -> i32 {
@@ -4841,6 +5072,34 @@ fn main() -> i32 {
     rc = test_import_trait()
     if rc != 0 { return rc }
 
-    println("checker_main.kl: all tests passed (90 tests)")
+    // 9.10.5 Assertion Builtin tests
+    rc = test_assert_ok_builtin()
+    if rc != 0 { return rc }
+
+    rc = test_assert_ok_wrong_type()
+    if rc != 0 { return rc }
+
+    rc = test_assert_err_builtin()
+    if rc != 0 { return rc }
+
+    rc = test_assert_err_wrong_type()
+    if rc != 0 { return rc }
+
+    rc = test_assert_some_builtin()
+    if rc != 0 { return rc }
+
+    rc = test_assert_some_wrong_type()
+    if rc != 0 { return rc }
+
+    rc = test_assert_none_builtin()
+    if rc != 0 { return rc }
+
+    rc = test_assert_none_wrong_type()
+    if rc != 0 { return rc }
+
+    rc = test_assert_wrong_arg_count()
+    if rc != 0 { return rc }
+
+    println("checker_main.kl: all tests passed (99 tests)")
     return 0
 }

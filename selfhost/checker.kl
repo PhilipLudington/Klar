@@ -1307,8 +1307,8 @@ pub fn register_builtins(tc: TypeChecker) -> TypeChecker {
     c = r11.0
     c = define_builtin(c, "to_string", r11.1)
 
-    // parse_int(s: string) -> ?i32
-    let r12a: (TypeChecker, KlarType) = make_optional_type(c, type_i32())
+    // parse_int(s: string) -> ?i64
+    let r12a: (TypeChecker, KlarType) = make_optional_type(c, type_i64())
     c = r12a.0
     let r12: (TypeChecker, KlarType) = make_fn_type_1(c, type_string(), r12a.1)
     c = r12.0
@@ -1345,6 +1345,26 @@ pub fn register_builtins(tc: TypeChecker) -> TypeChecker {
     let r18: (TypeChecker, KlarType) = make_fn_type_1(c, type_f64(), type_f64())
     c = r18.0
     c = define_builtin(c, "sqrt", r18.1)
+
+    // assert_ok(result: unknown) -> void  (special call-site validation)
+    let r19: (TypeChecker, KlarType) = make_fn_type_1(c, type_unknown(), type_void())
+    c = r19.0
+    c = define_builtin(c, "assert_ok", r19.1)
+
+    // assert_err(result: unknown) -> void  (special call-site validation)
+    let r20: (TypeChecker, KlarType) = make_fn_type_1(c, type_unknown(), type_void())
+    c = r20.0
+    c = define_builtin(c, "assert_err", r20.1)
+
+    // assert_some(optional: unknown) -> void  (special call-site validation)
+    let r21: (TypeChecker, KlarType) = make_fn_type_1(c, type_unknown(), type_void())
+    c = r21.0
+    c = define_builtin(c, "assert_some", r21.1)
+
+    // assert_none(optional: unknown) -> void  (special call-site validation)
+    let r22: (TypeChecker, KlarType) = make_fn_type_1(c, type_unknown(), type_void())
+    c = r22.0
+    c = define_builtin(c, "assert_none", r22.1)
 
     // ─── Builtin Traits (Milestone 9.10.2) ──────────────────────────
     c = register_builtin_traits(c)
