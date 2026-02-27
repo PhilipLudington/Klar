@@ -76,10 +76,10 @@ check_output "--deprecated: finds next_token" "next_token" "$output"
 check_output "--deprecated: shows message" "Use new_tokenizer instead" "$output"
 check_exact_count "--deprecated: 1 match" "1" "$output"
 
-# --- Test 5: --hints on directory ---
+# --- Test 5: --hints on directory (includes group-expanded hints) ---
 output=$("$KLAR" meta --hints test/meta/project/ 2>&1)
 check_output "--hints: finds skip_whitespace" "skip_whitespace" "$output"
-check_exact_count "--hints: 1 match" "1" "$output"
+check_exact_count "--hints: 3 matches (group expansion)" "3" "$output"
 
 # --- Test 6: --related on single file ---
 output=$("$KLAR" meta --related process_v2 test/meta/single_file.kl 2>&1)

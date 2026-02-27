@@ -1,0 +1,12 @@
+// Expected: check-error pure function cannot call impure builtin
+// Test: meta pure on generic function that calls impure builtin
+
+meta pure
+fn bad_identity#[T](x: T) -> T {
+    println("side effect")
+    return x
+}
+
+fn main() -> i32 {
+    return 0
+}

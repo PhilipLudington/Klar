@@ -10,7 +10,9 @@
 const std = @import("std");
 const ast = @import("../ast.zig");
 
-/// Kinds of declarations that can carry meta annotations.
+/// Kinds of declarations that can carry meta annotations (for validation scope matching).
+/// Note: meta_query.zig has a separate DeclKind for CLI display that includes
+/// file_meta and distinguishes struct_field/enum_variant from struct_decl/enum_decl.
 pub const DeclKind = enum {
     function,
     struct_,

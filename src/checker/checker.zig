@@ -2000,7 +2000,11 @@ pub const TypeChecker = struct {
             .span = span,
             .message = message,
         }) catch {};
-        self.error_count += 1;
+        if (kind == .meta_warning) {
+            self.warning_count += 1;
+        } else {
+            self.error_count += 1;
+        }
     }
 
     /// Add a warning (same as addError but with meta_warning kind). Warnings don't block compilation.
