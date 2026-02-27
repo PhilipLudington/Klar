@@ -24,7 +24,7 @@ import ast.{
     FunctionDeclData, StructDeclData, EnumDeclData,
     ImplDeclData, TraitDeclData, TestDeclData,
     ConstDeclData, TypeAliasData, ImportDeclData,
-    FnParam, StructField, EnumVariantDecl,
+    FnParam, StructField, EnumVariantDecl, ImportItem,
     no_expr, has_expr, no_type_expr, has_type_expr
 }
 
@@ -36,7 +36,8 @@ import checker.{
     type_display,
     push_type_ref, get_resolved_type,
     make_fn_type_0, make_fn_type_1, make_fn_type_2,
-    record_trait_impl, find_trait_method
+    record_trait_impl, find_trait_method,
+    has_module, lookup_module_export
 }
 
 import checker_expr.{check_expr}
@@ -537,11 +538,134 @@ fn check_test_body(tc: TypeChecker, data: TestDeclData) -> TypeChecker {
     return c
 }
 
+// ─── Import Processing ──────────────────────────────────────────────
+// Processes import declarations before registration pass.
+
+// Maps export kind codes to SymbolKind:
+//   0=function, 1=struct, 2=enum, 3=trait (all type-defs), 4=constant
+fn kind_to_symbol_kind(kind: i32) -> SymbolKind {
+    if kind == 0 { return SymbolKind::Function }
+    if kind == 1 { return SymbolKind::TypeDef }   // struct
+    if kind == 2 { return SymbolKind::TypeDef }   // enum
+    if kind == 3 { return SymbolKind::TypeDef }   // trait — same as struct/enum per register_trait()
+    return SymbolKind::Constant
+}
+
+fn check_import_decl(tc: TypeChecker, data: ImportDeclData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Check if the module is registered
+    if not has_module(c, data.path) {
+        c = add_error(c, data.span, "module '" + data.path + "' is not defined")
+        return c
+    }
+
+    if data.is_glob {
+        // Import all exports from the module
+        let start_opt: ?i32 = c.module_starts.get(data.path)
+        match start_opt {
+            Some(start) => {
+                let count_opt: ?i32 = c.module_counts.get(data.path)
+                match count_opt {
+                    Some(count) => {
+                        var i: i32 = 0
+                        while i < count {
+                            let sym_name: string = c.module_export_names[start + i]
+                            let sym_type: KlarType = c.module_export_types[start + i]
+                            let sym_kind: i32 = c.module_export_kinds[start + i]
+                            c.define(sym_name, SymbolInfo {
+                                sym_name: sym_name,
+                                sym_type: sym_type,
+                                mutable: false,
+                                kind: kind_to_symbol_kind(sym_kind),
+                            })
+                            // Also register in type registries
+                            if sym_kind == 0 {
+                                c.function_types.insert(sym_name, sym_type)
+                            }
+                            if sym_kind == 1 {
+                                c.struct_types.insert(sym_name, sym_type)
+                            }
+                            if sym_kind == 2 {
+                                c.enum_types.insert(sym_name, sym_type)
+                            }
+                            if sym_kind == 3 {
+                                c.trait_types.insert(sym_name, sym_type)
+                            }
+                            i = i + 1
+                        }
+                    }
+                    None => {}
+                }
+            }
+            None => {}
+        }
+    } else {
+        // Selective import: import specific items
+        var i: i32 = 0
+        while i < data.items_count {
+            let item: ImportItem = c.extra_import_items[data.items_start + i]
+            let result: (bool, KlarType, i32) = lookup_module_export(c, data.path, item.item_name)
+            if not result.0 {
+                c = add_error(c, data.span,
+                    "symbol '" + item.item_name + "' not found in module '" + data.path + "'")
+            } else {
+                // Use alias if provided, otherwise original name
+                var local_name: string = item.item_name
+                if item.alias != "" {
+                    local_name = item.alias
+                }
+                c.define(local_name, SymbolInfo {
+                    sym_name: local_name,
+                    sym_type: result.1,
+                    mutable: false,
+                    kind: kind_to_symbol_kind(result.2),
+                })
+                // Also register in type registries
+                if result.2 == 0 {
+                    c.function_types.insert(local_name, result.1)
+                }
+                if result.2 == 1 {
+                    c.struct_types.insert(local_name, result.1)
+                }
+                if result.2 == 2 {
+                    c.enum_types.insert(local_name, result.1)
+                }
+                if result.2 == 3 {
+                    c.trait_types.insert(local_name, result.1)
+                }
+            }
+            i = i + 1
+        }
+    }
+
+    return c
+}
+
+pub fn process_imports(tc: TypeChecker, start: i32, count: i32) -> TypeChecker {
+    var c: TypeChecker = tc
+    var i: i32 = 0
+    while i < count {
+        let decl: Decl = c.decls[start + i]
+        match decl {
+            Decl::ImportDecl(data) => {
+                c = check_import_decl(c, data)
+            }
+            _ => {}
+        }
+        i = i + 1
+    }
+    return c
+}
+
 // ─── Top-Level Check Module ─────────────────────────────────────────
-// Full pipeline: register builtins → register decls → check bodies
+// Full pipeline: process imports → register decls → check bodies
 
 pub fn check_module(tc: TypeChecker, decls_start: i32, decls_count: i32) -> TypeChecker {
     var c: TypeChecker = tc
+
+    // Pass 0: process import declarations
+    c = process_imports(c, decls_start, decls_count)
 
     // Pass 1: register all type and function declarations
     c = register_declarations(c, decls_start, decls_count)

@@ -32,7 +32,7 @@ import ast.{
     Span, ExprId, StmtId, DeclId, TypeExprId, PatternId,
     Expr, Stmt, Decl, TypeExpr, Pattern,
     BinaryOp, UnaryOp, PostfixOp, AssignOp,
-    FnParam, MatchArm, FieldInit, StructField, EnumVariantDecl,
+    FnParam, MatchArm, FieldInit, StructField, EnumVariantDecl, ImportItem,
     GenericParam, FunctionDeclData, StructDeclData, EnumDeclData,
     NamedTypeData, ArrayTypeData, SliceTypeData, TupleTypeData,
     OptionalTypeData, ResultTypeData, FunctionTypeData,
@@ -158,6 +158,14 @@ pub struct TypeChecker {
     pub trait_assoc_types: List#[AssocTypeData],
     pub trait_types: Map#[string, KlarType],
     pub trait_impl_keys: Map#[string, bool],
+
+    // Module import infrastructure (Milestone 9.10.4)
+    pub extra_import_items: List#[ImportItem],
+    pub module_export_names: List#[string],
+    pub module_export_types: List#[KlarType],
+    pub module_export_kinds: List#[i32],
+    pub module_starts: Map#[string, i32],
+    pub module_counts: Map#[string, i32],
 }
 
 impl TypeChecker {
@@ -227,6 +235,13 @@ impl TypeChecker {
             trait_assoc_types: List.new#[AssocTypeData](),
             trait_types: Map.new#[string, KlarType](),
             trait_impl_keys: Map.new#[string, bool](),
+
+            extra_import_items: List.new#[ImportItem](),
+            module_export_names: List.new#[string](),
+            module_export_types: List.new#[KlarType](),
+            module_export_kinds: List.new#[i32](),
+            module_starts: Map.new#[string, i32](),
+            module_counts: Map.new#[string, i32](),
         }
         // Push global scope
         tc.scopes.push(Map.new#[string, SymbolInfo]())
@@ -1508,6 +1523,67 @@ pub fn find_trait_method(tc: TypeChecker, trait_data: TraitData, method_name: st
         i = i + 1
     }
     // Implicit None return
+}
+
+// ─── Module Export Registry ──────────────────────────────────────────
+// Flat parallel-list arena for module exports, indexed by module_starts/module_counts.
+
+pub fn has_module(tc: TypeChecker, module_name: string) -> bool {
+    return tc.module_starts.contains_key(module_name)
+}
+
+pub fn begin_module_exports(tc: TypeChecker, module_name: string) -> TypeChecker {
+    var c: TypeChecker = tc
+    let start: i32 = c.module_export_names.len()
+    c.module_starts.insert(module_name, start)
+    return c
+}
+
+pub fn end_module_exports(tc: TypeChecker, module_name: string) -> TypeChecker {
+    var c: TypeChecker = tc
+    let start_opt: ?i32 = c.module_starts.get(module_name)
+    match start_opt {
+        Some(start) => {
+            let count: i32 = c.module_export_names.len() - start
+            c.module_counts.insert(module_name, count)
+        }
+        None => {}
+    }
+    return c
+}
+
+pub fn register_module_export(tc: TypeChecker, module_name: string,
+    sym_name: string, sym_type: KlarType, kind: i32) -> TypeChecker {
+    var c: TypeChecker = tc
+    c.module_export_names.push(sym_name)
+    c.module_export_types.push(sym_type)
+    c.module_export_kinds.push(kind)
+    return c
+}
+
+pub fn lookup_module_export(tc: TypeChecker, module_name: string,
+    sym_name: string) -> (bool, KlarType, i32) {
+    let start_opt: ?i32 = tc.module_starts.get(module_name)
+    match start_opt {
+        Some(start) => {
+            let count_opt: ?i32 = tc.module_counts.get(module_name)
+            match count_opt {
+                Some(count) => {
+                    var i: i32 = 0
+                    while i < count {
+                        if tc.module_export_names[start + i] == sym_name {
+                            return (true, tc.module_export_types[start + i],
+                                tc.module_export_kinds[start + i])
+                        }
+                        i = i + 1
+                    }
+                }
+                None => {}
+            }
+        }
+        None => {}
+    }
+    return (false, type_error(), -1)
 }
 
 // ─── Pattern Binding ─────────────────────────────────────────────────

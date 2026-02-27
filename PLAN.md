@@ -80,7 +80,7 @@ WebAssembly compilation target is fully working for wasm32 freestanding. `klar b
 
 **Objective:** Implement the Klar compiler front-end (lexer through type checker) in Klar itself, enabling the language to compile its own compiler.
 
-**Status:** In Progress — 9.1-9.9 complete (lexer, AST, parser at full parity: 259/259 files, 789/789 tests; type system definitions; type checker foundation). 9.10.1-9.10.2 complete (generics + traits). 9.10.3/9.10.5 Phase B in progress (73 checker tests passing natively).
+**Status:** In Progress — 9.1-9.9 complete (lexer, AST, parser at full parity: 259/259 files, 789/789 tests; type system definitions; type checker foundation). 9.10.1-9.10.4 complete (generics, traits, closures/if/match expressions, module import resolution). 90 checker tests passing natively.
 
 **Effort:** Very High | **Impact:** Very High | **Dependencies:** Milestones 6, 7, 8
 
@@ -303,8 +303,8 @@ Port the advanced type system features.
 
 - [x] **9.10.1** Generic monomorphization (type parameter inference, substitution, caching)
 - [x] **9.10.2** Trait resolution (trait bounds checking, method dispatch through bounds)
-- [~] **9.10.3** Optional/Result type checking, `?` propagation operator *(Phase A: constructors, postfix ?, ??. Phase B: closures, if/match expressions, Optional/Result variant pattern binding)*
-- [ ] **9.10.4** Module import resolution (multi-file type checking)
+- [x] **9.10.3** Optional/Result type checking, `?` propagation operator *(Phase A: constructors, postfix ?, ??. Phase B: closures, if/match expressions, Optional/Result variant pattern binding)*
+- [x] **9.10.4** Module import resolution (module registry, import processing, symbol import)
 - [~] **9.10.5** Builtin function and method type checking *(Phase A: 18 free builtins + builtin methods for string/int/float/array/slice/list/map/set/optional/result in checker_builtins.kl)*
 - [ ] **9.10.6** Full diagnostic parity with Zig checker
 
