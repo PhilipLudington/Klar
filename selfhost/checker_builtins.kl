@@ -29,7 +29,8 @@ import checker.{
     make_optional_type, make_list_type,
     unwrap_optional_inner, unwrap_list_element,
     unwrap_result_ok, unwrap_result_err,
-    unwrap_map_key, unwrap_map_value
+    unwrap_map_key, unwrap_map_value,
+    unwrap_range_element
 }
 
 // ─── Main Dispatch ──────────────────────────────────────────────────
@@ -61,6 +62,9 @@ pub fn check_builtin_method(tc: TypeChecker, recv_type: KlarType,
         }
         TypeKind::Result => {
             return check_result_method(tc, recv_type, method_name, args_count, span)
+        }
+        TypeKind::Range => {
+            return check_range_method(tc, recv_type, method_name, args_count, span)
         }
         _ => {
             return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
@@ -439,6 +443,23 @@ fn check_result_method(tc: TypeChecker, recv_type: KlarType,
 
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on Result")
+}
+
+// ─── Range Methods ──────────────────────────────────────────────────
+
+fn check_range_method(tc: TypeChecker, recv_type: KlarType,
+    method_name: string, args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    let elem: KlarType = unwrap_range_element(tc, recv_type)
+
+    // () -> ?T
+    if method_name == "next" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+        return r
+    }
+
+    return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
+        "no method '" + method_name + "' on Range")
 }
 
 // ─── Smoke Test ─────────────────────────────────────────────────────

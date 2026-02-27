@@ -40,15 +40,15 @@ import checker.{
     lookup, add_error, add_error_msg, add_error_with_type,
     add_typed_error, add_typed_error_with_type,
     resolve_type_expr,
-    type_eq, type_compatible, is_error_type, is_never_type, is_void_type,
+    type_eq, type_compatible, type_compatible_tc, is_error_type, is_never_type, is_void_type,
     type_display,
     push_type_ref, get_resolved_type,
-    make_optional_type, make_result_type,
+    make_optional_type, make_result_type, make_range_type, unwrap_range_element,
     unwrap_optional_inner, unwrap_result_ok,
     clear_substitutions, add_substitution, make_type_var,
     mangle_generic_name, substitute_type, unify_types,
     resolve_type_expr_with_type_vars,
-    find_trait_method,
+    find_trait_method, has_trait_impl,
     bind_pattern
 }
 
@@ -254,8 +254,17 @@ fn check_binary(tc: TypeChecker, data: BinaryData) -> (TypeChecker, KlarType) {
             }
         }
 
+        BinaryOp::Range => {
+            // Range operator: returns Range type with element type from left operand
+            let mr: (TypeChecker, KlarType) = make_range_type(c, left_type, false)
+            return mr
+        }
+        BinaryOp::RangeInclusive => {
+            let mr: (TypeChecker, KlarType) = make_range_type(c, left_type, true)
+            return mr
+        }
         _ => {
-            // Range, Pipe, Is — deferred to 9.10
+            // Pipe, Is — deferred
             return (c, type_unknown())
         }
     }
@@ -505,7 +514,7 @@ fn check_fn_call_args(tc: TypeChecker, data: CallData, fn_data: FunctionData, fn
         // Check type compatibility if within param range
         if i < fn_data.params_count {
             let param_type: KlarType = get_resolved_type(c, fn_data.params_start + i)
-            if not type_compatible(param_type, arg_type) {
+            if not type_compatible_tc(c, param_type, arg_type) {
                 c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                     "argument " + (i + 1).to_string().as_str() + " of '" + fn_name +
                     "': expected " + type_display(param_type) + ", got " + type_display(arg_type))
@@ -657,10 +666,51 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
             return check_type_var_method(c, recv_type, data)
         }
         _ => {
+            // Try trait method resolution for concrete types
+            let trait_result: (TypeChecker, KlarType, bool) = check_concrete_trait_method(c, recv_type, data.method_name)
+            if trait_result.2 {
+                return (trait_result.0, trait_result.1)
+            }
             // Dispatch to builtin method resolution
-            return check_builtin_method(c, recv_type, data.method_name, data.args_count, data.span)
+            return check_builtin_method(trait_result.0, recv_type, data.method_name, data.args_count, data.span)
         }
     }
+}
+
+// ─── Concrete Type Trait Method Resolution ──────────────────────────
+// Check if a concrete type (primitive, etc.) has a trait impl with the given method.
+// Returns (tc, return_type, found).
+
+fn check_concrete_trait_method(tc: TypeChecker, recv_type: KlarType, method_name: string) -> (TypeChecker, KlarType, bool) {
+    let type_name: string = type_display(recv_type)
+
+    // Search all registered traits for a method with this name
+    var ti: i32 = 0
+    while ti < tc.type_traits.len() {
+        let trait_data: TraitData = tc.type_traits[ti]
+        // Check if this type implements this trait
+        if has_trait_impl(tc, type_name, trait_data.name) {
+            let found: ?TraitMethodData = find_trait_method(tc, trait_data, method_name)
+            match found {
+                Some(method) => {
+                    // Return the method's return type
+                    let ret: KlarType = get_resolved_type(tc, method.signature.id)
+                    match ret.kind {
+                        TypeKind::Unknown => {
+                            // Unknown is placeholder for Self — return the receiver type
+                            return (tc, recv_type, true)
+                        }
+                        _ => {
+                            return (tc, ret, true)
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+        ti = ti + 1
+    }
+    return (tc, type_error(), false)
 }
 
 // ─── TypeVar Method Resolution (Trait Bounds) ──────────────────────
@@ -906,7 +956,7 @@ fn check_array_literal(tc: TypeChecker, data: ArrayLiteralData) -> (TypeChecker,
         let eid: ExprId = c.extra_expr_ids[data.elems_start + i]
         let r: (TypeChecker, KlarType) = check_expr(c, eid)
         c = r.0
-        if not type_compatible(elem_type, r.1) and not is_error_type(r.1) {
+        if not type_compatible_tc(c, elem_type, r.1) and not is_error_type(r.1) {
             c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                 "array element type mismatch: expected " + type_display(elem_type) +
                 ", got " + type_display(r.1))
@@ -1082,7 +1132,7 @@ fn check_generic_fn_call_impl(tc: TypeChecker, data: CallData, fn_name: string, 
             c = vr.0
             if vi < fn_decl.params_count and not is_error_type(vr.1) {
                 let param_type: KlarType = get_resolved_type(c, mono_params_start + vi)
-                if not type_compatible(param_type, vr.1) {
+                if not type_compatible_tc(c, param_type, vr.1) {
                     c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
                         "argument " + (vi + 1).to_string().as_str() + " of '" + fn_name +
                         "': expected " + type_display(param_type) + ", got " + type_display(vr.1))
@@ -1189,7 +1239,7 @@ fn check_if_expr(tc: TypeChecker, data: IfExprData) -> (TypeChecker, KlarType) {
         let else_type: KlarType = r_else.1
 
         // Both branches should return compatible types
-        if not type_compatible(then_type, else_type)
+        if not type_compatible_tc(c, then_type, else_type)
             and not is_error_type(then_type) and not is_error_type(else_type)
             and not is_never_type(then_type) and not is_never_type(else_type)
             and not is_void_type(then_type) and not is_void_type(else_type) {
@@ -1246,7 +1296,7 @@ fn check_match_expr(tc: TypeChecker, data: MatchExprData) -> (TypeChecker, KlarT
                 has_result = true
             } else {
                 let arm_type: KlarType = r_body.1
-                if not type_compatible(result_type, arm_type)
+                if not type_compatible_tc(c, result_type, arm_type)
                     and not is_error_type(arm_type) and not is_error_type(result_type)
                     and not is_never_type(arm_type) and not is_never_type(result_type) {
                     c = add_typed_error(c, ErrorKind::TypeMismatch, arm.span,

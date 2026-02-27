@@ -622,14 +622,14 @@ fn build_closure(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprI
 fn build_block_from_body(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprId) {
     var c: TypeChecker = tc
     let sp: i32 = field_pos(json, pos, "statements")
-    let stmts_start: i32 = c.extra_stmt_ids.len()
+    var collected: List#[StmtId] = List.new#[StmtId]()
     var stmts_count: i32 = 0
     if sp >= 0 {
         var ap: i32 = array_start(json, sp)
         while ap >= 0 {
             let r: (TypeChecker, StmtId) = build_stmt(c, json, ap)
             c = r.0
-            c.extra_stmt_ids.push(r.1)
+            collected.push(r.1)
             stmts_count = stmts_count + 1
             ap = array_next(json, ap)
         }
@@ -641,8 +641,15 @@ fn build_block_from_body(tc: TypeChecker, json: string, pos: i32) -> (TypeChecke
         c = fer.0
         let stmt_idx: i32 = c.stmts.len()
         c.stmts.push(Stmt::ExprStmt(ExprStmtData { expr: fer.1, span: s() }))
-        c.extra_stmt_ids.push(StmtId { id: stmt_idx })
+        collected.push(StmtId { id: stmt_idx })
         stmts_count = stmts_count + 1
+    }
+    // Push collected stmts as contiguous block
+    let stmts_start: i32 = c.extra_stmt_ids.len()
+    var j: i32 = 0
+    while j < stmts_count {
+        c.extra_stmt_ids.push(collected[j])
+        j = j + 1
     }
     let idx: i32 = c.exprs.len()
     c.exprs.push(Expr::Block(BlockData { stmts_start: stmts_start, stmts_count: stmts_count, span: s() }))
@@ -869,7 +876,7 @@ fn build_grouped(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprI
 fn build_comptime_block(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprId) {
     let bp: i32 = field_pos(json, pos, "body")
     var c: TypeChecker = tc
-    let body_start: i32 = c.extra_stmt_ids.len()
+    var body_collected: List#[StmtId] = List.new#[StmtId]()
     var body_count: i32 = 0
     if bp >= 0 {
         let sp: i32 = field_pos(json, bp, "statements")
@@ -878,11 +885,17 @@ fn build_comptime_block(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker
             while ap >= 0 {
                 let r: (TypeChecker, StmtId) = build_stmt(c, json, ap)
                 c = r.0
-                c.extra_stmt_ids.push(r.1)
+                body_collected.push(r.1)
                 body_count = body_count + 1
                 ap = array_next(json, ap)
             }
         }
+    }
+    let body_start: i32 = c.extra_stmt_ids.len()
+    var bj: i32 = 0
+    while bj < body_count {
+        c.extra_stmt_ids.push(body_collected[bj])
+        bj = bj + 1
     }
     let idx: i32 = c.exprs.len()
     c.exprs.push(Expr::ComptimeBlock(ComptimeBlockData { body_start: body_start, body_count: body_count, span: s() }))
@@ -892,7 +905,7 @@ fn build_comptime_block(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker
 fn build_unsafe_block(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprId) {
     let bp: i32 = field_pos(json, pos, "body")
     var c: TypeChecker = tc
-    let body_start: i32 = c.extra_stmt_ids.len()
+    var body_collected: List#[StmtId] = List.new#[StmtId]()
     var body_count: i32 = 0
     if bp >= 0 {
         let sp: i32 = field_pos(json, bp, "statements")
@@ -901,11 +914,17 @@ fn build_unsafe_block(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, 
             while ap >= 0 {
                 let r: (TypeChecker, StmtId) = build_stmt(c, json, ap)
                 c = r.0
-                c.extra_stmt_ids.push(r.1)
+                body_collected.push(r.1)
                 body_count = body_count + 1
                 ap = array_next(json, ap)
             }
         }
+    }
+    let body_start: i32 = c.extra_stmt_ids.len()
+    var bj: i32 = 0
+    while bj < body_count {
+        c.extra_stmt_ids.push(body_collected[bj])
+        bj = bj + 1
     }
     let idx: i32 = c.exprs.len()
     c.exprs.push(Expr::UnsafeBlock(UnsafeBlockData { body_start: body_start, body_count: body_count, span: s() }))
@@ -1303,9 +1322,9 @@ fn build_if_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtI
     let cr: (TypeChecker, ExprId) = build_expr(tc, json, cp)
     var c: TypeChecker = cr.0
 
-    // then_branch is a body object
+    // then_branch is a body object — collect stmts to avoid interleaving
     let tbp: i32 = field_pos(json, pos, "then_branch")
-    let then_start: i32 = c.extra_stmt_ids.len()
+    var then_collected: List#[StmtId] = List.new#[StmtId]()
     var then_count: i32 = 0
     if tbp >= 0 {
         let stmts_p: i32 = field_pos(json, tbp, "statements")
@@ -1314,16 +1333,22 @@ fn build_if_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtI
             while ap >= 0 {
                 let r: (TypeChecker, StmtId) = build_stmt(c, json, ap)
                 c = r.0
-                c.extra_stmt_ids.push(r.1)
+                then_collected.push(r.1)
                 then_count = then_count + 1
                 ap = array_next(json, ap)
             }
         }
     }
+    let then_start: i32 = c.extra_stmt_ids.len()
+    var ti: i32 = 0
+    while ti < then_count {
+        c.extra_stmt_ids.push(then_collected[ti])
+        ti = ti + 1
+    }
 
     // else_branch — can be null, a body object, or an if_stmt (else if chain)
     let ebp: i32 = field_pos(json, pos, "else_branch")
-    let else_start: i32 = c.extra_stmt_ids.len()
+    var else_collected: List#[StmtId] = List.new#[StmtId]()
     var else_count: i32 = 0
     if ebp >= 0 and not json_is_null(json, ebp) {
         // Check if it's an if_stmt (else-if chain)
@@ -1332,7 +1357,7 @@ fn build_if_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtI
             // Recursively build the else-if as a single IfStmt
             let eir: (TypeChecker, StmtId) = build_if_stmt(c, json, ebp)
             c = eir.0
-            c.extra_stmt_ids.push(eir.1)
+            else_collected.push(eir.1)
             else_count = 1
         } else {
             // Regular else body
@@ -1342,12 +1367,18 @@ fn build_if_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtI
                 while ap >= 0 {
                     let r: (TypeChecker, StmtId) = build_stmt(c, json, ap)
                     c = r.0
-                    c.extra_stmt_ids.push(r.1)
+                    else_collected.push(r.1)
                     else_count = else_count + 1
                     ap = array_next(json, ap)
                 }
             }
         }
+    }
+    let else_start: i32 = c.extra_stmt_ids.len()
+    var ei: i32 = 0
+    while ei < else_count {
+        c.extra_stmt_ids.push(else_collected[ei])
+        ei = ei + 1
     }
 
     let idx: i32 = c.stmts.len()
@@ -1365,7 +1396,7 @@ fn build_while_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, St
     let cr: (TypeChecker, ExprId) = build_expr(tc, json, cp)
     var c: TypeChecker = cr.0
     let bp: i32 = field_pos(json, pos, "body")
-    let body_start: i32 = c.extra_stmt_ids.len()
+    var body_collected: List#[StmtId] = List.new#[StmtId]()
     var body_count: i32 = 0
     if bp >= 0 {
         let sp: i32 = field_pos(json, bp, "statements")
@@ -1374,11 +1405,17 @@ fn build_while_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, St
             while ap >= 0 {
                 let r: (TypeChecker, StmtId) = build_stmt(c, json, ap)
                 c = r.0
-                c.extra_stmt_ids.push(r.1)
+                body_collected.push(r.1)
                 body_count = body_count + 1
                 ap = array_next(json, ap)
             }
         }
+    }
+    let body_start: i32 = c.extra_stmt_ids.len()
+    var bj: i32 = 0
+    while bj < body_count {
+        c.extra_stmt_ids.push(body_collected[bj])
+        bj = bj + 1
     }
     let idx: i32 = c.stmts.len()
     c.stmts.push(Stmt::WhileLoop(WhileLoopData {
@@ -1407,9 +1444,9 @@ fn build_for_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stmt
     let ip: i32 = field_pos(json, pos, "iterable")
     let ir: (TypeChecker, ExprId) = build_expr(c, json, ip)
     c = ir.0
-    // Body
+    // Body — collect stmts to avoid interleaving with inner bodies
     let bp: i32 = field_pos(json, pos, "body")
-    let body_start: i32 = c.extra_stmt_ids.len()
+    var body_collected: List#[StmtId] = List.new#[StmtId]()
     var body_count: i32 = 0
     if bp >= 0 {
         let sp: i32 = field_pos(json, bp, "statements")
@@ -1418,11 +1455,17 @@ fn build_for_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stmt
             while ap >= 0 {
                 let r: (TypeChecker, StmtId) = build_stmt(c, json, ap)
                 c = r.0
-                c.extra_stmt_ids.push(r.1)
+                body_collected.push(r.1)
                 body_count = body_count + 1
                 ap = array_next(json, ap)
             }
         }
+    }
+    let body_start: i32 = c.extra_stmt_ids.len()
+    var bj: i32 = 0
+    while bj < body_count {
+        c.extra_stmt_ids.push(body_collected[bj])
+        bj = bj + 1
     }
     let idx: i32 = c.stmts.len()
     c.stmts.push(Stmt::ForLoop(ForLoopData {
@@ -1437,7 +1480,7 @@ fn build_for_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stmt
 fn build_loop_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtId) {
     let bp: i32 = field_pos(json, pos, "body")
     var c: TypeChecker = tc
-    let body_start: i32 = c.extra_stmt_ids.len()
+    var body_collected: List#[StmtId] = List.new#[StmtId]()
     var body_count: i32 = 0
     if bp >= 0 {
         let sp: i32 = field_pos(json, bp, "statements")
@@ -1446,11 +1489,17 @@ fn build_loop_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stm
             while ap >= 0 {
                 let r: (TypeChecker, StmtId) = build_stmt(c, json, ap)
                 c = r.0
-                c.extra_stmt_ids.push(r.1)
+                body_collected.push(r.1)
                 body_count = body_count + 1
                 ap = array_next(json, ap)
             }
         }
+    }
+    let body_start: i32 = c.extra_stmt_ids.len()
+    var bj: i32 = 0
+    while bj < body_count {
+        c.extra_stmt_ids.push(body_collected[bj])
+        bj = bj + 1
     }
     let idx: i32 = c.stmts.len()
     c.stmts.push(Stmt::LoopStmt(LoopStmtData {
@@ -1547,19 +1596,27 @@ fn build_generic_params(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker
 
 fn build_body_stmts(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, i32, i32) {
     var c: TypeChecker = tc
-    let start: i32 = c.extra_stmt_ids.len()
     var count: i32 = 0
-    if pos < 0 or json_is_null(json, pos) { return (c, start, 0) }
+    if pos < 0 or json_is_null(json, pos) { return (c, c.extra_stmt_ids.len(), 0) }
     let sp: i32 = field_pos(json, pos, "statements")
+    // Collect StmtIds in a temporary list to avoid interleaving with inner stmts
+    var collected: List#[StmtId] = List.new#[StmtId]()
     if sp >= 0 {
         var ap: i32 = array_start(json, sp)
         while ap >= 0 {
             let r: (TypeChecker, StmtId) = build_stmt(c, json, ap)
             c = r.0
-            c.extra_stmt_ids.push(r.1)
+            collected.push(r.1)
             count = count + 1
             ap = array_next(json, ap)
         }
+    }
+    // Push all collected stmts as a contiguous block
+    let start: i32 = c.extra_stmt_ids.len()
+    var j: i32 = 0
+    while j < count {
+        c.extra_stmt_ids.push(collected[j])
+        j = j + 1
     }
     return (c, start, count)
 }

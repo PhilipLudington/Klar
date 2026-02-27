@@ -18,13 +18,13 @@ import types.{
     make_primitive, get_primitive_kind,
     type_i32, type_i64, type_f64, type_bool, type_char, type_string,
     type_void, type_never, type_unknown, type_error,
-    type_eq_simple, type_to_string_simple,
+    type_eq_simple, type_to_string_simple, type_kind_name,
     type_is_numeric, type_is_integer, type_is_float, type_is_signed,
     type_is_primitive,
     primitive_from_name, primitive_name,
     ArrayData, SliceData, TupleData, ResultData, FunctionData,
     ReferenceData, StructData, StructFieldData, EnumData,
-    EnumVariantInfo, WrapperData, MapData, TraitData,
+    EnumVariantInfo, WrapperData, MapData, RangeData, TraitData,
     TraitMethodData, AssocTypeData, TypeVarData,
     ErrorKind, error_kind_name
 }
@@ -115,6 +115,7 @@ pub struct TypeChecker {
     pub type_references: List#[ReferenceData],
     pub type_wrappers: List#[WrapperData],
     pub type_maps: List#[MapData],
+    pub type_ranges: List#[RangeData],
 
     // Extra type lists for struct fields, enum variants, function params
     pub type_ids: List#[TypeId],
@@ -206,6 +207,7 @@ impl TypeChecker {
             type_references: List.new#[ReferenceData](),
             type_wrappers: List.new#[WrapperData](),
             type_maps: List.new#[MapData](),
+            type_ranges: List.new#[RangeData](),
 
             type_ids: List.new#[TypeId](),
             resolved_types: List.new#[KlarType](),
@@ -655,6 +657,14 @@ fn resolve_generic_apply(tc: TypeChecker, data: GenericApplyData) -> (TypeChecke
                 let rr: (TypeChecker, KlarType) = make_result_type(c, ok_type, err_type)
                 return rr
             }
+            if name == "Range" and data.args_count == 1 {
+                let arg_te: TypeExprId = tc.extra_type_expr_ids[data.args_start]
+                let r: (TypeChecker, KlarType) = resolve_type_expr(tc, arg_te)
+                var c: TypeChecker = r.0
+                let elem: KlarType = r.1
+                let rng_r: (TypeChecker, KlarType) = make_range_type(c, elem, false)
+                return rng_r
+            }
             // User-defined generic structs
             if tc.generic_struct_decls.contains_key(name) {
                 return resolve_user_generic_struct(tc, data, name)
@@ -808,6 +818,67 @@ pub fn type_eq(a: KlarType, b: KlarType) -> bool {
     return type_eq_simple(a, b)
 }
 
+// Full structural type equality that handles compound types (Array, Optional, etc.)
+// Requires TypeChecker for arena access.
+pub fn type_eq_tc(tc: TypeChecker, a: KlarType, b: KlarType) -> bool {
+    // Fast path: same kind and payload
+    if type_eq_simple(a, b) { return true }
+    // If kinds differ, not equal
+    if type_kind_name(a.kind) != type_kind_name(b.kind) { return false }
+    // Structural comparison for compound types
+    match a.kind {
+        TypeKind::Array => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_arr: ArrayData = tc.type_arrays[a.payload]
+            let b_arr: ArrayData = tc.type_arrays[b.payload]
+            let a_elem: KlarType = get_resolved_type(tc, a_arr.element.id)
+            let b_elem: KlarType = get_resolved_type(tc, b_arr.element.id)
+            return type_eq_tc(tc, a_elem, b_elem)
+        }
+        TypeKind::Optional => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_inner: KlarType = unwrap_optional_inner(tc, a)
+            let b_inner: KlarType = unwrap_optional_inner(tc, b)
+            return type_eq_tc(tc, a_inner, b_inner)
+        }
+        TypeKind::Result => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_ok: KlarType = unwrap_result_ok(tc, a)
+            let b_ok: KlarType = unwrap_result_ok(tc, b)
+            let a_err: KlarType = unwrap_result_err(tc, a)
+            let b_err: KlarType = unwrap_result_err(tc, b)
+            return type_eq_tc(tc, a_ok, b_ok) and type_eq_tc(tc, a_err, b_err)
+        }
+        TypeKind::ListType => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_elem: KlarType = unwrap_list_element(tc, a)
+            let b_elem: KlarType = unwrap_list_element(tc, b)
+            return type_eq_tc(tc, a_elem, b_elem)
+        }
+        TypeKind::MapType => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_key: KlarType = unwrap_map_key(tc, a)
+            let b_key: KlarType = unwrap_map_key(tc, b)
+            let a_val: KlarType = unwrap_map_value(tc, a)
+            let b_val: KlarType = unwrap_map_value(tc, b)
+            return type_eq_tc(tc, a_key, b_key) and type_eq_tc(tc, a_val, b_val)
+        }
+        TypeKind::SetType => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_elem: KlarType = unwrap_list_element(tc, a)
+            let b_elem: KlarType = unwrap_list_element(tc, b)
+            return type_eq_tc(tc, a_elem, b_elem)
+        }
+        TypeKind::Range => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_elem: KlarType = unwrap_range_element(tc, a)
+            let b_elem: KlarType = unwrap_range_element(tc, b)
+            return type_eq_tc(tc, a_elem, b_elem)
+        }
+        _ => { return false }
+    }
+}
+
 // ─── Type Compatibility ─────────────────────────────────────────────
 // Check if a value of type `value` can be assigned to a target of type `target`.
 // Strict equality plus wildcards: never, error, and unknown are compatible with anything.
@@ -838,6 +909,23 @@ pub fn type_compatible(target: KlarType, value: KlarType) -> bool {
     if is_unknown_type(target) { return true }
     if is_unknown_type(value) { return true }
     return type_eq(target, value)
+}
+
+// Full structural type compatibility with compound type support and integer widening.
+pub fn type_compatible_tc(tc: TypeChecker, target: KlarType, value: KlarType) -> bool {
+    // Never is compatible with anything (it doesn't return)
+    if is_never_type(value) { return true }
+    // Error type is compatible with anything (to avoid cascading errors)
+    if is_error_type(value) { return true }
+    if is_error_type(target) { return true }
+    // Unknown is compatible with anything (polymorphic builtins)
+    if is_unknown_type(target) { return true }
+    if is_unknown_type(value) { return true }
+    // Integer widening: i32 -> i64
+    if type_eq_simple(target, type_i64()) and type_eq_simple(value, type_i32()) {
+        return true
+    }
+    return type_eq_tc(tc, target, value)
 }
 
 // ─── Type Display ───────────────────────────────────────────────────
@@ -1250,6 +1338,21 @@ pub fn make_set_type(tc: TypeChecker, elem: KlarType) -> (TypeChecker, KlarType)
     let wrap_idx: i32 = c.type_wrappers.len()
     c.type_wrappers.push(WrapperData { inner: TypeId { id: pr.1 } })
     return (c, KlarType { kind: TypeKind::SetType, payload: wrap_idx })
+}
+
+pub fn make_range_type(tc: TypeChecker, elem: KlarType, inclusive: bool) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let pr: (TypeChecker, i32) = push_type_ref(c, elem)
+    c = pr.0
+    let range_idx: i32 = c.type_ranges.len()
+    c.type_ranges.push(RangeData { element_type: TypeId { id: pr.1 }, is_inclusive: inclusive })
+    return (c, KlarType { kind: TypeKind::Range, payload: range_idx })
+}
+
+pub fn unwrap_range_element(tc: TypeChecker, t: KlarType) -> KlarType {
+    if t.payload < 0 or t.payload >= tc.type_ranges.len() { return type_unknown() }
+    let rd: RangeData = tc.type_ranges[t.payload]
+    return get_resolved_type(tc, rd.element_type.id)
 }
 
 // ─── Type Unwrap Helpers ────────────────────────────────────────────
