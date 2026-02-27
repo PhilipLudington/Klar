@@ -1,0 +1,589 @@
+// selfhost/json.kl — Position-based JSON walker
+// Milestone 9.10.7: No allocation, no parse tree.
+// All functions take (json_string, position) and return updated position.
+//
+// Character codes used:
+//   " = 34   { = 123  } = 125  [ = 91   ] = 93
+//   : = 58   , = 44   \ = 92   / = 47
+//   t = 116  f = 102  n = 110
+//   - = 45   0..9 = 48..57
+//   space = 32  tab = 9  newline = 10  CR = 13
+
+// ─── Peek helper ─────────────────────────────────────────────────────
+
+fn peek(json: string, pos: i32) -> i32 {
+    if pos < 0 or pos >= json.byte_len() { return -1 }
+    return json.byte_at(pos).as#[i32]
+}
+
+// ─── Whitespace ──────────────────────────────────────────────────────
+
+pub fn skip_whitespace(json: string, pos: i32) -> i32 {
+    var p: i32 = pos
+    while p < json.byte_len() {
+        let c: i32 = peek(json, p)
+        if c == 32 or c == 9 or c == 10 or c == 13 {
+            p = p + 1
+        } else {
+            return p
+        }
+    }
+    return p
+}
+
+// ─── Skip Value ──────────────────────────────────────────────────────
+// Skip any JSON value: string, number, bool, null, object, array.
+// Returns position after the value.
+
+pub fn skip_value(json: string, pos: i32) -> i32 {
+    let p: i32 = skip_whitespace(json, pos)
+    let c: i32 = peek(json, p)
+
+    // String
+    if c == 34 { return skip_string(json, p) }
+
+    // Object
+    if c == 123 { return skip_object(json, p) }
+
+    // Array
+    if c == 91 { return skip_array(json, p) }
+
+    // true
+    if c == 116 { return p + 4 }
+
+    // false
+    if c == 102 { return p + 5 }
+
+    // null
+    if c == 110 { return p + 4 }
+
+    // Number (digits or -)
+    if c == 45 or (c >= 48 and c <= 57) { return skip_number(json, p) }
+
+    // Unknown — advance one to avoid infinite loop
+    return p + 1
+}
+
+fn skip_string(json: string, pos: i32) -> i32 {
+    // pos points to opening "
+    var p: i32 = pos + 1
+    while p < json.byte_len() {
+        let c: i32 = peek(json, p)
+        if c == 92 {
+            // Backslash escape — skip next char
+            p = p + 2
+        } else if c == 34 {
+            // Closing quote
+            return p + 1
+        } else {
+            p = p + 1
+        }
+    }
+    return p
+}
+
+fn skip_number(json: string, pos: i32) -> i32 {
+    var p: i32 = pos
+    // Optional minus
+    if peek(json, p) == 45 { p = p + 1 }
+    // Digits, decimal point, exponent
+    while p < json.byte_len() {
+        let c: i32 = peek(json, p)
+        if c >= 48 and c <= 57 {
+            p = p + 1
+        } else if c == 46 {
+            // decimal point
+            p = p + 1
+        } else if c == 101 or c == 69 {
+            // 'e' or 'E' — exponent marker
+            p = p + 1
+            // Optional +/- sign after exponent
+            let next_c: i32 = peek(json, p)
+            if next_c == 43 or next_c == 45 { p = p + 1 }
+        } else {
+            return p
+        }
+    }
+    return p
+}
+
+fn skip_object(json: string, pos: i32) -> i32 {
+    // pos points to {
+    var p: i32 = pos + 1
+    p = skip_whitespace(json, p)
+    if peek(json, p) == 125 { return p + 1 }  // empty object
+
+    while p < json.byte_len() {
+        // Skip key (string)
+        p = skip_value(json, p)
+        // Skip colon
+        p = skip_whitespace(json, p)
+        if peek(json, p) == 58 { p = p + 1 }
+        // Skip value
+        p = skip_value(json, p)
+        // Comma or closing brace
+        p = skip_whitespace(json, p)
+        let c: i32 = peek(json, p)
+        if c == 44 {
+            p = p + 1
+            p = skip_whitespace(json, p)
+        } else if c == 125 {
+            return p + 1
+        } else {
+            return p
+        }
+    }
+    return p
+}
+
+fn skip_array(json: string, pos: i32) -> i32 {
+    // pos points to [
+    var p: i32 = pos + 1
+    p = skip_whitespace(json, p)
+    if peek(json, p) == 93 { return p + 1 }  // empty array
+
+    while p < json.byte_len() {
+        p = skip_value(json, p)
+        p = skip_whitespace(json, p)
+        let c: i32 = peek(json, p)
+        if c == 44 {
+            p = p + 1
+            p = skip_whitespace(json, p)
+        } else if c == 93 {
+            return p + 1
+        } else {
+            return p
+        }
+    }
+    return p
+}
+
+// ─── Extract String ──────────────────────────────────────────────────
+// pos must point to opening ". Returns (decoded_value, position_after_closing_quote).
+
+pub fn extract_string(json: string, pos: i32) -> (string, i32) {
+    let p0: i32 = skip_whitespace(json, pos)
+    if peek(json, p0) != 34 {
+        return ("", p0)
+    }
+    var p: i32 = p0 + 1
+    var result: string = ""
+    while p < json.byte_len() {
+        let c: i32 = peek(json, p)
+        if c == 92 {
+            // Escape sequence
+            let next: i32 = peek(json, p + 1)
+            if next == 34 { result = result + "\""; p = p + 2 }
+            else if next == 92 { result = result + "\\"; p = p + 2 }
+            else if next == 47 { result = result + "/"; p = p + 2 }
+            else if next == 110 { result = result + "\n"; p = p + 2 }
+            else if next == 116 { result = result + "\t"; p = p + 2 }
+            else if next == 114 { result = result + "\r"; p = p + 2 }
+            else if next == 98 { result = result + "\x08"; p = p + 2 }
+            else if next == 102 { result = result + "\x0c"; p = p + 2 }
+            else if next == 117 {
+                // \uXXXX — skip all 6 chars, store raw escape
+                result = result + json.slice(p, p + 6)
+                p = p + 6
+            }
+            else {
+                // Unknown escape — keep as-is
+                result = result + json.slice(p, p + 2)
+                p = p + 2
+            }
+        } else if c == 34 {
+            return (result, p + 1)
+        } else {
+            // Regular character — copy one byte
+            result = result + json.slice(p, p + 1)
+            p = p + 1
+        }
+    }
+    return (result, p)
+}
+
+// ─── Extract Int ─────────────────────────────────────────────────────
+// pos points to start of number. Returns (value, position_after_number).
+
+pub fn extract_int(json: string, pos: i32) -> (i32, i32) {
+    let p0: i32 = skip_whitespace(json, pos)
+    var p: i32 = p0
+    var negative: bool = false
+    if peek(json, p) == 45 {
+        negative = true
+        p = p + 1
+    }
+    var val: i32 = 0
+    while p < json.byte_len() {
+        let c: i32 = peek(json, p)
+        if c >= 48 and c <= 57 {
+            val = val * 10 + (c - 48)
+            p = p + 1
+        } else {
+            if negative { return (0 - val, p) }
+            return (val, p)
+        }
+    }
+    if negative { return (0 - val, p) }
+    return (val, p)
+}
+
+// ─── Extract Bool ────────────────────────────────────────────────────
+
+pub fn extract_bool(json: string, pos: i32) -> (bool, i32) {
+    let p: i32 = skip_whitespace(json, pos)
+    let c: i32 = peek(json, p)
+    if c == 116 { return (true, p + 4) }   // "true"
+    if c == 102 { return (false, p + 5) }  // "false"
+    return (false, p)  // Unknown — don't advance position
+}
+
+// ─── Is Null ─────────────────────────────────────────────────────────
+
+pub fn json_is_null(json: string, pos: i32) -> bool {
+    let p: i32 = skip_whitespace(json, pos)
+    let c: i32 = peek(json, p)
+    return c == 110  // 'n' for null
+}
+
+// ─── Find Field ──────────────────────────────────────────────────────
+// Given an object at obj_pos, find the value position for a given field name.
+// Returns -1 if not found. obj_pos should point to '{'.
+
+pub fn find_field(json: string, obj_pos: i32, field_name: string) -> i32 {
+    var p: i32 = skip_whitespace(json, obj_pos)
+    if peek(json, p) != 123 { return -1 }
+    p = p + 1  // skip {
+    p = skip_whitespace(json, p)
+    if peek(json, p) == 125 { return -1 }  // empty object
+
+    while p < json.byte_len() {
+        // Extract key
+        let key_result: (string, i32) = extract_string(json, p)
+        let key: string = key_result.0
+        p = key_result.1
+
+        // Skip colon
+        p = skip_whitespace(json, p)
+        if peek(json, p) == 58 { p = p + 1 }
+        p = skip_whitespace(json, p)
+
+        // Check if this is the field we want
+        if key == field_name {
+            return p
+        }
+
+        // Skip value
+        p = skip_value(json, p)
+
+        // Comma or closing brace
+        p = skip_whitespace(json, p)
+        let c: i32 = peek(json, p)
+        if c == 44 {
+            p = p + 1
+            p = skip_whitespace(json, p)
+            // Guard: trailing comma before closing brace
+            if peek(json, p) == 125 { return -1 }
+        } else {
+            return -1
+        }
+    }
+    return -1
+}
+
+// ─── Field Extraction Helpers ────────────────────────────────────────
+// Convenience: find_field + extract in one call.
+
+pub fn field_string(json: string, obj_pos: i32, field_name: string) -> (string, bool) {
+    let vp: i32 = find_field(json, obj_pos, field_name)
+    if vp < 0 { return ("", false) }
+    if json_is_null(json, vp) { return ("", false) }
+    let r: (string, i32) = extract_string(json, vp)
+    return (r.0, true)
+}
+
+pub fn field_int(json: string, obj_pos: i32, field_name: string) -> (i32, bool) {
+    let vp: i32 = find_field(json, obj_pos, field_name)
+    if vp < 0 { return (0, false) }
+    let r: (i32, i32) = extract_int(json, vp)
+    return (r.0, true)
+}
+
+pub fn field_bool(json: string, obj_pos: i32, field_name: string) -> (bool, bool) {
+    let vp: i32 = find_field(json, obj_pos, field_name)
+    if vp < 0 { return (false, false) }
+    let r: (bool, i32) = extract_bool(json, vp)
+    return (r.0, true)
+}
+
+pub fn field_is_null(json: string, obj_pos: i32, field_name: string) -> bool {
+    let vp: i32 = find_field(json, obj_pos, field_name)
+    if vp < 0 { return true }
+    return json_is_null(json, vp)
+}
+
+// Position of field value (for nested objects/arrays)
+pub fn field_pos(json: string, obj_pos: i32, field_name: string) -> i32 {
+    return find_field(json, obj_pos, field_name)
+}
+
+// ─── Array Iteration ─────────────────────────────────────────────────
+// array_start: given pos pointing to '[', return position of first element (or -1 if empty)
+// array_next: given pos pointing to start of current element, skip it and return next element pos (or -1)
+// array_count: count elements in array
+
+pub fn array_start(json: string, pos: i32) -> i32 {
+    var p: i32 = skip_whitespace(json, pos)
+    if peek(json, p) != 91 { return -1 }  // not an array
+    p = p + 1  // skip [
+    p = skip_whitespace(json, p)
+    if peek(json, p) == 93 { return -1 }  // empty array
+    return p
+}
+
+pub fn array_next(json: string, pos: i32) -> i32 {
+    // pos points to start of current element — skip it
+    var p: i32 = skip_value(json, pos)
+    p = skip_whitespace(json, p)
+    let c: i32 = peek(json, p)
+    if c == 44 {
+        p = p + 1
+        p = skip_whitespace(json, p)
+        return p
+    }
+    // ] or end
+    return -1
+}
+
+pub fn array_count(json: string, pos: i32) -> i32 {
+    var p: i32 = skip_whitespace(json, pos)
+    if peek(json, p) != 91 { return 0 }
+    p = p + 1
+    p = skip_whitespace(json, p)
+    if peek(json, p) == 93 { return 0 }
+
+    var count: i32 = 0
+    while p >= 0 and p < json.byte_len() {
+        count = count + 1
+        p = skip_value(json, p)
+        p = skip_whitespace(json, p)
+        let c: i32 = peek(json, p)
+        if c == 44 {
+            p = p + 1
+            p = skip_whitespace(json, p)
+        } else {
+            return count
+        }
+    }
+    return count
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────
+
+fn main() -> i32 {
+    println("json.kl: all tests in test block")
+    return 0
+}
+
+test main {
+    // skip_whitespace
+    assert_eq(skip_whitespace("  hello", 0), 2)
+    assert_eq(skip_whitespace("hello", 0), 0)
+    assert_eq(skip_whitespace(" \t\n x", 0), 4)
+    assert_eq(skip_whitespace("", 0), 0)
+
+    // extract_string basic
+    let es1: (string, i32) = extract_string("\"hello\"", 0)
+    assert(es1.0 == "hello")
+    assert_eq(es1.1, 7)
+    let es2: (string, i32) = extract_string("\"\"", 0)
+    assert(es2.0 == "")
+    assert_eq(es2.1, 2)
+
+    // extract_string escapes
+    let esc1: (string, i32) = extract_string("\"a\\nb\"", 0)
+    assert(esc1.0 == "a\nb")
+    let esc2: (string, i32) = extract_string("\"a\\\"b\"", 0)
+    assert(esc2.0 == "a\"b")
+    let esc3: (string, i32) = extract_string("\"a\\\\b\"", 0)
+    assert(esc3.0 == "a\\b")
+    let esc4: (string, i32) = extract_string("\"a\\/b\"", 0)
+    assert(esc4.0 == "a/b")
+
+    // extract_string with offset
+    let eso: (string, i32) = extract_string("{\"key\":\"value\"}", 7)
+    assert(eso.0 == "value")
+    assert_eq(eso.1, 14)
+
+    // extract_int
+    let ei1: (i32, i32) = extract_int("42", 0)
+    assert_eq(ei1.0, 42)
+    assert_eq(ei1.1, 2)
+    let ei2: (i32, i32) = extract_int("0", 0)
+    assert_eq(ei2.0, 0)
+    let ei3: (i32, i32) = extract_int("-7", 0)
+    assert_eq(ei3.0, -7)
+    let ei4: (i32, i32) = extract_int("123,", 0)
+    assert_eq(ei4.0, 123)
+    assert_eq(ei4.1, 3)
+    let ei5: (i32, i32) = extract_int("  42", 0)
+    assert_eq(ei5.0, 42)
+
+    // extract_bool
+    let eb1: (bool, i32) = extract_bool("true", 0)
+    assert(eb1.0 == true)
+    assert_eq(eb1.1, 4)
+    let eb2: (bool, i32) = extract_bool("false", 0)
+    assert(eb2.0 == false)
+    assert_eq(eb2.1, 5)
+
+    // json_is_null
+    assert(json_is_null("null", 0))
+    assert(not json_is_null("true", 0))
+    assert(not json_is_null("\"hi\"", 0))
+
+    // skip_value primitives
+    assert_eq(skip_value("\"hello\"", 0), 7)
+    assert_eq(skip_value("42", 0), 2)
+    assert_eq(skip_value("true", 0), 4)
+    assert_eq(skip_value("false", 0), 5)
+    assert_eq(skip_value("null", 0), 4)
+    assert_eq(skip_value("-10", 0), 3)
+
+    // skip_value array/object/nested
+    assert_eq(skip_value("[]", 0), 2)
+    assert_eq(skip_value("[1,2,3]", 0), 7)
+    assert_eq(skip_value("[[1],[2]]", 0), 9)
+    assert_eq(skip_value("{}", 0), 2)
+    let sv1: string = "{\"a\":1,\"b\":2}"
+    assert_eq(skip_value(sv1, 0), sv1.byte_len())
+    let sv2: string = "{\"a\":[1,{\"b\":true}],\"c\":null}"
+    assert_eq(skip_value(sv2, 0), sv2.byte_len())
+
+    // find_field
+    let ff1: string = "{\"kind\":\"literal\",\"type\":\"int\",\"value\":\"42\"}"
+    let fp1: i32 = find_field(ff1, 0, "kind")
+    assert(fp1 >= 0)
+    let fr1: (string, i32) = extract_string(ff1, fp1)
+    assert(fr1.0 == "literal")
+    let fp2: i32 = find_field(ff1, 0, "value")
+    assert(fp2 >= 0)
+    let fr2: (string, i32) = extract_string(ff1, fp2)
+    assert(fr2.0 == "42")
+    assert_eq(find_field("{\"a\":1,\"b\":2}", 0, "c"), -1)
+
+    // find_field nested
+    let ffn: string = "{\"left\":{\"kind\":\"literal\"},\"right\":42}"
+    let flp: i32 = find_field(ffn, 0, "left")
+    assert(flp >= 0)
+    let fkp: i32 = find_field(ffn, flp, "kind")
+    assert(fkp >= 0)
+    let fkr: (string, i32) = extract_string(ffn, fkp)
+    assert(fkr.0 == "literal")
+
+    // field helpers
+    let fh: string = "{\"name\":\"foo\",\"count\":5,\"ok\":true,\"data\":null}"
+    let fh1: (string, bool) = field_string(fh, 0, "name")
+    assert(fh1.0 == "foo")
+    assert(fh1.1 == true)
+    let fh2: (i32, bool) = field_int(fh, 0, "count")
+    assert_eq(fh2.0, 5)
+    let fh3: (bool, bool) = field_bool(fh, 0, "ok")
+    assert(fh3.0 == true)
+    assert(field_is_null(fh, 0, "data"))
+    assert(not field_is_null(fh, 0, "name"))
+    let fhm: (string, bool) = field_string("{\"a\":1}", 0, "b")
+    assert(fhm.1 == false)
+
+    // array_start / array_count
+    assert_eq(array_start("[]", 0), -1)
+    assert(array_start("[1,2,3]", 0) >= 0)
+    assert_eq(array_count("[]", 0), 0)
+    assert_eq(array_count("[1]", 0), 1)
+    assert_eq(array_count("[1,2,3]", 0), 3)
+    assert_eq(array_count("[\"a\",\"b\"]", 0), 2)
+
+    // array iteration
+    let ai: string = "[\"a\",\"b\",\"c\"]"
+    var aip: i32 = array_start(ai, 0)
+    assert(aip >= 0)
+    let air1: (string, i32) = extract_string(ai, aip)
+    assert(air1.0 == "a")
+    aip = array_next(ai, aip)
+    assert(aip >= 0)
+    let air2: (string, i32) = extract_string(ai, aip)
+    assert(air2.0 == "b")
+    aip = array_next(ai, aip)
+    assert(aip >= 0)
+    let air3: (string, i32) = extract_string(ai, aip)
+    assert(air3.0 == "c")
+    aip = array_next(ai, aip)
+    assert_eq(aip, -1)
+
+    // array of objects
+    let ao: string = "[{\"x\":1},{\"x\":2}]"
+    assert_eq(array_count(ao, 0), 2)
+    var aop: i32 = array_start(ao, 0)
+    let aor1: (i32, bool) = field_int(ao, aop, "x")
+    assert_eq(aor1.0, 1)
+    aop = array_next(ao, aop)
+    let aor2: (i32, bool) = field_int(ao, aop, "x")
+    assert_eq(aor2.0, 2)
+
+    // whitespace in json
+    let wj: string = "{ \"kind\" : \"literal\" , \"value\" : 42 }"
+    let wjr: (string, bool) = field_string(wj, 0, "kind")
+    assert(wjr.0 == "literal")
+
+    // nested object field
+    let nof: string = "{\"expr\":{\"kind\":\"identifier\",\"name\":\"x\"},\"type\":\"int\"}"
+    let nofp: i32 = field_pos(nof, 0, "expr")
+    assert(nofp >= 0)
+    let nofr: (string, bool) = field_string(nof, nofp, "kind")
+    assert(nofr.0 == "identifier")
+
+    // nested arrays
+    let na: string = "[[1,2],[3,4]]"
+    assert_eq(array_count(na, 0), 2)
+
+    // empty object and array in fields
+    let eoa: string = "{\"items\":[],\"meta\":{}}"
+    let eoap: i32 = field_pos(eoa, 0, "items")
+    assert(eoap >= 0)
+    assert_eq(array_count(eoa, eoap), 0)
+
+    // extract_string not at quote
+    let enq: (string, i32) = extract_string("42", 0)
+    assert(enq.0 == "")
+
+    // extract_string: \r, \b, \f escapes
+    let esc_r: (string, i32) = extract_string("\"a\\rb\"", 0)
+    assert(esc_r.0 == "a\rb")
+    let esc_b: (string, i32) = extract_string("\"a\\bb\"", 0)
+    assert(esc_b.0 == "a\x08b")
+    let esc_f: (string, i32) = extract_string("\"a\\fb\"", 0)
+    assert(esc_f.0 == "a\x0cb")
+
+    // extract_string: \uXXXX position advance (6 chars consumed)
+    let esc_u: (string, i32) = extract_string("\"\\u0041\"", 0)
+    assert_eq(esc_u.1, 8)
+
+    // extract_bool on non-bool input — should not advance position
+    let eb_bad: (bool, i32) = extract_bool("null", 0)
+    assert(eb_bad.0 == false)
+    assert_eq(eb_bad.1, 0)
+
+    // skip_number with exponent
+    assert_eq(skip_number("1e10", 0), 4)
+    assert_eq(skip_number("1E+3", 0), 4)
+    assert_eq(skip_number("3.14e-2", 0), 7)
+
+    // skip_number: +/- only valid after exponent, not mid-number
+    assert_eq(skip_number("1", 0), 1)
+
+    // find_field with trailing comma (invalid JSON, should not infinite loop)
+    assert_eq(find_field("{\"a\":1,}", 0, "b"), -1)
+
+    // peek on negative position — should return -1
+    assert_eq(peek("hello", -1), -1)
+}

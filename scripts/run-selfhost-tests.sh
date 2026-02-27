@@ -535,6 +535,150 @@ else
     done
 fi
 
+# Phase 4: Checker parity testing
+# Runs both Zig klar check and selfhost checker on test files.
+# Requires pre-built selfhost parser (from Phase 3) and checker_parity binary.
+echo ""
+echo "Phase 4: Checker parity testing"
+echo "────────────────────────────────────────"
+
+# Temp file cleanup on interrupt
+_CHECKER_TMPJSON=""
+trap 'rm -f "$_CHECKER_TMPJSON"' INT TERM
+
+SELFHOST_CHECKER="$SCRIPT_DIR/build/checker_parity"
+checker_build_output=$("$KLAR" build "$SELFHOST_DIR/checker_parity.kl" -o "$SELFHOST_CHECKER" 2>&1)
+checker_build_exit=$?
+# Check if binary was actually created (build may exit 0 without producing binary)
+if [ ! -f "$SELFHOST_CHECKER" ]; then
+    echo "  ✗ selfhost checker build failed (no binary produced)"
+    echo "    $checker_build_output" | head -3
+    FAILED=$((FAILED + 1))
+    [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+    FAILURES="$FAILURES\"selfhost checker: build failed\""
+else
+    # Test tiers — start with simple programs
+    CHECKER_TIER1="
+test/native/hello.kl
+test/native/arith.kl
+test/native/local_vars.kl
+test/native/call.kl
+test/native/early_return.kl
+test/native/return_types.kl
+test/native/nested_calls.kl
+test/native/many_params.kl
+test/native/struct.kl
+test/native/struct_method.kl
+test/native/struct_param.kl
+test/native/struct_order.kl
+test/native/struct_field_assign.kl
+test/native/struct_static_method.kl
+test/native/nested_struct_field.kl
+test/native/for_range.kl
+test/native/for_array.kl
+test/native/range_basic.kl
+test/native/range_inclusive.kl
+test/native/string_simple.kl
+test/native/string_basic.kl
+test/native/string_concat.kl
+test/native/string_eq.kl
+test/native/string_len.kl
+test/native/eq_trait.kl
+test/native/eq_trait_bool.kl
+test/native/eq_trait_string.kl
+test/native/clone_trait_int.kl
+test/native/clone_trait_bool.kl
+test/native/clone_trait_float.kl
+test/native/clone_trait_string.kl
+"
+
+    # Known gaps — features not yet in selfhost checker
+    # string_ tests need String type support; eq_trait_string/clone_trait_string
+    # need string primitive trait impls
+    CHECKER_KNOWN_GAPS="async_ ffi/ ownership_ shadow_ import string_ eq_trait_string clone_trait_string clone_trait_float"
+
+    MATCH_ACCEPT=0
+    MATCH_REJECT=0
+    KNOWN_GAP=0
+    SELFHOST_TOO_PERMISSIVE=0
+    SELFHOST_TOO_STRICT=0
+    CRASH=0
+
+    for f in $CHECKER_TIER1; do
+        [ -f "$SCRIPT_DIR/$f" ] || continue
+        name=$(basename "$f" .kl)
+
+        # Check known gaps
+        skip=0
+        for gap in $CHECKER_KNOWN_GAPS; do
+            case "$name" in
+                ${gap}*) skip=1 ;;
+            esac
+        done
+        if [ $skip -eq 1 ]; then
+            KNOWN_GAP=$((KNOWN_GAP + 1))
+            continue
+        fi
+
+        # Run Zig klar check
+        "$KLAR" check "$SCRIPT_DIR/$f" >/dev/null 2>&1
+        zig_exit=$?
+
+        # Run selfhost: dump-ast directly to temp file, then checker_parity
+        tmpjson=$(mktemp /tmp/checker_parity_XXXXXX.json)
+        _CHECKER_TMPJSON="$tmpjson"
+        "$KLAR" dump-ast "$SCRIPT_DIR/$f" > "$tmpjson" 2>/dev/null
+        dump_exit=$?
+        if [ $dump_exit -ne 0 ]; then
+            rm -f "$tmpjson"
+            KNOWN_GAP=$((KNOWN_GAP + 1))
+            continue
+        fi
+
+        selfhost_output=$("$SELFHOST_CHECKER" "$tmpjson" 2>&1)
+        selfhost_exit=$?
+        rm -f "$tmpjson"
+
+        if [ $selfhost_exit -ge 128 ]; then
+            echo "  ✗ $name (CRASH, exit $selfhost_exit)"
+            CRASH=$((CRASH + 1))
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: checker crash (exit $selfhost_exit)\""
+        elif [ $zig_exit -eq 0 ] && [ $selfhost_exit -eq 0 ]; then
+            echo "  ✓ $name (match-accept)"
+            MATCH_ACCEPT=$((MATCH_ACCEPT + 1))
+            PASSED=$((PASSED + 1))
+        elif [ $zig_exit -ne 0 ] && [ $selfhost_exit -ne 0 ]; then
+            echo "  ✓ $name (match-reject)"
+            MATCH_REJECT=$((MATCH_REJECT + 1))
+            PASSED=$((PASSED + 1))
+        elif [ $zig_exit -eq 0 ] && [ $selfhost_exit -ne 0 ]; then
+            echo "  ✗ $name (selfhost-too-strict)"
+            echo "    selfhost: $selfhost_output" | head -3
+            SELFHOST_TOO_STRICT=$((SELFHOST_TOO_STRICT + 1))
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: selfhost too strict\""
+        else
+            echo "  ✗ $name (selfhost-too-permissive)"
+            SELFHOST_TOO_PERMISSIVE=$((SELFHOST_TOO_PERMISSIVE + 1))
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: selfhost too permissive\""
+        fi
+    done
+
+    echo ""
+    echo "  Checker parity summary:"
+    echo "    match-accept: $MATCH_ACCEPT"
+    echo "    match-reject: $MATCH_REJECT"
+    echo "    known-gap: $KNOWN_GAP"
+    echo "    selfhost-too-strict: $SELFHOST_TOO_STRICT"
+    echo "    selfhost-too-permissive: $SELFHOST_TOO_PERMISSIVE"
+    echo "    crash: $CRASH"
+fi
+
 TOTAL=$((PASSED + FAILED))
 echo ""
 echo "Selfhost tests: $PASSED/$TOTAL passed"

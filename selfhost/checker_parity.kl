@@ -1,0 +1,81 @@
+// selfhost/checker_parity.kl — Parity testing entry point
+// Milestone 9.10.7: Read JSON (from selfhost parser) → build arenas → check → output
+//
+// Usage: checker_parity <file.json>   — reads parser JSON from file
+//
+// The test script runs the selfhost parser separately to produce JSON,
+// then passes the JSON file to this binary. This avoids circular import
+// issues between the parser and checker module trees.
+//
+// Output format:
+//   Success: "check-pass"
+//   Errors: one line per error "{line}:{col} [{error_kind}]: {message}"
+//   Exit: 0 = pass, 1 = errors, 2 = internal error
+
+import checker.{
+    TypeChecker,
+    register_builtins,
+    format_error
+}
+
+import checker_decl.{check_module}
+
+import ast_builder.{build_module}
+
+import ast.{AstModule}
+
+fn main(args: [String]) -> i32 {
+    if args.len() < 2 {
+        println("Usage: checker_parity <file.json>")
+        return 2
+    }
+
+    let arg1: String = args[1]
+    let path: string = arg1.as_str()
+
+    // Step 1: Read JSON file (produced by selfhost parser)
+    let read_result: Result#[String, IoError] = File.read_to_string(path)
+    if not read_result.is_ok() {
+        println("error: could not read file: " + path)
+        return 2
+    }
+    let content: String = read_result!
+    let json: string = content.as_str()
+
+    // Step 2: Build AST arenas from JSON
+    var tc: TypeChecker = TypeChecker.new()
+    let build_result: (TypeChecker, AstModule) = build_module(tc, json)
+    tc = build_result.0
+    let m: AstModule = build_result.1
+
+    // Step 3: Register builtins
+    tc = register_builtins(tc)
+
+    // Step 4: Run checker (register + check declarations)
+    tc = check_module(tc, m.decls_start, m.decls_count)
+
+    // Step 5: Output results
+    if tc.error_count == 0 {
+        println("check-pass")
+        return 0
+    }
+
+    // Output structured errors
+    var i: i32 = 0
+    let err_count: i32 = tc.error_kinds.len()
+    while i < err_count {
+        println(format_error(tc, i))
+        i = i + 1
+    }
+
+    // If no structured errors but has legacy errors, output those
+    if err_count == 0 {
+        var j: i32 = 0
+        while j < tc.errors.len() {
+            println(tc.errors[j])
+            j = j + 1
+        }
+    }
+
+    return 1
+}
