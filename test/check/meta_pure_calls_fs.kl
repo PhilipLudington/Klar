@@ -1,0 +1,7 @@
+// Expected: check-error pure function cannot call impure builtin
+// Pure function calling filesystem builtin should be an error
+
+meta pure
+fn check_path(path: string) -> bool {
+    return fs_exists(path)
+}

@@ -185,6 +185,16 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
         }
         defer tc.in_unsafe_context = was_unsafe;
 
+        // For pure functions, set the purity flag so calls are checked
+        const was_pure = tc.in_pure_function;
+        const was_pure_span = tc.pure_function_span;
+        if (meta_validation.hasPureAnnotation(func.meta)) |pure_span| {
+            tc.in_pure_function = true;
+            tc.pure_function_span = pure_span;
+        }
+        defer tc.in_pure_function = was_pure;
+        defer tc.pure_function_span = was_pure_span;
+
         const was_async_context = tc.current_async_context;
         tc.current_async_context = func.is_async;
         defer tc.current_async_context = was_async_context;
@@ -831,6 +841,16 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
 
             tc.current_return_type = return_type;
             defer tc.current_return_type = null;
+
+            // For pure methods, set the purity flag so calls are checked
+            const was_pure = tc.in_pure_function;
+            const was_pure_span = tc.pure_function_span;
+            if (meta_validation.hasPureAnnotation(method_decl.meta)) |pure_span| {
+                tc.in_pure_function = true;
+                tc.pure_function_span = pure_span;
+            }
+            defer tc.in_pure_function = was_pure;
+            defer tc.pure_function_span = was_pure_span;
 
             _ = tc.checkBlock(body);
         }

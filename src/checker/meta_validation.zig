@@ -116,6 +116,101 @@ fn validateModuleMetaFields(tc: anytype, block: *ast.MetaBlock) void {
     }
 }
 
+/// Check if a meta annotation list contains `meta pure`.
+/// Returns the span of the pure annotation if found.
+pub fn hasPureAnnotation(meta: []const ast.MetaAnnotation) ?ast.Span {
+    for (meta) |annotation| {
+        switch (annotation) {
+            .pure => |span| return span,
+            else => {},
+        }
+    }
+    return null;
+}
+
+/// Register a function as pure if it has a `meta pure` annotation.
+pub fn registerPureFunction(tc: anytype, name: []const u8, meta: []const ast.MetaAnnotation) void {
+    if (hasPureAnnotation(meta) != null) {
+        tc.pure_functions.put(tc.allocator, name, {}) catch {};
+    }
+}
+
+/// Check if a function call violates purity constraints.
+/// Called from checkCallImpl when in_pure_function is true.
+pub fn checkPureCall(tc: anytype, func_name: []const u8, call_span: ast.Span) void {
+    // Check if calling a known-impure builtin
+    if (isImpureBuiltin(func_name)) {
+        tc.addError(.meta_error, call_span, "pure function cannot call impure builtin '{s}'", .{func_name});
+        return;
+    }
+    // Skip constructors — always pure
+    if (std.mem.eql(u8, func_name, "Ok") or std.mem.eql(u8, func_name, "Err") or
+        std.mem.eql(u8, func_name, "Some") or std.mem.eql(u8, func_name, "None"))
+    {
+        return;
+    }
+    // Skip compiler-handled builtins that are pure (no side effects)
+    if (isPureBuiltin(func_name)) return;
+    // Skip local variables (closures defined within the pure function's body)
+    if (tc.current_scope.lookup(func_name)) |sym| {
+        if (sym.kind == .variable or sym.kind == .parameter) return;
+    }
+    // User function — must be marked meta pure
+    if (!tc.pure_functions.contains(func_name)) {
+        tc.addError(.meta_error, call_span, "pure function cannot call non-pure function '{s}'", .{func_name});
+    }
+}
+
+/// Returns true if the given builtin function name is known to be impure (performs I/O or side effects).
+fn isImpureBuiltin(name: []const u8) bool {
+    // I/O functions
+    if (std.mem.eql(u8, name, "print")) return true;
+    if (std.mem.eql(u8, name, "println")) return true;
+    if (std.mem.eql(u8, name, "readline")) return true;
+    if (std.mem.eql(u8, name, "dbg")) return true;
+    // Assertion functions (side effects: abort on failure)
+    if (std.mem.eql(u8, name, "panic")) return true;
+    if (std.mem.eql(u8, name, "assert")) return true;
+    if (std.mem.eql(u8, name, "assert_eq")) return true;
+    if (std.mem.eql(u8, name, "assert_ne")) return true;
+    if (std.mem.eql(u8, name, "assert_ok")) return true;
+    if (std.mem.eql(u8, name, "assert_err")) return true;
+    if (std.mem.eql(u8, name, "assert_some")) return true;
+    if (std.mem.eql(u8, name, "assert_none")) return true;
+    // Stream handles
+    if (std.mem.eql(u8, name, "stdout")) return true;
+    if (std.mem.eql(u8, name, "stderr")) return true;
+    if (std.mem.eql(u8, name, "stdin")) return true;
+    // Filesystem functions
+    if (std.mem.eql(u8, name, "fs_exists")) return true;
+    if (std.mem.eql(u8, name, "fs_is_file")) return true;
+    if (std.mem.eql(u8, name, "fs_is_dir")) return true;
+    if (std.mem.eql(u8, name, "fs_create_dir")) return true;
+    if (std.mem.eql(u8, name, "fs_create_dir_all")) return true;
+    if (std.mem.eql(u8, name, "fs_remove_file")) return true;
+    if (std.mem.eql(u8, name, "fs_remove_dir")) return true;
+    if (std.mem.eql(u8, name, "fs_read_string")) return true;
+    if (std.mem.eql(u8, name, "fs_write_string")) return true;
+    if (std.mem.eql(u8, name, "fs_read_dir")) return true;
+    // Unsafe memory access (side effects)
+    if (std.mem.eql(u8, name, "read")) return true;
+    if (std.mem.eql(u8, name, "write")) return true;
+    return false;
+}
+
+/// Returns true if the given function name is a compiler-handled builtin that is pure (no side effects).
+/// These are special-cased in checkCallImpl but don't have meta annotations, so they need
+/// explicit whitelisting to avoid false "non-pure function" errors.
+fn isPureBuiltin(name: []const u8) bool {
+    if (std.mem.eql(u8, name, "debug")) return true;
+    if (std.mem.eql(u8, name, "is_null")) return true;
+    if (std.mem.eql(u8, name, "unwrap_ptr")) return true;
+    if (std.mem.eql(u8, name, "offset")) return true;
+    if (std.mem.eql(u8, name, "ref_to_ptr")) return true;
+    if (std.mem.eql(u8, name, "ptr_cast")) return true;
+    return false;
+}
+
 /// Validate paths in a meta related annotation.
 fn validateRelatedPaths(tc: anytype, related: *ast.MetaRelated) void {
     for (related.paths) |path| {

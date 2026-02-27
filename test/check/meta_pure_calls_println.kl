@@ -1,0 +1,8 @@
+// Expected: check-error pure function cannot call impure builtin
+// Pure function calling println should be an error
+
+meta pure
+fn greet(name: string) -> string {
+    println(name)
+    return name
+}

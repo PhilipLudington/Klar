@@ -422,6 +422,12 @@ pub const TypeChecker = struct {
     error_count: usize,
     /// Count of meta warnings. Avoids O(n) scan in hasWarnings().
     warning_count: usize,
+    /// True when checking the body of a `meta pure` function.
+    in_pure_function: bool,
+    /// Span of the current `meta pure` annotation (for error messages).
+    pure_function_span: ?ast.Span,
+    /// Set of function names declared `meta pure`.
+    pure_functions: std.StringHashMapUnmanaged(void),
 
     const CaptureInfo = struct {
         is_mutable: bool,
@@ -492,6 +498,9 @@ pub const TypeChecker = struct {
             .meta_group_names = .{},
             .error_count = 0,
             .warning_count = 0,
+            .in_pure_function = false,
+            .pure_function_span = null,
+            .pure_functions = .{},
         };
         checker.initBuiltins() catch @panic("Failed to initialize builtin types");
         return checker;
@@ -752,6 +761,7 @@ pub const TypeChecker = struct {
         // Clean up meta validation maps (no values to free, just the maps)
         self.deprecated_functions.deinit(self.allocator);
         self.meta_group_names.deinit(self.allocator);
+        self.pure_functions.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -3219,6 +3229,12 @@ pub const TypeChecker = struct {
         // Special handling for Ok/Err constructors to infer Result type from context
         if (call.callee == .identifier) {
             const func_name = call.callee.identifier.name;
+
+            // Check purity constraints (before special-case handling which may return early)
+            if (self.in_pure_function) {
+                meta_validation.checkPureCall(self, func_name, call.span);
+            }
+
             if (std.mem.eql(u8, func_name, "Ok") or std.mem.eql(u8, func_name, "Err")) {
                 return self.checkOkErrCall(call, std.mem.eql(u8, func_name, "Ok"));
             }
@@ -3732,6 +3748,13 @@ pub const TypeChecker = struct {
         if (object_type == .struct_) {
             const struct_type = object_type.struct_;
             if (self.lookupStructMethod(struct_type.name, method.method_name)) |struct_method| {
+                // Check purity constraints for user-defined method calls
+                if (self.in_pure_function) {
+                    if (meta_validation.hasPureAnnotation(struct_method.decl.meta) == null) {
+                        self.addError(.meta_error, method.span, "pure function cannot call non-pure method '{s}.{s}'", .{ struct_type.name, method.method_name });
+                    }
+                }
+
                 // Check argument count (excluding self if method has it)
                 const expected_args = if (struct_method.has_self)
                     struct_method.func_type.function.params.len - 1
@@ -3792,6 +3815,13 @@ pub const TypeChecker = struct {
         if (object_type == .enum_) {
             const enum_type = object_type.enum_;
             if (self.lookupStructMethod(enum_type.name, method.method_name)) |enum_method| {
+                // Check purity constraints for user-defined method calls
+                if (self.in_pure_function) {
+                    if (meta_validation.hasPureAnnotation(enum_method.decl.meta) == null) {
+                        self.addError(.meta_error, method.span, "pure function cannot call non-pure method '{s}.{s}'", .{ enum_type.name, method.method_name });
+                    }
+                }
+
                 // Check argument count (excluding self if method has it)
                 const expected_args = if (enum_method.has_self)
                     enum_method.func_type.function.params.len - 1
@@ -4616,6 +4646,8 @@ pub const TypeChecker = struct {
 
                     // Register deprecated functions for call-site warnings
                     meta_validation.registerDeprecatedFunction(self, f.name, f.meta);
+                    // Register pure functions for purity checking
+                    meta_validation.registerPureFunction(self, f.name, f.meta);
                 },
                 .const_decl => self.checkDecl(decl),
                 .extern_block => self.checkDecl(decl),
@@ -4707,6 +4739,16 @@ pub const TypeChecker = struct {
                             self.in_unsafe_context = true;
                         }
                         defer self.in_unsafe_context = was_unsafe;
+
+                        // For pure functions, set the purity flag so calls are checked
+                        const was_pure = self.in_pure_function;
+                        const was_pure_span = self.pure_function_span;
+                        if (meta_validation.hasPureAnnotation(f.meta)) |pure_span| {
+                            self.in_pure_function = true;
+                            self.pure_function_span = pure_span;
+                        }
+                        defer self.in_pure_function = was_pure;
+                        defer self.pure_function_span = was_pure_span;
 
                         const was_async_context = self.current_async_context;
                         self.current_async_context = f.is_async;
@@ -4871,6 +4913,8 @@ pub const TypeChecker = struct {
 
                     // Register deprecated functions for call-site warnings
                     meta_validation.registerDeprecatedFunction(self, f.name, f.meta);
+                    // Register pure functions for purity checking
+                    meta_validation.registerPureFunction(self, f.name, f.meta);
                 },
                 .const_decl => self.checkDecl(decl),
                 .extern_block => self.checkDecl(decl),
@@ -4937,6 +4981,16 @@ pub const TypeChecker = struct {
                             self.in_unsafe_context = true;
                         }
                         defer self.in_unsafe_context = was_unsafe;
+
+                        // For pure functions, set the purity flag so calls are checked
+                        const was_pure = self.in_pure_function;
+                        const was_pure_span = self.pure_function_span;
+                        if (meta_validation.hasPureAnnotation(f.meta)) |pure_span| {
+                            self.in_pure_function = true;
+                            self.pure_function_span = pure_span;
+                        }
+                        defer self.in_pure_function = was_pure;
+                        defer self.pure_function_span = was_pure_span;
 
                         const was_async_context = self.current_async_context;
                         self.current_async_context = f.is_async;
