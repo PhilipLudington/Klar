@@ -1,6 +1,7 @@
 meta  define  priority(level:  "high"  |  "medium"  |  "low")
 meta  define  owner(name:  string)
 meta  define  endpoint(method:  "GET"  |  "POST",  path:  string)
+meta  define  related_to(target:  path)
 meta  define  marker()
 meta  define  api_version(version:  string)  for  fn
 meta  define  domain_model(layer:  string)  for  struct

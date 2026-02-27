@@ -894,6 +894,7 @@ pub const MetaDefineParam = struct {
 
 pub const MetaParamType = union(enum) {
     string_type,
+    path_type,
     string_union: []const []const u8,
 };
 

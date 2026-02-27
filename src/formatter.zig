@@ -351,6 +351,7 @@ pub const Formatter = struct {
                     try self.write(": ");
                     switch (param.type_constraint) {
                         .string_type => try self.write("string"),
+                        .path_type => try self.write("path"),
                         .string_union => |values| {
                             for (values, 0..) |val, j| {
                                 if (j > 0) try self.write(" | ");

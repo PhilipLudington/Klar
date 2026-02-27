@@ -118,7 +118,8 @@ group_join      = "in" "(" string_literal ")"
 custom_meta     = identifier "(" expression_list ")"
 
 typed_params    = typed_param ("," typed_param)*
-typed_param     = identifier ":" (type_name | string_union)
+typed_param     = identifier ":" (param_type | string_union)
+param_type      = "string" | "path"
 string_union    = string_literal ("|" string_literal)*
 scope_target    = "fn" | "module" | "struct" | "enum" | "trait" | "field"
 expression_list = expression ("," expression)*

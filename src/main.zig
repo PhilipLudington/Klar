@@ -1407,6 +1407,7 @@ fn dumpOneMetaAnnotation(out: std.fs.File, ann: ast.MetaAnnotation) anyerror!voi
                 try out.writeAll(",\"type\":");
                 switch (p.type_constraint) {
                     .string_type => try out.writeAll("\"string\""),
+                    .path_type => try out.writeAll("\"path\""),
                     .string_union => |vals| {
                         try out.writeAll("[");
                         for (vals, 0..) |v, k| {

@@ -293,11 +293,20 @@ fn validateCustomAnnotation(tc: anytype, cust: *ast.MetaCustom, decl_kind: ?Decl
         const param = def.params[i];
         switch (param.type_constraint) {
             .string_type => {
-                // string_type accepts both string literals and path identifiers
-                // (paths are treated as symbolic references, not validated further)
                 switch (arg) {
                     .string => {},
+                    .path => |p| {
+                        const path_str = joinMetaPath(tc.allocator, p.segments);
+                        tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, path_str });
+                    },
+                }
+            },
+            .path_type => {
+                switch (arg) {
                     .path => {},
+                    .string => |value| {
+                        tc.addError(.meta_error, cust.span, "meta {s}: expected path for parameter '{s}', got string literal \"{s}\"", .{ cust.name, param.name, value });
+                    },
                 }
             },
             .string_union => |allowed| {
@@ -317,8 +326,8 @@ fn validateCustomAnnotation(tc: anytype, cust: *ast.MetaCustom, decl_kind: ?Decl
                     },
                     .path => |p| {
                         // Path args don't match string union constraints
-                        const path_name = if (p.segments.len > 0) p.segments[0] else "?";
-                        tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, path_name });
+                        const path_str = joinMetaPath(tc.allocator, p.segments);
+                        tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, path_str });
                     },
                 }
             },
@@ -329,6 +338,18 @@ fn validateCustomAnnotation(tc: anytype, cust: *ast.MetaCustom, decl_kind: ?Decl
     if (def.scope) |scope| {
         validateCustomScope(tc, cust, scope, decl_kind);
     }
+}
+
+/// Join meta path segments with "::" for error messages.
+fn joinMetaPath(allocator: std.mem.Allocator, segments: []const []const u8) []const u8 {
+    if (segments.len == 0) return "?";
+    if (segments.len == 1) return segments[0];
+    var list = std.ArrayListUnmanaged(u8){};
+    for (segments, 0..) |seg, i| {
+        if (i > 0) list.appendSlice(allocator, "::") catch return segments[0];
+        list.appendSlice(allocator, seg) catch return segments[0];
+    }
+    return list.items;
 }
 
 /// Validate that a custom annotation is used on the correct kind of declaration.

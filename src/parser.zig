@@ -2728,7 +2728,7 @@ pub const Parser = struct {
         });
     }
 
-    /// Parse a dotted/scoped path: identifier (:: identifier)*
+    /// Parse a scoped path: identifier (:: identifier)*
     fn parseMetaPath(self: *Parser) ParseError!ast.MetaPath {
         var segments = std.ArrayListUnmanaged([]const u8){};
         const start_span = self.spanFromToken(self.current);
@@ -2874,6 +2874,9 @@ pub const Parser = struct {
         const type_constraint: ast.MetaParamType = if (self.current.kind == .identifier and std.mem.eql(u8, self.tokenText(self.current), "string")) blk: {
             self.advance(); // consume 'string'
             break :blk .string_type;
+        } else if (self.current.kind == .identifier and std.mem.eql(u8, self.tokenText(self.current), "path")) blk: {
+            self.advance(); // consume 'path'
+            break :blk .path_type;
         } else if (self.current.kind == .string_literal) blk: {
             // Parse string union: "a" | "b" | "c"
             var values = std.ArrayListUnmanaged([]const u8){};
@@ -2898,7 +2901,7 @@ pub const Parser = struct {
 
             break :blk .{ .string_union = try self.dupeSlice([]const u8, values.items) };
         } else {
-            try self.reportError("expected 'string' or string union type in meta define parameter");
+            try self.reportError("expected 'string', 'path', or string union type in meta define parameter");
             return ParseError.UnexpectedToken;
         };
 
@@ -2941,14 +2944,14 @@ pub const Parser = struct {
             self.advance();
             return .{ .string = processed };
         } else if (self.current.kind == .identifier) {
-            // Parse dotted path: ident.ident.ident
+            // Parse scoped path: ident::ident::ident
             var segments = std.ArrayListUnmanaged([]const u8){};
             const path_span = self.spanFromToken(self.current);
             try segments.append(self.allocator, self.tokenText(self.current));
             self.advance();
-            while (self.match(.dot)) {
+            while (self.match(.colon_colon)) {
                 if (self.current.kind != .identifier) {
-                    try self.reportError("expected identifier after '.' in meta annotation path");
+                    try self.reportError("expected identifier after '::' in meta annotation path");
                     return ParseError.UnexpectedToken;
                 }
                 try segments.append(self.allocator, self.tokenText(self.current));

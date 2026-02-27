@@ -1,5 +1,5 @@
-// Test: custom annotation with path argument (string_type accepts paths)
-meta define related_to(target: string)
+// Test: custom annotation with path argument (path_type accepts paths)
+meta define related_to(target: path)
 
 fn helper() -> i32 {
     return 10
