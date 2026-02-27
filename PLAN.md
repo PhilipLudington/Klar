@@ -461,7 +461,7 @@ let x: i32 = arr[0]
 
 **Objective:** Implement the `meta` keyword system for embedding intent, architecture, and design decisions in Klar source code — compiler-validated, CLI-queryable, zero runtime cost.
 
-**Status:** In Progress — M.1–M.7 complete (token, AST, parsing, backend passthrough, formatter, validation, pure verification, custom annotations)
+**Status:** Complete — M.1–M.8 all done (token, AST, parsing, backend passthrough, formatter, validation, pure verification, custom annotations, CLI query command)
 
 **Effort:** High | **Impact:** Very High | **Design Spec:** [docs/design/meta-layer.md](docs/design/meta-layer.md)
 
@@ -596,10 +596,10 @@ Validate meta annotations during type checking.
 - [x] **M.5.7** Native test files: positive cases (valid annotations) and negative cases (`test/check/` error tests)
 
 **Success Criteria:**
-- [ ] Invalid `meta related` targets produce clear error messages
-- [ ] Undefined group references are compile errors
-- [ ] Deprecation warnings fire with migration guidance text
-- [ ] All validation errors include file:line:column spans
+- [x] Invalid `meta related` targets produce clear error messages
+- [x] Undefined group references are compile errors
+- [x] Deprecation warnings fire with migration guidance text
+- [x] All validation errors include file:line:column spans
 
 #### M.6 — Pure Verification ✅
 
@@ -635,10 +635,10 @@ Implement `meta define`, string union constraints, scope restrictions, and cross
 - [x] **M.7.8** Native test files for custom definitions, constraints, scope restrictions, and imports
 
 **Success Criteria:**
-- [ ] `meta define` creates project-specific annotation vocabulary
-- [ ] String union constraints catch typos at compile time
-- [ ] Scope restrictions prevent annotations in wrong positions
-- [ ] Custom definitions can be imported and used across modules
+- [x] `meta define` creates project-specific annotation vocabulary
+- [x] String union constraints catch typos at compile time
+- [x] Scope restrictions prevent annotations in wrong positions
+- [x] Custom definitions can be imported and used across modules
 
 ---
 
@@ -650,20 +650,20 @@ Implement `meta define`, string union constraints, scope restrictions, and cross
 
 Add the `klar meta` CLI command for querying meta annotations across a codebase.
 
-- [ ] **M.8.1** Add `meta` subcommand to `src/main.zig` command routing
-- [ ] **M.8.2** Implement `--tag "name"` — find all declarations with a specific tag
-- [ ] **M.8.3** Implement `--module` — list all module descriptions
-- [ ] **M.8.4** Implement `--related fn_name` — follow cross-references for a function
-- [ ] **M.8.5** Implement `--deprecated` — list all deprecated items with migration guidance
-- [ ] **M.8.6** Implement `--hints` — list all AI hints
-- [ ] **M.8.7** Implement `--json` output mode for all commands
-- [ ] **M.8.8** App-level test files for CLI output validation
+- [x] **M.8.1** Add `meta` subcommand to `src/main.zig` command routing
+- [x] **M.8.2** Implement `--tag "name"` — find all declarations with a specific tag
+- [x] **M.8.3** Implement `--module` — list all module descriptions
+- [x] **M.8.4** Implement `--related fn_name` — follow cross-references for a function
+- [x] **M.8.5** Implement `--deprecated` — list all deprecated items with migration guidance
+- [x] **M.8.6** Implement `--hints` — list all AI hints
+- [x] **M.8.7** Implement `--json` output mode for all commands
+- [x] **M.8.8** App-level test files for CLI output validation (54 tests in `scripts/run-meta-tests.sh`)
 
 **Success Criteria:**
-- [ ] All six query modes produce correct, human-readable output
-- [ ] `--json` mode produces structured output matching the design spec format
-- [ ] CLI works across multi-file projects (processes all `.kl` files in directory)
-- [ ] Output is useful for both human developers and AI agents
+- [x] All six query modes produce correct, human-readable output
+- [x] `--json` mode produces structured output matching the design spec format
+- [x] CLI works across multi-file projects (processes all `.kl` files in directory)
+- [x] Output is useful for both human developers and AI agents
 
 ---
 
