@@ -41,6 +41,11 @@ requires_c_helper() {
     head -5 "$1" | grep -q "// Requires: c-helper"
 }
 
+# Extract -l flags from "// Requires: -lXXX" comments in first 5 lines
+get_link_flags() {
+    head -5 "$1" | grep '// Requires:' | grep -o -- '-l[^ ]*' | tr '\n' ' '
+}
+
 # Check if test should be skipped (handled by different runner)
 should_skip() {
     head -5 "$1" | grep -q "// Skip: native-tests"
@@ -124,9 +129,12 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
     fi
 
     # Normal test - compile and run
-    # Add linker flags for tests requiring C helper
+    # Add linker flags for tests requiring C helper or external libraries
+    LINK_FLAGS=$(get_link_flags "$f")
     if requires_c_helper "$f"; then
-        BUILD_CMD="$KLAR build $f -o $temp_bin -L/tmp -lklarhelper"
+        BUILD_CMD="$KLAR build $f -o $temp_bin -L/tmp -lklarhelper $LINK_FLAGS"
+    elif [ -n "$LINK_FLAGS" ]; then
+        BUILD_CMD="$KLAR build $f -o $temp_bin $LINK_FLAGS"
     else
         BUILD_CMD="$KLAR build $f -o $temp_bin"
     fi
