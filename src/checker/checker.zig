@@ -4854,9 +4854,19 @@ pub const TypeChecker = struct {
                     }
                 },
                 .impl_decl => self.checkDecl(decl),
-                // Re-validate custom meta annotations on types (deferred from Phase 1)
-                .struct_decl => |s| meta_validation.validateDeclMetaCustomOnly(self, s.meta, .struct_),
-                .enum_decl => |e| meta_validation.validateDeclMetaCustomOnly(self, e.meta, .enum_),
+                // Re-validate custom meta annotations on types and their members (deferred from Phase 1)
+                .struct_decl => |s| {
+                    meta_validation.validateDeclMetaCustomOnly(self, s.meta, .struct_);
+                    for (s.fields) |field| {
+                        meta_validation.validateDeclMetaCustomOnly(self, field.meta, .field);
+                    }
+                },
+                .enum_decl => |e| {
+                    meta_validation.validateDeclMetaCustomOnly(self, e.meta, .enum_);
+                    for (e.variants) |variant| {
+                        meta_validation.validateDeclMetaCustomOnly(self, variant.meta, .variant);
+                    }
+                },
                 .trait_decl => |t| meta_validation.validateDeclMetaCustomOnly(self, t.meta, .trait_),
                 .type_alias => |a| meta_validation.validateDeclMetaCustomOnly(self, a.meta, .type_alias),
                 .const_decl => |c| meta_validation.validateDeclMetaCustomOnly(self, c.meta, .const_),

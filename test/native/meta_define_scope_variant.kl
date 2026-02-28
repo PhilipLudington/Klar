@@ -1,0 +1,19 @@
+// Test: custom annotation with variant scope
+meta define status_code(code: string) for variant
+
+enum Color {
+    meta status_code("R")
+    Red,
+    meta status_code("G")
+    Green,
+    meta status_code("B")
+    Blue,
+}
+
+fn main() -> i32 {
+    let c: Color = Color::Green
+    match c {
+        Color::Green => { return 0 }
+        _ => { return 1 }
+    }
+}

@@ -1,0 +1,12 @@
+// Expected: check-error can only appear on test declarations
+
+meta define test_only(reason: string) for test
+
+meta test_only("unit")
+struct Foo {
+    x: i32,
+}
+
+fn main() -> i32 {
+    return 0
+}

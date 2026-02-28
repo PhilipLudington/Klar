@@ -1,0 +1,16 @@
+// Test: fn-scoped annotation is accepted on test declarations (fn_scope covers tests)
+meta define api_version(version: string) for fn
+
+meta api_version("v2")
+fn get_data() -> i32 {
+    return 42
+}
+
+meta api_version("v2")
+test get_data {
+    assert_eq(get_data(), 42)
+}
+
+fn main() -> i32 {
+    return 0
+}

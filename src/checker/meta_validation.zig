@@ -438,6 +438,8 @@ fn validateCustomScope(tc: anytype, cust: *ast.MetaCustom, scope: ast.MetaScope,
         return;
     };
 
+    // fn_scope covers both functions and tests — tests are function-like executable units.
+    // test_scope covers only tests. This means `for fn` is a superset of `for test`.
     const matches = switch (scope) {
         .fn_scope => dk == .function or dk == .test_,
         .module_scope => false, // module_scope means file-level only
