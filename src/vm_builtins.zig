@@ -607,11 +607,21 @@ fn nativeParseFloat(_: Allocator, args: []const Value) RuntimeError!Value {
 // Environment, Process, Stat, Timestamp Functions
 // ============================================================================
 
-// One-time warning flags for VM stubs (avoid spamming on repeated calls)
+// One-time warning flags for VM stubs (avoid spamming on repeated calls).
+// Reset via resetStubWarnings() when a new VM instance is set up.
 var warned_env_get: bool = false;
 var warned_env_set: bool = false;
 var warned_fs_stat: bool = false;
 var warned_process_run: bool = false;
+
+/// Reset stub warning flags. Call when initializing a new VM instance so that
+/// warnings are emitted again if multiple VMs are created in the same process.
+pub fn resetStubWarnings() void {
+    warned_env_get = false;
+    warned_env_set = false;
+    warned_fs_stat = false;
+    warned_process_run = false;
+}
 
 fn warnVmStub(name: []const u8) void {
     const stderr = getStdErr();

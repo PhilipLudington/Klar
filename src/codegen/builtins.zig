@@ -28,10 +28,15 @@
 //! | `env_set`        | `fn(string, string) -> Result#[void, IoError]`   | Set environment variable        |
 //! | `fs_stat`        | `fn(string) -> Result#[FileStat, IoError]`       | Stat a filesystem path          |
 //! | `timestamp_now`  | `fn() -> i64`                                    | Current Unix epoch (seconds)    |
-//! | `process_run`    | `fn(string, [string]) -> Result#[ProcessOutput, IoError]` | Run subprocess via shell |
+//! | `process_run`    | `fn(string, [string]) -> Result#[ProcessOutput, IoError]` | Run subprocess via shell (CAUTION: args are shell-interpreted, not isolated — see security note) |
 //!
 //! Struct types: `FileStat { size: i64, modified_epoch: i64, is_dir: bool, is_file: bool }`,
-//! `ProcessOutput { stdout: string, stderr: string, exit_code: i32 }`
+//! `ProcessOutput { stdout: string, stderr: string (always "" — not yet captured), exit_code: i32 }`
+//!
+//! **Security note:** `process_run` uses `popen()` internally. The command and arguments are
+//! concatenated into a single string and passed to `/bin/sh`. Shell metacharacters in any
+//! argument (`;`, `|`, `$()`, `` ` ``, `&&`, etc.) WILL be interpreted. Only pass trusted,
+//! literal strings. A future `process_spawn` builtin will use `execvp()` for safe arg passing.
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

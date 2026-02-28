@@ -24702,6 +24702,15 @@ pub const Emitter = struct {
         const strdup_fn = self.getOrDeclareStrdup();
         var strdup_args = [_]llvm.ValueRef{result};
         const owned_copy = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strdup_fn), strdup_fn, &strdup_args, "env.strdup");
+
+        // Null-check strdup: returns NULL on OOM. Treat as "not found" (None)
+        // rather than wrapping a null pointer in Some (which would SIGSEGV on
+        // any string operation like strlen or concat).
+        const strdup_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, owned_copy, llvm.c.LLVMConstNull(ptr_type), "env.strdup_null");
+        const strdup_ok_bb = llvm.appendBasicBlock(self.ctx, func, "env.strdup_ok");
+        _ = self.builder.buildCondBr(strdup_null, not_found_bb, strdup_ok_bb);
+
+        self.builder.positionAtEnd(strdup_ok_bb);
         const some_val = self.emitSome(owned_copy, ptr_type);
         _ = self.builder.buildBr(merge_bb);
         const found_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
@@ -25098,6 +25107,28 @@ pub const Emitter = struct {
         const out_len_alloca = self.builder.buildAlloca(i64_type, "procrun.outlen");
         const out_cap_alloca = self.builder.buildAlloca(i64_type, "procrun.outcap");
         const init_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, init_cap)}, "procrun.initbuf");
+
+        // Null-check initial malloc: on OOM, pclose pipe, free cmd_buf, return Err.
+        // (Mirrors the realloc failure path below.)
+        const init_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, init_buf, llvm.c.LLVMConstNull(ptr_type), "procrun.initnull");
+        const init_ok_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.init_ok");
+        const init_fail_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.init_fail");
+        _ = self.builder.buildCondBr(init_null, init_fail_bb, init_ok_bb);
+
+        // Initial malloc failure: clean up and return Err
+        self.builder.positionAtEnd(init_fail_bb);
+        const pclose_init_fn = self.getOrDeclarePclose();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(pclose_init_fn), pclose_init_fn, &[_]llvm.ValueRef{pipe}, "");
+        const free_init_fn = self.getOrDeclareFree();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_init_fn), free_init_fn, &[_]llvm.ValueRef{cmd_buf}, "");
+        const init_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "procrun.init_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), init_tag_ptr);
+        const init_err_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "procrun.init_err");
+        self.emitErrnoToIoError(init_err_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Initial malloc succeeded
+        self.builder.positionAtEnd(init_ok_bb);
         _ = self.builder.buildStore(init_buf, out_buf_alloca);
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), out_len_alloca);
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, init_cap), out_cap_alloca);
@@ -25125,10 +25156,36 @@ pub const Emitter = struct {
         const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, cur_len, bytes_read, "procrun.newlen");
         _ = self.builder.buildStore(new_len, out_len_alloca);
 
-        // If bytes_read == 0, we're done (EOF or error)
+        // If bytes_read == 0, check ferror to distinguish EOF from read error
         const read_zero = self.builder.buildICmp(llvm.c.LLVMIntEQ, bytes_read, llvm.Const.int64(self.ctx, 0), "procrun.read0");
+        const check_eof_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.check_eof");
         const grow_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.grow");
-        _ = self.builder.buildCondBr(read_zero, read_done_bb, grow_bb);
+        _ = self.builder.buildCondBr(read_zero, check_eof_bb, grow_bb);
+
+        // Check ferror: if the stream had an error, clean up and return Err
+        self.builder.positionAtEnd(check_eof_bb);
+        const ferror_fn = self.getOrDeclareFerror();
+        var ferror_args = [_]llvm.ValueRef{pipe};
+        const ferr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(ferror_fn), ferror_fn, &ferror_args, "procrun.ferr");
+        const has_read_err = self.builder.buildICmp(llvm.c.LLVMIntNE, ferr, llvm.Const.int32(self.ctx, 0), "procrun.has_read_err");
+        const read_err_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.read_err");
+        _ = self.builder.buildCondBr(has_read_err, read_err_bb, read_done_bb);
+
+        // Read error: pclose, free buffers, return Err(IoError)
+        self.builder.positionAtEnd(read_err_bb);
+        {
+            const pclose_rerr_fn = self.getOrDeclarePclose();
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(pclose_rerr_fn), pclose_rerr_fn, &[_]llvm.ValueRef{pipe}, "");
+            const rerr_buf = self.builder.buildLoad(ptr_type, out_buf_alloca, "procrun.rerr_buf");
+            const free_rerr_fn = self.getOrDeclareFree();
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_rerr_fn), free_rerr_fn, &[_]llvm.ValueRef{rerr_buf}, "");
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_rerr_fn), free_rerr_fn, &[_]llvm.ValueRef{cmd_buf}, "");
+            const rerr_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "procrun.rerr_tag");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), rerr_tag);
+            const rerr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "procrun.rerr_ptr");
+            self.emitErrnoToIoError(rerr_ptr);
+            _ = self.builder.buildBr(cont_bb);
+        }
 
         // Grow buffer if full
         self.builder.positionAtEnd(grow_bb);

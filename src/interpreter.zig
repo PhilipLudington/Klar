@@ -279,6 +279,9 @@ pub const Interpreter = struct {
     }
 
     fn initBuiltins(self: *Interpreter) !void {
+        // Reset one-time warning flags so stubs warn again for each interpreter instance
+        resetStubWarnings();
+
         // Register built-in functions
         const print_fn = try self.allocator.create(values.BuiltinFunction);
         print_fn.* = .{ .name = "print", .func = &builtinPrint };
@@ -2848,11 +2851,21 @@ fn builtinParseFloat(allocator: Allocator, args: []const Value) RuntimeError!Val
 // Phase 0: Environment, Process, Stat, Timestamp
 // ============================================================================
 
-// One-time warning flags for interpreter stubs
+// One-time warning flags for interpreter stubs.
+// Reset via resetStubWarnings() when a new interpreter instance is created.
 var interp_warned_env_get: bool = false;
 var interp_warned_env_set: bool = false;
 var interp_warned_fs_stat: bool = false;
 var interp_warned_process_run: bool = false;
+
+/// Reset stub warning flags. Call when initializing a new interpreter instance
+/// so that warnings are emitted again if multiple interpreters run in the same process.
+pub fn resetStubWarnings() void {
+    interp_warned_env_get = false;
+    interp_warned_env_set = false;
+    interp_warned_fs_stat = false;
+    interp_warned_process_run = false;
+}
 
 fn warnInterpStub(name: []const u8) void {
     const stderr = getStdErr();

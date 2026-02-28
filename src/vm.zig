@@ -171,6 +171,9 @@ pub const VM = struct {
             &self.frame_count,
         );
 
+        // Reset one-time warning flags so stubs warn again for each VM instance
+        vm_builtins.resetStubWarnings();
+
         // Register built-in functions using GC allocation
         try self.registerBuiltins();
     }
