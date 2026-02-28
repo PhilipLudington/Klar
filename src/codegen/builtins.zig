@@ -19,9 +19,19 @@
 //! Introspection: `type_name`, `len`
 //! String: `from_byte`, `parse_int`, `parse_float`
 //! Comptime: `repeat`, `comptime_print`
-//! Environment: `env_get`, `env_set`
-//! Filesystem: `fs_stat`
-//! Process: `process_run`, `timestamp_now`
+//!
+//! ### Phase 0: Environment, Process, Stat, Timestamp
+//!
+//! | Function         | Signature                                        | Description                     |
+//! |------------------|--------------------------------------------------|---------------------------------|
+//! | `env_get`        | `fn(string) -> ?string`                          | Get environment variable        |
+//! | `env_set`        | `fn(string, string) -> Result#[void, IoError]`   | Set environment variable        |
+//! | `fs_stat`        | `fn(string) -> Result#[FileStat, IoError]`       | Stat a filesystem path          |
+//! | `timestamp_now`  | `fn() -> i64`                                    | Current Unix epoch (seconds)    |
+//! | `process_run`    | `fn(string, [string]) -> Result#[ProcessOutput, IoError]` | Run subprocess via shell |
+//!
+//! Struct types: `FileStat { size: i64, modified: i64, is_dir: bool, is_file: bool }`,
+//! `ProcessOutput { stdout: string, stderr: string, exit_code: i32 }`
 
 const std = @import("std");
 const llvm = @import("llvm.zig");

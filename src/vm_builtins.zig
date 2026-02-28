@@ -620,7 +620,7 @@ fn nativeEnvSet(_: Allocator, args: []const Value) RuntimeError!Value {
 }
 
 fn nativeTimestampNow(_: Allocator, _: []const Value) RuntimeError!Value {
-    const now: i128 = @intCast(std.time.timestamp());
+    const now: i128 = @as(i128, std.time.timestamp());
     return Value.fromInt(now);
 }
 

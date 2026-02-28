@@ -15,6 +15,11 @@ fn main() -> i32 {
         return 2  // echo should exit with 0
     }
 
+    // Verify stdout content was captured correctly
+    if output.stdout != "hello\n" {
+        return 5  // stdout should be "hello\n"
+    }
+
     // Run a command that fails
     var args2: List#[string] = List.new#[string]()
     let result2: Result#[ProcessOutput, IoError] = process_run("false", args2)

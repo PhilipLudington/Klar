@@ -69,9 +69,9 @@ const stat_mode_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.
 const dirent_name_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_dirent, "d_name") else 0;
 
 /// Offset of st_size field within struct stat (in bytes).
-const stat_size_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_size") else 20;
+const stat_size_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_size") else @compileError("stat_size_offset: no POSIX headers; Windows _stat64 offsets must be verified for this platform");
 /// Size of st_size field in bits.
-const stat_size_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_size)) else 64;
+const stat_size_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_size)) else @compileError("stat_size_bits: no POSIX headers; Windows _stat64 field sizes must be verified for this platform");
 
 /// Offset of st_mtime (modification time) within struct stat (in bytes).
 /// On macOS/BSD, the field is st_mtimespec (struct timespec); tv_sec is at offset 0 within it.
@@ -84,7 +84,7 @@ const stat_mtime_offset: u32 = if (has_posix_headers) blk: {
         @offsetOf(posix.struct_stat, "st_mtim") // Linux glibc
     else
         @compileError("Cannot determine st_mtime offset for this platform");
-} else 24;
+} else @compileError("stat_mtime_offset: no POSIX headers; Windows _stat64 offsets must be verified for this platform");
 /// We always read mtime as 64-bit (time_t is 64-bit on modern platforms).
 const stat_mtime_bits: u32 = 64;
 
@@ -25148,8 +25148,11 @@ pub const Emitter = struct {
         const raw_status = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(pclose_fn), pclose_fn, &pclose_args, "procrun.status");
 
         // On POSIX, pclose returns the status from waitpid. Extract exit code: (status >> 8) & 0xFF
-        const shifted = llvm.c.LLVMBuildAShr(self.builder.ref, raw_status, llvm.Const.int32(self.ctx, 8), "procrun.shifted");
-        const exit_code = llvm.c.LLVMBuildAnd(self.builder.ref, shifted, llvm.Const.int32(self.ctx, 0xFF), "procrun.exit_code");
+        // On Windows, _pclose returns the exit code directly — no decoding needed.
+        const exit_code = if (self.platform.os == .windows) raw_status else blk: {
+            const shifted = llvm.c.LLVMBuildAShr(self.builder.ref, raw_status, llvm.Const.int32(self.ctx, 8), "procrun.shifted");
+            break :blk llvm.c.LLVMBuildAnd(self.builder.ref, shifted, llvm.Const.int32(self.ctx, 0xFF), "procrun.exit_code");
+        };
 
         // Build Ok(ProcessOutput { stdout: final_buf, stderr: "", exit_code })
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "procrun.tag_ok");
