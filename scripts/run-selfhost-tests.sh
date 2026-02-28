@@ -593,8 +593,7 @@ test/native/clone_trait_string.kl
 "
 
     # Known gaps — features not yet in selfhost checker
-    # string_simple/basic/concat/eq need String (capital-S) type support
-    CHECKER_KNOWN_GAPS="async_ ffi/ ownership_ shadow_ import string_simple string_basic string_concat string_eq"
+    CHECKER_KNOWN_GAPS="async_ ffi/ ownership_ shadow_ import"
 
     MATCH_ACCEPT=0
     MATCH_REJECT=0

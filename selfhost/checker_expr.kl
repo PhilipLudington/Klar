@@ -8,7 +8,7 @@
 import types.{
     KlarType, TypeKind, TypeId, PrimitiveKind,
     type_i32, type_i64, type_f64, type_bool, type_char, type_string,
-    type_void, type_never, type_unknown, type_error,
+    type_void, type_never, type_unknown, type_error, type_string_data,
     type_eq_simple, type_to_string_simple, type_kind_name,
     type_is_numeric, type_is_integer, type_is_float, type_is_signed,
     type_is_primitive, get_primitive_kind,
@@ -620,6 +620,17 @@ fn check_method_args(tc: TypeChecker, data: MethodCallData) -> TypeChecker {
 }
 
 fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, KlarType) {
+    // Check for static type constructor calls (String.new(), etc.)
+    let recv_expr: Expr = tc.exprs[data.receiver.id]
+    match recv_expr {
+        Expr::Identifier(id_data) => {
+            if id_data.ident_name == "String" {
+                return check_string_static_call(tc, data)
+            }
+        }
+        _ => {}
+    }
+
     // Check receiver
     let r: (TypeChecker, KlarType) = check_expr(tc, data.receiver)
     var c: TypeChecker = r.0
@@ -665,6 +676,10 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
         TypeKind::TypeVar => {
             return check_type_var_method(c, recv_type, data)
         }
+        TypeKind::StringData => {
+            // String (heap-allocated) — dispatch directly to builtin handler
+            return check_builtin_method(c, recv_type, data.method_name, data.args_count, data.span)
+        }
         _ => {
             // Try trait method resolution for concrete types
             let trait_result: (TypeChecker, KlarType, bool) = check_concrete_trait_method(c, recv_type, data.method_name)
@@ -675,6 +690,25 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
             return check_builtin_method(trait_result.0, recv_type, data.method_name, data.args_count, data.span)
         }
     }
+}
+
+// ─── String Static Constructor Calls ────────────────────────────────
+
+fn check_string_static_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    c = check_method_args(c, data)
+
+    if data.method_name == "new" and data.args_count == 0 {
+        return (c, type_string_data())
+    }
+    if data.method_name == "from" and data.args_count == 1 {
+        return (c, type_string_data())
+    }
+    if data.method_name == "with_capacity" and data.args_count == 1 {
+        return (c, type_string_data())
+    }
+    return add_typed_error_with_type(c, ErrorKind::UndefinedMethod, data.span,
+        "no static method '" + data.method_name + "' on String")
 }
 
 // ─── Concrete Type Trait Method Resolution ──────────────────────────

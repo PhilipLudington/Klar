@@ -80,7 +80,7 @@ WebAssembly compilation target is fully working for wasm32 freestanding. `klar b
 
 **Objective:** Implement the Klar compiler front-end (lexer through type checker) in Klar itself, enabling the language to compile its own compiler.
 
-**Status:** In Progress — 9.1-9.9 complete (lexer, AST, parser at full parity: 259/259 files, 789/789 tests; type system definitions; type checker foundation). 9.10.1-9.10.6 complete (generics, traits, closures/if/match expressions, module import resolution, builtin function/method type checking, structured error kinds). 9.10.7 in progress: JSON-to-AST bridge + checker parity testing (25/31 Tier 1 match-accept, 0 too-strict, 0 too-permissive, 4 known-gap [String type]).
+**Status:** In Progress — 9.1-9.9 complete (lexer, AST, parser at full parity: 259/259 files, 789/789 tests; type system definitions; type checker foundation). 9.10.1-9.10.6 complete (generics, traits, closures/if/match expressions, module import resolution, builtin function/method type checking, structured error kinds). 9.10.7 in progress: JSON-to-AST bridge + checker parity testing (31/31 Tier 1 match-accept, 0 too-strict, 0 too-permissive, 0 known-gap, 0 crash).
 
 **Effort:** Very High | **Impact:** Very High | **Dependencies:** Milestones 6, 7, 8
 
@@ -307,7 +307,7 @@ Port the advanced type system features.
 - [x] **9.10.4** Module import resolution (module registry, import processing, symbol import)
 - [x] **9.10.5** Builtin function and method type checking *(22 free builtins including assert_ok/err/some/none with call-site validation + builtin methods for string/int/float/array/slice/list/map/set/optional/result in checker_builtins.kl)*
 - [x] **9.10.6** Structured error kinds *(ErrorKind enum with 23 variants, parallel-list tracking, add_typed_error/format_error, all ~76 call sites refactored, 106 tests)*
-- [ ] **9.10.7** Diagnostic parity with Zig checker *(JSON-to-AST bridge: json.kl, ast_builder.kl, checker_parity.kl; Phase 4 parity tests in run-selfhost-tests.sh; Tier 1: 25/31 match-accept, 0 too-strict, 0 too-permissive, 4 known-gap [String type], intermittent native codegen crashes)*
+- [ ] **9.10.7** Diagnostic parity with Zig checker *(JSON-to-AST bridge: json.kl, ast_builder.kl, checker_parity.kl; Phase 4 parity tests in run-selfhost-tests.sh; Tier 1: 31/31 match-accept, 0 too-strict, 0 too-permissive, 0 known-gap, 0 crash; String type support added; args interleaving bug fixed in ast_builder)*
 
 **Success Criteria:**
 - [x] Structured error kinds with typed error tracking (9.10.6)

@@ -460,35 +460,46 @@ fn build_call(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprId) 
     let cr: (TypeChecker, ExprId) = build_expr(tc, json, cp)
     var c: TypeChecker = cr.0
 
-    // Build args
+    // Build args — collect ExprIds first to avoid interleaving with inner args
     let ap: i32 = field_pos(json, pos, "args")
-    let args_start: i32 = c.extra_expr_ids.len()
-    var args_count: i32 = 0
+    var arg_ids: List#[ExprId] = List.new#[ExprId]()
     if ap >= 0 {
         var ep: i32 = array_start(json, ap)
         while ep >= 0 {
             let r: (TypeChecker, ExprId) = build_expr(c, json, ep)
             c = r.0
-            c.extra_expr_ids.push(r.1)
-            args_count = args_count + 1
+            arg_ids.push(r.1)
             ep = array_next(json, ep)
         }
     }
+    // Push all arg ExprIds at once (after inner builds complete)
+    let args_start: i32 = c.extra_expr_ids.len()
+    var ai: i32 = 0
+    while ai < arg_ids.len() {
+        c.extra_expr_ids.push(arg_ids[ai])
+        ai = ai + 1
+    }
+    let args_count: i32 = arg_ids.len()
 
-    // Build type_args
+    // Build type_args — same collect-then-push pattern
     let tap: i32 = field_pos(json, pos, "type_args")
-    let ta_start: i32 = c.extra_type_expr_ids.len()
-    var ta_count: i32 = 0
+    var ta_ids: List#[TypeExprId] = List.new#[TypeExprId]()
     if tap >= 0 and not json_is_null(json, tap) {
         var ep: i32 = array_start(json, tap)
         while ep >= 0 {
             let r: (TypeChecker, TypeExprId) = build_type_expr(c, json, ep)
             c = r.0
-            c.extra_type_expr_ids.push(r.1)
-            ta_count = ta_count + 1
+            ta_ids.push(r.1)
             ep = array_next(json, ep)
         }
     }
+    let ta_start: i32 = c.extra_type_expr_ids.len()
+    var ti: i32 = 0
+    while ti < ta_ids.len() {
+        c.extra_type_expr_ids.push(ta_ids[ti])
+        ti = ti + 1
+    }
+    let ta_count: i32 = ta_ids.len()
 
     let idx: i32 = c.exprs.len()
     c.exprs.push(Expr::Call(CallData {
@@ -506,35 +517,46 @@ fn build_method_call(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, E
     var c: TypeChecker = or_result.0
     let mnr: (string, bool) = field_string(json, pos, "method_name")
 
-    // Build args
+    // Build args — collect ExprIds first to avoid interleaving with inner args
     let ap: i32 = field_pos(json, pos, "args")
-    let args_start: i32 = c.extra_expr_ids.len()
-    var args_count: i32 = 0
+    var arg_ids: List#[ExprId] = List.new#[ExprId]()
     if ap >= 0 {
         var ep: i32 = array_start(json, ap)
         while ep >= 0 {
             let r: (TypeChecker, ExprId) = build_expr(c, json, ep)
             c = r.0
-            c.extra_expr_ids.push(r.1)
-            args_count = args_count + 1
+            arg_ids.push(r.1)
             ep = array_next(json, ep)
         }
     }
+    // Push all arg ExprIds at once (after inner builds complete)
+    let args_start: i32 = c.extra_expr_ids.len()
+    var ai: i32 = 0
+    while ai < arg_ids.len() {
+        c.extra_expr_ids.push(arg_ids[ai])
+        ai = ai + 1
+    }
+    let args_count: i32 = arg_ids.len()
 
-    // Build type_args
+    // Build type_args — same collect-then-push pattern
     let tap: i32 = field_pos(json, pos, "type_args")
-    let ta_start: i32 = c.extra_type_expr_ids.len()
-    var ta_count: i32 = 0
+    var ta_ids: List#[TypeExprId] = List.new#[TypeExprId]()
     if tap >= 0 and not json_is_null(json, tap) {
         var ep: i32 = array_start(json, tap)
         while ep >= 0 {
             let r: (TypeChecker, TypeExprId) = build_type_expr(c, json, ep)
             c = r.0
-            c.extra_type_expr_ids.push(r.1)
-            ta_count = ta_count + 1
+            ta_ids.push(r.1)
             ep = array_next(json, ep)
         }
     }
+    let ta_start: i32 = c.extra_type_expr_ids.len()
+    var ti: i32 = 0
+    while ti < ta_ids.len() {
+        c.extra_type_expr_ids.push(ta_ids[ti])
+        ti = ti + 1
+    }
+    let ta_count: i32 = ta_ids.len()
 
     let idx: i32 = c.exprs.len()
     c.exprs.push(Expr::MethodCall(MethodCallData {

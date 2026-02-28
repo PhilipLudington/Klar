@@ -17,7 +17,7 @@ import types.{
     no_type, has_type,
     make_primitive, get_primitive_kind,
     type_i32, type_i64, type_f64, type_bool, type_char, type_string,
-    type_void, type_never, type_unknown, type_error,
+    type_void, type_never, type_unknown, type_error, type_string_data,
     type_eq_simple, type_to_string_simple, type_kind_name,
     type_is_numeric, type_is_integer, type_is_float, type_is_signed,
     type_is_primitive,
@@ -421,6 +421,9 @@ fn resolve_named_type(tc: TypeChecker, data: NamedTypeData) -> (TypeChecker, Kla
     // Check void/never
     if name == "void" { return (tc, type_void()) }
     if name == "never" { return (tc, type_never()) }
+
+    // Check String (heap-allocated string type)
+    if name == "String" { return (tc, type_string_data()) }
 
     // Check user-defined structs
     if tc.struct_types.contains_key(name) {
@@ -1674,6 +1677,11 @@ fn register_primitive_trait_impls(tc: TypeChecker) -> TypeChecker {
     c = record_trait_impl(c, "char", "Ordered")
     c = record_trait_impl(c, "char", "Clone")
     c = record_trait_impl(c, "char", "Hash")
+
+    // String (heap-allocated): Eq, Clone, Drop
+    c = record_trait_impl(c, "String", "Eq")
+    c = record_trait_impl(c, "String", "Clone")
+    c = record_trait_impl(c, "String", "Drop")
 
     return c
 }

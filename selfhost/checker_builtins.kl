@@ -10,7 +10,7 @@
 import types.{
     KlarType, TypeKind, TypeId, PrimitiveKind,
     type_i32, type_i64, type_f64, type_bool, type_char, type_string,
-    type_u8, type_void, type_never, type_unknown, type_error,
+    type_u8, type_void, type_never, type_unknown, type_error, type_string_data,
     type_eq_simple, type_to_string_simple,
     type_is_numeric, type_is_integer, type_is_float, type_is_signed,
     type_is_primitive, get_primitive_kind,
@@ -65,6 +65,9 @@ pub fn check_builtin_method(tc: TypeChecker, recv_type: KlarType,
         }
         TypeKind::Range => {
             return check_range_method(tc, recv_type, method_name, args_count, span)
+        }
+        TypeKind::StringData => {
+            return check_string_data_method(tc, method_name, args_count, span)
         }
         _ => {
             return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
@@ -460,6 +463,47 @@ fn check_range_method(tc: TypeChecker, recv_type: KlarType,
 
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on Range")
+}
+
+// ─── String (heap-allocated) Methods ────────────────────────────────
+
+fn check_string_data_method(tc: TypeChecker, method_name: string,
+    args_count: i32, span: Span) -> (TypeChecker, KlarType) {
+
+    // () -> i32
+    if method_name == "len" and args_count == 0 { return (tc, type_i32()) }
+    if method_name == "capacity" and args_count == 0 { return (tc, type_i32()) }
+
+    // () -> bool
+    if method_name == "is_empty" and args_count == 0 { return (tc, type_bool()) }
+
+    // (char) -> void
+    if method_name == "push" and args_count == 1 { return (tc, type_void()) }
+
+    // (String) -> String
+    if method_name == "concat" and args_count == 1 { return (tc, type_string_data()) }
+
+    // (String) -> void
+    if method_name == "append" and args_count == 1 { return (tc, type_void()) }
+
+    // () -> string
+    if method_name == "as_str" and args_count == 0 { return (tc, type_string()) }
+
+    // () -> void
+    if method_name == "clear" and args_count == 0 { return (tc, type_void()) }
+    if method_name == "drop" and args_count == 0 { return (tc, type_void()) }
+
+    // () -> String
+    if method_name == "clone" and args_count == 0 { return (tc, type_string_data()) }
+
+    // (String) -> bool
+    if method_name == "eq" and args_count == 1 { return (tc, type_bool()) }
+
+    // () -> i64
+    if method_name == "hash" and args_count == 0 { return (tc, type_i64()) }
+
+    return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
+        "no method '" + method_name + "' on String")
 }
 
 // ─── Smoke Test ─────────────────────────────────────────────────────
