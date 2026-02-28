@@ -110,6 +110,17 @@ fn detectLLVMPrefix() ?[]const u8 {
         return "/usr/local";
     } else |_| {}
 
+    // Linux - versioned LLVM paths (Ubuntu/Debian: /usr/lib/llvm-XX/)
+    {
+        const versions = [_][]const u8{ "20", "19", "18", "17", "16", "15", "14" };
+        for (versions) |ver| {
+            const path = std.fmt.allocPrint(std.heap.page_allocator, "/usr/lib/llvm-{s}/include/llvm-c/Core.h", .{ver}) catch continue;
+            if (std.fs.accessAbsolute(path, .{})) |_| {
+                return std.fmt.allocPrint(std.heap.page_allocator, "/usr/lib/llvm-{s}", .{ver}) catch continue;
+            } else |_| {}
+        }
+    }
+
     // Windows - check common LLVM installation paths
     if (builtin.os.tag == .windows) {
         const win_paths = [_][]const u8{
