@@ -279,6 +279,9 @@ pub const Interpreter = struct {
     }
 
     fn initBuiltins(self: *Interpreter) !void {
+        // Reset one-time warning flags so stubs warn again for each interpreter instance
+        resetStubWarnings();
+
         // Register built-in functions
         const print_fn = try self.allocator.create(values.BuiltinFunction);
         print_fn.* = .{ .name = "print", .func = &builtinPrint };
@@ -363,6 +366,27 @@ pub const Interpreter = struct {
         const parse_float_fn = try self.allocator.create(values.BuiltinFunction);
         parse_float_fn.* = .{ .name = "parse_float", .func = &builtinParseFloat };
         try self.global_env.define("parse_float", .{ .builtin = parse_float_fn }, false);
+
+        // Phase 0: environment, process, stat, timestamp
+        const env_get_fn = try self.allocator.create(values.BuiltinFunction);
+        env_get_fn.* = .{ .name = "env_get", .func = &builtinStubEnvGet };
+        try self.global_env.define("env_get", .{ .builtin = env_get_fn }, false);
+
+        const env_set_fn = try self.allocator.create(values.BuiltinFunction);
+        env_set_fn.* = .{ .name = "env_set", .func = &builtinStubEnvSet };
+        try self.global_env.define("env_set", .{ .builtin = env_set_fn }, false);
+
+        const timestamp_now_fn = try self.allocator.create(values.BuiltinFunction);
+        timestamp_now_fn.* = .{ .name = "timestamp_now", .func = &builtinTimestampNow };
+        try self.global_env.define("timestamp_now", .{ .builtin = timestamp_now_fn }, false);
+
+        const fs_stat_fn = try self.allocator.create(values.BuiltinFunction);
+        fs_stat_fn.* = .{ .name = "fs_stat", .func = &builtinStubFsStat };
+        try self.global_env.define("fs_stat", .{ .builtin = fs_stat_fn }, false);
+
+        const process_run_fn = try self.allocator.create(values.BuiltinFunction);
+        process_run_fn.* = .{ .name = "process_run", .func = &builtinStubProcessRun };
+        try self.global_env.define("process_run", .{ .builtin = process_run_fn }, false);
     }
 
     // ========================================================================
@@ -2821,6 +2845,89 @@ fn builtinParseFloat(allocator: Allocator, args: []const Value) RuntimeError!Val
         opt.* = .{ .value = null };
         return .{ .optional = opt };
     }
+}
+
+// ============================================================================
+// Phase 0: Environment, Process, Stat, Timestamp
+// ============================================================================
+
+// One-time warning flags for interpreter stubs.
+// Reset via resetStubWarnings() when a new interpreter instance is created.
+var interp_warned_env_get: bool = false;
+var interp_warned_env_set: bool = false;
+var interp_warned_fs_stat: bool = false;
+var interp_warned_process_run: bool = false;
+
+/// Reset stub warning flags. Call when initializing a new interpreter instance
+/// so that warnings are emitted again if multiple interpreters run in the same process.
+pub fn resetStubWarnings() void {
+    interp_warned_env_get = false;
+    interp_warned_env_set = false;
+    interp_warned_fs_stat = false;
+    interp_warned_process_run = false;
+}
+
+fn warnInterpStub(name: []const u8) void {
+    const stderr = getStdErr();
+    stderr.writeAll("warning: ") catch {};
+    stderr.writeAll(name) catch {};
+    stderr.writeAll(" is not supported in interpreter mode; compile with 'klar build' for native support\n") catch {};
+}
+
+/// Stub for env_get: returns None (not supported in interpreter, use native build).
+fn builtinStubEnvGet(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_env_get) {
+        interp_warned_env_get = true;
+        warnInterpStub("env_get");
+    }
+    const opt = allocator.create(values.OptionalValue) catch return RuntimeError.OutOfMemory;
+    opt.* = .{ .value = null };
+    return .{ .optional = opt };
+}
+
+/// Stub for env_set: returns Err (not supported in interpreter, use native build).
+fn builtinStubEnvSet(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_env_set) {
+        interp_warned_env_set = true;
+        warnInterpStub("env_set");
+    }
+    const err_val = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    err_val.* = .void_;
+    const res = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    res.* = .{ .is_ok = false, .value = err_val };
+    return .{ .result = res };
+}
+
+/// Stub for fs_stat: returns Err (not supported in interpreter, use native build).
+fn builtinStubFsStat(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_fs_stat) {
+        interp_warned_fs_stat = true;
+        warnInterpStub("fs_stat");
+    }
+    const err_val = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    err_val.* = .void_;
+    const res = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    res.* = .{ .is_ok = false, .value = err_val };
+    return .{ .result = res };
+}
+
+/// Stub for process_run: returns Err (not supported in interpreter, use native build).
+fn builtinStubProcessRun(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_process_run) {
+        interp_warned_process_run = true;
+        warnInterpStub("process_run");
+    }
+    const err_val = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    err_val.* = .void_;
+    const res = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    res.* = .{ .is_ok = false, .value = err_val };
+    return .{ .result = res };
+}
+
+fn builtinTimestampNow(_: Allocator, args: []const Value) RuntimeError!Value {
+    if (args.len != 0) return RuntimeError.InvalidOperation;
+    const now: i64 = std.time.timestamp();
+    return .{ .int = .{ .value = now, .type_ = .i64_ } };
 }
 
 // ============================================================================

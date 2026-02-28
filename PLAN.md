@@ -1,17 +1,19 @@
-# Klar Phase 5: AI-Native Language Improvements
+# Klar Standard Library — Lodex Infrastructure Plan
 
-> **Goal:** Strengthen Klar's AI-native story across documentation, language features, testing, and tooling.
->
-> **Inspiration:** Three research sources, each contributing complementary ideas:
-> - [Nanolang](docs/design/nanolang-inspiration.md) — Inline tests, checked arithmetic, FFI sandbox, formal verification
-> - [MoonBit Semantic Sampler](docs/design/moonbit-semantic-sampler.md) — Mandatory return types, grammar spec, incremental checking, constrained decoding
-> - [DSPy](docs/design/dspy-opportunities.md) — Pipeline operator, type schema export, AI test feedback, comptime examples, quality metrics
+## Overview
+Build the Klar standard library capabilities that [Lodex](../Lodex/DESIGN.md) (AI-native source control) depends on. These features are general-purpose and benefit the entire Klar ecosystem, not just Lodex. See [Lodex PLAN.md Phase 0](../Lodex/PLAN.md) for the downstream requirements.
+Current status: Phase 0 complete.
 
-## Previous Phases
+## Parallel Workflow Strategy
 
-**Phase 4 (Language Completion):** All 13 milestones complete. Generics, traits, modules, stdlib (List, Map, Set, String, Option, Result), iterators, error handling (`?` operator), REPL, comptime, FFI (including function pointers), package manager, formatter, and doc generator all working.
+This work runs in a dedicated worktree (`LodexNeeds`) alongside two active worktrees:
+- **StartWorkOnMetaLayer** — modifies `parser.zig` (+580), `ast.zig` (+306), `checker.zig` (+209)
+- **fizzy-nibbling-curry** — modifies `codegen/emit.zig` (+485)
 
-> **Phase 4 archive:** [docs/history/phase4-language-completion.md](docs/history/phase4-language-completion.md)
+To avoid merge conflicts:
+- **Phase 0** (compiler builtins) adds name constants to `src/codegen/builtins.zig` and emission code to `emit.zig` (appended at end, minimal conflict surface)
+- **Phases 1-4** are pure Klar libraries in `stdlib/` — zero compiler changes, zero conflict risk
+- **Phase 5** integration test is a standalone `.kl` program — no compiler changes
 
 **Phase 5A–5D + Async/Await + WebAssembly:** Milestones 1-6 and 8 complete. LLM reference, mandatory return types, inline tests, structured test output, LSP server, async/await, and WebAssembly target all working.
 
@@ -92,368 +94,67 @@ Self-hosting means **frontend only** (lexer through type checker). The 33K-line 
 
 ### Dependency Chain
 
+### Library Location: `stdlib/`
+
+All pure Klar libraries live in a new top-level `stdlib/` directory:
 ```
-9.1 → 9.2 → 9.3 → 9.4 → 9.6 → 9.7 → 9.8 → 9.9 → 9.10 → 9.11 → 9.12
-                    9.5 ↗      ↗                                      9.13 ↗
-```
-
----
-
-### Phase 9A: Language Prerequisites
-
-Language features needed in the Zig compiler before porting can begin.
-
-#### 9.1 — String and Collection Primitives
-
-**Effort:** Medium
-
-Wire up low-level string operations and numeric parsing needed by a lexer/parser.
-
-- [x] **9.1.1** `string.byte_at(i) -> u8` — access individual byte by index
-- [x] **9.1.2** `string.byte_len() -> i32` — byte length (distinct from `len()` if char-aware)
-- [x] **9.1.3** `string.substring(start, end) -> string` — byte-range substring
-- [x] **9.1.4** `string.index_of(sub) -> ?i32` — find first occurrence of substring
-- [x] **9.1.5** `string.from_byte(b: u8) -> string` — single-byte string construction
-- [x] **9.1.6** Wire `parse_int(s) -> ?i64` and `parse_float(s) -> ?f64` to native backend
-
-**Success Criteria:**
-- [x] All six string primitives work across native backend
-- [x] `parse_int` / `parse_float` return `None` on invalid input (no panics)
-
-#### 9.2 — Data Structure Foundations
-
-**Effort:** Medium
-
-Fix known collection gaps that would block self-hosting data structures.
-
-- [x] **9.2.1** Fix `List#[String]` drop — free individual string buffers before freeing list storage
-- [x] **9.2.2** `List.set(i, v)` / `list[i] = v` assignment in native codegen
-- [x] **9.2.3** `List.last() -> ?T` and `List.pop() -> ?T` in native codegen
-- [x] **9.2.4** Validate deeply nested structures: `List#[List#[i32]]` basic creation validated
-
-**Known Limitation:** `List#[List#[T]].drop()` leaks inner list buffers. Fixing this requires a general recursive element destructor, deferred to a future milestone. The self-hosting compiler can work around this by manually dropping inner lists before the outer list.
-
-**Success Criteria:**
-- [x] `List#[String]` can be created, mutated, and dropped without leaks
-- [x] Index assignment compiles and executes correctly
-- [x] Nested generic structures validated (basic creation; nested drop is a known limitation)
-
----
-
-### Phase 9B: Bootstrap Infrastructure
-
-#### 9.3 — Bootstrap Architecture
-
-**Effort:** Low-Medium
-
-Set up the directory structure, testing harness, and diagnostic commands for parity testing.
-
-- [x] **9.3.1** Create `selfhost/` directory with stub files (`lexer.kl`, `parser.kl`, `ast.kl`, `types.kl`, `checker.kl`, `main.kl`)
-- [x] **9.3.2** Add `klar dump-tokens <file>` command — output token stream as JSON for parity testing
-- [x] **9.3.3** Add `klar dump-ast <file>` command — output AST as JSON for parity testing
-- [x] **9.3.4** Create `scripts/run-selfhost-tests.sh` — runs parity tests between Zig and Klar frontends
-- [x] **9.3.5** Document bootstrap process (Stage 0/1/2) in `docs/guides/self-hosting.md`
-
-**Success Criteria:**
-- [x] `klar dump-tokens` produces deterministic JSON for any valid `.kl` file
-- [x] `klar dump-ast` produces deterministic JSON for any valid `.kl` file
-- [x] `selfhost/` directory compiles (even if stubs produce no useful output yet)
-
----
-
-### Phase 9C: Compiler Frontend Port
-
-#### 9.4 — Self-Hosted Lexer
-
-**Effort:** Medium (~500–700 lines Klar)
-
-Port token definitions and lexer logic from `src/token.zig` + `src/lexer.zig`.
-
-- [x] **9.4.1** Define `TokenKind` enum with all token variants
-- [x] **9.4.2** Define `Token` struct with kind, lexeme, line, column
-- [x] **9.4.3** Implement `Lexer` struct with `next_token() -> Token` method
-- [x] **9.4.4** Keyword lookup via `Map#[string, TokenKind]`
-- [x] **9.4.5** All operators, string/number/char literals, comments, location tracking
-- [x] **9.4.6** Inline `test` blocks for lexer edge cases
-- [x] **9.4.7** Parity tests: `selfhost/lexer.kl` output matches `klar dump-tokens` on test corpus
-
-**Known Limitation:** Keyword lookup uses chained `if`/`else` comparisons instead of `Map#[string, TokenKind]` because Klar's `Map` doesn't yet support string keys with proper hashing. Functionally equivalent.
-
-**Success Criteria:**
-- [x] Lexer tokenizes all files in `test/native/` identically to Zig lexer
-- [x] Lexer can tokenize its own source file
-
-#### 9.5 — AST Definitions
-
-**Effort:** Medium (~800–1000 lines Klar)
-
-Define the full AST type hierarchy needed by the parser.
-
-- [x] **9.5.1** Define `Expr` enum (literal, binary, unary, call, field access, index, closure, etc.)
-- [x] **9.5.2** Define `Stmt` enum (let/var, return, if/else, while, for, loop, match, assignment, expression)
-- [x] **9.5.3** Define `Decl` enum (function, struct, enum, trait, impl, import, test)
-- [x] **9.5.4** Define `TypeExpr` enum (named, generic, optional, array, function, reference)
-- [x] **9.5.5** Use typed i32 indices into flat `List#[T]` pools for recursive indirection (arena pattern — same as Zig's AST)
-- [x] **9.5.6** Debug functions (`expr_kind_name`, `binary_op_name`, `unary_op_name`) for diagnostics
-- [x] **9.5.7** Inline tests for AST construction, sentinels, and operator names
-
-**Known Limitation:** Klar's value semantics mean `List#[T]` fields inside structs lose data on move. Variable-length children use `(start, count)` i32 ranges into flat "extra" lists managed as direct `var` variables by the parser. This is the same flat-arena pattern used by production compilers (Zig, Rust HIR).
-
-**Success Criteria:**
-- [x] AST types can represent every construct in the Klar language
-- [x] All recursive structures use typed indices into arena lists — no raw pointers
-
-#### 9.6 — Parser (Core Subset)
-
-**Effort:** High (~1500–2000 lines Klar)
-
-Implement a recursive descent parser for the core language without generics or traits.
-
-- [x] **9.6.1** Pratt precedence expression parsing (all operators, grouping, calls, field access)
-- [x] **9.6.2** Statements: `let`/`var`, `return`, `if`/`else`, `while`, `for`, `loop`, `match`, assignment
-- [x] **9.6.3** Function declarations (with parameter types and return types)
-- [x] **9.6.4** Struct and enum declarations (no generics yet)
-- [x] **9.6.5** Type annotation parsing (named types, optionals, arrays, function types)
-- [x] **9.6.6** Parity tests: parser AST output matches `klar dump-ast` on non-generic test files
-
-**Success Criteria:**
-- [x] Parser handles all `test/native/` files that don't use generics, traits, or imports
-- [x] Error recovery produces partial AST (continue past first error)
-
-#### 9.7 — Parser (Full Language)
-
-**Effort:** High (~1500–2000 lines Klar)
-
-Extend the parser to cover the complete Klar language.
-
-- [x] **9.7.1** Generic type parameters on functions, structs, enums (`#[T]`, `#[T: Bound]`)
-- [x] **9.7.2** Trait definitions and impl blocks (including trait bounds, associated types)
-- [x] **9.7.3** Closures with explicit types and return
-- [x] **9.7.4** Full pattern matching (enum variants, wildcards, nested patterns)
-- [x] **9.7.5** Comptime blocks, comptime functions, comptime parameters
-- [x] **9.7.6** FFI syntax (`extern fn`), test blocks, `shadow` keyword
-- [x] **9.7.7** Import statements (all variants: selective, glob, aliased)
-- [x] **9.7.8** Full parity: identical AST output on entire `test/native/` suite (259/259 files)
-- [x] **9.7.9** Self-parse: parser can parse its own source files
-
-**Success Criteria:**
-- [x] 100% parity with Zig parser on all test files
-- [x] Parser can parse `selfhost/*.kl` — i.e., it can parse itself
-
----
-
-### Phase 9D: Type System Port
-
-#### 9.8 — Type System Definitions
-
-**Effort:** Medium (~600–800 lines Klar)
-
-Port the type representation from `src/types.zig`.
-
-- [x] **9.8.1** Define `KlarType` struct with `TypeKind` enum (44 variants) + `PrimitiveKind` (17 variants) mirroring `src/types.zig`
-- [x] **9.8.2** Type equality checks (`type_eq_simple` for primitives/singletons; compound equality via payload index)
-- [x] **9.8.3** Type compatibility/coercion checks (`can_widen_to`, `is_copy_type`, classification: `is_integer`, `is_float`, `is_numeric`, `is_signed`)
-- [x] **9.8.4** Type printing (`type_to_string_simple` for primitives/singletons; compound display deferred to 9.9)
-- [ ] **9.8.5** Type substitution for generic instantiation (deferred to 9.10 — requires working type checker)
-
-**Design Notes:**
-- `KlarType` is a struct (`kind: TypeKind, payload: i32`) rather than a tagged union, since Klar enums with struct payloads have value-semantics limitations
-- Compound type data (ArrayData, FunctionData, StructData, etc.) are flat structs stored in List#[T] arenas, referenced by i32 index — same pattern as ast.kl
-- Arena list management deferred to type checker (9.9); this module defines shapes and pure functions only
-- 24 compound data structs defined: ArrayData, SliceData, TupleData, ResultData, FunctionData, ReferenceData, StructData, StructFieldData, EnumData, EnumVariantData, TraitData, TraitMethodData, AssocTypeData, TypeVarData, AppliedData, AssocTypeRefData, WrapperData, RangeData, MapData, ExternTypeData, ExternFnData, TypeId
-
-**Known Limitation:** `?Enum` optional returns are broken in the interpreter (test runner), so inline `test` blocks avoid functions that return `?PrimitiveKind`. Full coverage runs via `klar run` (native/VM backend).
-
-**Success Criteria:**
-- [x] `KlarType` can represent every type the Zig checker produces (44 TypeKind variants + 17 PrimitiveKind variants)
-- [x] Type equality matches Zig checker behavior for primitives and singletons
-- [x] All 1,468 tests pass (zero regressions)
-
-#### 9.9 — Type Checker (Foundation)
-
-**Effort:** Very High (~2000–3000 lines Klar)
-
-Port the core type checking logic from `src/checker.zig`.
-
-- [ ] **9.9.1** Scope management via `List#[Map#[string, KlarType]]` stack
-- [ ] **9.9.2** Expression typing (literals, binary ops, unary ops, calls, field access, indexing)
-- [ ] **9.9.3** Function call type checking (argument count, parameter types, return type)
-- [ ] **9.9.4** Declaration checking (let/var type annotation matching)
-- [ ] **9.9.5** Control flow checking (if/else arm types, loop/while body, match exhaustiveness)
-- [ ] **9.9.6** Struct and method resolution (field access, method calls, `self` types)
-- [ ] **9.9.7** Error reporting with source spans (file, line, column)
-
-**Success Criteria:**
-- [ ] Checker accepts all valid non-generic `test/native/` files
-- [ ] Checker rejects all `test/check/` negative test files with correct error messages
-- [ ] Diagnostics include file:line:column spans
-
-#### 9.10 — Type Checker (Advanced)
-
-**Effort:** Very High (~2000–3000 lines Klar)
-
-Port the advanced type system features.
-
-- [ ] **9.10.1** Generic monomorphization (type parameter inference, substitution, caching)
-- [ ] **9.10.2** Trait resolution (trait bounds checking, method dispatch through bounds)
-- [ ] **9.10.3** Optional/Result type checking, `?` propagation operator
-- [ ] **9.10.4** Module import resolution (multi-file type checking)
-- [ ] **9.10.5** Builtin function and method type checking (all 100+ builtins)
-- [ ] **9.10.6** Full diagnostic parity with Zig checker
-
-**Success Criteria:**
-- [ ] Checker produces identical accept/reject decisions on entire test suite
-- [ ] Error messages match Zig checker output (content, not necessarily formatting)
-- [ ] Monomorphization produces identical instantiation sets
-
----
-
-### Phase 9E: Integration and Bootstrap
-
-#### 9.11 — Frontend Integration
-
-**Effort:** Medium
-
-Wire the self-hosted frontend components together and connect to the Zig backend.
-
-- [ ] **9.11.1** Wire lexer → parser → checker pipeline in `selfhost/main.kl`
-- [ ] **9.11.2** AST serialization to JSON for Zig backend consumption
-- [ ] **9.11.3** Add `klar build --ast-input <file>` to Zig compiler (read serialized AST, skip Zig frontend)
-- [ ] **9.11.4** End-to-end test: Klar frontend + Zig backend produces correct binaries
-- [ ] **9.11.5** Performance comparison: Klar frontend vs Zig frontend on representative files
-
-**Success Criteria:**
-- [ ] `selfhost/main.kl` can process any `.kl` file and produce JSON AST
-- [ ] Zig backend consumes serialized AST and produces identical binaries
-- [ ] End-to-end pipeline passes full test suite
-
-#### 9.12 — Bootstrap Validation (Stage 2)
-
-**Effort:** High
-
-Prove the self-hosted compiler can compile itself.
-
-- [ ] **9.12.1** Stage 1: Zig-compiled Klar frontend compiles `selfhost/*.kl` source
-- [ ] **9.12.2** Stage 2: Stage-1 binary compiles same `selfhost/*.kl` source again
-- [ ] **9.12.3** Verify functional equivalence: Stage-1 and Stage-2 outputs are identical
-- [ ] **9.12.4** Add CI job for bootstrap validation (Stage 0 → 1 → 2)
-- [ ] **9.12.5** Document the bootstrap process and contributor workflow
-
-**Success Criteria:**
-- [ ] Stage-2 binary produces bit-identical AST output as Stage-1 binary
-- [ ] Bootstrap is reproducible in CI with deterministic outputs
-- [ ] Documentation clearly explains the three stages
-
-#### 9.13 — Tooling Self-Hosting (Stretch)
-
-**Effort:** Medium
-
-Port selected tooling components to Klar.
-
-- [ ] **9.13.1** Port formatter to Klar (AST pretty-printer)
-- [ ] **9.13.2** Port diagnostics renderer to Klar (error message formatting)
-- [ ] **9.13.3** Port test runner to Klar (test discovery and execution)
-- [ ] **9.13.4** Parity tests against Zig implementations
-
-**Success Criteria:**
-- [ ] Self-hosted formatter produces identical output to Zig formatter
-- [ ] Self-hosted test runner passes its own tests
-
----
-
-## Milestone 10: Unambiguous Generic Syntax (`[T]` → `#[T]`)
-
-**Objective:** Eliminate the syntactic ambiguity between generics (`[T]`) and array indexing (`[i]`). After this change, `[` is **always** arrays and `#[` is **always** generics — parseable at a glance with zero disambiguation heuristics.
-
-**Status:** Complete
-
-**Effort:** Medium | **Impact:** High (language design, philosophy alignment)
-
-### Motivation
-
-The current `[T]` syntax requires the parser to use uppercase heuristics and lookahead (`isTypeArgsFollowedByCall`) to disambiguate `foo[Bar]` (generics vs indexing). This violates Klar's core principle: **"No ambiguity. No surprises."**
-
-```klar
-// Before                              // After
-fn max[T: Ordered](a: T, b: T)        fn max#[T: Ordered](a: T, b: T)
-struct Pair[A, B] { ... }             struct Pair#[A, B] { ... }
-let list: List[i32] = ...             let list: List#[i32] = ...
-List.new[i32]()                       List.new#[i32]()
-value.as[f64]                         value.as#[f64]
-
-// Unchanged (arrays, not generics)
-let arr: [i32; 3] = [1, 2, 3]
-let x: i32 = arr[0]
+stdlib/
+├── json.kl          # JSON parse/stringify
+├── sha256.kl        # SHA-256 hashing
+├── toml.kl          # TOML parser
+├── cli.kl           # CLI argument parsing
+└── test/            # Tests for each module
+    ├── test_json.kl
+    ├── test_sha256.kl
+    ├── test_toml.kl
+    └── test_cli.kl
 ```
 
-### Design Decisions
+Imported as `import "stdlib/json"`, `import "stdlib/toml"`, etc. This is self-documenting, separate from compiler internals (`src/`), and establishes the pattern for Klar's standard library.
 
-1. **Two tokens (`hash` + `l_bracket`), not one compound token** — lexer stays simple
-2. **`#[T]` everywhere** — declarations, type applications, method calls, casts
-3. **`isTypeArgsFollowedByCall()` deleted** — the entire lookahead heuristic becomes unnecessary
+---
+
+## Phase 0: Foundational Gaps ✅
+**Status:** Complete (2026-02-27)
+
+**Goal:** Fill small but critical missing primitives that later phases depend on.
+**Estimated Effort:** 3-5 days
+
+### Parallel Workflow
+Touches compiler files: `src/codegen/builtins.zig`, `src/checker/checker.zig`, `src/vm_builtins.zig`, `src/interpreter.zig`, `src/codegen/emit.zig`. None of these are modified by other worktrees.
+
+### Deliverables
+- Environment variable access (`env_get`, `env_set`)
+- Process spawning (`process_run` — run command, capture stdout/exit code via popen)
+- Filesystem stat (`fs_stat` — file size, modification time, is_dir, is_file)
+- Timestamp (`timestamp_now` — epoch-based, for checkpoint metadata)
 
 ### Tasks
+- [x] Implement `env_get(name: string) -> ?string` builtin (wraps C `getenv`) (completed 2026-02-27)
+- [x] Implement `env_set(name: string, value: string) -> Result#[void, IoError]` builtin (wraps C `setenv`) (completed 2026-02-27)
+- [x] Implement `fs_stat(path: string) -> Result#[FileStat, IoError]` returning size, modified_time, is_dir, is_file (completed 2026-02-27)
+- [x] Define `FileStat` struct: `size: i64`, `modified_epoch: i64`, `is_dir: bool`, `is_file: bool` (completed 2026-02-27)
+- [x] Implement `process_run(cmd: string, args: List#[string]) -> Result#[ProcessOutput, IoError]` (completed 2026-02-27)
+- [x] Define `ProcessOutput` struct: `stdout: string`, `stderr: string`, `exit_code: i32` (completed 2026-02-27)
+- [x] Implement `timestamp_now() -> i64` (Unix epoch seconds) (completed 2026-02-27)
+- [x] Add all of the above to checker, codegen/builtins, vm_builtins, interpreter (completed 2026-02-27)
+- [x] Write native tests for each new builtin (completed 2026-02-27)
 
-#### Phase 1: Zig Compiler — Lexer
+### Implementation Notes
+- API names simplified from PLAN: `Process.run` → `process_run`, `Timestamp.now()` → `timestamp_now()` (static methods on structs not yet needed)
+- `process_run` uses `popen`/`pclose` for subprocess execution. Stdout is captured; stderr returns empty string (sufficient for Lodex MVP). Exit code extracted via `WEXITSTATUS` macro equivalent.
+- `FileStat` and `ProcessOutput` are registered as builtin struct types with field access through the standard struct infrastructure.
+- VM and interpreter backends have stubs (return IOError) for complex builtins; `timestamp_now` works across all backends.
 
-- [x] **10.1** Add `hash` token to `src/token.zig` (Kind enum + lexeme)
-- [x] **10.2** Handle `#` in `src/lexer.zig` main switch → `self.makeToken(.hash)`
-- [x] **10.3** Add lexer tests for `#` and `#[` sequences
+### Testing Strategy
+Native tests exercising each builtin: env round-trip, stat on known files, process execution of simple commands, timestamp monotonicity.
 
-#### Phase 2: Zig Compiler — Parser
-
-- [x] **10.4** `parseTypeParams()` — match `hash` then `l_bracket` (was just `l_bracket`)
-- [x] **10.5** `parseIndexOrTypeArgs()` — `l_bracket` is now ALWAYS indexing; remove type-args branch
-- [x] **10.6** Add `hash` handling in infix expression parsing for `expr#[T](...)` calls
-- [x] **10.7** Delete `isTypeArgsFollowedByCall()` and `canStartType()` — no longer needed
-- [x] **10.8** `parseFieldOrMethod()` — `hash` instead of `l_bracket + canStartType` heuristic
-- [x] **10.9** `parseTypeCast()` (`.as#[T]`) — expect `hash` before `l_bracket`
-- [x] **10.10** `parseFallibleConversion()` (`.to#[T]`) — expect `hash` before `l_bracket`
-- [x] **10.11** `parseType()` generic application — match `hash` then `l_bracket`
-- [x] **10.12** Expression context generic types — check `hash` not `l_bracket`
-- [x] **10.13** Pattern context generic types — check `hash` not `l_bracket`
-- [x] **10.14** Extern fn/enum generic errors — check `hash` not `l_bracket`
-
-#### Phase 3: Update All .kl Source Files (~139 files)
-
-- [x] **10.15** Update `test/native/*.kl` files
-- [x] **10.16** Update `selfhost/*.kl` files (generic usage, not parser logic)
-- [x] **10.17** Update `std/*.kl`, `examples/*.kl`, `scratch/*.kl`
-- [x] **10.18** Update `test/fmt/*.kl`, `test/module/*.kl`, `test/app/*.kl`, `test/check/*.kl`, `test/args/*.kl`, `test/wasm/*.kl`
-
-#### Phase 4: Build + Verify
-
-- [x] **10.19** Build compiler: `./run-build.sh`
-- [x] **10.20** Run full test suite: `./run-tests.sh` (all non-selfhost tests pass)
-- [x] **10.21** Fix any failures (formatter, types.zig display, hash precedence)
-
-#### Phase 5: Selfhost Parser
-
-- [x] **10.22** Update `selfhost/lexer.kl` — add `Hash` token kind and `#` handler
-- [x] **10.23** Update `selfhost/parser_decl.kl` — fn/struct/enum/impl type params expect `hash`
-- [x] **10.24** Update `selfhost/parser_expr.kl` — delete `is_type_args_context()` and `parse_type_args_and_call()`; add `parse_generic_call()`
-- [x] **10.25** Update `selfhost/parser_expr.kl` — `parse_field_or_method()` uses `hash` for method generics
-- [x] **10.26** Update `selfhost/parser_type.kl` — `parse_named_type()` expects `hash`
-- [x] **10.27** Update `selfhost/parser_expr.kl` — cast syntax (`.as#[T]`, `.to#[T]`, `.trunc#[T]`)
-
-#### Phase 6: Selfhost Verify
-
-- [x] **10.28** Run selfhost tests: `./scripts/run-selfhost-tests.sh` — 789/789 passed
-- [x] **10.29** Fix any selfhost test failures — none needed
-
-#### Phase 7: Documentation
-
-- [x] **10.30** Update `CLAUDE.md` — Language Syntax Quick Reference
-- [x] **10.31** Update `docs/` — all files referencing generic syntax
-- [x] **10.32** Update project documentation
-
-### Success Criteria
-
-- [x] All test suites pass (native, unit, app, module, selfhost)
-- [x] `isTypeArgsFollowedByCall()` and `canStartType` heuristic are deleted
-- [x] `[` in expression context is ALWAYS parsed as indexing — no disambiguation
-- [x] `#[` is ALWAYS parsed as generics — unambiguous at the token level
-- [x] Documentation reflects new syntax throughout
+### Phase 0 Readiness Gate
+Before Phase 1, these must be true:
+- [x] Can get/set environment variables
+- [x] Can stat files for size and modification time
+- [x] Can spawn a subprocess and capture its output
+- [x] Can get the current Unix timestamp
 
 ---
 
@@ -667,29 +368,211 @@ Add the `klar meta` CLI command for querying meta annotations across a codebase.
 
 ---
 
-## References
+## Phase 1: JSON Library
 
-**Nanolang:**
-- [Nanolang GitHub](https://github.com/jordanhubbard/nanolang)
-- [Design Analysis](docs/design/nanolang-inspiration.md)
+**Goal:** Implement JSON serialization and deserialization as a pure Klar library.
+**Estimated Effort:** 5-7 days
 
-**MoonBit:**
-- [MoonBit Paper (IEEE)](https://ieeexplore.ieee.org/document/10734654/)
-- [MoonBit Paper (ACM)](https://dl.acm.org/doi/10.1145/3643795.3648376)
-- [Design Analysis](docs/design/moonbit-semantic-sampler.md)
+### Parallel Workflow
+Pure Klar code in `stdlib/json.kl`. Zero compiler changes — no conflict risk with any worktree.
 
-**DSPy:**
-- [DSPy Paper (arXiv)](https://arxiv.org/abs/2310.03714)
-- [DSPy Paper (ICLR 2024)](https://openreview.net/pdf?id=sY5N0zY5Od)
-- [Design Analysis](docs/design/dspy-opportunities.md)
+### Deliverables
+- `stdlib/json.kl` — JSON value type, parser, emitter, accessors
+- `stdlib/test/test_json.kl` — test suite
+
+### Tasks
+- [ ] Define `JsonValue` enum: `Null`, `Bool(bool)`, `Number(f64)`, `Str(string)`, `Array(List#[JsonValue])`, `Object(Map#[string, JsonValue])`
+- [ ] Define `JsonError` struct: `message: string`, `line: i32`, `col: i32`
+- [ ] Implement JSON lexer (tokenize string into JSON tokens)
+- [ ] Implement JSON parser (recursive descent: object, array, string, number, bool, null)
+- [ ] Handle escape sequences in strings (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX`)
+- [ ] Implement `json_stringify(value: JsonValue) -> string` (compact output)
+- [ ] Implement `json_stringify_pretty(value: JsonValue, indent: i32) -> string`
+- [ ] Implement accessor helpers: `json_get(obj, key)`, `json_get_string(obj, key)`, `json_get_i32(obj, key)`, etc.
+- [ ] Implement builder helpers: `json_object()`, `json_array()`, `json_string(s)`, `json_number(n)`, etc.
+- [ ] Write round-trip tests: parse → stringify → parse produces identical values
+- [ ] Write edge-case tests: empty objects/arrays, nested structures, unicode, large numbers
+
+### Testing Strategy
+Round-trip tests for all JSON types. Edge cases: deeply nested objects, empty containers, special float values, escaped strings. Validate against known JSON test suites (RFC 8259 examples).
+
+### Phase 1 Readiness Gate
+Before Phase 2, these must be true:
+- [ ] Can parse any valid JSON string into a `JsonValue`
+- [ ] Can stringify a `JsonValue` back to valid JSON
+- [ ] Round-trip (parse → stringify → parse) produces identical values
+- [ ] Handles all JSON escape sequences correctly
 
 ---
 
-## Backlog: Selfhost Parser Known Limitations
+## Phase 2: SHA-256 Hashing
 
-Deferred tech debt from the Milestone 9.6 selfhost parser work.
+**Goal:** Provide cryptographic hashing for content-addressed storage as a pure Klar library.
+**Estimated Effort:** 2-3 days
 
-- [ ] `parse_int_value`: hex/binary/octal literals use i64 computation (overflow possible for values > i64 max)
-- [ ] `process_string_escapes`: `\u` and `\x` escape sequences not handled (falls through to unknown escape)
-- [ ] `final_expr` detection in `parse_block` uses fragile JSON prefix string matching (acknowledged by COUPLING comment)
-- [ ] `is_extern` exemption in mandatory return type check is moot: Zig parser rejects standalone `extern fn`, so the selfhost exemption has no test coverage
+### Parallel Workflow
+Pure Klar code in `stdlib/sha256.kl`. If FFI approach is chosen, uses `extern` declarations within the `.kl` file — still no compiler changes. Zero conflict risk.
+
+### Deliverables
+- `stdlib/sha256.kl` — SHA-256 hashing functions
+- `stdlib/test/test_sha256.kl` — test suite with NIST vectors
+
+### Tasks
+- [ ] Evaluate approach: pure Klar vs FFI to OpenSSL/libcrypto
+- [ ] If pure Klar: implement SHA-256 per FIPS 180-4 (message schedule, compression, padding)
+- [ ] If FFI: write `extern` declarations for `SHA256_Init`, `SHA256_Update`, `SHA256_Final` from libcrypto within `stdlib/sha256.kl`
+- [ ] Implement `sha256(data: string) -> string` returning 64-char hex string
+- [ ] Implement `sha256_bytes(data: List#[u8]) -> string` for binary data
+- [ ] Write tests against known test vectors (empty string, "abc", etc.)
+
+### Testing Strategy
+Compare output against NIST test vectors and `sha256sum` command-line tool output.
+
+### Phase 2 Readiness Gate
+Before Phase 3, these must be true:
+- [ ] `sha256("")` returns `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+- [ ] `sha256("abc")` returns `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`
+- [ ] Produces correct output for multi-block inputs (> 55 bytes)
+
+---
+
+## Phase 3: TOML Parser
+
+**Goal:** Parse TOML configuration files as a pure Klar library (needed for `lodex.toml`).
+**Estimated Effort:** 4-5 days
+
+### Parallel Workflow
+Pure Klar code in `stdlib/toml.kl`. Zero compiler changes — no conflict risk.
+
+### Deliverables
+- `stdlib/toml.kl` — TOML value type, parser, accessors
+- `stdlib/test/test_toml.kl` — test suite
+
+### Tasks
+- [ ] Define `TomlValue` enum: `Str(string)`, `Integer(i64)`, `Float(f64)`, `Bool(bool)`, `Array(List#[TomlValue])`, `Table(Map#[string, TomlValue])`
+- [ ] Define `TomlError` struct: `message: string`, `line: i32`
+- [ ] Implement TOML lexer (bare keys, quoted keys, `=`, `[section]`, `[section.sub]`)
+- [ ] Implement TOML parser: key-value pairs, sections, nested tables, inline tables
+- [ ] Handle TOML string types (basic, literal, multi-line basic, multi-line literal)
+- [ ] Handle TOML arrays (including arrays of tables `[[section]]`)
+- [ ] Implement accessor helpers: `toml_get(table, key)`, `toml_get_string(table, key)`, etc.
+- [ ] Write tests with `lodex.toml` format as primary test case
+- [ ] Write edge-case tests: dotted keys, inline tables, mixed types
+
+### Testing Strategy
+Parse sample `lodex.toml` files and verify all sections/values extracted correctly. Test dotted keys, inline tables, and arrays of tables.
+
+### Phase 3 Readiness Gate
+Before Phase 4, these must be true:
+- [ ] Can parse `lodex.toml` evaluation config with nested sections
+- [ ] Handles dotted keys (`evaluation.suites.unit`)
+- [ ] Returns structured errors with line numbers for invalid TOML
+
+---
+
+## Phase 4: CLI Argument Parsing
+
+**Goal:** Build a CLI argument parsing library in pure Klar.
+**Estimated Effort:** 3-4 days
+
+### Parallel Workflow
+Pure Klar code in `stdlib/cli.kl`. Zero compiler changes — no conflict risk.
+
+### Deliverables
+- `stdlib/cli.kl` — argument parser with subcommands, flags, help generation
+- `stdlib/test/test_cli.kl` — test suite
+
+### Tasks
+- [ ] Design API: `ArgParser.new(name, description)`, `.subcommand(name, description)`, `.flag(name, short, description)`, `.option(name, short, description, default)`
+- [ ] Implement argument tokenization (handle `--flag`, `--key=value`, `--key value`, `-f`, positional args)
+- [ ] Implement subcommand dispatch (first positional arg selects subcommand)
+- [ ] Implement `parse(args: [String]) -> Result#[ParsedArgs, ArgError]`
+- [ ] Define `ParsedArgs` struct: `subcommand: ?string`, `flags: Map#[string, bool]`, `options: Map#[string, string]`, `positional: List#[string]`
+- [ ] Implement help generation: `--help` / `-h` prints usage, flags, subcommands
+- [ ] Write tests modeling the Lodex CLI: `lodex init`, `lodex checkpoint --goal "..." --strategy "..."`, `lodex tree`, `lodex export --squash-strategy logical --json`
+
+### Testing Strategy
+Test parsing of Lodex's full CLI surface. Verify help output. Test error cases: unknown flags, missing required args.
+
+### Phase 4 Readiness Gate
+Before Phase 5, these must be true:
+- [ ] Can parse `lodex checkpoint --goal "optimize auth" --strategy "cache" --json`
+- [ ] `--help` prints formatted usage for each subcommand
+- [ ] Unknown flags produce clear error messages
+
+---
+
+## Phase 5: Integration Validation
+
+**Goal:** Validate all libraries work together in a realistic Lodex-like program.
+**Estimated Effort:** 2-3 days
+
+### Parallel Workflow
+Pure Klar code in `stdlib/test/`. Zero compiler changes — no conflict risk.
+
+### Deliverables
+- End-to-end integration test program in Klar
+- Validation that all Phase 0-4 deliverables compose correctly
+
+### Tasks
+- [ ] Write a Klar program that: parses CLI args, reads a TOML config, reads/writes JSON files, computes SHA-256 hashes, stats files, spawns a subprocess
+- [ ] Verify the program compiles and runs natively via `klar build`
+- [ ] Profile for any performance issues in JSON parsing or SHA-256
+- [ ] Document any bugs or missing features discovered during integration
+- [ ] File issues upstream for any compiler bugs found
+
+### Testing Strategy
+The integration program itself is the test. It exercises all libraries in combination and must produce correct output.
+
+---
+
+## Phase 6: Async I/O and HTTP (Lodex Phase 3 Prerequisites)
+
+**Goal:** Build async I/O and HTTP capabilities needed for Lodex's evaluation engine and HTTP API.
+**Estimated Effort:** 3-4 weeks
+
+### Parallel Workflow
+This phase will require compiler changes (async execution model). By the time this phase starts, the other worktrees should be merged. If not, async runtime work lives in `src/runtime/` which is untouched by other branches. HTTP server/client can be pure Klar in `stdlib/http.kl` using FFI to libcurl/libmicrohttpd.
+
+### Deliverables
+- Improved async execution model (beyond current synchronous-completion Future#[T])
+- `stdlib/http_server.kl` — HTTP server library (request routing, JSON request/response)
+- `stdlib/http_client.kl` — HTTP client library (make requests, parse responses)
+
+### Tasks
+- [ ] Design async execution model: event loop, task scheduling, concurrent I/O
+- [ ] Implement async subprocess execution (for evaluation engine: run tests without blocking)
+- [ ] Build HTTP server: listen on port, route requests, serve JSON responses
+- [ ] Build HTTP client: make GET/POST requests, parse response body
+- [ ] Evaluate FFI approach: libuv for event loop, libmicrohttpd or libcurl for HTTP
+- [ ] Write tests: concurrent async tasks, HTTP request/response round-trips
+
+### Testing Strategy
+Async tests with multiple concurrent tasks. HTTP server tests with curl/client. Load tests for checkpoint-rate scenarios.
+
+### Phase 6 Readiness Gate
+Before Lodex Phase 3, these must be true:
+- [ ] Can serve HTTP endpoints from Klar
+- [ ] Can make HTTP requests from Klar
+- [ ] Can run subprocesses asynchronously without blocking the main thread
+
+---
+
+## Risk Register
+
+| Risk | Impact | Likelihood | Mitigation |
+|------|--------|------------|------------|
+| JSON parser performance insufficient for rapid checkpoint serialization | Medium | Low | Profile early; can optimize hot paths or switch to FFI (jansson) |
+| SHA-256 pure Klar too slow for content-addressed storage | Medium | Medium | Default to FFI to libcrypto; pure Klar as fallback |
+| TOML spec is large; full compliance may not be needed | Low | Low | Implement subset needed by `lodex.toml`; extend later |
+| Compiler bugs discovered when building complex pure-Klar libraries | High | Medium | File and fix upstream; use scratch/ for testing |
+| Async model design is a significant language-level decision | High | High | Start with simple subprocess spawning; defer full async redesign |
+| Process spawning requires platform-specific code (POSIX vs Windows) | Low | Low | Target macOS/Linux first; Klar already POSIX-focused |
+| Merge conflicts with other worktrees during Phase 0 | Low | Low | Phase 0 codegen appended at end of `emit.zig`; minimal overlap with other branches |
+
+## Timeline
+Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 (sequential, each builds on prior).
+Phase 6 is independent and can be developed later when Lodex approaches Phase 3.
+Estimated total for Phases 0-5: 3-4 weeks.
+
+Phases 1-4 are pure Klar libraries with zero compiler changes. They can begin as soon as Phase 0 builtins are available, and they can be developed in any order since they are independent of each other. The sequential ordering reflects priority (JSON is most critical for Lodex), not dependency.
