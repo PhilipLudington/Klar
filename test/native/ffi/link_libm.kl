@@ -1,5 +1,5 @@
 // Test linking with external library (-l flag)
-// This test requires linking with -lm (math library)
+// Requires: -lm
 //
 // Build: klar build test/native/ffi/link_libm.kl -lm
 // Expected output: 2

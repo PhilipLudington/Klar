@@ -258,6 +258,21 @@ pub const Interpreter = struct {
         if (self.global_env.get("parse_float")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
+        if (self.global_env.get("env_get")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("env_set")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("timestamp_now")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("fs_stat")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
+        if (self.global_env.get("process_run")) |v| {
+            if (v == .builtin) self.allocator.destroy(v.builtin);
+        }
         self.global_env.deinit();
         self.allocator.destroy(self.global_env);
     }

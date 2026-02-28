@@ -440,8 +440,7 @@ fn parse_identifier_or_struct(p: Parser) -> (Parser, string) {
         }
 
         // Bare Name#[T] without call or struct/enum literal — emit error but recover
-        let err_result: (Parser, string) = error_and_advance(p3, "expected '(' after type arguments in generic call")
-        p3 = err_result.0
+        p3 = error_and_advance(p3, "expected '(' after type arguments in generic call")
         let callee: string = "{\"kind\":\"identifier\",\"name\":" + json_str(name) + "}"
         return (p3, "{\"kind\":\"call\",\"callee\":" + callee + ",\"args\":[],\"type_args\":" + ta_json + "}")
     }
@@ -721,8 +720,7 @@ fn parse_generic_call(p: Parser, left: string) -> (Parser, string) {
     }
 
     // Type args without call — emit error but recover
-    let err_result: (Parser, string) = error_and_advance(p2, "expected '(' after type arguments in generic call")
-    p2 = err_result.0
+    p2 = error_and_advance(p2, "expected '(' after type arguments in generic call")
     let json: string = "{\"kind\":\"call\",\"callee\":" + left + ",\"args\":[],\"type_args\":" + ta_json + "}"
     return (p2, json)
 }
