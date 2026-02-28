@@ -91,15 +91,29 @@ fn detectLLVMPrefix() ?[]const u8 {
         return prefix;
     } else |_| {}
 
-    // macOS ARM64 (Apple Silicon) - Homebrew
+    // macOS ARM64 (Apple Silicon) - Homebrew (unversioned)
     if (std.fs.accessAbsolute("/opt/homebrew/opt/llvm/include/llvm-c/Core.h", .{})) |_| {
         return "/opt/homebrew/opt/llvm";
     } else |_| {}
 
-    // macOS x86_64 (Intel) - Homebrew
+    // macOS x86_64 (Intel) - Homebrew (unversioned)
     if (std.fs.accessAbsolute("/usr/local/opt/llvm/include/llvm-c/Core.h", .{})) |_| {
         return "/usr/local/opt/llvm";
     } else |_| {}
+
+    // macOS - Homebrew versioned (e.g., brew install llvm@17)
+    {
+        const versions = [_][]const u8{ "20", "19", "18", "17", "16", "15", "14" };
+        const prefixes = [_][]const u8{ "/opt/homebrew/opt/llvm@", "/usr/local/opt/llvm@" };
+        for (prefixes) |prefix| {
+            for (versions) |ver| {
+                const path = std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}/include/llvm-c/Core.h", .{ prefix, ver }) catch continue;
+                if (std.fs.accessAbsolute(path, .{})) |_| {
+                    return std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ prefix, ver }) catch continue;
+                } else |_| {}
+            }
+        }
+    }
 
     // Linux - check common paths
     if (std.fs.accessAbsolute("/usr/include/llvm-c/Core.h", .{})) |_| {
