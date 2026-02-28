@@ -68,8 +68,13 @@ pub fn clearMetaDefinitions(tc: anytype) void {
 }
 
 /// Clear the deprecated functions map, freeing allocated method keys.
-/// Method keys (format "TypeName::method_name") are heap-allocated and must be freed
-/// before clearing the map to avoid leaking memory in multi-module builds.
+/// Method keys (format "TypeName::method_name") are heap-allocated via registerDeprecatedMethod
+/// and must be freed before clearing the map to avoid leaking memory in multi-module builds.
+/// Plain function keys are borrowed slices into the AST source buffer and must NOT be freed.
+///
+/// Safety: We distinguish the two by checking for "::" in the key. This is safe because
+/// Klar identifiers cannot contain "::" (it is a path separator token, not a valid identifier
+/// character), so any key containing "::" was necessarily heap-allocated by registerDeprecatedMethod.
 pub fn clearDeprecatedFunctions(tc: anytype) void {
     var key_iter = tc.deprecated_functions.keyIterator();
     while (key_iter.next()) |key| {
@@ -359,9 +364,9 @@ fn validateCustomAnnotation(tc: anytype, cust: *ast.MetaCustom, decl_kind: ?Decl
                 switch (arg) {
                     .string => {},
                     .path => |p| {
-                        const path_str = joinMetaPath(tc.allocator, p.segments);
-                        defer if (p.segments.len > 1) tc.allocator.free(path_str);
-                        tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, path_str });
+                        const joined = joinMetaPath(tc.allocator, p.segments);
+                        defer joined.deinit();
+                        tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, joined.slice });
                     },
                 }
             },
@@ -390,9 +395,9 @@ fn validateCustomAnnotation(tc: anytype, cust: *ast.MetaCustom, decl_kind: ?Decl
                     },
                     .path => |p| {
                         // Path args don't match string union constraints
-                        const path_str = joinMetaPath(tc.allocator, p.segments);
-                        defer if (p.segments.len > 1) tc.allocator.free(path_str);
-                        tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, path_str });
+                        const joined = joinMetaPath(tc.allocator, p.segments);
+                        defer joined.deinit();
+                        tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, joined.slice });
                     },
                 }
             },
@@ -406,25 +411,37 @@ fn validateCustomAnnotation(tc: anytype, cust: *ast.MetaCustom, decl_kind: ?Decl
 }
 
 /// Join meta path segments with "::" for error messages.
-/// Returns an allocated slice owned by the caller (or a static/borrowed fallback on error).
-fn joinMetaPath(allocator: std.mem.Allocator, segments: []const []const u8) []const u8 {
-    if (segments.len == 0) return "?";
-    if (segments.len == 1) return segments[0];
+/// Returns a JoinedPath; call deinit() when done to free the heap buffer (if any).
+const JoinedPath = struct {
+    slice: []const u8,
+    /// Non-null when slice is heap-allocated and must be freed.
+    owned: ?[]const u8,
+    allocator: std.mem.Allocator,
+
+    fn deinit(self: JoinedPath) void {
+        if (self.owned) |buf| self.allocator.free(buf);
+    }
+};
+
+fn joinMetaPath(allocator: std.mem.Allocator, segments: []const []const u8) JoinedPath {
+    if (segments.len == 0) return .{ .slice = "?", .owned = null, .allocator = allocator };
+    if (segments.len == 1) return .{ .slice = segments[0], .owned = null, .allocator = allocator };
     var list = std.ArrayListUnmanaged(u8){};
     for (segments, 0..) |seg, i| {
         if (i > 0) list.appendSlice(allocator, "::") catch {
             list.deinit(allocator);
-            return segments[0];
+            return .{ .slice = segments[0], .owned = null, .allocator = allocator };
         };
         list.appendSlice(allocator, seg) catch {
             list.deinit(allocator);
-            return segments[0];
+            return .{ .slice = segments[0], .owned = null, .allocator = allocator };
         };
     }
-    return list.toOwnedSlice(allocator) catch {
+    const owned_slice = list.toOwnedSlice(allocator) catch {
         list.deinit(allocator);
-        return segments[0];
+        return .{ .slice = segments[0], .owned = null, .allocator = allocator };
     };
+    return .{ .slice = owned_slice, .owned = owned_slice, .allocator = allocator };
 }
 
 /// Validate that a custom annotation is used on the correct kind of declaration.

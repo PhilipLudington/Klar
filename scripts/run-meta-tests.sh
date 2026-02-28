@@ -40,7 +40,7 @@ check_exact_count() {
     local expected_count="$2"
     local actual="$3"
     TOTAL=$((TOTAL + 1))
-    if echo "$actual" | grep -qF "$expected_count match"; then
+    if echo "$actual" | grep -qE "^${expected_count} match(es)? found"; then
         echo -e "${GREEN}PASS${NC} $desc"
         PASS=$((PASS + 1))
     else

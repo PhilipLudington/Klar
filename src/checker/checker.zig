@@ -766,7 +766,9 @@ pub const TypeChecker = struct {
         self.debug_call_types.deinit(self.allocator);
 
         // Clean up meta validation maps
-        // Free allocated keys for deprecated methods (format "TypeName::method_name")
+        // Free heap-allocated keys for deprecated methods (format "TypeName::method_name").
+        // Plain function keys are borrowed from the AST and must not be freed.
+        // See meta_validation.clearDeprecatedFunctions for the safety invariant.
         var dep_key_iter = self.deprecated_functions.keyIterator();
         while (dep_key_iter.next()) |key| {
             if (std.mem.indexOf(u8, key.*, "::") != null) {
