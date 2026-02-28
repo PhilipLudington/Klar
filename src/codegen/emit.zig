@@ -24967,6 +24967,7 @@ pub const Emitter = struct {
         const proc_type = self.getProcessOutputStructType();
         const result_alloca = self.builder.buildAlloca(result_type, "procrun.result");
         const func = self.current_function orelse return EmitError.InvalidAST;
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.cont");
 
         // Build command string: concat cmd + " " + each arg with spaces
         // Start with cmd, then append " arg1 arg2 ..."
@@ -25025,6 +25026,22 @@ pub const Emitter = struct {
         const buf_size = llvm.c.LLVMBuildAdd(self.builder.ref, cmd_len, total_args_len, "procrun.bufsize1");
         const buf_size_final = llvm.c.LLVMBuildAdd(self.builder.ref, buf_size, llvm.Const.int64(self.ctx, 1), "procrun.bufsize");
         const cmd_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{buf_size_final}, "procrun.cmdbuf");
+
+        // Null-check cmd_buf malloc
+        const cmdbuf_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, cmd_buf, llvm.c.LLVMConstNull(ptr_type), "procrun.cmdbuf_null");
+        const cmdbuf_ok_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.cmdbuf_ok");
+        const cmdbuf_fail_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.cmdbuf_fail");
+        _ = self.builder.buildCondBr(cmdbuf_null, cmdbuf_fail_bb, cmdbuf_ok_bb);
+
+        // cmd_buf malloc failure: no pipe open, nothing to free — just return Err
+        self.builder.positionAtEnd(cmdbuf_fail_bb);
+        const cmdbuf_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "procrun.cmdbuf_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), cmdbuf_tag_ptr);
+        const cmdbuf_err_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "procrun.cmdbuf_err");
+        self.emitErrnoToIoError(cmdbuf_err_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        self.builder.positionAtEnd(cmdbuf_ok_bb);
 
         // Copy cmd to buffer (without null terminator — we'll append args after it)
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &[_]llvm.ValueRef{ cmd_buf, cmd_val, cmd_len }, "");
@@ -25094,7 +25111,6 @@ pub const Emitter = struct {
 
         const popen_ok_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.popen_ok");
         const popen_err_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.popen_err");
-        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.cont");
 
         _ = self.builder.buildCondBr(pipe_null, popen_err_bb, popen_ok_bb);
 
