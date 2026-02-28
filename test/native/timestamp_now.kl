@@ -1,0 +1,22 @@
+// Test timestamp_now builtin
+// Expected exit code: 42
+fn main() -> i32 {
+    // Get current timestamp
+    let t1: i64 = timestamp_now()
+
+    // Should be a reasonable Unix timestamp (after 2020-01-01)
+    let min_epoch: i64 = 1577836800
+    if t1 < min_epoch {
+        return 1  // Too early
+    }
+
+    // Get another timestamp
+    let t2: i64 = timestamp_now()
+
+    // t2 should be >= t1 (monotonicity)
+    if t2 < t1 {
+        return 2  // Not monotonic
+    }
+
+    return 42
+}

@@ -75,6 +75,13 @@ pub const builtins = [_]NativeDesc{
     .{ .name = "from_byte", .arity = 1, .function = nativeFromByte },
     .{ .name = "parse_int", .arity = 1, .function = nativeParseInt },
     .{ .name = "parse_float", .arity = 1, .function = nativeParseFloat },
+
+    // Environment, process, stat, timestamp
+    .{ .name = "env_get", .arity = 1, .function = nativeEnvGet },
+    .{ .name = "env_set", .arity = 2, .function = nativeEnvSet },
+    .{ .name = "timestamp_now", .arity = 0, .function = nativeTimestampNow },
+    .{ .name = "fs_stat", .arity = 1, .function = nativeFsStat },
+    .{ .name = "process_run", .arity = 2, .function = nativeProcessRun },
 };
 
 // ============================================================================
@@ -594,6 +601,88 @@ fn nativeParseFloat(_: Allocator, args: []const Value) RuntimeError!Value {
         const none = ObjOptional.createNoneGC(gc) catch return RuntimeError.OutOfMemory;
         return .{ .optional = none };
     }
+}
+
+// ============================================================================
+// Environment, Process, Stat, Timestamp Functions
+// ============================================================================
+
+// One-time warning flags for VM stubs (avoid spamming on repeated calls).
+// Reset via resetStubWarnings() when a new VM instance is set up.
+var warned_env_get: bool = false;
+var warned_env_set: bool = false;
+var warned_fs_stat: bool = false;
+var warned_process_run: bool = false;
+
+/// Reset stub warning flags. Call when initializing a new VM instance so that
+/// warnings are emitted again if multiple VMs are created in the same process.
+pub fn resetStubWarnings() void {
+    warned_env_get = false;
+    warned_env_set = false;
+    warned_fs_stat = false;
+    warned_process_run = false;
+}
+
+fn warnVmStub(name: []const u8) void {
+    const stderr = getStdErr();
+    stderr.writeAll("warning: ") catch {};
+    stderr.writeAll(name) catch {};
+    stderr.writeAll(" is not supported in bytecode VM mode; compile with 'klar build' for native support\n") catch {};
+}
+
+fn nativeEnvGet(_: Allocator, args: []const Value) RuntimeError!Value {
+    _ = args;
+    if (!warned_env_get) {
+        warned_env_get = true;
+        warnVmStub("env_get");
+    }
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const none = ObjOptional.createNoneGC(gc) catch return RuntimeError.OutOfMemory;
+    return .{ .optional = none };
+}
+
+fn nativeEnvSet(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = args;
+    if (!warned_env_set) {
+        warned_env_set = true;
+        warnVmStub("env_set");
+    }
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+fn nativeTimestampNow(_: Allocator, _: []const Value) RuntimeError!Value {
+    const now: i64 = std.time.timestamp();
+    return Value.fromInt(now);
+}
+
+fn nativeFsStat(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = args;
+    if (!warned_fs_stat) {
+        warned_fs_stat = true;
+        warnVmStub("fs_stat");
+    }
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+fn nativeProcessRun(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = args;
+    if (!warned_process_run) {
+        warned_process_run = true;
+        warnVmStub("process_run");
+    }
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
 }
 
 // ============================================================================
