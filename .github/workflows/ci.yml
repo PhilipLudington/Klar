@@ -28,7 +28,7 @@ jobs:
         run: ./run-tests.sh
 
   test-windows:
-    name: Windows (VM-only)
+    name: Windows (full suite)
     runs-on: windows-latest
     defaults:
       run:
@@ -41,11 +41,17 @@ jobs:
         with:
           version: 0.15.2
 
-      - name: Build (VM-only mode)
+      - name: Install LLVM (vovkos pre-built with dev headers)
+        run: |
+          curl -L -o llvm.7z "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-18.1.8/llvm-18.1.8-windows-amd64-msvc17-msvcrt.7z"
+          7z x llvm.7z -oC:/llvm -y
+          echo "LLVM_PREFIX=C:/llvm/llvm-18.1.8-windows-amd64-msvc17-msvcrt" >> $GITHUB_ENV
+
+      - name: Build (with LLVM)
         run: ./run-build.sh
 
-      - name: Run Windows tests
-        run: ./scripts/run-windows-tests.sh
+      - name: Run all tests
+        run: ./run-tests.sh
 
   test-linux:
     name: Linux (full suite)

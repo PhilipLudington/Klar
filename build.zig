@@ -33,7 +33,12 @@ pub fn build(b: *std.Build) void {
     if (llvm_prefix) |prefix| {
         exe.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{prefix}) });
         exe.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{prefix}) });
-        exe.linkSystemLibrary("LLVM");
+        // Windows: LLVM-C.lib/dll (vovkos packages); macOS/Linux: libLLVM.dylib/.so
+        if (builtin.os.tag == .windows) {
+            exe.linkSystemLibrary("LLVM-C");
+        } else {
+            exe.linkSystemLibrary("LLVM");
+        }
         exe.linkLibC();
     }
 
@@ -65,7 +70,11 @@ pub fn build(b: *std.Build) void {
     if (llvm_prefix) |prefix| {
         unit_tests.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{prefix}) });
         unit_tests.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/lib", .{prefix}) });
-        unit_tests.linkSystemLibrary("LLVM");
+        if (builtin.os.tag == .windows) {
+            unit_tests.linkSystemLibrary("LLVM-C");
+        } else {
+            unit_tests.linkSystemLibrary("LLVM");
+        }
         unit_tests.linkLibC();
     }
 

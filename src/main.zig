@@ -3400,8 +3400,8 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
         std.fs.cwd().deleteFile(temp_path) catch {};
 
         switch (term) {
-            .exited => |code| std.process.exit(code),
-            .signal => |sig| {
+            .Exited => |code| std.process.exit(code),
+            .Signal => |sig| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
                 getStdErr().writeAll(msg) catch {};

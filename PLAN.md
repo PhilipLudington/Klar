@@ -63,9 +63,9 @@ Windows before WebAssembly: lower effort builds momentum, fixes platform assumpt
 - [x] **7.14** Documentation: Windows setup/install guide (`docs/getting-started/installation.md`)
 
 - [x] **7.13** CI: Add Windows matrix jobs
-  - `.github/workflows/ci.yml`: macOS (full), Linux (full), Windows (VM-only)
-  - `scripts/run-windows-tests.sh`: runs unit, check, fmt, meta suites
-  - All 422 Windows tests pass (240 unit + 61 check + 59 fmt + 62 meta)
+  - `.github/workflows/ci.yml`: macOS (full), Linux (full), Windows (full with vovkos LLVM)
+  - `scripts/run-windows-tests.sh`: fallback runner for VM-only suites
+  - LLVM-C linking, `@hasDecl` target init, `_stat64` offsets, `.Exited` PascalCase
 
 ### Fixes Applied During Windows Testing
 
@@ -75,6 +75,10 @@ Windows before WebAssembly: lower effort builds momentum, fixes platform assumpt
 - **Windows errno**: Updated `emitGetErrno()` in `emit.zig` to use `_errno` on Windows (was `__errno_location`)
 - **`statFile` on Windows**: `statFile` returns `error.IsDir` for directories on Windows (unlike macOS/Linux); fixed in `meta_query.zig`, `main.zig` (fmt and test commands) to handle this error
 - **Formatter idempotence test**: `klar fmt /dev/stdin` hangs on Windows; replaced with temp file approach in `run-fmt-tests.sh`
+- **LLVM-C linking on Windows**: vovkos packages provide `LLVM-C.lib` not `LLVM.lib`; `build.zig` now links `LLVM-C` on Windows
+- **LLVM target availability**: `@hasDecl` guards on target init (vovkos amd64 only includes X86)
+- **`_stat64` struct offsets**: Filled in Windows offsets: st_size=24, st_mtime=40 (verified via `offsetof`)
+- **`process.Child.Term`**: Zig 0.15.2 uses PascalCase `.Exited`/`.Signal` not `.exited`/`.signal`
 
 ### Known Limitations
 

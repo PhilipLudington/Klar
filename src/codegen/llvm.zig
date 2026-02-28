@@ -42,28 +42,36 @@ pub fn initializeNativeTarget() void {
 
 /// Initialize all supported targets for cross-compilation.
 /// Note: LLVM_InitializeAllTargets, etc. are macros that expand to individual
-/// target initialization calls. We explicitly initialize the targets we care about.
+/// target initialization calls. We use @hasDecl to only initialize targets
+/// that are available in the linked LLVM build (e.g., vovkos Windows packages
+/// may only include X86).
 pub fn initializeAllTargets() void {
     // Initialize X86 target
-    c.LLVMInitializeX86TargetInfo();
-    c.LLVMInitializeX86Target();
-    c.LLVMInitializeX86TargetMC();
-    c.LLVMInitializeX86AsmPrinter();
-    c.LLVMInitializeX86AsmParser();
+    if (comptime @hasDecl(c, "LLVMInitializeX86TargetInfo")) {
+        c.LLVMInitializeX86TargetInfo();
+        c.LLVMInitializeX86Target();
+        c.LLVMInitializeX86TargetMC();
+        c.LLVMInitializeX86AsmPrinter();
+        c.LLVMInitializeX86AsmParser();
+    }
 
     // Initialize AArch64 (ARM64) target
-    c.LLVMInitializeAArch64TargetInfo();
-    c.LLVMInitializeAArch64Target();
-    c.LLVMInitializeAArch64TargetMC();
-    c.LLVMInitializeAArch64AsmPrinter();
-    c.LLVMInitializeAArch64AsmParser();
+    if (comptime @hasDecl(c, "LLVMInitializeAArch64TargetInfo")) {
+        c.LLVMInitializeAArch64TargetInfo();
+        c.LLVMInitializeAArch64Target();
+        c.LLVMInitializeAArch64TargetMC();
+        c.LLVMInitializeAArch64AsmPrinter();
+        c.LLVMInitializeAArch64AsmParser();
+    }
 
     // Initialize WebAssembly target
-    c.LLVMInitializeWebAssemblyTargetInfo();
-    c.LLVMInitializeWebAssemblyTarget();
-    c.LLVMInitializeWebAssemblyTargetMC();
-    c.LLVMInitializeWebAssemblyAsmPrinter();
-    c.LLVMInitializeWebAssemblyAsmParser();
+    if (comptime @hasDecl(c, "LLVMInitializeWebAssemblyTargetInfo")) {
+        c.LLVMInitializeWebAssemblyTargetInfo();
+        c.LLVMInitializeWebAssemblyTarget();
+        c.LLVMInitializeWebAssemblyTargetMC();
+        c.LLVMInitializeWebAssemblyAsmPrinter();
+        c.LLVMInitializeWebAssemblyAsmParser();
+    }
 }
 
 /// LLVM Context wrapper.

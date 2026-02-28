@@ -69,9 +69,10 @@ const stat_mode_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.
 const dirent_name_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_dirent, "d_name") else 0;
 
 /// Offset of st_size field within struct stat (in bytes).
-const stat_size_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_size") else @compileError("stat_size_offset: no POSIX headers; Windows _stat64 offsets must be verified for this platform");
-/// Size of st_size field in bits.
-const stat_size_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_size)) else @compileError("stat_size_bits: no POSIX headers; Windows _stat64 field sizes must be verified for this platform");
+/// On Windows, _stat64 has st_size at offset 24 (verified via offsetof).
+const stat_size_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_size") else 24;
+/// Size of st_size field in bits. _stat64 uses __int64 (64-bit).
+const stat_size_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_size)) else 64;
 
 /// Offset of st_mtime (modification time) within struct stat (in bytes).
 /// On macOS/BSD, the field is st_mtimespec (struct timespec); tv_sec is at offset 0 within it.
@@ -84,7 +85,7 @@ const stat_mtime_offset: u32 = if (has_posix_headers) blk: {
         @offsetOf(posix.struct_stat, "st_mtim") // Linux glibc
     else
         @compileError("Cannot determine st_mtime offset for this platform");
-} else @compileError("stat_mtime_offset: no POSIX headers; Windows _stat64 offsets must be verified for this platform");
+} else 40; // Windows _stat64 has st_mtime at offset 40 (verified via offsetof)
 /// We always read mtime as 64-bit (time_t is 64-bit on modern platforms).
 const stat_mtime_bits: u32 = 64;
 
