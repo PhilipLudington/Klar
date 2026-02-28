@@ -731,40 +731,48 @@ fn build_match_expr(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Ex
 fn build_tuple_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprId) {
     let ep: i32 = field_pos(json, pos, "elements")
     var c: TypeChecker = tc
-    let start: i32 = c.extra_expr_ids.len()
-    var count: i32 = 0
+    var elem_ids: List#[ExprId] = List.new#[ExprId]()
     if ep >= 0 {
         var ap: i32 = array_start(json, ep)
         while ap >= 0 {
             let r: (TypeChecker, ExprId) = build_expr(c, json, ap)
             c = r.0
-            c.extra_expr_ids.push(r.1)
-            count = count + 1
+            elem_ids.push(r.1)
             ap = array_next(json, ap)
         }
     }
+    let start: i32 = c.extra_expr_ids.len()
+    var ei: i32 = 0
+    while ei < elem_ids.len() {
+        c.extra_expr_ids.push(elem_ids[ei])
+        ei = ei + 1
+    }
     let idx: i32 = c.exprs.len()
-    c.exprs.push(Expr::TupleLiteral(TupleLiteralData { elems_start: start, elems_count: count, span: s() }))
+    c.exprs.push(Expr::TupleLiteral(TupleLiteralData { elems_start: start, elems_count: elem_ids.len(), span: s() }))
     return (c, ExprId { id: idx })
 }
 
 fn build_array_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprId) {
     let ep: i32 = field_pos(json, pos, "elements")
     var c: TypeChecker = tc
-    let start: i32 = c.extra_expr_ids.len()
-    var count: i32 = 0
+    var elem_ids: List#[ExprId] = List.new#[ExprId]()
     if ep >= 0 {
         var ap: i32 = array_start(json, ep)
         while ap >= 0 {
             let r: (TypeChecker, ExprId) = build_expr(c, json, ap)
             c = r.0
-            c.extra_expr_ids.push(r.1)
-            count = count + 1
+            elem_ids.push(r.1)
             ap = array_next(json, ap)
         }
     }
+    let start: i32 = c.extra_expr_ids.len()
+    var ei: i32 = 0
+    while ei < elem_ids.len() {
+        c.extra_expr_ids.push(elem_ids[ei])
+        ei = ei + 1
+    }
     let idx: i32 = c.exprs.len()
-    c.exprs.push(Expr::ArrayLiteral(ArrayLiteralData { elems_start: start, elems_count: count, span: s() }))
+    c.exprs.push(Expr::ArrayLiteral(ArrayLiteralData { elems_start: start, elems_count: elem_ids.len(), span: s() }))
     return (c, ExprId { id: idx })
 }
 
@@ -833,24 +841,28 @@ fn build_enum_variant(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, 
 
     let vnr: (string, bool) = field_string(json, pos, "variant_name")
     var c: TypeChecker = tc
-    // Build payload args
+    // Build payload args — collect then push to avoid interleaving
     let pp: i32 = field_pos(json, pos, "payload")
-    let args_start: i32 = c.extra_expr_ids.len()
-    var args_count: i32 = 0
+    var arg_ids: List#[ExprId] = List.new#[ExprId]()
     if pp >= 0 and not json_is_null(json, pp) {
         var ap: i32 = array_start(json, pp)
         while ap >= 0 {
             let r: (TypeChecker, ExprId) = build_expr(c, json, ap)
             c = r.0
-            c.extra_expr_ids.push(r.1)
-            args_count = args_count + 1
+            arg_ids.push(r.1)
             ap = array_next(json, ap)
         }
+    }
+    let args_start: i32 = c.extra_expr_ids.len()
+    var ai: i32 = 0
+    while ai < arg_ids.len() {
+        c.extra_expr_ids.push(arg_ids[ai])
+        ai = ai + 1
     }
     let idx: i32 = c.exprs.len()
     c.exprs.push(Expr::EnumVariant(EnumVariantData {
         type_name: type_name, variant_name: vnr.0,
-        args_start: args_start, args_count: args_count,
+        args_start: args_start, args_count: arg_ids.len(),
         span: s(),
     }))
     return (c, ExprId { id: idx })
@@ -859,8 +871,7 @@ fn build_enum_variant(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, 
 fn build_interp_string(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprId) {
     let pp: i32 = field_pos(json, pos, "parts")
     var c: TypeChecker = tc
-    let start: i32 = c.extra_expr_ids.len()
-    var count: i32 = 0
+    var part_ids: List#[ExprId] = List.new#[ExprId]()
     if pp >= 0 {
         var ap: i32 = array_start(json, pp)
         while ap >= 0 {
@@ -869,20 +880,25 @@ fn build_interp_string(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker,
                 let vr: (string, bool) = field_string(json, ap, "value")
                 let eidx: i32 = c.exprs.len()
                 c.exprs.push(Expr::StringLiteral(StringLiteralData { value: vr.0, span: s() }))
-                c.extra_expr_ids.push(ExprId { id: eidx })
+                part_ids.push(ExprId { id: eidx })
             } else {
                 // "expr" part
                 let vp: i32 = field_pos(json, ap, "value")
                 let r: (TypeChecker, ExprId) = build_expr(c, json, vp)
                 c = r.0
-                c.extra_expr_ids.push(r.1)
+                part_ids.push(r.1)
             }
-            count = count + 1
             ap = array_next(json, ap)
         }
     }
+    let start: i32 = c.extra_expr_ids.len()
+    var pi: i32 = 0
+    while pi < part_ids.len() {
+        c.extra_expr_ids.push(part_ids[pi])
+        pi = pi + 1
+    }
     let idx: i32 = c.exprs.len()
-    c.exprs.push(Expr::InterpolatedString(InterpolatedStringData { parts_start: start, parts_count: count, span: s() }))
+    c.exprs.push(Expr::InterpolatedString(InterpolatedStringData { parts_start: start, parts_count: part_ids.len(), span: s() }))
     return (c, ExprId { id: idx })
 }
 
@@ -957,8 +973,7 @@ fn build_builtin_call(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, 
     let nr: (string, bool) = field_string(json, pos, "name")
     var c: TypeChecker = tc
     let ap: i32 = field_pos(json, pos, "args")
-    let args_start: i32 = c.extra_expr_ids.len()
-    var args_count: i32 = 0
+    var arg_ids: List#[ExprId] = List.new#[ExprId]()
     if ap >= 0 {
         var ep: i32 = array_start(json, ap)
         while ep >= 0 {
@@ -967,19 +982,24 @@ fn build_builtin_call(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, 
             if vp >= 0 {
                 let r: (TypeChecker, ExprId) = build_expr(c, json, vp)
                 c = r.0
-                c.extra_expr_ids.push(r.1)
+                arg_ids.push(r.1)
             } else {
                 let r: (TypeChecker, ExprId) = build_expr(c, json, ep)
                 c = r.0
-                c.extra_expr_ids.push(r.1)
+                arg_ids.push(r.1)
             }
-            args_count = args_count + 1
             ep = array_next(json, ep)
         }
     }
+    let args_start: i32 = c.extra_expr_ids.len()
+    var ai: i32 = 0
+    while ai < arg_ids.len() {
+        c.extra_expr_ids.push(arg_ids[ai])
+        ai = ai + 1
+    }
     let idx: i32 = c.exprs.len()
     c.exprs.push(Expr::BuiltinCall(BuiltinCallData {
-        builtin_name: nr.0, args_start: args_start, args_count: args_count, span: s(),
+        builtin_name: nr.0, args_start: args_start, args_count: arg_ids.len(), span: s(),
     }))
     return (c, ExprId { id: idx })
 }
