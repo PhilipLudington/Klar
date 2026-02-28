@@ -7,12 +7,20 @@ pub fn build(b: *std.Build) void {
 
     // Detect LLVM installation
     const llvm_prefix = detectLLVMPrefix();
+    const has_llvm = llvm_prefix != null;
+
+    // Build options module (pass has_llvm to source code)
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "has_llvm", has_llvm);
 
     // Create the main module
     const main_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options.createModule() },
+        },
     });
 
     // Create executable using the module
@@ -44,6 +52,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_options.createModule() },
+        },
     });
 
     const unit_tests = b.addTest(.{

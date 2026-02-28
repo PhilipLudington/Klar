@@ -15778,9 +15778,13 @@ pub const Emitter = struct {
     /// Get a pointer to errno via platform-specific function.
     /// macOS: int* __error(void)
     /// Linux: int* __errno_location(void)
+    /// Windows: int* _errno(void)
     fn emitGetErrno(self: *Emitter) llvm.ValueRef {
-        // Use __error on macOS, __errno_location on Linux
-        const fn_name = if (self.platform.os == .macos) "__error" else "__errno_location";
+        const fn_name = switch (self.platform.os) {
+            .macos => "__error",
+            .windows => "_errno",
+            else => "__errno_location",
+        };
         const func = if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |f|
             f
         else blk: {

@@ -1,5 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
+const has_llvm = build_options.has_llvm;
 const version = @import("version.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("token.zig").Token;
@@ -16,10 +18,10 @@ const values = @import("values.zig");
 const Compiler = @import("compiler.zig").Compiler;
 const Disassembler = @import("disasm.zig").Disassembler;
 const VM = @import("vm.zig").VM;
-const codegen = @import("codegen/mod.zig");
-const ir = @import("ir/mod.zig");
+const codegen = if (has_llvm) @import("codegen/mod.zig") else struct {};
+const ir = if (has_llvm) @import("ir/mod.zig") else struct {};
 const ownership = @import("ownership/mod.zig");
-const opt = @import("opt/mod.zig");
+const opt = if (has_llvm) @import("opt/mod.zig") else struct {};
 const module_resolver = @import("module_resolver.zig");
 const ModuleResolver = module_resolver.ModuleResolver;
 const ModuleInfo = module_resolver.ModuleInfo;
@@ -33,7 +35,7 @@ const meta_query = @import("meta_query.zig");
 // Cross-platform IO helpers
 fn getStdOut() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE);
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE).?;
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDOUT_FILENO };
@@ -42,7 +44,7 @@ fn getStdOut() std.fs.File {
 
 fn getStdErr() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE);
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE).?;
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDERR_FILENO };
@@ -455,9 +457,12 @@ pub fn main() !void {
             } else {
                 try runVmFile(allocator, final_source, debug_mode, program_args);
             }
-        } else {
+        } else if (comptime has_llvm) {
             // Default: compile to native and run
             try runNativeFileWithOptions(allocator, final_source, program_args, search_paths);
+        } else {
+            // LLVM not available, fall back to VM
+            try runVmFile(allocator, final_source, debug_mode, program_args);
         }
     } else if (std.mem.eql(u8, command, "tokenize")) {
         if (args.len < 3) {
@@ -484,6 +489,10 @@ pub fn main() !void {
         }
         try dumpAstFile(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "build")) {
+        if (comptime !has_llvm) {
+            try getStdErr().writeAll("Error: 'klar build' requires LLVM. Install LLVM development headers and rebuild the compiler.\n");
+            return;
+        }
         // Parse options - need to determine if first arg after "build" is a file or a flag
         var output_path: ?[]const u8 = null;
         var emit_llvm = false;
@@ -3707,16 +3716,21 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var had_unformatted = false;
 
     for (targets.items) |target| {
-        // Check if target is a directory
-        const stat = std.fs.cwd().statFile(target) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error: cannot access '{s}': {}\n", .{ target, err }) catch "Error accessing file\n";
-            try stderr.writeAll(msg);
-            had_error = true;
-            continue;
+        // Check if target is a file or directory
+        // Note: on Windows, statFile returns error.IsDir for directories
+        const is_dir = blk: {
+            const stat = std.fs.cwd().statFile(target) catch |err| {
+                if (err == error.IsDir) break :blk true;
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error: cannot access '{s}': {}\n", .{ target, err }) catch "Error accessing file\n";
+                try stderr.writeAll(msg);
+                had_error = true;
+                continue;
+            };
+            break :blk stat.kind == .directory;
         };
 
-        if (stat.kind == .directory) {
+        if (is_dir) {
             // Recursively format all .kl files
             try fmtDirectory(allocator, target, in_place, check_only, &had_error, &had_unformatted);
         } else {
@@ -4405,58 +4419,61 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
     const stdout = getStdOut();
     const stderr = getStdErr();
 
-    const stat = std.fs.cwd().statFile(path) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error accessing path '{s}': {}\n", .{ path, err }) catch "Error accessing path\n";
-        try stderr.writeAll(msg);
-        return error.TestsFailed;
+    // Note: on Windows, statFile returns error.IsDir for directories
+    const is_dir = blk: {
+        const stat = std.fs.cwd().statFile(path) catch |err| {
+            if (err == error.IsDir) break :blk true;
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error accessing path '{s}': {}\n", .{ path, err }) catch "Error accessing path\n";
+            try stderr.writeAll(msg);
+            return error.TestsFailed;
+        };
+        break :blk stat.kind == .directory;
     };
 
-    switch (stat.kind) {
-        .file => {
-            const result = runTestFile(allocator, path, options) catch |err| {
-                if (err == error.TestsFailed and options.json_output) {
-                    try stdout.writeAll("{\"file\":");
-                    try writeJsonEscaped(stdout, path);
-                    try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0,\"tests\":[]}\n");
-                }
-                return err;
-            };
-            defer freeJsonTestResults(allocator, result.test_results);
-            defer freeJsonCompilerErrors(allocator, result.compile_errors);
-            if (options.json_output and result.file_failed) {
+    if (!is_dir) {
+        const result = runTestFile(allocator, path, options) catch |err| {
+            if (err == error.TestsFailed and options.json_output) {
                 try stdout.writeAll("{\"file\":");
                 try writeJsonEscaped(stdout, path);
-                try stdout.writeAll(",\"total\":");
-                try writeJsonUsize(stdout, result.tests_discovered);
-                try stdout.writeAll(",\"passed\":");
-                try writeJsonUsize(stdout, result.tests_passed);
-                try stdout.writeAll(",\"failed\":");
-                try writeJsonUsize(stdout, result.tests_failed);
-                try stdout.writeAll(",\"tests\":[],\"errors\":[");
-                for (result.compile_errors, 0..) |compile_error, idx| {
-                    if (idx > 0) try stdout.writeAll(",");
-                    try stdout.writeAll("{\"stage\":");
-                    try writeJsonEscaped(stdout, compile_error.stage);
-                    try stdout.writeAll(",\"message\":");
-                    try writeJsonEscaped(stdout, compile_error.message);
-                    if (compile_error.line) |line| {
-                        try stdout.writeAll(",\"line\":");
-                        try writeJsonUsize(stdout, line);
-                    }
-                    if (compile_error.column) |column| {
-                        try stdout.writeAll(",\"column\":");
-                        try writeJsonUsize(stdout, column);
-                    }
-                    try stdout.writeAll("}");
-                }
-                try stdout.writeAll("]}\n");
+                try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0,\"tests\":[]}\n");
             }
-            if (result.tests_failed > 0 or result.file_failed) return error.TestsFailed;
-            return;
-        },
-        .directory => {
-            var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
+            return err;
+        };
+        defer freeJsonTestResults(allocator, result.test_results);
+        defer freeJsonCompilerErrors(allocator, result.compile_errors);
+        if (options.json_output and result.file_failed) {
+            try stdout.writeAll("{\"file\":");
+            try writeJsonEscaped(stdout, path);
+            try stdout.writeAll(",\"total\":");
+            try writeJsonUsize(stdout, result.tests_discovered);
+            try stdout.writeAll(",\"passed\":");
+            try writeJsonUsize(stdout, result.tests_passed);
+            try stdout.writeAll(",\"failed\":");
+            try writeJsonUsize(stdout, result.tests_failed);
+            try stdout.writeAll(",\"tests\":[],\"errors\":[");
+            for (result.compile_errors, 0..) |compile_error, idx| {
+                if (idx > 0) try stdout.writeAll(",");
+                try stdout.writeAll("{\"stage\":");
+                try writeJsonEscaped(stdout, compile_error.stage);
+                try stdout.writeAll(",\"message\":");
+                try writeJsonEscaped(stdout, compile_error.message);
+                if (compile_error.line) |line| {
+                    try stdout.writeAll(",\"line\":");
+                    try writeJsonUsize(stdout, line);
+                }
+                if (compile_error.column) |column| {
+                    try stdout.writeAll(",\"column\":");
+                    try writeJsonUsize(stdout, column);
+                }
+                try stdout.writeAll("}");
+            }
+            try stdout.writeAll("]}\n");
+        }
+        if (result.tests_failed > 0 or result.file_failed) return error.TestsFailed;
+        return;
+    } else {
+        var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error opening directory '{s}': {}\n", .{ path, err }) catch "Error opening directory\n";
                 try stderr.writeAll(msg);
@@ -4666,13 +4683,6 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             if (files_failed > 0) {
                 return error.TestsFailed;
             }
-        },
-        else => {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error: unsupported test path '{s}'\n", .{path}) catch "Error: unsupported test path\n";
-            try stderr.writeAll(msg);
-            return error.TestsFailed;
-        },
     }
 }
 

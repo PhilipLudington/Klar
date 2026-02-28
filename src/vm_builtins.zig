@@ -719,7 +719,7 @@ fn valueToString(allocator: Allocator, value: Value) RuntimeError![]const u8 {
 
 fn getStdOut() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) };
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE).? };
     } else {
         return .{ .handle = std.posix.STDOUT_FILENO };
     }
@@ -727,7 +727,7 @@ fn getStdOut() std.fs.File {
 
 fn getStdIn() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) };
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE).? };
     } else {
         return .{ .handle = std.posix.STDIN_FILENO };
     }
@@ -735,7 +735,7 @@ fn getStdIn() std.fs.File {
 
 fn getStdErr() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) };
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE).? };
     } else {
         return .{ .handle = std.posix.STDERR_FILENO };
     }
