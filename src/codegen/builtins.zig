@@ -30,7 +30,7 @@
 //! | `timestamp_now`  | `fn() -> i64`                                    | Current Unix epoch (seconds)    |
 //! | `process_run`    | `fn(string, [string]) -> Result#[ProcessOutput, IoError]` | Run subprocess via shell |
 //!
-//! Struct types: `FileStat { size: i64, modified: i64, is_dir: bool, is_file: bool }`,
+//! Struct types: `FileStat { size: i64, modified_epoch: i64, is_dir: bool, is_file: bool }`,
 //! `ProcessOutput { stdout: string, stderr: string, exit_code: i32 }`
 
 const std = @import("std");

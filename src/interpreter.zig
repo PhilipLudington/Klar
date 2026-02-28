@@ -366,11 +366,11 @@ pub const Interpreter = struct {
 
         // Phase 0: environment, process, stat, timestamp
         const env_get_fn = try self.allocator.create(values.BuiltinFunction);
-        env_get_fn.* = .{ .name = "env_get", .func = &builtinStubIO };
+        env_get_fn.* = .{ .name = "env_get", .func = &builtinStubEnvGet };
         try self.global_env.define("env_get", .{ .builtin = env_get_fn }, false);
 
         const env_set_fn = try self.allocator.create(values.BuiltinFunction);
-        env_set_fn.* = .{ .name = "env_set", .func = &builtinStubIO };
+        env_set_fn.* = .{ .name = "env_set", .func = &builtinStubResultIO };
         try self.global_env.define("env_set", .{ .builtin = env_set_fn }, false);
 
         const timestamp_now_fn = try self.allocator.create(values.BuiltinFunction);
@@ -378,11 +378,11 @@ pub const Interpreter = struct {
         try self.global_env.define("timestamp_now", .{ .builtin = timestamp_now_fn }, false);
 
         const fs_stat_fn = try self.allocator.create(values.BuiltinFunction);
-        fs_stat_fn.* = .{ .name = "fs_stat", .func = &builtinStubIO };
+        fs_stat_fn.* = .{ .name = "fs_stat", .func = &builtinStubResultIO };
         try self.global_env.define("fs_stat", .{ .builtin = fs_stat_fn }, false);
 
         const process_run_fn = try self.allocator.create(values.BuiltinFunction);
-        process_run_fn.* = .{ .name = "process_run", .func = &builtinStubIO };
+        process_run_fn.* = .{ .name = "process_run", .func = &builtinStubResultIO };
         try self.global_env.define("process_run", .{ .builtin = process_run_fn }, false);
     }
 
@@ -2848,14 +2848,26 @@ fn builtinParseFloat(allocator: Allocator, args: []const Value) RuntimeError!Val
 // Phase 0: Environment, Process, Stat, Timestamp
 // ============================================================================
 
-/// Stub for builtins not supported in the interpreter (use native build).
-fn builtinStubIO(_: Allocator, _: []const Value) RuntimeError!Value {
-    return RuntimeError.IOError;
+/// Stub for env_get: returns None (not supported in interpreter, use native build).
+fn builtinStubEnvGet(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    const opt = allocator.create(values.OptionalValue) catch return RuntimeError.OutOfMemory;
+    opt.* = .{ .value = null };
+    return .{ .optional = opt };
+}
+
+/// Stub for builtins returning Result that are not supported in the interpreter.
+/// Returns Err(void) so callers can pattern-match on is_ok() rather than crashing.
+fn builtinStubResultIO(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    const err_val = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    err_val.* = .void_;
+    const res = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    res.* = .{ .is_ok = false, .value = err_val };
+    return .{ .result = res };
 }
 
 fn builtinTimestampNow(_: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 0) return RuntimeError.InvalidOperation;
-    const now: i128 = @as(i128, std.time.timestamp());
+    const now: i64 = std.time.timestamp();
     return .{ .int = .{ .value = now, .type_ = .i64_ } };
 }
 

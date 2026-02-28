@@ -1889,7 +1889,7 @@ pub const TypeChecker = struct {
         });
 
         // env_set(name: string, value: string) -> Result#[void, IoError]
-        const void_io_result = fs_create_dir_ret; // Result#[void, IoError] computed above
+        const void_io_result = try self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType());
         const env_set_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.stringType() }, void_io_result);
         try self.current_scope.define(.{
             .name = "env_set",
@@ -1958,7 +1958,7 @@ pub const TypeChecker = struct {
             .type_params = &.{},
             .fields = process_output_fields,
             .traits = &.{},
-            .is_copy = true,
+            .is_copy = false,
         };
         try self.generic_struct_types.append(self.allocator, process_output_struct);
         const process_output_type: types.Type = .{ .struct_ = process_output_struct };

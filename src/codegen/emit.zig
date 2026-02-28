@@ -88,6 +88,15 @@ const stat_mtime_offset: u32 = if (has_posix_headers) blk: {
 /// We always read mtime as 64-bit (time_t is 64-bit on modern platforms).
 const stat_mtime_bits: u32 = 64;
 
+// Compile-time assertion: stat buffer allocation (256 bytes) must be large enough.
+comptime {
+    if (has_posix_headers) {
+        if (@sizeOf(posix.struct_stat) > 256) {
+            @compileError("struct stat exceeds 256-byte buffer allocation");
+        }
+    }
+}
+
 /// File type mask and constants from POSIX (these are standardized).
 const S_IFMT: u32 = 0o170000; // File type mask
 const S_IFREG: u32 = 0o100000; // Regular file
@@ -24681,12 +24690,11 @@ pub const Emitter = struct {
 
         _ = self.builder.buildCondBr(is_null, not_found_bb, found_bb);
 
-        // Found: Some(strdup(result))
+        // Found: Some(result)
+        // Return the raw getenv pointer (valid until next env_set call).
+        // No strdup — avoids a memory leak since primitive ?string has no drop.
         self.builder.positionAtEnd(found_bb);
-        const strdup_fn = self.getOrDeclareStrdup();
-        var strdup_args = [_]llvm.ValueRef{result};
-        const copied = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strdup_fn), strdup_fn, &strdup_args, "env.copy");
-        const some_val = self.emitSome(copied, ptr_type);
+        const some_val = self.emitSome(result, ptr_type);
         _ = self.builder.buildBr(merge_bb);
         const found_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
 
@@ -24979,7 +24987,8 @@ pub const Emitter = struct {
         // Length loop body: total_args_len += 1 + strlen(args[i])
         self.builder.positionAtEnd(len_body_bb);
         const len_idx_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, len_cur_idx, i64_type, "procrun.len_idx64");
-        const len_elem_offset = llvm.c.LLVMBuildMul(self.builder.ref, len_idx_i64, llvm.Const.int64(self.ctx, 8), "procrun.len_elem_off");
+        const ptr_stride: i64 = @intCast(self.platform.getPointerSize());
+        const len_elem_offset = llvm.c.LLVMBuildMul(self.builder.ref, len_idx_i64, llvm.Const.int64(self.ctx, ptr_stride), "procrun.len_elem_off");
         var len_elem_gep = [_]llvm.ValueRef{len_elem_offset};
         const len_elem_raw_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), list_ptr, &len_elem_gep, 1, "procrun.len_elem_ptr");
         const len_elem_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, len_elem_raw_ptr, ptr_type, "procrun.len_elem_cast");
@@ -25032,9 +25041,10 @@ pub const Emitter = struct {
         const new_offset1 = llvm.c.LLVMBuildAdd(self.builder.ref, cur_offset, llvm.Const.int64(self.ctx, 1), "procrun.off1");
 
         // Get arg string pointer from list
-        // List elements are primitive strings (char*), each is a pointer (8 bytes)
+        // List elements are primitive strings (char*), each is one pointer wide
         const idx_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, cur_idx, i64_type, "procrun.idx64");
-        const elem_offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, llvm.Const.int64(self.ctx, 8), "procrun.elem_off");
+        const elem_stride: i64 = @intCast(self.platform.getPointerSize());
+        const elem_offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, llvm.Const.int64(self.ctx, elem_stride), "procrun.elem_off");
         var elem_gep = [_]llvm.ValueRef{elem_offset};
         const elem_raw_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), list_ptr, &elem_gep, 1, "procrun.elem_ptr");
         const elem_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, elem_raw_ptr, ptr_type, "procrun.elem_cast");

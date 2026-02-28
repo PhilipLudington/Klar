@@ -608,31 +608,36 @@ fn nativeParseFloat(_: Allocator, args: []const Value) RuntimeError!Value {
 // ============================================================================
 
 fn nativeEnvGet(_: Allocator, args: []const Value) RuntimeError!Value {
-    // VM: env_get not supported in bytecode VM (use native build)
+    // VM: env_get returns None (not supported in bytecode VM, use native build)
     _ = args;
-    return RuntimeError.IOError;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const none = ObjOptional.createNoneGC(gc) catch return RuntimeError.OutOfMemory;
+    return .{ .optional = none };
 }
 
 fn nativeEnvSet(_: Allocator, args: []const Value) RuntimeError!Value {
-    // VM: env_set not supported in bytecode VM (use native build)
+    // VM lacks Result value representation; env_set requires native build.
     _ = args;
+    std.debug.print("error: env_set is not supported in bytecode VM (use native build)\n", .{});
     return RuntimeError.IOError;
 }
 
 fn nativeTimestampNow(_: Allocator, _: []const Value) RuntimeError!Value {
-    const now: i128 = @as(i128, std.time.timestamp());
+    const now: i64 = std.time.timestamp();
     return Value.fromInt(now);
 }
 
 fn nativeFsStat(_: Allocator, args: []const Value) RuntimeError!Value {
-    // VM: fs_stat not supported in bytecode VM (use native build)
+    // VM lacks Result value representation; fs_stat requires native build.
     _ = args;
+    std.debug.print("error: fs_stat is not supported in bytecode VM (use native build)\n", .{});
     return RuntimeError.IOError;
 }
 
 fn nativeProcessRun(_: Allocator, args: []const Value) RuntimeError!Value {
-    // VM: process_run not supported in bytecode VM (use native build)
+    // VM lacks Result value representation; process_run requires native build.
     _ = args;
+    std.debug.print("error: process_run is not supported in bytecode VM (use native build)\n", .{});
     return RuntimeError.IOError;
 }
 

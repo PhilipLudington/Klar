@@ -17,19 +17,19 @@ fn main() -> i32 {
 
     // Verify stdout content was captured correctly
     if output.stdout != "hello\n" {
-        return 5  // stdout should be "hello\n"
+        return 3  // stdout should be "hello\n"
     }
 
     // Run a command that fails
     var args2: List#[string] = List.new#[string]()
     let result2: Result#[ProcessOutput, IoError] = process_run("false", args2)
     if not result2.is_ok() {
-        return 3  // process_run should succeed even for failing commands
+        return 4  // process_run should succeed even for failing commands
     }
 
     let output2: ProcessOutput = result2!
     if output2.exit_code == 0 {
-        return 4  // 'false' should exit with non-zero
+        return 5  // 'false' should exit with non-zero
     }
 
     return 42
