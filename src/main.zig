@@ -168,14 +168,17 @@ fn parseLineColumn(value: []const u8) !LineColumn {
 /// Warnings don't block compilation but inform the user of potential issues.
 fn printMetaWarnings(checker: *const TypeChecker, stderr: anytype) !void {
     if (!checker.hasWarnings()) return;
-    var buf: [2048]u8 = undefined;
     for (checker.errors.items) |check_err| {
         if (check_err.kind != .meta_warning) continue;
-        const warn_msg = std.fmt.bufPrint(&buf, "  warning: {d}:{d} {s}\n", .{
+        const warn_msg = std.fmt.allocPrint(checker.allocator, "  warning: {d}:{d} {s}\n", .{
             check_err.span.line,
             check_err.span.column,
             check_err.message,
-        }) catch continue;
+        }) catch {
+            try stderr.writeAll("  warning: (message too long to display)\n");
+            continue;
+        };
+        defer checker.allocator.free(warn_msg);
         try stderr.writeAll(warn_msg);
     }
 }
@@ -1452,6 +1455,8 @@ fn metaScopeString(scope: ast.MetaScope) []const u8 {
         .enum_scope => "enum",
         .trait_scope => "trait",
         .field_scope => "field",
+        .variant_scope => "variant",
+        .test_scope => "test",
     };
 }
 

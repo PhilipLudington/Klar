@@ -21,8 +21,11 @@ pub const MetaQueryMode = union(enum) {
     hints,
 };
 
-/// Kind of declaration carrying meta annotations.
-/// Shared between meta CLI and meta validation.
+/// Kind of declaration carrying meta annotations (for CLI display and JSON output).
+///
+/// Separate from meta_validation.zig's DeclKind which is for scope validation. This enum
+/// adds file_meta, test_decl, const_decl, and distinguishes struct_field/enum_variant
+/// for richer CLI output. The validation enum is simpler (maps directly to MetaScope).
 pub const DeclKind = enum {
     function,
     test_decl,
@@ -470,18 +473,27 @@ fn readSourceFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 }
 
 // ============================================================================
-// Collection: tag
+// Generic declaration traversal (deduplicates tag/deprecated/hints collection)
 // ============================================================================
 
-fn metaCollectTag(
+/// Traverse all declarations in a module, calling matchFn on each meta annotation slice.
+/// If matchFn returns true, the declaration is added to matches. Also descends into
+/// struct fields, enum variants, and impl/trait methods.
+///
+/// Used by metaCollectTag, metaCollectDeprecated, and metaCollectHints to avoid
+/// repeating the same traversal structure. The module and related collection functions
+/// have distinct structures and are kept separate.
+fn traverseDecls(
+    comptime Ctx: type,
     allocator: std.mem.Allocator,
     path: []const u8,
     module: ast.Module,
-    tag_name: []const u8,
     matches: *std.ArrayListUnmanaged(MetaMatch),
+    ctx: Ctx,
+    comptime matchFn: fn(Ctx, []const ast.MetaAnnotation, []const ast.MetaAnnotation) bool,
 ) void {
     // Check file-level meta
-    if (hasMatchingTag(module.file_meta, tag_name, module.file_meta)) {
+    if (matchFn(ctx, module.file_meta, module.file_meta)) {
         matches.append(allocator, .{
             .path = path,
             .name = path,
@@ -493,9 +505,8 @@ fn metaCollectTag(
 
     for (module.declarations) |decl| {
         const info = getDeclNameAndMeta(decl);
-        if (info.meta.len == 0) continue;
 
-        if (hasMatchingTag(info.meta, tag_name, module.file_meta)) {
+        if (info.meta.len > 0 and matchFn(ctx, info.meta, module.file_meta)) {
             matches.append(allocator, .{
                 .path = path,
                 .name = info.name,
@@ -508,7 +519,7 @@ fn metaCollectTag(
         // Descend into struct fields
         if (decl == .struct_decl) {
             for (decl.struct_decl.fields) |field| {
-                if (hasMatchingTag(field.meta, tag_name, module.file_meta)) {
+                if (matchFn(ctx, field.meta, module.file_meta)) {
                     matches.append(allocator, .{
                         .path = path,
                         .name = field.name,
@@ -523,7 +534,7 @@ fn metaCollectTag(
         // Descend into enum variants
         if (decl == .enum_decl) {
             for (decl.enum_decl.variants) |variant| {
-                if (hasMatchingTag(variant.meta, tag_name, module.file_meta)) {
+                if (matchFn(ctx, variant.meta, module.file_meta)) {
                     matches.append(allocator, .{
                         .path = path,
                         .name = variant.name,
@@ -536,34 +547,49 @@ fn metaCollectTag(
         }
 
         // Descend into impl/trait methods
-        metaCollectMethodsTag(allocator, path, decl, tag_name, module.file_meta, matches);
+        const methods = switch (decl) {
+            .impl_decl => |impl_d| impl_d.methods,
+            .trait_decl => |t| t.methods,
+            else => continue,
+        };
+        for (methods) |method| {
+            if (matchFn(ctx, method.meta, module.file_meta)) {
+                matches.append(allocator, .{
+                    .path = path,
+                    .name = method.name,
+                    .kind = .function,
+                    .line = method.span.line,
+                    .meta = collectExpandedMeta(allocator, method.meta, module.file_meta),
+                }) catch {};
+            }
+        }
     }
 }
 
-fn metaCollectMethodsTag(
+// ============================================================================
+// Collection: tag
+// ============================================================================
+
+fn metaCollectTag(
     allocator: std.mem.Allocator,
     path: []const u8,
-    decl: ast.Decl,
+    module: ast.Module,
     tag_name: []const u8,
-    file_meta: []const ast.MetaAnnotation,
     matches: *std.ArrayListUnmanaged(MetaMatch),
 ) void {
-    const methods = switch (decl) {
-        .impl_decl => |impl_d| impl_d.methods,
-        .trait_decl => |t| t.methods,
-        else => return,
-    };
-    for (methods) |method| {
-        if (hasMatchingTag(method.meta, tag_name, file_meta)) {
-            matches.append(allocator, .{
-                .path = path,
-                .name = method.name,
-                .kind = .function,
-                .line = method.span.line,
-                .meta = collectExpandedMeta(allocator, method.meta, file_meta),
-            }) catch {};
-        }
-    }
+    traverseDecls(
+        []const u8,
+        allocator,
+        path,
+        module,
+        matches,
+        tag_name,
+        struct {
+            fn match(name: []const u8, meta: []const ast.MetaAnnotation, file_meta: []const ast.MetaAnnotation) bool {
+                return hasMatchingTag(meta, name, file_meta);
+            }
+        }.match,
+    );
 }
 
 // ============================================================================
@@ -603,77 +629,19 @@ fn metaCollectDeprecated(
     module: ast.Module,
     matches: *std.ArrayListUnmanaged(MetaMatch),
 ) void {
-    // Check file-level meta
-    if (hasDeprecatedViaGroup(module.file_meta, module.file_meta) != null) {
-        matches.append(allocator, .{
-            .path = path,
-            .name = path,
-            .kind = .file_meta,
-            .line = if (module.file_meta.len > 0) module.file_meta[0].span().line else 1,
-            .meta = collectExpandedMeta(allocator, module.file_meta, module.file_meta),
-        }) catch {};
-    }
-
-    for (module.declarations) |decl| {
-        const info = getDeclNameAndMeta(decl);
-        if (hasDeprecatedViaGroup(info.meta, module.file_meta) != null) {
-            matches.append(allocator, .{
-                .path = path,
-                .name = info.name,
-                .kind = info.kind,
-                .line = info.line,
-                .meta = collectExpandedMeta(allocator, info.meta, module.file_meta),
-            }) catch {};
-        }
-
-        // Descend into struct fields
-        if (decl == .struct_decl) {
-            for (decl.struct_decl.fields) |field| {
-                if (hasDeprecatedViaGroup(field.meta, module.file_meta) != null) {
-                    matches.append(allocator, .{
-                        .path = path,
-                        .name = field.name,
-                        .kind = .struct_field,
-                        .line = field.span.line,
-                        .meta = collectExpandedMeta(allocator, field.meta, module.file_meta),
-                    }) catch {};
-                }
+    traverseDecls(
+        void,
+        allocator,
+        path,
+        module,
+        matches,
+        {},
+        struct {
+            fn match(_: void, meta: []const ast.MetaAnnotation, file_meta: []const ast.MetaAnnotation) bool {
+                return hasDeprecatedViaGroup(meta, file_meta) != null;
             }
-        }
-
-        // Descend into enum variants
-        if (decl == .enum_decl) {
-            for (decl.enum_decl.variants) |variant| {
-                if (hasDeprecatedViaGroup(variant.meta, module.file_meta) != null) {
-                    matches.append(allocator, .{
-                        .path = path,
-                        .name = variant.name,
-                        .kind = .enum_variant,
-                        .line = variant.span.line,
-                        .meta = collectExpandedMeta(allocator, variant.meta, module.file_meta),
-                    }) catch {};
-                }
-            }
-        }
-
-        // Descend into impl/trait methods
-        const methods = switch (decl) {
-            .impl_decl => |impl_d| impl_d.methods,
-            .trait_decl => |t| t.methods,
-            else => continue,
-        };
-        for (methods) |method| {
-            if (hasDeprecatedViaGroup(method.meta, module.file_meta) != null) {
-                matches.append(allocator, .{
-                    .path = path,
-                    .name = method.name,
-                    .kind = .function,
-                    .line = method.span.line,
-                    .meta = collectExpandedMeta(allocator, method.meta, module.file_meta),
-                }) catch {};
-            }
-        }
-    }
+        }.match,
+    );
 }
 
 // ============================================================================
@@ -686,77 +654,19 @@ fn metaCollectHints(
     module: ast.Module,
     matches: *std.ArrayListUnmanaged(MetaMatch),
 ) void {
-    // Check file-level hints
-    if (hasHintViaGroup(module.file_meta, module.file_meta)) {
-        matches.append(allocator, .{
-            .path = path,
-            .name = path,
-            .kind = .file_meta,
-            .line = if (module.file_meta.len > 0) module.file_meta[0].span().line else 1,
-            .meta = collectExpandedMeta(allocator, module.file_meta, module.file_meta),
-        }) catch {};
-    }
-
-    for (module.declarations) |decl| {
-        const info = getDeclNameAndMeta(decl);
-        if (hasHintViaGroup(info.meta, module.file_meta)) {
-            matches.append(allocator, .{
-                .path = path,
-                .name = info.name,
-                .kind = info.kind,
-                .line = info.line,
-                .meta = collectExpandedMeta(allocator, info.meta, module.file_meta),
-            }) catch {};
-        }
-
-        // Descend into struct fields
-        if (decl == .struct_decl) {
-            for (decl.struct_decl.fields) |field| {
-                if (hasHintViaGroup(field.meta, module.file_meta)) {
-                    matches.append(allocator, .{
-                        .path = path,
-                        .name = field.name,
-                        .kind = .struct_field,
-                        .line = field.span.line,
-                        .meta = collectExpandedMeta(allocator, field.meta, module.file_meta),
-                    }) catch {};
-                }
+    traverseDecls(
+        void,
+        allocator,
+        path,
+        module,
+        matches,
+        {},
+        struct {
+            fn match(_: void, meta: []const ast.MetaAnnotation, file_meta: []const ast.MetaAnnotation) bool {
+                return hasHintViaGroup(meta, file_meta);
             }
-        }
-
-        // Descend into enum variants
-        if (decl == .enum_decl) {
-            for (decl.enum_decl.variants) |variant| {
-                if (hasHintViaGroup(variant.meta, module.file_meta)) {
-                    matches.append(allocator, .{
-                        .path = path,
-                        .name = variant.name,
-                        .kind = .enum_variant,
-                        .line = variant.span.line,
-                        .meta = collectExpandedMeta(allocator, variant.meta, module.file_meta),
-                    }) catch {};
-                }
-            }
-        }
-
-        // Descend into impl/trait methods
-        const methods = switch (decl) {
-            .impl_decl => |impl_d| impl_d.methods,
-            .trait_decl => |t| t.methods,
-            else => continue,
-        };
-        for (methods) |method| {
-            if (hasHintViaGroup(method.meta, module.file_meta)) {
-                matches.append(allocator, .{
-                    .path = path,
-                    .name = method.name,
-                    .kind = .function,
-                    .line = method.span.line,
-                    .meta = collectExpandedMeta(allocator, method.meta, module.file_meta),
-                }) catch {};
-            }
-        }
-    }
+        }.match,
+    );
 }
 
 // ============================================================================

@@ -4596,7 +4596,7 @@ pub const TypeChecker = struct {
 
         // Clear meta state before processing imports (imports may add definitions)
         meta_validation.clearMetaDefinitions(self);
-        self.deprecated_functions.clearRetainingCapacity();
+        meta_validation.clearDeprecatedFunctions(self);
         self.pure_functions.clearRetainingCapacity();
 
         // Process imports leniently — modules not yet registered are skipped
@@ -4753,7 +4753,7 @@ pub const TypeChecker = struct {
 
         // Clear meta state before re-processing imports
         meta_validation.clearMetaDefinitions(self);
-        self.deprecated_functions.clearRetainingCapacity();
+        meta_validation.clearDeprecatedFunctions(self);
         self.pure_functions.clearRetainingCapacity();
 
         // Re-process imports — all exports now available, skip already-imported symbols
@@ -4890,7 +4890,7 @@ pub const TypeChecker = struct {
 
         // Clear meta state before processing imports (imports may add definitions)
         meta_validation.clearMetaDefinitions(self);
-        self.deprecated_functions.clearRetainingCapacity();
+        meta_validation.clearDeprecatedFunctions(self);
         self.pure_functions.clearRetainingCapacity();
 
         // Process imports first (for multi-file compilation)

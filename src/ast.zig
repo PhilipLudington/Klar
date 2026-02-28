@@ -905,6 +905,8 @@ pub const MetaScope = enum {
     enum_scope,
     trait_scope,
     field_scope,
+    variant_scope,
+    test_scope,
 };
 
 pub const MetaCustom = struct {

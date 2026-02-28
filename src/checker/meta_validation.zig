@@ -11,8 +11,11 @@ const std = @import("std");
 const ast = @import("../ast.zig");
 
 /// Kinds of declarations that can carry meta annotations (for validation scope matching).
-/// Note: meta_query.zig has a separate DeclKind for CLI display that includes
-/// file_meta and distinguishes struct_field/enum_variant from struct_decl/enum_decl.
+///
+/// Separate from meta_query.zig's DeclKind which is for CLI display. Key differences:
+/// - This enum: used by validateDeclMeta/validateCustomScope for scope checking
+/// - meta_query.zig: adds file_meta, test_decl, const_decl, and splits struct_field/enum_variant
+/// Both enums intentionally diverge because their use cases differ.
 pub const DeclKind = enum {
     function,
     struct_,
@@ -62,6 +65,19 @@ pub fn collectMetaDefinitions(tc: anytype, file_meta: []const ast.MetaAnnotation
 /// Clear the meta definitions registry. Call before processImports when switching modules.
 pub fn clearMetaDefinitions(tc: anytype) void {
     tc.meta_definitions.clearRetainingCapacity();
+}
+
+/// Clear the deprecated functions map, freeing allocated method keys.
+/// Method keys (format "TypeName::method_name") are heap-allocated and must be freed
+/// before clearing the map to avoid leaking memory in multi-module builds.
+pub fn clearDeprecatedFunctions(tc: anytype) void {
+    var key_iter = tc.deprecated_functions.keyIterator();
+    while (key_iter.next()) |key| {
+        if (std.mem.indexOf(u8, key.*, "::") != null) {
+            tc.allocator.free(key.*);
+        }
+    }
+    tc.deprecated_functions.clearRetainingCapacity();
 }
 
 /// Validate only custom meta annotations at file level.
@@ -230,8 +246,15 @@ pub fn registerPureFunction(tc: anytype, name: []const u8, meta: []const ast.Met
 
 /// Check if a function call violates purity constraints.
 /// Called from checkCallImpl when in_pure_function is true.
-/// TODO: Method calls (e.g., obj.method()) are not yet checked for purity.
-/// A pure function can currently call impure methods without triggering an error.
+///
+/// Current scope: Only function/builtin calls are checked. Local mutation (var bindings,
+/// accumulator patterns) is intentionally allowed — purity here means "no external side effects,"
+/// not "no mutation at all."
+///
+/// Known gaps (not yet checked):
+/// - Method calls (e.g., obj.method()) — impure methods can be called without error
+/// - Assignments to captured variables from outer scope (closures)
+/// - Mutation via inout parameters
 pub fn checkPureCall(tc: anytype, func_name: []const u8, call_span: ast.Span) void {
     // Check if calling a known-impure builtin
     if (isImpureBuiltin(func_name)) {
@@ -416,12 +439,14 @@ fn validateCustomScope(tc: anytype, cust: *ast.MetaCustom, scope: ast.MetaScope,
     };
 
     const matches = switch (scope) {
-        .fn_scope => dk == .function,
+        .fn_scope => dk == .function or dk == .test_,
         .module_scope => false, // module_scope means file-level only
         .struct_scope => dk == .struct_,
         .enum_scope => dk == .enum_,
         .trait_scope => dk == .trait_,
         .field_scope => dk == .field,
+        .variant_scope => dk == .variant,
+        .test_scope => dk == .test_,
     };
 
     if (!matches) {
@@ -439,6 +464,8 @@ fn scopeName(scope: ast.MetaScope) []const u8 {
         .enum_scope => "enum",
         .trait_scope => "trait",
         .field_scope => "field",
+        .variant_scope => "variant",
+        .test_scope => "test",
     };
 }
 

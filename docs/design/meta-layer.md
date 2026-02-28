@@ -131,11 +131,13 @@ key_value_list  = (identifier ":" expression ("," identifier ":" expression)* ",
 
 | Position | Example annotations |
 |----------|-------------------|
-| File-level (top of file) | `meta module { ... }`, `meta guide { ... }` |
+| File-level (top of file) | `meta module { ... }`, `meta guide { ... }`, `meta define ...` |
 | Before functions | `meta intent(...)`, `meta decision(...)`, `meta tag(...)`, `meta pure` |
 | Before structs, enums, traits | `meta tag(...)`, `meta intent(...)`, `meta deprecated(...)` |
-| Before impl blocks | `meta tag(...)`, `meta guide { ... }` |
-| Before fields | `meta tag(...)`, `meta deprecated(...)` |
+| Before impl blocks | `meta tag(...)` |
+| Before fields/variants | `meta tag(...)`, `meta deprecated(...)` |
+
+> **Note:** `meta guide { ... }` is always file-level. Even when written directly before an `impl` block or function, it is stored as file-level metadata. Guides describe file-wide conventions, not individual declarations.
 
 Multiple meta annotations can be stacked (one per line) or chained inline for compact Tier 1 annotations:
 
@@ -419,7 +421,7 @@ Three inheritance models were considered:
 
 ```klar
 meta group "parser_visitor" {
-    meta guide { errors: "Use KlarError enum" },
+    meta guide { errors: "Use KlarError enum" }
     meta tag("ast_traversal")
 }
 ```

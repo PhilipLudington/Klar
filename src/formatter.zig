@@ -370,6 +370,8 @@ pub const Formatter = struct {
                         .enum_scope => "enum",
                         .trait_scope => "trait",
                         .field_scope => "field",
+                        .variant_scope => "variant",
+                        .test_scope => "test",
                     });
                 }
             },

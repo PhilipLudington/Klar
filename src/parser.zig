@@ -160,7 +160,7 @@ fn processEscapes(allocator: Allocator, content: []const u8) ![]const u8 {
             i += 1;
         }
     }
-    return result.items;
+    return result.toOwnedSlice(allocator) catch result.items;
 }
 
 pub const Parser = struct {
@@ -2510,6 +2510,8 @@ pub const Parser = struct {
                     try self.reportError("expected 'fn' after 'async'");
                 } else if (is_unsafe) {
                     try self.reportError("expected 'fn', 'trait', or 'impl' after 'unsafe'");
+                } else if (meta.len > 0) {
+                    try self.reportError("meta annotation must be followed by a declaration (fn, struct, enum, trait, impl, type, const, or test)");
                 } else {
                     try self.reportError("expected declaration");
                 }
@@ -2841,8 +2843,14 @@ pub const Parser = struct {
             } else if (self.current.kind == .identifier and std.mem.eql(u8, scope_text, "field")) {
                 scope = .field_scope;
                 self.advance();
+            } else if (self.current.kind == .identifier and std.mem.eql(u8, scope_text, "variant")) {
+                scope = .variant_scope;
+                self.advance();
+            } else if (self.current.kind == .test_) {
+                scope = .test_scope;
+                self.advance();
             } else {
-                try self.reportError("expected scope (fn, module, struct, enum, trait, field) after 'for'");
+                try self.reportError("expected scope (fn, module, struct, enum, trait, field, variant, test) after 'for'");
                 return ParseError.UnexpectedToken;
             }
         }
@@ -4006,8 +4014,12 @@ pub const Parser = struct {
 
     /// Check if the current `meta` token begins a file-level annotation.
     /// File-level: `meta module { ... }`, `meta group "..." { ... }`, `meta guide { ... }`, `meta define name(...)`.
-    /// Note: `meta guide` is always parsed as file-level. When it appears before an `impl` block,
-    /// it is stored in file_meta (not attached to the impl). The checker allows guide at file level.
+    ///
+    /// Note: `meta guide` is always parsed as file-level and stored in file_meta, even when it
+    /// appears directly before an `impl` block or function. This is by design — guides describe
+    /// file-wide or project-wide conventions, not individual declarations. The checker rejects
+    /// guide on non-impl declarations (when attached via stacking with other annotations).
+    /// Standalone `meta guide` before a function silently goes to file_meta without error.
     fn isFileLevelMeta(self: *Parser) bool {
         const next = self.peekNext();
         if (next.kind == .module) return true;

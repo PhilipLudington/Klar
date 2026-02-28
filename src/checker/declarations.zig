@@ -741,6 +741,8 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
         // Need to cast to mutable pointer for registration
         const method_decl = @constCast(method_decl_const);
 
+        // Validate meta annotations on method declarations
+        meta_validation.validateDeclMeta(tc, method_decl.meta, .function);
         // Register deprecated methods with qualified key "TypeName::method"
         meta_validation.registerDeprecatedMethod(tc, struct_name, method_decl.name, method_decl.meta);
         // Register pure methods
