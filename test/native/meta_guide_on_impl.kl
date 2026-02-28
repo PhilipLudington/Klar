@@ -1,0 +1,26 @@
+// Test: meta guide on impl block is valid (not just file level)
+struct Widget {
+    value: i32
+}
+
+meta guide {
+    pattern: "builder",
+    prefer: "fluent API"
+}
+impl Widget {
+    fn new(v: i32) -> Widget {
+        return Widget { value: v }
+    }
+
+    fn get_value(self: Widget) -> i32 {
+        return self.value
+    }
+}
+
+fn main() -> i32 {
+    let w: Widget = Widget.new(42)
+    if w.get_value() == 42 {
+        println("ok")
+    }
+    return 0
+}

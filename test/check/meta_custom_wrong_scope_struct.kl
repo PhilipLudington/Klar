@@ -1,0 +1,12 @@
+// Expected: check-error can only appear on struct declarations
+
+meta define model(layer: string) for struct
+
+meta model("domain")
+fn foo() -> i32 {
+    return 0
+}
+
+fn main() -> i32 {
+    return 0
+}

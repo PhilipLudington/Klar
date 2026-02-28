@@ -1,0 +1,11 @@
+// Expected: check-error expected path for parameter
+meta define related_to(target: path)
+
+meta related_to("some_string")
+fn foo() -> i32 {
+    return 0
+}
+
+fn main() -> i32 {
+    return 0
+}

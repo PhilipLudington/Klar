@@ -1,0 +1,16 @@
+// Test: custom annotation stacked with built-in meta annotations
+meta define priority(level: "high" | "medium" | "low")
+
+meta pure
+meta priority("high")
+meta intent("core computation")
+fn compute(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn main() -> i32 {
+    if compute(20, 22) == 42 {
+        return 0
+    }
+    return 1
+}

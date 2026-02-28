@@ -1,0 +1,13 @@
+meta related(checker::resolve_type, "resolves type for emit")
+fn emit_type() -> i32 {
+    return 1
+}
+
+meta related(auth::login, auth::validate)
+fn auth_handler() -> i32 {
+    return 2
+}
+
+fn main() -> i32 {
+    return 0
+}

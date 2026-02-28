@@ -133,6 +133,12 @@ Reserved keywords in Klar that cannot be used as identifiers.
 | `async` | Asynchronous function modifier | `async fn fetch() -> Future#[i32] { ... }` |
 | `await` | Await async result inside async functions | `let x: i32 = await task` |
 
+## Meta Layer Keywords
+
+| Keyword | Description | Example |
+|---------|-------------|---------|
+| `meta` | Code metadata and annotations ([design](../design/meta-layer.md)) | `meta intent("Parse expressions")` |
+
 ## Reserved for Future Use
 
 The following keywords are reserved and may be used in future versions:
@@ -144,7 +150,6 @@ The following keywords are reserved and may be used in future versions:
 | `where` | Additional trait bounds |
 | `dyn` | Dynamic dispatch |
 | `move` | Move semantics |
-| `meta` | Code metadata and annotations ([design](../design/meta-layer.md)) |
 | `mut` | Mutability (alternative to `var`) |
 | `static` | Static variables |
 | `union` | Union types |

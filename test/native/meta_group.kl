@@ -1,0 +1,15 @@
+// Test: meta group definition (file-level) and group join (on declaration)
+meta group "auth" {
+    meta tag("security")
+    meta hint("requires auth token")
+}
+meta group "empty" {
+}
+meta in("auth")
+fn login() -> i32 {
+    return 1
+}
+fn main() -> i32 {
+    println("ok")
+    return 0
+}

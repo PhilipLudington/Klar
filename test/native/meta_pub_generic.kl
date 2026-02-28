@@ -1,0 +1,30 @@
+// Test: meta annotations on pub and generic declarations
+
+meta tag("utility")
+pub fn identity#[T](x: T) -> T {
+    return x
+}
+
+meta pure
+pub fn max#[T: Ordered](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+meta tag("container")
+pub struct Pair#[A, B] {
+    first: A,
+    second: B,
+}
+
+fn main() -> i32 {
+    let x: i32 = identity#[i32](42)
+    let m: i32 = max#[i32](10, 20)
+    let p: Pair#[i32, string] = Pair#[i32, string] { first: 1, second: "hello" }
+    if x == 42 and m == 20 and p.first == 1 {
+        println("ok")
+    }
+    return 0
+}

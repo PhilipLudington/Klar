@@ -1,0 +1,8 @@
+// Expected: check-error duplicate meta define
+
+meta define priority(level: "high" | "low")
+meta define priority(level: string)
+
+fn main() -> i32 {
+    return 0
+}

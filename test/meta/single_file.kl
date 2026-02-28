@@ -1,0 +1,28 @@
+// Test fixture: single file with diverse annotations
+meta tag("data-model")
+meta intent("Represents a 2D point")
+struct Point {
+    meta hint("X coordinate in pixels")
+    x: i32,
+    y: i32,
+}
+
+meta deprecated("Use process_v2 instead")
+fn old_process(x: i32) -> i32 {
+    return x
+}
+
+meta tag("core")
+meta hint("Main processing function")
+fn process_v2(x: i32) -> i32 {
+    return x + 1
+}
+
+meta related(process_v2, "Tests for process_v2")
+test process_works {
+    assert(process_v2(1) == 2)
+}
+
+fn main() -> i32 {
+    return 0
+}

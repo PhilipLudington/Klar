@@ -1,0 +1,16 @@
+// Expected: check-error cannot call non-pure method
+// Pure function calling non-pure impl method should be an error
+
+struct Logger { prefix: string }
+
+impl Logger {
+    fn log(self: Logger) -> void {
+        println(self.prefix)
+    }
+}
+
+meta pure
+fn process(logger: Logger) -> i32 {
+    logger.log()
+    return 42
+}

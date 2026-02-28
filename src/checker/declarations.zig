@@ -13,6 +13,7 @@ const traits_mod = @import("traits.zig");
 const TraitInfo = traits_mod.TraitInfo;
 const AssociatedTypeBinding = traits_mod.AssociatedTypeBinding;
 const StructMethod = traits_mod.StructMethod;
+const meta_validation = @import("meta_validation.zig");
 
 // ============================================================================
 // Declaration Checking
@@ -36,6 +37,8 @@ pub fn checkDecl(tc: anytype, decl: ast.Decl) void {
 }
 
 fn checkTestDecl(tc: anytype, test_decl: *ast.TestDecl) void {
+    meta_validation.validateDeclMeta(tc, test_decl.meta, .test_);
+
     const referenced = tc.current_scope.lookup(test_decl.name) orelse {
         tc.addError(.undefined_function, test_decl.span, "test '{s}' references missing function '{s}'", .{ test_decl.name, test_decl.name });
         return;
@@ -50,6 +53,8 @@ fn checkTestDecl(tc: anytype, test_decl: *ast.TestDecl) void {
 }
 
 fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
+    meta_validation.validateDeclMeta(tc, func.meta, .function);
+
     // Push type parameters into scope if this is a generic function
     const has_type_params = func.type_params.len > 0;
     if (has_type_params) {
@@ -180,6 +185,16 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
         }
         defer tc.in_unsafe_context = was_unsafe;
 
+        // For pure functions, set the purity flag so calls are checked
+        const was_pure = tc.in_pure_function;
+        const was_pure_span = tc.pure_function_span;
+        if (meta_validation.hasPureAnnotation(func.meta)) |pure_span| {
+            tc.in_pure_function = true;
+            tc.pure_function_span = pure_span;
+        }
+        defer tc.in_pure_function = was_pure;
+        defer tc.pure_function_span = was_pure_span;
+
         const was_async_context = tc.current_async_context;
         tc.current_async_context = func.is_async;
         defer tc.current_async_context = was_async_context;
@@ -189,6 +204,8 @@ fn checkFunction(tc: anytype, func: *ast.FunctionDecl) void {
 }
 
 fn checkStruct(tc: anytype, struct_decl: *ast.StructDecl) void {
+    meta_validation.validateDeclMeta(tc, struct_decl.meta, .struct_);
+
     // Push type parameters into scope if this is a generic struct
     const has_type_params = struct_decl.type_params.len > 0;
     var struct_type_params: []const types.TypeVar = &.{};
@@ -201,6 +218,8 @@ fn checkStruct(tc: anytype, struct_decl: *ast.StructDecl) void {
     defer fields.deinit(tc.allocator);
 
     for (struct_decl.fields) |field| {
+        meta_validation.validateDeclMeta(tc, field.meta, .field);
+
         const field_type = tc.resolveTypeExpr(field.type_) catch tc.type_builder.unknownType();
 
         // Validate FFI-compatible types for extern structs
@@ -320,6 +339,8 @@ fn checkExternFunction(tc: anytype, func: *ast.FunctionDecl) void {
 }
 
 fn checkEnum(tc: anytype, enum_decl: *ast.EnumDecl) void {
+    meta_validation.validateDeclMeta(tc, enum_decl.meta, .enum_);
+
     // Push type parameters into scope if this is a generic enum
     const has_type_params = enum_decl.type_params.len > 0;
     var enum_type_params: []const types.TypeVar = &.{};
@@ -373,6 +394,8 @@ fn checkEnum(tc: anytype, enum_decl: *ast.EnumDecl) void {
     defer variants.deinit(tc.allocator);
 
     for (enum_decl.variants) |variant| {
+        meta_validation.validateDeclMeta(tc, variant.meta, .variant);
+
         // For extern enums, validate variant constraints
         if (enum_decl.is_extern) {
             // Payload should already be forbidden by parser, but double-check
@@ -431,6 +454,8 @@ fn checkEnum(tc: anytype, enum_decl: *ast.EnumDecl) void {
 }
 
 fn checkTrait(tc: anytype, trait_decl: *ast.TraitDecl) void {
+    meta_validation.validateDeclMeta(tc, trait_decl.meta, .trait_);
+
     // Check for duplicate trait definition
     if (tc.trait_registry.get(trait_decl.name) != null) {
         tc.addError(.duplicate_definition, trait_decl.span, "duplicate trait definition '{s}'", .{trait_decl.name});
@@ -579,6 +604,8 @@ fn checkTrait(tc: anytype, trait_decl: *ast.TraitDecl) void {
 }
 
 fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
+    meta_validation.validateDeclMeta(tc, impl_decl.meta, .impl_);
+
     // Push type parameters into scope if this is a generic impl
     const has_type_params = impl_decl.type_params.len > 0;
     var impl_type_params: []const types.TypeVar = &.{};
@@ -714,6 +741,13 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
         // Need to cast to mutable pointer for registration
         const method_decl = @constCast(method_decl_const);
 
+        // Validate meta annotations on method declarations
+        meta_validation.validateDeclMeta(tc, method_decl.meta, .function);
+        // Register deprecated methods with qualified key "TypeName::method"
+        meta_validation.registerDeprecatedMethod(tc, struct_name, method_decl.name, method_decl.meta);
+        // Register pure methods with qualified key "TypeName::method"
+        meta_validation.registerPureMethod(tc, struct_name, method_decl.name, method_decl.meta);
+
         if (method_decl.is_async) {
             tc.addError(.invalid_operation, method_decl.span, "async methods are not yet supported", .{});
             continue;
@@ -819,6 +853,16 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
             tc.current_return_type = return_type;
             defer tc.current_return_type = null;
 
+            // For pure methods, set the purity flag so calls are checked
+            const was_pure = tc.in_pure_function;
+            const was_pure_span = tc.pure_function_span;
+            if (meta_validation.hasPureAnnotation(method_decl.meta)) |pure_span| {
+                tc.in_pure_function = true;
+                tc.pure_function_span = pure_span;
+            }
+            defer tc.in_pure_function = was_pure;
+            defer tc.pure_function_span = was_pure_span;
+
             _ = tc.checkBlock(body);
         }
     }
@@ -886,6 +930,8 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
 }
 
 fn checkTypeAlias(tc: anytype, alias: *ast.TypeAlias) void {
+    meta_validation.validateDeclMeta(tc, alias.meta, .type_alias);
+
     const target_type = tc.resolveTypeExpr(alias.target) catch return;
 
     tc.current_scope.define(.{
@@ -898,6 +944,8 @@ fn checkTypeAlias(tc: anytype, alias: *ast.TypeAlias) void {
 }
 
 fn checkConst(tc: anytype, const_decl: *ast.ConstDecl) void {
+    meta_validation.validateDeclMeta(tc, const_decl.meta, .const_);
+
     const value_type = tc.checkExpr(const_decl.value);
 
     const declared_type = if (const_decl.type_) |t|

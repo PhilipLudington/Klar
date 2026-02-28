@@ -1,0 +1,17 @@
+meta related(validate_input, "helper for process")
+fn process(x: i32) -> i32 {
+    return validate_input(x) + 1
+}
+
+meta related(process, login)
+fn validate_input(x: i32) -> i32 {
+    return x
+}
+
+fn login() -> i32 {
+    return 1
+}
+
+fn main() -> i32 {
+    return 0
+}

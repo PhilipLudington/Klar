@@ -1,0 +1,17 @@
+struct User {
+    meta tag("primary-key")
+    id: i32
+    meta hint("display name")
+    name: string
+}
+
+enum Status {
+    meta tag("initial-state")
+    Pending,
+    meta tag("terminal-state")
+    Done,
+}
+
+fn main() -> i32 {
+    return 0
+}

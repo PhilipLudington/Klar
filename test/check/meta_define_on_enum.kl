@@ -1,0 +1,10 @@
+// Expected: check-error meta define can only appear at file level
+enum Color {
+    meta define status(level: string) for fn
+    Red,
+    Green,
+    Blue
+}
+fn main() -> i32 {
+    return 0
+}

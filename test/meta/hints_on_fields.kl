@@ -1,0 +1,21 @@
+// Test fixture: hints on struct fields and enum variants
+
+struct Config {
+    meta hint("Server hostname or IP address")
+    host: string,
+    meta hint("Port number (1-65535)")
+    port: i32,
+    name: string,
+}
+
+enum LogLevel {
+    meta hint("Most verbose logging level")
+    Debug,
+    Info,
+    meta hint("Only critical failures")
+    Error,
+}
+
+fn main() -> i32 {
+    return 0
+}

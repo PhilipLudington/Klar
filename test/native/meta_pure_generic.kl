@@ -1,0 +1,32 @@
+// Test: meta pure on generic functions (monomorphization must preserve purity)
+
+meta pure
+fn identity#[T](x: T) -> T {
+    return x
+}
+
+meta pure
+fn add_generic#[T: Ordered](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+meta pure
+fn apply#[T](f: fn(T) -> T, x: T) -> T {
+    return f(x)
+}
+
+fn main() -> i32 {
+    let a: i32 = identity#[i32](42)
+    let b: f64 = identity#[f64](3.14)
+    let c: i32 = add_generic#[i32](10, 20)
+    let d: f64 = add_generic#[f64](1.5, 2.5)
+    let inc: fn(i32) -> i32 = |x: i32| -> i32 { return x + 1 }
+    let e: i32 = apply#[i32](inc, 5)
+    if a == 42 and b > 3.0 and c == 20 and d > 2.0 and e == 6 {
+        println("ok")
+    }
+    return 0
+}

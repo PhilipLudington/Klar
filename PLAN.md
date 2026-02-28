@@ -15,6 +15,85 @@ To avoid merge conflicts:
 - **Phases 1-4** are pure Klar libraries in `stdlib/` — zero compiler changes, zero conflict risk
 - **Phase 5** integration test is a standalone `.kl` program — no compiler changes
 
+**Phase 5A–5D + Async/Await + WebAssembly:** Milestones 1-6 and 8 complete. LLM reference, mandatory return types, inline tests, structured test output, LSP server, async/await, and WebAssembly target all working.
+
+> **Phase 5 archive:** [docs/history/phase5-milestones.md](docs/history/phase5-milestones.md)
+
+---
+
+## Completed Milestones Summary
+
+| # | Milestone | Status | Source |
+|---|-----------|--------|--------|
+| 1 | LLM Reference File (MEMORY.md) | Complete | Nanolang |
+| 2 | Mandatory Function Return Types | Complete | MoonBit |
+| 3 | Inline Test Blocks (`test`) | Complete | Nanolang |
+| 4 | Structured Test Output (`--json`) | Complete | DSPy |
+| 5 | LSP and Incremental Type Checking | Complete | MoonBit |
+| 6 | Async/Await | Complete | — |
+| 8 | WebAssembly Target | Complete | — |
+
+---
+
+## Milestone 7: Windows Support
+
+**Objective:** Provide first-class Windows developer and runtime support across build, test, and tooling workflows.
+
+**Status:** In Progress — compiler cross-platform changes complete (tasks 7.1–7.11), Windows testing pending
+
+**Effort:** Medium-High | **Impact:** High
+
+### Rationale
+
+Windows before WebAssembly: lower effort builds momentum, fixes platform assumptions (paths, line endings, stdio) that would otherwise complicate the WebAssembly target, and expands the contributor base before tackling the harder milestone.
+
+### Remaining Tasks
+
+- [ ] **7.12** Windows on-device testing (Parallels)
+  - Verify `zig build`, `klar run`, `klar build`, `klar test`, `klar lsp`
+- [ ] **7.13** CI: Add Windows matrix jobs for `./run-tests.sh`
+- [ ] **7.14** Documentation: Windows setup/install guide
+
+### Known Limitations
+
+- Test scripts (`run-tests.sh`, etc.) require WSL or Git Bash on Windows
+- `klar run` on Windows shows temp binary path as `args[0]` instead of source path
+- Cross-compilation of filesystem operations to Windows from non-Windows is not supported (build on target platform)
+
+### Success Criteria
+
+- [x] Repository builds on macOS with zero regressions (667/667 tests pass)
+- [ ] Repository builds and full test suite pass on supported Windows environments
+- [ ] CLI and LSP workflows behave consistently with macOS/Linux
+- [ ] Windows-specific path/stdio regressions are covered by tests
+- [ ] Contributor docs include complete Windows development setup
+
+---
+
+## Milestone 8: WebAssembly Target (Complete)
+
+WebAssembly compilation target is fully working for wasm32 freestanding. `klar build --target wasm` emits valid `.wasm` modules; 6 smoke tests cover hello, arithmetic, structs, closures, generics, and control flow. Filesystem/readline builtins are gated with runtime traps. See [archive](docs/history/phase5-milestones.md#milestone-8-webassembly-target) for full detail.
+
+**Remaining:** CI wasm-target regression coverage (deferred to Milestone 7.13 CI work).
+
+---
+
+## Milestone 9: Self-Hosting
+
+**Objective:** Implement the Klar compiler front-end (lexer through type checker) in Klar itself, enabling the language to compile its own compiler.
+
+**Status:** Paused — 9.1-9.8 complete (lexer, AST, parser at full parity: 259/259 files, 789/789 tests; type system definitions). 9.9+ paused pending Milestone M (Meta Layer).
+
+**Effort:** Very High | **Impact:** Very High | **Dependencies:** Milestones 6, 7, 8
+
+### Scope Boundary
+
+Self-hosting means **frontend only** (lexer through type checker). The 33K-line LLVM codegen stays in Zig. The self-hosted frontend serializes AST/typed-AST for the Zig backend to consume. This is the standard bootstrap strategy (Go, Rust, etc.).
+
+### Estimated Total: ~11,000–16,000 lines of Klar
+
+### Dependency Chain
+
 ### Library Location: `stdlib/`
 
 All pure Klar libraries live in a new top-level `stdlib/` directory:
@@ -76,6 +155,216 @@ Before Phase 1, these must be true:
 - [x] Can stat files for size and modification time
 - [x] Can spawn a subprocess and capture its output
 - [x] Can get the current Unix timestamp
+
+---
+
+## Milestone M: Meta Layer
+
+**Objective:** Implement the `meta` keyword system for embedding intent, architecture, and design decisions in Klar source code — compiler-validated, CLI-queryable, zero runtime cost.
+
+**Status:** Complete — M.1–M.8 all done (token, AST, parsing, backend passthrough, formatter, validation, pure verification, custom annotations, CLI query command)
+
+**Effort:** High | **Impact:** Very High | **Design Spec:** [docs/design/meta-layer.md](docs/design/meta-layer.md)
+
+### Rationale
+
+AI agents waste tokens and make mistakes because context lives outside the code (CLAUDE.md, comments, external docs). The meta layer moves architectural intent *into* the language where the compiler validates it and tooling queries it. See the design spec for full motivation and philosophy alignment.
+
+### Dependency Chain
+
+```
+M.1 → M.2 → M.3 → M.4
+                 → M.5 → M.6
+                      → M.7
+                 → M.8
+```
+
+### Deferred (not in Milestone M)
+
+- LSP integration (hover tooltips, completion) — post-M stretch goal
+- Selfhost parser/AST updates — handled when 9.9+ resumes
+
+---
+
+### Phase MA: Foundation
+
+#### M.1 — Token, AST, and Declaration Fields ✅
+
+**Effort:** Low
+
+Add the `meta` keyword token, AST node types for meta annotations, and meta fields on declaration structs.
+
+- [x] **M.1.1** Add `meta` keyword token to `src/token.zig`
+- [x] **M.1.2** Define `MetaAnnotation` union type in `src/ast.zig` (intent, decision, tag, hint, pure, deprecated, module, guide, related, group_def, group_join, define, custom)
+- [x] **M.1.3** Add `meta: []const MetaAnnotation` field to function, struct, enum, trait, impl, and field declaration AST nodes
+- [x] **M.1.4** Add `file_meta: []const MetaAnnotation` to the top-level program/module AST node
+- [x] **M.1.5** Unit tests for MetaAnnotation construction and field access
+
+**Success Criteria:**
+- [x] `meta` is a recognized keyword token
+- [x] MetaAnnotation can represent all 13 annotation kinds from the design spec
+- [x] All declaration AST nodes carry meta annotation lists
+- [x] Compiler builds with zero regressions
+
+---
+
+### Phase MB: Parsing
+
+#### M.2 — Simple Annotation Parsing ✅
+
+**Effort:** Medium
+
+Parse the string-based annotations: `meta intent(...)`, `meta decision(...)`, `meta tag(...)`, `meta hint(...)`, `meta deprecated(...)`, `meta pure`.
+
+- [x] **M.2.1** Add `parseMetaAnnotation()` to `src/parser.zig` — dispatches on the keyword after `meta`
+- [x] **M.2.2** Parse `meta intent("...")` — string literal argument
+- [x] **M.2.3** Parse `meta decision("...")` — string literal argument
+- [x] **M.2.4** Parse `meta tag("...")` — string literal argument
+- [x] **M.2.5** Parse `meta hint("...")` — string literal argument
+- [x] **M.2.6** Parse `meta deprecated("...")` — string literal argument
+- [x] **M.2.7** Parse `meta pure` — no arguments
+- [x] **M.2.8** Parse stacked annotations (multiple `meta` lines before a declaration)
+- [x] **M.2.9** Attach parsed meta annotations to the following declaration AST node
+- [x] **M.2.10** Native test files for each simple annotation kind
+- [x] **M.2.11** Verify `klar dump-ast` includes meta annotations in JSON output
+
+**Success Criteria:**
+- [x] All six simple annotation kinds parse correctly
+- [x] Multiple annotations stack on a single declaration
+- [x] `dump-ast` round-trips meta annotations
+- [x] All existing tests pass (zero regressions)
+
+#### M.3 — Block and Group Parsing ✅
+
+**Effort:** Medium
+
+Parse block-form annotations and group definitions/joins.
+
+- [x] **M.3.1** Parse `meta module { key: value, ... }` — key-value block with string/list values
+- [x] **M.3.2** Parse `meta guide { key: value, ... }` — same key-value block form
+- [x] **M.3.3** Parse `meta related(path, path, "description")` — path list with optional trailing string
+- [x] **M.3.4** Parse `meta group "name" { meta_annotation, ... }` — group definition with nested annotations
+- [x] **M.3.5** Parse `meta in("name")` — group join
+- [x] **M.3.6** Handle `in` keyword disambiguation (loop context vs meta context)
+- [x] **M.3.7** Native test files for block annotations, related paths, and group def/join
+
+**Success Criteria:**
+- [x] Block annotations parse with arbitrary key-value pairs
+- [x] `meta related(...)` accepts paths and validates trailing string position
+- [x] Group definitions contain nested meta annotations
+- [x] `meta in(...)` correctly joins groups
+- [x] `in` keyword works correctly in both loop and meta contexts
+
+---
+
+### Phase MC: Backend Passthrough and Tooling
+
+#### M.4 — Backend Passthrough and Formatter ✅
+
+**Effort:** Low-Medium
+
+Verify all three backends (interpreter, bytecode compiler, native codegen) skip meta annotations. Extend `dump-ast` and the formatter.
+
+- [x] **M.4.1** Verify interpreter skips meta annotations (no codegen for meta nodes)
+- [x] **M.4.2** Verify bytecode compiler skips meta annotations
+- [x] **M.4.3** Verify native codegen (`src/codegen/emit.zig`) skips meta annotations — zero runtime cost
+- [x] **M.4.4** Extend `dump-ast` JSON output to include all meta annotation types
+- [x] **M.4.5** Extend formatter (`src/formatter.zig`) to preserve meta annotations with correct indentation
+- [x] **M.4.6** Test: format → parse → format round-trip preserves meta annotations
+
+**Success Criteria:**
+- [x] Programs with meta annotations produce identical runtime output to programs without
+- [x] `dump-ast` includes full meta annotation data in JSON
+- [x] Formatter preserves meta annotations correctly
+- [x] All existing tests pass (zero regressions)
+
+---
+
+### Phase MD: Checker Validation
+
+#### M.5 — Basic Validation ✅
+
+**Effort:** Medium-High
+
+Validate meta annotations during type checking.
+
+- [x] **M.5.1** Validate `meta related(...)` — all path targets resolve to existing declarations
+- [x] **M.5.2** Validate `meta in("group")` — referenced group must be defined in scope
+- [x] **M.5.3** Validate scope rules — file-level annotations (`meta module`, `meta guide`) only at top of file
+- [x] **M.5.4** Emit deprecation warnings when calling functions marked `meta deprecated(...)`
+- [x] **M.5.5** Validate `meta module` and `meta guide` field types (strings, string lists)
+- [x] **M.5.6** Error messages with source spans for all meta validation failures
+- [x] **M.5.7** Native test files: positive cases (valid annotations) and negative cases (`test/check/` error tests)
+
+**Success Criteria:**
+- [x] Invalid `meta related` targets produce clear error messages
+- [x] Undefined group references are compile errors
+- [x] Deprecation warnings fire with migration guidance text
+- [x] All validation errors include file:line:column spans
+
+#### M.6 — Pure Verification ✅
+
+**Effort:** High
+
+Verify that `meta pure` functions have no side effects. Pragmatic purity model: local `var` and assignment allowed (referential transparency, not strict immutability).
+
+- [x] **M.6.1** Define "pure" criteria: no I/O, no impure function calls (local mutation allowed)
+- [x] **M.6.2** Implement purity analysis in checker (`in_pure_function` flag, `pure_functions` registry)
+- [x] **M.6.3** Error when `meta pure` function calls impure builtins (print, println, fs_*, etc.)
+- [x] **M.6.4** Error when `meta pure` function calls non-pure user functions
+- [x] **M.6.5** Allow `meta pure` functions to call other `meta pure` functions (transitive purity)
+- [x] **M.6.6** Test files: `meta_pure_pass.kl` (positive), `meta_pure_calls_*.kl` (negative check tests)
+
+**Success Criteria:**
+- [x] Compiler rejects `meta pure` functions that perform side effects
+- [x] Compiler accepts `meta pure` functions that are genuinely pure
+- [x] Transitive purity checking works (pure calling pure is OK, pure calling impure is error)
+
+#### M.7 — Custom Annotations ✅
+
+**Effort:** Medium
+
+Implement `meta define`, string union constraints, scope restrictions, and cross-module import.
+
+- [x] **M.7.1** Parse `meta define name(params)` declarations
+- [x] **M.7.2** Parse string union type constraints (`"high" | "medium" | "low"`)
+- [x] **M.7.3** Parse scope restrictions (`for fn`, `for module`, etc.)
+- [x] **M.7.4** Validate custom annotation usage matches its `meta define` shape
+- [x] **M.7.5** Validate string union constraint violations (typo → compiler error)
+- [x] **M.7.6** Validate scope restriction violations (wrong position → compiler error)
+- [x] **M.7.7** Support importing `meta define` declarations from other modules
+- [x] **M.7.8** Native test files for custom definitions, constraints, scope restrictions, and imports
+
+**Success Criteria:**
+- [x] `meta define` creates project-specific annotation vocabulary
+- [x] String union constraints catch typos at compile time
+- [x] Scope restrictions prevent annotations in wrong positions
+- [x] Custom definitions can be imported and used across modules
+
+---
+
+### Phase ME: CLI
+
+#### M.8 — `klar meta` Command ✅
+
+**Effort:** Medium
+
+Add the `klar meta` CLI command for querying meta annotations across a codebase.
+
+- [x] **M.8.1** Add `meta` subcommand to `src/main.zig` command routing
+- [x] **M.8.2** Implement `--tag "name"` — find all declarations with a specific tag
+- [x] **M.8.3** Implement `--module` — list all module descriptions
+- [x] **M.8.4** Implement `--related fn_name` — follow cross-references for a function
+- [x] **M.8.5** Implement `--deprecated` — list all deprecated items with migration guidance
+- [x] **M.8.6** Implement `--hints` — list all AI hints
+- [x] **M.8.7** Implement `--json` output mode for all commands
+- [x] **M.8.8** App-level test files for CLI output validation (62 tests in `scripts/run-meta-tests.sh`)
+
+**Success Criteria:**
+- [x] All six query modes produce correct, human-readable output
+- [x] `--json` mode produces structured output matching the design spec format
+- [x] CLI works across multi-file projects (processes all `.kl` files in directory)
+- [x] Output is useful for both human developers and AI agents
 
 ---
 

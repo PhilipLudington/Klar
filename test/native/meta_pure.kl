@@ -1,0 +1,13 @@
+// Test: meta pure annotation on a pure function
+meta pure
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn main() -> i32 {
+    let result: i32 = add(3, 4)
+    if result == 7 {
+        println("ok")
+    }
+    return 0
+}

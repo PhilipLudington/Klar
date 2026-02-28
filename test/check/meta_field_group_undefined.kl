@@ -1,0 +1,10 @@
+// Expected: check-error group 'nonexistent' is not defined
+
+struct Config {
+    meta in("nonexistent")
+    name: string,
+}
+
+fn main() -> i32 {
+    return 0
+}

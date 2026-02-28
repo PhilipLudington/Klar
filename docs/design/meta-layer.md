@@ -1,6 +1,6 @@
 # Meta Layer: Self-Describing Code
 
-> **Status:** Design spec (not yet implemented)
+> **Status:** Implemented (Milestones M.1–M.8 complete)
 > Klar's meta layer embeds intent, architecture, and conventions directly in the language — where the compiler can validate them and tooling can query them.
 
 ---
@@ -118,9 +118,10 @@ group_join      = "in" "(" string_literal ")"
 custom_meta     = identifier "(" expression_list ")"
 
 typed_params    = typed_param ("," typed_param)*
-typed_param     = identifier ":" (type_name | string_union)
+typed_param     = identifier ":" (param_type | string_union)
+param_type      = "string" | "path"
 string_union    = string_literal ("|" string_literal)*
-scope_target    = "fn" | "module" | "struct" | "enum" | "trait" | "field"
+scope_target    = "fn" | "module" | "struct" | "enum" | "trait" | "field" | "variant" | "test"
 expression_list = expression ("," expression)*
 path            = identifier ("::" identifier)*
 key_value_list  = (identifier ":" expression ("," identifier ":" expression)* ","?)?
@@ -130,11 +131,13 @@ key_value_list  = (identifier ":" expression ("," identifier ":" expression)* ",
 
 | Position | Example annotations |
 |----------|-------------------|
-| File-level (top of file) | `meta module { ... }`, `meta guide { ... }` |
+| File-level (top of file) | `meta module { ... }`, `meta guide { ... }`, `meta define ...` |
 | Before functions | `meta intent(...)`, `meta decision(...)`, `meta tag(...)`, `meta pure` |
 | Before structs, enums, traits | `meta tag(...)`, `meta intent(...)`, `meta deprecated(...)` |
-| Before impl blocks | `meta tag(...)`, `meta guide { ... }` |
-| Before fields | `meta tag(...)`, `meta deprecated(...)` |
+| Before impl blocks | `meta tag(...)` |
+| Before fields/variants | `meta tag(...)`, `meta deprecated(...)` |
+
+> **Note:** `meta guide { ... }` is always file-level. Even when written directly before an `impl` block or function, it is stored as file-level metadata. Guides describe file-wide conventions, not individual declarations.
 
 Multiple meta annotations can be stacked (one per line) or chained inline for compact Tier 1 annotations:
 
@@ -418,7 +421,7 @@ Three inheritance models were considered:
 
 ```klar
 meta group "parser_visitor" {
-    meta guide { errors: "Use KlarError enum" },
+    meta guide { errors: "Use KlarError enum" }
     meta tag("ast_traversal")
 }
 ```
@@ -758,7 +761,7 @@ The two are complementary and non-overlapping.
 
 ### Parsing
 
-The `meta` keyword introduces a new statement/annotation form in the parser. `meta` is reserved for future use (see `docs/appendix/keywords.md`) but not yet implemented in the lexer — it must be added as a recognized keyword when this feature is built.
+The `meta` keyword introduces a new statement/annotation form in the parser. It is a recognized keyword in the lexer (`src/lexer.zig`) and parser (`src/parser.zig`). Meta annotations are parsed before declarations and stored in the AST.
 
 ### Type checking
 

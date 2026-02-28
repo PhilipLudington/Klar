@@ -1,0 +1,4 @@
+// Expected: check-error meta annotations are not supported on import declarations
+
+meta tag("should-fail")
+import std.io

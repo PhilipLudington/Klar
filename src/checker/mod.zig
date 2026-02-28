@@ -18,6 +18,7 @@
 //! | type_resolution.zig | Type substitution, unification, AST resolution |
 //! | trait_checking.zig| Trait implementation and bounds checking         |
 //! | method_calls.zig  | Builtin method call type checking                |
+//! | meta_validation.zig | Meta annotation validation                     |
 //! | generics.zig      | Monomorphization type definitions                |
 //! | traits.zig        | Trait type definitions                           |
 //! | comptime.zig      | Compile-time value type definitions              |

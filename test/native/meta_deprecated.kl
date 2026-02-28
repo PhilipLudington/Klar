@@ -1,0 +1,17 @@
+// Test: meta deprecated annotation on a function
+meta deprecated("use new_helper() instead")
+fn old_helper() -> i32 {
+    return 10
+}
+
+fn new_helper() -> i32 {
+    return 20
+}
+
+fn main() -> i32 {
+    let val: i32 = new_helper()
+    if val == 20 {
+        println("ok")
+    }
+    return 0
+}

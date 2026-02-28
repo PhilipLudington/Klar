@@ -255,6 +255,200 @@ pub const Formatter = struct {
         return self.source[s.start..s.end];
     }
 
+    // --- Meta Annotation Formatting ---
+
+    fn formatMetaAnnotations(self: *Formatter, meta: []const ast.MetaAnnotation) Error!void {
+        for (meta) |annotation| {
+            try self.writeIndent();
+            try self.formatOneMetaAnnotation(annotation);
+            try self.newline();
+        }
+    }
+
+    fn formatOneMetaAnnotation(self: *Formatter, ann: ast.MetaAnnotation) Error!void {
+        switch (ann) {
+            .intent => |s| {
+                try self.write("meta intent(");
+                try self.writeMetaString(s.value);
+                try self.writeByte(')');
+            },
+            .decision => |s| {
+                try self.write("meta decision(");
+                try self.writeMetaString(s.value);
+                try self.writeByte(')');
+            },
+            .tag => |s| {
+                try self.write("meta tag(");
+                try self.writeMetaString(s.value);
+                try self.writeByte(')');
+            },
+            .hint => |s| {
+                try self.write("meta hint(");
+                try self.writeMetaString(s.value);
+                try self.writeByte(')');
+            },
+            .deprecated => |s| {
+                try self.write("meta deprecated(");
+                try self.writeMetaString(s.value);
+                try self.writeByte(')');
+            },
+            .pure => {
+                try self.write("meta pure");
+            },
+            .module_meta => |block| {
+                try self.write("meta module {");
+                try self.newline();
+                try self.formatMetaBlockEntries(block.entries);
+                try self.writeIndent();
+                try self.writeByte('}');
+            },
+            .guide => |block| {
+                try self.write("meta guide {");
+                try self.newline();
+                try self.formatMetaBlockEntries(block.entries);
+                try self.writeIndent();
+                try self.writeByte('}');
+            },
+            .related => |rel| {
+                try self.write("meta related(");
+                for (rel.paths, 0..) |path, i| {
+                    if (i > 0) try self.write(", ");
+                    try self.formatMetaPath(path);
+                }
+                if (rel.description) |desc| {
+                    if (rel.paths.len > 0) try self.write(", ");
+                    try self.writeMetaString(desc);
+                }
+                try self.writeByte(')');
+            },
+            .group_def => |group| {
+                try self.write("meta group ");
+                try self.writeMetaString(group.name);
+                try self.write(" {");
+                try self.newline();
+                self.indent();
+                for (group.annotations) |nested| {
+                    try self.flushCommentsBefore(nested.span().start);
+                    try self.writeIndent();
+                    try self.formatOneMetaAnnotation(nested);
+                    try self.newline();
+                }
+                self.dedent();
+                try self.writeIndent();
+                try self.writeByte('}');
+            },
+            .group_join => |s| {
+                try self.write("meta in(");
+                try self.writeMetaString(s.value);
+                try self.writeByte(')');
+            },
+            .define => |def| {
+                try self.write("meta define ");
+                try self.write(def.name);
+                try self.writeByte('(');
+                for (def.params, 0..) |param, i| {
+                    if (i > 0) try self.write(", ");
+                    try self.write(param.name);
+                    try self.write(": ");
+                    switch (param.type_constraint) {
+                        .string_type => try self.write("string"),
+                        .path_type => try self.write("path"),
+                        .string_union => |values| {
+                            for (values, 0..) |val, j| {
+                                if (j > 0) try self.write(" | ");
+                                try self.writeMetaString(val);
+                            }
+                        },
+                    }
+                }
+                try self.writeByte(')');
+                if (def.scope) |scope| {
+                    try self.write(" for ");
+                    try self.write(switch (scope) {
+                        .fn_scope => "fn",
+                        .module_scope => "module",
+                        .struct_scope => "struct",
+                        .enum_scope => "enum",
+                        .trait_scope => "trait",
+                        .field_scope => "field",
+                        .variant_scope => "variant",
+                        .test_scope => "test",
+                    });
+                }
+            },
+            .custom => |cust| {
+                try self.write("meta ");
+                try self.write(cust.name);
+                try self.writeByte('(');
+                for (cust.args, 0..) |arg, i| {
+                    if (i > 0) try self.write(", ");
+                    switch (arg) {
+                        .string => |s| try self.writeMetaString(s),
+                        .path => |p| try self.formatMetaPath(p),
+                    }
+                }
+                try self.writeByte(')');
+            },
+        }
+    }
+
+    fn formatMetaBlockEntries(self: *Formatter, entries: []const ast.MetaKeyValue) Error!void {
+        self.indent();
+        for (entries, 0..) |entry, i| {
+            try self.writeIndent();
+            try self.write(entry.key);
+            try self.write(": ");
+            switch (entry.value) {
+                .string => |s| try self.writeMetaString(s),
+                .string_list => |items| {
+                    try self.writeByte('[');
+                    for (items, 0..) |item, j| {
+                        if (j > 0) try self.write(", ");
+                        try self.writeMetaString(item);
+                    }
+                    try self.writeByte(']');
+                },
+            }
+            if (i + 1 < entries.len) {
+                try self.writeByte(',');
+            }
+            try self.newline();
+        }
+        self.dedent();
+    }
+
+    fn formatMetaPath(self: *Formatter, path: ast.MetaPath) Error!void {
+        for (path.segments, 0..) |seg, i| {
+            if (i > 0) try self.write("::");
+            try self.write(seg);
+        }
+    }
+
+    fn writeMetaString(self: *Formatter, value: []const u8) Error!void {
+        try self.writeByte('"');
+        for (value) |c| {
+            switch (c) {
+                '"' => try self.write("\\\""),
+                '\\' => try self.write("\\\\"),
+                '\n' => try self.write("\\n"),
+                '\r' => try self.write("\\r"),
+                '\t' => try self.write("\\t"),
+                0 => try self.write("\\0"),
+                else => {
+                    if (c < 0x20) {
+                        // Escape remaining control characters
+                        var esc_buf: [6]u8 = undefined;
+                        const esc = std.fmt.bufPrint(&esc_buf, "\\u{x:0>4}", .{@as(u16, c)}) catch unreachable;
+                        try self.write(esc);
+                    } else {
+                        try self.writeByte(c);
+                    }
+                },
+            }
+        }
+        try self.writeByte('"');
+    }
+
     // --- Format Module (entry point) ---
 
     pub fn formatModule(self: *Formatter, module: ast.Module) Error!void {
@@ -296,6 +490,18 @@ pub const Formatter = struct {
                 try self.newline();
             }
             try self.newline();
+        }
+
+        // File-level meta annotations (meta module, meta group)
+        if (module.file_meta.len > 0) {
+            for (module.file_meta) |annotation| {
+                try self.flushCommentsBefore(annotation.span().start);
+                try self.formatOneMetaAnnotation(annotation);
+                try self.newline();
+            }
+            if (module.declarations.len > 0) {
+                try self.newline();
+            }
         }
 
         // Declarations with blank lines between them
@@ -350,6 +556,7 @@ pub const Formatter = struct {
     }
 
     fn formatTestDecl(self: *Formatter, test_decl: *const ast.TestDecl) Error!void {
+        try self.formatMetaAnnotations(test_decl.meta);
         try self.writeIndent();
         try self.write("test ");
         try self.write(test_decl.name);
@@ -358,6 +565,7 @@ pub const Formatter = struct {
     }
 
     fn formatFunction(self: *Formatter, func: *const ast.FunctionDecl, in_trait: bool) Error!void {
+        try self.formatMetaAnnotations(func.meta);
         try self.writeIndent();
         if (func.is_pub) try self.write("pub ");
         if (func.is_async) try self.write("async ");
@@ -442,6 +650,7 @@ pub const Formatter = struct {
     }
 
     fn formatStruct(self: *Formatter, s: *const ast.StructDecl) Error!void {
+        try self.formatMetaAnnotations(s.meta);
         try self.writeIndent();
         if (s.is_pub) try self.write("pub ");
         if (s.is_extern) try self.write("extern ");
@@ -481,6 +690,7 @@ pub const Formatter = struct {
 
         for (s.fields) |field| {
             try self.flushCommentsBefore(field.span.start);
+            try self.formatMetaAnnotations(field.meta);
             try self.writeIndent();
             if (field.is_pub) try self.write("pub ");
             try self.write(field.name);
@@ -495,6 +705,7 @@ pub const Formatter = struct {
     }
 
     fn formatEnum(self: *Formatter, e: *const ast.EnumDecl) Error!void {
+        try self.formatMetaAnnotations(e.meta);
         try self.writeIndent();
         if (e.is_pub) try self.write("pub ");
         if (e.is_extern) try self.write("extern ");
@@ -530,6 +741,7 @@ pub const Formatter = struct {
 
         for (e.variants) |variant| {
             try self.flushCommentsBefore(variant.span.start);
+            try self.formatMetaAnnotations(variant.meta);
             try self.writeIndent();
             try self.write(variant.name);
 
@@ -580,6 +792,7 @@ pub const Formatter = struct {
     }
 
     fn formatTrait(self: *Formatter, t: *const ast.TraitDecl) Error!void {
+        try self.formatMetaAnnotations(t.meta);
         try self.writeIndent();
         if (t.is_pub) try self.write("pub ");
         if (t.is_unsafe) try self.write("unsafe ");
@@ -661,6 +874,7 @@ pub const Formatter = struct {
     }
 
     fn formatImpl(self: *Formatter, imp: *const ast.ImplDecl) Error!void {
+        try self.formatMetaAnnotations(imp.meta);
         try self.writeIndent();
         if (imp.is_unsafe) try self.write("unsafe ");
         try self.write("impl");
@@ -744,6 +958,7 @@ pub const Formatter = struct {
     }
 
     fn formatTypeAlias(self: *Formatter, ta: *const ast.TypeAlias) Error!void {
+        try self.formatMetaAnnotations(ta.meta);
         try self.writeIndent();
         if (ta.is_pub) try self.write("pub ");
         try self.write("type ");
@@ -763,6 +978,7 @@ pub const Formatter = struct {
     }
 
     fn formatConst(self: *Formatter, c: *const ast.ConstDecl) Error!void {
+        try self.formatMetaAnnotations(c.meta);
         try self.writeIndent();
         if (c.is_pub) try self.write("pub ");
         try self.write("const ");

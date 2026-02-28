@@ -1,0 +1,4 @@
+// Expected: check-error meta annotations are not supported on module declarations
+
+meta tag("should-fail")
+module test_mod

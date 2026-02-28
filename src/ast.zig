@@ -637,12 +637,14 @@ pub const FunctionDecl = struct {
     is_extern: bool, // true for extern fn (C FFI function)
     is_variadic: bool, // true for variadic fn (has ... in params)
     span: Span,
+    meta: []const MetaAnnotation = &.{},
 };
 
 pub const TestDecl = struct {
     name: []const u8,
     body: *Block,
     span: Span,
+    meta: []const MetaAnnotation = &.{},
 };
 
 pub const FunctionParam = struct {
@@ -675,6 +677,7 @@ pub const StructDecl = struct {
     is_extern: bool = false,
     is_packed: bool = false,
     span: Span,
+    meta: []const MetaAnnotation = &.{},
 };
 
 pub const StructField = struct {
@@ -682,6 +685,7 @@ pub const StructField = struct {
     type_: TypeExpr,
     is_pub: bool,
     span: Span,
+    meta: []const MetaAnnotation = &.{},
 };
 
 /// External type declaration for FFI interop
@@ -709,6 +713,7 @@ pub const EnumDecl = struct {
     is_extern: bool = false, // extern enum for C-compatible layout
     repr_type: ?TypeExpr = null, // Required for extern enums (e.g., i32)
     span: Span,
+    meta: []const MetaAnnotation = &.{},
 };
 
 pub const EnumVariant = struct {
@@ -716,6 +721,7 @@ pub const EnumVariant = struct {
     payload: ?VariantPayload,
     value: ?i128 = null, // Explicit discriminant value for extern enums
     span: Span,
+    meta: []const MetaAnnotation = &.{},
 };
 
 pub const VariantPayload = union(enum) {
@@ -747,6 +753,7 @@ pub const TraitDecl = struct {
     is_pub: bool,
     is_unsafe: bool, // unsafe trait - implementing requires unsafe impl
     span: Span,
+    meta: []const MetaAnnotation = &.{},
 };
 
 pub const ImplDecl = struct {
@@ -758,6 +765,7 @@ pub const ImplDecl = struct {
     methods: []const FunctionDecl,
     is_unsafe: bool, // unsafe impl - required when implementing an unsafe trait
     span: Span,
+    meta: []const MetaAnnotation = &.{},
 };
 
 pub const TypeAlias = struct {
@@ -766,6 +774,7 @@ pub const TypeAlias = struct {
     target: TypeExpr,
     is_pub: bool,
     span: Span,
+    meta: []const MetaAnnotation = &.{},
 };
 
 pub const ConstDecl = struct {
@@ -774,6 +783,7 @@ pub const ConstDecl = struct {
     value: Expr,
     is_pub: bool,
     span: Span,
+    meta: []const MetaAnnotation = &.{},
 };
 
 pub const ImportDecl = struct {
@@ -797,6 +807,117 @@ pub const ImportItem = struct {
 pub const ModuleDecl = struct {
     path: []const []const u8,
     span: Span,
+};
+
+// ============================================================================
+// Meta Annotations
+// ============================================================================
+
+pub const MetaAnnotation = union(enum) {
+    intent: MetaString,
+    decision: MetaString,
+    tag: MetaString,
+    hint: MetaString,
+    deprecated: MetaString,
+    pure: Span,
+    module_meta: *MetaBlock,
+    guide: *MetaBlock,
+    related: *MetaRelated,
+    group_def: *MetaGroupDef,
+    group_join: MetaString,
+    define: *MetaDefine,
+    custom: *MetaCustom,
+
+    pub fn span(self: MetaAnnotation) Span {
+        return switch (self) {
+            .intent, .decision, .tag, .hint, .deprecated, .group_join => |s| s.span,
+            .pure => |span_val| span_val,
+            .module_meta, .guide => |b| b.span,
+            .related => |r| r.span,
+            .group_def => |g| g.span,
+            .define => |d| d.span,
+            .custom => |c| c.span,
+        };
+    }
+};
+
+pub const MetaString = struct {
+    value: []const u8,
+    span: Span,
+};
+
+pub const MetaBlock = struct {
+    entries: []const MetaKeyValue,
+    span: Span,
+};
+
+pub const MetaKeyValue = struct {
+    key: []const u8,
+    value: MetaValue,
+    span: Span,
+};
+
+pub const MetaValue = union(enum) {
+    string: []const u8,
+    string_list: []const []const u8,
+};
+
+pub const MetaRelated = struct {
+    paths: []const MetaPath,
+    description: ?[]const u8,
+    span: Span,
+};
+
+pub const MetaPath = struct {
+    segments: []const []const u8,
+    span: Span,
+};
+
+pub const MetaGroupDef = struct {
+    name: []const u8,
+    annotations: []const MetaAnnotation,
+    span: Span,
+};
+
+pub const MetaDefine = struct {
+    name: []const u8,
+    params: []const MetaDefineParam,
+    scope: ?MetaScope,
+    span: Span,
+};
+
+pub const MetaDefineParam = struct {
+    name: []const u8,
+    type_constraint: MetaParamType,
+    span: Span,
+};
+
+pub const MetaParamType = union(enum) {
+    string_type,
+    path_type,
+    string_union: []const []const u8,
+};
+
+pub const MetaScope = enum {
+    fn_scope,
+    module_scope,
+    struct_scope,
+    enum_scope,
+    trait_scope,
+    field_scope,
+    variant_scope,
+    test_scope,
+};
+
+pub const MetaCustom = struct {
+    name: []const u8,
+    args: []const MetaCustomArg,
+    span: Span,
+};
+
+pub const MetaCustomArg = union(enum) {
+    string: []const u8,
+    path: MetaPath,
 };
 
 // ============================================================================
@@ -907,6 +1028,7 @@ pub const Module = struct {
     module_decl: ?ModuleDecl,
     imports: []const ImportDecl,
     declarations: []const Decl,
+    file_meta: []const MetaAnnotation = &.{},
 };
 
 // ============================================================================
@@ -934,4 +1056,190 @@ test "UnaryOp fromToken" {
     try std.testing.expectEqual(UnaryOp.not, UnaryOp.fromToken(.not).?);
     try std.testing.expectEqual(UnaryOp.await_, UnaryOp.fromToken(.await_).?);
     try std.testing.expect(UnaryOp.fromToken(.plus) == null);
+}
+
+test "MetaAnnotation span - string variants" {
+    const test_span = Span{ .start = 0, .end = 10, .line = 1, .column = 1 };
+    const ms = MetaString{ .value = "test", .span = test_span };
+
+    const intent: MetaAnnotation = .{ .intent = ms };
+    try std.testing.expectEqual(test_span, intent.span());
+
+    const decision: MetaAnnotation = .{ .decision = ms };
+    try std.testing.expectEqual(test_span, decision.span());
+
+    const tag: MetaAnnotation = .{ .tag = ms };
+    try std.testing.expectEqual(test_span, tag.span());
+
+    const hint_ann: MetaAnnotation = .{ .hint = ms };
+    try std.testing.expectEqual(test_span, hint_ann.span());
+
+    const dep: MetaAnnotation = .{ .deprecated = ms };
+    try std.testing.expectEqual(test_span, dep.span());
+
+    const join: MetaAnnotation = .{ .group_join = ms };
+    try std.testing.expectEqual(test_span, join.span());
+}
+
+test "MetaAnnotation span - pure" {
+    const test_span = Span{ .start = 5, .end = 9, .line = 2, .column = 3 };
+    const pure: MetaAnnotation = .{ .pure = test_span };
+    try std.testing.expectEqual(test_span, pure.span());
+}
+
+test "MetaAnnotation span - block variants" {
+    const test_span = Span{ .start = 0, .end = 20, .line = 1, .column = 1 };
+    var block = MetaBlock{ .entries = &.{}, .span = test_span };
+
+    const module_ann: MetaAnnotation = .{ .module_meta = &block };
+    try std.testing.expectEqual(test_span, module_ann.span());
+
+    const guide_ann: MetaAnnotation = .{ .guide = &block };
+    try std.testing.expectEqual(test_span, guide_ann.span());
+}
+
+test "MetaAnnotation span - pointer variants" {
+    const test_span = Span{ .start = 10, .end = 30, .line = 3, .column = 5 };
+
+    var related = MetaRelated{ .paths = &.{}, .description = null, .span = test_span };
+    const related_ann: MetaAnnotation = .{ .related = &related };
+    try std.testing.expectEqual(test_span, related_ann.span());
+
+    var group_def = MetaGroupDef{ .name = "test", .annotations = &.{}, .span = test_span };
+    const group_ann: MetaAnnotation = .{ .group_def = &group_def };
+    try std.testing.expectEqual(test_span, group_ann.span());
+
+    var define = MetaDefine{ .name = "test", .params = &.{}, .scope = null, .span = test_span };
+    const define_ann: MetaAnnotation = .{ .define = &define };
+    try std.testing.expectEqual(test_span, define_ann.span());
+
+    var custom = MetaCustom{ .name = "test", .args = &.{}, .span = test_span };
+    const custom_ann: MetaAnnotation = .{ .custom = &custom };
+    try std.testing.expectEqual(test_span, custom_ann.span());
+}
+
+test "declaration structs have empty default meta" {
+    // Verify that all declaration types default to empty meta slices
+    const empty_span = Span{ .start = 0, .end = 0, .line = 0, .column = 0 };
+    const empty_type = TypeExpr{ .named = .{ .name = "void", .span = empty_span } };
+
+    // FunctionDecl
+    const func = FunctionDecl{
+        .name = "test",
+        .type_params = &.{},
+        .params = &.{},
+        .return_type = null,
+        .where_clause = null,
+        .body = null,
+        .is_pub = false,
+        .is_async = false,
+        .is_comptime = false,
+        .is_unsafe = false,
+        .is_extern = false,
+        .is_variadic = false,
+        .span = empty_span,
+    };
+    try std.testing.expectEqual(@as(usize, 0), func.meta.len);
+
+    // StructDecl
+    const s = StructDecl{
+        .name = "Test",
+        .type_params = &.{},
+        .fields = &.{},
+        .traits = &.{},
+        .is_pub = false,
+        .span = empty_span,
+    };
+    try std.testing.expectEqual(@as(usize, 0), s.meta.len);
+
+    // StructField
+    const field = StructField{
+        .name = "x",
+        .type_ = empty_type,
+        .is_pub = false,
+        .span = empty_span,
+    };
+    try std.testing.expectEqual(@as(usize, 0), field.meta.len);
+
+    // EnumDecl
+    const e = EnumDecl{
+        .name = "Test",
+        .type_params = &.{},
+        .variants = &.{},
+        .is_pub = false,
+        .span = empty_span,
+    };
+    try std.testing.expectEqual(@as(usize, 0), e.meta.len);
+
+    // TraitDecl
+    const t = TraitDecl{
+        .name = "Test",
+        .type_params = &.{},
+        .super_traits = &.{},
+        .associated_types = &.{},
+        .methods = &.{},
+        .is_pub = false,
+        .is_unsafe = false,
+        .span = empty_span,
+    };
+    try std.testing.expectEqual(@as(usize, 0), t.meta.len);
+
+    // ImplDecl
+    const imp = ImplDecl{
+        .type_params = &.{},
+        .target_type = empty_type,
+        .trait_type = null,
+        .associated_types = &.{},
+        .where_clause = null,
+        .methods = &.{},
+        .is_unsafe = false,
+        .span = empty_span,
+    };
+    try std.testing.expectEqual(@as(usize, 0), imp.meta.len);
+
+    // TypeAlias
+    const ta = TypeAlias{
+        .name = "Test",
+        .type_params = &.{},
+        .target = empty_type,
+        .is_pub = false,
+        .span = empty_span,
+    };
+    try std.testing.expectEqual(@as(usize, 0), ta.meta.len);
+
+    // ConstDecl
+    const cd = ConstDecl{
+        .name = "TEST",
+        .type_ = null,
+        .value = .{ .literal = .{ .kind = .{ .int = 42 }, .span = empty_span } },
+        .is_pub = false,
+        .span = empty_span,
+    };
+    try std.testing.expectEqual(@as(usize, 0), cd.meta.len);
+
+    // TestDecl
+    var empty_block = Block{ .statements = &.{}, .final_expr = null, .span = empty_span };
+    const td = TestDecl{
+        .name = "test",
+        .body = &empty_block,
+        .span = empty_span,
+    };
+    try std.testing.expectEqual(@as(usize, 0), td.meta.len);
+
+    // EnumVariant
+    const ev = EnumVariant{
+        .name = "Red",
+        .payload = null,
+        .span = empty_span,
+    };
+    try std.testing.expectEqual(@as(usize, 0), ev.meta.len);
+}
+
+test "Module has empty default file_meta" {
+    const m = Module{
+        .module_decl = null,
+        .imports = &.{},
+        .declarations = &.{},
+    };
+    try std.testing.expectEqual(@as(usize, 0), m.file_meta.len);
 }

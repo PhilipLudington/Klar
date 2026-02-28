@@ -1,0 +1,17 @@
+// Test: custom annotation with enum scope
+meta define state_machine(name: string) for enum
+
+meta state_machine("order")
+enum OrderStatus {
+    Pending,
+    Shipped,
+    Delivered,
+}
+
+fn main() -> i32 {
+    let status: OrderStatus = OrderStatus::Pending
+    match status {
+        OrderStatus::Pending => { return 0 }
+        _ => { return 1 }
+    }
+}

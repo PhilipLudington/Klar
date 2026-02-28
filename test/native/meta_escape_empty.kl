@@ -1,0 +1,23 @@
+// Test: meta annotations with escape sequences and empty strings
+
+meta intent("line1\nline2")
+fn with_escapes() -> i32 {
+    return 1
+}
+
+meta tag("")
+fn with_empty_tag() -> i32 {
+    return 2
+}
+
+meta hint("tab\there")
+fn with_tab() -> i32 {
+    return 3
+}
+
+fn main() -> i32 {
+    if with_escapes() == 1 and with_empty_tag() == 2 and with_tab() == 3 {
+        println("ok")
+    }
+    return 0
+}

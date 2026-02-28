@@ -1,0 +1,12 @@
+// Expected: check-error expects 0 argument(s), got 1
+
+meta define marker()
+
+meta marker("unexpected")
+fn foo() -> i32 {
+    return 0
+}
+
+fn main() -> i32 {
+    return 0
+}

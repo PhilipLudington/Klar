@@ -1,0 +1,20 @@
+// Test: multiple parameters in custom meta annotation
+meta define endpoint(method: "GET" | "POST" | "PUT" | "DELETE", path: string)
+
+meta endpoint("GET", "/api/users")
+fn list_users() -> i32 {
+    return 10
+}
+
+meta endpoint("POST", "/api/users")
+fn create_user() -> i32 {
+    return 20
+}
+
+fn main() -> i32 {
+    let total: i32 = list_users() + create_user()
+    if total == 30 {
+        return 0
+    }
+    return 1
+}

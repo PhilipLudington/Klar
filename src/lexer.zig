@@ -466,6 +466,7 @@ pub const Lexer = struct {
         .{ "packed", .packed_ },
         .{ "import", .import },
         .{ "module", .module },
+        .{ "meta", .meta },
         .{ "test", .test_ },
         .{ "as", .as },
         .{ "in", .in },
@@ -637,6 +638,22 @@ test "lexer hash standalone" {
 
     try std.testing.expectEqual(Token.Kind.hash, lexer.next().kind);
     try std.testing.expectEqual(Token.Kind.at, lexer.next().kind);
+}
+
+test "lexer meta keyword" {
+    var lexer = Lexer.init("meta intent");
+
+    try std.testing.expectEqual(Token.Kind.meta, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.identifier, lexer.next().kind);
+    try std.testing.expectEqual(Token.Kind.eof, lexer.next().kind);
+}
+
+test "lexer meta is keyword not identifier" {
+    var lexer = Lexer.init("meta");
+
+    const tok = lexer.next();
+    try std.testing.expectEqual(Token.Kind.meta, tok.kind);
+    try std.testing.expect(tok.kind.isKeyword());
 }
 
 test "lexer location tracking" {

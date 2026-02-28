@@ -1,0 +1,4 @@
+// Test fixture: no meta annotations
+fn main() -> i32 {
+    return 0
+}

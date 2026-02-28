@@ -1,0 +1,13 @@
+// File header comment
+meta  module  {
+    name:  "auth"
+}
+
+// Group comment
+meta  group  "auth"  {
+    meta  tag("security")
+}
+
+fn  main()  ->  i32  {
+    return  0
+}
