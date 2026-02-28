@@ -115,6 +115,11 @@ pub fn validateFileMeta(tc: anytype, file_meta: []const ast.MetaAnnotation) void
                     validateCustomAnnotation(tc, cust, null);
                 }
             },
+            .group_def => |g| {
+                for (g.annotations) |nested| {
+                    validateDeclMeta(tc, &.{nested}, .function);
+                }
+            },
             else => {},
         }
     }
@@ -198,7 +203,10 @@ pub fn registerDeprecatedMethod(tc: anytype, type_name: []const u8, method_name:
         switch (annotation) {
             .deprecated => |dep| {
                 const key = std.fmt.allocPrint(tc.allocator, "{s}::{s}", .{ type_name, method_name }) catch return;
-                tc.deprecated_functions.put(tc.allocator, key, dep.value) catch {};
+                tc.deprecated_functions.put(tc.allocator, key, dep.value) catch {
+                    tc.allocator.free(key);
+                    return;
+                };
                 return;
             },
             else => {},
@@ -247,6 +255,29 @@ pub fn registerPureFunction(tc: anytype, name: []const u8, meta: []const ast.Met
     if (hasPureAnnotation(meta) != null) {
         tc.pure_functions.put(tc.allocator, name, {}) catch {};
     }
+}
+
+/// Register a method as pure using a qualified key "TypeName::method_name".
+pub fn registerPureMethod(tc: anytype, type_name: []const u8, method_name: []const u8, meta: []const ast.MetaAnnotation) void {
+    if (hasPureAnnotation(meta) != null) {
+        const key = std.fmt.allocPrint(tc.allocator, "{s}::{s}", .{ type_name, method_name }) catch return;
+        tc.pure_functions.put(tc.allocator, key, {}) catch {
+            tc.allocator.free(key);
+        };
+    }
+}
+
+/// Clear the pure functions map, freeing allocated method keys.
+/// Method keys (format "TypeName::method_name") are heap-allocated via registerPureMethod
+/// and must be freed before clearing the map to avoid leaking memory in multi-module builds.
+pub fn clearPureFunctions(tc: anytype) void {
+    var key_iter = tc.pure_functions.keyIterator();
+    while (key_iter.next()) |key| {
+        if (std.mem.indexOf(u8, key.*, "::") != null) {
+            tc.allocator.free(key.*);
+        }
+    }
+    tc.pure_functions.clearRetainingCapacity();
 }
 
 /// Check if a function call violates purity constraints.

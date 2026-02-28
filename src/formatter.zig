@@ -316,7 +316,7 @@ pub const Formatter = struct {
                     try self.formatMetaPath(path);
                 }
                 if (rel.description) |desc| {
-                    try self.write(", ");
+                    if (rel.paths.len > 0) try self.write(", ");
                     try self.writeMetaString(desc);
                 }
                 try self.writeByte(')');
@@ -328,6 +328,7 @@ pub const Formatter = struct {
                 try self.newline();
                 self.indent();
                 for (group.annotations) |nested| {
+                    try self.flushCommentsBefore(nested.span().start);
                     try self.writeIndent();
                     try self.formatOneMetaAnnotation(nested);
                     try self.newline();
@@ -437,7 +438,7 @@ pub const Formatter = struct {
                     if (c < 0x20) {
                         // Escape remaining control characters
                         var esc_buf: [6]u8 = undefined;
-                        const esc = std.fmt.bufPrint(&esc_buf, "\\u{x:0>4}", .{@as(u16, c)}) catch "\\u0000";
+                        const esc = std.fmt.bufPrint(&esc_buf, "\\u{x:0>4}", .{@as(u16, c)}) catch unreachable;
                         try self.write(esc);
                     } else {
                         try self.writeByte(c);

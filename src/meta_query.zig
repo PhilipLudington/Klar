@@ -126,6 +126,10 @@ pub fn metaCommand(allocator: std.mem.Allocator, args: []const []const u8) !void
                 try stderr.writeAll("Error: --related requires a function name\n");
                 return;
             }
+            if (args[i].len == 0) {
+                try stderr.writeAll("Error: --related requires a non-empty function name\n");
+                return;
+            }
             query_mode = .{ .related = args[i] };
         } else if (std.mem.eql(u8, arg, "--deprecated")) {
             if (query_mode != null) {
@@ -680,6 +684,9 @@ fn metaCollectRelated(
     fn_name: []const u8,
     matches: *std.ArrayListUnmanaged(MetaMatch),
 ) void {
+    // Check file-level meta for related annotations
+    metaCheckRelated(allocator, path, path, .file_meta, 1, module.file_meta, fn_name, matches);
+
     for (module.declarations) |decl| {
         const info = getDeclNameAndMeta(decl);
         metaCheckRelated(allocator, path, info.name, info.kind, info.line, info.meta, fn_name, matches);
@@ -1215,6 +1222,7 @@ fn metaOutputJsonMeta(out: std.fs.File, meta: []const ast.MetaAnnotation) !void 
             }
         }
         try out.writeAll("]");
+        wrote_field = true;
     }
 }
 

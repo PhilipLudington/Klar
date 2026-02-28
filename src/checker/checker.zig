@@ -2008,7 +2008,7 @@ pub const TypeChecker = struct {
             .kind = kind,
             .span = span,
             .message = message,
-        }) catch {};
+        }) catch return;
         if (kind == .meta_warning) {
             self.warning_count += 1;
         } else {
@@ -4599,7 +4599,7 @@ pub const TypeChecker = struct {
         // Clear meta state before processing imports (imports may add definitions)
         meta_validation.clearMetaDefinitions(self);
         meta_validation.clearDeprecatedFunctions(self);
-        self.pure_functions.clearRetainingCapacity();
+        meta_validation.clearPureFunctions(self);
 
         // Process imports leniently — modules not yet registered are skipped
         self.skip_missing_modules = true;
@@ -4756,12 +4756,38 @@ pub const TypeChecker = struct {
         // Clear meta state before re-processing imports
         meta_validation.clearMetaDefinitions(self);
         meta_validation.clearDeprecatedFunctions(self);
-        self.pure_functions.clearRetainingCapacity();
+        meta_validation.clearPureFunctions(self);
 
         // Re-process imports — all exports now available, skip already-imported symbols
         self.skip_existing_imports = true;
         self.processImports(module);
         self.skip_existing_imports = false;
+
+        // Re-register current module's deprecated and pure functions
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .function => |f| {
+                    meta_validation.registerDeprecatedFunction(self, f.name, f.meta);
+                    meta_validation.registerPureFunction(self, f.name, f.meta);
+                },
+                .impl_decl => |impl| {
+                    // Extract type name from target_type AST node
+                    const struct_name = switch (impl.target_type) {
+                        .named => |n| n.name,
+                        .generic_apply => |g| switch (g.base) {
+                            .named => |n| n.name,
+                            else => continue,
+                        },
+                        else => continue,
+                    };
+                    for (impl.methods) |method| {
+                        meta_validation.registerDeprecatedMethod(self, struct_name, method.name, method.meta);
+                        meta_validation.registerPureMethod(self, struct_name, method.name, method.meta);
+                    }
+                },
+                else => {},
+            }
+        }
 
         // Re-collect group names and definitions for this module (may differ from previous module in multi-file builds)
         meta_validation.collectGroupNames(self, module.file_meta);
@@ -4903,7 +4929,7 @@ pub const TypeChecker = struct {
         // Clear meta state before processing imports (imports may add definitions)
         meta_validation.clearMetaDefinitions(self);
         meta_validation.clearDeprecatedFunctions(self);
-        self.pure_functions.clearRetainingCapacity();
+        meta_validation.clearPureFunctions(self);
 
         // Process imports first (for multi-file compilation)
         self.processImports(module);

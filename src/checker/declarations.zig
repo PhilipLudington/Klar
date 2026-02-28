@@ -745,8 +745,8 @@ fn checkImpl(tc: anytype, impl_decl: *ast.ImplDecl) void {
         meta_validation.validateDeclMeta(tc, method_decl.meta, .function);
         // Register deprecated methods with qualified key "TypeName::method"
         meta_validation.registerDeprecatedMethod(tc, struct_name, method_decl.name, method_decl.meta);
-        // Register pure methods
-        meta_validation.registerPureFunction(tc, method_decl.name, method_decl.meta);
+        // Register pure methods with qualified key "TypeName::method"
+        meta_validation.registerPureMethod(tc, struct_name, method_decl.name, method_decl.meta);
 
         if (method_decl.is_async) {
             tc.addError(.invalid_operation, method_decl.span, "async methods are not yet supported", .{});

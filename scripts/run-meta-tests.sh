@@ -2,8 +2,6 @@
 # Run meta command tests
 # Tests the `klar meta` CLI command against fixture files in test/meta/
 
-set -e
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/.."
 

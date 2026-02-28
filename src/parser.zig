@@ -160,7 +160,7 @@ fn processEscapes(allocator: Allocator, content: []const u8) ![]const u8 {
             i += 1;
         }
     }
-    return result.toOwnedSlice(allocator) catch result.items;
+    return result.toOwnedSlice(allocator) catch return error.OutOfMemory;
 }
 
 pub const Parser = struct {
@@ -2954,7 +2954,8 @@ pub const Parser = struct {
         } else if (self.current.kind == .identifier) {
             // Parse scoped path: ident::ident::ident
             var segments = std.ArrayListUnmanaged([]const u8){};
-            const path_span = self.spanFromToken(self.current);
+            const path_start_span = self.spanFromToken(self.current);
+            var path_end_span = path_start_span;
             try segments.append(self.allocator, self.tokenText(self.current));
             self.advance();
             while (self.match(.colon_colon)) {
@@ -2962,12 +2963,13 @@ pub const Parser = struct {
                     try self.reportError("expected identifier after '::' in meta annotation path");
                     return ParseError.UnexpectedToken;
                 }
+                path_end_span = self.spanFromToken(self.current);
                 try segments.append(self.allocator, self.tokenText(self.current));
                 self.advance();
             }
             return .{ .path = .{
                 .segments = try self.dupeSlice([]const u8, segments.items),
-                .span = path_span,
+                .span = ast.Span.merge(path_start_span, path_end_span),
             } };
         } else {
             try self.reportError("expected string literal or identifier in custom meta annotation argument");
@@ -3203,6 +3205,14 @@ pub const Parser = struct {
             if (self.check(.r_brace)) break;
 
             const field_meta = try self.parseMetaAnnotations();
+            // Guard against trailing meta at end of struct body
+            if (self.check(.r_brace)) {
+                if (field_meta.len > 0) {
+                    try self.reportError("meta annotation must be followed by a field declaration");
+                    return ParseError.UnexpectedToken;
+                }
+                break;
+            }
             const field_is_pub = self.match(.pub_);
             const field_span = self.spanFromToken(self.current);
             const field_name = try self.consumeIdentifier();
@@ -3273,6 +3283,14 @@ pub const Parser = struct {
             if (self.check(.r_brace)) break;
 
             const variant_meta = try self.parseMetaAnnotations();
+            // Guard against trailing meta at end of enum body
+            if (self.check(.r_brace)) {
+                if (variant_meta.len > 0) {
+                    try self.reportError("meta annotation must be followed by a variant declaration");
+                    return ParseError.UnexpectedToken;
+                }
+                break;
+            }
             const variant_span = self.spanFromToken(self.current);
             const variant_name = try self.consumeIdentifier();
 
