@@ -615,11 +615,14 @@ fn nativeEnvGet(_: Allocator, args: []const Value) RuntimeError!Value {
     return .{ .optional = none };
 }
 
-fn nativeEnvSet(_: Allocator, args: []const Value) RuntimeError!Value {
-    // VM lacks Result value representation; env_set requires native build.
+fn nativeEnvSet(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    // VM stub: return Err("not supported in bytecode VM") as a Result struct.
     _ = args;
-    std.debug.print("error: env_set is not supported in bytecode VM (use native build)\n", .{});
-    return RuntimeError.IOError;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
 }
 
 fn nativeTimestampNow(_: Allocator, _: []const Value) RuntimeError!Value {
@@ -627,18 +630,24 @@ fn nativeTimestampNow(_: Allocator, _: []const Value) RuntimeError!Value {
     return Value.fromInt(now);
 }
 
-fn nativeFsStat(_: Allocator, args: []const Value) RuntimeError!Value {
-    // VM lacks Result value representation; fs_stat requires native build.
+fn nativeFsStat(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    // VM stub: return Err("not supported in bytecode VM") as a Result struct.
     _ = args;
-    std.debug.print("error: fs_stat is not supported in bytecode VM (use native build)\n", .{});
-    return RuntimeError.IOError;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
 }
 
-fn nativeProcessRun(_: Allocator, args: []const Value) RuntimeError!Value {
-    // VM lacks Result value representation; process_run requires native build.
+fn nativeProcessRun(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    // VM stub: return Err("not supported in bytecode VM") as a Result struct.
     _ = args;
-    std.debug.print("error: process_run is not supported in bytecode VM (use native build)\n", .{});
-    return RuntimeError.IOError;
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
 }
 
 // ============================================================================

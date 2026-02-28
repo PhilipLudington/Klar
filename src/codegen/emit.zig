@@ -24667,7 +24667,10 @@ pub const Emitter = struct {
     // ==================== Environment, Process, Stat, Timestamp Builtins ====================
 
     /// Emit env_get(name: string) -> ?string
-    /// Wraps C getenv(). Returns Some(strdup(result)) if found, None if null.
+    /// Wraps C getenv() + strdup(). Returns Some(owned copy) if found, None if null.
+    /// Note: The returned string is strdup'd to avoid dangling pointer issues
+    /// (POSIX allows getenv() result to be invalidated by setenv/putenv).
+    /// This leaks the copy since primitive ?string has no Drop — acceptable tradeoff.
     fn emitEnvGet(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: env_get is not supported on WebAssembly targets");
         if (call.args.len != 1) return EmitError.InvalidAST;
@@ -24690,11 +24693,16 @@ pub const Emitter = struct {
 
         _ = self.builder.buildCondBr(is_null, not_found_bb, found_bb);
 
-        // Found: Some(result)
-        // Return the raw getenv pointer (valid until next env_set call).
-        // No strdup — avoids a memory leak since primitive ?string has no drop.
+        // Found: strdup the result to avoid dangling pointer.
+        // POSIX permits getenv() to return a pointer that is invalidated by
+        // subsequent setenv/putenv calls. strdup gives us a stable copy.
+        // This does leak (primitive ?string has no Drop), but a leak is safer
+        // than a use-after-free when env_set is called later.
         self.builder.positionAtEnd(found_bb);
-        const some_val = self.emitSome(result, ptr_type);
+        const strdup_fn = self.getOrDeclareStrdup();
+        var strdup_args = [_]llvm.ValueRef{result};
+        const owned_copy = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strdup_fn), strdup_fn, &strdup_args, "env.strdup");
+        const some_val = self.emitSome(owned_copy, ptr_type);
         _ = self.builder.buildBr(merge_bb);
         const found_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
 
@@ -24930,9 +24938,12 @@ pub const Emitter = struct {
     /// Emit process_run(cmd: string, args: List#[string]) -> Result#[ProcessOutput, IoError]
     /// Builds a shell command string, uses popen() to capture stdout, pclose() for exit code.
     /// Stderr is not captured separately (returns empty string).
-    /// WARNING: Arguments are joined with spaces and passed to /bin/sh via popen.
-    /// Callers must ensure arguments do not contain shell metacharacters when
-    /// processing untrusted input. A future version should use posix_spawn/execvp.
+    ///
+    /// SECURITY: Arguments are joined with spaces and passed to /bin/sh via popen().
+    /// This means shell metacharacters in arguments (;, |, $(), `, &&, etc.) WILL be
+    /// interpreted by the shell. Only pass trusted, literal string arguments.
+    /// Do NOT pass user-supplied or external input without sanitization.
+    /// A future version should use posix_spawn/execvp to bypass the shell entirely.
     fn emitProcessRun(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
         if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: process_run is not supported on WebAssembly targets");
         if (call.args.len != 2) return EmitError.InvalidAST;
@@ -24986,13 +24997,10 @@ pub const Emitter = struct {
 
         // Length loop body: total_args_len += 1 + strlen(args[i])
         self.builder.positionAtEnd(len_body_bb);
-        const len_idx_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, len_cur_idx, i64_type, "procrun.len_idx64");
-        const ptr_stride: i64 = @intCast(self.platform.getPointerSize());
-        const len_elem_offset = llvm.c.LLVMBuildMul(self.builder.ref, len_idx_i64, llvm.Const.int64(self.ctx, ptr_stride), "procrun.len_elem_off");
-        var len_elem_gep = [_]llvm.ValueRef{len_elem_offset};
-        const len_elem_raw_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), list_ptr, &len_elem_gep, 1, "procrun.len_elem_ptr");
-        const len_elem_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, len_elem_raw_ptr, ptr_type, "procrun.len_elem_cast");
-        const len_arg_str = self.builder.buildLoad(ptr_type, len_elem_cast, "procrun.len_arg");
+        // Use typed GEP with pointer element type — LLVM computes stride automatically
+        var len_elem_gep = [_]llvm.ValueRef{len_cur_idx};
+        const len_elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, list_ptr, &len_elem_gep, 1, "procrun.len_elem_ptr");
+        const len_arg_str = self.builder.buildLoad(ptr_type, len_elem_ptr, "procrun.len_arg");
         const len_arg_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{len_arg_str}, "procrun.len_arg_len");
         const len_plus_space = llvm.c.LLVMBuildAdd(self.builder.ref, len_arg_len, llvm.Const.int64(self.ctx, 1), "procrun.len_plus_space");
         const len_cur_total = self.builder.buildLoad(i64_type, total_args_alloca, "procrun.len_cur_total");
@@ -25040,15 +25048,10 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int8(self.ctx, ' '), space_ptr);
         const new_offset1 = llvm.c.LLVMBuildAdd(self.builder.ref, cur_offset, llvm.Const.int64(self.ctx, 1), "procrun.off1");
 
-        // Get arg string pointer from list
-        // List elements are primitive strings (char*), each is one pointer wide
-        const idx_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, cur_idx, i64_type, "procrun.idx64");
-        const elem_stride: i64 = @intCast(self.platform.getPointerSize());
-        const elem_offset = llvm.c.LLVMBuildMul(self.builder.ref, idx_i64, llvm.Const.int64(self.ctx, elem_stride), "procrun.elem_off");
-        var elem_gep = [_]llvm.ValueRef{elem_offset};
-        const elem_raw_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), list_ptr, &elem_gep, 1, "procrun.elem_ptr");
-        const elem_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, elem_raw_ptr, ptr_type, "procrun.elem_cast");
-        const arg_str = self.builder.buildLoad(ptr_type, elem_ptr_cast, "procrun.arg");
+        // Get arg string pointer from list — typed GEP with pointer element type
+        var elem_gep = [_]llvm.ValueRef{cur_idx};
+        const elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, ptr_type, list_ptr, &elem_gep, 1, "procrun.elem_ptr");
+        const arg_str = self.builder.buildLoad(ptr_type, elem_ptr, "procrun.arg");
 
         // Copy arg to buffer at new_offset1
         const arg_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{arg_str}, "procrun.arg_len");
@@ -25157,11 +25160,26 @@ pub const Emitter = struct {
         var pclose_args = [_]llvm.ValueRef{pipe};
         const raw_status = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(pclose_fn), pclose_fn, &pclose_args, "procrun.status");
 
-        // On POSIX, pclose returns the status from waitpid. Extract exit code: (status >> 8) & 0xFF
+        // On POSIX, pclose returns the raw waitpid status word:
+        //   WIFEXITED(s)   = (s & 0x7F) == 0          → normal exit
+        //   WEXITSTATUS(s) = (s >> 8) & 0xFF           → exit code (only valid if WIFEXITED)
+        //   WIFSIGNALED(s) = ((s & 0x7F) != 0) && ((s & 0x7F) != 0x7F)  → killed by signal
+        //   WTERMSIG(s)    = s & 0x7F                  → signal number
+        // Convention: return 128 + signal for signal-killed processes (matches bash behavior).
         // On Windows, _pclose returns the exit code directly — no decoding needed.
         const exit_code = if (self.platform.os == .windows) raw_status else blk: {
+            // Check WIFEXITED: (status & 0x7F) == 0
+            const low7 = llvm.c.LLVMBuildAnd(self.builder.ref, raw_status, llvm.Const.int32(self.ctx, 0x7F), "procrun.low7");
+            const is_exited = self.builder.buildICmp(llvm.c.LLVMIntEQ, low7, llvm.Const.int32(self.ctx, 0), "procrun.is_exited");
+
+            // WEXITSTATUS: (status >> 8) & 0xFF
             const shifted = llvm.c.LLVMBuildAShr(self.builder.ref, raw_status, llvm.Const.int32(self.ctx, 8), "procrun.shifted");
-            break :blk llvm.c.LLVMBuildAnd(self.builder.ref, shifted, llvm.Const.int32(self.ctx, 0xFF), "procrun.exit_code");
+            const wexitstatus = llvm.c.LLVMBuildAnd(self.builder.ref, shifted, llvm.Const.int32(self.ctx, 0xFF), "procrun.wexitstatus");
+
+            // Signal case: 128 + (status & 0x7F)
+            const signal_code = llvm.c.LLVMBuildAdd(self.builder.ref, low7, llvm.Const.int32(self.ctx, 128), "procrun.signal_code");
+
+            break :blk llvm.c.LLVMBuildSelect(self.builder.ref, is_exited, wexitstatus, signal_code, "procrun.exit_code");
         };
 
         // Build Ok(ProcessOutput { stdout: final_buf, stderr: "", exit_code })
