@@ -139,7 +139,11 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
         BUILD_CMD="$KLAR build $f -o $temp_bin"
     fi
 
-    if $BUILD_CMD 2>/dev/null | grep -q "^Built"; then
+    build_stdout=$($BUILD_CMD 2>/tmp/klar_build_stderr_$$ || true)
+    build_stderr=$(cat /tmp/klar_build_stderr_$$ 2>/dev/null || true)
+    rm -f /tmp/klar_build_stderr_$$
+
+    if echo "$build_stdout" | grep -q "^Built"; then
         # Run and get exit code
         "$temp_bin" 2>/dev/null
         result=$?
@@ -161,7 +165,13 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
 
         rm -f "$temp_bin"
     else
-        echo "✗ $name (build failed)"
+        # Show first line of build error for diagnosis
+        build_err_line=$(echo "$build_stderr" | head -1)
+        if [ -n "$build_err_line" ]; then
+            echo "✗ $name (build failed: $build_err_line)"
+        else
+            echo "✗ $name (build failed)"
+        fi
         FAILED=$((FAILED + 1))
         if [ -n "$FAILURES" ]; then
             FAILURES="$FAILURES,"

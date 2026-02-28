@@ -258,7 +258,10 @@ fn linkForPlatform(
     child.stderr_behavior = .Pipe;
     child.stdout_behavior = .Pipe;
 
-    child.spawn() catch return LinkerError.LinkerFailed;
+    child.spawn() catch |err| {
+        if (err == error.FileNotFound) return LinkerError.LinkerNotFound;
+        return LinkerError.LinkerFailed;
+    };
 
     // Wait for completion and get result
     const result = child.wait() catch return LinkerError.LinkerFailed;
@@ -326,7 +329,10 @@ pub fn linkWithClang(
     child.stderr_behavior = .Pipe;
     child.stdout_behavior = .Pipe;
 
-    child.spawn() catch return LinkerError.LinkerFailed;
+    child.spawn() catch |err| {
+        if (err == error.FileNotFound) return LinkerError.LinkerNotFound;
+        return LinkerError.LinkerFailed;
+    };
 
     // Wait for completion and get result
     const result = child.wait() catch return LinkerError.LinkerFailed;

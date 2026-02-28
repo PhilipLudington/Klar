@@ -41,6 +41,9 @@ jobs:
         with:
           version: 0.15.2
 
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install LLVM (vovkos pre-built with dev headers)
         run: |
           curl -L -o llvm.7z "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-18.1.8/llvm-18.1.8-windows-amd64-msvc17-msvcrt.7z"
