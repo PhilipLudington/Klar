@@ -25141,6 +25141,32 @@ pub const Emitter = struct {
         const realloc_fn = self.getOrDeclareRealloc();
         var realloc_args = [_]llvm.ValueRef{ cur_buf, new_cap };
         const new_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "procrun.newbuf");
+
+        // Check realloc result — null means OOM. On failure, pclose the pipe,
+        // free the original cmd_buf, and return Err(IoError).
+        const realloc_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, new_buf, llvm.c.LLVMConstNull(ptr_type), "procrun.oom");
+        const realloc_ok_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.realloc_ok");
+        const realloc_fail_bb = llvm.appendBasicBlock(self.ctx, func, "procrun.realloc_fail");
+        _ = self.builder.buildCondBr(realloc_null, realloc_fail_bb, realloc_ok_bb);
+
+        // Realloc failure: clean up and return Err
+        self.builder.positionAtEnd(realloc_fail_bb);
+        const pclose_oom_fn = self.getOrDeclarePclose();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(pclose_oom_fn), pclose_oom_fn, &[_]llvm.ValueRef{pipe}, "");
+        const free_oom_fn = self.getOrDeclareFree();
+        // Free the old buffer (realloc failure leaves original pointer valid)
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_oom_fn), free_oom_fn, &[_]llvm.ValueRef{cur_buf}, "");
+        // Free the command buffer
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_oom_fn), free_oom_fn, &[_]llvm.ValueRef{cmd_buf}, "");
+        // Return Err(IoError) — use ENOMEM (12) directly
+        const oom_tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "procrun.oom_tag");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), oom_tag_ptr);
+        const oom_err_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "procrun.oom_err");
+        self.emitErrnoToIoError(oom_err_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Realloc succeeded: store new buffer and capacity
+        self.builder.positionAtEnd(realloc_ok_bb);
         _ = self.builder.buildStore(new_buf, out_buf_alloca);
         _ = self.builder.buildStore(new_cap, out_cap_alloca);
         _ = self.builder.buildBr(read_loop_bb);
@@ -25394,7 +25420,10 @@ pub const Emitter = struct {
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
-        // time_t time(time_t *tloc)  — time_t is typically i64
+        // time_t time(time_t *tloc)
+        // time_t is i64 on 64-bit macOS, Linux (x86_64, aarch64), and Windows.
+        // This would be incorrect on 32-bit Linux where time_t is i32, but Klar
+        // currently only targets 64-bit platforms.
         var param_types = [_]llvm.TypeRef{llvm.Types.pointer(self.ctx)};
         const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int64(self.ctx), &param_types, 1, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);

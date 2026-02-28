@@ -607,17 +607,36 @@ fn nativeParseFloat(_: Allocator, args: []const Value) RuntimeError!Value {
 // Environment, Process, Stat, Timestamp Functions
 // ============================================================================
 
+// One-time warning flags for VM stubs (avoid spamming on repeated calls)
+var warned_env_get: bool = false;
+var warned_env_set: bool = false;
+var warned_fs_stat: bool = false;
+var warned_process_run: bool = false;
+
+fn warnVmStub(name: []const u8) void {
+    const stderr = getStdErr();
+    stderr.writeAll("warning: ") catch {};
+    stderr.writeAll(name) catch {};
+    stderr.writeAll(" is not supported in bytecode VM mode; compile with 'klar build' for native support\n") catch {};
+}
+
 fn nativeEnvGet(_: Allocator, args: []const Value) RuntimeError!Value {
-    // VM: env_get returns None (not supported in bytecode VM, use native build)
     _ = args;
+    if (!warned_env_get) {
+        warned_env_get = true;
+        warnVmStub("env_get");
+    }
     const gc = active_gc orelse return RuntimeError.TypeError;
     const none = ObjOptional.createNoneGC(gc) catch return RuntimeError.OutOfMemory;
     return .{ .optional = none };
 }
 
 fn nativeEnvSet(allocator: Allocator, args: []const Value) RuntimeError!Value {
-    // VM stub: return Err("not supported in bytecode VM") as a Result struct.
     _ = args;
+    if (!warned_env_set) {
+        warned_env_set = true;
+        warnVmStub("env_set");
+    }
     const gc = active_gc orelse return RuntimeError.TypeError;
     const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
     result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
@@ -631,8 +650,11 @@ fn nativeTimestampNow(_: Allocator, _: []const Value) RuntimeError!Value {
 }
 
 fn nativeFsStat(allocator: Allocator, args: []const Value) RuntimeError!Value {
-    // VM stub: return Err("not supported in bytecode VM") as a Result struct.
     _ = args;
+    if (!warned_fs_stat) {
+        warned_fs_stat = true;
+        warnVmStub("fs_stat");
+    }
     const gc = active_gc orelse return RuntimeError.TypeError;
     const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
     result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
@@ -641,8 +663,11 @@ fn nativeFsStat(allocator: Allocator, args: []const Value) RuntimeError!Value {
 }
 
 fn nativeProcessRun(allocator: Allocator, args: []const Value) RuntimeError!Value {
-    // VM stub: return Err("not supported in bytecode VM") as a Result struct.
     _ = args;
+    if (!warned_process_run) {
+        warned_process_run = true;
+        warnVmStub("process_run");
+    }
     const gc = active_gc orelse return RuntimeError.TypeError;
     const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
     result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;

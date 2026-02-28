@@ -1971,8 +1971,10 @@ pub const TypeChecker = struct {
         });
 
         // process_run(cmd: string, args: List#[string]) -> Result#[ProcessOutput, IoError]
-        // Uses popen() internally — cmd+args are concatenated into a shell command string.
-        // Callers are responsible for sanitizing inputs to avoid shell injection.
+        // SECURITY WARNING: Uses popen() internally — cmd and args are concatenated into a
+        // single shell command string passed to /bin/sh. Shell metacharacters in any argument
+        // (;, |, $(), `, &&, etc.) WILL be interpreted. Only pass trusted, literal strings.
+        // A future process_spawn() builtin will use execvp() for safe argument passing.
         const process_args_type = try self.type_builder.listType(self.type_builder.stringType());
         const process_run_ret = try self.type_builder.resultType(process_output_type, self.type_builder.ioErrorType());
         const process_run_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), process_args_type }, process_run_ret);

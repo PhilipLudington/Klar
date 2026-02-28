@@ -370,7 +370,7 @@ pub const Interpreter = struct {
         try self.global_env.define("env_get", .{ .builtin = env_get_fn }, false);
 
         const env_set_fn = try self.allocator.create(values.BuiltinFunction);
-        env_set_fn.* = .{ .name = "env_set", .func = &builtinStubResultIO };
+        env_set_fn.* = .{ .name = "env_set", .func = &builtinStubEnvSet };
         try self.global_env.define("env_set", .{ .builtin = env_set_fn }, false);
 
         const timestamp_now_fn = try self.allocator.create(values.BuiltinFunction);
@@ -378,11 +378,11 @@ pub const Interpreter = struct {
         try self.global_env.define("timestamp_now", .{ .builtin = timestamp_now_fn }, false);
 
         const fs_stat_fn = try self.allocator.create(values.BuiltinFunction);
-        fs_stat_fn.* = .{ .name = "fs_stat", .func = &builtinStubResultIO };
+        fs_stat_fn.* = .{ .name = "fs_stat", .func = &builtinStubFsStat };
         try self.global_env.define("fs_stat", .{ .builtin = fs_stat_fn }, false);
 
         const process_run_fn = try self.allocator.create(values.BuiltinFunction);
-        process_run_fn.* = .{ .name = "process_run", .func = &builtinStubResultIO };
+        process_run_fn.* = .{ .name = "process_run", .func = &builtinStubProcessRun };
         try self.global_env.define("process_run", .{ .builtin = process_run_fn }, false);
     }
 
@@ -2848,16 +2848,62 @@ fn builtinParseFloat(allocator: Allocator, args: []const Value) RuntimeError!Val
 // Phase 0: Environment, Process, Stat, Timestamp
 // ============================================================================
 
+// One-time warning flags for interpreter stubs
+var interp_warned_env_get: bool = false;
+var interp_warned_env_set: bool = false;
+var interp_warned_fs_stat: bool = false;
+var interp_warned_process_run: bool = false;
+
+fn warnInterpStub(name: []const u8) void {
+    const stderr = getStdErr();
+    stderr.writeAll("warning: ") catch {};
+    stderr.writeAll(name) catch {};
+    stderr.writeAll(" is not supported in interpreter mode; compile with 'klar build' for native support\n") catch {};
+}
+
 /// Stub for env_get: returns None (not supported in interpreter, use native build).
 fn builtinStubEnvGet(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_env_get) {
+        interp_warned_env_get = true;
+        warnInterpStub("env_get");
+    }
     const opt = allocator.create(values.OptionalValue) catch return RuntimeError.OutOfMemory;
     opt.* = .{ .value = null };
     return .{ .optional = opt };
 }
 
-/// Stub for builtins returning Result that are not supported in the interpreter.
-/// Returns Err(void) so callers can pattern-match on is_ok() rather than crashing.
-fn builtinStubResultIO(allocator: Allocator, _: []const Value) RuntimeError!Value {
+/// Stub for env_set: returns Err (not supported in interpreter, use native build).
+fn builtinStubEnvSet(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_env_set) {
+        interp_warned_env_set = true;
+        warnInterpStub("env_set");
+    }
+    const err_val = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    err_val.* = .void_;
+    const res = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    res.* = .{ .is_ok = false, .value = err_val };
+    return .{ .result = res };
+}
+
+/// Stub for fs_stat: returns Err (not supported in interpreter, use native build).
+fn builtinStubFsStat(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_fs_stat) {
+        interp_warned_fs_stat = true;
+        warnInterpStub("fs_stat");
+    }
+    const err_val = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    err_val.* = .void_;
+    const res = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    res.* = .{ .is_ok = false, .value = err_val };
+    return .{ .result = res };
+}
+
+/// Stub for process_run: returns Err (not supported in interpreter, use native build).
+fn builtinStubProcessRun(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_process_run) {
+        interp_warned_process_run = true;
+        warnInterpStub("process_run");
+    }
     const err_val = allocator.create(Value) catch return RuntimeError.OutOfMemory;
     err_val.* = .void_;
     const res = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;

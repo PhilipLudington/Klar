@@ -32,5 +32,34 @@ fn main() -> i32 {
         return 5  // 'false' should exit with non-zero
     }
 
+    // Test output > 4096 bytes to exercise the buffer grow/realloc path.
+    // seq 1 1000 produces ~3893 bytes; seq 1 2000 produces ~8893 bytes (well over 4096).
+    var args3: List#[string] = List.new#[string]()
+    args3.push("1")
+    args3.push("2000")
+    let result3: Result#[ProcessOutput, IoError] = process_run("seq", args3)
+    if not result3.is_ok() {
+        return 6  // process_run failed for large output
+    }
+
+    let output3: ProcessOutput = result3!
+    if output3.exit_code != 0 {
+        return 7  // seq should exit with 0
+    }
+
+    // Verify the output is non-trivially large (should be > 4096 bytes)
+    let out_len: i32 = output3.stdout.len()
+    if out_len < 4096 {
+        return 8  // Expected output > 4096 bytes to test realloc path
+    }
+
+    // Verify the output starts and ends correctly
+    if not output3.stdout.starts_with("1\n2\n") {
+        return 9  // Should start with "1\n2\n"
+    }
+    if not output3.stdout.ends_with("2000\n") {
+        return 10  // Should end with "2000\n"
+    }
+
     return 42
 }
