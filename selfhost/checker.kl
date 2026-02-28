@@ -16,7 +16,7 @@ import types.{
     KlarType, TypeKind, TypeId, PrimitiveKind,
     no_type, has_type,
     make_primitive, get_primitive_kind,
-    type_i32, type_i64, type_f64, type_bool, type_char, type_string,
+    type_i32, type_i64, type_u8, type_f64, type_bool, type_char, type_string,
     type_void, type_never, type_unknown, type_error, type_string_data,
     type_eq_simple, type_to_string_simple, type_kind_name,
     type_is_numeric, type_is_integer, type_is_float, type_is_signed,
@@ -34,7 +34,7 @@ import ast.{
     Expr, Stmt, Decl, TypeExpr, Pattern,
     BinaryOp, UnaryOp, PostfixOp, AssignOp,
     FnParam, MatchArm, FieldInit, StructField, EnumVariantDecl, ImportItem,
-    GenericParam, FunctionDeclData, StructDeclData, EnumDeclData,
+    GenericParam, FunctionDeclData, StructDeclData, EnumDeclData, ImplDeclData,
     NamedTypeData, ArrayTypeData, SliceTypeData, TupleTypeData,
     OptionalTypeData, ResultTypeData, FunctionTypeData,
     ReferenceTypeData, GenericApplyData,
@@ -153,6 +153,7 @@ pub struct TypeChecker {
     pub generic_struct_data: List#[StructDeclData],
     pub generic_enum_decls: Map#[string, i32],
     pub generic_enum_data: List#[EnumDeclData],
+    pub generic_impl_data: List#[ImplDeclData],
 
     // Trait infrastructure (Milestone 9.10.2)
     pub type_traits: List#[TraitData],
@@ -238,6 +239,7 @@ impl TypeChecker {
             generic_struct_data: List.new#[StructDeclData](),
             generic_enum_decls: Map.new#[string, i32](),
             generic_enum_data: List.new#[EnumDeclData](),
+            generic_impl_data: List.new#[ImplDeclData](),
 
             type_traits: List.new#[TraitData](),
             trait_methods_data: List.new#[TraitMethodData](),
@@ -724,8 +726,19 @@ fn resolve_user_generic_struct(tc: TypeChecker, data: GenericApplyData, name: st
 fn resolve_user_generic_struct_impl(tc: TypeChecker, data: GenericApplyData, name: string, struct_decl: StructDeclData) -> (TypeChecker, KlarType) {
     var c: TypeChecker = tc
 
+    // Save current substitution map for re-entrant generic instantiation.
+    // If this function is called recursively (e.g. a field type is another
+    // generic struct like Pair#[i32, string] inside Wrapper#[T]), the inner
+    // call's clear_substitutions would wipe the outer call's map. Saving and
+    // restoring ensures each nesting level operates on its own substitution
+    // context and the caller's map is preserved in the returned TypeChecker.
+    let saved_sub_keys: List#[i32] = c.substitution_keys
+    let saved_sub_values: List#[KlarType] = c.substitution_values
+
     // Validate type argument count
     if data.args_count != struct_decl.generics_count {
+        c.substitution_keys = saved_sub_keys
+        c.substitution_values = saved_sub_values
         return add_typed_error_with_type(c, ErrorKind::WrongNumberOfArgs, data.span,
             "generic struct '" + name + "' expects " + struct_decl.generics_count.to_string().as_str() +
             " type argument(s), got " + data.args_count.to_string().as_str())
@@ -757,7 +770,11 @@ fn resolve_user_generic_struct_impl(tc: TypeChecker, data: GenericApplyData, nam
     if c.mono_structs.contains_key(mangled) {
         let opt_cached: ?KlarType = c.mono_structs.get(mangled)
         match opt_cached {
-            Some(cached) => { return (c, cached) }
+            Some(cached) => {
+                c.substitution_keys = saved_sub_keys
+                c.substitution_values = saved_sub_values
+                return (c, cached)
+            }
             None => {}
         }
     }
@@ -798,7 +815,114 @@ fn resolve_user_generic_struct_impl(tc: TypeChecker, data: GenericApplyData, nam
     // Register mangled name in struct_types so field access works
     c.struct_types.insert(mangled, struct_type)
 
+    // Register methods from generic impl blocks for this struct
+    c = register_generic_impl_methods(c, name, mangled, tvar_start, struct_decl.generics_count)
+
+    // Restore substitution map so the caller's context is preserved
+    c.substitution_keys = saved_sub_keys
+    c.substitution_values = saved_sub_values
+
     return (c, struct_type)
+}
+
+// Register monomorphized methods from generic impl blocks for a concrete struct.
+// Called during generic struct instantiation after substitution map is set up.
+// Scans ALL generic_impl_data entries matching base_name so that multiple impl
+// blocks (e.g. inherent impl + trait impl) are all processed.
+fn register_generic_impl_methods(tc: TypeChecker, base_name: string,
+    mangled_name: string, tvar_start: i32, tvar_count: i32) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    var ii: i32 = 0
+    while ii < c.generic_impl_data.len() {
+        let impl_data: ImplDeclData = c.generic_impl_data[ii]
+        if impl_data.target_type == base_name {
+            var mi: i32 = 0
+            while mi < impl_data.methods_count {
+                let method_decl: Decl = c.decls[impl_data.methods_start + mi]
+                match method_decl {
+                    Decl::Function(fn_data) => {
+                        c = register_mono_impl_method(c, fn_data, mangled_name, tvar_start, tvar_count)
+                    }
+                    _ => {}
+                }
+                mi = mi + 1
+            }
+        }
+        ii = ii + 1
+    }
+
+    return c
+}
+
+// Register a single monomorphized method from a generic impl.
+// NOTE: The self-skip + param-collect + contiguous-push scaffolding here
+// mirrors register_impl's inner loop in checker_decl.kl. The key difference
+// is that this function resolves types via resolve_type_expr_with_type_vars +
+// substitute_type (for monomorphization), while register_impl uses plain
+// resolve_type_expr. Extracting a shared helper would require first-class
+// function parameters for the resolve step.
+fn register_mono_impl_method(tc: TypeChecker, fn_data: FunctionDeclData,
+    mangled_name: string, tvar_start: i32, tvar_count: i32) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    let key: string = mangled_name + "." + fn_data.fn_name
+
+    // Collect param types (skip self), resolving with type vars and substitution
+    var param_types: List#[KlarType] = List.new#[KlarType]()
+    var pi: i32 = 0
+    var self_skip: i32 = 0
+    while pi < fn_data.params_count {
+        let param: FnParam = c.extra_params[fn_data.params_start + pi]
+        if pi == 0 and (param.param_name == "self" or param.param_name == "inout self") {
+            self_skip = 1
+        } else {
+            let r: (TypeChecker, KlarType) = resolve_type_expr_with_type_vars(c, param.type_expr, tvar_start, tvar_count)
+            c = r.0
+            let sr: (TypeChecker, KlarType) = substitute_type(c, r.1)
+            c = sr.0
+            param_types.push(sr.1)
+        }
+        pi = pi + 1
+    }
+
+    // Resolve return type with substitution
+    let rr: (TypeChecker, KlarType) = resolve_type_expr_with_type_vars(c, fn_data.return_type, tvar_start, tvar_count)
+    c = rr.0
+    let sr_ret: (TypeChecker, KlarType) = substitute_type(c, rr.1)
+    c = sr_ret.0
+    let ret_type: KlarType = sr_ret.1
+
+    // Push param types contiguously
+    let params_start: i32 = c.resolved_types.len()
+    var ppi: i32 = 0
+    while ppi < param_types.len() {
+        let pr: (TypeChecker, i32) = push_type_ref(c, param_types[ppi])
+        c = pr.0
+        ppi = ppi + 1
+    }
+
+    // Push return type
+    let pr_ret: (TypeChecker, i32) = push_type_ref(c, ret_type)
+    c = pr_ret.0
+
+    let fn_idx: i32 = c.type_functions.len()
+    c.type_functions.push(FunctionData {
+        params_start: params_start,
+        params_count: fn_data.params_count - self_skip,
+        return_type: TypeId { id: pr_ret.1 },
+        is_async: false,
+        is_unsafe: fn_data.is_unsafe,
+    })
+
+    let mtype: KlarType = KlarType { kind: TypeKind::Function, payload: fn_idx }
+    c.methods.insert(key, MethodInfo {
+        method_name: fn_data.fn_name,
+        method_type: mtype,
+        fn_data_idx: fn_idx,
+    })
+
+    return c
 }
 
 // Helper: add error and return error type
@@ -1601,6 +1725,16 @@ pub fn register_builtins(tc: TypeChecker) -> TypeChecker {
     let r14: (TypeChecker, KlarType) = make_fn_type_1(c, type_i32(), type_never())
     c = r14.0
     c = define_builtin(c, "exit", r14.1)
+
+    // from_byte(b: u8) -> string
+    let r14a: (TypeChecker, KlarType) = make_fn_type_1(c, type_u8(), type_string())
+    c = r14a.0
+    c = define_builtin(c, "from_byte", r14a.1)
+
+    // len(s: string) -> i32
+    let r14b: (TypeChecker, KlarType) = make_fn_type_1(c, type_string(), type_i32())
+    c = r14b.0
+    c = define_builtin(c, "len", r14b.1)
 
     // min(a: unknown, b: unknown) -> unknown
     let r15: (TypeChecker, KlarType) = make_fn_type_2(c, type_unknown(), type_unknown(), type_unknown())

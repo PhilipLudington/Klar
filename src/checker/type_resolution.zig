@@ -624,6 +624,15 @@ pub fn resolveTypeExpr(tc: anytype, type_expr: ast.TypeExpr) !Type {
                     return sym.type_;
                 }
             }
+            // Fallback: search across all module scopes (for codegen-time resolution
+            // when current scope may not contain imported types from other modules).
+            // Required for multi-module selfhost builds — removing this causes
+            // UnsupportedFeature codegen errors. See MEMORY.md.
+            if (tc.lookupSymbolAcrossModules(n.name)) |sym| {
+                if (sym.kind == .type_ or sym.kind == .trait_) {
+                    return sym.type_;
+                }
+            }
             tc.addError(.undefined_type, n.span, "undefined type '{s}'", .{n.name});
             return tc.type_builder.unknownType();
         },

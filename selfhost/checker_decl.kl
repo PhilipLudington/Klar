@@ -297,8 +297,11 @@ fn register_enum(tc: TypeChecker, data: EnumDeclData) -> TypeChecker {
 fn register_impl(tc: TypeChecker, data: ImplDeclData) -> TypeChecker {
     var c: TypeChecker = tc
 
-    // Skip generic impls (deferred)
+    // Store generic impls for later instantiation during monomorphization.
+    // Multiple impl blocks per type are supported (e.g. inherent + trait).
+    // register_generic_impl_methods scans all entries matching the type name.
     if data.generics_count > 0 {
+        c.generic_impl_data.push(data)
         return c
     }
 
@@ -495,6 +498,16 @@ fn check_function_body(tc: TypeChecker, data: FunctionDeclData) -> TypeChecker {
     // Skip generic, extern, or bodyless functions
     if data.generics_count > 0 or data.is_extern or data.body_count == 0 {
         return c
+    }
+
+    // Skip impl methods — their bodies are checked via check_impl_methods.
+    // Without this guard, methods in the top-level decl range get checked
+    // both here and via check_impl_methods, producing duplicate errors.
+    if data.params_count > 0 {
+        let first_param: FnParam = c.extra_params[data.params_start]
+        if first_param.param_name == "self" or first_param.param_name == "inout self" {
+            return c
+        }
     }
 
     // Look up the function's type to get return type

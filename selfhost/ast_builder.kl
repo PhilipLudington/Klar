@@ -218,17 +218,25 @@ fn build_type_slice(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Ty
 fn build_type_tuple(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, TypeExprId) {
     let ep: i32 = field_pos(json, pos, "elements")
     var c: TypeChecker = tc
-    let start: i32 = c.extra_type_expr_ids.len()
+    // Collect element type expr IDs first, then push contiguously
+    // (build_type_expr may internally push sub-type expr IDs for generic args)
+    var elem_ids: List#[TypeExprId] = List.new#[TypeExprId]()
     var count: i32 = 0
     if ep >= 0 {
         var ap: i32 = array_start(json, ep)
         while ap >= 0 {
             let r: (TypeChecker, TypeExprId) = build_type_expr(c, json, ap)
             c = r.0
-            c.extra_type_expr_ids.push(r.1)
+            elem_ids.push(r.1)
             count = count + 1
             ap = array_next(json, ap)
         }
+    }
+    let start: i32 = c.extra_type_expr_ids.len()
+    var ei: i32 = 0
+    while ei < elem_ids.len() {
+        c.extra_type_expr_ids.push(elem_ids[ei])
+        ei = ei + 1
     }
     let idx: i32 = c.type_exprs.len()
     c.type_exprs.push(TypeExpr::Tuple(TupleTypeData { elems_start: start, elems_count: count, span: s() }))
@@ -238,21 +246,34 @@ fn build_type_tuple(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Ty
 fn build_type_function(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, TypeExprId) {
     let pp: i32 = field_pos(json, pos, "params")
     var c: TypeChecker = tc
-    let start: i32 = c.extra_type_expr_ids.len()
+    // Collect param type expr IDs first, then push contiguously
+    var param_ids: List#[TypeExprId] = List.new#[TypeExprId]()
     var count: i32 = 0
     if pp >= 0 {
         var ap: i32 = array_start(json, pp)
         while ap >= 0 {
             let r: (TypeChecker, TypeExprId) = build_type_expr(c, json, ap)
             c = r.0
-            c.extra_type_expr_ids.push(r.1)
+            param_ids.push(r.1)
             count = count + 1
             ap = array_next(json, ap)
         }
     }
+    // Build the return type BEFORE snapshotting start. Any sub-type-expr IDs
+    // pushed by nested generics in the return type land before start, keeping
+    // the param IDs contiguous in [start, start+count). This is intentionally
+    // asymmetric: param sub-IDs from collection above also land before start
+    // and are referenced internally by each param's own TypeExpr, not via
+    // params_start.
     let rtp: i32 = field_pos(json, pos, "return_type")
     let rr: (TypeChecker, TypeExprId) = build_type_expr(c, json, rtp)
     c = rr.0
+    let start: i32 = c.extra_type_expr_ids.len()
+    var pi: i32 = 0
+    while pi < param_ids.len() {
+        c.extra_type_expr_ids.push(param_ids[pi])
+        pi = pi + 1
+    }
     let idx: i32 = c.type_exprs.len()
     c.type_exprs.push(TypeExpr::FunctionType(FunctionTypeData {
         params_start: start, params_count: count, ret: rr.1, span: s(),
@@ -275,17 +296,24 @@ fn build_type_generic_apply(tc: TypeChecker, json: string, pos: i32) -> (TypeChe
     let br: (TypeChecker, TypeExprId) = build_type_expr(tc, json, bp)
     var c: TypeChecker = br.0
     let ap: i32 = field_pos(json, pos, "args")
-    let start: i32 = c.extra_type_expr_ids.len()
+    // Collect arg type expr IDs first, then push contiguously
+    var arg_ids: List#[TypeExprId] = List.new#[TypeExprId]()
     var count: i32 = 0
     if ap >= 0 {
         var ep: i32 = array_start(json, ap)
         while ep >= 0 {
             let r: (TypeChecker, TypeExprId) = build_type_expr(c, json, ep)
             c = r.0
-            c.extra_type_expr_ids.push(r.1)
+            arg_ids.push(r.1)
             count = count + 1
             ep = array_next(json, ep)
         }
+    }
+    let start: i32 = c.extra_type_expr_ids.len()
+    var ai: i32 = 0
+    while ai < arg_ids.len() {
+        c.extra_type_expr_ids.push(arg_ids[ai])
+        ai = ai + 1
     }
     let idx: i32 = c.type_exprs.len()
     c.type_exprs.push(TypeExpr::GenericApply(GenericApplyData {
@@ -711,20 +739,27 @@ fn build_match_expr(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Ex
     let sr: (TypeChecker, ExprId) = build_expr(tc, json, sp)
     var c: TypeChecker = sr.0
     let ap: i32 = field_pos(json, pos, "arms")
-    let arms_start: i32 = c.extra_match_arms.len()
-    var arms_count: i32 = 0
+    // Collect match arms first, then push contiguously
+    // (build_match_arm calls build_expr for arm bodies, which may contain
+    // nested match expressions that would interleave entries in extra_match_arms)
+    var arm_list: List#[MatchArm] = List.new#[MatchArm]()
     if ap >= 0 {
         var ep: i32 = array_start(json, ap)
         while ep >= 0 {
             let r: (TypeChecker, MatchArm) = build_match_arm(c, json, ep)
             c = r.0
-            c.extra_match_arms.push(r.1)
-            arms_count = arms_count + 1
+            arm_list.push(r.1)
             ep = array_next(json, ep)
         }
     }
+    let arms_start: i32 = c.extra_match_arms.len()
+    var ali: i32 = 0
+    while ali < arm_list.len() {
+        c.extra_match_arms.push(arm_list[ali])
+        ali = ali + 1
+    }
     let idx: i32 = c.exprs.len()
-    c.exprs.push(Expr::MatchExpr(MatchExprData { subject: sr.1, arms_start: arms_start, arms_count: arms_count, span: s() }))
+    c.exprs.push(Expr::MatchExpr(MatchExprData { subject: sr.1, arms_start: arms_start, arms_count: arm_list.len(), span: s() }))
     return (c, ExprId { id: idx })
 }
 
@@ -798,8 +833,10 @@ fn build_struct_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker
 
     var c: TypeChecker = tc
     let fp: i32 = field_pos(json, pos, "fields")
-    let fields_start: i32 = c.extra_field_inits.len()
-    var fields_count: i32 = 0
+    // Collect field inits first, then push contiguously
+    // (build_expr for field values may recursively build nested struct literals,
+    // which would interleave entries in extra_field_inits)
+    var field_list: List#[FieldInit] = List.new#[FieldInit]()
     if fp >= 0 {
         var ap: i32 = array_start(json, fp)
         while ap >= 0 {
@@ -807,11 +844,17 @@ fn build_struct_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker
             let vp: i32 = field_pos(json, ap, "value")
             let vr: (TypeChecker, ExprId) = build_expr(c, json, vp)
             c = vr.0
-            c.extra_field_inits.push(FieldInit { field_name: fnr.0, value: vr.1, span: s() })
-            fields_count = fields_count + 1
+            field_list.push(FieldInit { field_name: fnr.0, value: vr.1, span: s() })
             ap = array_next(json, ap)
         }
     }
+    let fields_start: i32 = c.extra_field_inits.len()
+    var fli: i32 = 0
+    while fli < field_list.len() {
+        c.extra_field_inits.push(field_list[fli])
+        fli = fli + 1
+    }
+    let fields_count: i32 = field_list.len()
     let idx: i32 = c.exprs.len()
     c.exprs.push(Expr::StructLiteral(StructLiteralData {
         struct_name: struct_name,
@@ -1088,15 +1131,21 @@ fn build_variant_pat(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, P
         te = tr.1
     }
 
-    // Build payload pattern(s) — single pattern
+    // Build payload pattern first, then push — build_pattern may push
+    // into extra_pattern_ids for nested patterns (e.g. tuple payload),
+    // so we must snapshot fields_start AFTER building.
     let pp: i32 = field_pos(json, pos, "payload")
-    let fields_start: i32 = c.extra_pattern_ids.len()
+    var payload_id: PatternId = PatternId { id: -1 }
     var fields_count: i32 = 0
     if pp >= 0 and not json_is_null(json, pp) {
         let pr: (TypeChecker, PatternId) = build_pattern(c, json, pp)
         c = pr.0
-        c.extra_pattern_ids.push(pr.1)
+        payload_id = pr.1
         fields_count = 1
+    }
+    let fields_start: i32 = c.extra_pattern_ids.len()
+    if fields_count > 0 {
+        c.extra_pattern_ids.push(payload_id)
     }
 
     let idx: i32 = c.patterns.len()
@@ -1111,20 +1160,27 @@ fn build_variant_pat(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, P
 fn build_tuple_pat(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, PatternId) {
     let ep: i32 = field_pos(json, pos, "elements")
     var c: TypeChecker = tc
-    let start: i32 = c.extra_pattern_ids.len()
-    var count: i32 = 0
+    // Collect element pattern IDs first, then push contiguously
+    // (build_pattern may recursively push into extra_pattern_ids for
+    // nested variant/tuple patterns, breaking the [start, start+count) window)
+    var elem_ids: List#[PatternId] = List.new#[PatternId]()
     if ep >= 0 {
         var ap: i32 = array_start(json, ep)
         while ap >= 0 {
             let r: (TypeChecker, PatternId) = build_pattern(c, json, ap)
             c = r.0
-            c.extra_pattern_ids.push(r.1)
-            count = count + 1
+            elem_ids.push(r.1)
             ap = array_next(json, ap)
         }
     }
+    let start: i32 = c.extra_pattern_ids.len()
+    var ei: i32 = 0
+    while ei < elem_ids.len() {
+        c.extra_pattern_ids.push(elem_ids[ei])
+        ei = ei + 1
+    }
     let idx: i32 = c.patterns.len()
-    c.patterns.push(Pattern::TuplePat(TuplePatData { elems_start: start, elems_count: count, span: s() }))
+    c.patterns.push(Pattern::TuplePat(TuplePatData { elems_start: start, elems_count: elem_ids.len(), span: s() }))
     return (c, PatternId { id: idx })
 }
 
@@ -1555,21 +1611,28 @@ fn build_match_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, St
     let sr: (TypeChecker, ExprId) = build_expr(tc, json, sp)
     var c: TypeChecker = sr.0
     let ap: i32 = field_pos(json, pos, "arms")
-    let arms_start: i32 = c.extra_match_arms.len()
-    var arms_count: i32 = 0
+    // Collect match arms first, then push contiguously
+    // (build_match_arm calls build_expr for arm bodies, which may contain
+    // nested match expressions that would interleave entries in extra_match_arms)
+    var arm_list: List#[MatchArm] = List.new#[MatchArm]()
     if ap >= 0 {
         var ep: i32 = array_start(json, ap)
         while ep >= 0 {
             let r: (TypeChecker, MatchArm) = build_match_arm(c, json, ep)
             c = r.0
-            c.extra_match_arms.push(r.1)
-            arms_count = arms_count + 1
+            arm_list.push(r.1)
             ep = array_next(json, ep)
         }
     }
+    let arms_start: i32 = c.extra_match_arms.len()
+    var ali: i32 = 0
+    while ali < arm_list.len() {
+        c.extra_match_arms.push(arm_list[ali])
+        ali = ali + 1
+    }
     let idx: i32 = c.stmts.len()
     c.stmts.push(Stmt::MatchStmt(MatchStmtData {
-        subject: sr.1, arms_start: arms_start, arms_count: arms_count, span: s(),
+        subject: sr.1, arms_start: arms_start, arms_count: arm_list.len(), span: s(),
     }))
     return (c, StmtId { id: idx })
 }
@@ -1790,8 +1853,9 @@ fn build_enum_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Dec
             let vnr: (string, bool) = field_string(json, ap, "name")
             // Payload — check for tuple types
             let plp: i32 = field_pos(json, ap, "payload")
-            let payload_start: i32 = c.extra_type_expr_ids.len()
-            var payload_count: i32 = 0
+            // Collect payload type expr IDs first, then push contiguously
+            // (build_type_expr may push sub-IDs for generic payload types)
+            var payload_ids: List#[TypeExprId] = List.new#[TypeExprId]()
             if plp >= 0 and not json_is_null(json, plp) {
                 let plk: (string, bool) = field_string(json, plp, "kind")
                 if plk.0 == "tuple" {
@@ -1801,13 +1865,19 @@ fn build_enum_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Dec
                         while tp >= 0 {
                             let tr: (TypeChecker, TypeExprId) = build_type_expr(c, json, tp)
                             c = tr.0
-                            c.extra_type_expr_ids.push(tr.1)
-                            payload_count = payload_count + 1
+                            payload_ids.push(tr.1)
                             tp = array_next(json, tp)
                         }
                     }
                 }
             }
+            let payload_start: i32 = c.extra_type_expr_ids.len()
+            var pli: i32 = 0
+            while pli < payload_ids.len() {
+                c.extra_type_expr_ids.push(payload_ids[pli])
+                pli = pli + 1
+            }
+            let payload_count: i32 = payload_ids.len()
             c.extra_enum_variants.push(EnumVariantDecl {
                 variant_name: vnr.0,
                 payload_start: payload_start, payload_count: payload_count,
@@ -1907,20 +1977,27 @@ fn build_trait_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, De
     let gpr: (TypeChecker, i32, i32) = build_generic_params(c, json, tpp)
     c = gpr.0
 
-    // Super traits
+    // Super traits — collect then push contiguously
+    // (build_type_expr for generic super-traits may push sub-IDs into
+    // extra_type_expr_ids, breaking the [parents_start, parents_start+count) window)
     let stp: i32 = field_pos(json, pos, "super_traits")
-    let parents_start: i32 = c.extra_type_expr_ids.len()
-    var parents_count: i32 = 0
+    var parent_ids: List#[TypeExprId] = List.new#[TypeExprId]()
     if stp >= 0 {
         var ap: i32 = array_start(json, stp)
         while ap >= 0 {
             let r: (TypeChecker, TypeExprId) = build_type_expr(c, json, ap)
             c = r.0
-            c.extra_type_expr_ids.push(r.1)
-            parents_count = parents_count + 1
+            parent_ids.push(r.1)
             ap = array_next(json, ap)
         }
     }
+    let parents_start: i32 = c.extra_type_expr_ids.len()
+    var pti: i32 = 0
+    while pti < parent_ids.len() {
+        c.extra_type_expr_ids.push(parent_ids[pti])
+        pti = pti + 1
+    }
+    let parents_count: i32 = parent_ids.len()
 
     // Methods — for now store as decl indices (not TraitMethod)
     let mp: i32 = field_pos(json, pos, "methods")
@@ -2052,18 +2129,34 @@ pub fn build_module(tc: TypeChecker, json: string) -> (TypeChecker, AstModule) {
     }
 
     // Process declarations
+    // Collect top-level DeclIds first, since nested decls (impl methods)
+    // are also pushed into the flat decls array during building.
     let dp: i32 = field_pos(json, 0, "declarations")
-    let decls_start: i32 = c.decls.len()
-    var decls_count: i32 = 0
+    var top_level_ids: List#[i32] = List.new#[i32]()
     if dp >= 0 {
         var ap: i32 = array_start(json, dp)
         while ap >= 0 {
             let r: (TypeChecker, DeclId) = build_decl(c, json, ap)
             c = r.0
-            decls_count = decls_count + 1
+            top_level_ids.push(r.1.id)
             ap = array_next(json, ap)
         }
     }
+
+    // Re-push top-level decls as copies into a contiguous range so
+    // register_declarations can iterate [decls_start, decls_start+count).
+    // This is needed because build_decl for impl blocks pushes method decls
+    // between top-level decls, breaking contiguity. The originals remain in
+    // the arena (referenced by ImplDeclData.methods_start) — only code using
+    // the [start, count) window should iterate decls, never the full arena.
+    let decls_start: i32 = c.decls.len()
+    var tli: i32 = 0
+    while tli < top_level_ids.len() {
+        let decl_copy: Decl = c.decls[top_level_ids[tli]]
+        c.decls.push(decl_copy)
+        tli = tli + 1
+    }
+    let decls_count: i32 = top_level_ids.len()
 
     let m: AstModule = AstModule {
         imports_start: imports_start,

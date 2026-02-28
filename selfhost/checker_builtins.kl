@@ -208,6 +208,9 @@ fn check_float_method(tc: TypeChecker, recv_type: KlarType,
     // () -> string
     if method_name == "to_string" and args_count == 0 { return (tc, type_string()) }
 
+    // () -> i64
+    if method_name == "hash" and args_count == 0 { return (tc, type_i64()) }
+
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on " + type_display(recv_type))
 }
