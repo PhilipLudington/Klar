@@ -557,7 +557,7 @@ if [ ! -f "$SELFHOST_CHECKER" ]; then
     [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
     FAILURES="$FAILURES\"selfhost checker: build failed\""
 else
-    # Test tiers — start with simple programs
+    # Test tiers — Tier 1 (basics) + Tier 2 (closures, optionals, strings, traits, arithmetic)
     CHECKER_TIER1="
 test/native/hello.kl
 test/native/arith.kl
@@ -567,6 +567,9 @@ test/native/early_return.kl
 test/native/return_types.kl
 test/native/nested_calls.kl
 test/native/many_params.kl
+test/native/print_hello.kl
+test/native/print_no_newline.kl
+test/native/recursive_deep.kl
 test/native/struct.kl
 test/native/struct_method.kl
 test/native/struct_param.kl
@@ -583,6 +586,23 @@ test/native/string_basic.kl
 test/native/string_concat.kl
 test/native/string_eq.kl
 test/native/string_len.kl
+test/native/string_is_empty.kl
+test/native/string_push.kl
+test/native/string_append.kl
+test/native/string_clear.kl
+test/native/string_clone.kl
+test/native/string_as_str.kl
+test/native/string_contains.kl
+test/native/string_starts_with.kl
+test/native/string_ends_with.kl
+test/native/string_trim.kl
+test/native/string_to_uppercase.kl
+test/native/string_to_lowercase.kl
+test/native/string_slice.kl
+test/native/string_hash.kl
+test/native/string_drop.kl
+test/native/string_interp.kl
+test/native/string_primitives.kl
 test/native/eq_trait.kl
 test/native/eq_trait_bool.kl
 test/native/eq_trait_string.kl
@@ -590,6 +610,64 @@ test/native/clone_trait_int.kl
 test/native/clone_trait_bool.kl
 test/native/clone_trait_float.kl
 test/native/clone_trait_string.kl
+test/native/ordered_trait.kl
+test/native/ordered_trait_float.kl
+test/native/ordered_trait_string.kl
+test/native/hash_trait_int.kl
+test/native/hash_trait_bool.kl
+test/native/hash_trait_float.kl
+test/native/hash_trait_string.kl
+test/native/default_trait_int.kl
+test/native/default_trait_bool.kl
+test/native/default_trait_float.kl
+test/native/default_trait_string.kl
+test/native/drop_trait.kl
+test/native/int_abs.kl
+test/native/int_min.kl
+test/native/int_max.kl
+test/native/wrapping_add.kl
+test/native/wrapping_sub.kl
+test/native/wrapping_mul.kl
+test/native/wrapping_arithmetic.kl
+test/native/saturating_add.kl
+test/native/saturating_sub.kl
+test/native/saturating_mul.kl
+test/native/saturating_arithmetic.kl
+test/native/overflow_add.kl
+test/native/overflow_sub.kl
+test/native/overflow_mul.kl
+test/native/closure_simple.kl
+test/native/closure_arg.kl
+test/native/closure_capture.kl
+test/native/closure_multi_capture.kl
+test/native/closure_return_simple.kl
+test/native/optional_some.kl
+test/native/optional_unwrap.kl
+test/native/optional_coalesce.kl
+test/native/optional_coalesce_some.kl
+test/native/optional_unwrap_or.kl
+test/native/optional_expect.kl
+test/native/array.kl
+test/native/array_assign.kl
+test/native/array_sized.kl
+test/native/array_repeat.kl
+test/native/array_return.kl
+test/native/array_methods.kl
+test/native/tuple.kl
+test/native/list_basic.kl
+test/native/list_for.kl
+test/native/list_pop.kl
+test/native/list_last.kl
+test/native/list_with_capacity.kl
+test/native/map_basic.kl
+test/native/set_basic.kl
+test/native/generics_basic.kl
+test/native/generic_struct.kl
+test/native/generic_struct_method.kl
+test/native/trait_basic.kl
+test/native/trait_bounds.kl
+test/native/trait_method_with_args.kl
+test/native/match_tuple_element.kl
 "
 
     # Known gaps — features not yet in selfhost checker

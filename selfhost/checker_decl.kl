@@ -122,22 +122,34 @@ fn register_function(tc: TypeChecker, data: FunctionDeclData) -> TypeChecker {
         return c
     }
 
-    // Resolve parameter types
-    let params_start: i32 = c.resolved_types.len()
+    // Resolve parameter types — collect first, then push contiguously
+    // (resolve_type_expr may internally push sub-type refs, so we must
+    //  separate resolution from the contiguous param-type block)
+    var param_types: List#[KlarType] = List.new#[KlarType]()
     var i: i32 = 0
     while i < data.params_count {
         let param: FnParam = c.extra_params[data.params_start + i]
         let r: (TypeChecker, KlarType) = resolve_type_expr(c, param.type_expr)
         c = r.0
-        let pr: (TypeChecker, i32) = push_type_ref(c, r.1)
-        c = pr.0
+        param_types.push(r.1)
         i = i + 1
     }
 
-    // Resolve return type
+    // Resolve return type (before pushing params to keep it separate)
     let rr: (TypeChecker, KlarType) = resolve_type_expr(c, data.return_type)
     c = rr.0
     let ret_type: KlarType = rr.1
+
+    // Now push param types contiguously
+    let params_start: i32 = c.resolved_types.len()
+    var pi: i32 = 0
+    while pi < param_types.len() {
+        let pr: (TypeChecker, i32) = push_type_ref(c, param_types[pi])
+        c = pr.0
+        pi = pi + 1
+    }
+
+    // Push return type ref
     let pr_ret: (TypeChecker, i32) = push_type_ref(c, ret_type)
     c = pr_ret.0
     let ret_tid: i32 = pr_ret.1

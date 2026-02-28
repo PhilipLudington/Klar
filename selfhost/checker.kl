@@ -418,9 +418,10 @@ fn resolve_named_type(tc: TypeChecker, data: NamedTypeData) -> (TypeChecker, Kla
         None => {}
     }
 
-    // Check void/never
+    // Check void/never/Self
     if name == "void" { return (tc, type_void()) }
     if name == "never" { return (tc, type_never()) }
+    if name == "Self" { return (tc, type_unknown()) }
 
     // Check String (heap-allocated string type)
     if name == "String" { return (tc, type_string_data()) }
@@ -479,15 +480,24 @@ fn resolve_slice_type(tc: TypeChecker, data: SliceTypeData) -> (TypeChecker, Kla
 
 fn resolve_tuple_type(tc: TypeChecker, data: TupleTypeData) -> (TypeChecker, KlarType) {
     var c: TypeChecker = tc
-    let start: i32 = c.resolved_types.len()
+
+    // Resolve all element types first, then push contiguously
+    var elem_types: List#[KlarType] = List.new#[KlarType]()
     var i: i32 = 0
     while i < data.elems_count {
         let te_id: TypeExprId = c.extra_type_expr_ids[data.elems_start + i]
         let r: (TypeChecker, KlarType) = resolve_type_expr(c, te_id)
         c = r.0
-        let pr: (TypeChecker, i32) = push_type_ref(c, r.1)
-        c = pr.0
+        elem_types.push(r.1)
         i = i + 1
+    }
+
+    let start: i32 = c.resolved_types.len()
+    var ei: i32 = 0
+    while ei < elem_types.len() {
+        let pr: (TypeChecker, i32) = push_type_ref(c, elem_types[ei])
+        c = pr.0
+        ei = ei + 1
     }
 
     let tup_idx: i32 = c.type_tuples.len()
@@ -536,20 +546,33 @@ fn resolve_result_type(tc: TypeChecker, data: ResultTypeData) -> (TypeChecker, K
 
 fn resolve_function_type(tc: TypeChecker, data: FunctionTypeData) -> (TypeChecker, KlarType) {
     var c: TypeChecker = tc
-    let params_start: i32 = c.resolved_types.len()
+
+    // Resolve all param types first (collect), then push contiguously.
+    // resolve_type_expr may internally call push_type_ref for sub-types,
+    // so we must separate resolution from the contiguous param block.
+    var param_types: List#[KlarType] = List.new#[KlarType]()
     var i: i32 = 0
     while i < data.params_count {
         let te_id: TypeExprId = c.extra_type_expr_ids[data.params_start + i]
         let r: (TypeChecker, KlarType) = resolve_type_expr(c, te_id)
         c = r.0
-        let pr: (TypeChecker, i32) = push_type_ref(c, r.1)
-        c = pr.0
+        param_types.push(r.1)
         i = i + 1
     }
 
     let r_ret: (TypeChecker, KlarType) = resolve_type_expr(c, data.ret)
     c = r_ret.0
     let ret_type: KlarType = r_ret.1
+
+    // Now push param types contiguously
+    let params_start: i32 = c.resolved_types.len()
+    var pi: i32 = 0
+    while pi < param_types.len() {
+        let pr: (TypeChecker, i32) = push_type_ref(c, param_types[pi])
+        c = pr.0
+        pi = pi + 1
+    }
+
     let pr_ret: (TypeChecker, i32) = push_type_ref(c, ret_type)
     c = pr_ret.0
     let ret_tid: i32 = pr_ret.1
@@ -826,6 +849,8 @@ pub fn type_eq(a: KlarType, b: KlarType) -> bool {
 pub fn type_eq_tc(tc: TypeChecker, a: KlarType, b: KlarType) -> bool {
     // Fast path: same kind and payload
     if type_eq_simple(a, b) { return true }
+    // Unknown is a wildcard — matches any type (for polymorphic constructors like Ok/Err/Some)
+    if is_unknown_type(a) or is_unknown_type(b) { return true }
     // If kinds differ, not equal
     if type_kind_name(a.kind) != type_kind_name(b.kind) { return false }
     // Structural comparison for compound types
@@ -878,6 +903,42 @@ pub fn type_eq_tc(tc: TypeChecker, a: KlarType, b: KlarType) -> bool {
             let b_elem: KlarType = unwrap_range_element(tc, b)
             return type_eq_tc(tc, a_elem, b_elem)
         }
+        TypeKind::Function => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_fn: FunctionData = tc.type_functions[a.payload]
+            let b_fn: FunctionData = tc.type_functions[b.payload]
+            // Compare param count
+            if a_fn.params_count != b_fn.params_count { return false }
+            // Compare return types
+            let a_ret: KlarType = get_resolved_type(tc, a_fn.return_type.id)
+            let b_ret: KlarType = get_resolved_type(tc, b_fn.return_type.id)
+            if not type_eq_tc(tc, a_ret, b_ret) { return false }
+            // Compare each param type
+            var pi: i32 = 0
+            while pi < a_fn.params_count {
+                let a_param: KlarType = get_resolved_type(tc, a_fn.params_start + pi)
+                let b_param: KlarType = get_resolved_type(tc, b_fn.params_start + pi)
+                if not type_eq_tc(tc, a_param, b_param) { return false }
+                pi = pi + 1
+            }
+            return true
+        }
+        TypeKind::Tuple => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_tup: TupleData = tc.type_tuples[a.payload]
+            let b_tup: TupleData = tc.type_tuples[b.payload]
+            if a_tup.elems_count != b_tup.elems_count { return false }
+            var ti: i32 = 0
+            while ti < a_tup.elems_count {
+                let a_elem: KlarType = get_resolved_type(tc, a_tup.elems_start + ti)
+                let b_elem: KlarType = get_resolved_type(tc, b_tup.elems_start + ti)
+                if not type_eq_tc(tc, a_elem, b_elem) {
+                    return false
+                }
+                ti = ti + 1
+            }
+            return true
+        }
         _ => { return false }
     }
 }
@@ -927,6 +988,60 @@ pub fn type_compatible_tc(tc: TypeChecker, target: KlarType, value: KlarType) ->
     // Integer widening: i32 -> i64
     if type_eq_simple(target, type_i64()) and type_eq_simple(value, type_i32()) {
         return true
+    }
+    // Optional implicit wrapping: T is compatible with ?T
+    match target.kind {
+        TypeKind::Optional => {
+            let inner: KlarType = unwrap_optional_inner(tc, target)
+            if type_compatible_tc(tc, inner, value) { return true }
+        }
+        _ => {}
+    }
+    // Tuple structural compatibility: each element must be compatible
+    match target.kind {
+        TypeKind::Tuple => {
+            match value.kind {
+                TypeKind::Tuple => {
+                    if target.payload >= 0 and value.payload >= 0 {
+                        let t_tup: TupleData = tc.type_tuples[target.payload]
+                        let v_tup: TupleData = tc.type_tuples[value.payload]
+                        if t_tup.elems_count == v_tup.elems_count {
+                            var all_compat: bool = true
+                            var ti: i32 = 0
+                            while ti < t_tup.elems_count and all_compat {
+                                let t_elem: KlarType = get_resolved_type(tc, t_tup.elems_start + ti)
+                                let v_elem: KlarType = get_resolved_type(tc, v_tup.elems_start + ti)
+                                if not type_compatible_tc(tc, t_elem, v_elem) {
+                                    all_compat = false
+                                }
+                                ti = ti + 1
+                            }
+                            if all_compat { return true }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    // Array → Slice coercion: [T; N] is compatible with [T]
+    match target.kind {
+        TypeKind::Slice => {
+            match value.kind {
+                TypeKind::Array => {
+                    if target.payload >= 0 and value.payload >= 0 {
+                        let s_data: SliceData = tc.type_slices[target.payload]
+                        let a_data: ArrayData = tc.type_arrays[value.payload]
+                        let s_elem: KlarType = get_resolved_type(tc, s_data.element.id)
+                        let a_elem: KlarType = get_resolved_type(tc, a_data.element.id)
+                        if type_eq_tc(tc, s_elem, a_elem) { return true }
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
     }
     return type_eq_tc(tc, target, value)
 }

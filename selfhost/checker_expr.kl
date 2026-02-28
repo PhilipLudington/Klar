@@ -45,6 +45,7 @@ import checker.{
     push_type_ref, get_resolved_type,
     make_optional_type, make_result_type, make_range_type, unwrap_range_element,
     unwrap_optional_inner, unwrap_result_ok,
+    make_list_type, make_map_type, make_set_type,
     clear_substitutions, add_substitution, make_type_var,
     mangle_generic_name, substitute_type, unify_types,
     resolve_type_expr_with_type_vars,
@@ -620,12 +621,21 @@ fn check_method_args(tc: TypeChecker, data: MethodCallData) -> TypeChecker {
 }
 
 fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, KlarType) {
-    // Check for static type constructor calls (String.new(), etc.)
+    // Check for static type constructor calls (String.new(), List.new#[T](), etc.)
     let recv_expr: Expr = tc.exprs[data.receiver.id]
     match recv_expr {
         Expr::Identifier(id_data) => {
             if id_data.ident_name == "String" {
                 return check_string_static_call(tc, data)
+            }
+            if id_data.ident_name == "List" or id_data.ident_name == "Map" or id_data.ident_name == "Set" {
+                return check_collection_static_call(tc, data, id_data.ident_name)
+            }
+            // Primitive type static methods: i32.default(), i64.default(), etc.
+            if id_data.ident_name == "i32" or id_data.ident_name == "i64" or id_data.ident_name == "f64"
+                or id_data.ident_name == "bool" or id_data.ident_name == "string"
+                or id_data.ident_name == "char" or id_data.ident_name == "u8" {
+                return check_primitive_static_call(tc, data, id_data.ident_name)
             }
         }
         _ => {}
@@ -709,6 +719,99 @@ fn check_string_static_call(tc: TypeChecker, data: MethodCallData) -> (TypeCheck
     }
     return add_typed_error_with_type(c, ErrorKind::UndefinedMethod, data.span,
         "no static method '" + data.method_name + "' on String")
+}
+
+// ─── Collection Static Constructor Calls ─────────────────────────────
+
+fn check_collection_static_call(tc: TypeChecker, data: MethodCallData, type_name: string) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    c = check_method_args(c, data)
+
+    if type_name == "List" {
+        if data.method_name == "new" or data.method_name == "with_capacity" {
+            // List.new#[T]() or List.with_capacity#[T](n)
+            if data.type_args_count == 1 {
+                let ta_te: TypeExprId = c.extra_type_expr_ids[data.type_args_start]
+                let tar: (TypeChecker, KlarType) = resolve_type_expr(c, ta_te)
+                c = tar.0
+                return make_list_type(c, tar.1)
+            }
+            return add_typed_error_with_type(c, ErrorKind::TypeMismatch, data.span,
+                "List." + data.method_name + " requires 1 type argument")
+        }
+        return add_typed_error_with_type(c, ErrorKind::UndefinedMethod, data.span,
+            "no static method '" + data.method_name + "' on List")
+    }
+
+    if type_name == "Map" {
+        if data.method_name == "new" or data.method_name == "with_capacity" {
+            // Map.new#[K, V]() or Map.with_capacity#[K, V](n)
+            if data.type_args_count == 2 {
+                let ka_te: TypeExprId = c.extra_type_expr_ids[data.type_args_start]
+                let kar: (TypeChecker, KlarType) = resolve_type_expr(c, ka_te)
+                c = kar.0
+                let va_te: TypeExprId = c.extra_type_expr_ids[data.type_args_start + 1]
+                let var_: (TypeChecker, KlarType) = resolve_type_expr(c, va_te)
+                c = var_.0
+                return make_map_type(c, kar.1, var_.1)
+            }
+            return add_typed_error_with_type(c, ErrorKind::TypeMismatch, data.span,
+                "Map." + data.method_name + " requires 2 type arguments")
+        }
+        return add_typed_error_with_type(c, ErrorKind::UndefinedMethod, data.span,
+            "no static method '" + data.method_name + "' on Map")
+    }
+
+    if type_name == "Set" {
+        if data.method_name == "new" or data.method_name == "with_capacity" {
+            // Set.new#[T]() or Set.with_capacity#[T](n)
+            if data.type_args_count == 1 {
+                let ta_te: TypeExprId = c.extra_type_expr_ids[data.type_args_start]
+                let tar: (TypeChecker, KlarType) = resolve_type_expr(c, ta_te)
+                c = tar.0
+                return make_set_type(c, tar.1)
+            }
+            return add_typed_error_with_type(c, ErrorKind::TypeMismatch, data.span,
+                "Set." + data.method_name + " requires 1 type argument")
+        }
+        return add_typed_error_with_type(c, ErrorKind::UndefinedMethod, data.span,
+            "no static method '" + data.method_name + "' on Set")
+    }
+
+    return add_typed_error_with_type(c, ErrorKind::UndefinedMethod, data.span,
+        "no static method '" + data.method_name + "' on " + type_name)
+}
+
+// ─── Primitive Static Method Calls ───────────────────────────────────
+
+fn check_primitive_static_call(tc: TypeChecker, data: MethodCallData, type_name: string) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    c = check_method_args(c, data)
+
+    if data.method_name == "default" and data.args_count == 0 {
+        if type_name == "i32" { return (c, type_i32()) }
+        if type_name == "i64" { return (c, type_i64()) }
+        if type_name == "f64" { return (c, type_f64()) }
+        if type_name == "bool" { return (c, type_bool()) }
+        if type_name == "string" { return (c, type_string()) }
+        if type_name == "char" { return (c, type_char()) }
+        if type_name == "u8" { return (c, type_i32()) }
+    }
+
+    if data.method_name == "max_value" and data.args_count == 0 {
+        if type_name == "i32" { return (c, type_i32()) }
+        if type_name == "i64" { return (c, type_i64()) }
+        if type_name == "u8" { return (c, type_i32()) }
+    }
+
+    if data.method_name == "min_value" and data.args_count == 0 {
+        if type_name == "i32" { return (c, type_i32()) }
+        if type_name == "i64" { return (c, type_i64()) }
+        if type_name == "u8" { return (c, type_i32()) }
+    }
+
+    return add_typed_error_with_type(c, ErrorKind::UndefinedMethod, data.span,
+        "no static method '" + data.method_name + "' on " + type_name)
 }
 
 // ─── Concrete Type Trait Method Resolution ──────────────────────────
@@ -815,7 +918,31 @@ fn check_field_access(tc: TypeChecker, data: FieldAccessData) -> (TypeChecker, K
         }
         TypeKind::Tuple => {
             // Tuple field access: .0, .1, etc.
-            // Foundation: return unknown
+            if obj_type.payload >= 0 {
+                let tup: TupleData = c.type_tuples[obj_type.payload]
+                // Parse field name as tuple index (0, 1, 2, ...)
+                let fname: string = data.field_name
+                var tup_idx: i32 = -1
+                if fname == "0" { tup_idx = 0 }
+                if fname == "1" { tup_idx = 1 }
+                if fname == "2" { tup_idx = 2 }
+                if fname == "3" { tup_idx = 3 }
+                if fname == "4" { tup_idx = 4 }
+                if fname == "5" { tup_idx = 5 }
+                if fname == "6" { tup_idx = 6 }
+                if fname == "7" { tup_idx = 7 }
+                if tup_idx >= 0 and tup_idx < tup.elems_count {
+                    let elem_type: KlarType = get_resolved_type(c, tup.elems_start + tup_idx)
+                    return (c, elem_type)
+                }
+                if tup_idx >= 0 {
+                    return add_typed_error_with_type(c, ErrorKind::InvalidIndex, data.span,
+                        "tuple index " + data.field_name + " out of bounds (tuple has " +
+                        tup.elems_count.to_string().as_str() + " elements)")
+                }
+                return add_typed_error_with_type(c, ErrorKind::UndefinedField, data.span,
+                    "no field '" + data.field_name + "' on tuple")
+            }
             return (c, type_unknown())
         }
         _ => {
@@ -914,8 +1041,21 @@ fn check_block(tc: TypeChecker, data: BlockData) -> (TypeChecker, KlarType) {
 fn check_struct_literal(tc: TypeChecker, data: StructLiteralData) -> (TypeChecker, KlarType) {
     var c: TypeChecker = tc
 
-    // Look up struct type
+    // Look up struct type (check both concrete and generic registries)
     if not c.struct_types.contains_key(data.struct_name) {
+        // Check if it's a generic struct — the literal may use the base name
+        if c.generic_struct_decls.contains_key(data.struct_name) {
+            // Generic struct literal — accept without detailed field checking
+            // (monomorphization occurs during type annotation resolution)
+            var gi: i32 = 0
+            while gi < data.fields_count {
+                let fi: FieldInit = c.extra_field_inits[data.fields_start + gi]
+                let r: (TypeChecker, KlarType) = check_expr(c, fi.value)
+                c = r.0
+                gi = gi + 1
+            }
+            return (c, type_unknown())
+        }
         return add_typed_error_with_type(c, ErrorKind::UndefinedType, data.span, "unknown struct '" + data.struct_name + "'")
     }
 
@@ -1010,16 +1150,24 @@ fn check_array_literal(tc: TypeChecker, data: ArrayLiteralData) -> (TypeChecker,
 
 fn check_tuple_literal(tc: TypeChecker, data: TupleLiteralData) -> (TypeChecker, KlarType) {
     var c: TypeChecker = tc
-    let start: i32 = c.resolved_types.len()
 
+    // Collect element types first, then push contiguously
+    var elem_types: List#[KlarType] = List.new#[KlarType]()
     var i: i32 = 0
     while i < data.elems_count {
         let eid: ExprId = c.extra_expr_ids[data.elems_start + i]
         let r: (TypeChecker, KlarType) = check_expr(c, eid)
         c = r.0
-        let pr: (TypeChecker, i32) = push_type_ref(c, r.1)
-        c = pr.0
+        elem_types.push(r.1)
         i = i + 1
+    }
+
+    let start: i32 = c.resolved_types.len()
+    var ei: i32 = 0
+    while ei < elem_types.len() {
+        let pr: (TypeChecker, i32) = push_type_ref(c, elem_types[ei])
+        c = pr.0
+        ei = ei + 1
     }
 
     let tup_idx: i32 = c.type_tuples.len()

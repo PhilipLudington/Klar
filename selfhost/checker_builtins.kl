@@ -236,6 +236,25 @@ fn check_array_method(tc: TypeChecker, recv_type: KlarType,
     if method_name == "len" and args_count == 0 { return (tc, type_i32()) }
     if method_name == "is_empty" and args_count == 0 { return (tc, type_bool()) }
 
+    // Element access methods — need element type from ArrayData
+    if recv_type.payload >= 0 {
+        let a_data: ArrayData = tc.type_arrays[recv_type.payload]
+        let elem: KlarType = get_resolved_type(tc, a_data.element.id)
+        if method_name == "first" and args_count == 0 {
+            let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+            return r
+        }
+        if method_name == "last" and args_count == 0 {
+            let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+            return r
+        }
+        if method_name == "get" and args_count == 1 {
+            let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+            return r
+        }
+        if method_name == "contains" and args_count == 1 { return (tc, type_bool()) }
+    }
+
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on array")
 }
@@ -301,6 +320,15 @@ fn check_list_method(tc: TypeChecker, recv_type: KlarType,
 
     // (i32) -> T
     if method_name == "remove" and args_count == 1 { return (tc, elem) }
+
+    // () -> i32
+    if method_name == "capacity" and args_count == 0 { return (tc, type_i32()) }
+
+    // () -> void
+    if method_name == "drop" and args_count == 0 { return (tc, type_void()) }
+
+    // () -> List#[T]
+    if method_name == "clone" and args_count == 0 { return (tc, recv_type) }
 
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on List")
@@ -379,6 +407,15 @@ fn check_set_method(tc: TypeChecker, recv_type: KlarType,
 
     // () -> void
     if method_name == "clear" and args_count == 0 { return (tc, type_void()) }
+
+    // () -> i32
+    if method_name == "capacity" and args_count == 0 { return (tc, type_i32()) }
+
+    // () -> Set#[T]
+    if method_name == "clone" and args_count == 0 { return (tc, recv_type) }
+
+    // () -> void
+    if method_name == "drop" and args_count == 0 { return (tc, type_void()) }
 
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on Set")
