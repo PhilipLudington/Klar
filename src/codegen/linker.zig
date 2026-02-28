@@ -194,9 +194,13 @@ fn linkForPlatform(
                 allocated_strings.append(allocator, out_arg) catch return LinkerError.OutOfMemory;
                 args.appendSlice(allocator, &.{
                     "link.exe",
+                    "/NOLOGO",
                     out_arg,
                     object_file,
                     "/SUBSYSTEM:CONSOLE",
+                    // Default Windows libraries for CRT and system API
+                    "kernel32.lib",
+                    "msvcrt.lib",
                 }) catch return LinkerError.OutOfMemory;
             }
         },
@@ -255,7 +259,7 @@ fn linkForPlatform(
     }
 
     var child = std.process.Child.init(args.items, allocator);
-    child.stderr_behavior = .Pipe;
+    child.stderr_behavior = .Inherit;
     child.stdout_behavior = .Pipe;
 
     child.spawn() catch |err| {
