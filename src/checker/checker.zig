@@ -777,6 +777,15 @@ pub const TypeChecker = struct {
         }
         self.deprecated_functions.deinit(self.allocator);
         self.meta_group_names.deinit(self.allocator);
+        // Free heap-allocated keys for pure methods (format "TypeName::method_name").
+        // Plain function keys are borrowed from the AST and must not be freed.
+        // See meta_validation.clearPureFunctions for the safety invariant.
+        var pure_key_iter = self.pure_functions.keyIterator();
+        while (pure_key_iter.next()) |key| {
+            if (std.mem.indexOf(u8, key.*, "::") != null) {
+                self.allocator.free(key.*);
+            }
+        }
         self.pure_functions.deinit(self.allocator);
         self.meta_definitions.deinit(self.allocator);
     }

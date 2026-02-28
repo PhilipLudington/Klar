@@ -232,12 +232,13 @@ fn metaQueryDirectory(
     };
     defer walker.deinit();
 
-    while (walker.next() catch |err| blk: {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Warning: error walking '{s}': {}\n", .{ dir_path, err }) catch "Warning: directory walk error\n";
-        stderr.writeAll(msg) catch {};
-        break :blk null;
-    }) |entry| {
+    while (true) {
+        const entry = walker.next() catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Warning: error walking '{s}': {}\n", .{ dir_path, err }) catch "Warning: directory walk error\n";
+            stderr.writeAll(msg) catch {};
+            continue;
+        } orelse break;
         if (entry.kind == .directory) continue;
         if (shouldSkipPath(entry.path)) continue;
         if (!std.mem.endsWith(u8, entry.path, ".kl")) continue;

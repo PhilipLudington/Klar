@@ -116,13 +116,112 @@ pub fn validateFileMeta(tc: anytype, file_meta: []const ast.MetaAnnotation) void
                 }
             },
             .group_def => |g| {
+                // Validate group body structurally: nested annotations are templates
+                // applied to declarations at join time, so scope-dependent checks
+                // (custom annotation scope, meta guide on impl-only) are deferred.
                 for (g.annotations) |nested| {
-                    validateDeclMeta(tc, &.{nested}, .function);
+                    validateGroupBodyAnnotation(tc, nested);
                 }
             },
             else => {},
         }
     }
+}
+
+/// Validate a single annotation inside a group definition body.
+/// Group annotations are templates — they will be applied to declarations at join time.
+/// Only structural errors are checked here (no meta module, no nested groups/defines).
+/// Scope-dependent checks (custom annotation scope, meta guide on impl-only) are
+/// deferred until the group is joined to a specific declaration.
+fn validateGroupBodyAnnotation(tc: anytype, annotation: ast.MetaAnnotation) void {
+    switch (annotation) {
+        .module_meta => {
+            tc.addError(.meta_error, annotation.span(), "meta module cannot appear inside a group definition", .{});
+        },
+        .group_def => {
+            tc.addError(.meta_error, annotation.span(), "meta group cannot be nested inside another group definition", .{});
+        },
+        .define => {
+            tc.addError(.meta_error, annotation.span(), "meta define cannot appear inside a group definition", .{});
+        },
+        .group_join => |gj| {
+            if (!tc.meta_group_names.contains(gj.value)) {
+                tc.addError(.meta_error, gj.span, "meta in: group '{s}' is not defined", .{gj.value});
+            }
+        },
+        .related => |rel| {
+            validateRelatedPaths(tc, rel);
+        },
+        .custom => |cust| {
+            // Validate argument types/counts but NOT scope (scope depends on target declaration)
+            if (!tc.lenient_custom_meta) {
+                validateCustomAnnotationNoScope(tc, cust);
+            }
+        },
+        else => {
+            // intent, decision, tag, hint, deprecated, pure, guide — all structurally valid in groups
+        },
+    }
+}
+
+/// Validate a custom meta annotation's existence and argument types, but NOT its scope.
+/// Used for group body annotations where the target declaration kind is not yet known.
+fn validateCustomAnnotationNoScope(tc: anytype, cust: *ast.MetaCustom) void {
+    const def = tc.meta_definitions.get(cust.name) orelse {
+        tc.addError(.meta_error, cust.span, "unknown custom meta annotation '{s}'", .{cust.name});
+        return;
+    };
+
+    if (cust.args.len != def.params.len) {
+        tc.addError(.meta_error, cust.span, "meta {s} expects {d} argument(s), got {d}", .{ cust.name, def.params.len, cust.args.len });
+        return;
+    }
+
+    for (cust.args, 0..) |arg, i| {
+        const param = def.params[i];
+        switch (param.type_constraint) {
+            .string_type => {
+                switch (arg) {
+                    .string => {},
+                    .path => |p| {
+                        const joined = joinMetaPath(tc.allocator, p.segments);
+                        defer joined.deinit();
+                        tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, joined.slice });
+                    },
+                }
+            },
+            .path_type => {
+                switch (arg) {
+                    .path => {},
+                    .string => |value| {
+                        tc.addError(.meta_error, cust.span, "meta {s}: expected path for parameter '{s}', got string literal \"{s}\"", .{ cust.name, param.name, value });
+                    },
+                }
+            },
+            .string_union => |allowed| {
+                switch (arg) {
+                    .string => |value| {
+                        var found = false;
+                        for (allowed) |valid| {
+                            if (std.mem.eql(u8, value, valid)) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            tc.addError(.meta_error, cust.span, "meta {s}: argument '{s}' is not a valid value for parameter '{s}'", .{ cust.name, value, param.name });
+                        }
+                    },
+                    .path => |p| {
+                        const joined = joinMetaPath(tc.allocator, p.segments);
+                        defer joined.deinit();
+                        tc.addError(.meta_error, cust.span, "meta {s}: expected string literal for parameter '{s}', got path '{s}'", .{ cust.name, param.name, joined.slice });
+                    },
+                }
+            },
+        }
+    }
+    // NOTE: scope validation is intentionally skipped — see validateGroupBodyAnnotation.
 }
 
 /// Validate only custom meta annotations on a declaration.
@@ -289,6 +388,7 @@ pub fn clearPureFunctions(tc: anytype) void {
 ///
 /// Known gaps (not yet checked):
 /// - Method calls (e.g., obj.method()) — impure methods can be called without error
+/// - Function-typed parameters (callbacks) — could hold impure function references
 /// - Assignments to captured variables from outer scope (closures)
 /// - Mutation via inout parameters
 pub fn checkPureCall(tc: anytype, func_name: []const u8, call_span: ast.Span) void {
@@ -309,7 +409,11 @@ pub fn checkPureCall(tc: anytype, func_name: []const u8, call_span: ast.Span) vo
     }
     // Skip compiler-handled builtins that are pure (no side effects)
     if (isPureBuiltin(func_name)) return;
-    // Skip local variables (closures defined within the pure function's body)
+    // Skip local variables and parameters. Local closures defined within the pure
+    // function's body are safe. Function-typed parameters (callbacks) are a known
+    // gap — they could hold impure function references but we cannot statically
+    // verify this without a "pure callback" annotation on function types.
+    // This is the same category of limitation as impure method calls.
     if (tc.current_scope.lookup(func_name)) |sym| {
         if (sym.kind == .variable or sym.kind == .parameter) return;
     }
