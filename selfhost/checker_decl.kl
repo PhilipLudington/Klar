@@ -94,8 +94,10 @@ pub fn check_declarations(tc: TypeChecker, start: i32, count: i32) -> TypeChecke
             Decl::TestDecl(data) => {
                 c = check_test_body(c, data)
             }
+            Decl::ImplDecl(data) => {
+                c = check_impl_methods(c, data)
+            }
             _ => {
-                // ImplDecl method bodies are handled via their Function decls
                 // Other decls fully handled in pass 1
             }
         }
@@ -349,27 +351,39 @@ fn register_impl(tc: TypeChecker, data: ImplDeclData) -> TypeChecker {
 
                 // Build method function type
                 // Skip the self parameter (first param) for the method's type
-                let params_start: i32 = c.resolved_types.len()
+                // Collect param types first, then push contiguously
+                // (resolve_type_expr may internally push sub-type refs)
+                var param_types: List#[KlarType] = List.new#[KlarType]()
                 var pi: i32 = 0
                 var self_skip: i32 = 0
                 while pi < fn_data.params_count {
                     let param: FnParam = c.extra_params[fn_data.params_start + pi]
                     if pi == 0 and (param.param_name == "self" or param.param_name == "inout self") {
                         self_skip = 1
-                        pi = pi + 1
                     } else {
                         let r: (TypeChecker, KlarType) = resolve_type_expr(c, param.type_expr)
                         c = r.0
-                        let pr: (TypeChecker, i32) = push_type_ref(c, r.1)
-                        c = pr.0
-                        pi = pi + 1
+                        param_types.push(r.1)
                     }
+                    pi = pi + 1
                 }
 
-                // Resolve return type
+                // Resolve return type (before pushing params)
                 let rr: (TypeChecker, KlarType) = resolve_type_expr(c, fn_data.return_type)
                 c = rr.0
-                let pr_ret: (TypeChecker, i32) = push_type_ref(c, rr.1)
+                let ret_type: KlarType = rr.1
+
+                // Now push param types contiguously
+                let params_start: i32 = c.resolved_types.len()
+                var ppi: i32 = 0
+                while ppi < param_types.len() {
+                    let pr: (TypeChecker, i32) = push_type_ref(c, param_types[ppi])
+                    c = pr.0
+                    ppi = ppi + 1
+                }
+
+                // Push return type ref
+                let pr_ret: (TypeChecker, i32) = push_type_ref(c, ret_type)
                 c = pr_ret.0
 
                 let fn_idx: i32 = c.type_functions.len()
@@ -525,6 +539,107 @@ fn check_function_body(tc: TypeChecker, data: FunctionDeclData) -> TypeChecker {
     c = check_stmts(c, data.body_start, data.body_count)
 
     // Pop function scope
+    c.pop_scope()
+
+    // Restore context
+    c.current_return_type = prev_return_type
+    c.in_loop = prev_in_loop
+
+    return c
+}
+
+// ─── Check Impl Method Bodies ──────────────────────────────────────
+
+fn check_impl_methods(tc: TypeChecker, data: ImplDeclData) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Skip generic impls (deferred)
+    if data.generics_count > 0 {
+        return c
+    }
+
+    var i: i32 = 0
+    while i < data.methods_count {
+        let method_decl: Decl = c.decls[data.methods_start + i]
+        match method_decl {
+            Decl::Function(fn_data) => {
+                c = check_impl_method_body(c, fn_data, data.target_type)
+            }
+            _ => {}
+        }
+        i = i + 1
+    }
+    return c
+}
+
+fn check_impl_method_body(tc: TypeChecker, data: FunctionDeclData, target_type_name: string) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // Skip generic, extern, or bodyless methods
+    if data.generics_count > 0 or data.is_extern or data.body_count == 0 {
+        return c
+    }
+
+    // Look up the method's return type from the methods map
+    let key: string = target_type_name + "." + data.fn_name
+    let method_opt: ?MethodInfo = c.methods.get(key)
+    var ret_type: KlarType = type_void()
+    match method_opt {
+        Some(info) => {
+            let fn_type_data: FunctionData = c.type_functions[info.method_type.payload]
+            ret_type = get_resolved_type(c, fn_type_data.return_type.id)
+        }
+        None => {}
+    }
+
+    // Save and set context
+    let prev_return_type: KlarType = c.current_return_type
+    let prev_in_loop: bool = c.in_loop
+    c.current_return_type = ret_type
+    c.in_loop = false
+
+    // Push method scope and bind parameters
+    c.push_scope()
+    var i: i32 = 0
+    while i < data.params_count {
+        let param: FnParam = c.extra_params[data.params_start + i]
+        if i == 0 and (param.param_name == "self" or param.param_name == "inout self") {
+            // Resolve self to the target type
+            var self_type: KlarType = type_unknown()
+            let struct_opt: ?KlarType = c.struct_types.get(target_type_name)
+            match struct_opt {
+                Some(t) => { self_type = t }
+                None => {
+                    let enum_opt: ?KlarType = c.enum_types.get(target_type_name)
+                    match enum_opt {
+                        Some(t) => { self_type = t }
+                        None => {}
+                    }
+                }
+            }
+            c.define(param.param_name, SymbolInfo {
+                sym_name: param.param_name,
+                sym_type: self_type,
+                mutable: param.param_name == "inout self",
+                kind: SymbolKind::Parameter,
+            })
+        } else {
+            let r: (TypeChecker, KlarType) = resolve_type_expr(c, param.type_expr)
+            c = r.0
+            c.define(param.param_name, SymbolInfo {
+                sym_name: param.param_name,
+                sym_type: r.1,
+                mutable: param.is_mut,
+                kind: SymbolKind::Parameter,
+            })
+        }
+        i = i + 1
+    }
+
+    // Check body statements
+    c = check_stmts(c, data.body_start, data.body_count)
+
+    // Pop method scope
     c.pop_scope()
 
     // Restore context

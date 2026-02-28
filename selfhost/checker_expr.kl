@@ -30,6 +30,7 @@ import ast.{
     TupleLiteralData, ArrayLiteralData, StructLiteralData,
     EnumVariantData,
     GroupedData, InterpolatedStringData,
+    LetDeclData, VarDeclData,
     FnParam, MatchArm, FieldInit,
     FunctionDeclData, GenericParam,
     no_expr, has_expr, no_type_expr, has_type_expr
@@ -422,6 +423,11 @@ fn check_postfix(tc: TypeChecker, data: PostfixData) -> (TypeChecker, KlarType) 
 // ─── Function Call ──────────────────────────────────────────────────
 
 fn check_call(tc: TypeChecker, data: CallData) -> (TypeChecker, KlarType) {
+    // Guard against no_expr() sentinel
+    if not has_expr(data.callee) {
+        return (tc, type_unknown())
+    }
+
     // Get callee expression
     let callee_expr: Expr = tc.exprs[data.callee.id]
 
@@ -621,6 +627,11 @@ fn check_method_args(tc: TypeChecker, data: MethodCallData) -> TypeChecker {
 }
 
 fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, KlarType) {
+    // Guard against no_expr() sentinel
+    if not has_expr(data.receiver) {
+        return (tc, type_unknown())
+    }
+
     // Check for static type constructor calls (String.new(), List.new#[T](), etc.)
     let recv_expr: Expr = tc.exprs[data.receiver.id]
     match recv_expr {
@@ -1015,17 +1026,53 @@ fn check_block(tc: TypeChecker, data: BlockData) -> (TypeChecker, KlarType) {
     var i: i32 = 0
     while i < data.stmts_count {
         let sid: StmtId = c.extra_stmt_ids[data.stmts_start + i]
-        // Block statements are checked by checker_stmt.kl
-        // For now, just check expression statements inline
         let stmt: Stmt = c.stmts[sid.id]
+        // Can't import check_stmt (circular dep: checker_stmt → checker_expr),
+        // so we handle the critical statement types inline here.
         match stmt {
             Stmt::ExprStmt(es_data) => {
                 let r: (TypeChecker, KlarType) = check_expr(c, es_data.expr)
                 c = r.0
             }
+            Stmt::LetDecl(ld) => {
+                let rt: (TypeChecker, KlarType) = resolve_type_expr(c, ld.type_expr)
+                c = rt.0
+                var var_type: KlarType = rt.1
+                if has_expr(ld.value) {
+                    let ri: (TypeChecker, KlarType) = check_expr(c, ld.value)
+                    c = ri.0
+                    if not has_type_expr(ld.type_expr) {
+                        var_type = ri.1
+                    }
+                }
+                c.define(ld.decl_name, SymbolInfo {
+                    sym_name: ld.decl_name,
+                    sym_type: var_type,
+                    mutable: false,
+                    kind: SymbolKind::Variable,
+                })
+            }
+            Stmt::VarDecl(vd) => {
+                let rt: (TypeChecker, KlarType) = resolve_type_expr(c, vd.type_expr)
+                c = rt.0
+                var var_type: KlarType = rt.1
+                if has_expr(vd.value) {
+                    let ri: (TypeChecker, KlarType) = check_expr(c, vd.value)
+                    c = ri.0
+                    if not has_type_expr(vd.type_expr) {
+                        var_type = ri.1
+                    }
+                }
+                c.define(vd.decl_name, SymbolInfo {
+                    sym_name: vd.decl_name,
+                    sym_type: var_type,
+                    mutable: true,
+                    kind: SymbolKind::Variable,
+                })
+            }
             _ => {
-                // Non-expression statements (let, var, etc.) are skipped here.
-                // Full statement checking happens via check_stmts in function bodies.
+                // Other statement types (for, while, if, match, etc.) in block
+                // expressions are uncommon; full dispatch is in checker_stmt.kl.
             }
         }
         i = i + 1
