@@ -12,7 +12,10 @@ RESULTS_FILE="$SCRIPT_DIR/.native-test-results.json"
 KLAR="$SCRIPT_DIR/zig-out/bin/klar"
 TEST_DIR="$SCRIPT_DIR/test/native"
 HELPER_C="$TEST_DIR/ffi/helper.c"
-HELPER_LIB="/tmp/libklarhelper.a"
+
+# Cross-platform temp directory for test artifacts
+BUILD_DIR="$SCRIPT_DIR/build"
+mkdir -p "$BUILD_DIR"
 
 # Ensure compiler is built
 if [ ! -f "$KLAR" ]; then
@@ -22,9 +25,16 @@ fi
 
 # Build C helper library if helper.c exists
 if [ -f "$HELPER_C" ]; then
-    cc -c "$HELPER_C" -o /tmp/klarhelper.o 2>/dev/null
-    ar rcs "$HELPER_LIB" /tmp/klarhelper.o 2>/dev/null
-    rm -f /tmp/klarhelper.o
+    if [[ "$OS" == "Windows_NT" ]]; then
+        # MSVC toolchain: cl.exe + lib.exe
+        cl.exe /nologo /c "$HELPER_C" /Fo"$BUILD_DIR/klarhelper.obj" 2>/dev/null
+        lib.exe /NOLOGO /OUT:"$BUILD_DIR/klarhelper.lib" "$BUILD_DIR/klarhelper.obj" 2>/dev/null
+        rm -f "$BUILD_DIR/klarhelper.obj"
+    else
+        cc -c "$HELPER_C" -o "$BUILD_DIR/klarhelper.o" 2>/dev/null
+        ar rcs "$BUILD_DIR/libklarhelper.a" "$BUILD_DIR/klarhelper.o" 2>/dev/null
+        rm -f "$BUILD_DIR/klarhelper.o"
+    fi
 fi
 
 PASSED=0
@@ -101,7 +111,7 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
     [ -f "$f" ] || continue
 
     name=$(basename "$f" .kl)
-    temp_bin="/tmp/klar_test_$name"
+    temp_bin="$BUILD_DIR/klar_test_$name"
 
     # Check if test should be skipped
     if should_skip "$f"; then
@@ -132,16 +142,16 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
     # Add linker flags for tests requiring C helper or external libraries
     LINK_FLAGS=$(get_link_flags "$f")
     if requires_c_helper "$f"; then
-        BUILD_CMD="$KLAR build $f -o $temp_bin -L/tmp -lklarhelper $LINK_FLAGS"
+        BUILD_CMD="$KLAR build $f -o $temp_bin -L$BUILD_DIR -lklarhelper $LINK_FLAGS"
     elif [ -n "$LINK_FLAGS" ]; then
         BUILD_CMD="$KLAR build $f -o $temp_bin $LINK_FLAGS"
     else
         BUILD_CMD="$KLAR build $f -o $temp_bin"
     fi
 
-    build_stdout=$($BUILD_CMD 2>/tmp/klar_build_stderr_$$ || true)
-    build_stderr=$(cat /tmp/klar_build_stderr_$$ 2>/dev/null || true)
-    rm -f /tmp/klar_build_stderr_$$
+    build_stdout=$($BUILD_CMD 2>"$BUILD_DIR/klar_build_stderr_$$" || true)
+    build_stderr=$(cat "$BUILD_DIR/klar_build_stderr_$$" 2>/dev/null || true)
+    rm -f "$BUILD_DIR/klar_build_stderr_$$"
 
     if echo "$build_stdout" | grep -q "^Built"; then
         # Run and get exit code
