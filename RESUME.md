@@ -1,0 +1,145 @@
+# RESUME — Codegen Bugs to Fix
+
+These bugs were discovered during the TOML parser implementation (Phase 3) and worked around in `stdlib/toml.kl`. They should be fixed in the compiler to prevent future stdlib/user code from hitting the same issues.
+
+## [ ] Bug 1: Map.new() doesn't allocate backing storage
+
+**Symptom:** A freshly created `Map.new#[K,V]()` passed to a function or stored in an enum before any `.insert()` call silently loses all subsequent inserts made by the callee.
+
+**Root cause:** `Map.new()` returns a map with null/zero backing storage. The first `.insert()` allocates the hash table. If the map is passed by value to a function before any insert, the callee's insert allocates new storage on the callee's copy, which the caller never sees.
+
+**Workaround:** "Prime" every map immediately after creation:
+```klar
+var m: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
+m.insert("", TomlValue::Bool(false))  // forces backing allocation
+```
+
+**Fix approach:** Either (a) `Map.new()` should eagerly allocate a small backing table, or (b) the map struct should use a pointer to heap-allocated state so copies share the same backing storage.
+
+**Repro:** `scratch/toml_prime.kl`
+
+---
+
+## [ ] Bug 2: List.push() on lists extracted from Map.get() doesn't persist
+
+**Symptom:** Extracting a `List` from a `Map` via `.get()` + match, then calling `.push()` on it, modifies a copy. The original list in the map is unchanged.
+
+**Root cause:** `Map.get()` returns a copy of the value. For `Map` values, the copy shares the underlying hash table (pointer semantics), so `.insert()` works. For `List` values, the copy creates an independent list header (pointer + length + capacity), so `.push()` updates the copy's length but not the original's.
+
+**Workaround:** After pushing, re-insert the modified list back into the map:
+```klar
+let got: ?List#[i32] = m.get("items")
+match got {
+    Some(a) => {
+        a.push(new_item)
+        m.insert("items", a)  // re-insert to persist the push
+    }
+    None => {}
+}
+```
+
+**Fix approach:** Make `List` use a double-indirection (pointer to heap header) so copies share the same length/capacity metadata, or make `Map.get()` return a reference rather than a copy.
+
+**Repro:** `scratch/list_match_push.kl`, `scratch/list_reinsert.kl`
+
+---
+
+## [ ] Bug 3: String (capital-S) passed to functions creates independent copy
+
+**Symptom:** A `String` buffer passed to a function and mutated via `.push_str()` inside the function does not affect the caller's `String`. The caller's buffer remains empty/unchanged.
+
+**Root cause:** Same value-copy semantics as Bug 2. `String` is likely backed by a `List#[u8]` or similar, and passing it copies the header. The callee's `.push_str()` may reallocate or update length on the copy.
+
+**Workaround:** Don't pass `String` buffers to helper functions. Instead, have each function return a `string` result and concatenate at the call site:
+```klar
+// Instead of: fill_buffer(buf)
+// Do: let result: string = build_string()
+fn build_string() -> string {
+    var buf: String = String.new()
+    buf.push_str("hello")
+    return buf.as_str()
+}
+```
+
+**Fix approach:** Same as Bug 2 — make `String` use pointer-to-heap-header semantics so copies share state.
+
+**Repro:** `scratch/string_pass.kl`, `scratch/string_pass2.kl`
+
+---
+
+## [ ] Bug 4: Key string corruption in recursive functions passing List#[string]
+
+**Symptom:** When a `List#[string]` (e.g., map keys) is passed through recursive function calls, key string pointers become corrupted after ~2 iterations. Accessing `keys.get(i)!` returns a pointer to invalid memory, causing SIGSEGV in `strcmp`.
+
+**Root cause:** Unclear. Possibly related to how `List` backing data interacts with stack frames during recursion — the list's backing array pointer may become stale after intermediate function calls (like `stringify_inline_value`) allocate memory.
+
+**Workaround:** Don't pass the keys list through recursive calls. Instead, use iterative loops with helper functions that receive the map and individual key strings:
+```klar
+// Instead of recursive: stringify_keys(m, keys, idx, total)
+// Do iterative with per-key helper:
+var i: i32 = 0
+while i < num_keys {
+    let k: string = key_strs.get(i)!
+    result = result + stringify_one_kv(m, k)
+    i = i + 1
+}
+```
+
+**Fix approach:** Investigate LLVM IR generation for recursive functions with `List` parameters. The list struct `{ ptr, i32, i32 }` is passed by value — check if the pointer component becomes invalid after callee functions allocate.
+
+**Repro:** `scratch/toml_str20.kl` through `scratch/toml_str27.kl` (various isolation attempts). Use `lldb` on the compiled binary to see the crash in `strcmp` called from the recursive function.
+
+---
+
+## [ ] Bug 5: Cross-module string length metadata corruption
+
+**Symptom:** Strings extracted from enum payloads across module boundaries have corrupted `.len()` metadata — `.len()` returns 0 or wrong values, and `.index_of()` fails. However, `==` comparison works correctly.
+
+**Root cause:** Previously documented (also affects JSON module). The string's length field is not correctly propagated when extracting from an enum variant across module boundaries.
+
+**Workaround:** Use `==` comparison instead of `.len()` or `.index_of()` for strings obtained from cross-module enum extraction:
+```klar
+// Instead of: if val.index_of("\n") ...
+// Do: let expected: string = "hello" + from_byte(10.as#[u8]) + "world"
+//     if val == expected { ... }
+```
+
+**Fix approach:** Check how enum payload extraction generates LLVM IR for string types across module boundaries. The string metadata (length) may not be correctly loaded from the enum's memory layout.
+
+**Repro:** Already documented in JSON test comments. Also visible in TOML escape sequence tests.
+
+---
+
+## [ ] Bug 6: Returning strings through Result tuples from helper functions causes SIGSEGV
+
+**Symptom:** A function that returns `Result#[(string, i32), TomlError]` and is called from within another function (e.g., `parse_basic_string`) causes a SIGSEGV at runtime. The calling function itself returns the same type and works fine. Simple string returns work; the crash only occurs when a *called* helper returns a string inside a Result tuple.
+
+**Root cause:** Unclear. Likely related to how string memory is managed when returned through nested `Ok((string_val, i32))` tuples from a callee back to the caller. The string pointer may become invalid after the callee's stack frame is cleaned up.
+
+**Workaround:** Keep string-producing escape logic inline rather than extracting to a shared helper function. This means escape-sequence handling is duplicated between `parse_basic_string` and `parse_ml_basic_string_val` in `stdlib/toml.kl`.
+
+**Fix approach:** Investigate LLVM IR for functions returning `Result#[(string, i32), E]` when called from other functions. Check if the string pointer component of the tuple is correctly copied/moved when unwinding through the Result match in the caller.
+
+**Repro:** Extract escape handling from `parse_basic_string` into a `parse_escape_sequence(chars, pos, len) -> Result#[(string, i32), TomlError]` helper and call it. The compiled binary will SIGSEGV on any input containing escape sequences (e.g., `"msg = \"hello\\nworld\""`).
+
+---
+
+## [ ] Bug 7: f64 infinity and NaN operations crash native codegen
+
+**Symptom:** Any program that produces or operates on `f64` infinity or NaN values crashes with SIGSEGV. This includes: `1.0e308 * 10.0` (overflow to inf), `0.0 / 0.0` (NaN), `inf.to_string()`, and arithmetic on inf/nan.
+
+**Root cause:** Unclear. Possibly `f64.to_string()` doesn't handle special float values (inf, NaN, -inf) and dereferences an invalid pointer or buffer.
+
+**Workaround:** Avoid producing or operating on inf/NaN values in native-compiled code. In `stdlib/toml.kl`, the `try_parse_special_float` function produces inf via `1.0e308 * 10.0` and NaN via `0.0 / 0.0`, but these values can only be safely stored — any operation on them (comparison, stringify, print) may crash.
+
+**Fix approach:** Check the `f64.to_string()` implementation in the runtime. Likely needs explicit handling for IEEE 754 special values. Also check if LLVM constant folding produces unexpected IR for `1.0e308 * 10.0`.
+
+**Repro:**
+```klar
+fn main() -> i32 {
+    let big: f64 = 1.0e308
+    let inf: f64 = big * 10.0
+    println(inf.to_string().as_str())  // SIGSEGV
+    return 0
+}
+```

@@ -278,6 +278,29 @@ else
     echo "⊘ sha256 (test not found, skipping)"
 fi
 
+# Test 12: TOML library (stdlib/toml.kl)
+echo "--- toml: TOML library (stdlib/toml.kl) ---"
+temp_bin="/tmp/klar_module_toml"
+if [ -d "$TEST_DIR/toml" ]; then
+    if $KLAR build $TEST_DIR/toml/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ toml (exit: $result)"
+            record_success "toml"
+        else
+            echo "✗ toml (expected: 0, got: $result)"
+            record_failure "toml" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ toml (build failed)"
+        record_failure "toml" "build failed"
+    fi
+else
+    echo "⊘ toml (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON

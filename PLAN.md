@@ -2,7 +2,7 @@
 
 ## Overview
 Build the Klar standard library capabilities that [Lodex](../Lodex/DESIGN.md) (AI-native source control) depends on. These features are general-purpose and benefit the entire Klar ecosystem, not just Lodex. See [Lodex PLAN.md Phase 0](../Lodex/PLAN.md) for the downstream requirements.
-Current status: Phase 2 complete.
+Current status: Phase 3 complete. Phase 4 (CLI Argument Parsing) is next.
 
 ## Parallel Workflow Strategy
 
@@ -473,7 +473,8 @@ Before Phase 3, these must be true:
 
 ---
 
-## Phase 3: TOML Parser
+## Phase 3: TOML Parser ✅
+**Status:** Complete (2026-03-01)
 
 **Goal:** Parse TOML configuration files as a pure Klar library (needed for `lodex.toml`).
 **Estimated Effort:** 4-5 days
@@ -482,28 +483,36 @@ Before Phase 3, these must be true:
 Pure Klar code in `stdlib/toml.kl`. Zero compiler changes — no conflict risk.
 
 ### Deliverables
-- `stdlib/toml.kl` — TOML value type, parser, accessors
-- `stdlib/test/test_toml.kl` — test suite
+- `stdlib/toml.kl` — TOML value type, parser, accessors, stringify
+- `test/module/toml/main.kl` — comprehensive test suite (35+ tests)
 
 ### Tasks
-- [ ] Define `TomlValue` enum: `Str(string)`, `Integer(i64)`, `Float(f64)`, `Bool(bool)`, `Array(List#[TomlValue])`, `Table(Map#[string, TomlValue])`
-- [ ] Define `TomlError` struct: `message: string`, `line: i32`
-- [ ] Implement TOML lexer (bare keys, quoted keys, `=`, `[section]`, `[section.sub]`)
-- [ ] Implement TOML parser: key-value pairs, sections, nested tables, inline tables
-- [ ] Handle TOML string types (basic, literal, multi-line basic, multi-line literal)
-- [ ] Handle TOML arrays (including arrays of tables `[[section]]`)
-- [ ] Implement accessor helpers: `toml_get(table, key)`, `toml_get_string(table, key)`, etc.
-- [ ] Write tests with `lodex.toml` format as primary test case
-- [ ] Write edge-case tests: dotted keys, inline tables, mixed types
+- [x] Define `TomlValue` enum: `Str(string)`, `Integer(i64)`, `Float(f64)`, `Bool(bool)`, `Array(List#[TomlValue])`, `Table(Map#[string, TomlValue])` (completed 2026-03-01)
+- [x] Define `TomlError` struct: `message: string`, `line: i32` (completed 2026-03-01)
+- [x] Implement TOML lexer (bare keys, quoted keys, `=`, `[section]`, `[section.sub]`) (completed 2026-03-01)
+- [x] Implement TOML parser: key-value pairs, sections, nested tables, inline tables (completed 2026-03-01)
+- [x] Handle TOML string types (basic, literal, multi-line basic, multi-line literal) (completed 2026-03-01)
+- [x] Handle TOML arrays (including arrays of tables `[[section]]`) (completed 2026-03-01)
+- [x] Implement accessor helpers: `toml_get(table, key)`, `toml_get_string(table, key)`, etc. (completed 2026-03-01)
+- [x] Implement `toml_stringify` for serialization (completed 2026-03-01)
+- [x] Write tests with `lodex.toml` format as primary test case (completed 2026-03-01)
+- [x] Write edge-case tests: dotted keys, inline tables, mixed types (completed 2026-03-01)
+- [x] Add TOML test to module test runner (completed 2026-03-01)
+
+### Known Workarounds
+- **Map priming:** All `Map.new#[string, TomlValue]()` calls are followed by a sentinel insert (`""` → `Bool(false)`) to work around a codegen bug where unprimed maps don't allocate backing storage.
+- **List.push cross-function:** `List.push()` on lists extracted via `Map.get()` doesn't persist; the list must be re-inserted into the map after push.
+- **String buffer pass-by-value:** `String` passed to functions creates a copy; stringify uses string concatenation (`+`) instead of shared `String` buffer.
+- **Key corruption in recursive stringify:** Recursive functions that pass `List#[string]` (keys) corrupt key pointers; workaround uses per-iteration `Map.get()` in helper functions.
 
 ### Testing Strategy
-Parse sample `lodex.toml` files and verify all sections/values extracted correctly. Test dotted keys, inline tables, and arrays of tables.
+Parse sample `lodex.toml` files and verify all sections/values extracted correctly. Test dotted keys, inline tables, and arrays of tables. 35+ tests covering: primitives, strings, sections, dotted keys, arrays, inline tables, array of tables, comments, number formats, accessors, error handling, stringify, and lodex-style config.
 
 ### Phase 3 Readiness Gate
 Before Phase 4, these must be true:
-- [ ] Can parse `lodex.toml` evaluation config with nested sections
-- [ ] Handles dotted keys (`evaluation.suites.unit`)
-- [ ] Returns structured errors with line numbers for invalid TOML
+- [x] Can parse `lodex.toml` evaluation config with nested sections
+- [x] Handles dotted keys (`evaluation.suites.unit`)
+- [x] Returns structured errors with line numbers for invalid TOML
 
 ---
 

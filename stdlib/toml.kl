@@ -1,0 +1,1682 @@
+//! stdlib/toml.kl - TOML parsing and manipulation
+//!
+//! Pure Klar TOML library providing:
+//! - Parsing: toml_parse(string) -> Result#[TomlValue, TomlError]
+//! - Accessors: toml_get, toml_get_string, toml_get_integer, toml_get_float, toml_get_bool, toml_get_array, toml_get_table
+//! - Builders: toml_string, toml_integer, toml_float, toml_bool, toml_array, toml_table
+
+module stdlib.toml
+
+// ============================================================================
+// TOML Value Type
+// ============================================================================
+
+pub enum TomlValue {
+    Str(string),
+    Integer(i64),
+    Float(f64),
+    Bool(bool),
+    Array(List#[TomlValue]),
+    Table(Map#[string, TomlValue]),
+}
+
+// ============================================================================
+// TOML Error Type
+// ============================================================================
+
+pub struct TomlError {
+    pub message: string,
+    pub line: i32,
+}
+
+// ============================================================================
+// Builder Functions
+// ============================================================================
+
+pub fn toml_string(s: string) -> TomlValue {
+    return TomlValue::Str(s)
+}
+
+pub fn toml_integer(n: i64) -> TomlValue {
+    return TomlValue::Integer(n)
+}
+
+pub fn toml_float(n: f64) -> TomlValue {
+    return TomlValue::Float(n)
+}
+
+pub fn toml_bool(b: bool) -> TomlValue {
+    return TomlValue::Bool(b)
+}
+
+pub fn toml_array() -> TomlValue {
+    return TomlValue::Array(List.new#[TomlValue]())
+}
+
+pub fn toml_table() -> TomlValue {
+    var t: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
+    t.insert("", TomlValue::Bool(false))
+    return TomlValue::Table(t)
+}
+
+// ============================================================================
+// Accessor Functions
+// ============================================================================
+
+pub fn toml_get(table: TomlValue, key: string) -> ?TomlValue {
+    match table {
+        TomlValue.Table(m) => {
+            return m.get(key)
+        }
+        _ => {}
+    }
+    // implicit None
+}
+
+pub fn toml_get_string(table: TomlValue, key: string) -> ?string {
+    let val: ?TomlValue = toml_get(table, key)
+    match val {
+        Some(v) => {
+            match v {
+                TomlValue.Str(s) => { return Some(s) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn toml_get_integer(table: TomlValue, key: string) -> ?i64 {
+    let val: ?TomlValue = toml_get(table, key)
+    match val {
+        Some(v) => {
+            match v {
+                TomlValue.Integer(n) => { return Some(n) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn toml_get_float(table: TomlValue, key: string) -> ?f64 {
+    let val: ?TomlValue = toml_get(table, key)
+    match val {
+        Some(v) => {
+            match v {
+                TomlValue.Float(n) => { return Some(n) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn toml_get_bool(table: TomlValue, key: string) -> ?bool {
+    let val: ?TomlValue = toml_get(table, key)
+    match val {
+        Some(v) => {
+            match v {
+                TomlValue.Bool(b) => { return Some(b) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn toml_get_array(table: TomlValue, key: string) -> ?List#[TomlValue] {
+    let val: ?TomlValue = toml_get(table, key)
+    match val {
+        Some(v) => {
+            match v {
+                TomlValue.Array(a) => { return Some(a) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn toml_get_table(table: TomlValue, key: string) -> ?Map#[string, TomlValue] {
+    let val: ?TomlValue = toml_get(table, key)
+    match val {
+        Some(v) => {
+            match v {
+                TomlValue.Table(m) => { return Some(m) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+// ============================================================================
+// ASCII Reference
+// ============================================================================
+// Tab=9  LF=10  CR=13  Space=32  !=33  "=34  #=35  '=39  +=43  ,=44
+// -=45  .=46  0=48  9=57  :=58  ==61  A=65  E=69  F=70  Z=90
+// [=91  \=92  ]=93  _=95  a=97  b=98  e=101  f=102  i=105  n=110
+// o=111  r=114  t=116  u=117  x=120  z=122  {=123  }=125
+
+// ============================================================================
+// Parser Helpers
+// ============================================================================
+
+fn is_ws(code: i32) -> bool {
+    return code == 32 or code == 9
+}
+
+fn is_newline(code: i32) -> bool {
+    return code == 10 or code == 13
+}
+
+fn is_digit(code: i32) -> bool {
+    return code >= 48 and code <= 57
+}
+
+fn is_hex_digit(code: i32) -> bool {
+    return (code >= 48 and code <= 57) or (code >= 65 and code <= 70) or (code >= 97 and code <= 102)
+}
+
+fn is_oct_digit(code: i32) -> bool {
+    return code >= 48 and code <= 55
+}
+
+fn is_bin_digit(code: i32) -> bool {
+    return code == 48 or code == 49
+}
+
+fn is_bare_key_char(code: i32) -> bool {
+    return (code >= 65 and code <= 90) or (code >= 97 and code <= 122) or
+           (code >= 48 and code <= 57) or code == 45 or code == 95
+}
+
+fn hex_val(c: i32) -> i32 {
+    if c >= 48 and c <= 57 { return c - 48 }
+    if c >= 97 and c <= 102 { return c - 97 + 10 }
+    if c >= 65 and c <= 70 { return c - 65 + 10 }
+    return -1
+}
+
+fn char_to_str(c: char) -> string {
+    return from_byte(c.as#[u8])
+}
+
+fn make_error(msg: string, line: i32) -> TomlError {
+    return TomlError { message: msg, line: line }
+}
+
+// Count line number from start to position
+fn count_lines(chars: [char], end: i32) -> i32 {
+    var line: i32 = 1
+    var i: i32 = 0
+    while i < end {
+        if chars[i].as#[i32] == 10 {
+            line = line + 1
+        }
+        i = i + 1
+    }
+    return line
+}
+
+// Skip whitespace (spaces and tabs only, not newlines)
+fn skip_ws(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = pos
+    while i < len {
+        if not is_ws(chars[i].as#[i32]) {
+            break
+        }
+        i = i + 1
+    }
+    return i
+}
+
+// Skip whitespace and comments to end of line (or end of input)
+fn skip_ws_and_comment(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = skip_ws(chars, pos, len)
+    if i < len and chars[i].as#[i32] == 35 {
+        // Skip comment to end of line
+        while i < len and chars[i].as#[i32] != 10 {
+            i = i + 1
+        }
+    }
+    return i
+}
+
+// Skip to the next meaningful line (past newlines, blank lines, comment-only lines)
+fn skip_to_next_line(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = pos
+    // Skip current newline
+    if i < len and chars[i].as#[i32] == 13 {
+        i = i + 1
+    }
+    if i < len and chars[i].as#[i32] == 10 {
+        i = i + 1
+    }
+    return i
+}
+
+// Skip all blank/comment lines, returning position at next meaningful content
+fn skip_blank_lines(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = pos
+    while i < len {
+        let p: i32 = skip_ws(chars, i, len)
+        if p >= len {
+            return p
+        }
+        let c: i32 = chars[p].as#[i32]
+        if c == 10 or c == 13 {
+            i = skip_to_next_line(chars, p, len)
+        } else if c == 35 {
+            // Comment line — skip to end
+            var j: i32 = p
+            while j < len and chars[j].as#[i32] != 10 {
+                j = j + 1
+            }
+            i = skip_to_next_line(chars, j, len)
+        } else {
+            break
+        }
+    }
+    return i
+}
+
+// ============================================================================
+// TOML Parser
+// ============================================================================
+
+pub fn toml_parse(input: string) -> Result#[TomlValue, TomlError] {
+    let chars: [char] = input.chars()
+    let len: i32 = input.len()
+    var pos: i32 = 0
+
+    var root: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
+    root.insert("", TomlValue::Bool(false))
+
+    var current_path: List#[string] = List.new#[string]()
+
+    pos = skip_blank_lines(chars, pos, len)
+
+    while pos < len {
+        let c: i32 = chars[pos].as#[i32]
+
+        if c == 91 {
+            // Section header: [table] or [[array]]
+            let hdr_r: Result#[(List#[string], bool, i32), TomlError] = parse_header(chars, pos, len)
+            match hdr_r {
+                Ok(hdr) => {
+                    let path: List#[string] = hdr.0
+                    let is_array: bool = hdr.1
+                    pos = hdr.2
+
+                    if is_array {
+                        // [[array_of_tables]] — ensure parent path, append new table
+                        let aot_r: Result#[i32, TomlError] = ensure_array_of_tables(root, path, chars, pos)
+                        match aot_r {
+                            Ok(_) => {}
+                            Err(e) => { return Err(e) }
+                        }
+                    } else {
+                        // [table] — ensure path exists
+                        let tbl_r: Result#[i32, TomlError] = ensure_table_path(root, path, chars, pos)
+                        match tbl_r {
+                            Ok(_) => {}
+                            Err(e) => { return Err(e) }
+                        }
+                    }
+                    current_path = path
+                }
+                Err(e) => { return Err(e) }
+            }
+
+            // Skip rest of line after header
+            pos = skip_ws_and_comment(chars, pos, len)
+            if pos < len and not is_newline(chars[pos].as#[i32]) {
+                return Err(make_error("unexpected content after section header", count_lines(chars, pos)))
+            }
+            pos = skip_to_next_line(chars, pos, len)
+            pos = skip_blank_lines(chars, pos, len)
+        } else {
+            // Key-value pair
+            let kv_r: Result#[(List#[string], TomlValue, i32), TomlError] = parse_keyval(chars, pos, len)
+            match kv_r {
+                Ok(kv) => {
+                    let keys: List#[string] = kv.0
+                    let value: TomlValue = kv.1
+                    pos = kv.2
+
+                    // Insert into the current table
+                    let ins_r: Result#[i32, TomlError] = insert_dotted_key(root, current_path, keys, value, chars, pos)
+                    match ins_r {
+                        Ok(_) => {}
+                        Err(e) => { return Err(e) }
+                    }
+                }
+                Err(e) => { return Err(e) }
+            }
+
+            // Skip rest of line
+            pos = skip_ws_and_comment(chars, pos, len)
+            if pos < len and not is_newline(chars[pos].as#[i32]) {
+                return Err(make_error("unexpected content after value", count_lines(chars, pos)))
+            }
+            pos = skip_to_next_line(chars, pos, len)
+            pos = skip_blank_lines(chars, pos, len)
+        }
+    }
+
+    return Ok(TomlValue::Table(root))
+}
+
+// ============================================================================
+// Header Parsing: [table] and [[array_of_tables]]
+// ============================================================================
+
+// Returns (path_keys, is_array_of_tables, new_pos)
+fn parse_header(chars: [char], pos: i32, len: i32) -> Result#[(List#[string], bool, i32), TomlError] {
+    var p: i32 = pos + 1  // skip first '['
+    var is_array: bool = false
+
+    if p < len and chars[p].as#[i32] == 91 {
+        is_array = true
+        p = p + 1
+    }
+
+    p = skip_ws(chars, p, len)
+
+    // Parse dotted key path
+    let path_r: Result#[(List#[string], i32), TomlError] = parse_key_path(chars, p, len)
+    var path: List#[string] = List.new#[string]()
+    match path_r {
+        Ok(pv) => {
+            path = pv.0
+            p = pv.1
+        }
+        Err(e) => { return Err(e) }
+    }
+
+    p = skip_ws(chars, p, len)
+
+    // Expect closing ] or ]]
+    if p >= len or chars[p].as#[i32] != 93 {
+        return Err(make_error("expected ']' in section header", count_lines(chars, pos)))
+    }
+    p = p + 1
+    if is_array {
+        if p >= len or chars[p].as#[i32] != 93 {
+            return Err(make_error("expected ']]' in array-of-tables header", count_lines(chars, pos)))
+        }
+        p = p + 1
+    }
+
+    return Ok((path, is_array, p))
+}
+
+// Parse a dotted key path: key1.key2.key3
+fn parse_key_path(chars: [char], pos: i32, len: i32) -> Result#[(List#[string], i32), TomlError] {
+    var p: i32 = pos
+    var keys: List#[string] = List.new#[string]()
+
+    let first_r: Result#[(string, i32), TomlError] = parse_key(chars, p, len)
+    match first_r {
+        Ok(fv) => {
+            keys.push(fv.0)
+            p = fv.1
+        }
+        Err(e) => { return Err(e) }
+    }
+
+    while p < len {
+        let cp: i32 = skip_ws(chars, p, len)
+        if cp >= len or chars[cp].as#[i32] != 46 {
+            p = cp
+            break
+        }
+        p = skip_ws(chars, cp + 1, len)
+        let next_r: Result#[(string, i32), TomlError] = parse_key(chars, p, len)
+        match next_r {
+            Ok(nv) => {
+                keys.push(nv.0)
+                p = nv.1
+            }
+            Err(e) => { return Err(e) }
+        }
+    }
+
+    return Ok((keys, p))
+}
+
+// Parse a single key (bare or quoted)
+fn parse_key(chars: [char], pos: i32, len: i32) -> Result#[(string, i32), TomlError] {
+    if pos >= len {
+        return Err(make_error("expected key", count_lines(chars, pos)))
+    }
+
+    let c: i32 = chars[pos].as#[i32]
+
+    // Quoted key (basic string)
+    if c == 34 {
+        return parse_basic_string(chars, pos, len)
+    }
+    // Quoted key (literal string)
+    if c == 39 {
+        return parse_literal_string(chars, pos, len)
+    }
+    // Bare key
+    if is_bare_key_char(c) {
+        var p: i32 = pos
+        var result: string = ""
+        while p < len and is_bare_key_char(chars[p].as#[i32]) {
+            result = result + char_to_str(chars[p])
+            p = p + 1
+        }
+        return Ok((result, p))
+    }
+
+    return Err(make_error("expected key", count_lines(chars, pos)))
+}
+
+// ============================================================================
+// Key-Value Pair Parsing
+// ============================================================================
+
+// Returns (dotted_keys, value, new_pos)
+fn parse_keyval(chars: [char], pos: i32, len: i32) -> Result#[(List#[string], TomlValue, i32), TomlError] {
+    // Parse the key (possibly dotted)
+    let key_r: Result#[(List#[string], i32), TomlError] = parse_key_path(chars, pos, len)
+    var keys: List#[string] = List.new#[string]()
+    var p: i32 = pos
+    match key_r {
+        Ok(kv) => {
+            keys = kv.0
+            p = kv.1
+        }
+        Err(e) => { return Err(e) }
+    }
+
+    p = skip_ws(chars, p, len)
+
+    // Expect '='
+    if p >= len or chars[p].as#[i32] != 61 {
+        return Err(make_error("expected '=' after key", count_lines(chars, p)))
+    }
+    p = p + 1
+    p = skip_ws(chars, p, len)
+
+    // Parse value
+    let val_r: Result#[(TomlValue, i32), TomlError] = parse_value(chars, p, len)
+    match val_r {
+        Ok(vv) => {
+            return Ok((keys, vv.0, vv.1))
+        }
+        Err(e) => { return Err(e) }
+    }
+}
+
+// ============================================================================
+// Value Parsing
+// ============================================================================
+
+fn parse_value(chars: [char], pos: i32, len: i32) -> Result#[(TomlValue, i32), TomlError] {
+    if pos >= len {
+        return Err(make_error("unexpected end of input", count_lines(chars, pos)))
+    }
+
+    let c: i32 = chars[pos].as#[i32]
+
+    // String values
+    if c == 34 {
+        // Check for multi-line basic string """
+        if pos + 2 < len and chars[pos+1].as#[i32] == 34 and chars[pos+2].as#[i32] == 34 {
+            return parse_ml_basic_string_val(chars, pos, len)
+        }
+        let sr: Result#[(string, i32), TomlError] = parse_basic_string(chars, pos, len)
+        match sr {
+            Ok(sv) => { return Ok((TomlValue::Str(sv.0), sv.1)) }
+            Err(e) => { return Err(e) }
+        }
+    }
+
+    if c == 39 {
+        // Check for multi-line literal string '''
+        if pos + 2 < len and chars[pos+1].as#[i32] == 39 and chars[pos+2].as#[i32] == 39 {
+            return parse_ml_literal_string_val(chars, pos, len)
+        }
+        let sr: Result#[(string, i32), TomlError] = parse_literal_string(chars, pos, len)
+        match sr {
+            Ok(sv) => { return Ok((TomlValue::Str(sv.0), sv.1)) }
+            Err(e) => { return Err(e) }
+        }
+    }
+
+    // Boolean
+    if c == 116 and pos + 3 < len {
+        if chars[pos+1].as#[i32] == 114 and chars[pos+2].as#[i32] == 117 and chars[pos+3].as#[i32] == 101 {
+            // Check next char isn't a bare key char
+            if pos + 4 >= len or not is_bare_key_char(chars[pos+4].as#[i32]) {
+                return Ok((TomlValue::Bool(true), pos + 4))
+            }
+        }
+    }
+    if c == 102 and pos + 4 < len {
+        if chars[pos+1].as#[i32] == 97 and chars[pos+2].as#[i32] == 108 and
+           chars[pos+3].as#[i32] == 115 and chars[pos+4].as#[i32] == 101 {
+            if pos + 5 >= len or not is_bare_key_char(chars[pos+5].as#[i32]) {
+                return Ok((TomlValue::Bool(false), pos + 5))
+            }
+        }
+    }
+
+    // Special float values: inf, nan, +inf, -inf, +nan, -nan
+    if c == 105 or c == 110 or c == 43 or c == 45 {
+        let sf_r: Result#[(TomlValue, i32), TomlError] = try_parse_special_float(chars, pos, len)
+        match sf_r {
+            Ok(sv) => { return Ok(sv) }
+            Err(_) => {}  // Fall through to number parsing
+        }
+    }
+
+    // Array
+    if c == 91 {
+        return parse_array(chars, pos, len)
+    }
+
+    // Inline table
+    if c == 123 {
+        return parse_inline_table(chars, pos, len)
+    }
+
+    // Number (integer or float)
+    if c == 45 or c == 43 or is_digit(c) {
+        return parse_number(chars, pos, len)
+    }
+
+    return Err(make_error("expected a value", count_lines(chars, pos)))
+}
+
+// ============================================================================
+// String Parsing
+// ============================================================================
+
+// Basic string: "..." with escape sequences
+fn parse_basic_string(chars: [char], pos: i32, len: i32) -> Result#[(string, i32), TomlError] {
+    var p: i32 = pos + 1  // skip opening "
+    var result: string = ""
+
+    while p < len {
+        let code: i32 = chars[p].as#[i32]
+
+        if code == 34 {
+            return Ok((result, p + 1))
+        }
+
+        if code == 10 or code == 13 {
+            return Err(make_error("newline in basic string", count_lines(chars, p)))
+        }
+
+        if code == 92 {
+            // Escape sequence
+            p = p + 1
+            if p >= len {
+                return Err(make_error("unterminated string escape", count_lines(chars, p)))
+            }
+            let esc: i32 = chars[p].as#[i32]
+            if esc == 34 { result = result + "\"" }
+            else if esc == 92 { result = result + from_byte(92.as#[u8]) }
+            else if esc == 98 { result = result + from_byte(8.as#[u8]) }
+            else if esc == 102 { result = result + from_byte(12.as#[u8]) }
+            else if esc == 110 { result = result + from_byte(10.as#[u8]) }
+            else if esc == 114 { result = result + from_byte(13.as#[u8]) }
+            else if esc == 116 { result = result + from_byte(9.as#[u8]) }
+            else if esc == 117 {
+                // \uXXXX — 4 hex digits
+                if p + 4 >= len {
+                    return Err(make_error("incomplete unicode escape", count_lines(chars, p)))
+                }
+                var cp: i32 = 0
+                var k: i32 = 1
+                while k <= 4 {
+                    let hv: i32 = hex_val(chars[p + k].as#[i32])
+                    if hv < 0 {
+                        return Err(make_error("invalid hex in unicode escape", count_lines(chars, p)))
+                    }
+                    cp = cp * 16 + hv
+                    k = k + 1
+                }
+                // Reject UTF-16 surrogates (U+D800 to U+DFFF)
+                if cp >= 55296 and cp <= 57343 {
+                    return Err(make_error("surrogate codepoint in unicode escape", count_lines(chars, p)))
+                }
+                result = result + encode_utf8(cp)
+                p = p + 4
+            }
+            else if esc == 85 {
+                // \UXXXXXXXX — 8 hex digits
+                if p + 8 >= len {
+                    return Err(make_error("incomplete unicode escape", count_lines(chars, p)))
+                }
+                var cp: i32 = 0
+                var k: i32 = 1
+                while k <= 8 {
+                    let hv: i32 = hex_val(chars[p + k].as#[i32])
+                    if hv < 0 {
+                        return Err(make_error("invalid hex in unicode escape", count_lines(chars, p)))
+                    }
+                    cp = cp * 16 + hv
+                    k = k + 1
+                }
+                // Reject surrogates and codepoints above U+10FFFF
+                if cp > 1114111 or (cp >= 55296 and cp <= 57343) {
+                    return Err(make_error("invalid unicode codepoint", count_lines(chars, p)))
+                }
+                result = result + encode_utf8(cp)
+                p = p + 8
+            }
+            else {
+                return Err(make_error("invalid escape character", count_lines(chars, p)))
+            }
+            p = p + 1
+        } else {
+            result = result + char_to_str(chars[p])
+            p = p + 1
+        }
+    }
+
+    return Err(make_error("unterminated string", count_lines(chars, pos)))
+}
+
+// Literal string: '...' with no escape processing
+fn parse_literal_string(chars: [char], pos: i32, len: i32) -> Result#[(string, i32), TomlError] {
+    var p: i32 = pos + 1  // skip opening '
+    var result: string = ""
+
+    while p < len {
+        let code: i32 = chars[p].as#[i32]
+        if code == 39 {
+            return Ok((result, p + 1))
+        }
+        if code == 10 or code == 13 {
+            return Err(make_error("newline in literal string", count_lines(chars, p)))
+        }
+        result = result + char_to_str(chars[p])
+        p = p + 1
+    }
+
+    return Err(make_error("unterminated literal string", count_lines(chars, pos)))
+}
+
+// Multi-line basic string: """..."""
+fn parse_ml_basic_string_val(chars: [char], pos: i32, len: i32) -> Result#[(TomlValue, i32), TomlError] {
+    var p: i32 = pos + 3  // skip opening """
+    // Skip immediate newline after opening """
+    if p < len and chars[p].as#[i32] == 13 { p = p + 1 }
+    if p < len and chars[p].as#[i32] == 10 { p = p + 1 }
+
+    var result: string = ""
+
+    while p < len {
+        let code: i32 = chars[p].as#[i32]
+
+        // Check for closing """
+        if code == 34 and p + 2 < len and chars[p+1].as#[i32] == 34 and chars[p+2].as#[i32] == 34 {
+            return Ok((TomlValue::Str(result), p + 3))
+        }
+
+        if code == 92 {
+            p = p + 1
+            if p >= len {
+                return Err(make_error("unterminated escape in multi-line string", count_lines(chars, p)))
+            }
+            let esc: i32 = chars[p].as#[i32]
+            // Line ending backslash: trim whitespace/newlines
+            if esc == 10 or esc == 13 {
+                if esc == 13 and p + 1 < len and chars[p+1].as#[i32] == 10 {
+                    p = p + 1
+                }
+                p = p + 1
+                // Skip whitespace and newlines
+                while p < len and (is_ws(chars[p].as#[i32]) or is_newline(chars[p].as#[i32])) {
+                    p = p + 1
+                }
+            } else if esc == 34 { result = result + "\""; p = p + 1 }
+            else if esc == 92 { result = result + from_byte(92.as#[u8]); p = p + 1 }
+            else if esc == 98 { result = result + from_byte(8.as#[u8]); p = p + 1 }
+            else if esc == 102 { result = result + from_byte(12.as#[u8]); p = p + 1 }
+            else if esc == 110 { result = result + from_byte(10.as#[u8]); p = p + 1 }
+            else if esc == 114 { result = result + from_byte(13.as#[u8]); p = p + 1 }
+            else if esc == 116 { result = result + from_byte(9.as#[u8]); p = p + 1 }
+            else if esc == 117 {
+                if p + 4 >= len {
+                    return Err(make_error("incomplete unicode escape", count_lines(chars, p)))
+                }
+                var cp: i32 = 0
+                var k: i32 = 1
+                while k <= 4 {
+                    let hv: i32 = hex_val(chars[p + k].as#[i32])
+                    if hv < 0 {
+                        return Err(make_error("invalid hex in unicode escape", count_lines(chars, p)))
+                    }
+                    cp = cp * 16 + hv
+                    k = k + 1
+                }
+                // Reject UTF-16 surrogates (U+D800 to U+DFFF)
+                if cp >= 55296 and cp <= 57343 {
+                    return Err(make_error("surrogate codepoint in unicode escape", count_lines(chars, p)))
+                }
+                result = result + encode_utf8(cp)
+                p = p + 5
+            }
+            else if esc == 85 {
+                if p + 8 >= len {
+                    return Err(make_error("incomplete unicode escape", count_lines(chars, p)))
+                }
+                var cp: i32 = 0
+                var k: i32 = 1
+                while k <= 8 {
+                    let hv: i32 = hex_val(chars[p + k].as#[i32])
+                    if hv < 0 {
+                        return Err(make_error("invalid hex in unicode escape", count_lines(chars, p)))
+                    }
+                    cp = cp * 16 + hv
+                    k = k + 1
+                }
+                // Reject surrogates and codepoints above U+10FFFF
+                if cp > 1114111 or (cp >= 55296 and cp <= 57343) {
+                    return Err(make_error("invalid unicode codepoint", count_lines(chars, p)))
+                }
+                result = result + encode_utf8(cp)
+                p = p + 9
+            }
+            else {
+                return Err(make_error("invalid escape in multi-line string", count_lines(chars, p)))
+            }
+        } else {
+            result = result + char_to_str(chars[p])
+            p = p + 1
+        }
+    }
+
+    return Err(make_error("unterminated multi-line basic string", count_lines(chars, pos)))
+}
+
+// Multi-line literal string: '''...'''
+fn parse_ml_literal_string_val(chars: [char], pos: i32, len: i32) -> Result#[(TomlValue, i32), TomlError] {
+    var p: i32 = pos + 3  // skip opening '''
+    // Skip immediate newline after opening '''
+    if p < len and chars[p].as#[i32] == 13 { p = p + 1 }
+    if p < len and chars[p].as#[i32] == 10 { p = p + 1 }
+
+    var result: string = ""
+
+    while p < len {
+        let code: i32 = chars[p].as#[i32]
+
+        // Check for closing '''
+        if code == 39 and p + 2 < len and chars[p+1].as#[i32] == 39 and chars[p+2].as#[i32] == 39 {
+            return Ok((TomlValue::Str(result), p + 3))
+        }
+
+        result = result + char_to_str(chars[p])
+        p = p + 1
+    }
+
+    return Err(make_error("unterminated multi-line literal string", count_lines(chars, pos)))
+}
+
+// UTF-8 encoder for codepoints
+fn encode_utf8(cp: i32) -> string {
+    if cp < 128 {
+        return from_byte(cp.as#[u8])
+    }
+    if cp < 2048 {
+        var s: string = from_byte((192 + cp / 64).as#[u8])
+        s = s + from_byte((128 + cp - (cp / 64) * 64).as#[u8])
+        return s
+    }
+    if cp < 65536 {
+        var s: string = from_byte((224 + cp / 4096).as#[u8])
+        let mid: i32 = cp - (cp / 4096) * 4096
+        s = s + from_byte((128 + mid / 64).as#[u8])
+        s = s + from_byte((128 + mid - (mid / 64) * 64).as#[u8])
+        return s
+    }
+    var s: string = from_byte((240 + cp / 262144).as#[u8])
+    let rem3: i32 = cp - (cp / 262144) * 262144
+    s = s + from_byte((128 + rem3 / 4096).as#[u8])
+    let rem2: i32 = rem3 - (rem3 / 4096) * 4096
+    s = s + from_byte((128 + rem2 / 64).as#[u8])
+    s = s + from_byte((128 + rem2 - (rem2 / 64) * 64).as#[u8])
+    return s
+}
+
+// ============================================================================
+// Number Parsing (Integer and Float)
+// ============================================================================
+
+fn parse_number(chars: [char], pos: i32, len: i32) -> Result#[(TomlValue, i32), TomlError] {
+    var p: i32 = pos
+    var negative: bool = false
+
+    // Optional sign
+    if p < len and chars[p].as#[i32] == 45 {
+        negative = true
+        p = p + 1
+    } else if p < len and chars[p].as#[i32] == 43 {
+        p = p + 1
+    }
+
+    // Check for hex, octal, binary prefixes (only after optional sign, and if first digit is 0)
+    if p < len and chars[p].as#[i32] == 48 and p + 1 < len {
+        let next: i32 = chars[p+1].as#[i32]
+        if next == 120 or next == 88 {
+            return parse_hex_int(chars, pos, p + 2, len, negative)
+        }
+        if next == 111 or next == 79 {
+            return parse_oct_int(chars, pos, p + 2, len, negative)
+        }
+        if next == 98 or next == 66 {
+            return parse_bin_int(chars, pos, p + 2, len, negative)
+        }
+    }
+
+    // Decimal integer or float
+    var int_part: i64 = 0
+    var has_digits: bool = false
+    while p < len and (is_digit(chars[p].as#[i32]) or chars[p].as#[i32] == 95) {
+        if chars[p].as#[i32] != 95 {
+            int_part = int_part * 10.as#[i64] + (chars[p].as#[i32] - 48).as#[i64]
+            has_digits = true
+        }
+        p = p + 1
+    }
+
+    if not has_digits {
+        return Err(make_error("expected digit in number", count_lines(chars, pos)))
+    }
+
+    // Check if this is a float (has . or e/E)
+    var is_float: bool = false
+    var float_val: f64 = int_part.as#[f64]
+
+    if p < len and chars[p].as#[i32] == 46 {
+        // Must have digit after dot (not bare key or section end)
+        if p + 1 < len and is_digit(chars[p+1].as#[i32]) {
+            is_float = true
+            p = p + 1
+            var decimal: f64 = 0.1
+            while p < len and (is_digit(chars[p].as#[i32]) or chars[p].as#[i32] == 95) {
+                if chars[p].as#[i32] != 95 {
+                    float_val = float_val + (chars[p].as#[i32] - 48).as#[f64] * decimal
+                    decimal = decimal * 0.1
+                }
+                p = p + 1
+            }
+        }
+    }
+
+    if p < len {
+        let ec: i32 = chars[p].as#[i32]
+        if ec == 101 or ec == 69 {
+            is_float = true
+            p = p + 1
+            var exp_neg: bool = false
+            if p < len {
+                let sign: i32 = chars[p].as#[i32]
+                if sign == 45 { exp_neg = true; p = p + 1 }
+                else if sign == 43 { p = p + 1 }
+            }
+            var exp: i32 = 0
+            var has_exp: bool = false
+            while p < len and (is_digit(chars[p].as#[i32]) or chars[p].as#[i32] == 95) {
+                if chars[p].as#[i32] != 95 {
+                    if exp < 400 {
+                        exp = exp * 10 + (chars[p].as#[i32] - 48)
+                    }
+                    has_exp = true
+                }
+                p = p + 1
+            }
+            if not has_exp {
+                return Err(make_error("expected digit in exponent", count_lines(chars, p)))
+            }
+            var mul: f64 = 1.0
+            var i: i32 = 0
+            while i < exp {
+                mul = mul * 10.0
+                i = i + 1
+            }
+            if exp_neg {
+                float_val = float_val / mul
+            } else {
+                float_val = float_val * mul
+            }
+        }
+    }
+
+    if is_float {
+        if negative {
+            float_val = 0.0 - float_val
+        }
+        return Ok((TomlValue::Float(float_val), p))
+    }
+
+    if negative {
+        int_part = 0.as#[i64] - int_part
+    }
+    return Ok((TomlValue::Integer(int_part), p))
+}
+
+fn parse_hex_int(chars: [char], start: i32, pos: i32, len: i32, negative: bool) -> Result#[(TomlValue, i32), TomlError] {
+    var p: i32 = pos
+    var result: i64 = 0
+    var has_digits: bool = false
+    while p < len and (is_hex_digit(chars[p].as#[i32]) or chars[p].as#[i32] == 95) {
+        if chars[p].as#[i32] != 95 {
+            result = result * 16.as#[i64] + hex_val(chars[p].as#[i32]).as#[i64]
+            has_digits = true
+        }
+        p = p + 1
+    }
+    if not has_digits {
+        return Err(make_error("expected hex digit", count_lines(chars, start)))
+    }
+    if negative { result = 0.as#[i64] - result }
+    return Ok((TomlValue::Integer(result), p))
+}
+
+fn parse_oct_int(chars: [char], start: i32, pos: i32, len: i32, negative: bool) -> Result#[(TomlValue, i32), TomlError] {
+    var p: i32 = pos
+    var result: i64 = 0
+    var has_digits: bool = false
+    while p < len and (is_oct_digit(chars[p].as#[i32]) or chars[p].as#[i32] == 95) {
+        if chars[p].as#[i32] != 95 {
+            result = result * 8.as#[i64] + (chars[p].as#[i32] - 48).as#[i64]
+            has_digits = true
+        }
+        p = p + 1
+    }
+    if not has_digits {
+        return Err(make_error("expected octal digit", count_lines(chars, start)))
+    }
+    if negative { result = 0.as#[i64] - result }
+    return Ok((TomlValue::Integer(result), p))
+}
+
+fn parse_bin_int(chars: [char], start: i32, pos: i32, len: i32, negative: bool) -> Result#[(TomlValue, i32), TomlError] {
+    var p: i32 = pos
+    var result: i64 = 0
+    var has_digits: bool = false
+    while p < len and (is_bin_digit(chars[p].as#[i32]) or chars[p].as#[i32] == 95) {
+        if chars[p].as#[i32] != 95 {
+            result = result * 2.as#[i64] + (chars[p].as#[i32] - 48).as#[i64]
+            has_digits = true
+        }
+        p = p + 1
+    }
+    if not has_digits {
+        return Err(make_error("expected binary digit", count_lines(chars, start)))
+    }
+    if negative { result = 0.as#[i64] - result }
+    return Ok((TomlValue::Integer(result), p))
+}
+
+// Try to parse special float values: inf, nan, +inf, -inf, +nan, -nan
+fn try_parse_special_float(chars: [char], pos: i32, len: i32) -> Result#[(TomlValue, i32), TomlError] {
+    var p: i32 = pos
+    var neg: bool = false
+
+    if p < len and chars[p].as#[i32] == 43 { p = p + 1 }
+    else if p < len and chars[p].as#[i32] == 45 { neg = true; p = p + 1 }
+
+    // Check for "inf"
+    if p + 2 < len and chars[p].as#[i32] == 105 and chars[p+1].as#[i32] == 110 and chars[p+2].as#[i32] == 102 {
+        if p + 3 >= len or not is_bare_key_char(chars[p+3].as#[i32]) {
+            // Infinity: use a very large number as approximation
+            var val: f64 = 1.0e308
+            val = val * 10.0  // overflow to inf
+            if neg { val = 0.0 - val }
+            return Ok((TomlValue::Float(val), p + 3))
+        }
+    }
+
+    // Check for "nan"
+    if p + 2 < len and chars[p].as#[i32] == 110 and chars[p+1].as#[i32] == 97 and chars[p+2].as#[i32] == 110 {
+        if p + 3 >= len or not is_bare_key_char(chars[p+3].as#[i32]) {
+            // NaN: 0.0 / 0.0
+            let val: f64 = 0.0 / 0.0
+            return Ok((TomlValue::Float(val), p + 3))
+        }
+    }
+
+    return Err(make_error("not a special float", count_lines(chars, pos)))
+}
+
+// ============================================================================
+// Array Parsing
+// ============================================================================
+
+fn parse_array(chars: [char], pos: i32, len: i32) -> Result#[(TomlValue, i32), TomlError] {
+    var p: i32 = pos + 1  // skip '['
+    var elements: List#[TomlValue] = List.new#[TomlValue]()
+
+    // Skip whitespace, newlines, and comments inside arrays
+    p = skip_array_ws(chars, p, len)
+
+    // Empty array
+    if p < len and chars[p].as#[i32] == 93 {
+        return Ok((TomlValue::Array(elements), p + 1))
+    }
+
+    // Parse first element
+    let first_r: Result#[(TomlValue, i32), TomlError] = parse_value(chars, p, len)
+    match first_r {
+        Ok(first) => {
+            elements.push(first.0)
+            p = first.1
+        }
+        Err(e) => { return Err(e) }
+    }
+    p = skip_array_ws(chars, p, len)
+
+    // Parse remaining elements
+    while p < len {
+        let c: i32 = chars[p].as#[i32]
+        if c == 93 {
+            return Ok((TomlValue::Array(elements), p + 1))
+        }
+        if c != 44 {
+            return Err(make_error("expected ',' or ']' in array", count_lines(chars, p)))
+        }
+        p = p + 1
+        p = skip_array_ws(chars, p, len)
+        // Allow trailing comma
+        if p < len and chars[p].as#[i32] == 93 {
+            return Ok((TomlValue::Array(elements), p + 1))
+        }
+        let elem_r: Result#[(TomlValue, i32), TomlError] = parse_value(chars, p, len)
+        match elem_r {
+            Ok(elem) => {
+                elements.push(elem.0)
+                p = elem.1
+            }
+            Err(e) => { return Err(e) }
+        }
+        p = skip_array_ws(chars, p, len)
+    }
+
+    return Err(make_error("unterminated array", count_lines(chars, pos)))
+}
+
+// TOML arrays allow newlines and comments between elements
+fn skip_array_ws(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = pos
+    while i < len {
+        let c: i32 = chars[i].as#[i32]
+        if is_ws(c) or is_newline(c) {
+            i = i + 1
+        } else if c == 35 {
+            // Comment — skip to end of line
+            while i < len and chars[i].as#[i32] != 10 {
+                i = i + 1
+            }
+        } else {
+            break
+        }
+    }
+    return i
+}
+
+// ============================================================================
+// Inline Table Parsing
+// ============================================================================
+
+fn parse_inline_table(chars: [char], pos: i32, len: i32) -> Result#[(TomlValue, i32), TomlError] {
+    var p: i32 = pos + 1  // skip '{'
+    var entries: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
+    entries.insert("", TomlValue::Bool(false))
+
+    p = skip_ws(chars, p, len)
+
+    // Empty inline table
+    if p < len and chars[p].as#[i32] == 125 {
+        return Ok((TomlValue::Table(entries), p + 1))
+    }
+
+    var first: bool = true
+    while p < len {
+        if not first {
+            if chars[p].as#[i32] != 44 {
+                return Err(make_error("expected ',' or '}' in inline table", count_lines(chars, p)))
+            }
+            p = p + 1
+            p = skip_ws(chars, p, len)
+        }
+        first = false
+
+        // Parse key
+        let key_r: Result#[(List#[string], i32), TomlError] = parse_key_path(chars, p, len)
+        var keys: List#[string] = List.new#[string]()
+        match key_r {
+            Ok(kv) => {
+                keys = kv.0
+                p = kv.1
+            }
+            Err(e) => { return Err(e) }
+        }
+
+        p = skip_ws(chars, p, len)
+        if p >= len or chars[p].as#[i32] != 61 {
+            return Err(make_error("expected '=' in inline table", count_lines(chars, p)))
+        }
+        p = p + 1
+        p = skip_ws(chars, p, len)
+
+        // Parse value
+        let val_r: Result#[(TomlValue, i32), TomlError] = parse_value(chars, p, len)
+        match val_r {
+            Ok(vv) => {
+                // Handle dotted keys in inline table
+                let ins_r: Result#[i32, TomlError] = insert_dotted_into_map(entries, keys, 0, vv.0, chars, p)
+                match ins_r {
+                    Ok(_) => {}
+                    Err(e) => { return Err(e) }
+                }
+                p = vv.1
+            }
+            Err(e) => { return Err(e) }
+        }
+
+        p = skip_ws(chars, p, len)
+
+        if p < len and chars[p].as#[i32] == 125 {
+            return Ok((TomlValue::Table(entries), p + 1))
+        }
+    }
+
+    return Err(make_error("unterminated inline table", count_lines(chars, pos)))
+}
+
+// ============================================================================
+// Table Path Management (recursive — match extraction gives references)
+// ============================================================================
+
+// Ensure a dotted table path exists, creating intermediate tables as needed
+fn ensure_table_path(root: Map#[string, TomlValue], path: List#[string], chars: [char], pos: i32) -> Result#[i32, TomlError] {
+    return ensure_table_path_at(root, path, 0, chars, pos)
+}
+
+fn ensure_table_path_at(m: Map#[string, TomlValue], path: List#[string], idx: i32, chars: [char], pos: i32) -> Result#[i32, TomlError] {
+    if idx >= path.len() {
+        return Ok(0)
+    }
+    let key: string = path.get(idx)!
+    let existing: ?TomlValue = m.get(key)
+    match existing {
+        Some(v) => {
+            match v {
+                TomlValue.Table(t) => {
+                    return ensure_table_path_at(t, path, idx + 1, chars, pos)
+                }
+                TomlValue.Array(a) => {
+                    let alen: i32 = a.len()
+                    if alen > 0 {
+                        let last: TomlValue = a.get(alen - 1)!
+                        match last {
+                            TomlValue.Table(t) => {
+                                return ensure_table_path_at(t, path, idx + 1, chars, pos)
+                            }
+                            _ => {
+                                return Err(make_error("key is not a table", count_lines(chars, pos)))
+                            }
+                        }
+                    } else {
+                        return Err(make_error("empty array of tables", count_lines(chars, pos)))
+                    }
+                }
+                _ => {
+                    return Err(make_error("key already exists as non-table", count_lines(chars, pos)))
+                }
+            }
+        }
+        None => {
+            var new_t: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
+            new_t.insert("", TomlValue::Bool(false))
+            m.insert(key, TomlValue::Table(new_t))
+            let inserted: ?TomlValue = m.get(key)
+            match inserted {
+                Some(iv) => {
+                    match iv {
+                        TomlValue.Table(t) => {
+                            return ensure_table_path_at(t, path, idx + 1, chars, pos)
+                        }
+                        _ => { return Err(make_error("internal: unexpected type after table insert", count_lines(chars, pos))) }
+                    }
+                }
+                None => { return Err(make_error("internal: table insert failed", count_lines(chars, pos))) }
+            }
+        }
+    }
+}
+
+// Ensure an array-of-tables path, appending a new table to the array at the final key
+fn ensure_array_of_tables(root: Map#[string, TomlValue], path: List#[string], chars: [char], pos: i32) -> Result#[i32, TomlError] {
+    return ensure_aot_at(root, path, 0, chars, pos)
+}
+
+fn ensure_aot_at(m: Map#[string, TomlValue], path: List#[string], idx: i32, chars: [char], pos: i32) -> Result#[i32, TomlError] {
+    let path_len: i32 = path.len()
+    let key: string = path.get(idx)!
+
+    // At the final key, create or append to array
+    if idx == path_len - 1 {
+        let existing: ?TomlValue = m.get(key)
+        match existing {
+            Some(v) => {
+                match v {
+                    TomlValue.Array(a) => {
+                        var new_t: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
+                        new_t.insert("", TomlValue::Bool(false))
+                        a.push(TomlValue::Table(new_t))
+                        m.insert(key, TomlValue::Array(a))
+                        return Ok(0)
+                    }
+                    _ => {
+                        return Err(make_error("key already defined as non-array", count_lines(chars, pos)))
+                    }
+                }
+            }
+            None => {
+                var arr: List#[TomlValue] = List.new#[TomlValue]()
+                var new_t2: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
+                new_t2.insert("", TomlValue::Bool(false))
+                arr.push(TomlValue::Table(new_t2))
+                m.insert(key, TomlValue::Array(arr))
+                return Ok(0)
+            }
+        }
+    }
+
+    // Navigate to parent
+    let existing: ?TomlValue = m.get(key)
+    match existing {
+        Some(v) => {
+            match v {
+                TomlValue.Table(t) => {
+                    return ensure_aot_at(t, path, idx + 1, chars, pos)
+                }
+                TomlValue.Array(a) => {
+                    let alen: i32 = a.len()
+                    if alen > 0 {
+                        let last: TomlValue = a.get(alen - 1)!
+                        match last {
+                            TomlValue.Table(t) => {
+                                return ensure_aot_at(t, path, idx + 1, chars, pos)
+                            }
+                            _ => {
+                                return Err(make_error("expected table in array", count_lines(chars, pos)))
+                            }
+                        }
+                    }
+                    return Err(make_error("empty array", count_lines(chars, pos)))
+                }
+                _ => {
+                    return Err(make_error("key is not a table or array", count_lines(chars, pos)))
+                }
+            }
+        }
+        None => {
+            var new_t3: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
+            new_t3.insert("", TomlValue::Bool(false))
+            m.insert(key, TomlValue::Table(new_t3))
+            let inserted: ?TomlValue = m.get(key)
+            match inserted {
+                Some(iv) => {
+                    match iv {
+                        TomlValue.Table(t) => {
+                            return ensure_aot_at(t, path, idx + 1, chars, pos)
+                        }
+                        _ => { return Err(make_error("internal: unexpected type after table insert", count_lines(chars, pos))) }
+                    }
+                }
+                None => { return Err(make_error("internal: table insert failed", count_lines(chars, pos))) }
+            }
+        }
+    }
+}
+
+// Insert a value at a dotted key path within the current section context
+fn insert_dotted_key(root: Map#[string, TomlValue], section_path: List#[string], keys: List#[string], value: TomlValue, chars: [char], pos: i32) -> Result#[i32, TomlError] {
+    if section_path.len() == 0 {
+        // No section — insert directly into root
+        return insert_dotted_into_map(root, keys, 0, value, chars, pos)
+    }
+    // Navigate section path then insert
+    return navigate_and_insert(root, section_path, 0, keys, value, chars, pos)
+}
+
+fn navigate_and_insert(m: Map#[string, TomlValue], section_path: List#[string], idx: i32, keys: List#[string], value: TomlValue, chars: [char], pos: i32) -> Result#[i32, TomlError] {
+    if idx >= section_path.len() {
+        // Reached the target table — insert the dotted key here
+        return insert_dotted_into_map(m, keys, 0, value, chars, pos)
+    }
+    let key: string = section_path.get(idx)!
+    let existing: ?TomlValue = m.get(key)
+    match existing {
+        Some(v) => {
+            match v {
+                TomlValue.Table(t) => {
+                    return navigate_and_insert(t, section_path, idx + 1, keys, value, chars, pos)
+                }
+                TomlValue.Array(a) => {
+                    let alen: i32 = a.len()
+                    if alen > 0 {
+                        let last: TomlValue = a.get(alen - 1)!
+                        match last {
+                            TomlValue.Table(t) => {
+                                return navigate_and_insert(t, section_path, idx + 1, keys, value, chars, pos)
+                            }
+                            _ => {
+                                return Err(make_error("expected table", count_lines(chars, pos)))
+                            }
+                        }
+                    }
+                    return Err(make_error("empty array", count_lines(chars, pos)))
+                }
+                _ => {
+                    return Err(make_error("section path is not a table", count_lines(chars, pos)))
+                }
+            }
+        }
+        None => {
+            return Err(make_error("section path not found", count_lines(chars, pos)))
+        }
+    }
+}
+
+// Insert a value at a dotted key path within a map, creating intermediate tables
+fn insert_dotted_into_map(m: Map#[string, TomlValue], keys: List#[string], idx: i32, value: TomlValue, chars: [char], pos: i32) -> Result#[i32, TomlError] {
+    let keys_len: i32 = keys.len()
+
+    // Final key — insert directly
+    if idx == keys_len - 1 {
+        let final_key: string = keys.get(idx)!
+        m.insert(final_key, value)
+        return Ok(0)
+    }
+
+    // Intermediate key — navigate or create table, then recurse
+    let key: string = keys.get(idx)!
+    let existing: ?TomlValue = m.get(key)
+    match existing {
+        Some(v) => {
+            match v {
+                TomlValue.Table(t) => {
+                    return insert_dotted_into_map(t, keys, idx + 1, value, chars, pos)
+                }
+                _ => {
+                    return Err(make_error("key already exists as non-table", count_lines(chars, pos)))
+                }
+            }
+        }
+        None => {
+            var new_t4: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
+            new_t4.insert("", TomlValue::Bool(false))
+            m.insert(key, TomlValue::Table(new_t4))
+            let inserted: ?TomlValue = m.get(key)
+            match inserted {
+                Some(iv) => {
+                    match iv {
+                        TomlValue.Table(t) => {
+                            return insert_dotted_into_map(t, keys, idx + 1, value, chars, pos)
+                        }
+                        _ => {
+                            return Err(make_error("internal: unexpected type after table insert", count_lines(chars, pos)))
+                        }
+                    }
+                }
+                None => {
+                    return Err(make_error("internal: table insert failed", count_lines(chars, pos)))
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Stringify
+// ============================================================================
+
+pub fn toml_stringify(value: TomlValue) -> string {
+    match value {
+        TomlValue.Table(m) => {
+            return stringify_table_contents(m, "")
+        }
+        _ => {
+            return stringify_inline_value(value)
+        }
+    }
+}
+
+fn stringify_table_contents(m: Map#[string, TomlValue], prefix: string) -> string {
+    let keys: List#[string] = m.keys()
+    let num_keys: i32 = keys.len()
+    // Collect key strings into a separate list to avoid corruption during iteration
+    var key_strs: List#[string] = List.new#[string]()
+    var ci: i32 = 0
+    while ci < num_keys {
+        let ck: string = keys.get(ci)!
+        key_strs.push(ck)
+        ci = ci + 1
+    }
+
+    // First pass: simple key-value pairs
+    var result: string = ""
+    var i: i32 = 0
+    while i < num_keys {
+        let k: string = key_strs.get(i)!
+        if k != "" {
+            result = result + stringify_one_kv(m, k)
+        }
+        i = i + 1
+    }
+    // Second pass: sub-tables and arrays of tables
+    var j: i32 = 0
+    while j < num_keys {
+        let k: string = key_strs.get(j)!
+        if k != "" {
+            result = result + stringify_one_subtable(m, k, prefix)
+        }
+        j = j + 1
+    }
+    return result
+}
+
+// Stringify a single simple key-value pair (returns "" if it's a subtable/AOT)
+fn stringify_one_kv(m: Map#[string, TomlValue], k: string) -> string {
+    let v: TomlValue = m.get(k)!
+    var is_subtable: bool = false
+    match v {
+        TomlValue.Table(_) => { is_subtable = true }
+        TomlValue.Array(a) => {
+            if is_array_of_tables(a) {
+                is_subtable = true
+            }
+        }
+        _ => {}
+    }
+    if is_subtable { return "" }
+    return escape_key(k) + " = " + stringify_inline_value(v) + "\n"
+}
+
+// Stringify a single sub-table or array-of-tables entry (returns "" for simple values)
+fn stringify_one_subtable(m: Map#[string, TomlValue], k: string, prefix: string) -> string {
+    let v: TomlValue = m.get(k)!
+    match v {
+        TomlValue.Table(sub) => {
+            var full_key: string = k
+            if prefix != "" {
+                full_key = prefix + "." + k
+            }
+            return "\n[" + escape_key(full_key) + "]\n" + stringify_table_contents(sub, full_key)
+        }
+        TomlValue.Array(a) => {
+            if is_array_of_tables(a) {
+                var full_key: string = k
+                if prefix != "" {
+                    full_key = prefix + "." + k
+                }
+                return stringify_aot_entries(a, full_key)
+            }
+            return ""
+        }
+        _ => { return "" }
+    }
+}
+
+// Stringify all entries in an array of tables
+fn stringify_aot_entries(a: List#[TomlValue], full_key: string) -> string {
+    var result: string = ""
+    var i: i32 = 0
+    let total: i32 = a.len()
+    while i < total {
+        let elem: TomlValue = a.get(i)!
+        result = result + "\n[[" + escape_key(full_key) + "]]\n"
+        match elem {
+            TomlValue.Table(sub) => {
+                result = result + stringify_table_contents(sub, full_key)
+            }
+            _ => {}
+        }
+        i = i + 1
+    }
+    return result
+}
+
+fn is_array_of_tables(a: List#[TomlValue]) -> bool {
+    if a.len() == 0 { return false }
+    let first: TomlValue = a.get(0)!
+    match first {
+        TomlValue.Table(_) => { return true }
+        _ => { return false }
+    }
+}
+
+fn stringify_inline_value(value: TomlValue) -> string {
+    match value {
+        TomlValue.Str(s) => {
+            return "\"" + escape_toml_string(s) + "\""
+        }
+        TomlValue.Integer(n) => {
+            return n.to_string().as_str()
+        }
+        TomlValue.Float(n) => {
+            // Check NaN
+            if not (n == n) {
+                return "nan"
+            } else if (n - n) != 0.0 {
+                if n > 0.0 {
+                    return "inf"
+                }
+                return "-inf"
+            }
+            let int_val: i64 = n.as#[i64]
+            if int_val.as#[f64] == n {
+                return int_val.to_string().as_str() + ".0"
+            }
+            return n.to_string().as_str()
+        }
+        TomlValue.Bool(b) => {
+            if b { return "true" }
+            return "false"
+        }
+        TomlValue.Array(items) => {
+            return "[" + stringify_inline_array_items(items, 0, items.len()) + "]"
+        }
+        TomlValue.Table(entries) => {
+            let keys: List#[string] = entries.keys()
+            return "{" + stringify_inline_table_entries(entries, keys, 0, keys.len(), true) + "}"
+        }
+    }
+}
+
+// Recursive helper: stringify array items, returning concatenated string
+fn stringify_inline_array_items(items: List#[TomlValue], idx: i32, total: i32) -> string {
+    if idx >= total { return "" }
+    let item: TomlValue = items.get(idx)!
+    var prefix: string = ""
+    if idx > 0 { prefix = ", " }
+    return prefix + stringify_inline_value(item) + stringify_inline_array_items(items, idx + 1, total)
+}
+
+// Recursive helper: stringify table entries for inline representation
+fn stringify_inline_table_entries(m: Map#[string, TomlValue], keys: List#[string], idx: i32, total: i32, first: bool) -> string {
+    if idx >= total { return "" }
+    let k: string = keys.get(idx)!
+    if k == "" {
+        return stringify_inline_table_entries(m, keys, idx + 1, total, first)
+    }
+    var prefix: string = ""
+    if not first { prefix = ", " }
+    let v: TomlValue = m.get(k)!
+    return prefix + escape_key(k) + " = " + stringify_inline_value(v) + stringify_inline_table_entries(m, keys, idx + 1, total, false)
+}
+
+fn escape_key(key: string) -> string {
+    // Check if key needs quoting (non-bare-key chars)
+    var needs_quote: bool = false
+    var i: i32 = 0
+    let slen: i32 = key.byte_len()
+    if slen == 0 { return "\"\"" }
+    while i < slen {
+        if not is_bare_key_char(key.byte_at(i).as#[i32]) {
+            needs_quote = true
+            break
+        }
+        i = i + 1
+    }
+    if needs_quote {
+        var buf: String = String.from("\"")
+        buf.push_str(escape_toml_string(key))
+        buf.push_str("\"")
+        return buf.as_str()
+    }
+    return key
+}
+
+fn escape_toml_string(s: string) -> string {
+    var buf: String = String.new()
+    var i: i32 = 0
+    let slen: i32 = s.byte_len()
+    while i < slen {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 34 { buf.push_str("\\\"") }
+        else if c == 92 { buf.push_str("\\\\") }
+        else if c == 10 { buf.push_str("\\n") }
+        else if c == 13 { buf.push_str("\\r") }
+        else if c == 9 { buf.push_str("\\t") }
+        else if c == 8 { buf.push_str("\\b") }
+        else if c == 12 { buf.push_str("\\f") }
+        else if c < 32 {
+            buf.push_str("\\u00")
+            let hi: i32 = c / 16
+            let lo: i32 = c - hi * 16
+            buf.push_str(hex_digit_str(hi))
+            buf.push_str(hex_digit_str(lo))
+        }
+        else { buf.push_str(from_byte(c.as#[u8])) }
+        i = i + 1
+    }
+    return buf.as_str()
+}
+
+fn hex_digit_str(n: i32) -> string {
+    if n < 10 { return from_byte((48 + n).as#[u8]) }
+    return from_byte((97 + n - 10).as#[u8])
+}
