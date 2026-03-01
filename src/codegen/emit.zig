@@ -30427,6 +30427,7 @@ pub const Emitter = struct {
 
     fn getOrDeclareStdout(self: *Emitter) llvm.ValueRef {
         // On macOS/BSD, stdout is accessed via __stdoutp
+        // On Windows/MSVC, stdout is accessed via __acrt_iob_func(1)
         // On Linux, it's accessed via stdout global
         const os = @import("builtin").os.tag;
 
@@ -30474,6 +30475,38 @@ pub const Emitter = struct {
             llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
 
             const stdout_val = self.builder.buildLoad(ptr_type, global, "stdout");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stdout_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
+        } else if (os == .windows) {
+            // Windows/MSVC: stdout is obtained via __acrt_iob_func(1)
+            const fn_name = "klar_get_stdout";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const iob_func = self.getOrDeclareAcrtIobFunc();
+
+            // Create klar_get_stdout function
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            // Call __acrt_iob_func(1) to get stdout
+            var call_args = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, 1)};
+            const iob_fn_type = llvm.c.LLVMGlobalGetValueType(iob_func);
+            const stdout_val = self.builder.buildCall(iob_fn_type, iob_func, &call_args, "stdout");
             _ = llvm.c.LLVMBuildRet(self.builder.ref, stdout_val);
 
             if (saved_bb) |bb| {
