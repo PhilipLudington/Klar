@@ -55,9 +55,9 @@ fn main() -> i32 {
 
     // Test 5: sha256_bytes matches sha256 for "abc"
     var abc_bytes: List#[u8] = List.new#[u8]()
-    abc_bytes.push(97.as#[u8])
-    abc_bytes.push(98.as#[u8])
-    abc_bytes.push(99.as#[u8])
+    abc_bytes.push(97)
+    abc_bytes.push(98)
+    abc_bytes.push(99)
     let bytes_hash: string = sha256_bytes(abc_bytes)
     let str_hash: string = sha256("abc")
     if bytes_hash != str_hash {

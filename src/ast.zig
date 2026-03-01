@@ -331,6 +331,7 @@ pub const TypeCast = struct {
     expr: Expr,
     target_type: TypeExpr,
     truncating: bool, // true for .trunc[], false for .as[]
+    source_is_signed: bool = true, // set by checker; default signed for safety
     span: Span,
 };
 

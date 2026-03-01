@@ -46,17 +46,16 @@ pub fn sha256_bytes(data: List#[u8]) -> string {
         var w: List#[u32] = List.new#[u32]()
 
         // First 16 words: pack bytes big-endian
-        let byte_mask: u32 = 255
         let s24: u32 = 24
         let s16: u32 = 16
         let s8: u32 = 8
         var t: i32 = 0
         while t < 16 {
             let base: i32 = offset + t * 4
-            let b0: u32 = padded.get(base)!.as#[u32] & byte_mask
-            let b1: u32 = padded.get(base + 1)!.as#[u32] & byte_mask
-            let b2: u32 = padded.get(base + 2)!.as#[u32] & byte_mask
-            let b3: u32 = padded.get(base + 3)!.as#[u32] & byte_mask
+            let b0: u32 = padded.get(base)!.as#[u32]
+            let b1: u32 = padded.get(base + 1)!.as#[u32]
+            let b2: u32 = padded.get(base + 2)!.as#[u32]
+            let b3: u32 = padded.get(base + 3)!.as#[u32]
             w.push((b0 << s24) | (b1 << s16) | (b2 << s8) | b3)
             t = t + 1
         }
@@ -144,21 +143,21 @@ fn sha256_pad(msg: List#[u8]) -> List#[u8] {
     }
 
     // Append bit '1' (0x80 byte)
-    padded.push(128.as#[u8])
+    padded.push(128)
 
     // Append zeros until length is 56 mod 64
     while padded.len() % 64 != 56 {
-        padded.push(0.as#[u8])
+        padded.push(0)
     }
 
     // Append original message length in bits as big-endian 64-bit integer
     let bit_len: i64 = msg_len.as#[i64] * 8.as#[i64]
 
     // High 32 bits (zero for messages < 512 MB)
-    padded.push(0.as#[u8])
-    padded.push(0.as#[u8])
-    padded.push(0.as#[u8])
-    padded.push(0.as#[u8])
+    padded.push(0)
+    padded.push(0)
+    padded.push(0)
+    padded.push(0)
 
     // Low 32 bits (big-endian)
     let bl: i32 = bit_len.as#[i32]
@@ -245,69 +244,69 @@ fn u32_to_hex(val: u32) -> string {
 
 fn init_k() -> List#[u32] {
     var k: List#[u32] = List.new#[u32]()
-    k.push(1116352408.as#[u32])
-    k.push(1899447441.as#[u32])
-    k.push(3049323471.as#[u32])
-    k.push(3921009573.as#[u32])
-    k.push(961987163.as#[u32])
-    k.push(1508970993.as#[u32])
-    k.push(2453635748.as#[u32])
-    k.push(2870763221.as#[u32])
-    k.push(3624381080.as#[u32])
-    k.push(310598401.as#[u32])
-    k.push(607225278.as#[u32])
-    k.push(1426881987.as#[u32])
-    k.push(1925078388.as#[u32])
-    k.push(2162078206.as#[u32])
-    k.push(2614888103.as#[u32])
-    k.push(3248222580.as#[u32])
-    k.push(3835390401.as#[u32])
-    k.push(4022224774.as#[u32])
-    k.push(264347078.as#[u32])
-    k.push(604807628.as#[u32])
-    k.push(770255983.as#[u32])
-    k.push(1249150122.as#[u32])
-    k.push(1555081692.as#[u32])
-    k.push(1996064986.as#[u32])
-    k.push(2554220882.as#[u32])
-    k.push(2821834349.as#[u32])
-    k.push(2952996808.as#[u32])
-    k.push(3210313671.as#[u32])
-    k.push(3336571891.as#[u32])
-    k.push(3584528711.as#[u32])
-    k.push(113926993.as#[u32])
-    k.push(338241895.as#[u32])
-    k.push(666307205.as#[u32])
-    k.push(773529912.as#[u32])
-    k.push(1294757372.as#[u32])
-    k.push(1396182291.as#[u32])
-    k.push(1695183700.as#[u32])
-    k.push(1986661051.as#[u32])
-    k.push(2177026350.as#[u32])
-    k.push(2456956037.as#[u32])
-    k.push(2730485921.as#[u32])
-    k.push(2820302411.as#[u32])
-    k.push(3259730800.as#[u32])
-    k.push(3345764771.as#[u32])
-    k.push(3516065817.as#[u32])
-    k.push(3600352804.as#[u32])
-    k.push(4094571909.as#[u32])
-    k.push(275423344.as#[u32])
-    k.push(430227734.as#[u32])
-    k.push(506948616.as#[u32])
-    k.push(659060556.as#[u32])
-    k.push(883997877.as#[u32])
-    k.push(958139571.as#[u32])
-    k.push(1322822218.as#[u32])
-    k.push(1537002063.as#[u32])
-    k.push(1747873779.as#[u32])
-    k.push(1955562222.as#[u32])
-    k.push(2024104815.as#[u32])
-    k.push(2227730452.as#[u32])
-    k.push(2361852424.as#[u32])
-    k.push(2428436474.as#[u32])
-    k.push(2756734187.as#[u32])
-    k.push(3204031479.as#[u32])
-    k.push(3329325298.as#[u32])
+    k.push(1116352408)
+    k.push(1899447441)
+    k.push(3049323471)
+    k.push(3921009573)
+    k.push(961987163)
+    k.push(1508970993)
+    k.push(2453635748)
+    k.push(2870763221)
+    k.push(3624381080)
+    k.push(310598401)
+    k.push(607225278)
+    k.push(1426881987)
+    k.push(1925078388)
+    k.push(2162078206)
+    k.push(2614888103)
+    k.push(3248222580)
+    k.push(3835390401)
+    k.push(4022224774)
+    k.push(264347078)
+    k.push(604807628)
+    k.push(770255983)
+    k.push(1249150122)
+    k.push(1555081692)
+    k.push(1996064986)
+    k.push(2554220882)
+    k.push(2821834349)
+    k.push(2952996808)
+    k.push(3210313671)
+    k.push(3336571891)
+    k.push(3584528711)
+    k.push(113926993)
+    k.push(338241895)
+    k.push(666307205)
+    k.push(773529912)
+    k.push(1294757372)
+    k.push(1396182291)
+    k.push(1695183700)
+    k.push(1986661051)
+    k.push(2177026350)
+    k.push(2456956037)
+    k.push(2730485921)
+    k.push(2820302411)
+    k.push(3259730800)
+    k.push(3345764771)
+    k.push(3516065817)
+    k.push(3600352804)
+    k.push(4094571909)
+    k.push(275423344)
+    k.push(430227734)
+    k.push(506948616)
+    k.push(659060556)
+    k.push(883997877)
+    k.push(958139571)
+    k.push(1322822218)
+    k.push(1537002063)
+    k.push(1747873779)
+    k.push(1955562222)
+    k.push(2024104815)
+    k.push(2227730452)
+    k.push(2361852424)
+    k.push(2428436474)
+    k.push(2756734187)
+    k.push(3204031479)
+    k.push(3329325298)
     return k
 }

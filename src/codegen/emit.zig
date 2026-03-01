@@ -4845,7 +4845,7 @@ pub const Emitter = struct {
 
             if (dest_bits > src_bits) {
                 // Widening
-                const is_signed = self.isSignedIntType(cast.expr);
+                const is_signed = cast.source_is_signed;
                 if (is_signed) {
                     return self.builder.buildSExt(value, dest_type, "sext");
                 } else {

@@ -1288,7 +1288,7 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                     tc.addError(.invalid_call, method.span, "push() expects exactly 1 argument", .{});
                     return tc.type_builder.voidType();
                 }
-                const arg_type = tc.checkExpr(method.args[0]);
+                const arg_type = tc.checkExprWithHint(method.args[0], element_type);
                 // Allow string literals (primitive.string_) for List#[String] (string_data)
                 const is_string_compat = element_type == .string_data and
                     arg_type == .primitive and arg_type.primitive == .string_;
