@@ -58,8 +58,8 @@ const posix = if (has_posix_headers) @cImport({
 }) else struct {};
 
 /// Offset of st_mode field within struct stat (in bytes).
-/// On Windows, _stat64 has st_mode at offset 4 (after st_dev:u32).
-const stat_mode_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_mode") else 4;
+/// On Windows, _stat64 has st_mode at offset 6 (after st_dev:u32 + st_ino:u16).
+const stat_mode_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_mode") else 6;
 
 /// Size of st_mode field in bits (16 on macOS, 32 on Linux typically, 16 on Windows MSVC).
 const stat_mode_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_mode)) else 16;

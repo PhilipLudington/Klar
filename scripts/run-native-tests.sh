@@ -27,9 +27,18 @@ fi
 if [ -f "$HELPER_C" ]; then
     if [[ "$OS" == "Windows_NT" ]]; then
         # MSVC toolchain: cl.exe + lib.exe
-        cl.exe /nologo /c "$HELPER_C" /Fo"$BUILD_DIR/klarhelper.obj" 2>/dev/null
-        lib.exe /NOLOGO /OUT:"$BUILD_DIR/klarhelper.lib" "$BUILD_DIR/klarhelper.obj" 2>/dev/null
+        # Use MSYS_NO_PATHCONV to prevent Git Bash from mangling /Fo and /OUT: paths
+        HELPER_C_WIN="$(cygpath -w "$HELPER_C")"
+        OBJ_WIN="$(cygpath -w "$BUILD_DIR/klarhelper.obj")"
+        LIB_WIN="$(cygpath -w "$BUILD_DIR/klarhelper.lib")"
+        MSYS_NO_PATHCONV=1 cl.exe /nologo /c "$HELPER_C_WIN" /Fo"$OBJ_WIN" || echo "Warning: cl.exe compile failed"
+        MSYS_NO_PATHCONV=1 lib.exe /NOLOGO /OUT:"$LIB_WIN" "$OBJ_WIN" || echo "Warning: lib.exe failed"
         rm -f "$BUILD_DIR/klarhelper.obj"
+        if [ -f "$BUILD_DIR/klarhelper.lib" ]; then
+            echo "Built C helper library: $BUILD_DIR/klarhelper.lib"
+        else
+            echo "Warning: C helper library was not built"
+        fi
     else
         cc -c "$HELPER_C" -o "$BUILD_DIR/klarhelper.o" 2>/dev/null
         ar rcs "$BUILD_DIR/libklarhelper.a" "$BUILD_DIR/klarhelper.o" 2>/dev/null
