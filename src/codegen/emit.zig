@@ -58,8 +58,8 @@ const posix = if (has_posix_headers) @cImport({
 }) else struct {};
 
 /// Offset of st_mode field within struct stat (in bytes).
-/// On Windows, _stat64 has st_mode at offset 4 (after st_dev:u32).
-const stat_mode_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_mode") else 4;
+/// On Windows, _stat64 has st_mode at offset 6 (after st_dev:u32 + st_ino:u16).
+const stat_mode_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_mode") else 6;
 
 /// Size of st_mode field in bits (16 on macOS, 32 on Linux typically, 16 on Windows MSVC).
 const stat_mode_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_mode)) else 16;
@@ -69,9 +69,10 @@ const stat_mode_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.
 const dirent_name_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_dirent, "d_name") else 0;
 
 /// Offset of st_size field within struct stat (in bytes).
-const stat_size_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_size") else @compileError("stat_size_offset: no POSIX headers; Windows _stat64 offsets must be verified for this platform");
-/// Size of st_size field in bits.
-const stat_size_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_size)) else @compileError("stat_size_bits: no POSIX headers; Windows _stat64 field sizes must be verified for this platform");
+/// On Windows, _stat64 has st_size at offset 24 (verified via offsetof).
+const stat_size_offset: u32 = if (has_posix_headers) @offsetOf(posix.struct_stat, "st_size") else 24;
+/// Size of st_size field in bits. _stat64 uses __int64 (64-bit).
+const stat_size_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.struct_stat, undefined).st_size)) else 64;
 
 /// Offset of st_mtime (modification time) within struct stat (in bytes).
 /// On macOS/BSD, the field is st_mtimespec (struct timespec); tv_sec is at offset 0 within it.
@@ -84,7 +85,7 @@ const stat_mtime_offset: u32 = if (has_posix_headers) blk: {
         @offsetOf(posix.struct_stat, "st_mtim") // Linux glibc
     else
         @compileError("Cannot determine st_mtime offset for this platform");
-} else @compileError("stat_mtime_offset: no POSIX headers; Windows _stat64 offsets must be verified for this platform");
+} else 40; // Windows _stat64 has st_mtime at offset 40 (verified via offsetof)
 /// We always read mtime as 64-bit (time_t is 64-bit on modern platforms).
 const stat_mtime_bits: u32 = 64;
 
@@ -9402,7 +9403,12 @@ pub const Emitter = struct {
                 if (rt_info.is_optional) {
                     // Return None: { i1 = 0, T = undef }
                     const none_val = self.emitNone(rt_info.llvm_type);
-                    _ = self.builder.buildRet(none_val);
+                    if (self.current_sret_ptr) |sret_ptr| {
+                        _ = self.builder.buildStore(none_val, sret_ptr);
+                        _ = self.builder.buildRetVoid();
+                    } else {
+                        _ = self.builder.buildRet(none_val);
+                    }
                 } else if (rt_info.is_result) {
                     // Return Err with same error value
                     // For Result operand: extract error value from index 2
@@ -9434,7 +9440,12 @@ pub const Emitter = struct {
 
                         // Build Err result with the extracted (and possibly converted) error
                         const err_result = self.emitErr(err_val, rt_info.ok_type.?, rt_info.err_type.?);
-                        _ = self.builder.buildRet(err_result);
+                        if (self.current_sret_ptr) |sret_ptr| {
+                            _ = self.builder.buildStore(err_result, sret_ptr);
+                            _ = self.builder.buildRetVoid();
+                        } else {
+                            _ = self.builder.buildRet(err_result);
+                        }
                     } else {
                         // Operand is Optional but return is Result - shouldn't happen with proper type checking
                         // Fall back to unreachable
@@ -15778,9 +15789,13 @@ pub const Emitter = struct {
     /// Get a pointer to errno via platform-specific function.
     /// macOS: int* __error(void)
     /// Linux: int* __errno_location(void)
+    /// Windows: int* _errno(void)
     fn emitGetErrno(self: *Emitter) llvm.ValueRef {
-        // Use __error on macOS, __errno_location on Linux
-        const fn_name = if (self.platform.os == .macos) "__error" else "__errno_location";
+        const fn_name = switch (self.platform.os) {
+            .macos => "__error",
+            .windows => "_errno",
+            else => "__errno_location",
+        };
         const func = if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |f|
             f
         else blk: {
@@ -23994,8 +24009,12 @@ pub const Emitter = struct {
 
         // Done - create final directory
         self.builder.positionAtEnd(done_bb);
-        var final_mkdir_args = [_]llvm.ValueRef{ path_copy, llvm.Const.int32(self.ctx, 0o755) };
-        const final_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &final_mkdir_args, "dirall.final_mkdir");
+        var final_mkdir_args_win = [_]llvm.ValueRef{path_copy};
+        var final_mkdir_args_posix = [_]llvm.ValueRef{ path_copy, llvm.Const.int32(self.ctx, 0o755) };
+        const final_result = if (self.platform.os == .windows)
+            self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &final_mkdir_args_win, "dirall.final_mkdir")
+        else
+            self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &final_mkdir_args_posix, "dirall.final_mkdir");
         const final_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, final_result, llvm.Const.int32(self.ctx, 0), "dirall.final_ok");
         _ = self.builder.buildCondBr(final_ok, success_bb, check_final_eexist_bb);
 
@@ -30146,12 +30165,14 @@ pub const Emitter = struct {
 
     /// Declare the C strdup function if not already declared.
     fn getOrDeclareStrdup(self: *Emitter) llvm.ValueRef {
-        const fn_name = "strdup";
+        // On Windows/MSVC, strdup is _strdup (POSIX name not exported)
+        const os = @import("builtin").os.tag;
+        const fn_name = if (os == .windows) "_strdup" else "strdup";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
 
-        // char* strdup(const char *s)
+        // char* strdup(const char *s) / char* _strdup(const char *s)
         const ptr_type = llvm.Types.pointer(self.ctx);
         var param_types = [_]llvm.TypeRef{ptr_type};
         const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 1, 0); // not variadic
@@ -30422,6 +30443,7 @@ pub const Emitter = struct {
 
     fn getOrDeclareStdout(self: *Emitter) llvm.ValueRef {
         // On macOS/BSD, stdout is accessed via __stdoutp
+        // On Windows/MSVC, stdout is accessed via __acrt_iob_func(1)
         // On Linux, it's accessed via stdout global
         const os = @import("builtin").os.tag;
 
@@ -30477,6 +30499,38 @@ pub const Emitter = struct {
             self.current_function = saved_func;
 
             return func;
+        } else if (os == .windows) {
+            // Windows/MSVC: stdout is obtained via __acrt_iob_func(1)
+            const fn_name = "klar_get_stdout";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const iob_func = self.getOrDeclareAcrtIobFunc();
+
+            // Create klar_get_stdout function
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            // Call __acrt_iob_func(1) to get stdout
+            var call_args = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, 1)};
+            const iob_fn_type = llvm.c.LLVMGlobalGetValueType(iob_func);
+            const stdout_val = self.builder.buildCall(iob_fn_type, iob_func, &call_args, "stdout");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stdout_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
         } else {
             const fn_name = "klar_get_stdout";
             if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
@@ -30510,6 +30564,7 @@ pub const Emitter = struct {
 
     fn getOrDeclareStderr(self: *Emitter) llvm.ValueRef {
         // On macOS/BSD, stderr is accessed via __stderrp
+        // On Windows/MSVC, stderr is accessed via __acrt_iob_func(2)
         // On Linux, it's accessed via stderr global
         const os = @import("builtin").os.tag;
 
@@ -30571,6 +30626,38 @@ pub const Emitter = struct {
             self.current_function = saved_func;
 
             return func;
+        } else if (os == .windows) {
+            // Windows/MSVC: stderr is obtained via __acrt_iob_func(2)
+            const fn_name = "klar_get_stderr";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const iob_func = self.getOrDeclareAcrtIobFunc();
+
+            // Create klar_get_stderr function
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            // Call __acrt_iob_func(2) to get stderr
+            var call_args = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, 2)};
+            const iob_fn_type = llvm.c.LLVMGlobalGetValueType(iob_func);
+            const stderr_val = self.builder.buildCall(iob_fn_type, iob_func, &call_args, "stderr");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stderr_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
         } else {
             // Linux: use stderr directly (declared as extern)
             const fn_name = "klar_get_stderr";
@@ -30607,6 +30694,7 @@ pub const Emitter = struct {
 
     fn getOrDeclareStdin(self: *Emitter) llvm.ValueRef {
         // On macOS/BSD, stdin is accessed via __stdinp
+        // On Windows/MSVC, stdin is accessed via __acrt_iob_func(0)
         // On Linux, it's accessed via stdin global
         const os = @import("builtin").os.tag;
 
@@ -30668,6 +30756,38 @@ pub const Emitter = struct {
             self.current_function = saved_func;
 
             return func;
+        } else if (os == .windows) {
+            // Windows/MSVC: stdin is obtained via __acrt_iob_func(0)
+            const fn_name = "klar_get_stdin";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const iob_func = self.getOrDeclareAcrtIobFunc();
+
+            // Create klar_get_stdin function
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            // Call __acrt_iob_func(0) to get stdin
+            var call_args = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, 0)};
+            const iob_fn_type = llvm.c.LLVMGlobalGetValueType(iob_func);
+            const stdin_val = self.builder.buildCall(iob_fn_type, iob_func, &call_args, "stdin");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stdin_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
         } else {
             // Linux: use stdin directly (declared as extern)
             const fn_name = "klar_get_stdin";
@@ -30700,6 +30820,22 @@ pub const Emitter = struct {
 
             return func;
         }
+    }
+
+    /// Declare __acrt_iob_func(int) -> FILE* for Windows MSVC.
+    /// This is the UCRT function used to access stdin/stdout/stderr.
+    fn getOrDeclareAcrtIobFunc(self: *Emitter) llvm.ValueRef {
+        const fn_name = "__acrt_iob_func";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // FILE* __acrt_iob_func(unsigned index)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{i32_type};
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
     fn getOrDeclareAbort(self: *Emitter) llvm.ValueRef {

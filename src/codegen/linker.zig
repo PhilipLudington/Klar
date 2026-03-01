@@ -190,13 +190,31 @@ fn linkForPlatform(
                 }) catch return LinkerError.OutOfMemory;
             } else {
                 // Native Windows linking with MSVC link.exe
+                // Use full path via VCToolsInstallDir to avoid Git Bash's coreutils link.exe
+                const link_exe: []const u8 = blk: {
+                    if (findMSVCLinker(allocator)) |path| {
+                        allocated_strings.append(allocator, path) catch return LinkerError.OutOfMemory;
+                        break :blk path;
+                    } else |_| {
+                        break :blk "link.exe";
+                    }
+                };
                 const out_arg = std.fmt.allocPrint(allocator, "/OUT:{s}", .{output_file}) catch return LinkerError.OutOfMemory;
                 allocated_strings.append(allocator, out_arg) catch return LinkerError.OutOfMemory;
                 args.appendSlice(allocator, &.{
-                    "link.exe",
+                    link_exe,
+                    "/NOLOGO",
                     out_arg,
                     object_file,
                     "/SUBSYSTEM:CONSOLE",
+                    // Default Windows libraries for CRT and system API
+                    "kernel32.lib",
+                    "msvcrt.lib",
+                    // VS 2015+ moved fprintf out of msvcrt into UCRT;
+                    // legacy_stdio_definitions provides the traditional definitions.
+                    "legacy_stdio_definitions.lib",
+                    // __acrt_iob_func (for stdin/stdout/stderr access) lives in ucrt
+                    "ucrt.lib",
                 }) catch return LinkerError.OutOfMemory;
             }
         },
@@ -239,6 +257,8 @@ fn linkForPlatform(
                     allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
                     args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
                 } else {
+                    // MSVC: skip libm — math functions are in the CRT (msvcrt/ucrt)
+                    if (std.mem.eql(u8, lib, "m")) continue;
                     // MSVC: just add the library name with .lib extension
                     const formatted = std.fmt.allocPrint(allocator, "{s}.lib", .{lib}) catch return LinkerError.OutOfMemory;
                     allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
@@ -255,10 +275,13 @@ fn linkForPlatform(
     }
 
     var child = std.process.Child.init(args.items, allocator);
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
 
-    child.spawn() catch return LinkerError.LinkerFailed;
+    child.spawn() catch |err| {
+        if (err == error.FileNotFound) return LinkerError.LinkerNotFound;
+        return LinkerError.LinkerFailed;
+    };
 
     // Wait for completion and get result
     const result = child.wait() catch return LinkerError.LinkerFailed;
@@ -271,6 +294,30 @@ fn linkForPlatform(
         },
         else => return LinkerError.LinkerFailed,
     }
+}
+
+/// Find the MSVC link.exe using VCToolsInstallDir environment variable.
+/// Falls back to "link.exe" if the environment variable is not set.
+/// This avoids finding Git Bash's coreutils `link.exe` instead of MSVC's.
+fn findMSVCLinker(allocator: std.mem.Allocator) ![]const u8 {
+    const vc_dir = std.process.getEnvVarOwned(allocator, "VCToolsInstallDir") catch {
+        return error.LinkerNotFound;
+    };
+    defer allocator.free(vc_dir);
+
+    // VCToolsInstallDir typically ends with '\', construct full path
+    // e.g., "C:\Program Files\...\VC\Tools\MSVC\14.44.35207\"
+    const link_path = std.fmt.allocPrint(allocator, "{s}bin\\HostX64\\x64\\link.exe", .{vc_dir}) catch {
+        return error.OutOfMemory;
+    };
+
+    // Verify the file exists
+    std.fs.accessAbsolute(link_path, .{}) catch {
+        allocator.free(link_path);
+        return error.LinkerNotFound;
+    };
+
+    return link_path;
 }
 
 /// Find the macOS SDK path.
@@ -326,7 +373,10 @@ pub fn linkWithClang(
     child.stderr_behavior = .Pipe;
     child.stdout_behavior = .Pipe;
 
-    child.spawn() catch return LinkerError.LinkerFailed;
+    child.spawn() catch |err| {
+        if (err == error.FileNotFound) return LinkerError.LinkerNotFound;
+        return LinkerError.LinkerFailed;
+    };
 
     // Wait for completion and get result
     const result = child.wait() catch return LinkerError.LinkerFailed;

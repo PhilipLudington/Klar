@@ -68,16 +68,13 @@ for input in "$TEST_DIR"/*.kl; do
         continue
     fi
 
-    second=$(echo "$first" | "$KLAR" fmt /dev/stdin 2>/dev/null)
+    # Use temp file for second pass (portable across macOS/Linux/Windows)
+    echo "$first" > /tmp/klar_fmt_idem.kl
+    second=$("$KLAR" fmt /tmp/klar_fmt_idem.kl 2>/dev/null)
     if [ $? -ne 0 ]; then
-        # Try via temp file if stdin doesn't work
-        echo "$first" > /tmp/klar_fmt_idem.kl
-        second=$("$KLAR" fmt /tmp/klar_fmt_idem.kl 2>/dev/null)
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}FAIL${NC} $name (idempotent: second pass error)"
-            FAIL=$((FAIL + 1))
-            continue
-        fi
+        echo -e "${RED}FAIL${NC} $name (idempotent: second pass error)"
+        FAIL=$((FAIL + 1))
+        continue
     fi
 
     if [ "$first" = "$second" ]; then

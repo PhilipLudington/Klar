@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-macos:
+    name: macOS (full suite)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install LLVM
+        run: brew install llvm@17
+
+      - name: Build
+        run: ./run-build.sh
+
+      - name: Run all tests
+        run: ./run-tests.sh
+
+  test-windows:
+    name: Windows (full suite)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Set up Python (for selfhost AST normalization)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install LLVM (vovkos pre-built with dev headers)
+        run: |
+          curl -L -o llvm.7z "https://github.com/vovkos/llvm-package-windows/releases/download/llvm-18.1.8/llvm-18.1.8-windows-amd64-msvc17-msvcrt.7z"
+          7z x llvm.7z -oC:/llvm -y
+          echo "LLVM_PREFIX=C:/llvm/llvm-18.1.8-windows-amd64-msvc17-msvcrt" >> $GITHUB_ENV
+
+      - name: Build (with LLVM)
+        run: ./run-build.sh
+
+      - name: Run all tests
+        run: ./run-tests.sh
+
+  test-linux:
+    name: Linux (full suite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install LLVM
+        run: sudo apt-get update && sudo apt-get install -y llvm-17 llvm-17-dev
+
+      - name: Build
+        run: ./run-build.sh
+
+      - name: Run all tests
+        run: ./run-tests.sh

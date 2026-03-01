@@ -169,14 +169,19 @@ pub fn metaCommand(allocator: std.mem.Allocator, args: []const []const u8) !void
     var matches = std.ArrayListUnmanaged(MetaMatch){};
 
     // Determine if path is a file or directory
-    const stat = std.fs.cwd().statFile(path) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error: cannot access '{s}': {}\n", .{ path, err }) catch "Error accessing path\n";
-        try stderr.writeAll(msg);
-        return;
+    // Note: on Windows, statFile returns error.IsDir for directories
+    const is_dir = blk: {
+        const stat = std.fs.cwd().statFile(path) catch |err| {
+            if (err == error.IsDir) break :blk true;
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error: cannot access '{s}': {}\n", .{ path, err }) catch "Error accessing path\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+        break :blk stat.kind == .directory;
     };
 
-    if (stat.kind == .directory) {
+    if (is_dir) {
         try metaQueryDirectory(arena_alloc, path, mode, &matches);
     } else {
         metaQueryFile(arena_alloc, path, mode, &matches) catch |err| {
@@ -797,7 +802,7 @@ const builtin = @import("builtin");
 
 fn getStdOut() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE);
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE).?;
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDOUT_FILENO };
@@ -806,7 +811,7 @@ fn getStdOut() std.fs.File {
 
 fn getStdErr() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE);
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE).?;
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDERR_FILENO };
