@@ -257,6 +257,8 @@ fn linkForPlatform(
                     allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;
                     args.append(allocator, formatted) catch return LinkerError.OutOfMemory;
                 } else {
+                    // MSVC: skip libm — math functions are in the CRT (msvcrt/ucrt)
+                    if (std.mem.eql(u8, lib, "m")) continue;
                     // MSVC: just add the library name with .lib extension
                     const formatted = std.fmt.allocPrint(allocator, "{s}.lib", .{lib}) catch return LinkerError.OutOfMemory;
                     allocated_strings.append(allocator, formatted) catch return LinkerError.OutOfMemory;

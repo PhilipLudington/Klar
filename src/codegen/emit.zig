@@ -23999,8 +23999,12 @@ pub const Emitter = struct {
 
         // Done - create final directory
         self.builder.positionAtEnd(done_bb);
-        var final_mkdir_args = [_]llvm.ValueRef{ path_copy, llvm.Const.int32(self.ctx, 0o755) };
-        const final_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &final_mkdir_args, "dirall.final_mkdir");
+        var final_mkdir_args_win = [_]llvm.ValueRef{path_copy};
+        var final_mkdir_args_posix = [_]llvm.ValueRef{ path_copy, llvm.Const.int32(self.ctx, 0o755) };
+        const final_result = if (self.platform.os == .windows)
+            self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &final_mkdir_args_win, "dirall.final_mkdir")
+        else
+            self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(mkdir_fn), mkdir_fn, &final_mkdir_args_posix, "dirall.final_mkdir");
         const final_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, final_result, llvm.Const.int32(self.ctx, 0), "dirall.final_ok");
         _ = self.builder.buildCondBr(final_ok, success_bb, check_final_eexist_bb);
 
