@@ -17,6 +17,13 @@ if [ ! -f "$KLAR" ]; then
     cd "$SCRIPT_DIR" && zig build || exit 1
 fi
 
+# Detect python command (python3 on POSIX, python on Windows)
+if command -v python3 &>/dev/null; then
+    PYTHON=python3
+else
+    PYTHON=python
+fi
+
 PASSED=0
 FAILED=0
 FAILURES=""
@@ -383,8 +390,8 @@ else
             [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
             FAILURES="$FAILURES\"$name: token mismatch\""
             # Show first difference for debugging
-            diff <(echo "$zig_tokens" | python3 -m json.tool 2>/dev/null || echo "$zig_tokens") \
-                 <(echo "$selfhost_tokens" | python3 -m json.tool 2>/dev/null || echo "$selfhost_tokens") 2>/dev/null | head -10
+            diff <(echo "$zig_tokens" | $PYTHON -m json.tool 2>/dev/null || echo "$zig_tokens") \
+                 <(echo "$selfhost_tokens" | $PYTHON -m json.tool 2>/dev/null || echo "$selfhost_tokens") 2>/dev/null | head -10
         fi
     done
 fi
@@ -461,8 +468,12 @@ else
             continue
         fi
 
-        # Compare with normalization
-        norm_output=$(python3 "$NORMALIZE_SCRIPT" --str "$zig_ast" "$selfhost_ast" 2>&1)
+        # Compare with normalization (use temp files to avoid arg-length limits on Windows)
+        zig_tmp="$SCRIPT_DIR/build/.zig_ast.json"
+        self_tmp="$SCRIPT_DIR/build/.self_ast.json"
+        echo "$zig_ast" > "$zig_tmp"
+        echo "$selfhost_ast" > "$self_tmp"
+        norm_output=$($PYTHON "$NORMALIZE_SCRIPT" "$zig_tmp" "$self_tmp" 2>&1)
         norm_exit=$?
         if [ $norm_exit -eq 0 ]; then
             echo "  ✓ $name (AST parity)"
