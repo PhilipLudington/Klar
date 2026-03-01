@@ -30515,6 +30515,7 @@ pub const Emitter = struct {
 
     fn getOrDeclareStderr(self: *Emitter) llvm.ValueRef {
         // On macOS/BSD, stderr is accessed via __stderrp
+        // On Windows/MSVC, stderr is accessed via __acrt_iob_func(2)
         // On Linux, it's accessed via stderr global
         const os = @import("builtin").os.tag;
 
@@ -30576,6 +30577,38 @@ pub const Emitter = struct {
             self.current_function = saved_func;
 
             return func;
+        } else if (os == .windows) {
+            // Windows/MSVC: stderr is obtained via __acrt_iob_func(2)
+            const fn_name = "klar_get_stderr";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const iob_func = self.getOrDeclareAcrtIobFunc();
+
+            // Create klar_get_stderr function
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            // Call __acrt_iob_func(2) to get stderr
+            var call_args = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, 2)};
+            const iob_fn_type = llvm.c.LLVMGlobalGetValueType(iob_func);
+            const stderr_val = self.builder.buildCall(iob_fn_type, iob_func, &call_args, "stderr");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stderr_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
         } else {
             // Linux: use stderr directly (declared as extern)
             const fn_name = "klar_get_stderr";
@@ -30612,6 +30645,7 @@ pub const Emitter = struct {
 
     fn getOrDeclareStdin(self: *Emitter) llvm.ValueRef {
         // On macOS/BSD, stdin is accessed via __stdinp
+        // On Windows/MSVC, stdin is accessed via __acrt_iob_func(0)
         // On Linux, it's accessed via stdin global
         const os = @import("builtin").os.tag;
 
@@ -30673,6 +30707,38 @@ pub const Emitter = struct {
             self.current_function = saved_func;
 
             return func;
+        } else if (os == .windows) {
+            // Windows/MSVC: stdin is obtained via __acrt_iob_func(0)
+            const fn_name = "klar_get_stdin";
+            if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+                return func;
+            }
+
+            const ptr_type = llvm.Types.pointer(self.ctx);
+            const iob_func = self.getOrDeclareAcrtIobFunc();
+
+            // Create klar_get_stdin function
+            const fn_type = llvm.c.LLVMFunctionType(ptr_type, null, 0, 0);
+            const func = llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
+
+            const saved_bb = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+            const saved_func = self.current_function;
+
+            const entry = llvm.appendBasicBlock(self.ctx, func, "entry");
+            llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, entry);
+
+            // Call __acrt_iob_func(0) to get stdin
+            var call_args = [_]llvm.ValueRef{llvm.Const.int32(self.ctx, 0)};
+            const iob_fn_type = llvm.c.LLVMGlobalGetValueType(iob_func);
+            const stdin_val = self.builder.buildCall(iob_fn_type, iob_func, &call_args, "stdin");
+            _ = llvm.c.LLVMBuildRet(self.builder.ref, stdin_val);
+
+            if (saved_bb) |bb| {
+                llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, bb);
+            }
+            self.current_function = saved_func;
+
+            return func;
         } else {
             // Linux: use stdin directly (declared as extern)
             const fn_name = "klar_get_stdin";
@@ -30705,6 +30771,22 @@ pub const Emitter = struct {
 
             return func;
         }
+    }
+
+    /// Declare __acrt_iob_func(int) -> FILE* for Windows MSVC.
+    /// This is the UCRT function used to access stdin/stdout/stderr.
+    fn getOrDeclareAcrtIobFunc(self: *Emitter) llvm.ValueRef {
+        const fn_name = "__acrt_iob_func";
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
+            return func;
+        }
+
+        // FILE* __acrt_iob_func(unsigned index)
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        var param_types = [_]llvm.TypeRef{i32_type};
+        const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 1, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
     fn getOrDeclareAbort(self: *Emitter) llvm.ValueRef {

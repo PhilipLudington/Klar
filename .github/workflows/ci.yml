@@ -53,12 +53,6 @@ jobs:
       - name: Build (with LLVM)
         run: ./run-build.sh
 
-      - name: Debug - test single native build
-        run: |
-          echo "=== Testing klar build on a simple string test ==="
-          ./zig-out/bin/klar build test/native/array_contains_string.kl -o /tmp/test_debug.exe 2>&1 || echo "Build exited with code $?"
-          echo "=== Done ==="
-
       - name: Run all tests
         run: ./run-tests.sh
 

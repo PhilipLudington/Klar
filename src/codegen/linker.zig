@@ -210,6 +210,11 @@ fn linkForPlatform(
                     // Default Windows libraries for CRT and system API
                     "kernel32.lib",
                     "msvcrt.lib",
+                    // VS 2015+ moved fprintf out of msvcrt into UCRT;
+                    // legacy_stdio_definitions provides the traditional definitions.
+                    "legacy_stdio_definitions.lib",
+                    // __acrt_iob_func (for stdin/stdout/stderr access) lives in ucrt
+                    "ucrt.lib",
                 }) catch return LinkerError.OutOfMemory;
             }
         },
