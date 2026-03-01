@@ -1990,6 +1990,19 @@ pub fn checkBuiltinMethod(tc: anytype, method: *ast.MethodCall, object_type: Typ
                 return tc.type_builder.voidType();
             }
 
+            // push_str(&mut self, s: string) -> void
+            if (std.mem.eql(u8, method.method_name, "push_str")) {
+                if (method.args.len != 1) {
+                    tc.addError(.invalid_call, method.span, "push_str() expects exactly 1 argument", .{});
+                    return tc.type_builder.voidType();
+                }
+                const arg_type = tc.checkExpr(method.args[0]);
+                if (arg_type != .primitive or arg_type.primitive != .string_) {
+                    tc.addError(.type_mismatch, method.span, "push_str() expects a string argument", .{});
+                }
+                return tc.type_builder.voidType();
+            }
+
             // concat(&self, other: String) -> String
             if (std.mem.eql(u8, method.method_name, "concat")) {
                 if (method.args.len != 1) {

@@ -1,0 +1,704 @@
+// test/module/json/main.kl - Comprehensive tests for std/json.kl
+// Tests: parsing, stringification, round-trip, accessors, error handling
+// Returns 0 on success, non-zero test number on failure
+//
+// Note: Tests use json_stringify for value comparison and json_get_* accessors
+// for field extraction, avoiding direct enum payload extraction across modules
+// (which has a known codegen issue with string length fields).
+
+import std.json.*
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn expect_str(actual: string, expected: string, test_num: i32) -> i32 {
+    if actual != expected {
+        print("FAIL test ")
+        print(test_num.to_string().as_str())
+        print(": expected '")
+        print(expected)
+        print("' got '")
+        print(actual)
+        println("'")
+        return test_num
+    }
+    return 0
+}
+
+fn expect_ok(r: Result#[JsonValue, JsonError], test_num: i32) -> i32 {
+    match r {
+        Ok(_) => { return 0 }
+        Err(_) => { return fail(test_num, "expected Ok, got Err") }
+    }
+}
+
+fn expect_err(r: Result#[JsonValue, JsonError], test_num: i32) -> i32 {
+    match r {
+        Ok(_) => { return fail(test_num, "expected Err, got Ok") }
+        Err(_) => { return 0 }
+    }
+}
+
+// ============================================================================
+// Test: Parse Primitives (verified via stringify)
+// ============================================================================
+
+fn test_parse_null() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("null")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "null", 1) }
+        Err(_) => { return fail(1, "parse failed") }
+    }
+}
+
+fn test_parse_true() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("true")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "true", 2) }
+        Err(_) => { return fail(2, "parse failed") }
+    }
+}
+
+fn test_parse_false() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("false")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "false", 3) }
+        Err(_) => { return fail(3, "parse failed") }
+    }
+}
+
+fn test_parse_integer() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("42")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "42", 4) }
+        Err(_) => { return fail(4, "parse failed") }
+    }
+}
+
+fn test_parse_negative() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("-7")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "-7", 5) }
+        Err(_) => { return fail(5, "parse failed") }
+    }
+}
+
+fn test_parse_zero() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("0")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "0", 6) }
+        Err(_) => { return fail(6, "parse failed") }
+    }
+}
+
+fn test_parse_string() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("\"hello\"")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "\"hello\"", 7) }
+        Err(_) => { return fail(7, "parse failed") }
+    }
+}
+
+fn test_parse_empty_string() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("\"\"")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "\"\"", 8) }
+        Err(_) => { return fail(8, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Parse Containers
+// ============================================================================
+
+fn test_parse_empty_array() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("[]")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "[]", 10) }
+        Err(_) => { return fail(10, "parse failed") }
+    }
+}
+
+fn test_parse_number_array() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("[1,2,3]")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "[1,2,3]", 11) }
+        Err(_) => { return fail(11, "parse failed") }
+    }
+}
+
+fn test_parse_mixed_array() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("[true,null,\"x\",42]")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "[true,null,\"x\",42]", 12) }
+        Err(_) => { return fail(12, "parse failed") }
+    }
+}
+
+fn test_parse_empty_object() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("{}")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "{}", 13) }
+        Err(_) => { return fail(13, "parse failed") }
+    }
+}
+
+fn test_parse_single_key_object() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("{\"a\":1}")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "{\"a\":1}", 14) }
+        Err(_) => { return fail(14, "parse failed") }
+    }
+}
+
+fn test_parse_nested() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("{\"arr\":[1,2]}")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "{\"arr\":[1,2]}", 15) }
+        Err(_) => { return fail(15, "parse failed") }
+    }
+}
+
+fn test_parse_nested_object() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("{\"x\":{\"y\":1}}")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "{\"x\":{\"y\":1}}", 16) }
+        Err(_) => { return fail(16, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Whitespace Handling
+// ============================================================================
+
+fn test_whitespace_around_values() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("  42  ")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "42", 20) }
+        Err(_) => { return fail(20, "parse failed") }
+    }
+}
+
+fn test_whitespace_in_array() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("[ 1 , 2 , 3 ]")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "[1,2,3]", 21) }
+        Err(_) => { return fail(21, "parse failed") }
+    }
+}
+
+fn test_whitespace_in_object() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("  {  \"a\"  :  1  }  ")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "{\"a\":1}", 22) }
+        Err(_) => { return fail(22, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Escape Sequences (verified via round-trip stringify)
+// ============================================================================
+
+fn test_escape_quote() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("\"a\\\"b\"")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "\"a\\\"b\"", 30) }
+        Err(_) => { return fail(30, "parse failed") }
+    }
+}
+
+fn test_escape_backslash() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("\"a\\\\b\"")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "\"a\\\\b\"", 31) }
+        Err(_) => { return fail(31, "parse failed") }
+    }
+}
+
+fn test_escape_newline() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("\"a\\nb\"")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "\"a\\nb\"", 32) }
+        Err(_) => { return fail(32, "parse failed") }
+    }
+}
+
+fn test_escape_tab() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("\"a\\tb\"")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "\"a\\tb\"", 33) }
+        Err(_) => { return fail(33, "parse failed") }
+    }
+}
+
+fn test_escape_unicode() -> i32 {
+    // \u0041 = 'A'
+    let r: Result#[JsonValue, JsonError] = json_parse("\"\\u0041\"")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "\"A\"", 34) }
+        Err(_) => { return fail(34, "parse failed") }
+    }
+}
+
+fn test_escape_slash() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("\"a\\/b\"")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "\"a/b\"", 35) }
+        Err(_) => { return fail(35, "parse failed") }
+    }
+}
+
+fn test_escape_surrogate_pair() -> i32 {
+    // \uD83D\uDE00 = U+1F600 (grinning face emoji)
+    let r: Result#[JsonValue, JsonError] = json_parse("\"\\uD83D\\uDE00\"")
+    match r {
+        Ok(_) => { return 0 }  // Parsed successfully (emoji bytes)
+        Err(_) => { return fail(36, "surrogate pair parse failed") }
+    }
+}
+
+fn test_escape_lone_surrogate_err() -> i32 {
+    // Lone high surrogate should be an error
+    return expect_err(json_parse("\"\\uD800\""), 37)
+}
+
+fn test_escape_lone_low_surrogate_err() -> i32 {
+    // Lone low surrogate should be an error
+    return expect_err(json_parse("\"\\uDC00\""), 38)
+}
+
+// ============================================================================
+// Test: Number Formats
+// ============================================================================
+
+fn test_number_float() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("3.14")
+    match r {
+        Ok(_) => { return 0 }  // Just check it parses
+        Err(_) => { return fail(40, "parse failed") }
+    }
+}
+
+fn test_number_exponent() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("1e2")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "100", 41) }
+        Err(_) => { return fail(41, "parse failed") }
+    }
+}
+
+fn test_number_neg_exponent() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("1e-1")
+    match r {
+        Ok(_) => { return 0 }
+        Err(_) => { return fail(42, "parse failed") }
+    }
+}
+
+fn test_number_large() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("1000000")
+    match r {
+        Ok(v) => { return expect_str(json_stringify(v), "1000000", 43) }
+        Err(_) => { return fail(43, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Stringify Builders
+// ============================================================================
+
+fn test_stringify_null() -> i32 {
+    return expect_str(json_stringify(json_null()), "null", 50)
+}
+
+fn test_stringify_bool() -> i32 {
+    var e: i32 = expect_str(json_stringify(json_bool(true)), "true", 51)
+    if e != 0 { return e }
+    return expect_str(json_stringify(json_bool(false)), "false", 51)
+}
+
+fn test_stringify_number() -> i32 {
+    var e: i32 = expect_str(json_stringify(json_number(42.0)), "42", 52)
+    if e != 0 { return e }
+    e = expect_str(json_stringify(json_number(-3.0)), "-3", 52)
+    if e != 0 { return e }
+    return expect_str(json_stringify(json_number(0.0)), "0", 52)
+}
+
+fn test_stringify_string() -> i32 {
+    return expect_str(json_stringify(json_string("hello")), "\"hello\"", 53)
+}
+
+fn test_stringify_empty_containers() -> i32 {
+    var e: i32 = expect_str(json_stringify(json_array()), "[]", 54)
+    if e != 0 { return e }
+    return expect_str(json_stringify(json_object()), "{}", 54)
+}
+
+// ============================================================================
+// Test: Round-trip (parse -> stringify -> parse -> stringify)
+// ============================================================================
+
+fn test_roundtrip(input: string, test_num: i32) -> i32 {
+    let r1: Result#[JsonValue, JsonError] = json_parse(input)
+    match r1 {
+        Ok(v1) => {
+            let s1: string = json_stringify(v1)
+            let r2: Result#[JsonValue, JsonError] = json_parse(s1)
+            match r2 {
+                Ok(v2) => {
+                    let s2: string = json_stringify(v2)
+                    if s1 == s2 { return 0 }
+                    return fail(test_num, "round-trip mismatch")
+                }
+                Err(_) => { return fail(test_num, "re-parse failed") }
+            }
+        }
+        Err(_) => { return fail(test_num, "initial parse failed") }
+    }
+}
+
+fn test_roundtrips() -> i32 {
+    var e: i32 = test_roundtrip("null", 60)
+    if e != 0 { return e }
+    e = test_roundtrip("true", 60)
+    if e != 0 { return e }
+    e = test_roundtrip("42", 60)
+    if e != 0 { return e }
+    e = test_roundtrip("-7", 60)
+    if e != 0 { return e }
+    e = test_roundtrip("\"hello\"", 60)
+    if e != 0 { return e }
+    e = test_roundtrip("[]", 60)
+    if e != 0 { return e }
+    e = test_roundtrip("[1,2,3]", 60)
+    if e != 0 { return e }
+    e = test_roundtrip("{}", 60)
+    if e != 0 { return e }
+    e = test_roundtrip("{\"a\":1}", 60)
+    if e != 0 { return e }
+    e = test_roundtrip("{\"arr\":[1,2]}", 60)
+    return e
+}
+
+// ============================================================================
+// Test: Accessors
+// ============================================================================
+
+fn test_get_string() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("{\"name\":\"Klar\"}")
+    match r {
+        Ok(v) => {
+            let name: ?string = json_get_string(v, "name")
+            match name {
+                Some(s) => {
+                    if s == "Klar" { return 0 }
+                    return fail(70, "expected 'Klar'")
+                }
+                None => { return fail(70, "key not found") }
+            }
+        }
+        Err(_) => { return fail(70, "parse failed") }
+    }
+}
+
+fn test_get_number() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("{\"count\":42}")
+    match r {
+        Ok(v) => {
+            let count: ?f64 = json_get_number(v, "count")
+            match count {
+                Some(n) => {
+                    if n == 42.0 { return 0 }
+                    return fail(71, "expected 42")
+                }
+                None => { return fail(71, "key not found") }
+            }
+        }
+        Err(_) => { return fail(71, "parse failed") }
+    }
+}
+
+fn test_get_bool() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("{\"active\":true}")
+    match r {
+        Ok(v) => {
+            let active: ?bool = json_get_bool(v, "active")
+            match active {
+                Some(b) => {
+                    if b { return 0 }
+                    return fail(72, "expected true")
+                }
+                None => { return fail(72, "key not found") }
+            }
+        }
+        Err(_) => { return fail(72, "parse failed") }
+    }
+}
+
+fn test_get_missing() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("{\"a\":1}")
+    match r {
+        Ok(v) => {
+            let missing: ?string = json_get_string(v, "nope")
+            match missing {
+                Some(_) => { return fail(73, "should be None") }
+                None => { return 0 }
+            }
+        }
+        Err(_) => { return fail(73, "parse failed") }
+    }
+}
+
+fn test_get_wrong_type() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("{\"count\":42}")
+    match r {
+        Ok(v) => {
+            let s: ?string = json_get_string(v, "count")
+            match s {
+                Some(_) => { return fail(74, "should be None for wrong type") }
+                None => { return 0 }
+            }
+        }
+        Err(_) => { return fail(74, "parse failed") }
+    }
+}
+
+fn test_get_on_non_object() -> i32 {
+    let v: JsonValue = json_number(42.0)
+    let result: ?f64 = json_get_number(v, "anything")
+    match result {
+        Some(_) => { return fail(75, "should be None on non-object") }
+        None => { return 0 }
+    }
+}
+
+// ============================================================================
+// Test: Error Cases
+// ============================================================================
+
+fn test_error_empty() -> i32 {
+    return expect_err(json_parse(""), 80)
+}
+
+fn test_error_trailing() -> i32 {
+    return expect_err(json_parse("42 abc"), 81)
+}
+
+fn test_error_unterminated_string() -> i32 {
+    return expect_err(json_parse("\"hello"), 82)
+}
+
+fn test_error_unterminated_array() -> i32 {
+    return expect_err(json_parse("[1,2"), 83)
+}
+
+fn test_error_invalid_value() -> i32 {
+    return expect_err(json_parse("nope"), 84)
+}
+
+fn test_error_missing_colon() -> i32 {
+    return expect_err(json_parse("{\"a\" 1}"), 85)
+}
+
+fn test_error_invalid_escape() -> i32 {
+    return expect_err(json_parse("\"\\z\""), 86)
+}
+
+// ============================================================================
+// Test: Pretty Print
+// ============================================================================
+
+fn test_pretty_print() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("{\"a\":1}")
+    match r {
+        Ok(v) => {
+            let pretty: string = json_stringify_pretty(v, 2)
+            // Pretty output should contain newlines and indentation
+            if pretty.index_of("\n").is_none() {
+                return fail(90, "expected newlines")
+            }
+            if pretty.index_of("  ").is_none() {
+                return fail(90, "expected indentation")
+            }
+            // Should be parseable back
+            let r2: Result#[JsonValue, JsonError] = json_parse(pretty)
+            match r2 {
+                Ok(v2) => {
+                    // Compact form should match
+                    return expect_str(json_stringify(v2), "{\"a\":1}", 90)
+                }
+                Err(_) => { return fail(90, "pretty output not parseable") }
+            }
+        }
+        Err(_) => { return fail(90, "parse failed") }
+    }
+}
+
+fn test_pretty_array() -> i32 {
+    let r: Result#[JsonValue, JsonError] = json_parse("[1,2,3]")
+    match r {
+        Ok(v) => {
+            let pretty: string = json_stringify_pretty(v, 2)
+            let r2: Result#[JsonValue, JsonError] = json_parse(pretty)
+            match r2 {
+                Ok(v2) => {
+                    return expect_str(json_stringify(v2), "[1,2,3]", 91)
+                }
+                Err(_) => { return fail(91, "pretty output not parseable") }
+            }
+        }
+        Err(_) => { return fail(91, "parse failed") }
+    }
+}
+
+fn test_pretty_empty() -> i32 {
+    var e: i32 = expect_str(json_stringify_pretty(json_object(), 2), "{}", 92)
+    if e != 0 { return e }
+    return expect_str(json_stringify_pretty(json_array(), 2), "[]", 92)
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() -> i32 {
+    var e: i32 = 0
+
+    // Parse primitives
+    e = test_parse_null()
+    if e != 0 { return e }
+    e = test_parse_true()
+    if e != 0 { return e }
+    e = test_parse_false()
+    if e != 0 { return e }
+    e = test_parse_integer()
+    if e != 0 { return e }
+    e = test_parse_negative()
+    if e != 0 { return e }
+    e = test_parse_zero()
+    if e != 0 { return e }
+    e = test_parse_string()
+    if e != 0 { return e }
+    e = test_parse_empty_string()
+    if e != 0 { return e }
+
+    // Parse containers
+    e = test_parse_empty_array()
+    if e != 0 { return e }
+    e = test_parse_number_array()
+    if e != 0 { return e }
+    e = test_parse_mixed_array()
+    if e != 0 { return e }
+    e = test_parse_empty_object()
+    if e != 0 { return e }
+    e = test_parse_single_key_object()
+    if e != 0 { return e }
+    e = test_parse_nested()
+    if e != 0 { return e }
+    e = test_parse_nested_object()
+    if e != 0 { return e }
+
+    // Whitespace
+    e = test_whitespace_around_values()
+    if e != 0 { return e }
+    e = test_whitespace_in_array()
+    if e != 0 { return e }
+    e = test_whitespace_in_object()
+    if e != 0 { return e }
+
+    // Escape sequences
+    e = test_escape_quote()
+    if e != 0 { return e }
+    e = test_escape_backslash()
+    if e != 0 { return e }
+    e = test_escape_newline()
+    if e != 0 { return e }
+    e = test_escape_tab()
+    if e != 0 { return e }
+    e = test_escape_unicode()
+    if e != 0 { return e }
+    e = test_escape_slash()
+    if e != 0 { return e }
+    e = test_escape_surrogate_pair()
+    if e != 0 { return e }
+    e = test_escape_lone_surrogate_err()
+    if e != 0 { return e }
+    e = test_escape_lone_low_surrogate_err()
+    if e != 0 { return e }
+
+    // Number formats
+    e = test_number_float()
+    if e != 0 { return e }
+    e = test_number_exponent()
+    if e != 0 { return e }
+    e = test_number_neg_exponent()
+    if e != 0 { return e }
+    e = test_number_large()
+    if e != 0 { return e }
+
+    // Stringify builders
+    e = test_stringify_null()
+    if e != 0 { return e }
+    e = test_stringify_bool()
+    if e != 0 { return e }
+    e = test_stringify_number()
+    if e != 0 { return e }
+    e = test_stringify_string()
+    if e != 0 { return e }
+    e = test_stringify_empty_containers()
+    if e != 0 { return e }
+
+    // Round-trips
+    e = test_roundtrips()
+    if e != 0 { return e }
+
+    // Accessors
+    e = test_get_string()
+    if e != 0 { return e }
+    e = test_get_number()
+    if e != 0 { return e }
+    e = test_get_bool()
+    if e != 0 { return e }
+    e = test_get_missing()
+    if e != 0 { return e }
+    e = test_get_wrong_type()
+    if e != 0 { return e }
+    e = test_get_on_non_object()
+    if e != 0 { return e }
+
+    // Error cases
+    e = test_error_empty()
+    if e != 0 { return e }
+    e = test_error_trailing()
+    if e != 0 { return e }
+    e = test_error_unterminated_string()
+    if e != 0 { return e }
+    e = test_error_unterminated_array()
+    if e != 0 { return e }
+    e = test_error_invalid_value()
+    if e != 0 { return e }
+    e = test_error_missing_colon()
+    if e != 0 { return e }
+    e = test_error_invalid_escape()
+    if e != 0 { return e }
+
+    // Pretty print
+    e = test_pretty_print()
+    if e != 0 { return e }
+    e = test_pretty_array()
+    if e != 0 { return e }
+    e = test_pretty_empty()
+    if e != 0 { return e }
+
+    return 0
+}

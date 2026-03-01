@@ -1,0 +1,18 @@
+// Test String.as_str() use-after-free fix
+// Bug: as_str() returned raw pointer to String's internal buffer,
+// which was freed when the String was dropped.
+// Fix: as_str() now allocates a copy via klar_string_from().
+
+fn make_greeting() -> string {
+    let s: String = String.from("hello")
+    return s.as_str()
+    // s is dropped here — as_str() must return a copy, not a dangling pointer
+}
+
+fn main() -> i32 {
+    let greeting: string = make_greeting()
+    if greeting == "hello" {
+        return 0
+    }
+    return 1
+}

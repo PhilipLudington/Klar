@@ -256,6 +256,53 @@ export fn klar_string_append(s: *StringHeader, other: *const StringHeader) void 
     }
 }
 
+/// Append a null-terminated C string (lowercase string) to a String.
+export fn klar_string_append_str(s: *StringHeader, src: [*:0]const u8) void {
+    // Calculate source length
+    var src_len: i32 = 0;
+    while (src[@intCast(src_len)] != 0) : (src_len += 1) {}
+
+    if (src_len == 0) return;
+
+    // Ensure we have enough capacity
+    const new_len = s.len + src_len;
+    if (new_len + 1 > s.capacity) {
+        var new_capacity = if (s.capacity == 0) INITIAL_CAPACITY else s.capacity;
+        while (new_capacity < new_len + 1) {
+            new_capacity *= 2;
+        }
+        const new_size = @as(usize, @intCast(new_capacity));
+
+        if (s.ptr) |old_ptr| {
+            const old_size = @as(usize, @intCast(s.capacity));
+            const maybe_new = alloc.klar_realloc(@ptrCast(old_ptr), old_size, new_size, 0);
+            if (maybe_new) |new| {
+                s.ptr = @ptrCast(new);
+            } else {
+                return;
+            }
+        } else {
+            const maybe_new = alloc.klar_alloc(new_size, 0);
+            if (maybe_new) |new| {
+                s.ptr = @ptrCast(new);
+            } else {
+                return;
+            }
+        }
+        s.capacity = new_capacity;
+    }
+
+    // Copy bytes
+    if (s.ptr) |p| {
+        const start: usize = @intCast(s.len);
+        for (0..@intCast(src_len)) |i| {
+            p[start + i] = src[i];
+        }
+        s.len = new_len;
+        p[@intCast(s.len)] = 0; // Null terminate
+    }
+}
+
 /// Concatenate two Strings, returning a new String.
 export fn klar_string_concat(a: *const StringHeader, b: *const StringHeader) StringHeader {
     if (a.len == 0 and b.len == 0) {

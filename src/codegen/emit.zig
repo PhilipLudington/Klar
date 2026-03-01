@@ -2369,6 +2369,27 @@ pub const Emitter = struct {
                 self.emitDropsForReturn();
 
                 if (ret.value) |val| {
+                    // Handle "return None" for optional return types — None is
+                    // registered as a function symbol, so emitExpr would produce
+                    // a wrong value. Emit the optional None directly instead.
+                    if (val == .identifier) {
+                        if (std.mem.eql(u8, val.identifier.name, "None")) {
+                            if (self.current_return_type) |rt_info| {
+                                if (rt_info.is_optional) {
+                                    const none_val = self.emitNone(rt_info.llvm_type);
+                                    if (self.current_sret_ptr) |sret_ptr| {
+                                        _ = self.builder.buildStore(none_val, sret_ptr);
+                                        _ = self.builder.buildRetVoid();
+                                    } else {
+                                        _ = self.builder.buildRet(none_val);
+                                    }
+                                    self.has_terminator = true;
+                                    return;
+                                }
+                            }
+                        }
+                    }
+
                     // Set expected type from return type for Ok/Err inference
                     const prev_expected = self.expected_type;
                     self.expected_type = self.current_return_klar_type;
@@ -9403,6 +9424,7 @@ pub const Emitter = struct {
                 if (rt_info.is_optional) {
                     // Return None: { i1 = 0, T = undef }
                     const none_val = self.emitNone(rt_info.llvm_type);
+                    self.emitDropsForReturn();
                     if (self.current_sret_ptr) |sret_ptr| {
                         _ = self.builder.buildStore(none_val, sret_ptr);
                         _ = self.builder.buildRetVoid();
@@ -9440,6 +9462,7 @@ pub const Emitter = struct {
 
                         // Build Err result with the extracted (and possibly converted) error
                         const err_result = self.emitErr(err_val, rt_info.ok_type.?, rt_info.err_type.?);
+                        self.emitDropsForReturn();
                         if (self.current_sret_ptr) |sret_ptr| {
                             _ = self.builder.buildStore(err_result, sret_ptr);
                             _ = self.builder.buildRetVoid();
@@ -10239,6 +10262,11 @@ pub const Emitter = struct {
                     if (method.args.len != 1) return EmitError.InvalidAST;
                     const char_val = try self.emitExpr(method.args[0]);
                     return self.emitStringPush(ptr, char_val);
+                }
+                if (std.mem.eql(u8, method.method_name, "push_str")) {
+                    if (method.args.len != 1) return EmitError.InvalidAST;
+                    const raw_str = try self.emitExpr(method.args[0]);
+                    return self.emitStringPushStr(ptr, raw_str);
                 }
                 if (std.mem.eql(u8, method.method_name, "concat")) {
                     if (method.args.len != 1) return EmitError.InvalidAST;
@@ -21815,6 +21843,31 @@ pub const Emitter = struct {
         return self.builder.buildLoad(string_type, result_alloca, "concat.result_val");
     }
 
+    /// Emit string.push_str(s) - appends a raw string (lowercase) to this String.
+    /// Constructs a temporary StringHeader from the raw string and delegates to emitStringAppend.
+    fn emitStringPushStr(self: *Emitter, str_ptr: llvm.ValueRef, raw_str: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Get length of raw string via strlen
+        const strlen_fn = self.getOrDeclareStrlen();
+        var strlen_args = [_]llvm.ValueRef{raw_str};
+        const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "pushstr.len_i64");
+        const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "pushstr.len");
+
+        // Build a temporary StringHeader { ptr, len, cap=0 } on the stack
+        const tmp_alloca = self.builder.buildAlloca(string_type, "pushstr.tmp");
+        const tmp_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, tmp_alloca, 0, "pushstr.tmp.ptr");
+        const tmp_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, tmp_alloca, 1, "pushstr.tmp.len");
+        const tmp_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, tmp_alloca, 2, "pushstr.tmp.cap");
+        _ = self.builder.buildStore(raw_str, tmp_ptr_field);
+        _ = self.builder.buildStore(len_i32, tmp_len_field);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tmp_cap_field);
+
+        // Delegate to the existing append logic
+        return self.emitStringAppend(str_ptr, tmp_alloca);
+    }
+
     /// Emit string.append(other) - appends other string to this one (mutates).
     /// Implemented inline with growth logic similar to push but for multiple bytes.
     fn emitStringAppend(self: *Emitter, str_ptr: llvm.ValueRef, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
@@ -21929,13 +21982,56 @@ pub const Emitter = struct {
     }
 
     /// Emit string.as_str() - returns pointer to null-terminated C string.
-    /// Simply returns the ptr field (which is already null-terminated).
+    /// Steals the String's buffer (sets ptr/len/cap to zero) so the result
+    /// survives the source String being dropped. The String becomes empty
+    /// after this call — effectively a move/consume operation.
     fn emitStringAsStr(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
         const string_type = self.getStringStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
 
+        // Load the ptr field from the String
         const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "asstr.ptr_ptr");
-        return self.builder.buildLoad(ptr_type, ptr_ptr, "asstr.ptr");
+        const src_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "asstr.src");
+
+        // Null-out the String's fields — ownership transfer.
+        // String's drop will call free(null) which is a no-op.
+        const null_ptr = llvm.Const.null_(ptr_type);
+        _ = self.builder.buildStore(null_ptr, ptr_ptr);
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "asstr.len_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 2, "asstr.cap_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), cap_ptr);
+
+        // Null guard: if src_ptr was null, return empty string literal
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, src_ptr, null_ptr, "asstr.is_null");
+
+        const valid_bb = llvm.appendBasicBlock(self.ctx, func, "asstr.valid");
+        const empty_bb = llvm.appendBasicBlock(self.ctx, func, "asstr.empty");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, func, "asstr.merge");
+        _ = self.builder.buildCondBr(is_null, empty_bb, valid_bb);
+
+        // Valid path: return the stolen pointer directly (no allocation)
+        self.builder.positionAtEnd(valid_bb);
+        _ = self.builder.buildBr(merge_bb);
+
+        // Empty path: return empty string literal
+        self.builder.positionAtEnd(empty_bb);
+        const empty_str = llvm.c.LLVMBuildGlobalStringPtr(self.builder.ref, "", "asstr.empty_str");
+        _ = self.builder.buildBr(merge_bb);
+
+        // Merge
+        self.builder.positionAtEnd(merge_bb);
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, ptr_type, "asstr.result");
+        var phi_vals = [_]llvm.ValueRef{ src_ptr, empty_str };
+        var phi_blocks = [_]llvm.BasicBlockRef{ valid_bb, empty_bb };
+        llvm.c.LLVMAddIncoming(phi, &phi_vals, &phi_blocks, 2);
+
+        // Note: the returned string (lowercase) is a raw char* — its memory
+        // is not tracked for deallocation. This is consistent with all other
+        // string operations (concat, trim, to_uppercase, etc.). A proper fix
+        // requires adding GC/arena support to the string primitive type.
+        return phi;
     }
 
     /// Emit string.clear() - clears the string (keeps capacity).

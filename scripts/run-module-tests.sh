@@ -209,6 +209,52 @@ else
     echo "⊘ meta_import (test not found, skipping)"
 fi
 
+# Test 9: JSON library (std/json.kl)
+echo "--- json: JSON library (std/json.kl) ---"
+temp_bin="/tmp/klar_module_json"
+if [ -d "$TEST_DIR/json" ]; then
+    if $KLAR build $TEST_DIR/json/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ json (exit: $result)"
+            record_success "json"
+        else
+            echo "✗ json (expected: 0, got: $result)"
+            record_failure "json" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ json (build failed)"
+        record_failure "json" "build failed"
+    fi
+else
+    echo "⊘ json (test not found, skipping)"
+fi
+
+# Test 10: String.as_str() use-after-free fix
+echo "--- string_as_str: String.as_str() returns safe copy ---"
+temp_bin="/tmp/klar_module_string_as_str"
+if [ -d "$TEST_DIR/string_as_str" ]; then
+    if $KLAR build $TEST_DIR/string_as_str/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_as_str (exit: $result)"
+            record_success "string_as_str"
+        else
+            echo "✗ string_as_str (expected: 0, got: $result)"
+            record_failure "string_as_str" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_as_str (build failed)"
+        record_failure "string_as_str" "build failed"
+    fi
+else
+    echo "⊘ string_as_str (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON

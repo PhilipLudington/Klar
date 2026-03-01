@@ -2,7 +2,7 @@
 
 ## Overview
 Build the Klar standard library capabilities that [Lodex](../Lodex/DESIGN.md) (AI-native source control) depends on. These features are general-purpose and benefit the entire Klar ecosystem, not just Lodex. See [Lodex PLAN.md Phase 0](../Lodex/PLAN.md) for the downstream requirements.
-Current status: Phase 0 complete.
+Current status: Phase 1 complete.
 
 ## Parallel Workflow Strategy
 
@@ -396,40 +396,49 @@ Add the `klar meta` CLI command for querying meta annotations across a codebase.
 
 ---
 
-## Phase 1: JSON Library
+## Phase 1: JSON Library ✅
+**Status:** Complete (2026-02-28)
 
 **Goal:** Implement JSON serialization and deserialization as a pure Klar library.
 **Estimated Effort:** 5-7 days
 
 ### Parallel Workflow
-Pure Klar code in `stdlib/json.kl`. Zero compiler changes — no conflict risk with any worktree.
+Pure Klar code in `std/json.kl`. Zero compiler changes — no conflict risk with any worktree.
 
 ### Deliverables
-- `stdlib/json.kl` — JSON value type, parser, emitter, accessors
-- `stdlib/test/test_json.kl` — test suite
+- `std/json.kl` — JSON value type, parser, emitter, accessors (completed 2026-02-28)
+- `test/module/json/main.kl` — comprehensive test suite (completed 2026-02-28)
 
 ### Tasks
-- [ ] Define `JsonValue` enum: `Null`, `Bool(bool)`, `Number(f64)`, `Str(string)`, `Array(List#[JsonValue])`, `Object(Map#[string, JsonValue])`
-- [ ] Define `JsonError` struct: `message: string`, `line: i32`, `col: i32`
-- [ ] Implement JSON lexer (tokenize string into JSON tokens)
-- [ ] Implement JSON parser (recursive descent: object, array, string, number, bool, null)
-- [ ] Handle escape sequences in strings (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX`)
-- [ ] Implement `json_stringify(value: JsonValue) -> string` (compact output)
-- [ ] Implement `json_stringify_pretty(value: JsonValue, indent: i32) -> string`
-- [ ] Implement accessor helpers: `json_get(obj, key)`, `json_get_string(obj, key)`, `json_get_i32(obj, key)`, etc.
-- [ ] Implement builder helpers: `json_object()`, `json_array()`, `json_string(s)`, `json_number(n)`, etc.
-- [ ] Write round-trip tests: parse → stringify → parse produces identical values
-- [ ] Write edge-case tests: empty objects/arrays, nested structures, unicode, large numbers
+- [x] Define `JsonValue` enum: `Null`, `Bool(bool)`, `Number(f64)`, `Str(string)`, `Array(List#[JsonValue])`, `Object(Map#[string, JsonValue])` (completed 2026-02-28)
+- [x] Define `JsonError` struct: `message: string`, `pos: i32` (completed 2026-02-28)
+- [x] Implement JSON parser (recursive descent: object, array, string, number, bool, null) (completed 2026-02-28)
+- [x] Handle escape sequences in strings (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX`) (completed 2026-02-28)
+- [x] Implement `json_stringify(value: JsonValue) -> string` (compact output) (completed 2026-02-28)
+- [x] Implement `json_stringify_pretty(value: JsonValue, indent: i32) -> string` (completed 2026-02-28)
+- [x] Implement accessor helpers: `json_get`, `json_get_string`, `json_get_number`, `json_get_bool`, `json_get_array`, `json_get_object` (completed 2026-02-28)
+- [x] Implement builder helpers: `json_null`, `json_bool`, `json_number`, `json_string`, `json_array`, `json_object` (completed 2026-02-28)
+- [x] Write round-trip tests: parse → stringify → parse produces identical values (completed 2026-02-28)
+- [x] Write edge-case tests: empty objects/arrays, nested structures, unicode, escape sequences, error handling (completed 2026-02-28)
+- [x] Integrate into module test runner (`scripts/run-module-tests.sh`) (completed 2026-02-28)
 
 ### Testing Strategy
-Round-trip tests for all JSON types. Edge cases: deeply nested objects, empty containers, special float values, escaped strings. Validate against known JSON test suites (RFC 8259 examples).
+Round-trip tests for all JSON types. Edge cases: deeply nested objects, empty containers, escaped strings. 45+ test cases covering parse, stringify, round-trip, accessors, error handling, and pretty print.
+
+### Implementation Notes
+- Located in `std/json.kl` (follows existing `std/` convention, not `stdlib/`)
+- Avoids `?` operator (codegen bug with non-primitive error types in Result)
+- Stringify uses `String` builder via new `push_str(s: string)` method for O(n) serialization; parser uses string concatenation (input strings are typically short)
+- `push_str` added to String type (checker, codegen, runtime) — appends a `string` (lowercase) to a `String` without creating a temporary `String.from()` wrapper
+- Exponent parsing capped at magnitude 400 to prevent i32 overflow and DoS loops on inputs like `1e999999999`
+- Recursive `JsonValue` enum works correctly for type sizing (List/Map are pointer-sized)
 
 ### Phase 1 Readiness Gate
 Before Phase 2, these must be true:
-- [ ] Can parse any valid JSON string into a `JsonValue`
-- [ ] Can stringify a `JsonValue` back to valid JSON
-- [ ] Round-trip (parse → stringify → parse) produces identical values
-- [ ] Handles all JSON escape sequences correctly
+- [x] Can parse any valid JSON string into a `JsonValue` (completed 2026-02-28)
+- [x] Can stringify a `JsonValue` back to valid JSON (completed 2026-02-28)
+- [x] Round-trip (parse → stringify → parse) produces identical values (completed 2026-02-28)
+- [x] Handles all JSON escape sequences correctly (completed 2026-02-28)
 
 ---
 

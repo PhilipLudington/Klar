@@ -188,6 +188,15 @@ pub fn checkReturn(tc: anytype, ret: *ast.ReturnStmt) void {
                         return; // OK: T can be returned as ?T (becomes Some(T))
                     }
                 }
+                // Allow "return None" when ?T is expected — None is registered as
+                // a function symbol fn() -> ?i32, so the identifier type won't match.
+                if (expected == .optional) {
+                    if (value == .identifier) {
+                        if (std.mem.eql(u8, value.identifier.name, "None")) {
+                            return;
+                        }
+                    }
+                }
                 tc.addError(.return_type_mismatch, ret.span, "return type mismatch", .{});
             }
         }
