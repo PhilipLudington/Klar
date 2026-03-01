@@ -35,7 +35,7 @@ fn main() -> i32 {
     // Test output > 4096 bytes to exercise the buffer grow/realloc path.
     // Use platform-appropriate command: awk on POSIX, python on Windows.
     let os_env: ?string = env_get("OS")
-    var large_cmd: string
+    var large_cmd: string = ""
     if os_env.is_some() and (os_env ?? "") == "Windows_NT" {
         large_cmd = "python -c \"for i in range(1,2001): print(i)\""
     } else {
