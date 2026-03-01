@@ -53,6 +53,14 @@ jobs:
       - name: Build (with LLVM)
         run: ./run-build.sh
 
+      - name: Debug - linker diagnostics
+        run: |
+          echo "=== Testing clone_trait_string (linker diagnosis) ==="
+          ./zig-out/bin/klar build test/native/clone_trait_string.kl -o /tmp/test_clone.exe 2>&1 || echo "Exit: $?"
+          echo "=== Testing env_get_set ==="
+          ./zig-out/bin/klar build test/native/env_get_set.kl -o /tmp/test_env.exe 2>&1 || echo "Exit: $?"
+          echo "=== Done ==="
+
       - name: Run all tests
         run: ./run-tests.sh
 
