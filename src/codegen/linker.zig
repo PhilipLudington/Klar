@@ -269,7 +269,7 @@ fn linkForPlatform(
 
     var child = std.process.Child.init(args.items, allocator);
     child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Pipe;
+    child.stdout_behavior = .Inherit;
 
     child.spawn() catch |err| {
         if (err == error.FileNotFound) return LinkerError.LinkerNotFound;

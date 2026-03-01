@@ -165,12 +165,18 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
 
         rm -f "$temp_bin"
     else
-        # Show first line of build error for diagnosis
-        build_err_line=$(echo "$build_stderr" | head -1)
+        # Show build error for diagnosis (first 3 lines)
+        build_err_line=$(echo "$build_stderr" | head -3 | tr '\n' ' ')
         if [ -n "$build_err_line" ]; then
             echo "✗ $name (build failed: $build_err_line)"
         else
-            echo "✗ $name (build failed)"
+            # Check stdout for linker messages (MSVC link.exe outputs some errors to stdout)
+            build_out_err=$(echo "$build_stdout" | head -3 | tr '\n' ' ')
+            if [ -n "$build_out_err" ]; then
+                echo "✗ $name (build failed: $build_out_err)"
+            else
+                echo "✗ $name (build failed)"
+            fi
         fi
         FAILED=$((FAILED + 1))
         if [ -n "$FAILURES" ]; then
