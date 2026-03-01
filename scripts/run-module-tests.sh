@@ -209,8 +209,8 @@ else
     echo "⊘ meta_import (test not found, skipping)"
 fi
 
-# Test 9: JSON library (std/json.kl)
-echo "--- json: JSON library (std/json.kl) ---"
+# Test 9: JSON library (stdlib/json.kl)
+echo "--- json: JSON library (stdlib/json.kl) ---"
 temp_bin="/tmp/klar_module_json"
 if [ -d "$TEST_DIR/json" ]; then
     if $KLAR build $TEST_DIR/json/main.kl -o "$temp_bin" 2>/dev/null; then
@@ -253,6 +253,29 @@ if [ -d "$TEST_DIR/string_as_str" ]; then
     fi
 else
     echo "⊘ string_as_str (test not found, skipping)"
+fi
+
+# Test 11: SHA-256 library (stdlib/sha256.kl)
+echo "--- sha256: SHA-256 library (stdlib/sha256.kl) ---"
+temp_bin="/tmp/klar_module_sha256"
+if [ -d "$TEST_DIR/sha256" ]; then
+    if $KLAR build $TEST_DIR/sha256/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ sha256 (exit: $result)"
+            record_success "sha256"
+        else
+            echo "✗ sha256 (expected: 0, got: $result)"
+            record_failure "sha256" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ sha256 (build failed)"
+        record_failure "sha256" "build failed"
+    fi
+else
+    echo "⊘ sha256 (test not found, skipping)"
 fi
 
 TOTAL=$((PASSED + FAILED))

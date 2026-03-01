@@ -2594,10 +2594,10 @@ fn findStdLibPath(allocator: std.mem.Allocator) ?[]const u8 {
 
     // Try relative paths from the executable
     const candidates = [_][]const u8{
-        "std", // <exe_dir>/std
-        "../std", // <exe_dir>/../std
-        "../lib/std", // <exe_dir>/../lib/std
-        "../../std", // <exe_dir>/../../std (for zig-out/bin)
+        "stdlib", // <exe_dir>/stdlib
+        "../stdlib", // <exe_dir>/../stdlib
+        "../lib/stdlib", // <exe_dir>/../lib/stdlib
+        "../../stdlib", // <exe_dir>/../../stdlib (for zig-out/bin)
     };
 
     for (candidates) |candidate| {

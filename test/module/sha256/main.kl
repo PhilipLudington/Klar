@@ -1,0 +1,85 @@
+// test/module/sha256/main.kl - SHA-256 test suite
+// Tests NIST vectors, boundary cases, and sha256_bytes API.
+// Returns 0 on success, non-zero test number on failure.
+
+import stdlib.sha256.*
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn expect_hash(input: string, expected: string, test_num: i32) -> i32 {
+    let actual: string = sha256(input)
+    if actual != expected {
+        print("FAIL test ")
+        print(test_num.to_string().as_str())
+        print(": expected ")
+        print(expected)
+        print(" got ")
+        println(actual)
+        return test_num
+    }
+    return 0
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+fn main() -> i32 {
+    var r: i32 = 0
+
+    // Test 1: Empty string (NIST vector)
+    r = expect_hash("", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 1)
+    if r != 0 { return r }
+
+    // Test 2: "abc" (NIST vector)
+    r = expect_hash("abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", 2)
+    if r != 0 { return r }
+
+    // Test 3: Multi-block message (56 bytes, NIST vector)
+    r = expect_hash("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", 3)
+    if r != 0 { return r }
+
+    // Test 4: "hello"
+    r = expect_hash("hello", "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", 4)
+    if r != 0 { return r }
+
+    // Test 5: sha256_bytes matches sha256 for "abc"
+    var abc_bytes: List#[u8] = List.new#[u8]()
+    abc_bytes.push(97.as#[u8])
+    abc_bytes.push(98.as#[u8])
+    abc_bytes.push(99.as#[u8])
+    let bytes_hash: string = sha256_bytes(abc_bytes)
+    let str_hash: string = sha256("abc")
+    if bytes_hash != str_hash {
+        print("FAIL test 5: sha256_bytes != sha256 for abc: ")
+        print(bytes_hash)
+        print(" vs ")
+        println(str_hash)
+        return 5
+    }
+
+    // Test 6: Single char "a"
+    r = expect_hash("a", "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb", 6)
+    if r != 0 { return r }
+
+    // Test 7: 55-byte input (boundary: fits in one block after padding)
+    r = expect_hash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318", 7)
+    if r != 0 { return r }
+
+    // Test 8: 56-byte input (boundary: needs two blocks after padding)
+    r = expect_hash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a", 8)
+    if r != 0 { return r }
+
+    println("All SHA-256 tests passed")
+    return 0
+}

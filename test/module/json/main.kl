@@ -1,4 +1,4 @@
-// test/module/json/main.kl - Comprehensive tests for std/json.kl
+// test/module/json/main.kl - Comprehensive tests for stdlib/json.kl
 // Tests: parsing, stringification, round-trip, accessors, error handling
 // Returns 0 on success, non-zero test number on failure
 //
@@ -6,7 +6,7 @@
 // for field extraction, avoiding direct enum payload extraction across modules
 // (which has a known codegen issue with string length fields).
 
-import std.json.*
+import stdlib.json.*
 
 // ============================================================================
 // Test Helpers

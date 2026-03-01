@@ -268,9 +268,9 @@ src/types.zig            # Add trait bounds to type system
 
 **Deliverables:**
 - [ ] Module declaration (`module math.vector`)
-- [ ] Import resolution (`import std.collections.List`)
-- [ ] Selective imports (`import std.io.{ read, write }`)
-- [ ] Glob imports (`import std.collections.*`)
+- [ ] Import resolution (`import stdlib.collections.List`)
+- [ ] Selective imports (`import stdlib.io.{ read, write }`)
+- [ ] Glob imports (`import stdlib.collections.*`)
 - [ ] Relative imports (`import .sibling`, `import ..parent.child`)
 - [ ] Visibility modifiers (`pub fn`, `pub struct`)
 - [ ] Module dependency graph construction
@@ -279,8 +279,8 @@ src/types.zig            # Add trait bounds to type system
 
 **Module Resolution Rules:**
 ```
-import std.collections.List
-  → Look in: std/collections.kl or std/collections/mod.kl
+import stdlib.collections.List
+  → Look in: stdlib/collections.kl or stdlib/collections/mod.kl
   → Find: pub struct List#[T] { ... }
 
 import .utils

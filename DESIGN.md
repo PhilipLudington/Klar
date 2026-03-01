@@ -1078,7 +1078,7 @@ std
 └── fmt           # Formatting
 ```
 
-### std.core (Auto-Imported)
+### stdlib.core (Auto-Imported)
 
 ```klar
 // Types
@@ -1100,7 +1100,7 @@ assert_eq#[T: Eq](a: T, b: T)
 panic(msg: string) -> !
 ```
 
-### std.collections
+### stdlib.collections
 
 ```klar
 struct List#[T] {
@@ -1130,7 +1130,7 @@ struct Set#[T: Hash + Eq] {
 }
 ```
 
-### std.string
+### stdlib.string
 
 ```klar
 struct String {
@@ -1152,7 +1152,7 @@ struct StringBuilder {
 }
 ```
 
-### std.io
+### stdlib.io
 
 ```klar
 trait Read {
@@ -1205,7 +1205,7 @@ if buf[0] == 72.as#[u8] {  // 'H'
 }
 ```
 
-### std.fs
+### stdlib.fs
 
 **Currently implemented** on `File`:
 
@@ -1236,7 +1236,7 @@ fn remove(path: ref Path) -> Result#[void, IoError]
 fn read_dir(path: ref Path) -> Result#[DirIter, IoError]
 ```
 
-### std.net.http
+### stdlib.net.http
 
 ```klar
 async fn get(url: ref str) -> Result#[Response, HttpError]
@@ -1250,7 +1250,7 @@ struct Response {
 }
 ```
 
-### std.time
+### stdlib.time
 
 ```klar
 struct Duration {
@@ -1272,7 +1272,7 @@ struct DateTime {
 async fn sleep(duration: Duration)
 ```
 
-### std.json
+### stdlib.json
 
 ```klar
 enum Json {
@@ -1304,7 +1304,7 @@ struct User {
 }
 ```
 
-### std.testing
+### stdlib.testing
 
 ```klar
 #[test]
@@ -1346,10 +1346,10 @@ fn helper() { ... }  // private
 ### Imports
 
 ```klar
-import std.collections
-import std.collections.{ List, Map }
-import std.collections.*
-import std.collections.HashMap as Map
+import stdlib.collections
+import stdlib.collections.{ List, Map }
+import stdlib.collections.*
+import stdlib.collections.HashMap as Map
 import .sibling_module
 import ..parent.other
 ```

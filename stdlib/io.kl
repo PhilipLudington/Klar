@@ -1,10 +1,10 @@
-//! std/io.kl - Input/Output operations
+//! stdlib/io.kl - Input/Output operations
 //!
 //! Basic I/O operations for reading and writing.
 
-module std.io
+module stdlib.io
 
-import std.core
+import stdlib.core
 
 // ============================================================================
 // Traits

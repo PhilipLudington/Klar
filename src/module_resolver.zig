@@ -24,7 +24,7 @@ pub const ModuleState = enum {
 
 /// Information about a module in the compilation.
 pub const ModuleInfo = struct {
-    /// Module path segments (e.g., ["std", "io"]).
+    /// Module path segments (e.g., ["stdlib", "io"]).
     path: []const []const u8,
     /// Absolute file path to the source.
     file_path: []const u8,
@@ -290,7 +290,7 @@ pub const ModuleResolver = struct {
 
         // Check if it's a relative import (starts with '.')
         // For now, treat imports starting with known prefixes specially
-        const is_std_import = path.len > 0 and std.mem.eql(u8, path[0], "std");
+        const is_std_import = path.len > 0 and std.mem.eql(u8, path[0], "stdlib");
 
         if (is_std_import) {
             // Look in standard library path
@@ -527,8 +527,8 @@ fn fileExists(path: []const u8) bool {
 test "ModuleInfo canonical name" {
     const allocator = std.testing.allocator;
 
-    const path = [_][]const u8{ "std", "io" };
-    const info = try ModuleInfo.init(allocator, &path, "/test/std/io.kl");
+    const path = [_][]const u8{ "stdlib", "io" };
+    const info = try ModuleInfo.init(allocator, &path, "/test/stdlib/io.kl");
     defer {
         var m = info;
         m.deinit(allocator);
@@ -538,7 +538,7 @@ test "ModuleInfo canonical name" {
     const name = try info.canonicalName(allocator);
     defer allocator.free(name);
 
-    try std.testing.expectEqualStrings("std.io", name);
+    try std.testing.expectEqualStrings("stdlib.io", name);
 }
 
 test "ModuleResolver initialization" {
@@ -561,4 +561,19 @@ test "ModuleResolver build canonical name" {
     const canonical = try resolver.buildCanonicalName(&path);
 
     try std.testing.expectEqualStrings("utils.math", canonical);
+}
+
+test "stdlib prefix is recognized as standard library import" {
+    const path_stdlib = [_][]const u8{ "stdlib", "json" };
+    const is_stdlib = path_stdlib.len > 0 and std.mem.eql(u8, path_stdlib[0], "stdlib");
+    try std.testing.expect(is_stdlib);
+
+    const path_other = [_][]const u8{ "mylib", "utils" };
+    const is_other = path_other.len > 0 and std.mem.eql(u8, path_other[0], "stdlib");
+    try std.testing.expect(!is_other);
+
+    // Old "std" prefix should NOT be recognized
+    const path_old = [_][]const u8{ "std", "json" };
+    const is_old = path_old.len > 0 and std.mem.eql(u8, path_old[0], "stdlib");
+    try std.testing.expect(!is_old);
 }

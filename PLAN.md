@@ -2,7 +2,7 @@
 
 ## Overview
 Build the Klar standard library capabilities that [Lodex](../Lodex/DESIGN.md) (AI-native source control) depends on. These features are general-purpose and benefit the entire Klar ecosystem, not just Lodex. See [Lodex PLAN.md Phase 0](../Lodex/PLAN.md) for the downstream requirements.
-Current status: Phase 1 complete.
+Current status: Phase 2 complete.
 
 ## Parallel Workflow Strategy
 
@@ -138,7 +138,7 @@ stdlib/
     └── test_cli.kl
 ```
 
-Imported as `import "stdlib/json"`, `import "stdlib/toml"`, etc. This is self-documenting, separate from compiler internals (`src/`), and establishes the pattern for Klar's standard library.
+Imported as `import stdlib.json.*`, `import stdlib.toml.*`, etc. This is self-documenting, separate from compiler internals (`src/`), and establishes the pattern for Klar's standard library.
 
 ---
 
@@ -403,10 +403,10 @@ Add the `klar meta` CLI command for querying meta annotations across a codebase.
 **Estimated Effort:** 5-7 days
 
 ### Parallel Workflow
-Pure Klar code in `std/json.kl`. Zero compiler changes — no conflict risk with any worktree.
+Pure Klar code in `stdlib/json.kl`. Zero compiler changes — no conflict risk with any worktree.
 
 ### Deliverables
-- `std/json.kl` — JSON value type, parser, emitter, accessors (completed 2026-02-28)
+- `stdlib/json.kl` — JSON value type, parser, emitter, accessors (completed 2026-02-28)
 - `test/module/json/main.kl` — comprehensive test suite (completed 2026-02-28)
 
 ### Tasks
@@ -426,7 +426,7 @@ Pure Klar code in `std/json.kl`. Zero compiler changes — no conflict risk with
 Round-trip tests for all JSON types. Edge cases: deeply nested objects, empty containers, escaped strings. 45+ test cases covering parse, stringify, round-trip, accessors, error handling, and pretty print.
 
 ### Implementation Notes
-- Located in `std/json.kl` (follows existing `std/` convention, not `stdlib/`)
+- Located in `stdlib/json.kl`
 - Avoids `?` operator (codegen bug with non-primitive error types in Result)
 - Stringify uses `String` builder via new `push_str(s: string)` method for O(n) serialization; parser uses string concatenation (input strings are typically short)
 - `push_str` added to String type (checker, codegen, runtime) — appends a `string` (lowercase) to a `String` without creating a temporary `String.from()` wrapper
@@ -442,34 +442,34 @@ Before Phase 2, these must be true:
 
 ---
 
-## Phase 2: SHA-256 Hashing
+## Phase 2: SHA-256 Hashing ✅
+**Status:** Complete (2026-03-01)
 
 **Goal:** Provide cryptographic hashing for content-addressed storage as a pure Klar library.
 **Estimated Effort:** 2-3 days
 
 ### Parallel Workflow
-Pure Klar code in `stdlib/sha256.kl`. If FFI approach is chosen, uses `extern` declarations within the `.kl` file — still no compiler changes. Zero conflict risk.
+Pure Klar code in `stdlib/sha256.kl`. No compiler changes needed.
 
 ### Deliverables
 - `stdlib/sha256.kl` — SHA-256 hashing functions
-- `stdlib/test/test_sha256.kl` — test suite with NIST vectors
+- `test/module/sha256/main.kl` — test suite with NIST vectors
 
 ### Tasks
-- [ ] Evaluate approach: pure Klar vs FFI to OpenSSL/libcrypto
-- [ ] If pure Klar: implement SHA-256 per FIPS 180-4 (message schedule, compression, padding)
-- [ ] If FFI: write `extern` declarations for `SHA256_Init`, `SHA256_Update`, `SHA256_Final` from libcrypto within `stdlib/sha256.kl`
-- [ ] Implement `sha256(data: string) -> string` returning 64-char hex string
-- [ ] Implement `sha256_bytes(data: List#[u8]) -> string` for binary data
-- [ ] Write tests against known test vectors (empty string, "abc", etc.)
+- [x] Evaluate approach: pure Klar vs FFI to OpenSSL/libcrypto (completed 2026-03-01)
+- [x] Implement SHA-256 per FIPS 180-4 (message schedule, compression, padding) (completed 2026-03-01)
+- [x] Implement `sha256(data: string) -> string` returning 64-char hex string (completed 2026-03-01)
+- [x] Implement `sha256_bytes(data: List#[u8]) -> string` for binary data (completed 2026-03-01)
+- [x] Write tests against known test vectors (empty string, "abc", multi-block, boundary cases) (completed 2026-03-01)
 
 ### Testing Strategy
-Compare output against NIST test vectors and `sha256sum` command-line tool output.
+Compare output against NIST test vectors and `sha256sum` command-line tool output. All 8 test vectors pass.
 
 ### Phase 2 Readiness Gate
 Before Phase 3, these must be true:
-- [ ] `sha256("")` returns `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
-- [ ] `sha256("abc")` returns `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`
-- [ ] Produces correct output for multi-block inputs (> 55 bytes)
+- [x] `sha256("")` returns `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` (completed 2026-03-01)
+- [x] `sha256("abc")` returns `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad` (completed 2026-03-01)
+- [x] Produces correct output for multi-block inputs (> 55 bytes) (completed 2026-03-01)
 
 ---
 

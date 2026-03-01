@@ -1,4 +1,4 @@
-//! std/json.kl - JSON parsing, stringification, and manipulation
+//! stdlib/json.kl - JSON parsing, stringification, and manipulation
 //!
 //! Pure Klar JSON library providing:
 //! - Parsing: json_parse(string) -> Result#[JsonValue, JsonError]
@@ -6,7 +6,7 @@
 //! - Accessors: json_get, json_get_string, json_get_number, etc.
 //! - Builders: json_null, json_bool, json_number, json_string, json_array, json_object
 
-module std.json
+module stdlib.json
 
 // ============================================================================
 // JSON Value Type

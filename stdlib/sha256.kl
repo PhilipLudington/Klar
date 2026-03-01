@@ -1,0 +1,313 @@
+//! stdlib/sha256.kl - SHA-256 cryptographic hash function (FIPS 180-4)
+//!
+//! Pure Klar implementation. Provides:
+//! - sha256(string) -> string         (64-char lowercase hex digest)
+//! - sha256_bytes(List#[u8]) -> string (hex digest from byte list)
+
+module stdlib.sha256
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+pub fn sha256(data: string) -> string {
+    var bytes: List#[u8] = List.new#[u8]()
+    var i: i32 = 0
+    let slen: i32 = data.byte_len()
+    while i < slen {
+        bytes.push(data.byte_at(i))
+        i = i + 1
+    }
+    return sha256_bytes(bytes)
+}
+
+pub fn sha256_bytes(data: List#[u8]) -> string {
+    // Initial hash values (first 32 bits of square roots of first 8 primes)
+    var h0: u32 = 1779033703
+    var h1: u32 = 3144134277
+    var h2: u32 = 1013904242
+    var h3: u32 = 2773480762
+    var h4: u32 = 1359893119
+    var h5: u32 = 2600822924
+    var h6: u32 = 528734635
+    var h7: u32 = 1541459225
+
+    // Round constants
+    let k: List#[u32] = init_k()
+
+    // Pad message
+    let padded: List#[u8] = sha256_pad(data)
+    let padded_len: i32 = padded.len()
+
+    // Process each 64-byte block
+    var offset: i32 = 0
+    while offset < padded_len {
+        // Build message schedule (16 words from block + 48 expanded)
+        var w: List#[u32] = List.new#[u32]()
+
+        // First 16 words: pack bytes big-endian
+        let byte_mask: u32 = 255
+        let s24: u32 = 24
+        let s16: u32 = 16
+        let s8: u32 = 8
+        var t: i32 = 0
+        while t < 16 {
+            let base: i32 = offset + t * 4
+            let b0: u32 = padded.get(base)!.as#[u32] & byte_mask
+            let b1: u32 = padded.get(base + 1)!.as#[u32] & byte_mask
+            let b2: u32 = padded.get(base + 2)!.as#[u32] & byte_mask
+            let b3: u32 = padded.get(base + 3)!.as#[u32] & byte_mask
+            w.push((b0 << s24) | (b1 << s16) | (b2 << s8) | b3)
+            t = t + 1
+        }
+
+        // Extend to 64 words
+        while t < 64 {
+            let s0: u32 = small_sigma0(w.get(t - 15)!)
+            let s1: u32 = small_sigma1(w.get(t - 2)!)
+            w.push(w.get(t - 16)! +% s0 +% w.get(t - 7)! +% s1)
+            t = t + 1
+        }
+
+        // Initialize working variables
+        var a: u32 = h0
+        var b: u32 = h1
+        var c: u32 = h2
+        var d: u32 = h3
+        var e: u32 = h4
+        var f: u32 = h5
+        var g: u32 = h6
+        var h: u32 = h7
+
+        // Compression: 64 rounds
+        var r: i32 = 0
+        while r < 64 {
+            let sig1: u32 = big_sigma1(e)
+            let ch_val: u32 = ch(e, f, g)
+            let temp1: u32 = h +% sig1 +% ch_val +% k.get(r)! +% w.get(r)!
+            let sig0: u32 = big_sigma0(a)
+            let maj_val: u32 = maj(a, b, c)
+            let temp2: u32 = sig0 +% maj_val
+
+            h = g
+            g = f
+            f = e
+            e = d +% temp1
+            d = c
+            c = b
+            b = a
+            a = temp1 +% temp2
+
+            r = r + 1
+        }
+
+        // Add compressed chunk to hash state
+        h0 = h0 +% a
+        h1 = h1 +% b
+        h2 = h2 +% c
+        h3 = h3 +% d
+        h4 = h4 +% e
+        h5 = h5 +% f
+        h6 = h6 +% g
+        h7 = h7 +% h
+
+        offset = offset + 64
+    }
+
+    // Produce 64-char hex digest
+    var result: String = String.new()
+    result.push_str(u32_to_hex(h0))
+    result.push_str(u32_to_hex(h1))
+    result.push_str(u32_to_hex(h2))
+    result.push_str(u32_to_hex(h3))
+    result.push_str(u32_to_hex(h4))
+    result.push_str(u32_to_hex(h5))
+    result.push_str(u32_to_hex(h6))
+    result.push_str(u32_to_hex(h7))
+    return result.as_str()
+}
+
+// ============================================================================
+// Message Padding (FIPS 180-4 Section 5.1.1)
+// ============================================================================
+
+fn sha256_pad(msg: List#[u8]) -> List#[u8] {
+    let msg_len: i32 = msg.len()
+
+    var padded: List#[u8] = List.new#[u8]()
+
+    // Copy original message
+    var i: i32 = 0
+    while i < msg_len {
+        padded.push(msg.get(i)!)
+        i = i + 1
+    }
+
+    // Append bit '1' (0x80 byte)
+    padded.push(128.as#[u8])
+
+    // Append zeros until length is 56 mod 64
+    while padded.len() % 64 != 56 {
+        padded.push(0.as#[u8])
+    }
+
+    // Append original message length in bits as big-endian 64-bit integer
+    let bit_len: i64 = msg_len.as#[i64] * 8.as#[i64]
+
+    // High 32 bits (zero for messages < 512 MB)
+    padded.push(0.as#[u8])
+    padded.push(0.as#[u8])
+    padded.push(0.as#[u8])
+    padded.push(0.as#[u8])
+
+    // Low 32 bits (big-endian)
+    let bl: i32 = bit_len.as#[i32]
+    padded.push(((bl >> 24) & 255).as#[u8])
+    padded.push(((bl >> 16) & 255).as#[u8])
+    padded.push(((bl >> 8) & 255).as#[u8])
+    padded.push((bl & 255).as#[u8])
+
+    return padded
+}
+
+// ============================================================================
+// Bit Manipulation Helpers
+// ============================================================================
+
+fn rotr(x: u32, n: u32) -> u32 {
+    let bits: u32 = 32
+    return (x >> n) | (x << (bits -% n))
+}
+
+// Ch(x,y,z) = (x AND y) XOR (NOT x AND z) = z XOR (x AND (y XOR z))
+fn ch(x: u32, y: u32, z: u32) -> u32 {
+    return z ^ (x & (y ^ z))
+}
+
+// Maj(x,y,z) = (x AND y) XOR (x AND z) XOR (y AND z)
+fn maj(x: u32, y: u32, z: u32) -> u32 {
+    return (x & y) ^ (x & z) ^ (y & z)
+}
+
+fn big_sigma0(x: u32) -> u32 {
+    let r2: u32 = 2
+    let r13: u32 = 13
+    let r22: u32 = 22
+    return rotr(x, r2) ^ rotr(x, r13) ^ rotr(x, r22)
+}
+
+fn big_sigma1(x: u32) -> u32 {
+    let r6: u32 = 6
+    let r11: u32 = 11
+    let r25: u32 = 25
+    return rotr(x, r6) ^ rotr(x, r11) ^ rotr(x, r25)
+}
+
+fn small_sigma0(x: u32) -> u32 {
+    let r7: u32 = 7
+    let r18: u32 = 18
+    let s3: u32 = 3
+    return rotr(x, r7) ^ rotr(x, r18) ^ (x >> s3)
+}
+
+fn small_sigma1(x: u32) -> u32 {
+    let r17: u32 = 17
+    let r19: u32 = 19
+    let s10: u32 = 10
+    return rotr(x, r17) ^ rotr(x, r19) ^ (x >> s10)
+}
+
+// ============================================================================
+// Hex Output
+// ============================================================================
+
+fn hex_char(nibble: i32) -> string {
+    let hex_chars: string = "0123456789abcdef"
+    return from_byte(hex_chars.byte_at(nibble))
+}
+
+fn u32_to_hex(val: u32) -> string {
+    var buf: String = String.new()
+    let mask: u32 = 15
+    var i: i32 = 7
+    while i >= 0 {
+        let shift_amt: u32 = (i * 4).as#[u32]
+        let nibble: i32 = ((val >> shift_amt) & mask).as#[i32]
+        buf.push_str(hex_char(nibble))
+        i = i - 1
+    }
+    return buf.as_str()
+}
+
+// ============================================================================
+// Round Constants (first 32 bits of cube roots of first 64 primes)
+// ============================================================================
+
+fn init_k() -> List#[u32] {
+    var k: List#[u32] = List.new#[u32]()
+    k.push(1116352408.as#[u32])
+    k.push(1899447441.as#[u32])
+    k.push(3049323471.as#[u32])
+    k.push(3921009573.as#[u32])
+    k.push(961987163.as#[u32])
+    k.push(1508970993.as#[u32])
+    k.push(2453635748.as#[u32])
+    k.push(2870763221.as#[u32])
+    k.push(3624381080.as#[u32])
+    k.push(310598401.as#[u32])
+    k.push(607225278.as#[u32])
+    k.push(1426881987.as#[u32])
+    k.push(1925078388.as#[u32])
+    k.push(2162078206.as#[u32])
+    k.push(2614888103.as#[u32])
+    k.push(3248222580.as#[u32])
+    k.push(3835390401.as#[u32])
+    k.push(4022224774.as#[u32])
+    k.push(264347078.as#[u32])
+    k.push(604807628.as#[u32])
+    k.push(770255983.as#[u32])
+    k.push(1249150122.as#[u32])
+    k.push(1555081692.as#[u32])
+    k.push(1996064986.as#[u32])
+    k.push(2554220882.as#[u32])
+    k.push(2821834349.as#[u32])
+    k.push(2952996808.as#[u32])
+    k.push(3210313671.as#[u32])
+    k.push(3336571891.as#[u32])
+    k.push(3584528711.as#[u32])
+    k.push(113926993.as#[u32])
+    k.push(338241895.as#[u32])
+    k.push(666307205.as#[u32])
+    k.push(773529912.as#[u32])
+    k.push(1294757372.as#[u32])
+    k.push(1396182291.as#[u32])
+    k.push(1695183700.as#[u32])
+    k.push(1986661051.as#[u32])
+    k.push(2177026350.as#[u32])
+    k.push(2456956037.as#[u32])
+    k.push(2730485921.as#[u32])
+    k.push(2820302411.as#[u32])
+    k.push(3259730800.as#[u32])
+    k.push(3345764771.as#[u32])
+    k.push(3516065817.as#[u32])
+    k.push(3600352804.as#[u32])
+    k.push(4094571909.as#[u32])
+    k.push(275423344.as#[u32])
+    k.push(430227734.as#[u32])
+    k.push(506948616.as#[u32])
+    k.push(659060556.as#[u32])
+    k.push(883997877.as#[u32])
+    k.push(958139571.as#[u32])
+    k.push(1322822218.as#[u32])
+    k.push(1537002063.as#[u32])
+    k.push(1747873779.as#[u32])
+    k.push(1955562222.as#[u32])
+    k.push(2024104815.as#[u32])
+    k.push(2227730452.as#[u32])
+    k.push(2361852424.as#[u32])
+    k.push(2428436474.as#[u32])
+    k.push(2756734187.as#[u32])
+    k.push(3204031479.as#[u32])
+    k.push(3329325298.as#[u32])
+    return k
+}
