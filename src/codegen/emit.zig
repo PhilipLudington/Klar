@@ -30151,12 +30151,14 @@ pub const Emitter = struct {
 
     /// Declare the C strdup function if not already declared.
     fn getOrDeclareStrdup(self: *Emitter) llvm.ValueRef {
-        const fn_name = "strdup";
+        // On Windows/MSVC, strdup is _strdup (POSIX name not exported)
+        const os = @import("builtin").os.tag;
+        const fn_name = if (os == .windows) "_strdup" else "strdup";
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
 
-        // char* strdup(const char *s)
+        // char* strdup(const char *s) / char* _strdup(const char *s)
         const ptr_type = llvm.Types.pointer(self.ctx);
         var param_types = [_]llvm.TypeRef{ptr_type};
         const fn_type = llvm.c.LLVMFunctionType(ptr_type, &param_types, 1, 0); // not variadic
