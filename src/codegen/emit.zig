@@ -9403,7 +9403,12 @@ pub const Emitter = struct {
                 if (rt_info.is_optional) {
                     // Return None: { i1 = 0, T = undef }
                     const none_val = self.emitNone(rt_info.llvm_type);
-                    _ = self.builder.buildRet(none_val);
+                    if (self.current_sret_ptr) |sret_ptr| {
+                        _ = self.builder.buildStore(none_val, sret_ptr);
+                        _ = self.builder.buildRetVoid();
+                    } else {
+                        _ = self.builder.buildRet(none_val);
+                    }
                 } else if (rt_info.is_result) {
                     // Return Err with same error value
                     // For Result operand: extract error value from index 2
@@ -9435,7 +9440,12 @@ pub const Emitter = struct {
 
                         // Build Err result with the extracted (and possibly converted) error
                         const err_result = self.emitErr(err_val, rt_info.ok_type.?, rt_info.err_type.?);
-                        _ = self.builder.buildRet(err_result);
+                        if (self.current_sret_ptr) |sret_ptr| {
+                            _ = self.builder.buildStore(err_result, sret_ptr);
+                            _ = self.builder.buildRetVoid();
+                        } else {
+                            _ = self.builder.buildRet(err_result);
+                        }
                     } else {
                         // Operand is Optional but return is Result - shouldn't happen with proper type checking
                         // Fall back to unreachable

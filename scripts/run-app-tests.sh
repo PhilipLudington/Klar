@@ -73,15 +73,15 @@ for app in "${NATIVE_APPS[@]}"; do
         output=$(run_with_timeout 5 "$temp_bin" 2>&1) || true
         if [ -n "$output" ]; then
             echo "OK"
-            ((passed++))
+            passed=$((passed + 1))
         else
             echo "FAILED (no output)"
-            ((failed++))
+            failed=$((failed + 1))
             record_failure "$app" "no output"
         fi
     else
         echo "FAILED (compile error)"
-        ((failed++))
+        failed=$((failed + 1))
         record_failure "$app" "compile error"
     fi
 
@@ -94,10 +94,10 @@ for app in "${VM_ONLY_APPS[@]}"; do
 
     if run_with_timeout 10 $KLAR run "$APPS_DIR/$app.kl" >/dev/null 2>&1; then
         echo "OK"
-        ((passed++))
+        passed=$((passed + 1))
     else
         echo "FAILED"
-        ((failed++))
+        failed=$((failed + 1))
         record_failure "$app" "VM execution failed"
     fi
 done
