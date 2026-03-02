@@ -98,6 +98,7 @@ get_expected() {
         result_propagate_string_err) echo 0 ;;  # ? on Result#[String, String] (droppable sret)
         return_none) echo 0 ;;  # return None in fn -> ?T
         string_as_str_safe) echo 0 ;;  # as_str() returns safe copy
+        string_enum_cross_module) echo 0 ;;  # string from enum payload (Bug 5)
         saturating_add) echo 0 ;;  # +| clamps at INT_MAX/INT_MIN
         saturating_sub) echo 0 ;;  # -| clamps at INT_MAX/INT_MIN
         saturating_mul) echo 0 ;;  # *| clamps at INT_MAX/INT_MIN

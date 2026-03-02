@@ -1,0 +1,51 @@
+// Cross-module test: extract string from imported enum and verify .len() works
+
+import lib.{ Token, make_word, make_num }
+
+fn check_token(t: Token) -> i32 {
+    match t {
+        Word(s) => {
+            // This is the core Bug 5 scenario: string from cross-module enum payload
+            let len: i32 = s.len()
+            return len
+        }
+        Num(n) => { return n }
+        Eof => { return -1 }
+    }
+}
+
+fn main() -> i32 {
+    // Test 1: string .len() from cross-module enum
+    let t1: Token = make_word("hello")
+    let len1: i32 = check_token(t1)
+    assert_eq(len1, 5)
+
+    // Test 2: longer string
+    let t2: Token = make_word("hello world")
+    let len2: i32 = check_token(t2)
+    assert_eq(len2, 11)
+
+    // Test 3: empty string
+    let t3: Token = make_word("")
+    let len3: i32 = check_token(t3)
+    assert_eq(len3, 0)
+
+    // Test 4: string methods after cross-module extraction
+    let t4: Token = make_word("testing")
+    match t4 {
+        Word(s) => {
+            assert_eq(s.len(), 7)
+            assert(s == "testing")
+            assert(s.starts_with("test"))
+            assert(s.contains("sting"))
+        }
+        _ => { assert(false) }
+    }
+
+    // Test 5: non-string payload still works
+    let t5: Token = make_num(42)
+    let val: i32 = check_token(t5)
+    assert_eq(val, 42)
+
+    return 0
+}

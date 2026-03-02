@@ -6040,6 +6040,11 @@ pub const Emitter = struct {
                         .string_data => {
                             local_value.is_string_data = true;
                         },
+                        .primitive => |p| {
+                            if (p == .string_) {
+                                local_value.is_string = true;
+                            }
+                        },
                         .struct_ => |st| {
                             // Set struct type name for field access
                             local_value.struct_type_name = st.name;
@@ -32255,7 +32260,7 @@ pub const Emitter = struct {
                 .i32_, .u32_, .f32_ => 4,
                 .i64_, .u64_, .f64_, .isize_, .usize_ => 8,
                 .i128_, .u128_ => 16,
-                .string_ => 16, // Pointer + length
+                .string_ => 8, // pointer (heap-indirected)
             },
             .void_ => 0,
             .optional => 16, // Conservative: has_value flag + payload pointer

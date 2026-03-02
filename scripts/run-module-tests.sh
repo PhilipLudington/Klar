@@ -302,7 +302,30 @@ else
     echo "⊘ cli (test not found, skipping)"
 fi
 
-# Test 13: TOML library (stdlib/toml.kl)
+# Test 13: Cross-module string enum payload
+echo "--- string_enum: Cross-module string enum .len() ---"
+temp_bin="/tmp/klar_module_string_enum"
+if [ -d "$TEST_DIR/string_enum" ]; then
+    if $KLAR build $TEST_DIR/string_enum/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_enum (exit: $result)"
+            record_success "string_enum"
+        else
+            echo "✗ string_enum (expected: 0, got: $result)"
+            record_failure "string_enum" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_enum (build failed)"
+        record_failure "string_enum" "build failed"
+    fi
+else
+    echo "⊘ string_enum (test not found, skipping)"
+fi
+
+# Test 14: TOML library (stdlib/toml.kl)
 echo "--- toml: TOML library (stdlib/toml.kl) ---"
 temp_bin="/tmp/klar_module_toml"
 if [ -d "$TEST_DIR/toml" ]; then
