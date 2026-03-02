@@ -1,0 +1,60 @@
+// Test that Map uses shared semantics: insert() inside a function is visible to the caller.
+// This verifies the heap-indirected Map header means copies share state.
+
+fn insert_item(m: Map#[string, i32], key: string, value: i32) -> void {
+    m.insert(key, value)
+}
+
+fn main() -> i32 {
+    var m: Map#[string, i32] = Map.new#[string, i32]()
+
+    // Insert via function call (would be lost with flat value-copy semantics)
+    insert_item(m, "a", 10)
+    insert_item(m, "b", 20)
+    insert_item(m, "c", 30)
+
+    // Caller should see all 3 items
+    let len: i32 = m.len()
+    if len != 3 {
+        return 1
+    }
+
+    // Verify values
+    let va: ?i32 = m.get("a")
+    match va {
+        Some(v) => {
+            if v != 10 {
+                return 2
+            }
+        }
+        None => {
+            return 3
+        }
+    }
+
+    let vb: ?i32 = m.get("b")
+    match vb {
+        Some(v) => {
+            if v != 20 {
+                return 4
+            }
+        }
+        None => {
+            return 5
+        }
+    }
+
+    let vc: ?i32 = m.get("c")
+    match vc {
+        Some(v) => {
+            if v != 30 {
+                return 6
+            }
+        }
+        None => {
+            return 7
+        }
+    }
+
+    return 42
+}

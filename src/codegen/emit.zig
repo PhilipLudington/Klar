@@ -3514,7 +3514,7 @@ pub const Emitter = struct {
 
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
 
         // Allocate index counter (iterates over capacity, not len)
@@ -3569,8 +3569,9 @@ pub const Emitter = struct {
         // Emit condition: idx < capacity
         self.builder.positionAtEnd(cond_bb);
         const cur_idx = self.builder.buildLoad(i32_type, idx_alloca, "formap.idx.cur");
-        // Load capacity from map (field index 2)
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, 2, "formap.cap_ptr");
+        // Deref map header and load capacity (field index 2)
+        const cond_header = self.derefMapHeader(map_alloca);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, cond_header, map_constants.MapHeaderField.capacity, "formap.cap_ptr");
         const map_cap = self.builder.buildLoad(i32_type, cap_ptr, "formap.cap");
         const cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, cur_idx, map_cap, "formap.cmp");
         _ = self.builder.buildCondBr(cmp, check_bb, end_bb);
@@ -3579,8 +3580,9 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(check_bb);
         const cur_idx2 = self.builder.buildLoad(i32_type, idx_alloca, "formap.idx.cur2");
 
-        // Load entries pointer from map (field index 0)
-        const entries_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, 0, "formap.entries_ptr_ptr");
+        // Deref map header and load entries pointer (field index 0)
+        const check_header = self.derefMapHeader(map_alloca);
+        const entries_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, check_header, map_constants.MapHeaderField.entries, "formap.entries_ptr_ptr");
         const entries_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), entries_ptr_ptr, "formap.entries_ptr");
 
         // Get pointer to current entry: entries[idx]
@@ -6405,13 +6407,13 @@ pub const Emitter = struct {
                     if (std.mem.eql(u8, base_name, "List") and g.args.len == 1) {
                         return self.getListStructType();
                     }
-                    // Map#[K,V] is { entries_ptr, len: i32, capacity: i32, tombstone_count: i32 }
+                    // Map#[K,V] is { header_ptr } (pointer to heap-allocated MapHeader)
                     if (std.mem.eql(u8, base_name, "Map") and g.args.len == 2) {
                         return self.getMapStructType();
                     }
-                    // Set#[T] is same layout as Map
+                    // Set#[T] is { entries_ptr, len: i32, capacity: i32, tombstone_count: i32 }
                     if (std.mem.eql(u8, base_name, "Set") and g.args.len == 1) {
-                        return self.getMapStructType();
+                        return self.getSetStructType();
                     }
 
                     // Try to look up user-defined generic struct types
@@ -11015,13 +11017,13 @@ pub const Emitter = struct {
                     break :blk local.value;
                 }
                 const obj_val = try self.emitExpr(method.object);
-                const set_type = self.getMapStructType();
+                const set_type = self.getSetStructType();
                 const tmp_alloca = self.builder.buildAlloca(set_type, "set.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
                 const obj_val = try self.emitExpr(method.object);
-                const set_type = self.getMapStructType();
+                const set_type = self.getSetStructType();
                 const tmp_alloca = self.builder.buildAlloca(set_type, "set.tmp");
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
@@ -18197,16 +18199,64 @@ pub const Emitter = struct {
     // ========================================================================
     // Map Methods
     // ========================================================================
-    // Map layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
+    // Map layout (heap-indirected): outer { header_ptr } → heap { entries_ptr, len, capacity, tombstones }
     // Entry layout: { state: i8, cached_hash: i32, key: K, value: V }
     // State: 0=EMPTY, 1=OCCUPIED, 2=TOMBSTONE
 
-    /// Get the Map struct type: { ptr, i32, i32, i32 }
+    /// Get the LLVM struct type for Map (outer wrapper): { ptr }
+    /// The single field is a pointer to the heap-allocated MapHeader.
     fn getMapStructType(self: *Emitter) llvm.TypeRef {
-        const i32_type = llvm.Types.int32(self.ctx);
+        return map_constants.createMapStructType(self.ctx);
+    }
+
+    /// Get the LLVM struct type for MapHeader (heap-allocated): { ptr, i32, i32, i32 }
+    fn getMapHeaderType(self: *Emitter) llvm.TypeRef {
+        return map_constants.createMapHeaderType(self.ctx);
+    }
+
+    /// Dereference a map pointer to get the heap-allocated header pointer.
+    /// map_ptr is a pointer to a Map struct { header_ptr }.
+    /// Returns the loaded header_ptr (pointer to MapHeader on heap).
+    fn derefMapHeader(self: *Emitter, map_ptr: llvm.ValueRef) llvm.ValueRef {
+        const map_type = self.getMapStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
-        var fields = [_]llvm.TypeRef{ ptr_type, i32_type, i32_type, i32_type };
-        return llvm.Types.struct_(self.ctx, &fields, false);
+        const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.header_field");
+        return self.builder.buildLoad(ptr_type, header_field, "map.header_ptr");
+    }
+
+    /// Allocate a new MapHeader on the heap and return the pointer.
+    /// Initializes to { null, 0, 0, 0 }.
+    fn allocateMapHeader(self: *Emitter) llvm.ValueRef {
+        const header_type = self.getMapHeaderType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const header_size = llvm.Const.int64(self.ctx, map_constants.map_header_size);
+
+        // malloc for the header
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{header_size};
+        const header_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "map.new_header");
+
+        // Initialize to { null, 0, 0, 0 }
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "map.hdr.entries_field");
+        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), entries_field);
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "map.hdr.len_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_field);
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "map.hdr.cap_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), cap_field);
+        const tomb_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 3, "map.hdr.tomb_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tomb_field);
+
+        return header_ptr;
+    }
+
+    /// Build a map value { header_ptr } from a header pointer.
+    /// Returns a loaded map struct value.
+    fn buildMapFromHeader(self: *Emitter, header_ptr: llvm.ValueRef, name: [:0]const u8) llvm.ValueRef {
+        const map_type = self.getMapStructType();
+        const map_alloca = self.builder.buildAlloca(map_type, name);
+        const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, 0, "map.wrap.hdr");
+        _ = self.builder.buildStore(header_ptr, header_field);
+        return self.builder.buildLoad(map_type, map_alloca, "map.wrap.val");
     }
 
     /// Get the Map entry struct type for given key/value types.
@@ -18221,9 +18271,12 @@ pub const Emitter = struct {
     /// Shared helper: allocate a map with the given capacity (as an LLVM i32 value),
     /// malloc + memset the entries buffer, and return the loaded map struct value.
     fn emitMapAlloc(self: *Emitter, cap_i32: llvm.ValueRef, alloc_size: llvm.ValueRef, name: [:0]const u8) llvm.ValueRef {
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
 
-        // Call malloc(size)
+        // Allocate header on heap
+        const header_ptr = self.allocateMapHeader();
+
+        // Call malloc(size) for entries
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const entries_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "map.entries_ptr");
@@ -18233,23 +18286,14 @@ pub const Emitter = struct {
         var memset_args = [_]llvm.ValueRef{ entries_ptr, llvm.Const.int32(self.ctx, 0), alloc_size };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &memset_args, "");
 
-        // Build the map struct { entries_ptr, 0, capacity, 0 }
-        const map_alloca = self.builder.buildAlloca(map_type, name);
-        const zero_i32 = llvm.Const.int32(self.ctx, 0);
-
-        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, map_constants.MapField.entries, "map.ptr_field");
+        // Store entries_ptr and capacity into header
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, map_constants.MapHeaderField.entries, "map.hdr.ptr_field");
         _ = self.builder.buildStore(entries_ptr, ptr_field);
 
-        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, map_constants.MapField.len, "map.len_field");
-        _ = self.builder.buildStore(zero_i32, len_field);
-
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, map_constants.MapField.capacity, "map.cap_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, map_constants.MapHeaderField.capacity, "map.hdr.cap_field");
         _ = self.builder.buildStore(cap_i32, cap_field);
 
-        const tomb_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, map_constants.MapField.tombstones, "map.tomb_field");
-        _ = self.builder.buildStore(zero_i32, tomb_field);
-
-        return self.builder.buildLoad(map_type, map_alloca, "map.val");
+        return self.buildMapFromHeader(header_ptr, name);
     }
 
     /// Resolve key/value LLVM types and entry size from a method call's type_args.
@@ -18311,11 +18355,12 @@ pub const Emitter = struct {
 
     /// Emit map.len() - returns length as i32.
     fn emitMapLen(self: *Emitter, map_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
 
-        // GEP to the len field (index 1)
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 1, "map.len.ptr");
+        // Deref header and GEP to the len field
+        const header_ptr = self.derefMapHeader(map_ptr);
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, map_constants.MapHeaderField.len, "map.len.ptr");
         return self.builder.buildLoad(i32_type, len_ptr, "map.len");
     }
 
@@ -18328,11 +18373,12 @@ pub const Emitter = struct {
 
     /// Emit map.capacity() - returns capacity as i32.
     fn emitMapCapacity(self: *Emitter, map_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
 
-        // GEP to the capacity field (index 2)
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap.ptr");
+        // Deref header and GEP to the capacity field
+        const header_ptr = self.derefMapHeader(map_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, map_constants.MapHeaderField.capacity, "map.cap.ptr");
         return self.builder.buildLoad(i32_type, cap_ptr, "map.capacity");
     }
 
@@ -18347,7 +18393,7 @@ pub const Emitter = struct {
         const value_llvm_type = self.typeToLLVM(value_type_klar);
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
 
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
@@ -18358,12 +18404,13 @@ pub const Emitter = struct {
         // Compute hash of key
         const hash = try self.emitHashValue(key, key_type_klar);
 
-        // Load capacity, len, and tombstone_count
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap_ptr");
+        // Deref map header and load capacity, len, and tombstone_count
+        const header_ptr = self.derefMapHeader(map_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, map_constants.MapHeaderField.capacity, "map.cap_ptr");
         const capacity = self.builder.buildLoad(i32_type, cap_ptr, "map.cap");
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 1, "map.len_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, map_constants.MapHeaderField.len, "map.len_ptr");
         const len = self.builder.buildLoad(i32_type, len_ptr, "map.len");
-        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 3, "map.tomb_ptr");
+        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, map_constants.MapHeaderField.tombstones, "map.tomb_ptr");
         const tomb_count = self.builder.buildLoad(i32_type, tomb_ptr, "map.tomb");
 
         // Check if we need to grow:
@@ -18415,7 +18462,8 @@ pub const Emitter = struct {
 
         // Rehash block - iterate old entries and reinsert
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, rehash_block);
-        const old_entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "old_entries_ptr");
+        const rehash_header = self.derefMapHeader(map_ptr);
+        const old_entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, rehash_header, map_constants.MapHeaderField.entries, "old_entries_ptr");
         const old_entries = self.builder.buildLoad(ptr_type, old_entries_ptr_field, "old_entries");
         const new_cap_minus_1 = llvm.c.LLVMBuildSub(self.builder.ref, new_cap, llvm.Const.int32(self.ctx, 1), "new_cap_m1");
 
@@ -18508,23 +18556,28 @@ pub const Emitter = struct {
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
         _ = llvm.c.LLVMBuildBr(self.builder.ref, rehash_done_block);
 
-        // Rehash done - update map fields
+        // Rehash done - update map header fields
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, rehash_done_block);
-        const entries_ptr_grow = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_grow");
+        const done_header = self.derefMapHeader(map_ptr);
+        const entries_ptr_grow = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, done_header, map_constants.MapHeaderField.entries, "map.entries_ptr_grow");
         _ = self.builder.buildStore(new_entries, entries_ptr_grow);
-        _ = self.builder.buildStore(new_cap, cap_ptr);
+        const done_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, done_header, map_constants.MapHeaderField.capacity, "map.done_cap_ptr");
+        _ = self.builder.buildStore(new_cap, done_cap_ptr);
         // Reset tombstone count after rehash
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tomb_ptr);
+        const done_tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, done_header, map_constants.MapHeaderField.tombstones, "map.done_tomb_ptr");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), done_tomb_ptr);
 
         _ = llvm.c.LLVMBuildBr(self.builder.ref, insert_block);
 
         // Insert block - do the actual insert
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, insert_block);
 
-        // Reload entries and capacity after potential grow
-        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
+        // Reload entries and capacity from header after potential grow
+        const insert_header = self.derefMapHeader(map_ptr);
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, insert_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "map.entries");
-        const cap_val = self.builder.buildLoad(i32_type, cap_ptr, "map.cap_val");
+        const insert_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, insert_header, map_constants.MapHeaderField.capacity, "map.insert_cap_ptr");
+        const cap_val = self.builder.buildLoad(i32_type, insert_cap_ptr, "map.cap_val");
 
         // Compute initial index: hash & (capacity - 1)
         const cap_minus_one = llvm.c.LLVMBuildSub(self.builder.ref, cap_val, llvm.Const.int32(self.ctx, 1), "cap_m1");
@@ -18589,7 +18642,8 @@ pub const Emitter = struct {
 
         // Increment len
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, inc_len_block);
-        const len_ptr_insert = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 1, "map.len_ptr");
+        const inc_header = self.derefMapHeader(map_ptr);
+        const len_ptr_insert = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, inc_header, map_constants.MapHeaderField.len, "map.len_ptr");
         const old_len = self.builder.buildLoad(i32_type, len_ptr_insert, "old_len");
         const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, old_len, llvm.Const.int32(self.ctx, 1), "new_len");
         _ = self.builder.buildStore(new_len, len_ptr_insert);
@@ -18597,12 +18651,13 @@ pub const Emitter = struct {
 
         // Decrement tombstone count and increment len
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, dec_tomb_block);
-        const tomb_ptr_dec = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 3, "map.tomb_ptr");
+        const dec_header = self.derefMapHeader(map_ptr);
+        const tomb_ptr_dec = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, dec_header, map_constants.MapHeaderField.tombstones, "map.tomb_ptr");
         const old_tomb = self.builder.buildLoad(i32_type, tomb_ptr_dec, "old_tomb");
         const new_tomb = llvm.c.LLVMBuildSub(self.builder.ref, old_tomb, llvm.Const.int32(self.ctx, 1), "new_tomb");
         _ = self.builder.buildStore(new_tomb, tomb_ptr_dec);
 
-        const len_ptr_tomb = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 1, "map.len_ptr_tomb");
+        const len_ptr_tomb = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, dec_header, map_constants.MapHeaderField.len, "map.len_ptr_tomb");
         const old_len2 = self.builder.buildLoad(i32_type, len_ptr_tomb, "old_len2");
         const new_len2 = llvm.c.LLVMBuildAdd(self.builder.ref, old_len2, llvm.Const.int32(self.ctx, 1), "new_len2");
         _ = self.builder.buildStore(new_len2, len_ptr_tomb);
@@ -18661,7 +18716,7 @@ pub const Emitter = struct {
         const value_llvm_type = self.typeToLLVM(value_type_klar);
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
 
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
         const i1_type = llvm.Types.int1(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -18677,8 +18732,9 @@ pub const Emitter = struct {
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "opt.tag_ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
 
-        // Load capacity and check if zero
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap_ptr");
+        // Deref header and load capacity, check if zero
+        const get_header = self.derefMapHeader(map_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, get_header, map_constants.MapHeaderField.capacity, "map.cap_ptr");
         const capacity = self.builder.buildLoad(i32_type, cap_ptr, "map.cap");
         const is_empty_cap = self.builder.buildICmp(llvm.c.LLVMIntEQ, capacity, llvm.Const.int32(self.ctx, 0), "is_empty_cap");
 
@@ -18694,8 +18750,9 @@ pub const Emitter = struct {
         // Compute hash
         const hash = try self.emitHashValue(key, key_type_klar);
 
-        // Load entries
-        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
+        // Load entries from header
+        const search_header = self.derefMapHeader(map_ptr);
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, search_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "map.entries");
 
         // Compute initial index
@@ -18793,7 +18850,7 @@ pub const Emitter = struct {
         const value_llvm_type = self.typeToLLVM(value_type_klar);
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
 
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
         const i1_type = llvm.Types.int1(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -18809,8 +18866,9 @@ pub const Emitter = struct {
         const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, opt_type, opt_alloca, 0, "opt.tag_ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
 
-        // Check capacity
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap_ptr");
+        // Deref header and check capacity
+        const remove_header = self.derefMapHeader(map_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, remove_header, map_constants.MapHeaderField.capacity, "map.cap_ptr");
         const capacity = self.builder.buildLoad(i32_type, cap_ptr, "map.cap");
         const is_empty_cap = self.builder.buildICmp(llvm.c.LLVMIntEQ, capacity, llvm.Const.int32(self.ctx, 0), "is_empty_cap");
 
@@ -18824,7 +18882,8 @@ pub const Emitter = struct {
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, search_block);
         const hash = try self.emitHashValue(key, key_type_klar);
 
-        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
+        const search_rm_header = self.derefMapHeader(map_ptr);
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, search_rm_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "map.entries");
 
         const cap_minus_one = llvm.c.LLVMBuildSub(self.builder.ref, capacity, llvm.Const.int32(self.ctx, 1), "cap_m1");
@@ -18898,12 +18957,13 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 2), state_ptr);
 
         // Decrement len, increment tombstone count
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 1, "map.len_ptr");
+        const found_header = self.derefMapHeader(map_ptr);
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, found_header, map_constants.MapHeaderField.len, "map.len_ptr");
         const old_len = self.builder.buildLoad(i32_type, len_ptr, "old_len");
         const new_len = llvm.c.LLVMBuildSub(self.builder.ref, old_len, llvm.Const.int32(self.ctx, 1), "new_len");
         _ = self.builder.buildStore(new_len, len_ptr);
 
-        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 3, "map.tomb_ptr");
+        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, found_header, map_constants.MapHeaderField.tombstones, "map.tomb_ptr");
         const old_tomb = self.builder.buildLoad(i32_type, tomb_ptr, "old_tomb");
         const new_tomb = llvm.c.LLVMBuildAdd(self.builder.ref, old_tomb, llvm.Const.int32(self.ctx, 1), "new_tomb");
         _ = self.builder.buildStore(new_tomb, tomb_ptr);
@@ -18932,7 +18992,7 @@ pub const Emitter = struct {
         const value_llvm_type = self.typeToLLVM(value_type_klar);
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
 
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
         const i1_type = llvm.Types.int1(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -18942,8 +19002,9 @@ pub const Emitter = struct {
         const result_alloca = self.builder.buildAlloca(i1_type, "map.contains.result");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), result_alloca);
 
-        // Check capacity
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap_ptr");
+        // Deref header and check capacity
+        const contains_header = self.derefMapHeader(map_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, contains_header, map_constants.MapHeaderField.capacity, "map.cap_ptr");
         const capacity = self.builder.buildLoad(i32_type, cap_ptr, "map.cap");
         const is_empty_cap = self.builder.buildICmp(llvm.c.LLVMIntEQ, capacity, llvm.Const.int32(self.ctx, 0), "is_empty_cap");
 
@@ -18957,7 +19018,8 @@ pub const Emitter = struct {
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, search_block);
         const hash = try self.emitHashValue(key, key_type_klar);
 
-        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
+        const search_ck_header = self.derefMapHeader(map_ptr);
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, search_ck_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "map.entries");
 
         const cap_minus_one = llvm.c.LLVMBuildSub(self.builder.ref, capacity, llvm.Const.int32(self.ctx, 1), "cap_m1");
@@ -19045,7 +19107,7 @@ pub const Emitter = struct {
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
         const key_size = self.getLLVMTypeSize(key_llvm_type);
 
-        const map_type = self.getMapStructType();
+        const map_header_type = self.getMapHeaderType();
         const list_type = self.getListStructType();
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -19061,7 +19123,8 @@ pub const Emitter = struct {
 
         // Get map len and capacity
         const len = try self.emitMapLen(map_ptr);
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap_ptr");
+        const keys_map_header = self.derefMapHeader(map_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_header_type, keys_map_header, map_constants.MapHeaderField.capacity, "map.cap_ptr");
         const capacity = self.builder.buildLoad(i32_type, cap_ptr, "map.cap");
 
         // If len == 0, return empty list
@@ -19091,7 +19154,8 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, collect_header, 2, ""));
 
         // Loop through entries
-        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
+        const collect_map_header = self.derefMapHeader(map_ptr);
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_header_type, collect_map_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "map.entries");
 
         const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
@@ -19169,7 +19233,7 @@ pub const Emitter = struct {
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
         const value_size = self.getLLVMTypeSize(value_llvm_type);
 
-        const map_type = self.getMapStructType();
+        const map_header_type = self.getMapHeaderType();
         const list_type = self.getListStructType();
         const header_type = self.getListHeaderType();
         const i8_type = llvm.Types.int8(self.ctx);
@@ -19183,7 +19247,8 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(vals_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, ""));
 
         const len = try self.emitMapLen(map_ptr);
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap_ptr");
+        const vals_map_header = self.derefMapHeader(map_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_header_type, vals_map_header, map_constants.MapHeaderField.capacity, "map.cap_ptr");
         const capacity = self.builder.buildLoad(i32_type, cap_ptr, "map.cap");
 
         const is_empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, len, llvm.Const.int32(self.ctx, 0), "is_empty");
@@ -19209,7 +19274,8 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(values_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, collect_vals_header, 0, ""));
         _ = self.builder.buildStore(len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, collect_vals_header, 2, ""));
 
-        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
+        const collect_vals_map_header = self.derefMapHeader(map_ptr);
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_header_type, collect_vals_map_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "map.entries");
 
         const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
@@ -19272,23 +19338,26 @@ pub const Emitter = struct {
 
     /// Emit map.clear() - resets to empty state.
     fn emitMapClear(self: *Emitter, map_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
 
+        // Deref header
+        const clear_header = self.derefMapHeader(map_ptr);
+
         // Set len = 0
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 1, "map.len_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clear_header, map_constants.MapHeaderField.len, "map.len_ptr");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_ptr);
 
         // Set tombstone_count = 0
-        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 3, "map.tomb_ptr");
+        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clear_header, map_constants.MapHeaderField.tombstones, "map.tomb_ptr");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tomb_ptr);
 
         // Zero out entries (set all states to EMPTY)
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clear_header, map_constants.MapHeaderField.capacity, "map.cap_ptr");
         const capacity = self.builder.buildLoad(i32_type, cap_ptr, "map.cap");
 
         // Get entries ptr
-        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clear_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(llvm.Types.pointer(self.ctx), entries_ptr_field, "map.entries");
 
         // For simplicity, just set all state bytes to 0
@@ -19315,16 +19384,17 @@ pub const Emitter = struct {
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
         const entry_size = self.getLLVMTypeSize(entry_type);
 
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Load len, capacity, tombstone_count
+        // Deref header and load len, capacity, tombstone_count
+        const clone_src_header = self.derefMapHeader(map_ptr);
         const len = try self.emitMapLen(map_ptr);
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clone_src_header, map_constants.MapHeaderField.capacity, "map.cap_ptr");
         const capacity = self.builder.buildLoad(i32_type, cap_ptr, "map.cap");
-        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 3, "map.tomb_ptr");
+        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clone_src_header, map_constants.MapHeaderField.tombstones, "map.tomb_ptr");
         const tomb_count = self.builder.buildLoad(i32_type, tomb_ptr, "map.tomb");
 
         // Allocate new entries
@@ -19337,37 +19407,38 @@ pub const Emitter = struct {
         const new_entries = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "new_entries");
 
         // Copy entries
-        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clone_src_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const old_entries = self.builder.buildLoad(ptr_type, entries_ptr_field, "old_entries");
 
         const memcpy_fn = self.getOrDeclareMemcpy();
         var memcpy_args = [_]llvm.ValueRef{ new_entries, old_entries, alloc_size };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
-        // Build new map struct
-        const clone_alloca = self.builder.buildAlloca(map_type, "map.clone");
-        const clone_entries_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, clone_alloca, 0, "clone.entries_ptr");
-        const clone_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, clone_alloca, 1, "clone.len_ptr");
-        const clone_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, clone_alloca, 2, "clone.cap_ptr");
-        const clone_tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, clone_alloca, 3, "clone.tomb_ptr");
+        // Build new map: allocate new header, store fields, wrap
+        const clone_header = self.allocateMapHeader();
+        const clone_entries_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clone_header, map_constants.MapHeaderField.entries, "clone.entries_ptr");
+        const clone_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clone_header, map_constants.MapHeaderField.len, "clone.len_ptr");
+        const clone_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clone_header, map_constants.MapHeaderField.capacity, "clone.cap_ptr");
+        const clone_tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, clone_header, map_constants.MapHeaderField.tombstones, "clone.tomb_ptr");
 
         _ = self.builder.buildStore(new_entries, clone_entries_ptr);
         _ = self.builder.buildStore(len, clone_len_ptr);
         _ = self.builder.buildStore(capacity, clone_cap_ptr);
         _ = self.builder.buildStore(tomb_count, clone_tomb_ptr);
 
-        return self.builder.buildLoad(map_type, clone_alloca, "map.clone.result");
+        return self.buildMapFromHeader(clone_header, "map.clone");
     }
 
     /// Emit map.drop() - frees the map's memory.
     fn emitMapDrop(self: *Emitter, map_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         _ = method;
 
-        const map_type = self.getMapStructType();
+        const header_type = self.getMapHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Load entries ptr
-        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
+        // Deref header and load entries ptr
+        const drop_header = self.derefMapHeader(map_ptr);
+        const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, drop_header, map_constants.MapHeaderField.entries, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "map.entries");
 
         // Free entries
@@ -19375,13 +19446,13 @@ pub const Emitter = struct {
         var free_args = [_]llvm.ValueRef{entries_ptr_val};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
 
-        // Set to null state
+        // Set header to null state
         _ = self.builder.buildStore(llvm.c.LLVMConstNull(ptr_type), entries_ptr_field);
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 1, "map.len_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, drop_header, map_constants.MapHeaderField.len, "map.len_ptr");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_ptr);
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, drop_header, map_constants.MapHeaderField.capacity, "map.cap_ptr");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), cap_ptr);
-        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 3, "map.tomb_ptr");
+        const tomb_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, drop_header, map_constants.MapHeaderField.tombstones, "map.tomb_ptr");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tomb_ptr);
 
         return llvm.Const.int32(self.ctx, 0);
@@ -19400,19 +19471,20 @@ pub const Emitter = struct {
         const value_llvm_type = self.typeToLLVM(value_type_klar);
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
 
+        const header_type = self.getMapHeaderType();
         const map_type = self.getMapStructType();
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Create empty result map
-        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
-        const zero_i32 = llvm.Const.int32(self.ctx, 0);
-        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
-        const empty_map = llvm.c.LLVMConstNamedStruct(map_type, &result_values, 4);
+        // Create empty result map with heap-allocated header
+        const take_result_header = self.allocateMapHeader();
         const result_alloca = self.builder.buildAlloca(map_type, "take_result");
-        _ = self.builder.buildStore(empty_map, result_alloca);
+        const take_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, result_alloca, 0, "take.hdr");
+        _ = self.builder.buildStore(take_result_header, take_hdr_field);
+
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
 
         // Clamp count to >= 0
         const count_clamped = llvm.c.LLVMBuildSelect(
@@ -19423,10 +19495,11 @@ pub const Emitter = struct {
             "take.count_clamped",
         );
 
-        // Load map fields
-        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "entries_field");
+        // Deref source map header and load fields
+        const take_src_header = self.derefMapHeader(map_ptr);
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, take_src_header, map_constants.MapHeaderField.entries, "entries_field");
         const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "cap_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, take_src_header, map_constants.MapHeaderField.capacity, "cap_field");
         const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
 
         const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
@@ -19487,19 +19560,20 @@ pub const Emitter = struct {
         const value_llvm_type = self.typeToLLVM(value_type_klar);
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
 
+        const header_type = self.getMapHeaderType();
         const map_type = self.getMapStructType();
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Create empty result map
-        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
-        const zero_i32 = llvm.Const.int32(self.ctx, 0);
-        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
-        const empty_map = llvm.c.LLVMConstNamedStruct(map_type, &result_values, 4);
+        // Create empty result map with heap-allocated header
+        const skip_result_header = self.allocateMapHeader();
         const result_alloca = self.builder.buildAlloca(map_type, "skip_result");
-        _ = self.builder.buildStore(empty_map, result_alloca);
+        const skip_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, result_alloca, 0, "skip.hdr");
+        _ = self.builder.buildStore(skip_result_header, skip_hdr_field);
+
+        const zero_i32 = llvm.Const.int32(self.ctx, 0);
 
         // Clamp count to >= 0
         const count_clamped = llvm.c.LLVMBuildSelect(
@@ -19510,10 +19584,11 @@ pub const Emitter = struct {
             "skip.count_clamped",
         );
 
-        // Load map fields
-        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "entries_field");
+        // Deref source map header and load fields
+        const skip_src_header = self.derefMapHeader(map_ptr);
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, skip_src_header, map_constants.MapHeaderField.entries, "entries_field");
         const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "cap_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, skip_src_header, map_constants.MapHeaderField.capacity, "cap_field");
         const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
 
         const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
@@ -19577,6 +19652,7 @@ pub const Emitter = struct {
         const value_llvm_type = self.typeToLLVM(value_type_klar);
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
 
+        const header_type = self.getMapHeaderType();
         const map_type = self.getMapStructType();
         const i1_type = llvm.Types.int1(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
@@ -19584,13 +19660,11 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Create empty result map
-        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
-        const zero_i32 = llvm.Const.int32(self.ctx, 0);
-        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
-        const empty_map = llvm.c.LLVMConstNamedStruct(map_type, &result_values, 4);
+        // Create empty result map with heap-allocated header
+        const filter_result_header = self.allocateMapHeader();
         const result_alloca = self.builder.buildAlloca(map_type, "filter_result");
-        _ = self.builder.buildStore(empty_map, result_alloca);
+        const filter_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, result_alloca, 0, "filter.hdr");
+        _ = self.builder.buildStore(filter_result_header, filter_hdr_field);
 
         // Extract closure
         const closure_struct_type = self.getClosureStructType();
@@ -19609,10 +19683,11 @@ pub const Emitter = struct {
         var param_types = [_]llvm.TypeRef{ ptr_type, key_llvm_type, value_llvm_type };
         const closure_fn_type = llvm.Types.function(i1_type, &param_types, false);
 
-        // Load map fields
-        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "entries_field");
+        // Deref source map header and load fields
+        const filter_src_header = self.derefMapHeader(map_ptr);
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, filter_src_header, map_constants.MapHeaderField.entries, "entries_field");
         const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "cap_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, filter_src_header, map_constants.MapHeaderField.capacity, "cap_field");
         const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
 
         const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
@@ -19624,7 +19699,7 @@ pub const Emitter = struct {
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_done");
 
         const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
-        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
 
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
@@ -19685,19 +19760,18 @@ pub const Emitter = struct {
 
         const dest_value_llvm_type = self.typeToLLVM(dest_value_type);
 
+        const header_type = self.getMapHeaderType();
         const map_type = self.getMapStructType();
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Create empty result map
-        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
-        const zero_i32 = llvm.Const.int32(self.ctx, 0);
-        var result_values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
-        const empty_map = llvm.c.LLVMConstNamedStruct(map_type, &result_values, 4);
+        // Create empty result map with heap-allocated header
+        const mapval_result_header = self.allocateMapHeader();
         const result_alloca = self.builder.buildAlloca(map_type, "mapval_result");
-        _ = self.builder.buildStore(empty_map, result_alloca);
+        const mapval_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, result_alloca, 0, "mapval.hdr");
+        _ = self.builder.buildStore(mapval_result_header, mapval_hdr_field);
 
         // Extract closure
         const closure_struct_type = self.getClosureStructType();
@@ -19716,10 +19790,11 @@ pub const Emitter = struct {
         var param_types = [_]llvm.TypeRef{ ptr_type, value_llvm_type };
         const closure_fn_type = llvm.Types.function(dest_value_llvm_type, &param_types, false);
 
-        // Load map fields
-        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "entries_field");
+        // Deref source map header and load fields
+        const mapval_src_header = self.derefMapHeader(map_ptr);
+        const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, mapval_src_header, map_constants.MapHeaderField.entries, "entries_field");
         const entries = self.builder.buildLoad(ptr_type, entries_field, "entries");
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "cap_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, mapval_src_header, map_constants.MapHeaderField.capacity, "cap_field");
         const capacity = self.builder.buildLoad(i32_type, cap_field, "capacity");
 
         const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
@@ -19730,7 +19805,7 @@ pub const Emitter = struct {
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "mapval_done");
 
         const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
-        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
 
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
@@ -21030,7 +21105,7 @@ pub const Emitter = struct {
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "filter_done");
 
         const idx_alloca = self.builder.buildAlloca(i32_type, "idx");
-        _ = self.builder.buildStore(zero_i32, idx_alloca);
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), idx_alloca);
         _ = llvm.c.LLVMBuildBr(self.builder.ref, loop_block);
 
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, loop_block);
@@ -31557,8 +31632,8 @@ pub const Emitter = struct {
             // Collection types have fixed struct layouts (NOT pointers)
             // List: { header_ptr } = 8 bytes (heap-indirected)
             .list => list_constants.list_struct_size,
-            // Map: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
-            .map => 20,
+            // Map: { header_ptr } = 8 bytes (heap-indirected)
+            .map => map_constants.map_struct_size,
             // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
             .set => 20,
             .string_data => 8, // outer String struct { header_ptr } = 8 bytes (heap-indirected)
@@ -31622,10 +31697,10 @@ pub const Emitter = struct {
             .generic_apply => |g| {
                 if (g.base == .named) {
                     const base_name = g.base.named.name;
-                    if (std.mem.eql(u8, base_name, "Map") or std.mem.eql(u8, base_name, "Set")) {
+                    if (std.mem.eql(u8, base_name, "Set")) {
                         return true; // 20 bytes, always use sret
                     }
-                    if (std.mem.eql(u8, base_name, "List")) {
+                    if (std.mem.eql(u8, base_name, "Map") or std.mem.eql(u8, base_name, "List")) {
                         const size = self.getSizeOfTypeExpr(type_expr);
                         return size > self.abi.maxRegisterReturnSize();
                     }
@@ -31705,7 +31780,8 @@ pub const Emitter = struct {
                 if (g.base == .named) {
                     const base_name = g.base.named.name;
                     if (std.mem.eql(u8, base_name, "List")) return list_constants.list_struct_size;
-                    if (std.mem.eql(u8, base_name, "Map") or std.mem.eql(u8, base_name, "Set")) return 20;
+                    if (std.mem.eql(u8, base_name, "Map")) return map_constants.map_struct_size;
+                    if (std.mem.eql(u8, base_name, "Set")) return 20;
                     if (std.mem.eql(u8, base_name, "Result") and g.args.len == 2) {
                         const ok_size = self.getSizeOfTypeExpr(g.args[0]);
                         const err_size = self.getSizeOfTypeExpr(g.args[1]);
@@ -31889,15 +31965,8 @@ pub const Emitter = struct {
                 return self.getListStructType();
             },
             .map => {
-                // Map LLVM layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
-                // Entry layout is handled separately
-                var fields = [_]llvm.TypeRef{
-                    llvm.Types.pointer(self.ctx), // entries ptr
-                    llvm.Types.int32(self.ctx), // len
-                    llvm.Types.int32(self.ctx), // capacity
-                    llvm.Types.int32(self.ctx), // tombstone_count
-                };
-                return llvm.Types.struct_(self.ctx, &fields, false);
+                // Map LLVM layout: { header_ptr } (heap-indirected)
+                return self.getMapStructType();
             },
             .set => {
                 // Set LLVM layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
@@ -32274,8 +32343,8 @@ pub const Emitter = struct {
             // Collection types have fixed struct layouts:
             // List: { header_ptr } = 8 bytes (heap-indirected)
             .list => list_constants.list_struct_size,
-            // Map: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
-            .map => 20,
+            // Map: { header_ptr } = 8 bytes (heap-indirected)
+            .map => map_constants.map_struct_size,
             // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
             .set => 20,
             else => 8, // Default pointer size for complex types
