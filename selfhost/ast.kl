@@ -368,6 +368,7 @@ pub struct ContinueStmtData { span: Span }
 // ForLoopData: body stmts in extra_stmt_ids
 pub struct ForLoopData {
     binding: string,
+    binding2: string,
     binding_type: TypeExprId,
     iterable: ExprId,
     body_start: i32,

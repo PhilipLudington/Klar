@@ -678,6 +678,12 @@ test/native/generic_struct_method.kl
 test/native/trait_basic.kl
 test/native/trait_bounds.kl
 test/native/trait_method_with_args.kl
+test/native/trait_inheritance.kl
+test/native/trait_multi_inherit.kl
+test/native/trait_method_inout_bounds.kl
+test/native/trait_method_ref_bounds.kl
+test/native/meta_pure_generic.kl
+test/native/map_for.kl
 test/native/match_tuple_element.kl
 "
 

@@ -13,8 +13,8 @@ import types.{
     type_i32, type_i64, type_f64, type_bool, type_char, type_string,
     type_void, type_never, type_unknown, type_error,
     type_is_numeric, type_is_integer,
-    FunctionData,
-    ErrorKind
+    FunctionData, MapData, ArrayData, SliceData, WrapperData,
+    ErrorKind, type_kind_name
 }
 
 import ast.{
@@ -374,29 +374,64 @@ fn check_for_loop(tc: TypeChecker, data: ForLoopData) -> TypeChecker {
     c = r_iter.0
     let iter_type: KlarType = r_iter.1
 
-    // Resolve binding type annotation
-    var binding_type: KlarType = type_i32()
-    if has_type_expr(data.binding_type) {
-        let rt: (TypeChecker, KlarType) = resolve_type_expr(c, data.binding_type)
-        c = rt.0
-        binding_type = rt.1
-    } else {
-        // Infer from iterable: for ranges, the element type is i32 (default)
-        // For arrays/slices, it would be the element type
-        // Foundation: use i32 for range iteration
-        binding_type = type_i32()
-    }
-
-    // Check body in loop context with binding defined
+    // Check body in loop context with binding(s) defined
     let was_in_loop: bool = c.in_loop
     c.in_loop = true
     c.push_scope()
-    c.define(data.binding, SymbolInfo {
-        sym_name: data.binding,
-        sym_type: binding_type,
-        mutable: false,
-        kind: SymbolKind::Variable,
-    })
+
+    if data.binding2 != "" {
+        // Tuple destructuring: for (k, v) in map — bind key and value types
+        var key_type: KlarType = type_unknown()
+        var val_type: KlarType = type_unknown()
+        if type_kind_name(iter_type.kind) == "MapType" {
+            let md: MapData = c.type_maps[iter_type.payload]
+            key_type = get_resolved_type(c, md.key.id)
+            val_type = get_resolved_type(c, md.value.id)
+        }
+        c.define(data.binding, SymbolInfo {
+            sym_name: data.binding,
+            sym_type: key_type,
+            mutable: false,
+            kind: SymbolKind::Variable,
+        })
+        c.define(data.binding2, SymbolInfo {
+            sym_name: data.binding2,
+            sym_type: val_type,
+            mutable: false,
+            kind: SymbolKind::Variable,
+        })
+    } else {
+        // Single binding: infer element type from iterable
+        var binding_type: KlarType = type_i32()
+        if has_type_expr(data.binding_type) {
+            let rt: (TypeChecker, KlarType) = resolve_type_expr(c, data.binding_type)
+            c = rt.0
+            binding_type = rt.1
+        } else {
+            // Infer from iterable type
+            let kind_name: string = type_kind_name(iter_type.kind)
+            if kind_name == "Array" {
+                let ad: ArrayData = c.type_arrays[iter_type.payload]
+                binding_type = get_resolved_type(c, ad.element.id)
+            } else if kind_name == "Slice" {
+                let sd: SliceData = c.type_slices[iter_type.payload]
+                binding_type = get_resolved_type(c, sd.element.id)
+            } else if kind_name == "ListType" {
+                let wd: WrapperData = c.type_wrappers[iter_type.payload]
+                binding_type = get_resolved_type(c, wd.inner.id)
+            } else {
+                // Default: i32 for range iteration
+                binding_type = type_i32()
+            }
+        }
+        c.define(data.binding, SymbolInfo {
+            sym_name: data.binding,
+            sym_type: binding_type,
+            mutable: false,
+            kind: SymbolKind::Variable,
+        })
+    }
+
     c = check_stmts(c, data.body_start, data.body_count)
     c.pop_scope()
     c.in_loop = was_in_loop

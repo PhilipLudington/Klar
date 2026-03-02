@@ -461,6 +461,28 @@ fn register_trait(tc: TypeChecker, data: TraitDeclData) -> TypeChecker {
         i = i + 1
     }
 
+    // Resolve parent (super) traits
+    let super_start: i32 = c.extra_super_trait_ids.len()
+    var pi: i32 = 0
+    while pi < data.parents_count {
+        let parent_te_id: TypeExprId = c.extra_type_expr_ids[data.parents_start + pi]
+        let parent_te: TypeExpr = c.type_exprs[parent_te_id.id]
+        match parent_te {
+            TypeExpr::Named(nd) => {
+                let parent_opt: ?KlarType = c.trait_types.get(nd.type_name)
+                match parent_opt {
+                    Some(pt) => {
+                        c.extra_super_trait_ids.push(pt.payload)
+                    }
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+        pi = pi + 1
+    }
+    let super_count: i32 = c.extra_super_trait_ids.len() - super_start
+
     // Create TraitData
     let trait_idx: i32 = c.type_traits.len()
     c.type_traits.push(TraitData {
@@ -469,8 +491,8 @@ fn register_trait(tc: TypeChecker, data: TraitDeclData) -> TypeChecker {
         type_params_count: data.generics_count,
         methods_start: methods_start,
         methods_count: data.methods_count,
-        super_traits_start: 0,
-        super_traits_count: data.parents_count,
+        super_traits_start: super_start,
+        super_traits_count: super_count,
         assoc_types_start: 0,
         assoc_types_count: data.assoc_types_count,
     })

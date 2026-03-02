@@ -1523,19 +1523,38 @@ fn build_while_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, St
 }
 
 fn build_for_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtId) {
-    // Pattern has binding name and optional type annotation
+    // Pattern: single binding or tuple_pattern (for map iteration)
     let pp: i32 = field_pos(json, pos, "pattern")
     var binding_name: string = ""
+    var binding2_name: string = ""
     var c: TypeChecker = tc
     var binding_type: TypeExprId = no_type_expr()
     if pp >= 0 {
-        let nr: (string, bool) = field_string(json, pp, "name")
-        binding_name = nr.0
-        let tp: i32 = field_pos(json, pp, "type_annotation")
-        if tp >= 0 and not json_is_null(json, tp) {
-            let tr: (TypeChecker, TypeExprId) = build_type_expr(c, json, tp)
-            c = tr.0
-            binding_type = tr.1
+        let kr: (string, bool) = field_string(json, pp, "kind")
+        if kr.1 and kr.0 == "tuple_pattern" {
+            // Tuple pattern: extract both binding names from elements
+            let ep: i32 = field_pos(json, pp, "elements")
+            if ep >= 0 {
+                var elem_pos: i32 = array_start(json, ep)
+                if elem_pos >= 0 {
+                    let n1: (string, bool) = field_string(json, elem_pos, "name")
+                    binding_name = n1.0
+                    elem_pos = array_next(json, elem_pos)
+                    if elem_pos >= 0 {
+                        let n2: (string, bool) = field_string(json, elem_pos, "name")
+                        binding2_name = n2.0
+                    }
+                }
+            }
+        } else {
+            let nr: (string, bool) = field_string(json, pp, "name")
+            binding_name = nr.0
+            let tp: i32 = field_pos(json, pp, "type_annotation")
+            if tp >= 0 and not json_is_null(json, tp) {
+                let tr: (TypeChecker, TypeExprId) = build_type_expr(c, json, tp)
+                c = tr.0
+                binding_type = tr.1
+            }
         }
     }
     // Iterable
@@ -1567,7 +1586,8 @@ fn build_for_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stmt
     }
     let idx: i32 = c.stmts.len()
     c.stmts.push(Stmt::ForLoop(ForLoopData {
-        binding: binding_name, binding_type: binding_type,
+        binding: binding_name, binding2: binding2_name,
+        binding_type: binding_type,
         iterable: ir.1,
         body_start: body_start, body_count: body_count,
         span: s(),

@@ -1368,8 +1368,8 @@ fn check_generic_fn_call_impl(tc: TypeChecker, data: CallData, fn_name: string, 
         }
     }
 
-    // Build monomorphized function type
-    let mono_params_start: i32 = c.resolved_types.len()
+    // Build monomorphized function type (collect-then-push for contiguous params)
+    var mono_param_types: List#[KlarType] = List.new#[KlarType]()
     var pi: i32 = 0
     while pi < fn_decl.params_count {
         let param: FnParam = c.extra_params[fn_decl.params_start + pi]
@@ -1377,9 +1377,15 @@ fn check_generic_fn_call_impl(tc: TypeChecker, data: CallData, fn_name: string, 
         c = pr.0
         let sr: (TypeChecker, KlarType) = substitute_type(c, pr.1)
         c = sr.0
-        let ref_r: (TypeChecker, i32) = push_type_ref(c, sr.1)
-        c = ref_r.0
+        mono_param_types.push(sr.1)
         pi = pi + 1
+    }
+    let mono_params_start: i32 = c.resolved_types.len()
+    var pj: i32 = 0
+    while pj < mono_param_types.len() {
+        let ref_r: (TypeChecker, i32) = push_type_ref(c, mono_param_types[pj])
+        c = ref_r.0
+        pj = pj + 1
     }
 
     let rr: (TypeChecker, KlarType) = resolve_type_expr_with_type_vars(c, fn_decl.return_type, tvar_start, tvar_count)
