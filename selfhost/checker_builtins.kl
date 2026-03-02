@@ -26,8 +26,8 @@ import checker.{
     add_typed_error, add_typed_error_with_type,
     type_eq, type_display,
     push_type_ref, get_resolved_type,
-    make_optional_type, make_list_type,
-    unwrap_optional_inner, unwrap_list_element,
+    make_optional_type, make_result_type, make_list_type, make_map_type, make_set_type, make_slice_type,
+    unwrap_optional_inner, unwrap_list_element, unwrap_wrapper_inner, unwrap_slice_element,
     unwrap_result_ok, unwrap_result_err,
     unwrap_map_key, unwrap_map_value,
     unwrap_range_element
@@ -68,6 +68,30 @@ pub fn check_builtin_method(tc: TypeChecker, recv_type: KlarType,
         }
         TypeKind::StringData => {
             return check_string_data_method(tc, method_name, args_count, span)
+        }
+        TypeKind::Rc => {
+            // Rc methods: clone() -> Rc#[T], drop() -> void, deref() -> T
+            if method_name == "clone" and args_count == 0 { return (tc, recv_type) }
+            if method_name == "drop" and args_count == 0 { return (tc, type_void()) }
+            if method_name == "deref" and args_count == 0 {
+                return (tc, unwrap_wrapper_inner(tc, recv_type))
+            }
+            return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
+                "no method '" + method_name + "' on Rc")
+        }
+        TypeKind::Arc => {
+            // Arc methods: clone() -> Arc#[T], drop() -> void, deref() -> T
+            if method_name == "clone" and args_count == 0 { return (tc, recv_type) }
+            if method_name == "drop" and args_count == 0 { return (tc, type_void()) }
+            if method_name == "deref" and args_count == 0 {
+                return (tc, unwrap_wrapper_inner(tc, recv_type))
+            }
+            return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
+                "no method '" + method_name + "' on Arc")
+        }
+        TypeKind::Unknown => {
+            // Opaque/unknown types (File, etc.) — accept any method, return unknown
+            return (tc, type_unknown())
         }
         _ => {
             return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
@@ -160,9 +184,15 @@ fn check_string_method(tc: TypeChecker, method_name: string,
         return r
     }
 
-    // () -> List#[char]
+    // () -> [char] (slice)
     if method_name == "chars" and args_count == 0 {
-        let r: (TypeChecker, KlarType) = make_list_type(tc, type_char())
+        let r: (TypeChecker, KlarType) = make_slice_type(tc, type_char())
+        return r
+    }
+
+    // () -> [u8] (slice)
+    if method_name == "bytes" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_slice_type(tc, type_u8())
         return r
     }
 
@@ -270,6 +300,25 @@ fn check_slice_method(tc: TypeChecker, recv_type: KlarType,
     if method_name == "len" and args_count == 0 { return (tc, type_i32()) }
     if method_name == "is_empty" and args_count == 0 { return (tc, type_bool()) }
 
+    // Element access methods — need element type from SliceData
+    if recv_type.payload >= 0 {
+        let s_data: SliceData = tc.type_slices[recv_type.payload]
+        let elem: KlarType = get_resolved_type(tc, s_data.element.id)
+        if method_name == "first" and args_count == 0 {
+            let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+            return r
+        }
+        if method_name == "last" and args_count == 0 {
+            let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+            return r
+        }
+        if method_name == "get" and args_count == 1 {
+            let r: (TypeChecker, KlarType) = make_optional_type(tc, elem)
+            return r
+        }
+        if method_name == "contains" and args_count == 1 { return (tc, type_bool()) }
+    }
+
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on slice")
 }
@@ -333,6 +382,39 @@ fn check_list_method(tc: TypeChecker, recv_type: KlarType,
     // () -> List#[T]
     if method_name == "clone" and args_count == 0 { return (tc, recv_type) }
 
+    // Higher-order methods
+
+    // (fn(T) -> U) -> List#[U] (map — return type depends on closure, use List#[unknown])
+    if method_name == "map" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_list_type(tc, type_unknown())
+        return r
+    }
+
+    // (fn(T) -> bool) -> List#[T]
+    if method_name == "filter" and args_count == 1 { return (tc, recv_type) }
+
+    // () -> List#[(i32, T)]
+    if method_name == "enumerate" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_list_type(tc, type_unknown())
+        return r
+    }
+
+    // (i32) -> List#[T]
+    if method_name == "take" and args_count == 1 { return (tc, recv_type) }
+    if method_name == "skip" and args_count == 1 { return (tc, recv_type) }
+
+    // (List#[U]) -> List#[(T, U)]
+    if method_name == "zip" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_list_type(tc, type_unknown())
+        return r
+    }
+
+    // (i32, T) -> void (insert at index)
+    if method_name == "insert" and args_count == 2 { return (tc, type_void()) }
+
+    // () -> void (sort_by, reverse, etc.)
+    if method_name == "reverse" and args_count == 0 { return (tc, type_void()) }
+
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on List")
 }
@@ -384,6 +466,30 @@ fn check_map_method(tc: TypeChecker, recv_type: KlarType,
     // () -> void
     if method_name == "clear" and args_count == 0 { return (tc, type_void()) }
 
+    // () -> void
+    if method_name == "drop" and args_count == 0 { return (tc, type_void()) }
+
+    // () -> Map#[K,V]
+    if method_name == "clone" and args_count == 0 { return (tc, recv_type) }
+
+    // () -> i32
+    if method_name == "capacity" and args_count == 0 { return (tc, type_i32()) }
+
+    // Higher-order methods
+
+    // (fn((K,V)) -> bool) -> Map#[K,V]
+    if method_name == "filter" and args_count == 1 { return (tc, recv_type) }
+
+    // (i32) -> Map#[K,V]
+    if method_name == "take" and args_count == 1 { return (tc, recv_type) }
+    if method_name == "skip" and args_count == 1 { return (tc, recv_type) }
+
+    // (fn(V) -> U) -> Map#[K,U] (map_values — return type depends on closure)
+    if method_name == "map_values" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_map_type(tc, key_type, type_unknown())
+        return r
+    }
+
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on Map")
 }
@@ -420,6 +526,38 @@ fn check_set_method(tc: TypeChecker, recv_type: KlarType,
     // () -> void
     if method_name == "drop" and args_count == 0 { return (tc, type_void()) }
 
+    // Higher-order methods
+
+    // (fn(T) -> U) -> Set#[U] / List#[U] (map — return List since Set needs Hash)
+    if method_name == "map" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_list_type(tc, type_unknown())
+        return r
+    }
+
+    // (fn(T) -> bool) -> Set#[T]
+    if method_name == "filter" and args_count == 1 { return (tc, recv_type) }
+
+    // () -> List#[(i32, T)]
+    if method_name == "enumerate" and args_count == 0 {
+        let r: (TypeChecker, KlarType) = make_list_type(tc, type_unknown())
+        return r
+    }
+
+    // (i32) -> Set#[T] / List#[T]
+    if method_name == "take" and args_count == 1 { return (tc, recv_type) }
+    if method_name == "skip" and args_count == 1 { return (tc, recv_type) }
+
+    // (Set#[T]) -> Set#[T] (set operations)
+    if method_name == "union" and args_count == 1 { return (tc, recv_type) }
+    if method_name == "intersection" and args_count == 1 { return (tc, recv_type) }
+    if method_name == "difference" and args_count == 1 { return (tc, recv_type) }
+
+    // (List#[U]) -> List#[(T, U)]
+    if method_name == "zip" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_list_type(tc, type_unknown())
+        return r
+    }
+
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on Set")
 }
@@ -443,6 +581,24 @@ fn check_optional_method(tc: TypeChecker, recv_type: KlarType,
 
     // (string) -> T
     if method_name == "expect" and args_count == 1 { return (tc, inner) }
+
+    // () -> ?T (clone)
+    if method_name == "clone" and args_count == 0 { return (tc, recv_type) }
+
+    // (?T) -> bool (eq)
+    if method_name == "eq" and args_count == 1 { return (tc, type_bool()) }
+
+    // (fn(T) -> U) -> ?U (map — return type depends on closure, use ?unknown as wildcard)
+    if method_name == "map" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, type_unknown())
+        return r
+    }
+
+    // (fn(T) -> ?U) -> ?U (and_then — return type depends on closure)
+    if method_name == "and_then" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_optional_type(tc, type_unknown())
+        return r
+    }
 
     return add_typed_error_with_type(tc, ErrorKind::UndefinedMethod, span,
         "no method '" + method_name + "' on Optional")
@@ -481,6 +637,36 @@ fn check_result_method(tc: TypeChecker, recv_type: KlarType,
     // () -> ?E
     if method_name == "err" and args_count == 0 {
         let r: (TypeChecker, KlarType) = make_optional_type(tc, err_type)
+        return r
+    }
+
+    // () -> Result#[T,E] (clone)
+    if method_name == "clone" and args_count == 0 { return (tc, recv_type) }
+
+    // (Result#[T,E]) -> bool (eq)
+    if method_name == "eq" and args_count == 1 { return (tc, type_bool()) }
+
+    // (fn(T) -> U) -> Result#[U, E] (map — use unknown for U)
+    if method_name == "map" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_result_type(tc, type_unknown(), err_type)
+        return r
+    }
+
+    // (fn(T) -> Result#[U, E]) -> Result#[U, E] (and_then — use unknown for U)
+    if method_name == "and_then" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_result_type(tc, type_unknown(), err_type)
+        return r
+    }
+
+    // (fn(E) -> F) -> Result#[T, F] (map_err — use unknown for F)
+    if method_name == "map_err" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_result_type(tc, ok_type, type_unknown())
+        return r
+    }
+
+    // (string) -> Result#[T, ContextError#[E]] (context — use unknown for wrapped error)
+    if method_name == "context" and args_count == 1 {
+        let r: (TypeChecker, KlarType) = make_result_type(tc, ok_type, type_unknown())
         return r
     }
 

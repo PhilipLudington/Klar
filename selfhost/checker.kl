@@ -446,6 +446,21 @@ fn resolve_named_type(tc: TypeChecker, data: NamedTypeData) -> (TypeChecker, Kla
         }
     }
 
+    // Check scope for opaque/builtin types (File, Stdout, etc.)
+    let scope_sym: ?SymbolInfo = lookup(tc, name)
+    match scope_sym {
+        Some(si) => {
+            match si.kind {
+                SymbolKind::TypeDef => { return (tc, si.sym_type) }
+                _ => {
+                    return add_typed_error_with_type(tc, ErrorKind::UndefinedType, data.span,
+                        "'" + name + "' is not a type")
+                }
+            }
+        }
+        None => {}
+    }
+
     // Unknown type
     return add_typed_error_with_type(tc, ErrorKind::UndefinedType, data.span, "unknown type '" + name + "'")
 }
@@ -693,11 +708,19 @@ fn resolve_generic_apply(tc: TypeChecker, data: GenericApplyData) -> (TypeChecke
                 let rng_r: (TypeChecker, KlarType) = make_range_type(c, elem, false)
                 return rng_r
             }
+            // Opaque generic types: ContextError#[E], etc. — resolve to unknown
+            if name == "ContextError" {
+                return (tc, type_unknown())
+            }
             // User-defined generic structs
             if tc.generic_struct_decls.contains_key(name) {
                 return resolve_user_generic_struct(tc, data, name)
             }
-            // User-defined generic enums (deferred to 9.10.2+)
+            // User-defined generic enums — check enum registry
+            if tc.generic_enum_decls.contains_key(name) {
+                return (tc, type_unknown())
+            }
+            // Unknown generic type — return unknown
             return (tc, type_unknown())
         }
         _ => {
@@ -1021,6 +1044,24 @@ pub fn type_eq_tc(tc: TypeChecker, a: KlarType, b: KlarType) -> bool {
             let b_elem: KlarType = unwrap_list_element(tc, b)
             return type_eq_tc(tc, a_elem, b_elem)
         }
+        TypeKind::Slice => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_elem: KlarType = unwrap_slice_element(tc, a)
+            let b_elem: KlarType = unwrap_slice_element(tc, b)
+            return type_eq_tc(tc, a_elem, b_elem)
+        }
+        TypeKind::Rc => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_inner: KlarType = unwrap_wrapper_inner(tc, a)
+            let b_inner: KlarType = unwrap_wrapper_inner(tc, b)
+            return type_eq_tc(tc, a_inner, b_inner)
+        }
+        TypeKind::Arc => {
+            if a.payload < 0 or b.payload < 0 { return false }
+            let a_inner: KlarType = unwrap_wrapper_inner(tc, a)
+            let b_inner: KlarType = unwrap_wrapper_inner(tc, b)
+            return type_eq_tc(tc, a_inner, b_inner)
+        }
         TypeKind::Range => {
             if a.payload < 0 or b.payload < 0 { return false }
             let a_elem: KlarType = unwrap_range_element(tc, a)
@@ -1109,7 +1150,7 @@ pub fn type_compatible_tc(tc: TypeChecker, target: KlarType, value: KlarType) ->
     // Unknown is compatible with anything (polymorphic builtins)
     if is_unknown_type(target) { return true }
     if is_unknown_type(value) { return true }
-    // Integer widening: i32 -> i64
+    // Integer widening: i32 -> i64 (always safe, no data loss)
     if type_eq_simple(target, type_i64()) and type_eq_simple(value, type_i32()) {
         return true
     }
@@ -1553,6 +1594,15 @@ pub fn make_result_type(tc: TypeChecker, ok: KlarType, err: KlarType) -> (TypeCh
     return (c, KlarType { kind: TypeKind::Result, payload: res_idx })
 }
 
+pub fn make_slice_type(tc: TypeChecker, elem: KlarType) -> (TypeChecker, KlarType) {
+    var c: TypeChecker = tc
+    let pr: (TypeChecker, i32) = push_type_ref(c, elem)
+    c = pr.0
+    let slice_idx: i32 = c.type_slices.len()
+    c.type_slices.push(SliceData { element: TypeId { id: pr.1 } })
+    return (c, KlarType { kind: TypeKind::Slice, payload: slice_idx })
+}
+
 pub fn make_list_type(tc: TypeChecker, elem: KlarType) -> (TypeChecker, KlarType) {
     var c: TypeChecker = tc
     let pr: (TypeChecker, i32) = push_type_ref(c, elem)
@@ -1601,37 +1651,51 @@ pub fn unwrap_range_element(tc: TypeChecker, t: KlarType) -> KlarType {
 // Extract inner types from compound types.
 
 pub fn unwrap_optional_inner(tc: TypeChecker, t: KlarType) -> KlarType {
-    if t.payload < 0 { return type_unknown() }
+    if t.payload < 0 or t.payload >= tc.type_wrappers.len() { return type_unknown() }
     let wd: WrapperData = tc.type_wrappers[t.payload]
     return get_resolved_type(tc, wd.inner.id)
 }
 
+pub fn unwrap_slice_element(tc: TypeChecker, t: KlarType) -> KlarType {
+    if t.payload < 0 or t.payload >= tc.type_slices.len() { return type_unknown() }
+    let sd: SliceData = tc.type_slices[t.payload]
+    return get_resolved_type(tc, sd.element.id)
+}
+
 pub fn unwrap_list_element(tc: TypeChecker, t: KlarType) -> KlarType {
-    if t.payload < 0 { return type_unknown() }
+    if t.payload < 0 or t.payload >= tc.type_wrappers.len() { return type_unknown() }
+    let wd: WrapperData = tc.type_wrappers[t.payload]
+    return get_resolved_type(tc, wd.inner.id)
+}
+
+// Generic wrapper unwrap — used for Rc, Arc, and other types stored in type_wrappers.
+// Same arena as unwrap_list_element/unwrap_optional_inner, but with a semantically clear name.
+pub fn unwrap_wrapper_inner(tc: TypeChecker, t: KlarType) -> KlarType {
+    if t.payload < 0 or t.payload >= tc.type_wrappers.len() { return type_unknown() }
     let wd: WrapperData = tc.type_wrappers[t.payload]
     return get_resolved_type(tc, wd.inner.id)
 }
 
 pub fn unwrap_result_ok(tc: TypeChecker, t: KlarType) -> KlarType {
-    if t.payload < 0 { return type_unknown() }
+    if t.payload < 0 or t.payload >= tc.type_results.len() { return type_unknown() }
     let rd: ResultData = tc.type_results[t.payload]
     return get_resolved_type(tc, rd.ok_type.id)
 }
 
 pub fn unwrap_result_err(tc: TypeChecker, t: KlarType) -> KlarType {
-    if t.payload < 0 { return type_unknown() }
+    if t.payload < 0 or t.payload >= tc.type_results.len() { return type_unknown() }
     let rd: ResultData = tc.type_results[t.payload]
     return get_resolved_type(tc, rd.err_type.id)
 }
 
 pub fn unwrap_map_key(tc: TypeChecker, t: KlarType) -> KlarType {
-    if t.payload < 0 { return type_unknown() }
+    if t.payload < 0 or t.payload >= tc.type_maps.len() { return type_unknown() }
     let md: MapData = tc.type_maps[t.payload]
     return get_resolved_type(tc, md.key.id)
 }
 
 pub fn unwrap_map_value(tc: TypeChecker, t: KlarType) -> KlarType {
-    if t.payload < 0 { return type_unknown() }
+    if t.payload < 0 or t.payload >= tc.type_maps.len() { return type_unknown() }
     let md: MapData = tc.type_maps[t.payload]
     return get_resolved_type(tc, md.value.id)
 }
@@ -1776,6 +1840,68 @@ pub fn register_builtins(tc: TypeChecker) -> TypeChecker {
     c = r22.0
     c = define_builtin(c, "assert_none", r22.1)
 
+    // ─── IO/Runtime Functions ──────────────────────────────────────
+
+    // env_get(name: string) -> ?string
+    let renv1a: (TypeChecker, KlarType) = make_optional_type(c, type_string())
+    c = renv1a.0
+    let renv1: (TypeChecker, KlarType) = make_fn_type_1(c, type_string(), renv1a.1)
+    c = renv1.0
+    c = define_builtin(c, "env_get", renv1.1)
+
+    // env_set(name: string, value: string) -> Result#[void, IoError] (use unknown for IoError)
+    let renv2a: (TypeChecker, KlarType) = make_result_type(c, type_void(), type_unknown())
+    c = renv2a.0
+    let renv2: (TypeChecker, KlarType) = make_fn_type_2(c, type_string(), type_string(), renv2a.1)
+    c = renv2.0
+    c = define_builtin(c, "env_set", renv2.1)
+
+    // timestamp_now() -> i64
+    let rts: (TypeChecker, KlarType) = make_fn_type_0(c, type_i64())
+    c = rts.0
+    c = define_builtin(c, "timestamp_now", rts.1)
+
+    // stdout() -> Stdout (returns opaque type)
+    let rstdout: (TypeChecker, KlarType) = make_fn_type_0(c, type_unknown())
+    c = rstdout.0
+    c = define_builtin(c, "stdout", rstdout.1)
+
+    // stdin() -> Stdin (returns opaque type)
+    let rstdin: (TypeChecker, KlarType) = make_fn_type_0(c, type_unknown())
+    c = rstdin.0
+    c = define_builtin(c, "stdin", rstdin.1)
+
+    // fs_stat(path: string) -> Result#[FileStat, IoError] (use unknown types)
+    let rfs1a: (TypeChecker, KlarType) = make_result_type(c, type_unknown(), type_unknown())
+    c = rfs1a.0
+    let rfs1: (TypeChecker, KlarType) = make_fn_type_1(c, type_string(), rfs1a.1)
+    c = rfs1.0
+    c = define_builtin(c, "fs_stat", rfs1.1)
+
+    // process_run(cmd: string, args: unknown) -> Result#[ProcessOutput, IoError] (use unknown)
+    let rproc1a: (TypeChecker, KlarType) = make_result_type(c, type_unknown(), type_unknown())
+    c = rproc1a.0
+    let rproc1: (TypeChecker, KlarType) = make_fn_type_2(c, type_string(), type_unknown(), rproc1a.1)
+    c = rproc1.0
+    c = define_builtin(c, "process_run", rproc1.1)
+
+    // fs_write_string(path: string, content: string) -> Result#[void, IoError]
+    let rfsw1a: (TypeChecker, KlarType) = make_result_type(c, type_void(), type_unknown())
+    c = rfsw1a.0
+    let rfsw1: (TypeChecker, KlarType) = make_fn_type_2(c, type_string(), type_string(), rfsw1a.1)
+    c = rfsw1.0
+    c = define_builtin(c, "fs_write_string", rfsw1.1)
+
+    // fs_remove_file(path: string) -> Result#[void, IoError]
+    let rfsr1a: (TypeChecker, KlarType) = make_result_type(c, type_void(), type_unknown())
+    c = rfsr1a.0
+    let rfsr1: (TypeChecker, KlarType) = make_fn_type_1(c, type_string(), rfsr1a.1)
+    c = rfsr1.0
+    c = define_builtin(c, "fs_remove_file", rfsr1.1)
+
+    // ─── Builtin Opaque Types ───────────────────────────────────────
+    c = register_builtin_opaque_types(c)
+
     // ─── Builtin Traits (Milestone 9.10.2) ──────────────────────────
     c = register_builtin_traits(c)
 
@@ -1824,6 +1950,44 @@ fn register_builtin_trait_entry(tc: TypeChecker, trait_name: string,
         mutable: false,
         kind: SymbolKind::TypeDef,
     })
+
+    return c
+}
+
+fn define_opaque_type(tc: TypeChecker, name: string) -> TypeChecker {
+    var c: TypeChecker = tc
+    c.define(name, SymbolInfo {
+        sym_name: name,
+        sym_type: type_unknown(),
+        mutable: false,
+        kind: SymbolKind::TypeDef,
+    })
+    return c
+}
+
+// NOTE: Opaque types registered here must also be handled in check_method_call
+// (checker_expr.kl) for static method dispatch. Keep the two lists in sync.
+fn register_builtin_opaque_types(tc: TypeChecker) -> TypeChecker {
+    var c: TypeChecker = tc
+
+    // IO types (static dispatch in checker_expr.kl check_method_call)
+    c = define_opaque_type(c, "File")
+    c = define_opaque_type(c, "Stdout")
+    c = define_opaque_type(c, "Stdin")
+    c = define_opaque_type(c, "FileStat")
+    c = define_opaque_type(c, "BufReader")
+    c = define_opaque_type(c, "BufWriter")
+    c = define_opaque_type(c, "ProcessOutput")
+
+    // Smart pointers (static dispatch in checker_expr.kl check_method_call)
+    c = define_opaque_type(c, "Rc")
+    c = define_opaque_type(c, "Arc")
+
+    // Other runtime types
+    c = define_opaque_type(c, "Cell")
+    c = define_opaque_type(c, "ContextError")
+    c = define_opaque_type(c, "IoError")
+    c = define_opaque_type(c, "ItemId")
 
     return c
 }
@@ -1878,6 +2042,20 @@ fn register_builtin_traits(tc: TypeChecker) -> TypeChecker {
     var drop_rets: List#[KlarType] = List.new#[KlarType]()
     drop_rets.push(type_void())
     c = register_builtin_trait_entry(c, "Drop", drop_names, drop_rets)
+
+    // From: from(value) -> Self (conversion trait)
+    var from_names: List#[string] = List.new#[string]()
+    from_names.push("from")
+    var from_rets: List#[KlarType] = List.new#[KlarType]()
+    from_rets.push(type_unknown())
+    c = register_builtin_trait_entry(c, "From", from_names, from_rets)
+
+    // Into: into(self) -> T (conversion trait)
+    var into_names: List#[string] = List.new#[string]()
+    into_names.push("into")
+    var into_rets: List#[KlarType] = List.new#[KlarType]()
+    into_rets.push(type_unknown())
+    c = register_builtin_trait_entry(c, "Into", into_names, into_rets)
 
     // Register primitive trait impls
     c = register_primitive_trait_impls(c)

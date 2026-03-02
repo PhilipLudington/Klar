@@ -7,7 +7,7 @@
 
 import types.{
     KlarType, TypeKind, TypeId, PrimitiveKind,
-    type_i32, type_i64, type_f64, type_bool, type_char, type_string,
+    type_i32, type_i64, type_u8, type_f64, type_bool, type_char, type_string,
     type_void, type_never, type_unknown, type_error, type_string_data,
     type_eq_simple, type_to_string_simple, type_kind_name,
     type_is_numeric, type_is_integer, type_is_float, type_is_signed,
@@ -41,7 +41,8 @@ import checker.{
     lookup, add_error, add_error_msg, add_error_with_type,
     add_typed_error, add_typed_error_with_type,
     resolve_type_expr,
-    type_eq, type_compatible, type_compatible_tc, is_error_type, is_never_type, is_void_type,
+    type_eq, type_compatible, type_compatible_tc, type_eq_tc,
+    is_error_type, is_never_type, is_void_type, is_unknown_type,
     type_display,
     push_type_ref, get_resolved_type,
     make_optional_type, make_result_type, make_range_type, unwrap_range_element,
@@ -277,6 +278,11 @@ fn check_arithmetic_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarT
     if type_eq(left, type_string()) and type_eq(right, type_string()) {
         return (tc, type_string())
     }
+    // Unknown types pass through
+    if is_unknown_type(left) or is_unknown_type(right) {
+        if is_unknown_type(left) { return (tc, right) }
+        return (tc, left)
+    }
     if not type_is_numeric(left) {
         return add_typed_error_with_type(tc, ErrorKind::InvalidOperation, span,
             "arithmetic requires numeric operands, got " + type_display(left))
@@ -289,6 +295,10 @@ fn check_arithmetic_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarT
 }
 
 fn check_comparison_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
+    // Unknown types are compatible with anything
+    if is_unknown_type(left) or is_unknown_type(right) {
+        return (tc, type_bool())
+    }
     if not type_eq(left, right) {
         return add_typed_error_with_type(tc, ErrorKind::TypeMismatch, span,
             "comparison type mismatch: " + type_display(left) + " vs " + type_display(right))
@@ -297,6 +307,9 @@ fn check_comparison_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarT
 }
 
 fn check_ordered_op(tc: TypeChecker, span: Span, left: KlarType, right: KlarType) -> (TypeChecker, KlarType) {
+    if is_unknown_type(left) or is_unknown_type(right) {
+        return (tc, type_bool())
+    }
     if not type_eq(left, right) {
         return add_typed_error_with_type(tc, ErrorKind::TypeMismatch, span,
             "comparison type mismatch: " + type_display(left) + " vs " + type_display(right))
@@ -352,6 +365,7 @@ fn check_unary(tc: TypeChecker, data: UnaryData) -> (TypeChecker, KlarType) {
             return (c, op_type)
         }
         UnaryOp::Not => {
+            if is_unknown_type(op_type) { return (c, type_bool()) }
             if not type_eq(op_type, type_bool()) {
                 return add_typed_error_with_type(c, ErrorKind::TypeMismatch, data.span,
                     "'not' requires bool, got " + type_display(op_type))
@@ -385,7 +399,7 @@ fn check_postfix(tc: TypeChecker, data: PostfixData) -> (TypeChecker, KlarType) 
 
     match data.op {
         PostfixOp::Try => {
-            // ? on Optional(T) → T, on Result(T, E) → T
+            // ? on Optional(T) → T, on Result(T, E) → T, on unknown → unknown
             match op_type.kind {
                 TypeKind::Optional => {
                     let inner: KlarType = unwrap_optional_inner(c, op_type)
@@ -395,6 +409,9 @@ fn check_postfix(tc: TypeChecker, data: PostfixData) -> (TypeChecker, KlarType) 
                     let ok: KlarType = unwrap_result_ok(c, op_type)
                     return (c, ok)
                 }
+                TypeKind::Unknown => {
+                    return (c, type_unknown())
+                }
                 _ => {
                     return add_typed_error_with_type(c, ErrorKind::InvalidOperation, data.span,
                         "postfix '?' requires Optional or Result, got " + type_display(op_type))
@@ -402,15 +419,22 @@ fn check_postfix(tc: TypeChecker, data: PostfixData) -> (TypeChecker, KlarType) 
             }
         }
         PostfixOp::Unwrap => {
-            // .? on Optional(T) → T
+            // .? / ! on Optional(T) → T, Result(T, E) → T, unknown → unknown
             match op_type.kind {
                 TypeKind::Optional => {
                     let inner: KlarType = unwrap_optional_inner(c, op_type)
                     return (c, inner)
                 }
+                TypeKind::Result => {
+                    let ok: KlarType = unwrap_result_ok(c, op_type)
+                    return (c, ok)
+                }
+                TypeKind::Unknown => {
+                    return (c, type_unknown())
+                }
                 _ => {
                     return add_typed_error_with_type(c, ErrorKind::InvalidOperation, data.span,
-                        "postfix '.?' requires Optional, got " + type_display(op_type))
+                        "postfix '.?' requires Optional or Result, got " + type_display(op_type))
                 }
             }
         }
@@ -642,6 +666,21 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
             if id_data.ident_name == "List" or id_data.ident_name == "Map" or id_data.ident_name == "Set" {
                 return check_collection_static_call(tc, data, id_data.ident_name)
             }
+            // Smart pointer / Cell constructors: Rc.new(v), Arc.new(v), Cell.new(v)
+            // NOTE: Keep in sync with register_builtin_opaque_types in checker.kl
+            if id_data.ident_name == "Rc" or id_data.ident_name == "Arc"
+                or id_data.ident_name == "Cell" {
+                var c2: TypeChecker = check_method_args(tc, data)
+                return (c2, type_unknown())
+            }
+            // IO type static methods: File.open(path), etc.
+            // NOTE: Keep in sync with register_builtin_opaque_types in checker.kl
+            if id_data.ident_name == "File" or id_data.ident_name == "Stdout"
+                or id_data.ident_name == "Stdin" or id_data.ident_name == "BufReader"
+                or id_data.ident_name == "BufWriter" {
+                var c2: TypeChecker = check_method_args(tc, data)
+                return (c2, type_unknown())
+            }
             // Primitive type static methods: i32.default(), i64.default(), etc.
             if id_data.ident_name == "i32" or id_data.ident_name == "i64" or id_data.ident_name == "f64"
                 or id_data.ident_name == "bool" or id_data.ident_name == "string"
@@ -806,19 +845,19 @@ fn check_primitive_static_call(tc: TypeChecker, data: MethodCallData, type_name:
         if type_name == "bool" { return (c, type_bool()) }
         if type_name == "string" { return (c, type_string()) }
         if type_name == "char" { return (c, type_char()) }
-        if type_name == "u8" { return (c, type_i32()) }
+        if type_name == "u8" { return (c, type_u8()) }
     }
 
     if data.method_name == "max_value" and data.args_count == 0 {
         if type_name == "i32" { return (c, type_i32()) }
         if type_name == "i64" { return (c, type_i64()) }
-        if type_name == "u8" { return (c, type_i32()) }
+        if type_name == "u8" { return (c, type_u8()) }
     }
 
     if data.method_name == "min_value" and data.args_count == 0 {
         if type_name == "i32" { return (c, type_i32()) }
         if type_name == "i64" { return (c, type_i64()) }
-        if type_name == "u8" { return (c, type_i32()) }
+        if type_name == "u8" { return (c, type_u8()) }
     }
 
     return add_typed_error_with_type(c, ErrorKind::UndefinedMethod, data.span,
@@ -954,6 +993,10 @@ fn check_field_access(tc: TypeChecker, data: FieldAccessData) -> (TypeChecker, K
                 return add_typed_error_with_type(c, ErrorKind::UndefinedField, data.span,
                     "no field '" + data.field_name + "' on tuple")
             }
+            return (c, type_unknown())
+        }
+        TypeKind::Unknown => {
+            // Unknown/opaque type — allow any field access, return unknown
             return (c, type_unknown())
         }
         _ => {
@@ -1131,16 +1174,21 @@ fn check_struct_literal(tc: TypeChecker, data: StructLiteralData) -> (TypeChecke
 fn check_enum_variant(tc: TypeChecker, data: EnumVariantData) -> (TypeChecker, KlarType) {
     var c: TypeChecker = tc
 
-    // Look up enum type
-    if not c.enum_types.contains_key(data.type_name) {
+    // Look up enum type (check both concrete and generic enum registries)
+    if not c.enum_types.contains_key(data.type_name) and not c.generic_enum_decls.contains_key(data.type_name) {
         return add_typed_error_with_type(c, ErrorKind::UndefinedType, data.span, "unknown enum '" + data.type_name + "'")
     }
 
     let et: ?KlarType = c.enum_types.get(data.type_name)
-    var enum_type: KlarType = type_error()
+    var enum_type: KlarType = type_unknown()
     match et {
         Some(t) => { enum_type = t }
-        None => { return add_typed_error_with_type(c, ErrorKind::UndefinedType, data.span, "unknown enum '" + data.type_name + "'") }
+        None => {
+            // Generic enum — accept variant, return unknown
+            if not c.generic_enum_decls.contains_key(data.type_name) {
+                return add_typed_error_with_type(c, ErrorKind::UndefinedType, data.span, "unknown enum '" + data.type_name + "'")
+            }
+        }
     }
 
     // Check payload args

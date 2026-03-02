@@ -34,7 +34,7 @@ import checker.{
     lookup, lookup_in_current, add_error, add_error_msg, add_error_with_type,
     add_typed_error, add_typed_error_with_type,
     resolve_type_expr,
-    type_eq, type_compatible, type_compatible_tc, is_error_type, is_never_type, is_void_type,
+    type_eq, type_compatible, type_compatible_tc, is_error_type, is_never_type, is_void_type, is_unknown_type,
     type_display,
     push_type_ref, get_resolved_type,
     bind_pattern
@@ -319,7 +319,7 @@ fn check_if_stmt(tc: TypeChecker, data: IfStmtData) -> TypeChecker {
     let r_cond: (TypeChecker, KlarType) = check_expr(c, data.condition)
     c = r_cond.0
     let cond_type: KlarType = r_cond.1
-    if not type_eq(cond_type, type_bool()) and not is_error_type(cond_type) {
+    if not type_eq(cond_type, type_bool()) and not is_error_type(cond_type) and not is_unknown_type(cond_type) {
         c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
             "if condition must be bool, got " + type_display(cond_type))
     }
@@ -348,7 +348,7 @@ fn check_while_loop(tc: TypeChecker, data: WhileLoopData) -> TypeChecker {
     let r_cond: (TypeChecker, KlarType) = check_expr(c, data.condition)
     c = r_cond.0
     let cond_type: KlarType = r_cond.1
-    if not type_eq(cond_type, type_bool()) and not is_error_type(cond_type) {
+    if not type_eq(cond_type, type_bool()) and not is_error_type(cond_type) and not is_unknown_type(cond_type) {
         c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
             "while condition must be bool, got " + type_display(cond_type))
     }
