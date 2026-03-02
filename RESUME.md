@@ -1,4 +1,17 @@
-# RESUME — Codegen Bugs to Fix
+# RESUME
+
+## Recently Completed
+
+### CLI Argument Parsing Library (committed 2026-03-02)
+
+- **`stdlib/cli.kl`** — Builder-pattern API: `cli_def_flag`, `cli_def_option`, `cli_def_subcommand`, `cli_parse`, accessors (`cli_get_flag`, `cli_get_option`, `cli_has_subcommand`), help generation (`cli_help`, `cli_subcommand_help`)
+- **`test/module/cli/main.kl`** — 30 tests modeling the Lodex CLI (init, checkpoint, tree, export)
+- **`scripts/run-module-tests.sh`** — Updated with CLI as test #12
+- All 30 tests pass. Module test suite: 12/13 pass (TOML has pre-existing intermittent crash).
+
+---
+
+## Codegen Bugs to Fix
 
 These bugs were discovered during the TOML parser implementation (Phase 3) and worked around in `stdlib/toml.kl`. They should be fixed in the compiler to prevent future stdlib/user code from hitting the same issues.
 
@@ -30,26 +43,19 @@ Key changes:
 
 ---
 
-## [ ] Bug 3: String (capital-S) passed to functions creates independent copy
+## [x] Bug 3: String (capital-S) passed to functions creates independent copy (fixed 2026-03-02)
 
 **Symptom:** A `String` buffer passed to a function and mutated via `.push_str()` inside the function does not affect the caller's `String`. The caller's buffer remains empty/unchanged.
 
-**Root cause:** Same value-copy semantics as Bug 2. `String` is likely backed by a `List#[u8]` or similar, and passing it copies the header. The callee's `.push_str()` may reallocate or update length on the copy.
+**Root cause:** Same value-copy semantics as Bug 2. `String` was `{ ptr, len, capacity }` (16 bytes) — passing it copied the flat struct. The callee's `.push_str()` could reallocate or update length on the copy.
 
-**Workaround:** Don't pass `String` buffers to helper functions. Instead, have each function return a `string` result and concatenate at the call site:
-```klar
-// Instead of: fill_buffer(buf)
-// Do: let result: string = build_string()
-fn build_string() -> string {
-    var buf: String = String.new()
-    buf.push_str("hello")
-    return buf.as_str()
-}
-```
+**Fix:** Changed String from flat `{ ptr, len, capacity }` (16 bytes) to heap-indirected `{ header_ptr }` (8 bytes), identical to the List fix in Bug 2. The header `{ ptr, len, capacity }` lives on the heap. When a String is copied (passed to functions, extracted from Map.get(), etc.), both copies share the same heap header, so mutations like `.push_str()` are visible through both.
 
-**Fix approach:** Same as Bug 2 — make `String` use pointer-to-heap-header semantics so copies share state.
+Key changes:
+- `src/codegen/strings_emit.zig`: New `StringHeaderField`, `createStringHeaderType()`, updated `StringField` and `createStringStructType()` for single-pointer wrapper, updated size constants (8 bytes outer, 16 bytes header)
+- `src/codegen/emit.zig`: New helpers `getStringHeaderType()`, `derefStringHeader()`, `allocateStringHeader()`, `buildStringFromHeader()`. Updated all ~30 call sites that access String internals (emitStringNew, emitStringFrom, emitStringFromPtr, emitStringWithCapacity, emitStringPush, emitStringPushStr, emitStringConcat, emitStringLen, emitStringCapacity, emitStringAsStr, emitStringClear, emitStringClone, emitStringDrop, emitStringEq, emitStringHash, emitStringAsCstr, emitCstrToString, emitStringToCstrOwned, typeToLLVM, getTypeSize, main argv setup/cleanup, List#[String] drop, readdir, read_line, etc.)
 
-**Repro:** `scratch/string_pass.kl`, `scratch/string_pass2.kl`
+**Test:** `test/native/string_shared_push.kl`
 
 ---
 

@@ -1,0 +1,50 @@
+// Test that String uses shared semantics: push_str() inside a function is visible to the caller.
+// This verifies Bug 3 fix: String heap-indirected header means copies share state.
+
+fn append_to(buf: String, s: string) -> void {
+    buf.push_str(s)
+}
+
+fn main() -> i32 {
+    var buf: String = String.new()
+
+    // Push via function call (previously lost due to value-copy semantics)
+    append_to(buf, "hello")
+    append_to(buf, " ")
+    append_to(buf, "world")
+
+    // Caller should see all pushes
+    let len: i32 = buf.len()
+    if len != 11 {
+        return 1
+    }
+
+    // Verify content via as_str
+    let s: string = buf.as_str()
+    if s != "hello world" {
+        return 2
+    }
+
+    // Also test String.from + shared push
+    var buf2: String = String.from("start")
+    append_to(buf2, "-end")
+
+    let len2: i32 = buf2.len()
+    if len2 != 9 {
+        return 3
+    }
+
+    let s2: string = buf2.as_str()
+    if s2 != "start-end" {
+        return 4
+    }
+
+    // Test with_capacity + shared push
+    var buf3: String = String.with_capacity(64)
+    append_to(buf3, "abc")
+    if buf3.len() != 3 {
+        return 5
+    }
+
+    return 42
+}

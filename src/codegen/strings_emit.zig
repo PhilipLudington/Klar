@@ -6,38 +6,63 @@
 //!
 //! ## Provided by this module
 //!
-//! - `StringField`: Struct field index constants
-//! - `string_struct_size`: Size constant (16 bytes)
-//! - `createStringStructType`: Build the LLVM struct type for String
+//! - `StringField`: Outer string struct field index (header_ptr = 0)
+//! - `StringHeaderField`: Header struct field indices (data, len, capacity)
+//! - `string_struct_size`: Size constant (8 bytes — single pointer)
+//! - `string_header_size`: Size constant (16 bytes — heap-allocated header)
+//! - `createStringStructType`: Build the LLVM type for String (outer wrapper)
+//! - `createStringHeaderType`: Build the LLVM type for StringHeader (heap data)
 //! - `hashString`: FNV-1a hash (matches runtime implementation)
 //!
-//! ## String Struct Layout
+//! ## String Struct Layout (Heap-Indirected)
 //!
 //! ```
 //! struct String {
+//!     header: *StringHeader,  // Pointer to shared heap header
+//! }
+//!
+//! struct StringHeader {
 //!     data: *u8,     // Pointer to character data (null-terminated for C interop)
 //!     len: i32,      // Current length in bytes (excludes null terminator)
 //!     capacity: i32, // Allocated capacity (includes space for null terminator)
 //! }
 //! ```
 //!
-//! Total size: 16 bytes (8 + 4 + 4)
+//! Outer struct: 8 bytes (single pointer). When copied, both copies share
+//! the same heap header, so mutations through either are visible to both.
+//! Header: 16 bytes (8 + 4 + 4), heap-allocated.
 
 const std = @import("std");
 const llvm = @import("llvm.zig");
 
-/// String struct field indices.
+/// Outer string struct field index (just the header pointer).
 pub const StringField = struct {
+    pub const header_ptr = 0;
+};
+
+/// Header struct field indices (heap-allocated).
+pub const StringHeaderField = struct {
     pub const data = 0;
     pub const len = 1;
     pub const capacity = 2;
 };
 
-/// Size of the String struct in bytes.
-pub const string_struct_size = 16;
+/// Size of the outer String struct in bytes (single pointer).
+pub const string_struct_size = 8;
 
-/// Create the LLVM type for Klar's String struct.
+/// Size of the heap-allocated StringHeader in bytes.
+pub const string_header_size = 16;
+
+/// Create the LLVM type for Klar's outer String struct: { ptr }
 pub fn createStringStructType(ctx: llvm.Context) llvm.TypeRef {
+    var fields = [_]llvm.TypeRef{
+        llvm.Types.pointer(ctx), // header pointer
+    };
+    return llvm.Types.struct_(ctx, &fields, false);
+}
+
+/// Create the LLVM type for the heap-allocated StringHeader: { ptr, i32, i32 }
+pub fn createStringHeaderType(ctx: llvm.Context) llvm.TypeRef {
     var fields = [_]llvm.TypeRef{
         llvm.Types.pointer(ctx), // data pointer
         llvm.Types.int32(ctx), // len

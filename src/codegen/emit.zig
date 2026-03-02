@@ -32,6 +32,7 @@ const target = @import("target.zig");
 const layout = @import("layout.zig");
 const list_constants = @import("list.zig");
 const map_constants = @import("map.zig");
+const string_constants = @import("strings_emit.zig");
 
 // Supporting documentation modules (pure doc comments, see each file for details):
 // generics.zig, types_emit.zig, strings_emit.zig, list.zig, map.zig, set.zig,
@@ -827,8 +828,8 @@ pub const Emitter = struct {
 
         // Check block: allocate array of String structs for argc elements
         self.builder.positionAtEnd(check_block);
-        // String struct is { ptr, i32, i32 } = 8 + 4 + 4 = 16 bytes on 64-bit
-        const string_size_actual = llvm.Const.int64(self.ctx, 16);
+        // String struct is { header_ptr } = 8 bytes (single pointer, heap-indirected)
+        const string_size_actual = llvm.Const.int64(self.ctx, string_constants.string_struct_size);
         const array_size = self.builder.buildMul(argc_i64, string_size_actual, "array_size");
         var malloc_args = [_]llvm.ValueRef{array_size};
         const array_ptr = self.builder.buildCall(
@@ -887,19 +888,32 @@ pub const Emitter = struct {
         const null_pos = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, str_ptr, &null_idx, 1, "str_null_pos");
         _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_pos);
 
-        // Get pointer to array[i] (String struct)
+        // Allocate a StringHeader on heap for this arg
+        const arg_header_type = string_constants.createStringHeaderType(self.ctx);
+        const arg_header_size = llvm.Const.int64(self.ctx, string_constants.string_header_size);
+        var hdr_malloc_args = [_]llvm.ValueRef{arg_header_size};
+        const arg_header_ptr = self.builder.buildCall(
+            llvm.Types.function(ptr_type, &[_]llvm.TypeRef{i64_type}, false),
+            malloc_fn,
+            &hdr_malloc_args,
+            "arg_header",
+        );
+
+        // Fill header: { str_ptr, len, len }
+        const len_i32 = self.builder.buildTrunc(str_len, i32_type, "len32");
+        const hdr_data = llvm.c.LLVMBuildStructGEP2(self.builder.ref, arg_header_type, arg_header_ptr, 0, "hdr.data");
+        _ = self.builder.buildStore(str_ptr, hdr_data);
+        const hdr_len = llvm.c.LLVMBuildStructGEP2(self.builder.ref, arg_header_type, arg_header_ptr, 1, "hdr.len");
+        _ = self.builder.buildStore(len_i32, hdr_len);
+        const hdr_cap = llvm.c.LLVMBuildStructGEP2(self.builder.ref, arg_header_type, arg_header_ptr, 2, "hdr.cap");
+        _ = self.builder.buildStore(len_i32, hdr_cap);
+
+        // Get pointer to array[i] (outer String struct { header_ptr })
         const string_i_ptr = self.builder.buildGEP(string_type, array_ptr, &[_]llvm.ValueRef{i_val}, "string_i");
 
-        // Store String fields: { ptr, len, capacity }
-        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_i_ptr, 0, "ptr_field");
-        _ = self.builder.buildStore(str_ptr, ptr_field);
-
-        const len_i32 = self.builder.buildTrunc(str_len, i32_type, "len32");
-        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_i_ptr, 1, "len_field");
-        _ = self.builder.buildStore(len_i32, len_field);
-
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_i_ptr, 2, "cap_field");
-        _ = self.builder.buildStore(len_i32, cap_field);
+        // Store header_ptr in the outer String struct
+        const string_i_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_i_ptr, 0, "string_i.hdr");
+        _ = self.builder.buildStore(arg_header_ptr, string_i_hdr_field);
 
         // Increment i
         const i_next = self.builder.buildAdd(i_val, llvm.Const.int64(self.ctx, 1), "i_next");
@@ -975,27 +989,39 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), i_ptr);
         _ = self.builder.buildBr(loop_block);
 
-        // Loop block: free each string's data
+        // Loop block: free each string's header and data
         self.builder.positionAtEnd(loop_block);
         const i_val = self.builder.buildLoad(i64_type, i_ptr, "i");
 
-        // Get array[i].ptr
+        // Get array[i].header_ptr
         const string_i_ptr = self.builder.buildGEP(string_type, array_ptr, &[_]llvm.ValueRef{i_val}, "string_i");
-        const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_i_ptr, 0, "str_ptr_field");
-        const str_ptr = self.builder.buildLoad(ptr_type, str_ptr_field, "str_ptr");
+        const hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_i_ptr, 0, "hdr_field");
+        const hdr_ptr = self.builder.buildLoad(ptr_type, hdr_field, "hdr_ptr");
 
-        // free(str_ptr) if not null
-        const str_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, str_ptr, llvm.c.LLVMConstNull(ptr_type), "str_null");
+        // free(header_ptr) if not null - first free data ptr from header, then header
+        const hdr_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, hdr_ptr, llvm.c.LLVMConstNull(ptr_type), "hdr_null");
         const free_str_block = llvm.appendBasicBlock(self.ctx, func, "free_str");
         const next_iter_block = llvm.appendBasicBlock(self.ctx, func, "next_iter");
-        _ = self.builder.buildCondBr(str_is_null, next_iter_block, free_str_block);
+        _ = self.builder.buildCondBr(hdr_is_null, next_iter_block, free_str_block);
 
         self.builder.positionAtEnd(free_str_block);
-        var free_str_args = [_]llvm.ValueRef{str_ptr};
+        // Load data ptr from header and free it
+        const free_hdr_type = string_constants.createStringHeaderType(self.ctx);
+        const data_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, free_hdr_type, hdr_ptr, 0, "data_field");
+        const data_val = self.builder.buildLoad(ptr_type, data_field, "data_val");
+        var free_data_args = [_]llvm.ValueRef{data_val};
         _ = self.builder.buildCall(
             llvm.Types.function(llvm.Types.void_(self.ctx), &[_]llvm.TypeRef{ptr_type}, false),
             free_fn,
-            &free_str_args,
+            &free_data_args,
+            "",
+        );
+        // Free the header itself
+        var free_hdr_args = [_]llvm.ValueRef{hdr_ptr};
+        _ = self.builder.buildCall(
+            llvm.Types.function(llvm.Types.void_(self.ctx), &[_]llvm.TypeRef{ptr_type}, false),
+            free_fn,
+            &free_hdr_args,
             "",
         );
         _ = self.builder.buildBr(next_iter_block);
@@ -2120,7 +2146,7 @@ pub const Emitter = struct {
                     const value_is_struct = llvm.getTypeKind(value_ty) == llvm.c.LLVMStructTypeKind;
                     const target_is_ptr = llvm.getTypeKind(ty) == llvm.c.LLVMPointerTypeKind;
                     if (value_is_struct and target_is_ptr and self.isStringDataType(value_ty)) {
-                        value = self.builder.buildExtractValue(value, 0, "str.init.coerce");
+                        value = self.extractStringPtr(value);
                     }
 
                     _ = self.builder.buildStore(value, alloca);
@@ -2272,7 +2298,7 @@ pub const Emitter = struct {
                     const value_is_struct = llvm.getTypeKind(value_ty) == llvm.c.LLVMStructTypeKind;
                     const target_is_ptr = llvm.getTypeKind(ty) == llvm.c.LLVMPointerTypeKind;
                     if (value_is_struct and target_is_ptr and self.isStringDataType(value_ty)) {
-                        value = self.builder.buildExtractValue(value, 0, "str.init.coerce");
+                        value = self.extractStringPtr(value);
                     }
 
                     _ = self.builder.buildStore(value, alloca);
@@ -4259,12 +4285,19 @@ pub const Emitter = struct {
         );
     }
 
-    /// Check if an LLVM type is a string_data struct { ptr, i32, i32 }.
+    /// Check if an LLVM type is a String struct { header_ptr }.
+    /// After heap-indirection, String is a 1-field struct containing a pointer.
+    /// NOTE: List has the same LLVM layout { header_ptr }, so this is a structural
+    /// match, not a type-identity match. All call sites are guarded by `target_is_ptr`
+    /// (the coercion target must be a bare pointer), which prevents false positives
+    /// since List variables are never stored as bare pointers.
     fn isStringDataType(self: *Emitter, ty: llvm.TypeRef) bool {
         _ = self;
         if (llvm.getTypeKind(ty) != llvm.c.LLVMStructTypeKind) return false;
-        // string_data has exactly 3 fields: ptr, i32, i32
-        return llvm.c.LLVMCountStructElementTypes(ty) == 3;
+        if (llvm.c.LLVMCountStructElementTypes(ty) != 1) return false;
+        var field_types: [1]llvm.TypeRef = undefined;
+        llvm.c.LLVMGetStructElementTypes(ty, &field_types);
+        return llvm.getTypeKind(field_types[0]) == llvm.c.LLVMPointerTypeKind;
     }
 
     /// Check if an LLVM value is a string type (either ptr or string_data struct).
@@ -4279,17 +4312,21 @@ pub const Emitter = struct {
         return false;
     }
 
-    /// Extract the pointer from a string value.
+    /// Extract the raw data pointer from a string value.
     /// If it's already a pointer, returns it unchanged.
-    /// If it's a string_data struct, extracts field 0 (the ptr field).
+    /// If it's a String struct { header_ptr }, loads header_ptr then loads data ptr from header.
     fn extractStringPtr(self: *Emitter, val: llvm.ValueRef) llvm.ValueRef {
         const ty = llvm.typeOf(val);
         const kind = llvm.getTypeKind(ty);
         if (kind == llvm.c.LLVMPointerTypeKind) {
             return val;
         }
-        // It's a struct - extract the ptr field (field 0)
-        return self.builder.buildExtractValue(val, 0, "str.ptr");
+        // It's a String struct { header_ptr } - extract header_ptr, then load data from header
+        const header_ptr = self.builder.buildExtractValue(val, 0, "str.header_ptr");
+        const header_type = self.getStringHeaderType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const data_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "str.data_field");
+        return self.builder.buildLoad(ptr_type, data_field, "str.data_ptr");
     }
 
     /// Emit assignment (including compound assignment operators).
@@ -4362,8 +4399,8 @@ pub const Emitter = struct {
         const value_is_struct = llvm.getTypeKind(value_ty) == llvm.c.LLVMStructTypeKind;
         const target_is_ptr = llvm.getTypeKind(target_ty) == llvm.c.LLVMPointerTypeKind;
         if (value_is_struct and target_is_ptr and self.isStringDataType(value_ty)) {
-            // Value is string_data struct, target expects string (ptr) - extract ptr
-            coerced_value = self.builder.buildExtractValue(value, 0, "str.coerce");
+            // Value is String struct, target expects string (ptr) - extract data ptr through header
+            coerced_value = self.extractStringPtr(value);
         }
 
         // Store the result
@@ -6466,7 +6503,7 @@ pub const Emitter = struct {
 
         // Heap-allocated String type
         if (std.mem.eql(u8, name, "String")) {
-            return self.getStringStructType(); // { ptr, len: i32, capacity: i32 }
+            return self.getStringStructType(); // { header_ptr }
         }
 
         // Check if it's an extern type registered in the type checker
@@ -7163,15 +7200,15 @@ pub const Emitter = struct {
                     }
                     // String static constructors
                     if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, m.method_name, "new")) {
-                        // String.new() returns String struct { ptr, i32, i32 }
+                        // String.new() returns String struct { header_ptr }
                         return self.getStringStructType();
                     }
                     if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, m.method_name, "from")) {
-                        // String.from(s) returns String struct { ptr, i32, i32 }
+                        // String.from(s) returns String struct { header_ptr }
                         return self.getStringStructType();
                     }
                     if (std.mem.eql(u8, obj_name, "String") and std.mem.eql(u8, m.method_name, "with_capacity")) {
-                        // String.with_capacity(n) returns String struct { ptr, i32, i32 }
+                        // String.with_capacity(n) returns String struct { header_ptr }
                         return self.getStringStructType();
                     }
                     // File.open(path, mode) -> Result#[File, IoError]
@@ -13537,12 +13574,13 @@ pub const Emitter = struct {
                 _ = self.builder.buildStore(obj_val, tmp_alloca);
                 break :blk tmp_alloca;
             };
-            // String struct is { ptr, len, capacity }
-            // Extract field 0 (the data pointer) for puts/printf
-            const string_type = self.getStringStructType();
+            // String struct is { header_ptr } -> header is { data, len, cap }
+            // Dereference header, then load data pointer for puts/printf
+            const header_type = self.getStringHeaderType();
             const ptr_type = llvm.Types.pointer(self.ctx);
-            const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "print.str_ptr_ptr");
-            arg_value = self.builder.buildLoad(ptr_type, ptr_ptr, "print.str_ptr");
+            const header_ptr = self.derefStringHeader(str_ptr);
+            const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "print.str_data_ptr_ptr");
+            arg_value = self.builder.buildLoad(ptr_type, data_ptr_ptr, "print.str_ptr");
         } else {
             // Regular string literal - emit directly
             arg_value = try self.emitExpr(args[0]);
@@ -16123,26 +16161,23 @@ pub const Emitter = struct {
         const memcpy_type = llvm.c.LLVMGlobalGetValueType(memcpy_fn);
         _ = self.builder.buildCall(memcpy_type, memcpy_fn, &memcpy_args, "");
 
-        // Build String struct { ptr, len, capacity }
-        const string_type = self.getStringStructType();
-        const result = self.builder.buildAlloca(string_type, "tostr.result");
+        // Allocate String header on heap and fill: { ptr, len, capacity }
+        const header_type = self.getStringHeaderType();
+        const hdr_ptr = self.allocateStringHeader();
 
-        // Store ptr (field 0)
-        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 0, "tostr.ptr_field");
-        _ = self.builder.buildStore(heap_ptr, ptr_field);
+        const hdr_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 0, "tostr.hdr.ptr_field");
+        _ = self.builder.buildStore(heap_ptr, hdr_ptr_field);
 
-        // Store len (field 1) - truncate to i32
         const len_i32 = self.builder.buildTrunc(len_i64, i32_type, "tostr.len32");
-        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 1, "tostr.len_field");
-        _ = self.builder.buildStore(len_i32, len_field);
+        const hdr_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 1, "tostr.hdr.len_field");
+        _ = self.builder.buildStore(len_i32, hdr_len_field);
 
-        // Store capacity (field 2) - same as len+1 truncated to i32
         const cap_i32 = self.builder.buildTrunc(alloc_size, i32_type, "tostr.cap32");
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 2, "tostr.cap_field");
-        _ = self.builder.buildStore(cap_i32, cap_field);
+        const hdr_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 2, "tostr.hdr.cap_field");
+        _ = self.builder.buildStore(cap_i32, hdr_cap_field);
 
-        // Load and return the struct value
-        return self.builder.buildLoad(string_type, result, "tostr.string");
+        // Wrap header_ptr in outer String struct { header_ptr }
+        return self.buildStringFromHeader(hdr_ptr);
     }
 
     /// Emit char.to_string() - converts char to primitive string.
@@ -16871,14 +16906,15 @@ pub const Emitter = struct {
         // --- Free data block ---
         self.builder.positionAtEnd(free_data_bb);
 
-        // For List#[String], iterate and free each string's buffer first
+        // For List#[String], iterate and free each string's header + data
         if (element_type == .string_data) {
             const string_type = self.getStringStructType();
+            const str_header_type = self.getStringHeaderType();
             const i64_type = llvm.Types.int64(self.ctx);
             const i8_type = llvm.Types.int8(self.ctx);
             const string_size = self.getLLVMTypeSize(string_type);
 
-            // Load len from header
+            // Load len from list header
             const len_ptr_loop = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "drop.len_for_loop");
             const list_len = self.builder.buildLoad(i32_type, len_ptr_loop, "drop.list_len");
 
@@ -16898,7 +16934,7 @@ pub const Emitter = struct {
             const cond = self.builder.buildICmp(llvm.c.LLVMIntSLT, i_val, list_len, "drop.loop_cond");
             _ = self.builder.buildCondBr(cond, loop_body_bb, loop_end_bb);
 
-            // Loop body: get string ptr, free its buffer
+            // Loop body: get string element, free its header + data
             self.builder.positionAtEnd(loop_body_bb);
             const i_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, i_val, i64_type, "drop.i_i64");
             const str_size_val = llvm.Const.int64(self.ctx, @intCast(string_size));
@@ -16906,20 +16942,26 @@ pub const Emitter = struct {
             var gep_idx = [_]llvm.ValueRef{str_offset};
             const str_elem_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_ptr, &gep_idx, 1, "drop.str_elem_ptr");
 
-            // Load the string's data pointer (first field of StringHeader)
-            const str_data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_elem_ptr, 0, "drop.str_data_ptr_ptr");
-            const str_data_ptr = self.builder.buildLoad(ptr_type, str_data_ptr_ptr, "drop.str_data_ptr");
+            // Load the string's header_ptr (field 0 of outer String struct)
+            const str_hdr_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_elem_ptr, 0, "drop.str_hdr_ptr_ptr");
+            const str_hdr_ptr = self.builder.buildLoad(ptr_type, str_hdr_ptr_ptr, "drop.str_hdr_ptr");
 
-            // If string ptr is not null, free it
-            const str_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, str_data_ptr, null_ptr, "drop.str_is_null");
+            // If header_ptr is not null, free data ptr from header then free header
+            const str_hdr_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, str_hdr_ptr, null_ptr, "drop.str_hdr_is_null");
             const str_free_bb = llvm.appendBasicBlock(self.ctx, func, "drop.str_free");
             const str_next_bb = llvm.appendBasicBlock(self.ctx, func, "drop.str_next");
-            _ = self.builder.buildCondBr(str_is_null, str_next_bb, str_free_bb);
+            _ = self.builder.buildCondBr(str_hdr_is_null, str_next_bb, str_free_bb);
 
             self.builder.positionAtEnd(str_free_bb);
             const free_fn_str = self.getOrDeclareFree();
-            var str_free_args = [_]llvm.ValueRef{str_data_ptr};
-            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn_str), free_fn_str, &str_free_args, "");
+            // Free data ptr from header
+            const str_data_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, str_header_type, str_hdr_ptr, 0, "drop.str_data_ptr_field");
+            const str_data_ptr_val = self.builder.buildLoad(ptr_type, str_data_ptr_field, "drop.str_data_ptr");
+            var str_data_free_args = [_]llvm.ValueRef{str_data_ptr_val};
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn_str), free_fn_str, &str_data_free_args, "");
+            // Free header itself
+            var str_hdr_free_args = [_]llvm.ValueRef{str_hdr_ptr};
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn_str), free_fn_str, &str_hdr_free_args, "");
             _ = self.builder.buildBr(str_next_bb);
 
             self.builder.positionAtEnd(str_next_bb);
@@ -21622,15 +21664,10 @@ pub const Emitter = struct {
 
     /// Emit String.new() - creates an empty string.
     fn emitStringNew(self: *Emitter) EmitError!llvm.ValueRef {
-        // Build String struct type (same as List)
-        const string_type = self.getStringStructType();
-
-        // Create an empty string struct { null, 0, 0 } directly
-        const null_ptr = llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
-        const zero_i32 = llvm.Const.int32(self.ctx, 0);
-
-        var values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32 };
-        return llvm.c.LLVMConstNamedStruct(string_type, &values, 3);
+        // Allocate a header on the heap, initialized to { null, 0, 0 }
+        const header_ptr = self.allocateStringHeader();
+        // Wrap in outer struct { header_ptr }
+        return self.buildStringFromHeader(header_ptr);
     }
 
     /// Emit String.from(s) - creates a string from a string literal.
@@ -21641,7 +21678,7 @@ pub const Emitter = struct {
         // Emit the string literal argument (pointer to null-terminated string)
         const str_literal = try self.emitExpr(method.args[0]);
 
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
@@ -21658,7 +21695,7 @@ pub const Emitter = struct {
         const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, one_i32, "str.alloc_len");
         const alloc_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_len, i64_type, "str.alloc_len_i64");
 
-        // Call malloc
+        // Call malloc for data
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_len_i64};
         const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "str.ptr");
@@ -21668,24 +21705,24 @@ pub const Emitter = struct {
         var memcpy_args = [_]llvm.ValueRef{ new_ptr, str_literal, alloc_len_i64 };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
-        // Build the String struct: { ptr, len, capacity } (capacity = len + 1, includes null byte)
-        const string_alloca = self.builder.buildAlloca(string_type, "str.result");
-        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 0, "str.ptr_field");
-        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 1, "str.len_field");
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 2, "str.cap_field");
+        // Allocate header on heap and fill: { ptr, len, capacity }
+        const header_ptr = self.allocateStringHeader();
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "str.hdr.ptr_field");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "str.hdr.len_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "str.hdr.cap_field");
 
         _ = self.builder.buildStore(new_ptr, ptr_field);
         _ = self.builder.buildStore(len_i32, len_field);
         _ = self.builder.buildStore(alloc_len, cap_field); // capacity = len + 1 (includes null byte)
 
-        // Load and return the struct value
-        return self.builder.buildLoad(string_type, string_alloca, "str.from.result");
+        // Wrap header_ptr in outer struct { header_ptr }
+        return self.buildStringFromHeader(header_ptr);
     }
 
-    /// Promote a raw string pointer (from a string literal) to a StringHeader value.
-    /// Allocates heap memory, copies content, returns { ptr, len, capacity } struct value.
+    /// Promote a raw string pointer (from a string literal) to a String value.
+    /// Allocates heap header, copies content, returns { header_ptr } struct value.
     fn emitStringFromPtr(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
@@ -21702,7 +21739,7 @@ pub const Emitter = struct {
         const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, one_i32, "promote.alloc_len");
         const alloc_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_len, i64_type, "promote.alloc_len_i64");
 
-        // Call malloc
+        // Call malloc for data
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_len_i64};
         const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "promote.ptr");
@@ -21712,28 +21749,28 @@ pub const Emitter = struct {
         var memcpy_args = [_]llvm.ValueRef{ new_ptr, str_ptr, alloc_len_i64 };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
-        // Build the String struct: { ptr, len, capacity } (capacity = len + 1, includes null byte)
-        const string_alloca = self.builder.buildAlloca(string_type, "promote.result");
-        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 0, "promote.ptr_field");
-        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 1, "promote.len_field");
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 2, "promote.cap_field");
+        // Allocate header on heap and fill: { ptr, len, capacity }
+        const header_ptr = self.allocateStringHeader();
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "promote.hdr.ptr_field");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "promote.hdr.len_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "promote.hdr.cap_field");
 
         _ = self.builder.buildStore(new_ptr, ptr_field);
         _ = self.builder.buildStore(len_i32, len_field);
-        _ = self.builder.buildStore(alloc_len, cap_field); // capacity = len + 1 (includes null byte)
+        _ = self.builder.buildStore(alloc_len, cap_field);
 
-        return self.builder.buildLoad(string_type, string_alloca, "promote.str_val");
+        return self.buildStringFromHeader(header_ptr);
     }
 
     /// Emit String.with_capacity(n) - creates a string with pre-allocated capacity.
-    /// Implemented inline: allocates memory using malloc, returns { ptr, 0, capacity }.
+    /// Implemented inline: allocates memory using malloc, returns { header_ptr }.
     fn emitStringWithCapacity(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         if (method.args.len != 1) return EmitError.InvalidAST;
 
         // Emit the capacity argument (i32)
         const capacity = try self.emitExpr(method.args[0]);
 
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const i64_type = llvm.Types.int64(self.ctx);
 
         // Allocate memory: capacity + 1 for null terminator
@@ -21741,7 +21778,7 @@ pub const Emitter = struct {
         const alloc_size_i32 = llvm.c.LLVMBuildAdd(self.builder.ref, capacity, one_i32, "str.alloc_size");
         const alloc_size = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_size_i32, i64_type, "str.alloc_size_i64");
 
-        // Call malloc
+        // Call malloc for data
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "str.ptr");
@@ -21750,24 +21787,24 @@ pub const Emitter = struct {
         const i8_type = llvm.Types.int8(self.ctx);
         _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), new_ptr);
 
-        // Build the String struct: { ptr, 0, capacity }
-        const string_alloca = self.builder.buildAlloca(string_type, "str.result");
-        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 0, "str.ptr_field");
-        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 1, "str.len_field");
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 2, "str.cap_field");
+        // Allocate header on heap and fill: { ptr, 0, capacity }
+        const header_ptr = self.allocateStringHeader();
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "str.hdr.ptr_field");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "str.hdr.len_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "str.hdr.cap_field");
 
         _ = self.builder.buildStore(new_ptr, ptr_field);
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_field); // len = 0
         _ = self.builder.buildStore(capacity, cap_field); // capacity from argument
 
-        // Load and return the struct value
-        return self.builder.buildLoad(string_type, string_alloca, "str.with_cap.result");
+        return self.buildStringFromHeader(header_ptr);
     }
 
     /// Emit string.len() for heap-allocated String type - returns the byte length.
     fn emitStringDataLen(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const string_type = self.getStringStructType();
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "str.len_ptr");
+        const header_type = self.getStringHeaderType();
+        const header_ptr = self.derefStringHeader(str_ptr);
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "str.len_ptr");
         return self.builder.buildLoad(llvm.Types.int32(self.ctx), len_ptr, "str.len");
     }
 
@@ -21780,8 +21817,9 @@ pub const Emitter = struct {
 
     /// Emit string.capacity() - returns the allocated capacity.
     fn emitStringCapacity(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const string_type = self.getStringStructType();
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 2, "str.cap_ptr");
+        const header_type = self.getStringHeaderType();
+        const header_ptr = self.derefStringHeader(str_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "str.cap_ptr");
         return self.builder.buildLoad(llvm.Types.int32(self.ctx), cap_ptr, "str.cap");
     }
 
@@ -21790,16 +21828,19 @@ pub const Emitter = struct {
     fn emitStringPush(self: *Emitter, str_ptr: llvm.ValueRef, char_val: llvm.ValueRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
 
-        // Load current ptr, len, capacity
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "push.ptr_ptr");
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "push.len_ptr");
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 2, "push.cap_ptr");
+        // Dereference header from outer String struct
+        const header_ptr = self.derefStringHeader(str_ptr);
+
+        // Load current ptr, len, capacity from header
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "push.ptr_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "push.len_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "push.cap_ptr");
 
         const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "push.current_ptr");
         const current_len = self.builder.buildLoad(i32_type, len_ptr, "push.current_len");
@@ -21839,7 +21880,7 @@ pub const Emitter = struct {
         var realloc_args = [_]llvm.ValueRef{ current_ptr, new_cap_i64 };
         const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "push.new_ptr");
 
-        // Store new ptr and capacity
+        // Store new ptr and capacity into header
         _ = self.builder.buildStore(new_ptr, ptr_ptr);
         _ = self.builder.buildStore(new_cap, cap_ptr);
 
@@ -21871,7 +21912,7 @@ pub const Emitter = struct {
         const null_ptr_addr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, phi, &null_indices, 1, "push.null_ptr");
         _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_ptr_addr);
 
-        // Store new length
+        // Store new length into header
         _ = self.builder.buildStore(new_len, len_ptr);
 
         // Return void (represented as i32 0 for now)
@@ -21881,21 +21922,23 @@ pub const Emitter = struct {
     /// Emit string.concat(other) - concatenates two strings, returns new string.
     /// Implemented inline: allocates new buffer, copies both strings, returns new String struct.
     fn emitStringConcat(self: *Emitter, str_ptr: llvm.ValueRef, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
 
-        // Load ptr1, len1 from first string
-        const ptr1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "concat.ptr1_ptr");
-        const len1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "concat.len1_ptr");
+        // Load ptr1, len1 from first string's header
+        const header1 = self.derefStringHeader(str_ptr);
+        const ptr1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header1, 0, "concat.ptr1_ptr");
+        const len1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header1, 1, "concat.len1_ptr");
         const ptr1 = self.builder.buildLoad(ptr_type, ptr1_ptr, "concat.ptr1");
         const len1 = self.builder.buildLoad(i32_type, len1_ptr, "concat.len1");
 
-        // Load ptr2, len2 from second string
-        const ptr2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 0, "concat.ptr2_ptr");
-        const len2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 1, "concat.len2_ptr");
+        // Load ptr2, len2 from second string's header
+        const header2 = self.derefStringHeader(other_ptr);
+        const ptr2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header2, 0, "concat.ptr2_ptr");
+        const len2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header2, 1, "concat.len2_ptr");
         const ptr2 = self.builder.buildLoad(ptr_type, ptr2_ptr, "concat.ptr2");
         const len2 = self.builder.buildLoad(i32_type, len2_ptr, "concat.len2");
 
@@ -21906,7 +21949,7 @@ pub const Emitter = struct {
         const one = llvm.Const.int32(self.ctx, 1);
         const new_cap = llvm.c.LLVMBuildAdd(self.builder.ref, total_len, one, "concat.new_cap");
 
-        // Allocate: malloc(new_cap)
+        // Allocate: malloc(new_cap) for data
         const new_cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_cap, i64_type, "concat.new_cap_i64");
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{new_cap_i64};
@@ -21931,24 +21974,22 @@ pub const Emitter = struct {
         const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, new_ptr, &null_indices, 1, "concat.null_ptr");
         _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_ptr);
 
-        // Build result String struct: { new_ptr, total_len, new_cap }
-        const result_alloca = self.builder.buildAlloca(string_type, "concat.result");
-        const result_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 0, "concat.result_ptr");
-        const result_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 1, "concat.result_len");
-        const result_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 2, "concat.result_cap");
+        // Allocate NEW header for result, fill: { new_ptr, total_len, new_cap }
+        const result_header = self.allocateStringHeader();
+        const result_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, result_header, 0, "concat.result_ptr");
+        const result_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, result_header, 1, "concat.result_len");
+        const result_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, result_header, 2, "concat.result_cap");
 
         _ = self.builder.buildStore(new_ptr, result_ptr_field);
         _ = self.builder.buildStore(total_len, result_len_field);
         _ = self.builder.buildStore(new_cap, result_cap_field);
 
-        // Return loaded struct value
-        return self.builder.buildLoad(string_type, result_alloca, "concat.result_val");
+        return self.buildStringFromHeader(result_header);
     }
 
     /// Emit string.push_str(s) - appends a raw string (lowercase) to this String.
-    /// Constructs a temporary StringHeader from the raw string and delegates to emitStringAppend.
+    /// Gets the raw string ptr and length, then directly appends the data to the String's header.
     fn emitStringPushStr(self: *Emitter, str_ptr: llvm.ValueRef, raw_str: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const string_type = self.getStringStructType();
         const i32_type = llvm.Types.int32(self.ctx);
 
         // Get length of raw string via strlen
@@ -21957,37 +21998,43 @@ pub const Emitter = struct {
         const len_i64 = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "pushstr.len_i64");
         const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, len_i64, i32_type, "pushstr.len");
 
-        // Build a temporary StringHeader { ptr, len, cap=0 } on the stack
-        const tmp_alloca = self.builder.buildAlloca(string_type, "pushstr.tmp");
-        const tmp_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, tmp_alloca, 0, "pushstr.tmp.ptr");
-        const tmp_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, tmp_alloca, 1, "pushstr.tmp.len");
-        const tmp_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, tmp_alloca, 2, "pushstr.tmp.cap");
-        _ = self.builder.buildStore(raw_str, tmp_ptr_field);
-        _ = self.builder.buildStore(len_i32, tmp_len_field);
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tmp_cap_field);
-
-        // Delegate to the existing append logic
-        return self.emitStringAppend(str_ptr, tmp_alloca);
+        // Directly call the shared append-data helper with the raw ptr and len
+        return self.emitStringAppendRaw(str_ptr, raw_str, len_i32);
     }
 
-    /// Emit string.append(other) - appends other string to this one (mutates).
-    /// Implemented inline with growth logic similar to push but for multiple bytes.
+    /// Emit string.append(other) - appends other String to this one (mutates).
+    /// Dereferences both headers, then delegates to emitStringAppendRaw.
     fn emitStringAppend(self: *Emitter, str_ptr: llvm.ValueRef, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const header_type = self.getStringHeaderType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+
+        // Load other's data ptr and len from its header
+        const other_header = self.derefStringHeader(other_ptr);
+        const other_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, other_header, 0, "append.other_ptr_ptr");
+        const other_data_ptr = self.builder.buildLoad(ptr_type, other_ptr_ptr, "append.other_data");
+        const other_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, other_header, 1, "append.other_len_ptr");
+        const other_len = self.builder.buildLoad(i32_type, other_len_ptr, "append.other_len");
+
+        // Delegate to the raw append helper
+        return self.emitStringAppendRaw(str_ptr, other_data_ptr, other_len);
+    }
+
+    /// Shared helper: append raw data (ptr + len) to a String's buffer.
+    /// str_ptr is a pointer to the outer String struct (alloca).
+    /// data_ptr is the raw bytes to append, data_len is the i32 byte count.
+    fn emitStringAppendRaw(self: *Emitter, str_ptr: llvm.ValueRef, data_ptr: llvm.ValueRef, data_len: llvm.ValueRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
 
-        // Load other's len first to check if empty
-        const other_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 1, "append.other_len_ptr");
-        const other_len = self.builder.buildLoad(i32_type, other_len_ptr, "append.other_len");
-
-        // Early return if other is empty: if (other.len == 0) return
+        // Early return if data_len is 0
         const zero = llvm.Const.int32(self.ctx, 0);
-        const other_empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, other_len, zero, "append.other_empty");
+        const other_empty = self.builder.buildICmp(llvm.c.LLVMIntEQ, data_len, zero, "append.other_empty");
 
         const do_append_bb = llvm.appendBasicBlock(self.ctx, func, "append.do");
         const end_bb = llvm.appendBasicBlock(self.ctx, func, "append.end");
@@ -21997,21 +22044,20 @@ pub const Emitter = struct {
         // --- Do append block ---
         self.builder.positionAtEnd(do_append_bb);
 
-        // Load self's ptr, len, capacity
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "append.ptr_ptr");
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "append.len_ptr");
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 2, "append.cap_ptr");
+        // Dereference header from outer String struct
+        const header_ptr = self.derefStringHeader(str_ptr);
+
+        // Load self's ptr, len, capacity from header
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "append.ptr_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "append.len_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "append.cap_ptr");
 
         const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "append.current_ptr");
         const current_len = self.builder.buildLoad(i32_type, len_ptr, "append.current_len");
         const current_cap = self.builder.buildLoad(i32_type, cap_ptr, "append.current_cap");
 
-        // Load other's ptr
-        const other_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 0, "append.other_ptr_ptr");
-        const other_data_ptr = self.builder.buildLoad(ptr_type, other_ptr_ptr, "append.other_data");
-
-        // new_len = self.len + other.len
-        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, current_len, other_len, "append.new_len");
+        // new_len = self.len + data_len
+        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, current_len, data_len, "append.new_len");
 
         // need_space = new_len + 1 (for null terminator)
         const one = llvm.Const.int32(self.ctx, 1);
@@ -22028,8 +22074,7 @@ pub const Emitter = struct {
         // --- Grow block ---
         self.builder.positionAtEnd(grow_bb);
 
-        // Calculate new capacity: start with current cap (or 16 if 0), double until >= need_space
-        // For simplicity, use: new_cap = max(16, need_space * 2)
+        // new_cap = max(16, need_space * 2)
         const sixteen = llvm.Const.int32(self.ctx, 16);
         const need_space_doubled = llvm.c.LLVMBuildMul(self.builder.ref, need_space, llvm.Const.int32(self.ctx, 2), "append.need_doubled");
         const cmp = self.builder.buildICmp(llvm.c.LLVMIntSGT, need_space_doubled, sixteen, "append.cmp");
@@ -22041,7 +22086,7 @@ pub const Emitter = struct {
         var realloc_args = [_]llvm.ValueRef{ current_ptr, new_cap_i64 };
         const grown_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "append.grown_ptr");
 
-        // Store new ptr and capacity
+        // Store new ptr and capacity into header
         _ = self.builder.buildStore(grown_ptr, ptr_ptr);
         _ = self.builder.buildStore(new_cap, cap_ptr);
 
@@ -22056,14 +22101,14 @@ pub const Emitter = struct {
         var incoming_blocks = [_]llvm.BasicBlockRef{ do_append_bb, grow_bb };
         llvm.c.LLVMAddIncoming(data_phi, &incoming_values, &incoming_blocks, 2);
 
-        // memcpy(data_ptr + current_len, other_data, other_len)
+        // memcpy(data_ptr + current_len, data_ptr_arg, data_len)
         const current_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, current_len, i64_type, "append.cur_len_i64");
         var dest_indices = [_]llvm.ValueRef{current_len_i64};
-        const dest_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_phi, &dest_indices, 1, "append.dest");
+        const dest_ptr_val = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_phi, &dest_indices, 1, "append.dest");
 
-        const other_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, other_len, i64_type, "append.other_len_i64");
+        const other_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, data_len, i64_type, "append.other_len_i64");
         const memcpy_fn = self.getOrDeclareMemcpy();
-        var memcpy_args = [_]llvm.ValueRef{ dest_ptr, other_data_ptr, other_len_i64 };
+        var memcpy_args = [_]llvm.ValueRef{ dest_ptr_val, data_ptr, other_len_i64 };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
         // Store null terminator at data_ptr + new_len
@@ -22072,7 +22117,7 @@ pub const Emitter = struct {
         const null_ptr_addr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_phi, &null_indices, 1, "append.null_ptr");
         _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_ptr_addr);
 
-        // Update len
+        // Update len in header
         _ = self.builder.buildStore(new_len, len_ptr);
 
         _ = self.builder.buildBr(end_bb);
@@ -22089,20 +22134,23 @@ pub const Emitter = struct {
     /// after this call — effectively a move/consume operation.
     fn emitStringAsStr(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Load the ptr field from the String
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "asstr.ptr_ptr");
+        // Dereference header from outer String struct
+        const header_ptr = self.derefStringHeader(str_ptr);
+
+        // Load the data ptr from the header
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "asstr.ptr_ptr");
         const src_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "asstr.src");
 
-        // Null-out the String's fields — ownership transfer.
+        // Null-out the header's fields — ownership transfer.
         // String's drop will call free(null) which is a no-op.
         const null_ptr = llvm.Const.null_(ptr_type);
         _ = self.builder.buildStore(null_ptr, ptr_ptr);
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "asstr.len_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "asstr.len_ptr");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_ptr);
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 2, "asstr.cap_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "asstr.cap_ptr");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), cap_ptr);
 
         // Null guard: if src_ptr was null, return empty string literal
@@ -22141,16 +22189,19 @@ pub const Emitter = struct {
     fn emitStringClear(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
 
-        // Set len = 0
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "clear.len_ptr");
+        // Dereference header
+        const header_ptr = self.derefStringHeader(str_ptr);
+
+        // Set len = 0 in header
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "clear.len_ptr");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_ptr);
 
-        // Load data pointer
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "clear.ptr_ptr");
+        // Load data pointer from header
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "clear.ptr_ptr");
         const data_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "clear.data_ptr");
 
         // Check if ptr is not null before writing null terminator
@@ -22174,17 +22225,20 @@ pub const Emitter = struct {
     }
 
     /// Emit string.clone() - creates a deep copy.
-    /// Allocates new buffer, copies data, returns new String struct.
+    /// Allocates new header and buffer, copies data, returns new String struct.
     fn emitStringClone(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
 
-        // Load source ptr, len
-        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "clone.src_ptr_ptr");
-        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "clone.src_len_ptr");
+        // Dereference source header
+        const src_header = self.derefStringHeader(str_ptr);
+
+        // Load source ptr, len from header
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 0, "clone.src_ptr_ptr");
+        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 1, "clone.src_len_ptr");
         const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "clone.src_ptr");
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "clone.src_len");
 
@@ -22192,7 +22246,7 @@ pub const Emitter = struct {
         const one = llvm.Const.int32(self.ctx, 1);
         const new_cap = llvm.c.LLVMBuildAdd(self.builder.ref, src_len, one, "clone.new_cap");
 
-        // malloc(new_cap)
+        // malloc(new_cap) for data
         const new_cap_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, new_cap, i64_type, "clone.new_cap_i64");
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{new_cap_i64};
@@ -22209,43 +22263,64 @@ pub const Emitter = struct {
         const null_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, new_ptr, &null_indices, 1, "clone.null_ptr");
         _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), null_ptr);
 
-        // Build result String struct: { new_ptr, len, new_cap }
-        const result_alloca = self.builder.buildAlloca(string_type, "clone.result");
-        const result_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 0, "clone.result_ptr");
-        const result_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 1, "clone.result_len");
-        const result_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result_alloca, 2, "clone.result_cap");
+        // Allocate NEW header for clone, fill: { new_ptr, len, new_cap }
+        const result_header = self.allocateStringHeader();
+        const result_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, result_header, 0, "clone.result_ptr");
+        const result_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, result_header, 1, "clone.result_len");
+        const result_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, result_header, 2, "clone.result_cap");
 
         _ = self.builder.buildStore(new_ptr, result_ptr_field);
         _ = self.builder.buildStore(src_len, result_len_field);
         _ = self.builder.buildStore(new_cap, result_cap_field);
 
-        return self.builder.buildLoad(string_type, result_alloca, "clone.result_val");
+        return self.buildStringFromHeader(result_header);
     }
 
     /// Emit string.drop() - frees the string's memory.
-    /// Calls free(ptr) and zeroes the struct.
+    /// Frees data ptr, frees header, nulls out the outer struct's header_ptr.
     fn emitStringDrop(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const func = self.current_function orelse return EmitError.InvalidAST;
+
         const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Load ptr
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "drop.ptr_ptr");
-        const data_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "drop.data_ptr");
+        // Load header_ptr from outer struct
+        const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "drop.header_field");
+        const header_ptr = self.builder.buildLoad(ptr_type, header_field, "drop.header_ptr");
 
-        // free(ptr)
+        // Check if header pointer is null (safety for edge cases)
+        const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
+        const hdr_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, header_ptr, null_ptr, "drop.hdr_is_null");
+
+        const free_bb = llvm.appendBasicBlock(self.ctx, func, "drop.free");
+        const done_bb = llvm.appendBasicBlock(self.ctx, func, "drop.done");
+
+        _ = self.builder.buildCondBr(hdr_is_null, done_bb, free_bb);
+
+        // --- Free block: header is not null ---
+        self.builder.positionAtEnd(free_bb);
+
+        // Load data ptr from header
+        const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "drop.data_ptr_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, data_ptr_ptr, "drop.data_ptr");
+
+        // free(data_ptr) - free(NULL) is a no-op per C standard
         const free_fn = self.getOrDeclareFree();
         var free_args = [_]llvm.ValueRef{data_ptr};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
 
-        // Zero the struct: ptr=null, len=0, cap=0
-        const null_ptr = llvm.Const.null_(ptr_type);
-        const zero = llvm.Const.int32(self.ctx, 0);
+        // free(header_ptr)
+        var free_header_args = [_]llvm.ValueRef{header_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_header_args, "");
 
-        _ = self.builder.buildStore(null_ptr, ptr_ptr);
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "drop.len_ptr");
-        _ = self.builder.buildStore(zero, len_ptr);
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 2, "drop.cap_ptr");
-        _ = self.builder.buildStore(zero, cap_ptr);
+        _ = self.builder.buildBr(done_bb);
+
+        // --- Done block ---
+        self.builder.positionAtEnd(done_bb);
+
+        // Null out the outer struct's header_ptr
+        _ = self.builder.buildStore(llvm.Const.null_(ptr_type), header_field);
 
         return llvm.Const.int32(self.ctx, 0);
     }
@@ -22255,14 +22330,18 @@ pub const Emitter = struct {
     fn emitStringEq(self: *Emitter, str_ptr: llvm.ValueRef, other_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i1_type = llvm.Types.int1(self.ctx);
 
-        // Load len1, len2
-        const len1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "eq.len1_ptr");
-        const len2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 1, "eq.len2_ptr");
+        // Dereference both headers
+        const header1 = self.derefStringHeader(str_ptr);
+        const header2 = self.derefStringHeader(other_ptr);
+
+        // Load len1, len2 from headers
+        const len1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header1, 1, "eq.len1_ptr");
+        const len2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header2, 1, "eq.len2_ptr");
         const len1 = self.builder.buildLoad(i32_type, len1_ptr, "eq.len1");
         const len2 = self.builder.buildLoad(i32_type, len2_ptr, "eq.len2");
 
@@ -22278,8 +22357,8 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(check_bytes_bb);
 
         // Use memcmp for byte comparison
-        const ptr1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "eq.ptr1_ptr");
-        const ptr2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, other_ptr, 0, "eq.ptr2_ptr");
+        const ptr1_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header1, 0, "eq.ptr1_ptr");
+        const ptr2_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header2, 0, "eq.ptr2_ptr");
         const ptr1 = self.builder.buildLoad(ptr_type, ptr1_ptr, "eq.ptr1");
         const ptr2 = self.builder.buildLoad(ptr_type, ptr2_ptr, "eq.ptr2");
 
@@ -22312,7 +22391,7 @@ pub const Emitter = struct {
     fn emitStringDataHash(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
@@ -22322,9 +22401,10 @@ pub const Emitter = struct {
         const FNV_OFFSET: u64 = 14695981039346656037;
         const FNV_PRIME: u64 = 1099511628211;
 
-        // Load ptr, len
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "hash.ptr_ptr");
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "hash.len_ptr");
+        // Dereference header, load ptr, len
+        const header_ptr = self.derefStringHeader(str_ptr);
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "hash.ptr_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "hash.len_ptr");
         const data_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "hash.data_ptr");
         const len = self.builder.buildLoad(i32_type, len_ptr, "hash.len");
 
@@ -22383,11 +22463,12 @@ pub const Emitter = struct {
     /// Emit String.as_cstr() -> CStr
     /// Returns a pointer to the null-terminated string data.
     fn emitStringDataAsCstr(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Get pointer to the ptr field of the String struct
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "as_cstr.ptr_ptr");
+        // Dereference header, then load data pointer
+        const header_ptr = self.derefStringHeader(str_ptr);
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "as_cstr.ptr_ptr");
 
         // Load the data pointer - this is already null-terminated
         return self.builder.buildLoad(ptr_type, ptr_ptr, "as_cstr.ptr");
@@ -22395,9 +22476,9 @@ pub const Emitter = struct {
 
     /// Emit CStr.to_string() -> String
     /// Copies the C string to a new Klar String.
-    /// Implements inline: strlen, malloc, memcpy (like emitStringFrom).
+    /// Implements inline: strlen, malloc, memcpy.
     fn emitCstrToString(self: *Emitter, cstr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
@@ -22414,7 +22495,7 @@ pub const Emitter = struct {
         const alloc_len = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, one_i32, "cstr.alloc_len");
         const alloc_len_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, alloc_len, i64_type, "cstr.alloc_len_i64");
 
-        // Call malloc
+        // Call malloc for data
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_len_i64};
         const str_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "cstr.ptr");
@@ -22424,23 +22505,16 @@ pub const Emitter = struct {
         var memcpy_args = [_]llvm.ValueRef{ str_ptr, cstr, alloc_len_i64 };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "cstr.memcpy");
 
-        // Build the String result struct
-        const result = self.builder.buildAlloca(string_type, "cstr.result");
-
-        // Set ptr field
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 0, "cstr.ptr_ptr");
+        // Allocate header on heap and fill
+        const header_ptr = self.allocateStringHeader();
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "cstr.hdr.ptr");
         _ = self.builder.buildStore(str_ptr, ptr_ptr);
-
-        // Set len field
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 1, "cstr.len_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "cstr.hdr.len");
         _ = self.builder.buildStore(len_i32, len_ptr);
-
-        // Set capacity field (capacity = len + 1)
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, result, 2, "cstr.cap_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "cstr.hdr.cap");
         _ = self.builder.buildStore(alloc_len, cap_ptr);
 
-        // Load and return the struct
-        return self.builder.buildLoad(string_type, result, "cstr.to_string");
+        return self.buildStringFromHeader(header_ptr);
     }
 
     /// Emit CStr.len() -> usize
@@ -22458,17 +22532,17 @@ pub const Emitter = struct {
     /// Emit String.to_cstr() -> CStrOwned
     /// Allocates a new null-terminated copy of the String data.
     fn emitStringDataToCstrOwned(self: *Emitter, str_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Get the ptr field (source data)
-        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "to_cstr.src_ptr_ptr");
+        // Dereference header, get data ptr and len
+        const header_ptr = self.derefStringHeader(str_ptr);
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "to_cstr.src_ptr_ptr");
         const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "to_cstr.src_ptr");
 
-        // Get the len field
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 1, "to_cstr.len_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "to_cstr.len_ptr");
         const len_i32 = self.builder.buildLoad(i32_type, len_ptr, "to_cstr.len");
 
         // Allocate memory: len + 1 for null terminator
@@ -22533,14 +22607,58 @@ pub const Emitter = struct {
         return dest_ptr;
     }
 
-    /// Get the LLVM struct type for String: { ptr, i32, i32 }
+    /// Get the LLVM struct type for String (outer wrapper): { ptr }
+    /// The single field is a pointer to the heap-allocated StringHeader.
     fn getStringStructType(self: *Emitter) llvm.TypeRef {
-        var fields = [_]llvm.TypeRef{
-            llvm.Types.pointer(self.ctx), // ptr
-            llvm.Types.int32(self.ctx), // len
-            llvm.Types.int32(self.ctx), // capacity
-        };
-        return llvm.Types.struct_(self.ctx, &fields, false);
+        return string_constants.createStringStructType(self.ctx);
+    }
+
+    /// Get the LLVM struct type for StringHeader (heap-allocated): { ptr, i32, i32 }
+    fn getStringHeaderType(self: *Emitter) llvm.TypeRef {
+        return string_constants.createStringHeaderType(self.ctx);
+    }
+
+    /// Dereference a string pointer to get the heap-allocated header pointer.
+    /// str_ptr is a pointer to a String struct { header_ptr }.
+    /// Returns the loaded header_ptr (pointer to StringHeader on heap).
+    fn derefStringHeader(self: *Emitter, str_ptr: llvm.ValueRef) llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_ptr, 0, "str.header_field");
+        return self.builder.buildLoad(ptr_type, header_field, "str.header_ptr");
+    }
+
+    /// Allocate a new StringHeader on the heap and return the pointer.
+    /// Initializes to { null, 0, 0 }.
+    fn allocateStringHeader(self: *Emitter) llvm.ValueRef {
+        const header_type = self.getStringHeaderType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const header_size = llvm.Const.int64(self.ctx, string_constants.string_header_size);
+
+        // malloc for the header
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{header_size};
+        const header_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "str.new_header");
+
+        // Initialize to { null, 0, 0 }
+        const data_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "str.hdr.data_field");
+        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), data_field);
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "str.hdr.len_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_field);
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "str.hdr.cap_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), cap_field);
+
+        return header_ptr;
+    }
+
+    /// Build a string value { header_ptr } from a header pointer.
+    /// Returns a loaded string struct value.
+    fn buildStringFromHeader(self: *Emitter, header_ptr: llvm.ValueRef) llvm.ValueRef {
+        const string_type = self.getStringStructType();
+        const string_alloca = self.builder.buildAlloca(string_type, "str.wrap");
+        const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, string_alloca, 0, "str.wrap.hdr");
+        _ = self.builder.buildStore(header_ptr, header_field);
+        return self.builder.buildLoad(string_type, string_alloca, "str.wrap.val");
     }
 
     // ==================== File I/O Emit Functions ====================
@@ -22588,7 +22706,7 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Get the LLVM struct type for Result#[String, IoError]: { tag: i1, string: { ptr, len, cap }, error: IoError }
+    /// Get the LLVM struct type for Result#[String, IoError]: { tag: i1, string: { header_ptr }, error: IoError }
     fn getStringResultType(self: *Emitter) llvm.TypeRef {
         const io_error_type = self.getIoErrorStructType();
         const string_type = self.getStringStructType();
@@ -22752,23 +22870,25 @@ pub const Emitter = struct {
         var fclose_args = [_]llvm.ValueRef{file_ptr};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "readstr.close");
 
-        // Build String struct { ptr, len, capacity }
-        const string_type = self.getStringStructType();
+        // Allocate String header on heap and fill: { buffer, len, cap }
+        const header_type_rd = self.getStringHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
+        const hdr_ptr = self.allocateStringHeader();
 
-        // Store ptr (field 0)
-        const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 0, "readstr.str_ptr_field");
-        _ = self.builder.buildStore(buffer, str_ptr_field);
+        const hdr_data_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type_rd, hdr_ptr, 0, "readstr.hdr.data");
+        _ = self.builder.buildStore(buffer, hdr_data_field);
 
-        // Store len (field 1) - truncate i64 to i32
         const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, file_size, i32_type, "readstr.len_i32");
-        const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 1, "readstr.str_len_field");
-        _ = self.builder.buildStore(len_i32, str_len_field);
+        const hdr_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type_rd, hdr_ptr, 1, "readstr.hdr.len");
+        _ = self.builder.buildStore(len_i32, hdr_len_field);
 
-        // Store capacity (field 2) - len + 1 (includes null byte)
         const cap_i32 = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, llvm.Const.int32(self.ctx, 1), "readstr.cap_i32");
-        const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 2, "readstr.str_cap_field");
-        _ = self.builder.buildStore(cap_i32, str_cap_field);
+        const hdr_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type_rd, hdr_ptr, 2, "readstr.hdr.cap");
+        _ = self.builder.buildStore(cap_i32, hdr_cap_field);
+
+        // Build outer String struct { header_ptr } and store in result
+        const str_val = self.buildStringFromHeader(hdr_ptr);
+        _ = self.builder.buildStore(str_val, str_field_ptr);
 
         // Store Ok result
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr); // tag = 1 (Ok)
@@ -24420,20 +24540,25 @@ pub const Emitter = struct {
         var fclose_args = [_]llvm.ValueRef{file_ptr};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "fs_readstr.close");
 
-        // Build String struct
-        const string_type = self.getStringStructType();
+        // Allocate String header on heap and fill
+        const header_type_fs = self.getStringHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
+        const fs_hdr_ptr = self.allocateStringHeader();
 
-        const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 0, "fs_readstr.str_ptr_field");
-        _ = self.builder.buildStore(buffer, str_ptr_field);
+        const fs_hdr_data = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type_fs, fs_hdr_ptr, 0, "fs_readstr.hdr.data");
+        _ = self.builder.buildStore(buffer, fs_hdr_data);
 
         const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, file_size, i32_type, "fs_readstr.len_i32");
-        const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 1, "fs_readstr.str_len_field");
-        _ = self.builder.buildStore(len_i32, str_len_field);
+        const fs_hdr_len = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type_fs, fs_hdr_ptr, 1, "fs_readstr.hdr.len");
+        _ = self.builder.buildStore(len_i32, fs_hdr_len);
 
         const fs_cap_i32 = llvm.c.LLVMBuildAdd(self.builder.ref, len_i32, llvm.Const.int32(self.ctx, 1), "fs_readstr.cap_i32");
-        const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_field_ptr, 2, "fs_readstr.str_cap_field");
-        _ = self.builder.buildStore(fs_cap_i32, str_cap_field);
+        const fs_hdr_cap = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type_fs, fs_hdr_ptr, 2, "fs_readstr.hdr.cap");
+        _ = self.builder.buildStore(fs_cap_i32, fs_hdr_cap);
+
+        // Build outer String struct { header_ptr } and store in result
+        const fs_str_val = self.buildStringFromHeader(fs_hdr_ptr);
+        _ = self.builder.buildStore(fs_str_val, str_field_ptr);
 
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
         _ = self.builder.buildBr(cont_bb);
@@ -24549,7 +24674,7 @@ pub const Emitter = struct {
         const list_type = self.getListStructType();
         const initial_cap: u32 = 16;
         const string_struct_type = self.getStringStructType();
-        const string_size = 16; // { ptr, len, capacity } = 8 + 4 + 4 = 16 bytes
+        const string_size = string_constants.string_struct_size; // { header_ptr } = 8 bytes
         const malloc_fn = self.getOrDeclareMalloc();
 
         if (self.platform.os == .windows) {
@@ -24709,12 +24834,22 @@ pub const Emitter = struct {
             const slot_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cur_arr2, &slot_idx, 1, "readdir.slot_ptr");
 
             const slot_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, slot_ptr, ptr_type, "readdir.slot_cast");
-            const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 0, "readdir.str_ptr_field");
-            _ = self.builder.buildStore(str_copy, str_ptr_field);
-            const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 1, "readdir.str_len_field");
-            _ = self.builder.buildStore(str_len_i32, str_len_field);
-            const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 2, "readdir.str_cap_field");
-            _ = self.builder.buildStore(str_len_i32, str_cap_field);
+
+            // Allocate String header on heap and fill
+            const win_str_hdr_type = string_constants.createStringHeaderType(self.ctx);
+            const win_hdr_size = llvm.Const.int64(self.ctx, string_constants.string_header_size);
+            var win_hdr_malloc = [_]llvm.ValueRef{win_hdr_size};
+            const win_str_hdr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &win_hdr_malloc, "readdir.str_hdr");
+            const win_hdr_data = llvm.c.LLVMBuildStructGEP2(self.builder.ref, win_str_hdr_type, win_str_hdr, 0, "readdir.hdr.data");
+            _ = self.builder.buildStore(str_copy, win_hdr_data);
+            const win_hdr_len_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, win_str_hdr_type, win_str_hdr, 1, "readdir.hdr.len");
+            _ = self.builder.buildStore(str_len_i32, win_hdr_len_f);
+            const win_hdr_cap_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, win_str_hdr_type, win_str_hdr, 2, "readdir.hdr.cap");
+            _ = self.builder.buildStore(str_len_i32, win_hdr_cap_f);
+
+            // Store header_ptr in outer String struct slot
+            const win_slot_hdr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 0, "readdir.slot_hdr");
+            _ = self.builder.buildStore(win_str_hdr, win_slot_hdr);
 
             const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, cur_len2, llvm.Const.int32(self.ctx, 1), "readdir.new_len");
             _ = self.builder.buildStore(new_len, list_len_field);
@@ -24880,12 +25015,22 @@ pub const Emitter = struct {
             const slot_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), cur_arr2, &slot_idx, 1, "readdir.slot_ptr");
 
             const slot_ptr_cast = llvm.c.LLVMBuildBitCast(self.builder.ref, slot_ptr, llvm.Types.pointer(self.ctx), "readdir.slot_cast");
-            const str_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 0, "readdir.str_ptr_field");
-            _ = self.builder.buildStore(str_copy, str_ptr_field);
-            const str_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 1, "readdir.str_len_field");
-            _ = self.builder.buildStore(str_len_i32, str_len_field);
-            const str_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 2, "readdir.str_cap_field");
-            _ = self.builder.buildStore(str_len_i32, str_cap_field);
+
+            // Allocate String header on heap and fill
+            const posix_str_hdr_type = string_constants.createStringHeaderType(self.ctx);
+            const posix_hdr_size = llvm.Const.int64(self.ctx, string_constants.string_header_size);
+            var posix_hdr_malloc = [_]llvm.ValueRef{posix_hdr_size};
+            const posix_str_hdr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &posix_hdr_malloc, "readdir.str_hdr");
+            const posix_hdr_data = llvm.c.LLVMBuildStructGEP2(self.builder.ref, posix_str_hdr_type, posix_str_hdr, 0, "readdir.hdr.data");
+            _ = self.builder.buildStore(str_copy, posix_hdr_data);
+            const posix_hdr_len_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, posix_str_hdr_type, posix_str_hdr, 1, "readdir.hdr.len");
+            _ = self.builder.buildStore(str_len_i32, posix_hdr_len_f);
+            const posix_hdr_cap_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, posix_str_hdr_type, posix_str_hdr, 2, "readdir.hdr.cap");
+            _ = self.builder.buildStore(str_len_i32, posix_hdr_cap_f);
+
+            // Store header_ptr in outer String struct slot
+            const posix_slot_hdr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_struct_type, slot_ptr_cast, 0, "readdir.slot_hdr");
+            _ = self.builder.buildStore(posix_str_hdr, posix_slot_hdr);
 
             const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, cur_len2, llvm.Const.int32(self.ctx, 1), "readdir.new_len");
             _ = self.builder.buildStore(new_len, list_len_field);
@@ -25951,23 +26096,33 @@ pub const Emitter = struct {
         const pos_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_ptr, 2, "rl.pos_ptr");
         const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, br_type, br_ptr, 3, "rl.cap_ptr");
 
-        // Allocate result String on stack: { ptr, len, cap }
+        // Allocate result String on stack: { header_ptr }
         const str_alloca = self.builder.buildAlloca(string_type, "rl.str");
+        const header_type = self.getStringHeaderType();
 
-        // Initialize String with initial capacity
+        // Allocate header on heap
         const malloc_fn = self.getOrDeclareMalloc();
-        var malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, initial_cap)};
-        const str_data = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "rl.str_data");
+        const rl_header_size = llvm.Const.int64(self.ctx, string_constants.string_header_size);
+        var hdr_malloc_args = [_]llvm.ValueRef{rl_header_size};
+        const rl_header_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &hdr_malloc_args, "rl.header");
 
-        const str_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_alloca, 0, "rl.str_ptr_ptr");
-        const str_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_alloca, 1, "rl.str_len_ptr");
-        const str_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_alloca, 2, "rl.str_cap_ptr");
+        // Allocate data buffer with initial capacity
+        var data_malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, initial_cap)};
+        const str_data = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &data_malloc_args, "rl.str_data");
 
-        _ = self.builder.buildStore(str_data, str_ptr_ptr);
-        _ = self.builder.buildStore(zero_i32, str_len_ptr);
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, initial_cap), str_cap_ptr);
+        // Fill header: { str_data, 0, initial_cap }
+        const rl_hdr_data = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, rl_header_ptr, 0, "rl.hdr.data");
+        _ = self.builder.buildStore(str_data, rl_hdr_data);
+        const rl_hdr_len = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, rl_header_ptr, 1, "rl.hdr.len");
+        _ = self.builder.buildStore(zero_i32, rl_hdr_len);
+        const rl_hdr_cap = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, rl_header_ptr, 2, "rl.hdr.cap");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, initial_cap), rl_hdr_cap);
 
-        // Store null terminator at start
+        // Store header_ptr in outer struct
+        const rl_str_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_alloca, 0, "rl.str_hdr_field");
+        _ = self.builder.buildStore(rl_header_ptr, rl_str_hdr_field);
+
+        // Store null terminator at start of data
         _ = self.builder.buildStore(llvm.Const.int(i8_type, 0, false), str_data);
 
         // Create basic blocks
@@ -26079,7 +26234,7 @@ pub const Emitter = struct {
     }
 
     /// Helper for read_line: append bytes to the String, growing if needed.
-    /// str_alloca: pointer to String struct on stack
+    /// str_alloca: pointer to outer String struct on stack { header_ptr }
     /// src: pointer to source bytes
     /// len: number of bytes to copy (i32)
     fn emitReadLineAppend(self: *Emitter, str_alloca: llvm.ValueRef, src: llvm.ValueRef, len: llvm.ValueRef) EmitError!void {
@@ -26089,15 +26244,18 @@ pub const Emitter = struct {
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
 
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
         const one_i32 = llvm.Const.int32(self.ctx, 1);
 
-        // Load current string state
-        const str_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_alloca, 0, "rla.ptr_ptr");
-        const str_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_alloca, 1, "rla.len_ptr");
-        const str_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, string_type, str_alloca, 2, "rla.cap_ptr");
+        // Dereference header from outer struct
+        const rla_header_ptr = self.derefStringHeader(str_alloca);
+
+        // Load current string state from header
+        const str_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, rla_header_ptr, 0, "rla.ptr_ptr");
+        const str_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, rla_header_ptr, 1, "rla.len_ptr");
+        const str_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, rla_header_ptr, 2, "rla.cap_ptr");
 
         const current_ptr = self.builder.buildLoad(ptr_type, str_ptr_ptr, "rla.cur_ptr");
         const current_len = self.builder.buildLoad(i32_type, str_len_ptr, "rla.cur_len");
@@ -26882,11 +27040,11 @@ pub const Emitter = struct {
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
-        // StringHeader klar_string_from(const char* src)
+        // StringHeader klar_string_from(const char* src) -> returns StringHeader by value
         const ptr_type = llvm.Types.pointer(self.ctx);
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         var param_types = [_]llvm.TypeRef{ptr_type};
-        const fn_type = llvm.c.LLVMFunctionType(string_type, &param_types, 1, 0);
+        const fn_type = llvm.c.LLVMFunctionType(header_type, &param_types, 1, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
@@ -26895,11 +27053,11 @@ pub const Emitter = struct {
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
-        // StringHeader klar_string_with_capacity(i32 capacity)
+        // StringHeader klar_string_with_capacity(i32 capacity) -> returns StringHeader by value
         const i32_type = llvm.Types.int32(self.ctx);
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         var param_types = [_]llvm.TypeRef{i32_type};
-        const fn_type = llvm.c.LLVMFunctionType(string_type, &param_types, 1, 0);
+        const fn_type = llvm.c.LLVMFunctionType(header_type, &param_types, 1, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
@@ -26922,11 +27080,11 @@ pub const Emitter = struct {
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
-        // StringHeader klar_string_concat(const StringHeader* a, const StringHeader* b)
+        // StringHeader klar_string_concat(const StringHeader* a, const StringHeader* b) -> returns StringHeader by value
         const ptr_type = llvm.Types.pointer(self.ctx);
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         var param_types = [_]llvm.TypeRef{ ptr_type, ptr_type };
-        const fn_type = llvm.c.LLVMFunctionType(string_type, &param_types, 2, 0);
+        const fn_type = llvm.c.LLVMFunctionType(header_type, &param_types, 2, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
@@ -26973,11 +27131,11 @@ pub const Emitter = struct {
         if (llvm.c.LLVMGetNamedFunction(self.module.ref, fn_name)) |func| {
             return func;
         }
-        // StringHeader klar_string_clone_heap(const StringHeader* s)
+        // StringHeader klar_string_clone_heap(const StringHeader* s) -> returns StringHeader by value
         const ptr_type = llvm.Types.pointer(self.ctx);
-        const string_type = self.getStringStructType();
+        const header_type = self.getStringHeaderType();
         var param_types = [_]llvm.TypeRef{ptr_type};
-        const fn_type = llvm.c.LLVMFunctionType(string_type, &param_types, 1, 0);
+        const fn_type = llvm.c.LLVMFunctionType(header_type, &param_types, 1, 0);
         return llvm.c.LLVMAddFunction(self.module.ref, fn_name, fn_type);
     }
 
@@ -31398,8 +31556,8 @@ pub const Emitter = struct {
             .map => 20,
             // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
             .set => 20,
-            .string_data => 8, // pointer to string data
-            .path => 16, // Path: { ptr, len: i32, cap: i32 } = 8 + 4 + 4 = 16 bytes
+            .string_data => 8, // outer String struct { header_ptr } = 8 bytes (heap-indirected)
+            .path => 8, // Path wraps String: { header_ptr } = 8 bytes (heap-indirected)
             .file, .io_error, .stdout_handle, .stderr_handle, .stdin_handle => 8, // handles/pointers
             .buf_reader, .buf_writer => 8, // pointers to buffered I/O structures
             .extern_type => |ext| {
@@ -31748,14 +31906,9 @@ pub const Emitter = struct {
                 return llvm.Types.struct_(self.ctx, &fields, false);
             },
             .string_data => {
-                // String LLVM layout: { ptr: *u8, len: i32, capacity: i32 }
-                // Same layout as List but fixed element type of u8
-                var fields = [_]llvm.TypeRef{
-                    llvm.Types.pointer(self.ctx), // ptr
-                    llvm.Types.int32(self.ctx), // len
-                    llvm.Types.int32(self.ctx), // capacity
-                };
-                return llvm.Types.struct_(self.ctx, &fields, false);
+                // String LLVM layout: { header_ptr } (heap-indirected)
+                // Header on heap: { ptr: *u8, len: i32, capacity: i32 }
+                return self.getStringStructType();
             },
             .file => {
                 // File is an opaque FILE* handle
@@ -31784,13 +31937,8 @@ pub const Emitter = struct {
                 return llvm.Types.pointer(self.ctx);
             },
             .path => {
-                // Path is a wrapper around String: { ptr: *u8, len: i32, capacity: i32 }
-                var fields = [_]llvm.TypeRef{
-                    llvm.Types.pointer(self.ctx), // ptr
-                    llvm.Types.int32(self.ctx), // len
-                    llvm.Types.int32(self.ctx), // capacity
-                };
-                return llvm.Types.struct_(self.ctx, &fields, false);
+                // Path wraps String: { header_ptr } (heap-indirected)
+                return self.getStringStructType();
             },
             .buf_reader => |br| {
                 // BufReader LLVM layout: { inner: R, buffer: [8192]u8, pos: i32, cap: i32 }
