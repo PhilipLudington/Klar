@@ -34,6 +34,7 @@ const methods = @import("methods.zig");
 const type_resolution = @import("type_resolution.zig");
 const trait_checking = @import("trait_checking.zig");
 const method_calls = @import("method_calls.zig");
+const meta_validation = @import("meta_validation.zig");
 
 // Re-export types from submodules
 pub const MonomorphizedFunction = generics.MonomorphizedFunction;
@@ -99,6 +100,10 @@ pub const CheckError = struct {
         comptime_error,
         // Unsafe errors
         unsafe_trait_requires_unsafe_impl,
+        // Meta validation errors
+        meta_error,
+        // Meta warnings (don't block compilation)
+        meta_warning,
     };
 
     pub fn format(self: CheckError, allocator: Allocator) ![]u8 {
@@ -408,6 +413,27 @@ pub const TypeChecker = struct {
     /// Disabled for normal run/build flows so test-only failures are skipped.
     check_test_decls: bool,
 
+    // Meta validation fields
+    /// Maps function name -> deprecation message for functions annotated with meta deprecated.
+    deprecated_functions: std.StringHashMapUnmanaged([]const u8),
+    /// Set of group names defined via meta group at file level.
+    meta_group_names: std.StringHashMapUnmanaged(void),
+    /// Count of real errors (excludes meta_warning). Avoids O(n) scan in hasErrors().
+    error_count: usize,
+    /// Count of meta warnings. Avoids O(n) scan in hasWarnings().
+    warning_count: usize,
+    /// True when checking the body of a `meta pure` function.
+    in_pure_function: bool,
+    /// Span of the current `meta pure` annotation (for error messages).
+    pure_function_span: ?ast.Span,
+    /// Set of function names declared `meta pure`.
+    pure_functions: std.StringHashMapUnmanaged(void),
+    /// Registry of custom meta annotation definitions (meta define).
+    meta_definitions: std.StringHashMapUnmanaged(*ast.MetaDefine),
+    /// When true, skip custom annotation validation (Phase 1 of two-phase checking
+    /// may have incomplete imports, so custom validation is deferred to Phase 2).
+    lenient_custom_meta: bool,
+
     const CaptureInfo = struct {
         is_mutable: bool,
         type_: Type,
@@ -473,6 +499,15 @@ pub const TypeChecker = struct {
             .current_async_context = false,
             .debug_call_types = .{},
             .check_test_decls = false,
+            .deprecated_functions = .{},
+            .meta_group_names = .{},
+            .error_count = 0,
+            .warning_count = 0,
+            .in_pure_function = false,
+            .pure_function_span = null,
+            .pure_functions = .{},
+            .meta_definitions = .{},
+            .lenient_custom_meta = false,
         };
         checker.initBuiltins() catch @panic("Failed to initialize builtin types");
         return checker;
@@ -729,6 +764,30 @@ pub const TypeChecker = struct {
 
         // Clean up debug call types (no values to free, just the map)
         self.debug_call_types.deinit(self.allocator);
+
+        // Clean up meta validation maps
+        // Free heap-allocated keys for deprecated methods (format "TypeName::method_name").
+        // Plain function keys are borrowed from the AST and must not be freed.
+        // See meta_validation.clearDeprecatedFunctions for the safety invariant.
+        var dep_key_iter = self.deprecated_functions.keyIterator();
+        while (dep_key_iter.next()) |key| {
+            if (std.mem.indexOf(u8, key.*, "::") != null) {
+                self.allocator.free(key.*);
+            }
+        }
+        self.deprecated_functions.deinit(self.allocator);
+        self.meta_group_names.deinit(self.allocator);
+        // Free heap-allocated keys for pure methods (format "TypeName::method_name").
+        // Plain function keys are borrowed from the AST and must not be freed.
+        // See meta_validation.clearPureFunctions for the safety invariant.
+        var pure_key_iter = self.pure_functions.keyIterator();
+        while (pure_key_iter.next()) |key| {
+            if (std.mem.indexOf(u8, key.*, "::") != null) {
+                self.allocator.free(key.*);
+            }
+        }
+        self.pure_functions.deinit(self.allocator);
+        self.meta_definitions.deinit(self.allocator);
     }
 
     fn initBuiltins(self: *TypeChecker) !void {
@@ -1874,6 +1933,119 @@ pub const TypeChecker = struct {
         });
 
         // ====================================================================
+        // Register environment, process, stat, and timestamp builtins
+        // ====================================================================
+
+        // env_get(name: string) -> ?string
+        const env_get_ret = try self.type_builder.optionalType(self.type_builder.stringType());
+        const env_get_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, env_get_ret);
+        try self.current_scope.define(.{
+            .name = "env_get",
+            .type_ = env_get_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // env_set(name: string, value: string) -> Result#[void, IoError]
+        const void_io_result = try self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType());
+        const env_set_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.stringType() }, void_io_result);
+        try self.current_scope.define(.{
+            .name = "env_set",
+            .type_ = env_set_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // timestamp_now() -> i64
+        const timestamp_now_fn_type = try self.type_builder.functionType(&.{}, self.type_builder.i64Type());
+        try self.current_scope.define(.{
+            .name = "timestamp_now",
+            .type_ = timestamp_now_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // FileStat struct type: { size: i64, modified_epoch: i64, is_dir: bool, is_file: bool }
+        const file_stat_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "size", .type_ = self.type_builder.i64Type(), .is_pub = true },
+            .{ .name = "modified_epoch", .type_ = self.type_builder.i64Type(), .is_pub = true },
+            .{ .name = "is_dir", .type_ = self.type_builder.boolType(), .is_pub = true },
+            .{ .name = "is_file", .type_ = self.type_builder.boolType(), .is_pub = true },
+        });
+        const file_stat_struct = try self.allocator.create(types.StructType);
+        file_stat_struct.* = .{
+            .name = "FileStat",
+            .type_params = &.{},
+            .fields = file_stat_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, file_stat_struct);
+        const file_stat_type: types.Type = .{ .struct_ = file_stat_struct };
+        try self.current_scope.define(.{
+            .name = "FileStat",
+            .type_ = file_stat_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_stat(path: string) -> Result#[FileStat, IoError]
+        const fs_stat_ret = try self.type_builder.resultType(file_stat_type, self.type_builder.ioErrorType());
+        const fs_stat_fn_type = try self.type_builder.functionType(&.{self.type_builder.stringType()}, fs_stat_ret);
+        try self.current_scope.define(.{
+            .name = "fs_stat",
+            .type_ = fs_stat_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ProcessOutput struct type: { stdout: string, stderr: string, exit_code: i32 }
+        // Note: stderr is always empty in current implementation (stdout-only capture via popen).
+        const process_output_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "stdout", .type_ = self.type_builder.stringType(), .is_pub = true },
+            .{ .name = "stderr", .type_ = self.type_builder.stringType(), .is_pub = true },
+            .{ .name = "exit_code", .type_ = self.type_builder.i32Type(), .is_pub = true },
+        });
+        const process_output_struct = try self.allocator.create(types.StructType);
+        process_output_struct.* = .{
+            .name = "ProcessOutput",
+            .type_params = &.{},
+            .fields = process_output_fields,
+            .traits = &.{},
+            .is_copy = false,
+        };
+        try self.generic_struct_types.append(self.allocator, process_output_struct);
+        const process_output_type: types.Type = .{ .struct_ = process_output_struct };
+        try self.current_scope.define(.{
+            .name = "ProcessOutput",
+            .type_ = process_output_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // process_run(cmd: string, args: List#[string]) -> Result#[ProcessOutput, IoError]
+        // SECURITY WARNING: Uses popen() internally — cmd and args are concatenated into a
+        // single shell command string passed to /bin/sh. Shell metacharacters in any argument
+        // (;, |, $(), `, &&, etc.) WILL be interpreted. Only pass trusted, literal strings.
+        // A future process_spawn() builtin will use execvp() for safe argument passing.
+        const process_args_type = try self.type_builder.listType(self.type_builder.stringType());
+        const process_run_ret = try self.type_builder.resultType(process_output_type, self.type_builder.ioErrorType());
+        const process_run_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), process_args_type }, process_run_ret);
+        try self.current_scope.define(.{
+            .name = "process_run",
+            .type_ = process_run_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ====================================================================
         // Register builtin trait implementations for I/O types
         // ====================================================================
 
@@ -1958,11 +2130,26 @@ pub const TypeChecker = struct {
             .kind = kind,
             .span = span,
             .message = message,
-        }) catch {};
+        }) catch return;
+        if (kind == .meta_warning) {
+            self.warning_count += 1;
+        } else {
+            self.error_count += 1;
+        }
+    }
+
+    /// Add a warning (delegates to addError with meta_warning kind). Warnings don't block compilation.
+    pub fn addWarning(self: *TypeChecker, span: Span, comptime fmt: []const u8, args: anytype) void {
+        self.addError(.meta_warning, span, fmt, args);
     }
 
     pub fn hasErrors(self: *const TypeChecker) bool {
-        return self.errors.items.len > 0;
+        return self.error_count > 0;
+    }
+
+    /// Returns true if there are any meta warnings in the error list.
+    pub fn hasWarnings(self: *const TypeChecker) bool {
+        return self.warning_count > 0;
     }
 
     /// Clear all accumulated errors (useful for REPL after reporting)
@@ -1974,6 +2161,8 @@ pub const TypeChecker = struct {
             }
         }
         self.errors.clearRetainingCapacity();
+        self.error_count = 0;
+        self.warning_count = 0;
     }
 
     /// Resolve a type expression to a Type, returning void on error
@@ -3177,6 +3366,12 @@ pub const TypeChecker = struct {
         // Special handling for Ok/Err constructors to infer Result type from context
         if (call.callee == .identifier) {
             const func_name = call.callee.identifier.name;
+
+            // Check purity constraints (before special-case handling which may return early)
+            if (self.in_pure_function) {
+                meta_validation.checkPureCall(self, func_name, call.span);
+            }
+
             if (std.mem.eql(u8, func_name, "Ok") or std.mem.eql(u8, func_name, "Err")) {
                 return self.checkOkErrCall(call, std.mem.eql(u8, func_name, "Ok"));
             }
@@ -3413,6 +3608,8 @@ pub const TypeChecker = struct {
                 }
             }
 
+            // Check if calling a deprecated function
+            meta_validation.checkDeprecatedCall(self, func_name, call.span);
         }
 
         const callee_type = self.checkExpr(call.callee);
@@ -3688,6 +3885,20 @@ pub const TypeChecker = struct {
         if (object_type == .struct_) {
             const struct_type = object_type.struct_;
             if (self.lookupStructMethod(struct_type.name, method.method_name)) |struct_method| {
+                // Check if calling a deprecated method
+                meta_validation.checkDeprecatedMethodCall(self, struct_type.name, method.method_name, method.span);
+
+                // Check purity constraints for user-defined method calls
+                if (self.in_pure_function) {
+                    if (meta_validation.hasPureAnnotation(struct_method.decl.meta) == null) {
+                        if (self.pure_function_span) |ps| {
+                            self.addError(.meta_error, method.span, "pure function (declared at line {d}) cannot call non-pure method '{s}.{s}'", .{ ps.line, struct_type.name, method.method_name });
+                        } else {
+                            self.addError(.meta_error, method.span, "pure function cannot call non-pure method '{s}.{s}'", .{ struct_type.name, method.method_name });
+                        }
+                    }
+                }
+
                 // Check argument count (excluding self if method has it)
                 const expected_args = if (struct_method.has_self)
                     struct_method.func_type.function.params.len - 1
@@ -3748,6 +3959,20 @@ pub const TypeChecker = struct {
         if (object_type == .enum_) {
             const enum_type = object_type.enum_;
             if (self.lookupStructMethod(enum_type.name, method.method_name)) |enum_method| {
+                // Check if calling a deprecated method
+                meta_validation.checkDeprecatedMethodCall(self, enum_type.name, method.method_name, method.span);
+
+                // Check purity constraints for user-defined method calls
+                if (self.in_pure_function) {
+                    if (meta_validation.hasPureAnnotation(enum_method.decl.meta) == null) {
+                        if (self.pure_function_span) |ps| {
+                            self.addError(.meta_error, method.span, "pure function (declared at line {d}) cannot call non-pure method '{s}.{s}'", .{ ps.line, enum_type.name, method.method_name });
+                        } else {
+                            self.addError(.meta_error, method.span, "pure function cannot call non-pure method '{s}.{s}'", .{ enum_type.name, method.method_name });
+                        }
+                    }
+                }
+
                 // Check argument count (excluding self if method has it)
                 const expected_args = if (enum_method.has_self)
                     enum_method.func_type.function.params.len - 1
@@ -4290,6 +4515,22 @@ pub const TypeChecker = struct {
                     else => {},
                 }
             }
+
+            // Also export meta define entries from file-level meta
+            for (module_ast.file_meta) |annotation| {
+                switch (annotation) {
+                    .define => |def| {
+                        try symbols.symbols.put(self.allocator, def.name, .{
+                            .name = def.name,
+                            .kind = .meta_define,
+                            .type_ = null,
+                            .is_pub = true,
+                            .meta_define_ptr = def,
+                        });
+                    },
+                    else => {},
+                }
+            }
         }
 
         // Store in registry using duplicated canonical name
@@ -4379,11 +4620,24 @@ pub const TypeChecker = struct {
                 continue;
             }
 
+            // Meta defines go into meta_definitions registry, not scope
+            if (sym.kind == .meta_define) {
+                if (sym.meta_define_ptr) |def| {
+                    if (!self.skip_existing_imports and self.meta_definitions.contains(def.name)) {
+                        self.addError(.meta_error, span, "duplicate meta define '{s}' from import", .{def.name});
+                    } else {
+                        self.meta_definitions.put(self.allocator, def.name, def) catch {};
+                    }
+                }
+                continue;
+            }
+
             // Add to scope based on symbol kind
             const symbol_kind: Symbol.Kind = switch (sym.kind) {
                 .function => .function,
                 .struct_type, .enum_type, .trait_type, .type_alias => .type_,
                 .constant => .constant,
+                .meta_define => unreachable, // handled above
             };
 
             self.current_scope.define(.{
@@ -4420,11 +4674,24 @@ pub const TypeChecker = struct {
             return;
         }
 
+        // Meta defines go into meta_definitions registry, not scope
+        if (sym.kind == .meta_define) {
+            if (item.alias != null) {
+                self.addError(.meta_error, item.span, "meta define '{s}' cannot be aliased", .{item.name});
+                return;
+            }
+            if (sym.meta_define_ptr) |def| {
+                self.meta_definitions.put(self.allocator, def.name, def) catch {};
+            }
+            return;
+        }
+
         // Add to scope
         const symbol_kind: Symbol.Kind = switch (sym.kind) {
             .function => .function,
             .struct_type, .enum_type, .trait_type, .type_alias => .type_,
             .constant => .constant,
+            .meta_define => unreachable, // handled above
         };
 
         self.current_scope.define(.{
@@ -4447,10 +4714,24 @@ pub const TypeChecker = struct {
     pub fn checkModuleDeclarations(self: *TypeChecker, module: ast.Module) void {
         self.async_function_names.clearRetainingCapacity();
 
+        // Skip custom annotation validation in Phase 1 — imports may be incomplete.
+        // Custom annotations are validated in Phase 2 (checkModuleBodies) when all imports are resolved.
+        self.lenient_custom_meta = true;
+
+        // Clear meta state before processing imports (imports may add definitions)
+        meta_validation.clearMetaDefinitions(self);
+        meta_validation.clearDeprecatedFunctions(self);
+        meta_validation.clearPureFunctions(self);
+
         // Process imports leniently — modules not yet registered are skipped
         self.skip_missing_modules = true;
         self.processImports(module);
         self.skip_missing_modules = false;
+
+        // Collect meta group names, definitions, and validate file-level meta before checking declarations
+        meta_validation.collectGroupNames(self, module.file_meta);
+        meta_validation.collectMetaDefinitions(self, module.file_meta);
+        meta_validation.validateFileMeta(self, module.file_meta);
 
         // Pass 1: register all type declarations
         for (module.declarations) |decl| {
@@ -4565,6 +4846,11 @@ pub const TypeChecker = struct {
                     if (f.is_comptime) {
                         self.comptime_functions.put(self.allocator, f.name, f) catch {};
                     }
+
+                    // Register deprecated functions for call-site warnings
+                    meta_validation.registerDeprecatedFunction(self, f.name, f.meta);
+                    // Register pure functions for purity checking
+                    meta_validation.registerPureFunction(self, f.name, f.meta);
                 },
                 .const_decl => self.checkDecl(decl),
                 .extern_block => self.checkDecl(decl),
@@ -4589,15 +4875,59 @@ pub const TypeChecker = struct {
             }
         }
 
+        // Clear meta state before re-processing imports
+        meta_validation.clearMetaDefinitions(self);
+        meta_validation.clearDeprecatedFunctions(self);
+        meta_validation.clearPureFunctions(self);
+
         // Re-process imports — all exports now available, skip already-imported symbols
         self.skip_existing_imports = true;
         self.processImports(module);
         self.skip_existing_imports = false;
 
-        // Pass 3: check function bodies
+        // Re-register current module's deprecated and pure functions
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
+                    meta_validation.registerDeprecatedFunction(self, f.name, f.meta);
+                    meta_validation.registerPureFunction(self, f.name, f.meta);
+                },
+                .impl_decl => |impl| {
+                    // Extract type name from target_type AST node
+                    const struct_name = switch (impl.target_type) {
+                        .named => |n| n.name,
+                        .generic_apply => |g| switch (g.base) {
+                            .named => |n| n.name,
+                            else => continue,
+                        },
+                        else => continue,
+                    };
+                    for (impl.methods) |method| {
+                        meta_validation.registerDeprecatedMethod(self, struct_name, method.name, method.meta);
+                        meta_validation.registerPureMethod(self, struct_name, method.name, method.meta);
+                    }
+                },
+                else => {},
+            }
+        }
+
+        // Re-collect group names and definitions for this module (may differ from previous module in multi-file builds)
+        meta_validation.collectGroupNames(self, module.file_meta);
+        meta_validation.collectMetaDefinitions(self, module.file_meta);
+
+        // All imports resolved — enable custom annotation validation (was deferred from Phase 1)
+        self.lenient_custom_meta = false;
+
+        // Validate custom annotations at file level (deferred from Phase 1 when imports were incomplete)
+        meta_validation.validateFileMetaCustomOnly(self, module.file_meta);
+
+        // Pass 3: validate meta annotations and check function bodies
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .function => |f| {
+                    // Validate meta annotations (all functions are in scope by now)
+                    meta_validation.validateDeclMeta(self, f.meta, .function);
+
                     if (f.body) |body| {
                         // Push type parameters for generic functions
                         const has_type_params = f.type_params.len > 0;
@@ -4651,6 +4981,16 @@ pub const TypeChecker = struct {
                         }
                         defer self.in_unsafe_context = was_unsafe;
 
+                        // For pure functions, set the purity flag so calls are checked
+                        const was_pure = self.in_pure_function;
+                        const was_pure_span = self.pure_function_span;
+                        if (meta_validation.hasPureAnnotation(f.meta)) |pure_span| {
+                            self.in_pure_function = true;
+                            self.pure_function_span = pure_span;
+                        }
+                        defer self.in_pure_function = was_pure;
+                        defer self.pure_function_span = was_pure_span;
+
                         const was_async_context = self.current_async_context;
                         self.current_async_context = f.is_async;
                         defer self.current_async_context = was_async_context;
@@ -4664,6 +5004,22 @@ pub const TypeChecker = struct {
                     }
                 },
                 .impl_decl => self.checkDecl(decl),
+                // Re-validate custom meta annotations on types and their members (deferred from Phase 1)
+                .struct_decl => |s| {
+                    meta_validation.validateDeclMetaCustomOnly(self, s.meta, .struct_);
+                    for (s.fields) |field| {
+                        meta_validation.validateDeclMetaCustomOnly(self, field.meta, .field);
+                    }
+                },
+                .enum_decl => |e| {
+                    meta_validation.validateDeclMetaCustomOnly(self, e.meta, .enum_);
+                    for (e.variants) |variant| {
+                        meta_validation.validateDeclMetaCustomOnly(self, variant.meta, .variant);
+                    }
+                },
+                .trait_decl => |t| meta_validation.validateDeclMetaCustomOnly(self, t.meta, .trait_),
+                .type_alias => |a| meta_validation.validateDeclMetaCustomOnly(self, a.meta, .type_alias),
+                .const_decl => |c| meta_validation.validateDeclMetaCustomOnly(self, c.meta, .const_),
                 else => {},
             }
         }
@@ -4692,8 +5048,18 @@ pub const TypeChecker = struct {
     pub fn checkModule(self: *TypeChecker, module: ast.Module) void {
         self.async_function_names.clearRetainingCapacity();
 
+        // Clear meta state before processing imports (imports may add definitions)
+        meta_validation.clearMetaDefinitions(self);
+        meta_validation.clearDeprecatedFunctions(self);
+        meta_validation.clearPureFunctions(self);
+
         // Process imports first (for multi-file compilation)
         self.processImports(module);
+
+        // Collect meta group names, definitions, and validate file-level meta before checking declarations
+        meta_validation.collectGroupNames(self, module.file_meta);
+        meta_validation.collectMetaDefinitions(self, module.file_meta);
+        meta_validation.validateFileMeta(self, module.file_meta);
 
         // First pass: register all type declarations
         for (module.declarations) |decl| {
@@ -4807,6 +5173,11 @@ pub const TypeChecker = struct {
                     if (f.is_comptime) {
                         self.comptime_functions.put(self.allocator, f.name, f) catch {};
                     }
+
+                    // Register deprecated functions for call-site warnings
+                    meta_validation.registerDeprecatedFunction(self, f.name, f.meta);
+                    // Register pure functions for purity checking
+                    meta_validation.registerPureFunction(self, f.name, f.meta);
                 },
                 .const_decl => self.checkDecl(decl),
                 .extern_block => self.checkDecl(decl),
@@ -4814,10 +5185,13 @@ pub const TypeChecker = struct {
             }
         }
 
-        // Third pass: check function bodies
+        // Third pass: validate meta annotations and check function bodies
         for (module.declarations) |decl| {
             switch (decl) {
                 .function => |f| {
+                    // Validate meta annotations (all functions are in scope by now)
+                    meta_validation.validateDeclMeta(self, f.meta, .function);
+
                     if (f.body) |body| {
                         // Push type parameters for generic functions
                         const has_type_params = f.type_params.len > 0;
@@ -4870,6 +5244,16 @@ pub const TypeChecker = struct {
                             self.in_unsafe_context = true;
                         }
                         defer self.in_unsafe_context = was_unsafe;
+
+                        // For pure functions, set the purity flag so calls are checked
+                        const was_pure = self.in_pure_function;
+                        const was_pure_span = self.pure_function_span;
+                        if (meta_validation.hasPureAnnotation(f.meta)) |pure_span| {
+                            self.in_pure_function = true;
+                            self.pure_function_span = pure_span;
+                        }
+                        defer self.in_pure_function = was_pure;
+                        defer self.pure_function_span = was_pure_span;
 
                         const was_async_context = self.current_async_context;
                         self.current_async_context = f.is_async;

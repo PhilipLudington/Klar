@@ -1,0 +1,11 @@
+// Expected: check-error cannot call non-pure function
+// Pure function calling non-pure user function should be an error
+
+fn helper() -> i32 {
+    return 42
+}
+
+meta pure
+fn compute() -> i32 {
+    return helper()
+}

@@ -1,0 +1,13 @@
+meta  group  "auth"  {
+    meta  tag("security")
+    meta  hint("requires auth token")
+}
+
+meta  in("auth")
+fn  login()  ->  i32  {
+    return  1
+}
+
+fn  main()  ->  i32  {
+    return  0
+}

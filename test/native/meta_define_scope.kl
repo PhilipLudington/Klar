@@ -1,0 +1,14 @@
+// Test: scope restriction on custom meta annotation
+meta define api_version(version: string) for fn
+
+meta api_version("v2")
+fn get_data() -> i32 {
+    return 42
+}
+
+fn main() -> i32 {
+    if get_data() == 42 {
+        return 0
+    }
+    return 1
+}

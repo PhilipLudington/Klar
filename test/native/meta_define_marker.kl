@@ -1,0 +1,14 @@
+// Test: zero-parameter custom annotation (marker)
+meta define deprecated_v2()
+
+meta deprecated_v2()
+fn old_api() -> i32 {
+    return 1
+}
+
+fn main() -> i32 {
+    if old_api() == 1 {
+        return 0
+    }
+    return 1
+}

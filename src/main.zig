@@ -1,5 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
+const has_llvm = build_options.has_llvm;
 const version = @import("version.zig");
 const Lexer = @import("lexer.zig").Lexer;
 const Token = @import("token.zig").Token;
@@ -16,10 +18,10 @@ const values = @import("values.zig");
 const Compiler = @import("compiler.zig").Compiler;
 const Disassembler = @import("disasm.zig").Disassembler;
 const VM = @import("vm.zig").VM;
-const codegen = @import("codegen/mod.zig");
-const ir = @import("ir/mod.zig");
+const codegen = if (has_llvm) @import("codegen/mod.zig") else struct {};
+const ir = if (has_llvm) @import("ir/mod.zig") else struct {};
 const ownership = @import("ownership/mod.zig");
-const opt = @import("opt/mod.zig");
+const opt = if (has_llvm) @import("opt/mod.zig") else struct {};
 const module_resolver = @import("module_resolver.zig");
 const ModuleResolver = module_resolver.ModuleResolver;
 const ModuleInfo = module_resolver.ModuleInfo;
@@ -28,11 +30,12 @@ const manifest = @import("pkg/manifest.zig");
 const lockfile = @import("pkg/lockfile.zig");
 const formatter = @import("formatter.zig");
 const lsp = @import("lsp.zig");
+const meta_query = @import("meta_query.zig");
 
 // Cross-platform IO helpers
 fn getStdOut() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE);
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE).?;
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDOUT_FILENO };
@@ -41,7 +44,7 @@ fn getStdOut() std.fs.File {
 
 fn getStdErr() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE);
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE).?;
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDERR_FILENO };
@@ -161,6 +164,25 @@ fn parseLineColumn(value: []const u8) !LineColumn {
     if (line == 0 or column == 0) return error.InvalidScopePosition;
 
     return .{ .line = line, .column = column };
+}
+
+/// Print meta warnings (deprecation notices, etc.) to stderr.
+/// Warnings don't block compilation but inform the user of potential issues.
+fn printMetaWarnings(checker: *const TypeChecker, stderr: anytype) !void {
+    if (!checker.hasWarnings()) return;
+    for (checker.errors.items) |check_err| {
+        if (check_err.kind != .meta_warning) continue;
+        const warn_msg = std.fmt.allocPrint(checker.allocator, "  warning: {d}:{d} {s}\n", .{
+            check_err.span.line,
+            check_err.span.column,
+            check_err.message,
+        }) catch {
+            try stderr.writeAll("  warning: (message too long to display)\n");
+            continue;
+        };
+        defer checker.allocator.free(warn_msg);
+        try stderr.writeAll(warn_msg);
+    }
 }
 
 fn sourceOffsetFromLineColumn(source: []const u8, line: usize, column: usize) ?usize {
@@ -435,9 +457,12 @@ pub fn main() !void {
             } else {
                 try runVmFile(allocator, final_source, debug_mode, program_args);
             }
-        } else {
+        } else if (comptime has_llvm) {
             // Default: compile to native and run
             try runNativeFileWithOptions(allocator, final_source, program_args, search_paths);
+        } else {
+            // LLVM not available, fall back to VM
+            try runVmFile(allocator, final_source, debug_mode, program_args);
         }
     } else if (std.mem.eql(u8, command, "tokenize")) {
         if (args.len < 3) {
@@ -464,6 +489,10 @@ pub fn main() !void {
         }
         try dumpAstFile(allocator, args[2]);
     } else if (std.mem.eql(u8, command, "build")) {
+        if (comptime !has_llvm) {
+            try getStdErr().writeAll("Error: 'klar build' requires LLVM. Install LLVM development headers and rebuild the compiler.\n");
+            return;
+        }
         // Parse options - need to determine if first arg after "build" is a file or a flag
         var output_path: ?[]const u8 = null;
         var emit_llvm = false;
@@ -797,6 +826,8 @@ pub fn main() !void {
         };
     } else if (std.mem.eql(u8, command, "fmt")) {
         try fmtCommand(allocator, args);
+    } else if (std.mem.eql(u8, command, "meta")) {
+        try meta_query.metaCommand(allocator, args);
     } else if (std.mem.eql(u8, command, "lsp")) {
         try lsp.runStdio(allocator);
     } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
@@ -1018,6 +1049,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
             try stderr.writeAll(header);
 
             for (checker.errors.items) |check_err| {
+                if (check_err.kind == .meta_warning) continue;
                 const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                     check_err.span.line,
                     check_err.span.column,
@@ -1025,8 +1057,10 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
                 }) catch continue;
                 try stderr.writeAll(err_msg);
             }
+            try printMetaWarnings(&checker, stderr);
             return;
         }
+        try printMetaWarnings(&checker, stderr);
 
         // Multi-module execution: create per-module interpreters in dependency order
         var module_interpreters = std.AutoHashMapUnmanaged(*ModuleInfo, *Interpreter){};
@@ -1120,6 +1154,7 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
         try stderr.writeAll(header);
 
         for (checker.errors.items) |check_err| {
+            if (check_err.kind == .meta_warning) continue;
             const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                 check_err.span.line,
                 check_err.span.column,
@@ -1127,8 +1162,10 @@ fn runInterpreterFile(allocator: std.mem.Allocator, path: []const u8, program_ar
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        try printMetaWarnings(&checker, stderr);
         return;
     }
+    try printMetaWarnings(&checker, stderr);
 
     // Single-module execution
     var interp = Interpreter.init(allocator) catch {
@@ -1293,6 +1330,177 @@ fn dumpAstFile(allocator: std.mem.Allocator, path: []const u8) !void {
     try out.writeAll("\n");
 }
 
+fn dumpMetaAnnotations(out: std.fs.File, annotations: []const ast.MetaAnnotation) anyerror!void {
+    if (annotations.len == 0) return;
+    try out.writeAll(",\"meta\":[");
+    for (annotations, 0..) |ann, i| {
+        if (i > 0) try out.writeAll(",");
+        try dumpOneMetaAnnotation(out, ann);
+    }
+    try out.writeAll("]");
+}
+
+fn dumpOneMetaAnnotation(out: std.fs.File, ann: ast.MetaAnnotation) anyerror!void {
+    switch (ann) {
+        .intent => |s| {
+            try out.writeAll("{\"kind\":\"intent\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .decision => |s| {
+            try out.writeAll("{\"kind\":\"decision\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .tag => |s| {
+            try out.writeAll("{\"kind\":\"tag\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .hint => |s| {
+            try out.writeAll("{\"kind\":\"hint\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .deprecated => |s| {
+            try out.writeAll("{\"kind\":\"deprecated\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .pure => {
+            try out.writeAll("{\"kind\":\"pure\"}");
+        },
+        .module_meta => |b| {
+            try out.writeAll("{\"kind\":\"module\"");
+            try dumpMetaBlockEntries(out, b.entries);
+            try out.writeAll("}");
+        },
+        .guide => |b| {
+            try out.writeAll("{\"kind\":\"guide\"");
+            try dumpMetaBlockEntries(out, b.entries);
+            try out.writeAll("}");
+        },
+        .related => |r| {
+            try out.writeAll("{\"kind\":\"related\",\"paths\":[");
+            for (r.paths, 0..) |p, j| {
+                if (j > 0) try out.writeAll(",");
+                try dumpMetaPath(out, p);
+            }
+            try out.writeAll("],\"description\":");
+            if (r.description) |desc| {
+                try writeJsonEscaped(out, desc);
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .group_def => |g| {
+            try out.writeAll("{\"kind\":\"group\",\"name\":");
+            try writeJsonEscaped(out, g.name);
+            try out.writeAll(",\"annotations\":[");
+            for (g.annotations, 0..) |nested, j| {
+                if (j > 0) try out.writeAll(",");
+                try dumpOneMetaAnnotation(out, nested);
+            }
+            try out.writeAll("]}");
+        },
+        .group_join => |s| {
+            try out.writeAll("{\"kind\":\"in\",\"value\":");
+            try writeJsonEscaped(out, s.value);
+            try out.writeAll("}");
+        },
+        .define => |d| {
+            try out.writeAll("{\"kind\":\"define\",\"name\":");
+            try writeJsonEscaped(out, d.name);
+            try out.writeAll(",\"params\":[");
+            for (d.params, 0..) |p, j| {
+                if (j > 0) try out.writeAll(",");
+                try out.writeAll("{\"name\":");
+                try writeJsonEscaped(out, p.name);
+                try out.writeAll(",\"type\":");
+                switch (p.type_constraint) {
+                    .string_type => try out.writeAll("\"string\""),
+                    .path_type => try out.writeAll("\"path\""),
+                    .string_union => |vals| {
+                        try out.writeAll("[");
+                        for (vals, 0..) |v, k| {
+                            if (k > 0) try out.writeAll(",");
+                            try writeJsonEscaped(out, v);
+                        }
+                        try out.writeAll("]");
+                    },
+                }
+                try out.writeAll("}");
+            }
+            try out.writeAll("],\"scope\":");
+            if (d.scope) |scope| {
+                try writeJsonEscaped(out, metaScopeString(scope));
+            } else {
+                try out.writeAll("null");
+            }
+            try out.writeAll("}");
+        },
+        .custom => |c| {
+            try out.writeAll("{\"kind\":\"custom\",\"name\":");
+            try writeJsonEscaped(out, c.name);
+            try out.writeAll(",\"args\":[");
+            for (c.args, 0..) |arg, j| {
+                if (j > 0) try out.writeAll(",");
+                switch (arg) {
+                    .string => |s| try writeJsonEscaped(out, s),
+                    .path => |p| try dumpMetaPath(out, p),
+                }
+            }
+            try out.writeAll("]}");
+        },
+    }
+}
+
+fn metaScopeString(scope: ast.MetaScope) []const u8 {
+    return switch (scope) {
+        .fn_scope => "fn",
+        .module_scope => "module",
+        .struct_scope => "struct",
+        .enum_scope => "enum",
+        .trait_scope => "trait",
+        .field_scope => "field",
+        .variant_scope => "variant",
+        .test_scope => "test",
+    };
+}
+
+fn dumpMetaBlockEntries(out: std.fs.File, entries: []const ast.MetaKeyValue) anyerror!void {
+    try out.writeAll(",\"entries\":[");
+    for (entries, 0..) |entry, i| {
+        if (i > 0) try out.writeAll(",");
+        try out.writeAll("{\"key\":");
+        try writeJsonEscaped(out, entry.key);
+        try out.writeAll(",\"value\":");
+        switch (entry.value) {
+            .string => |s| try writeJsonEscaped(out, s),
+            .string_list => |list| {
+                try out.writeAll("[");
+                for (list, 0..) |item, j| {
+                    if (j > 0) try out.writeAll(",");
+                    try writeJsonEscaped(out, item);
+                }
+                try out.writeAll("]");
+            },
+        }
+        try out.writeAll("}");
+    }
+    try out.writeAll("]");
+}
+
+fn dumpMetaPath(out: std.fs.File, path: ast.MetaPath) anyerror!void {
+    try out.writeAll("{\"segments\":[");
+    for (path.segments, 0..) |seg, i| {
+        if (i > 0) try out.writeAll(",");
+        try writeJsonEscaped(out, seg);
+    }
+    try out.writeAll("]}");
+}
+
 fn dumpModule(out: std.fs.File, module: ast.Module) anyerror!void {
     try out.writeAll("{\"module_decl\":");
     if (module.module_decl) |md| {
@@ -1310,7 +1518,9 @@ fn dumpModule(out: std.fs.File, module: ast.Module) anyerror!void {
         if (i > 0) try out.writeAll(",");
         try dumpDecl(out, decl);
     }
-    try out.writeAll("]}");
+    try out.writeAll("]");
+    try dumpMetaAnnotations(out, module.file_meta);
+    try out.writeAll("}");
 }
 
 fn dumpModuleDecl(out: std.fs.File, md: ast.ModuleDecl) anyerror!void {
@@ -1398,6 +1608,7 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
             } else {
                 try out.writeAll("null");
             }
+            try dumpMetaAnnotations(out, f.meta);
             try out.writeAll("}");
         },
         .test_decl => |t| {
@@ -1405,6 +1616,7 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
             try writeJsonEscaped(out, t.name);
             try out.writeAll(",\"body\":");
             try dumpBlock(out, t.body);
+            try dumpMetaAnnotations(out, t.meta);
             try out.writeAll("}");
         },
         .struct_decl => |s| {
@@ -1427,7 +1639,9 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
                 if (i > 0) try out.writeAll(",");
                 try dumpTypeExpr(out, tr);
             }
-            try out.writeAll("]}");
+            try out.writeAll("]");
+            try dumpMetaAnnotations(out, s.meta);
+            try out.writeAll("}");
         },
         .enum_decl => |e| {
             try out.writeAll("{\"kind\":\"enum_decl\",\"name\":");
@@ -1448,7 +1662,9 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
                 if (i > 0) try out.writeAll(",");
                 try dumpEnumVariant(out, v);
             }
-            try out.writeAll("]}");
+            try out.writeAll("]");
+            try dumpMetaAnnotations(out, e.meta);
+            try out.writeAll("}");
         },
         .trait_decl => |t| {
             try out.writeAll("{\"kind\":\"trait_decl\",\"name\":");
@@ -1486,7 +1702,9 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
                 if (i > 0) try out.writeAll(",");
                 try dumpFunctionDeclInline(out, m);
             }
-            try out.writeAll("]}");
+            try out.writeAll("]");
+            try dumpMetaAnnotations(out, t.meta);
+            try out.writeAll("}");
         },
         .impl_decl => |imp| {
             try out.writeAll("{\"kind\":\"impl_decl\",\"is_unsafe\":");
@@ -1520,7 +1738,9 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
                 if (i > 0) try out.writeAll(",");
                 try dumpFunctionDeclInline(out, m);
             }
-            try out.writeAll("]}");
+            try out.writeAll("]");
+            try dumpMetaAnnotations(out, imp.meta);
+            try out.writeAll("}");
         },
         .type_alias => |t| {
             try out.writeAll("{\"kind\":\"type_alias\",\"name\":");
@@ -1530,6 +1750,7 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
             try dumpTypeParams(out, t.type_params);
             try out.writeAll(",\"target\":");
             try dumpTypeExpr(out, t.target);
+            try dumpMetaAnnotations(out, t.meta);
             try out.writeAll("}");
         },
         .const_decl => |c| {
@@ -1545,6 +1766,7 @@ fn dumpDecl(out: std.fs.File, decl: ast.Decl) anyerror!void {
             }
             try out.writeAll(",\"value\":");
             try dumpExpr(out, c.value);
+            try dumpMetaAnnotations(out, c.meta);
             try out.writeAll("}");
         },
         .import_decl => |imp| {
@@ -1620,6 +1842,7 @@ fn dumpFunctionDeclInline(out: std.fs.File, f: ast.FunctionDecl) anyerror!void {
     } else {
         try out.writeAll("null");
     }
+    try dumpMetaAnnotations(out, f.meta);
     try out.writeAll("}");
 }
 
@@ -1685,6 +1908,7 @@ fn dumpStructField(out: std.fs.File, field: ast.StructField) anyerror!void {
     try dumpTypeExpr(out, field.type_);
     try out.writeAll(",\"is_pub\":");
     try writeJsonBool(out, field.is_pub);
+    try dumpMetaAnnotations(out, field.meta);
     try out.writeAll("}");
 }
 
@@ -1722,6 +1946,7 @@ fn dumpEnumVariant(out: std.fs.File, v: ast.EnumVariant) anyerror!void {
     } else {
         try out.writeAll("null");
     }
+    try dumpMetaAnnotations(out, v.meta);
     try out.writeAll("}");
 }
 
@@ -2623,6 +2848,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try stderr.writeAll(header);
 
         for (checker.errors.items) |check_err| {
+            if (check_err.kind == .meta_warning) continue;
             const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                 check_err.span.line,
                 check_err.span.column,
@@ -2630,8 +2856,10 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        try printMetaWarnings(&checker, stderr);
         return;
     }
+    try printMetaWarnings(&checker, stderr);
 
     // Initialize LLVM targets
     codegen.llvm.initializeNativeTarget();
@@ -3172,8 +3400,8 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
         std.fs.cwd().deleteFile(temp_path) catch {};
 
         switch (term) {
-            .exited => |code| std.process.exit(code),
-            .signal => |sig| {
+            .Exited => |code| std.process.exit(code),
+            .Signal => |sig| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Process terminated by signal: {d}\n", .{sig}) catch "Process terminated by signal\n";
                 getStdErr().writeAll(msg) catch {};
@@ -3488,16 +3716,21 @@ fn fmtCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var had_unformatted = false;
 
     for (targets.items) |target| {
-        // Check if target is a directory
-        const stat = std.fs.cwd().statFile(target) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error: cannot access '{s}': {}\n", .{ target, err }) catch "Error accessing file\n";
-            try stderr.writeAll(msg);
-            had_error = true;
-            continue;
+        // Check if target is a file or directory
+        // Note: on Windows, statFile returns error.IsDir for directories
+        const is_dir = blk: {
+            const stat = std.fs.cwd().statFile(target) catch |err| {
+                if (err == error.IsDir) break :blk true;
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error: cannot access '{s}': {}\n", .{ target, err }) catch "Error accessing file\n";
+                try stderr.writeAll(msg);
+                had_error = true;
+                continue;
+            };
+            break :blk stat.kind == .directory;
         };
 
-        if (stat.kind == .directory) {
+        if (is_dir) {
             // Recursively format all .kl files
             try fmtDirectory(allocator, target, in_place, check_only, &had_error, &had_unformatted);
         } else {
@@ -3838,10 +4071,11 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
 
     const has_type_errors = checker.hasErrors();
     if (has_type_errors) {
-        const header = std.fmt.bufPrint(&buf, "Type check failed with {d} error(s):\n", .{checker.errors.items.len}) catch "Type check failed:\n";
+        const header = std.fmt.bufPrint(&buf, "Type check failed with {d} error(s):\n", .{checker.error_count}) catch "Type check failed:\n";
         try stderr.writeAll(header);
 
         for (checker.errors.items) |check_err| {
+            if (check_err.kind == .meta_warning) continue;
             const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d} [{s}]: {s}\n", .{
                 check_err.span.line,
                 check_err.span.column,
@@ -3850,6 +4084,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        try printMetaWarnings(&checker, stderr);
         if (options.scope_line == null and options.expected_line == null) return; // Query modes can proceed for tooling.
     }
 
@@ -3988,6 +4223,9 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     } else {
         const msg = std.fmt.bufPrint(&buf, "All checks passed for '{s}'\n", .{path}) catch "All checks passed\n";
         try stdout.writeAll(msg);
+
+        // Print meta warnings (don't block checks, but inform the user)
+        try printMetaWarnings(&checker, stderr);
 
         // Print some stats
         const decl_count = module.declarations.len;
@@ -4181,58 +4419,61 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
     const stdout = getStdOut();
     const stderr = getStdErr();
 
-    const stat = std.fs.cwd().statFile(path) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error accessing path '{s}': {}\n", .{ path, err }) catch "Error accessing path\n";
-        try stderr.writeAll(msg);
-        return error.TestsFailed;
+    // Note: on Windows, statFile returns error.IsDir for directories
+    const is_dir = blk: {
+        const stat = std.fs.cwd().statFile(path) catch |err| {
+            if (err == error.IsDir) break :blk true;
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error accessing path '{s}': {}\n", .{ path, err }) catch "Error accessing path\n";
+            try stderr.writeAll(msg);
+            return error.TestsFailed;
+        };
+        break :blk stat.kind == .directory;
     };
 
-    switch (stat.kind) {
-        .file => {
-            const result = runTestFile(allocator, path, options) catch |err| {
-                if (err == error.TestsFailed and options.json_output) {
-                    try stdout.writeAll("{\"file\":");
-                    try writeJsonEscaped(stdout, path);
-                    try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0,\"tests\":[]}\n");
-                }
-                return err;
-            };
-            defer freeJsonTestResults(allocator, result.test_results);
-            defer freeJsonCompilerErrors(allocator, result.compile_errors);
-            if (options.json_output and result.file_failed) {
+    if (!is_dir) {
+        const result = runTestFile(allocator, path, options) catch |err| {
+            if (err == error.TestsFailed and options.json_output) {
                 try stdout.writeAll("{\"file\":");
                 try writeJsonEscaped(stdout, path);
-                try stdout.writeAll(",\"total\":");
-                try writeJsonUsize(stdout, result.tests_discovered);
-                try stdout.writeAll(",\"passed\":");
-                try writeJsonUsize(stdout, result.tests_passed);
-                try stdout.writeAll(",\"failed\":");
-                try writeJsonUsize(stdout, result.tests_failed);
-                try stdout.writeAll(",\"tests\":[],\"errors\":[");
-                for (result.compile_errors, 0..) |compile_error, idx| {
-                    if (idx > 0) try stdout.writeAll(",");
-                    try stdout.writeAll("{\"stage\":");
-                    try writeJsonEscaped(stdout, compile_error.stage);
-                    try stdout.writeAll(",\"message\":");
-                    try writeJsonEscaped(stdout, compile_error.message);
-                    if (compile_error.line) |line| {
-                        try stdout.writeAll(",\"line\":");
-                        try writeJsonUsize(stdout, line);
-                    }
-                    if (compile_error.column) |column| {
-                        try stdout.writeAll(",\"column\":");
-                        try writeJsonUsize(stdout, column);
-                    }
-                    try stdout.writeAll("}");
-                }
-                try stdout.writeAll("]}\n");
+                try stdout.writeAll(",\"total\":0,\"passed\":0,\"failed\":0,\"tests\":[]}\n");
             }
-            if (result.tests_failed > 0 or result.file_failed) return error.TestsFailed;
-            return;
-        },
-        .directory => {
-            var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
+            return err;
+        };
+        defer freeJsonTestResults(allocator, result.test_results);
+        defer freeJsonCompilerErrors(allocator, result.compile_errors);
+        if (options.json_output and result.file_failed) {
+            try stdout.writeAll("{\"file\":");
+            try writeJsonEscaped(stdout, path);
+            try stdout.writeAll(",\"total\":");
+            try writeJsonUsize(stdout, result.tests_discovered);
+            try stdout.writeAll(",\"passed\":");
+            try writeJsonUsize(stdout, result.tests_passed);
+            try stdout.writeAll(",\"failed\":");
+            try writeJsonUsize(stdout, result.tests_failed);
+            try stdout.writeAll(",\"tests\":[],\"errors\":[");
+            for (result.compile_errors, 0..) |compile_error, idx| {
+                if (idx > 0) try stdout.writeAll(",");
+                try stdout.writeAll("{\"stage\":");
+                try writeJsonEscaped(stdout, compile_error.stage);
+                try stdout.writeAll(",\"message\":");
+                try writeJsonEscaped(stdout, compile_error.message);
+                if (compile_error.line) |line| {
+                    try stdout.writeAll(",\"line\":");
+                    try writeJsonUsize(stdout, line);
+                }
+                if (compile_error.column) |column| {
+                    try stdout.writeAll(",\"column\":");
+                    try writeJsonUsize(stdout, column);
+                }
+                try stdout.writeAll("}");
+            }
+            try stdout.writeAll("]}\n");
+        }
+        if (result.tests_failed > 0 or result.file_failed) return error.TestsFailed;
+        return;
+    } else {
+        var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Error opening directory '{s}': {}\n", .{ path, err }) catch "Error opening directory\n";
                 try stderr.writeAll(msg);
@@ -4442,13 +4683,6 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             if (files_failed > 0) {
                 return error.TestsFailed;
             }
-        },
-        else => {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error: unsupported test path '{s}'\n", .{path}) catch "Error: unsupported test path\n";
-            try stderr.writeAll(msg);
-            return error.TestsFailed;
-        },
     }
 }
 
@@ -4662,7 +4896,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
         if (checker.hasErrors()) {
             if (options.json_output) {
-                const compile_errors = try allocator.alloc(JsonCompileError, checker.errors.items.len);
+                const compile_errors = try allocator.alloc(JsonCompileError, checker.error_count);
                 var compile_errors_initialized: usize = 0;
                 errdefer {
                     for (compile_errors[0..compile_errors_initialized]) |compile_error| {
@@ -4670,8 +4904,9 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                     }
                     allocator.free(compile_errors);
                 }
-                for (checker.errors.items, 0..) |check_err, idx| {
-                    compile_errors[idx] = .{
+                for (checker.errors.items) |check_err| {
+                    if (check_err.kind == .meta_warning) continue;
+                    compile_errors[compile_errors_initialized] = .{
                         .stage = "type_check",
                         .message = try allocator.dupe(u8, check_err.message),
                         .line = check_err.span.line,
@@ -4694,6 +4929,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             try stderr.writeAll(header);
 
             for (checker.errors.items) |check_err| {
+                if (check_err.kind == .meta_warning) continue;
                 const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                     check_err.span.line,
                     check_err.span.column,
@@ -4984,7 +5220,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
 
         if (checker.hasErrors()) {
             if (options.json_output) {
-                const compile_errors = try allocator.alloc(JsonCompileError, checker.errors.items.len);
+                const compile_errors = try allocator.alloc(JsonCompileError, checker.error_count);
                 var compile_errors_initialized: usize = 0;
                 errdefer {
                     for (compile_errors[0..compile_errors_initialized]) |compile_error| {
@@ -4992,8 +5228,9 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                     }
                     allocator.free(compile_errors);
                 }
-                for (checker.errors.items, 0..) |check_err, idx| {
-                    compile_errors[idx] = .{
+                for (checker.errors.items) |check_err| {
+                    if (check_err.kind == .meta_warning) continue;
+                    compile_errors[compile_errors_initialized] = .{
                         .stage = "type_check",
                         .message = try allocator.dupe(u8, check_err.message),
                         .line = check_err.span.line,
@@ -5016,6 +5253,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
             try stderr.writeAll(header);
 
             for (checker.errors.items) |check_err| {
+                if (check_err.kind == .meta_warning) continue;
                 const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                     check_err.span.line,
                     check_err.span.column,
@@ -5393,6 +5631,7 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
         try stderr.writeAll(header);
 
         for (checker.errors.items) |check_err| {
+            if (check_err.kind == .meta_warning) continue;
             const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                 check_err.span.line,
                 check_err.span.column,
@@ -5400,8 +5639,10 @@ fn runVmFile(allocator: std.mem.Allocator, path: []const u8, debug_mode: bool, p
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        try printMetaWarnings(&checker, stderr);
         return;
     }
+    try printMetaWarnings(&checker, stderr);
 
     // Compile to bytecode
     var compiler = Compiler.init(allocator);
@@ -5538,6 +5779,7 @@ fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
         try stderr.writeAll(header);
 
         for (checker.errors.items) |check_err| {
+            if (check_err.kind == .meta_warning) continue;
             const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
                 check_err.span.line,
                 check_err.span.column,
@@ -5545,8 +5787,10 @@ fn disasmFile(allocator: std.mem.Allocator, path: []const u8) !void {
             }) catch continue;
             try stderr.writeAll(err_msg);
         }
+        try printMetaWarnings(&checker, stderr);
         return;
     }
+    try printMetaWarnings(&checker, stderr);
 
     // Compile to bytecode
     var compiler = Compiler.init(allocator);
@@ -5962,6 +6206,9 @@ fn initProject(allocator: std.mem.Allocator, name_arg: ?[]const u8, is_lib: bool
     try stdout.writeAll(msg);
 }
 
+// Meta command is in meta_query.zig
+
+
 fn printUsage() !void {
     try getStdOut().writeAll(
         \\
@@ -5990,6 +6237,13 @@ fn printUsage() !void {
         \\  fmt [file|dir]       Format source files
         \\    -i                  Format files in-place
         \\    --check             Check formatting (exit 1 if unformatted)
+        \\  meta [path]          Query meta annotations across files
+        \\    --tag "name"       Find declarations with a specific tag
+        \\    --module           List all module descriptions
+        \\    --related fn_name  Follow cross-references for a function
+        \\    --deprecated       List all deprecated items
+        \\    --hints            List all AI hints
+        \\    --json             Machine-readable JSON output
         \\  lsp                  Run LSP JSON-RPC transport over stdio
         \\  help                 Show this help
         \\  version              Show version
@@ -6086,4 +6340,5 @@ test {
     _ = @import("opt/mod.zig");
     _ = @import("repl.zig");
     _ = @import("lsp.zig");
+    _ = @import("meta_query.zig");
 }

@@ -160,7 +160,7 @@ fn processEscapes(allocator: Allocator, content: []const u8) ![]const u8 {
             i += 1;
         }
     }
-    return result.items;
+    return result.toOwnedSlice(allocator) catch return error.OutOfMemory;
 }
 
 pub const Parser = struct {
@@ -291,6 +291,7 @@ pub const Parser = struct {
             .const_,
             .import,
             .module,
+            .meta,
             => true,
             else => false,
         };
@@ -1652,10 +1653,10 @@ pub const Parser = struct {
             return .empty;
         }
 
-        // Check for declaration keywords first (fn, struct, enum, trait, impl, type, const, pub)
+        // Check for declaration keywords first (fn, struct, enum, trait, impl, type, const, pub, meta)
         if (self.check(.fn_) or self.check(.struct_) or self.check(.enum_) or
             self.check(.trait) or self.check(.impl) or self.check(.type_) or
-            self.check(.const_) or self.check(.pub_))
+            self.check(.const_) or self.check(.pub_) or self.check(.meta))
         {
             const decl = try self.parseDeclaration();
             return .{ .decl = decl };
@@ -2321,6 +2322,9 @@ pub const Parser = struct {
     /// This is enforced by parsing them sequentially — a later modifier appearing
     /// before an earlier one will hit the wrong production rule and error.
     pub fn parseDeclaration(self: *Parser) ParseError!ast.Decl {
+        // Parse stacked meta annotations before the declaration
+        const meta = try self.parseMetaAnnotations();
+
         // Handle visibility modifier
         const is_pub = self.match(.pub_);
 
@@ -2335,6 +2339,10 @@ pub const Parser = struct {
 
         // extern type declarations
         if (is_extern and self.current.kind == .type_) {
+            if (meta.len > 0) {
+                try self.reportError("meta annotations are not supported on extern type declarations");
+                return ParseError.UnexpectedToken;
+            }
             if (is_unsafe) {
                 try self.reportError("'unsafe' modifier is not allowed on extern type declarations");
                 return ParseError.UnexpectedToken;
@@ -2344,6 +2352,10 @@ pub const Parser = struct {
 
         // extern { ... } block for C function declarations
         if (is_extern and self.current.kind == .l_brace) {
+            if (meta.len > 0) {
+                try self.reportError("meta annotations are not supported on extern blocks");
+                return ParseError.UnexpectedToken;
+            }
             if (is_unsafe) {
                 try self.reportError("'unsafe' modifier is not allowed on extern blocks");
                 return ParseError.UnexpectedToken;
@@ -2361,7 +2373,7 @@ pub const Parser = struct {
                     try self.reportError("extern functions must be declared inside 'extern { }' blocks");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseFunctionDecl(is_pub, is_unsafe, is_async);
+                break :blk self.parseFunctionDecl(is_pub, is_unsafe, is_async, meta);
             },
             .test_ => blk: {
                 if (is_pub) {
@@ -2380,7 +2392,7 @@ pub const Parser = struct {
                     try self.reportError("'extern' modifier is not allowed on test declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseTestDecl();
+                break :blk self.parseTestDecl(meta);
             },
             .struct_ => blk: {
                 if (is_async) {
@@ -2391,7 +2403,7 @@ pub const Parser = struct {
                     try self.reportError("'unsafe' modifier is not allowed on struct declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseStructDecl(is_pub, is_extern);
+                break :blk self.parseStructDecl(is_pub, is_extern, meta);
             },
             .enum_ => blk: {
                 if (is_async) {
@@ -2402,7 +2414,7 @@ pub const Parser = struct {
                     try self.reportError("'unsafe' modifier is not allowed on enum declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseEnumDecl(is_pub, is_extern);
+                break :blk self.parseEnumDecl(is_pub, is_extern, meta);
             },
             .trait => blk: {
                 if (is_async) {
@@ -2413,7 +2425,7 @@ pub const Parser = struct {
                     try self.reportError("'extern' modifier is not allowed on trait declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseTraitDecl(is_pub, is_unsafe);
+                break :blk self.parseTraitDecl(is_pub, is_unsafe, meta);
             },
             .impl => blk: {
                 if (is_async) {
@@ -2424,7 +2436,7 @@ pub const Parser = struct {
                     try self.reportError("'extern' modifier is not allowed on impl declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseImplDecl(is_unsafe);
+                break :blk self.parseImplDecl(is_unsafe, meta);
             },
             .type_ => blk: {
                 if (is_async) {
@@ -2436,7 +2448,7 @@ pub const Parser = struct {
                     return ParseError.UnexpectedToken;
                 }
                 // Note: extern type is handled above before the switch
-                break :blk self.parseTypeAlias(is_pub);
+                break :blk self.parseTypeAlias(is_pub, meta);
             },
             .const_ => blk: {
                 if (is_async) {
@@ -2451,9 +2463,13 @@ pub const Parser = struct {
                     try self.reportError("'extern' modifier is not allowed on const declarations");
                     return ParseError.UnexpectedToken;
                 }
-                break :blk self.parseConstDecl(is_pub);
+                break :blk self.parseConstDecl(is_pub, meta);
             },
             .import => blk: {
+                if (meta.len > 0) {
+                    try self.reportError("meta annotations are not supported on import declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_async) {
                     try self.reportError("'async' modifier is only allowed on function declarations");
                     return ParseError.UnexpectedToken;
@@ -2469,6 +2485,10 @@ pub const Parser = struct {
                 break :blk self.parseImportDecl();
             },
             .module => blk: {
+                if (meta.len > 0) {
+                    try self.reportError("meta annotations are not supported on module declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 if (is_async) {
                     try self.reportError("'async' modifier is only allowed on function declarations");
                     return ParseError.UnexpectedToken;
@@ -2490,6 +2510,8 @@ pub const Parser = struct {
                     try self.reportError("expected 'fn' after 'async'");
                 } else if (is_unsafe) {
                     try self.reportError("expected 'fn', 'trait', or 'impl' after 'unsafe'");
+                } else if (meta.len > 0) {
+                    try self.reportError("meta annotation must be followed by a declaration (fn, struct, enum, trait, impl, type, const, or test)");
                 } else {
                     try self.reportError("expected declaration");
                 }
@@ -2498,7 +2520,464 @@ pub const Parser = struct {
         };
     }
 
-    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool, is_async: bool) ParseError!ast.Decl {
+    /// Parse zero or more stacked meta annotations before a declaration.
+    fn parseMetaAnnotations(self: *Parser) ParseError![]const ast.MetaAnnotation {
+        var annotations = std.ArrayListUnmanaged(ast.MetaAnnotation){};
+        while (self.check(.meta)) {
+            try annotations.append(self.allocator, try self.parseOneMetaAnnotation());
+        }
+        if (annotations.items.len == 0) return &.{};
+        return self.dupeSlice(ast.MetaAnnotation, annotations.items);
+    }
+
+    /// Parse a single meta annotation: meta intent("..."), meta pure, meta module { ... }, etc.
+    fn parseOneMetaAnnotation(self: *Parser) ParseError!ast.MetaAnnotation {
+        const meta_span = self.spanFromToken(self.current);
+        self.advance(); // consume 'meta'
+
+        // Handle keyword tokens that aren't identifiers
+        if (self.current.kind == .module) {
+            self.advance(); // consume 'module'
+            return .{ .module_meta = try self.parseMetaBlock(meta_span) };
+        }
+        if (self.current.kind == .in) {
+            self.advance(); // consume 'in'
+            return .{ .group_join = try self.parseMetaStringArg(meta_span) };
+        }
+
+        if (self.current.kind != .identifier) {
+            try self.reportError("expected annotation name after 'meta'");
+            return ParseError.UnexpectedToken;
+        }
+
+        const name_text = self.tokenText(self.current);
+        const name_span = self.spanFromToken(self.current);
+        self.advance(); // consume the annotation name
+
+        if (std.mem.eql(u8, name_text, "intent")) {
+            return .{ .intent = try self.parseMetaStringArg(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "decision")) {
+            return .{ .decision = try self.parseMetaStringArg(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "tag")) {
+            return .{ .tag = try self.parseMetaStringArg(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "hint")) {
+            return .{ .hint = try self.parseMetaStringArg(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "deprecated")) {
+            return .{ .deprecated = try self.parseMetaStringArg(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "pure")) {
+            return .{ .pure = ast.Span.merge(meta_span, name_span) };
+        } else if (std.mem.eql(u8, name_text, "guide")) {
+            return .{ .guide = try self.parseMetaBlock(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "related")) {
+            return .{ .related = try self.parseMetaRelated(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "group")) {
+            return .{ .group_def = try self.parseMetaGroupDef(meta_span) };
+        } else if (std.mem.eql(u8, name_text, "define")) {
+            return .{ .define = try self.parseMetaDefine(meta_span) };
+        } else {
+            if (self.current.kind != .l_paren) {
+                try self.reportError("unknown meta annotation; custom annotations require parentheses: meta name(args)");
+                return ParseError.UnexpectedToken;
+            }
+            return .{ .custom = try self.parseMetaCustom(name_text, meta_span) };
+        }
+    }
+
+    /// Parse the string argument of a meta annotation: ("string value")
+    fn parseMetaStringArg(self: *Parser, meta_span: ast.Span) ParseError!ast.MetaString {
+        try self.consume(.l_paren, "expected '(' after meta annotation name");
+
+        if (self.current.kind != .string_literal) {
+            try self.reportError("expected string literal in meta annotation");
+            return ParseError.UnexpectedToken;
+        }
+
+        const text = self.tokenText(self.current);
+        const content = if (text.len >= 2) text[1 .. text.len - 1] else text;
+        const processed = processEscapes(self.allocator, content) catch return ParseError.OutOfMemory;
+        self.advance(); // consume string literal
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_paren, "expected ')' after meta annotation string");
+
+        return .{
+            .value = processed,
+            .span = ast.Span.merge(meta_span, end_span),
+        };
+    }
+
+    /// Parse a meta block: { key: value, key: value, ... }
+    /// Values are either string literals or string lists: [str, str, ...]
+    fn parseMetaBlock(self: *Parser, meta_span: ast.Span) ParseError!*ast.MetaBlock {
+        try self.consume(.l_brace, "expected '{' after meta block annotation name");
+
+        var entries = std.ArrayListUnmanaged(ast.MetaKeyValue){};
+
+        while (!self.check(.r_brace) and self.current.kind != .eof) {
+            // Parse key (identifier)
+            if (self.current.kind != .identifier) {
+                try self.reportError("expected identifier key in meta block");
+                return ParseError.UnexpectedToken;
+            }
+            const key_text = self.tokenText(self.current);
+            const key_span = self.spanFromToken(self.current);
+            self.advance(); // consume key
+
+            try self.consume(.colon, "expected ':' after meta block key");
+
+            // Parse value: string literal or string list
+            const value: ast.MetaValue = if (self.check(.l_bracket)) blk: {
+                self.advance(); // consume '['
+                var items = std.ArrayListUnmanaged([]const u8){};
+                if (!self.check(.r_bracket)) {
+                    // First item
+                    if (self.current.kind != .string_literal) {
+                        try self.reportError("expected string literal in meta block list");
+                        return ParseError.UnexpectedToken;
+                    }
+                    const first_text = self.tokenText(self.current);
+                    const first_content = if (first_text.len >= 2) first_text[1 .. first_text.len - 1] else first_text;
+                    const first_processed = processEscapes(self.allocator, first_content) catch return ParseError.OutOfMemory;
+                    try items.append(self.allocator, first_processed);
+                    self.advance();
+
+                    while (self.match(.comma)) {
+                        if (self.check(.r_bracket)) break; // trailing comma
+                        if (self.current.kind != .string_literal) {
+                            try self.reportError("expected string literal in meta block list");
+                            return ParseError.UnexpectedToken;
+                        }
+                        const item_text = self.tokenText(self.current);
+                        const item_content = if (item_text.len >= 2) item_text[1 .. item_text.len - 1] else item_text;
+                        const item_processed = processEscapes(self.allocator, item_content) catch return ParseError.OutOfMemory;
+                        try items.append(self.allocator, item_processed);
+                        self.advance();
+                    }
+                }
+                try self.consume(.r_bracket, "expected ']' after meta block list");
+                break :blk .{ .string_list = try self.dupeSlice([]const u8, items.items) };
+            } else blk: {
+                if (self.current.kind != .string_literal) {
+                    try self.reportError("expected string literal or list in meta block value");
+                    return ParseError.UnexpectedToken;
+                }
+                const val_text = self.tokenText(self.current);
+                const val_content = if (val_text.len >= 2) val_text[1 .. val_text.len - 1] else val_text;
+                const val_processed = processEscapes(self.allocator, val_content) catch return ParseError.OutOfMemory;
+                self.advance();
+                break :blk .{ .string = val_processed };
+            };
+
+            const entry_span = ast.Span.merge(key_span, self.spanFromToken(self.previous));
+            try entries.append(self.allocator, .{
+                .key = key_text,
+                .value = value,
+                .span = entry_span,
+            });
+
+            // Optional comma between entries
+            if (!self.match(.comma)) break;
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_brace, "expected '}' to close meta block");
+
+        return self.create(ast.MetaBlock, .{
+            .entries = try self.dupeSlice(ast.MetaKeyValue, entries.items),
+            .span = ast.Span.merge(meta_span, end_span),
+        });
+    }
+
+    /// Parse meta related(path, path, ..., "optional description")
+    fn parseMetaRelated(self: *Parser, meta_span: ast.Span) ParseError!*ast.MetaRelated {
+        try self.consume(.l_paren, "expected '(' after 'related'");
+
+        var paths = std.ArrayListUnmanaged(ast.MetaPath){};
+        var description: ?[]const u8 = null;
+
+        // First token must be a path, not a description
+        if (self.current.kind == .string_literal) {
+            try self.reportError("meta related requires at least one path before the optional description");
+            return ParseError.UnexpectedToken;
+        }
+
+        // Parse first path (required)
+        const first_path = try self.parseMetaPath();
+        try paths.append(self.allocator, first_path);
+
+        while (self.match(.comma)) {
+            if (self.check(.r_paren)) break; // trailing comma
+            // Check if next token is a string literal (description) or identifier (path)
+            if (self.current.kind == .string_literal) {
+                const desc_text = self.tokenText(self.current);
+                const desc_content = if (desc_text.len >= 2) desc_text[1 .. desc_text.len - 1] else desc_text;
+                description = processEscapes(self.allocator, desc_content) catch return ParseError.OutOfMemory;
+                self.advance();
+                break; // description must be last
+            } else {
+                const path = try self.parseMetaPath();
+                try paths.append(self.allocator, path);
+            }
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_paren, "expected ')' after meta related annotation");
+
+        return self.create(ast.MetaRelated, .{
+            .paths = try self.dupeSlice(ast.MetaPath, paths.items),
+            .description = description,
+            .span = ast.Span.merge(meta_span, end_span),
+        });
+    }
+
+    /// Parse a scoped path: identifier (:: identifier)*
+    fn parseMetaPath(self: *Parser) ParseError!ast.MetaPath {
+        var segments = std.ArrayListUnmanaged([]const u8){};
+        const start_span = self.spanFromToken(self.current);
+
+        if (self.current.kind != .identifier) {
+            try self.reportError("expected identifier in meta path");
+            return ParseError.UnexpectedToken;
+        }
+        try segments.append(self.allocator, self.tokenText(self.current));
+        var end_span = self.spanFromToken(self.current);
+        self.advance();
+
+        while (self.check(.colon_colon)) {
+            self.advance(); // consume '::'
+            if (self.current.kind != .identifier) {
+                try self.reportError("expected identifier after '::' in meta path");
+                return ParseError.UnexpectedToken;
+            }
+            try segments.append(self.allocator, self.tokenText(self.current));
+            end_span = self.spanFromToken(self.current);
+            self.advance();
+        }
+
+        return .{
+            .segments = try self.dupeSlice([]const u8, segments.items),
+            .span = ast.Span.merge(start_span, end_span),
+        };
+    }
+
+    /// Parse meta group "name" { meta_annotation* }
+    fn parseMetaGroupDef(self: *Parser, meta_span: ast.Span) ParseError!*ast.MetaGroupDef {
+        // Parse group name (string literal)
+        if (self.current.kind != .string_literal) {
+            try self.reportError("expected string literal for group name");
+            return ParseError.UnexpectedToken;
+        }
+        const name_text = self.tokenText(self.current);
+        const name_content = if (name_text.len >= 2) name_text[1 .. name_text.len - 1] else name_text;
+        const group_name = processEscapes(self.allocator, name_content) catch return ParseError.OutOfMemory;
+        self.advance();
+
+        try self.consume(.l_brace, "expected '{' after group name");
+
+        // Parse nested meta annotations
+        var annotations = std.ArrayListUnmanaged(ast.MetaAnnotation){};
+        while (self.check(.meta)) {
+            try annotations.append(self.allocator, try self.parseOneMetaAnnotation());
+        }
+
+        if (!self.check(.r_brace)) {
+            try self.reportError("expected 'meta' annotation or '}' inside group definition");
+            return ParseError.UnexpectedToken;
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        self.advance(); // consume '}'
+
+        return self.create(ast.MetaGroupDef, .{
+            .name = group_name,
+            .annotations = try self.dupeSlice(ast.MetaAnnotation, annotations.items),
+            .span = ast.Span.merge(meta_span, end_span),
+        });
+    }
+
+    /// Parse `meta define name(param: type, ...) [for scope]`
+    fn parseMetaDefine(self: *Parser, meta_span: ast.Span) ParseError!*ast.MetaDefine {
+        // Parse definition name
+        if (self.current.kind != .identifier) {
+            try self.reportError("expected name after 'meta define'");
+            return ParseError.UnexpectedToken;
+        }
+        const def_name = self.tokenText(self.current);
+        self.advance();
+
+        // Parse parameter list
+        try self.consume(.l_paren, "expected '(' after meta define name");
+
+        var params = std.ArrayListUnmanaged(ast.MetaDefineParam){};
+        if (!self.check(.r_paren)) {
+            try params.append(self.allocator, try self.parseMetaDefineParam());
+            while (self.match(.comma)) {
+                if (self.check(.r_paren)) break; // trailing comma
+                try params.append(self.allocator, try self.parseMetaDefineParam());
+            }
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_paren, "expected ')' after meta define parameters");
+
+        // Parse optional scope restriction: `for fn`, `for module`, etc.
+        var scope: ?ast.MetaScope = null;
+        if (self.current.kind == .for_) {
+            self.advance(); // consume 'for'
+            const scope_text = self.tokenText(self.current);
+            if (self.current.kind == .fn_) {
+                scope = .fn_scope;
+                self.advance();
+            } else if (self.current.kind == .module) {
+                scope = .module_scope;
+                self.advance();
+            } else if (self.current.kind == .struct_) {
+                scope = .struct_scope;
+                self.advance();
+            } else if (self.current.kind == .enum_) {
+                scope = .enum_scope;
+                self.advance();
+            } else if (self.current.kind == .trait) {
+                scope = .trait_scope;
+                self.advance();
+            } else if (self.current.kind == .identifier and std.mem.eql(u8, scope_text, "field")) {
+                scope = .field_scope;
+                self.advance();
+            } else if (self.current.kind == .identifier and std.mem.eql(u8, scope_text, "variant")) {
+                scope = .variant_scope;
+                self.advance();
+            } else if (self.current.kind == .test_) {
+                scope = .test_scope;
+                self.advance();
+            } else {
+                try self.reportError("expected scope (fn, module, struct, enum, trait, field, variant, test) after 'for'");
+                return ParseError.UnexpectedToken;
+            }
+        }
+
+        const final_span = if (scope != null) self.spanFromToken(self.previous) else end_span;
+
+        return self.create(ast.MetaDefine, .{
+            .name = def_name,
+            .params = try self.dupeSlice(ast.MetaDefineParam, params.items),
+            .scope = scope,
+            .span = ast.Span.merge(meta_span, final_span),
+        });
+    }
+
+    /// Parse a meta define parameter: `name: string` or `name: "a" | "b" | "c"`
+    fn parseMetaDefineParam(self: *Parser) ParseError!ast.MetaDefineParam {
+        // Parse param name
+        if (self.current.kind != .identifier) {
+            try self.reportError("expected parameter name in meta define");
+            return ParseError.UnexpectedToken;
+        }
+        const param_name = self.tokenText(self.current);
+        const param_span = self.spanFromToken(self.current);
+        self.advance();
+
+        try self.consume(.colon, "expected ':' after parameter name in meta define");
+
+        // Parse type constraint: `string` or `"a" | "b" | "c"`
+        const type_constraint: ast.MetaParamType = if (self.current.kind == .identifier and std.mem.eql(u8, self.tokenText(self.current), "string")) blk: {
+            self.advance(); // consume 'string'
+            break :blk .string_type;
+        } else if (self.current.kind == .identifier and std.mem.eql(u8, self.tokenText(self.current), "path")) blk: {
+            self.advance(); // consume 'path'
+            break :blk .path_type;
+        } else if (self.current.kind == .string_literal) blk: {
+            // Parse string union: "a" | "b" | "c"
+            var values = std.ArrayListUnmanaged([]const u8){};
+            const first_text = self.tokenText(self.current);
+            const first_content = if (first_text.len >= 2) first_text[1 .. first_text.len - 1] else first_text;
+            const first_processed = processEscapes(self.allocator, first_content) catch return ParseError.OutOfMemory;
+            try values.append(self.allocator, first_processed);
+            self.advance();
+
+            while (self.current.kind == .pipe) {
+                self.advance(); // consume '|'
+                if (self.current.kind != .string_literal) {
+                    try self.reportError("expected string literal after '|' in string union type");
+                    return ParseError.UnexpectedToken;
+                }
+                const text = self.tokenText(self.current);
+                const content = if (text.len >= 2) text[1 .. text.len - 1] else text;
+                const processed = processEscapes(self.allocator, content) catch return ParseError.OutOfMemory;
+                try values.append(self.allocator, processed);
+                self.advance();
+            }
+
+            break :blk .{ .string_union = try self.dupeSlice([]const u8, values.items) };
+        } else {
+            try self.reportError("expected 'string', 'path', or string union type in meta define parameter");
+            return ParseError.UnexpectedToken;
+        };
+
+        return .{
+            .name = param_name,
+            .type_constraint = type_constraint,
+            .span = param_span,
+        };
+    }
+
+    /// Parse a custom meta annotation: `name(arg1, arg2, ...)`
+    fn parseMetaCustom(self: *Parser, name: []const u8, meta_span: ast.Span) ParseError!*ast.MetaCustom {
+        try self.consume(.l_paren, "expected '(' after custom meta annotation name");
+
+        var args = std.ArrayListUnmanaged(ast.MetaCustomArg){};
+        if (!self.check(.r_paren)) {
+            try args.append(self.allocator, try self.parseMetaCustomArg());
+            while (self.match(.comma)) {
+                if (self.check(.r_paren)) break; // trailing comma
+                try args.append(self.allocator, try self.parseMetaCustomArg());
+            }
+        }
+
+        const end_span = self.spanFromToken(self.current);
+        try self.consume(.r_paren, "expected ')' after custom meta annotation arguments");
+
+        return self.create(ast.MetaCustom, .{
+            .name = name,
+            .args = try self.dupeSlice(ast.MetaCustomArg, args.items),
+            .span = ast.Span.merge(meta_span, end_span),
+        });
+    }
+
+    /// Parse a single argument in a custom meta annotation
+    fn parseMetaCustomArg(self: *Parser) ParseError!ast.MetaCustomArg {
+        if (self.current.kind == .string_literal) {
+            const text = self.tokenText(self.current);
+            const content = if (text.len >= 2) text[1 .. text.len - 1] else text;
+            const processed = processEscapes(self.allocator, content) catch return ParseError.OutOfMemory;
+            self.advance();
+            return .{ .string = processed };
+        } else if (self.current.kind == .identifier) {
+            // Parse scoped path: ident::ident::ident
+            var segments = std.ArrayListUnmanaged([]const u8){};
+            const path_start_span = self.spanFromToken(self.current);
+            var path_end_span = path_start_span;
+            try segments.append(self.allocator, self.tokenText(self.current));
+            self.advance();
+            while (self.match(.colon_colon)) {
+                if (self.current.kind != .identifier) {
+                    try self.reportError("expected identifier after '::' in meta annotation path");
+                    return ParseError.UnexpectedToken;
+                }
+                path_end_span = self.spanFromToken(self.current);
+                try segments.append(self.allocator, self.tokenText(self.current));
+                self.advance();
+            }
+            return .{ .path = .{
+                .segments = try self.dupeSlice([]const u8, segments.items),
+                .span = ast.Span.merge(path_start_span, path_end_span),
+            } };
+        } else {
+            try self.reportError("expected string literal or identifier in custom meta annotation argument");
+            return ParseError.UnexpectedToken;
+        }
+    }
+
+    fn parseFunctionDecl(self: *Parser, is_pub: bool, is_unsafe: bool, is_async: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'fn'
 
@@ -2553,11 +3032,12 @@ pub const Parser = struct {
             .is_extern = false,
             .is_variadic = false,
             .span = ast.Span.merge(start_span, end_span),
+            .meta = meta,
         });
         return .{ .function = func };
     }
 
-    fn parseTestDecl(self: *Parser) ParseError!ast.Decl {
+    fn parseTestDecl(self: *Parser, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'test'
 
@@ -2568,6 +3048,7 @@ pub const Parser = struct {
             .name = name,
             .body = body,
             .span = ast.Span.merge(start_span, body.span),
+            .meta = meta,
         });
         return .{ .test_decl = test_decl };
     }
@@ -2681,7 +3162,7 @@ pub const Parser = struct {
         return try self.dupeSlice(ast.WhereConstraint, constraints.items);
     }
 
-    fn parseStructDecl(self: *Parser, is_pub: bool, is_extern: bool) ParseError!ast.Decl {
+    fn parseStructDecl(self: *Parser, is_pub: bool, is_extern: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'struct'
 
@@ -2723,6 +3204,15 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
+            const field_meta = try self.parseMetaAnnotations();
+            // Guard against trailing meta at end of struct body
+            if (self.check(.r_brace)) {
+                if (field_meta.len > 0) {
+                    try self.reportError("meta annotation must be followed by a field declaration");
+                    return ParseError.UnexpectedToken;
+                }
+                break;
+            }
             const field_is_pub = self.match(.pub_);
             const field_span = self.spanFromToken(self.current);
             const field_name = try self.consumeIdentifier();
@@ -2735,6 +3225,7 @@ pub const Parser = struct {
                 .type_ = field_type,
                 .is_pub = field_is_pub,
                 .span = field_span,
+                .meta = field_meta,
             });
 
             _ = self.match(.comma) or self.match(.newline);
@@ -2752,11 +3243,12 @@ pub const Parser = struct {
             .is_extern = is_extern,
             .is_packed = is_packed,
             .span = ast.Span.merge(start_span, end_span),
+            .meta = meta,
         });
         return .{ .struct_decl = struct_decl };
     }
 
-    fn parseEnumDecl(self: *Parser, is_pub: bool, is_extern: bool) ParseError!ast.Decl {
+    fn parseEnumDecl(self: *Parser, is_pub: bool, is_extern: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'enum'
 
@@ -2790,6 +3282,15 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
+            const variant_meta = try self.parseMetaAnnotations();
+            // Guard against trailing meta at end of enum body
+            if (self.check(.r_brace)) {
+                if (variant_meta.len > 0) {
+                    try self.reportError("meta annotation must be followed by a variant declaration");
+                    return ParseError.UnexpectedToken;
+                }
+                break;
+            }
             const variant_span = self.spanFromToken(self.current);
             const variant_name = try self.consumeIdentifier();
 
@@ -2880,6 +3381,7 @@ pub const Parser = struct {
                 .payload = payload,
                 .value = value,
                 .span = variant_span,
+                .meta = variant_meta,
             });
 
             _ = self.match(.comma) or self.match(.newline);
@@ -2896,11 +3398,12 @@ pub const Parser = struct {
             .is_extern = is_extern,
             .repr_type = repr_type,
             .span = ast.Span.merge(start_span, end_span),
+            .meta = meta,
         });
         return .{ .enum_decl = enum_decl };
     }
 
-    fn parseTraitDecl(self: *Parser, is_pub: bool, is_unsafe: bool) ParseError!ast.Decl {
+    fn parseTraitDecl(self: *Parser, is_pub: bool, is_unsafe: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'trait'
 
@@ -2930,15 +3433,31 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
+            // Parse meta annotations on trait members
+            const member_meta = try self.parseMetaAnnotations();
+
+            // Guard: meta annotation at end of block with no following member
+            if (self.check(.r_brace)) {
+                if (member_meta.len > 0) {
+                    try self.reportError("meta annotation must be followed by a declaration");
+                    return ParseError.UnexpectedToken;
+                }
+                break;
+            }
+
             // Check for associated type declaration: type Item or type Item: Bounds
             if (self.check(.type_)) {
+                if (member_meta.len > 0) {
+                    try self.reportError("meta annotations are not supported on associated type declarations");
+                    return ParseError.UnexpectedToken;
+                }
                 const assoc_type = try self.parseAssociatedTypeDecl();
                 try associated_types.append(self.allocator, assoc_type);
             } else {
                 // Each method in trait is a function signature (potentially without body)
                 // Note: unsafe methods in traits not yet supported
                 const method_is_async = self.match(.async_);
-                const method_decl = try self.parseFunctionDecl(false, false, method_is_async);
+                const method_decl = try self.parseFunctionDecl(false, false, method_is_async, member_meta);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -2957,6 +3476,7 @@ pub const Parser = struct {
             .is_pub = is_pub,
             .is_unsafe = is_unsafe,
             .span = ast.Span.merge(start_span, end_span),
+            .meta = meta,
         });
         return .{ .trait_decl = trait_decl };
     }
@@ -2996,7 +3516,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseImplDecl(self: *Parser, is_unsafe: bool) ParseError!ast.Decl {
+    fn parseImplDecl(self: *Parser, is_unsafe: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'impl'
 
@@ -3024,15 +3544,31 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.r_brace)) break;
 
+            // Parse meta annotations on impl members
+            const member_meta = try self.parseMetaAnnotations();
+
+            // Guard: meta annotation at end of block with no following member
+            if (self.check(.r_brace)) {
+                if (member_meta.len > 0) {
+                    try self.reportError("meta annotation must be followed by a declaration");
+                    return ParseError.UnexpectedToken;
+                }
+                break;
+            }
+
             // Check for associated type binding: type Item = ConcreteType
             if (self.check(.type_)) {
+                if (member_meta.len > 0) {
+                    try self.reportError("meta annotations are not supported on associated type bindings");
+                    return ParseError.UnexpectedToken;
+                }
                 const assoc_binding = try self.parseAssociatedTypeBinding();
                 try associated_types.append(self.allocator, assoc_binding);
             } else {
                 const is_pub = self.match(.pub_);
                 const method_is_async = self.match(.async_);
                 const method_is_unsafe = self.match(.unsafe_);
-                const method_decl = try self.parseFunctionDecl(is_pub, method_is_unsafe, method_is_async);
+                const method_decl = try self.parseFunctionDecl(is_pub, method_is_unsafe, method_is_async, member_meta);
                 try methods.append(self.allocator, method_decl.function.*);
             }
 
@@ -3051,6 +3587,7 @@ pub const Parser = struct {
             .methods = try self.dupeSlice(ast.FunctionDecl, methods.items),
             .is_unsafe = is_unsafe,
             .span = ast.Span.merge(start_span, end_span),
+            .meta = meta,
         });
         return .{ .impl_decl = impl_decl };
     }
@@ -3074,7 +3611,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseTypeAlias(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseTypeAlias(self: *Parser, is_pub: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'type'
 
@@ -3090,6 +3627,7 @@ pub const Parser = struct {
             .target = target,
             .is_pub = is_pub,
             .span = ast.Span.merge(start_span, target.span()),
+            .meta = meta,
         });
         return .{ .type_alias = type_alias };
     }
@@ -3290,7 +3828,7 @@ pub const Parser = struct {
         };
     }
 
-    fn parseConstDecl(self: *Parser, is_pub: bool) ParseError!ast.Decl {
+    fn parseConstDecl(self: *Parser, is_pub: bool, meta: []const ast.MetaAnnotation) ParseError!ast.Decl {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'const'
 
@@ -3310,6 +3848,7 @@ pub const Parser = struct {
             .value = value,
             .is_pub = is_pub,
             .span = ast.Span.merge(start_span, value.span()),
+            .meta = meta,
         });
         return .{ .const_decl = const_decl };
     }
@@ -3423,6 +3962,7 @@ pub const Parser = struct {
         var module_decl: ?ast.ModuleDecl = null;
         var imports = std.ArrayListUnmanaged(ast.ImportDecl){};
         var declarations = std.ArrayListUnmanaged(ast.Decl){};
+        var file_meta = std.ArrayListUnmanaged(ast.MetaAnnotation){};
 
         // Skip leading newlines
         while (self.match(.newline)) {}
@@ -3451,6 +3991,19 @@ pub const Parser = struct {
             while (self.match(.newline)) {}
             if (self.check(.eof)) break;
 
+            // Check for file-level meta annotations (meta module { ... }, meta group "..." { ... })
+            if (self.check(.meta) and self.isFileLevelMeta()) {
+                const ann = self.parseOneMetaAnnotation() catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => {
+                        self.synchronizeTopLevel();
+                        continue;
+                    },
+                };
+                try file_meta.append(self.allocator, ann);
+                continue;
+            }
+
             const decl = self.parseDeclaration() catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 else => {
@@ -3473,7 +4026,26 @@ pub const Parser = struct {
             .module_decl = module_decl,
             .imports = try self.dupeSlice(ast.ImportDecl, imports.items),
             .declarations = try self.dupeSlice(ast.Decl, declarations.items),
+            .file_meta = try self.dupeSlice(ast.MetaAnnotation, file_meta.items),
         };
+    }
+
+    /// Check if the current `meta` token begins a file-level annotation.
+    /// File-level: `meta module { ... }`, `meta group "..." { ... }`, `meta guide { ... }`, `meta define name(...)`.
+    ///
+    /// Note: `meta guide` is always parsed as file-level and stored in file_meta, even when it
+    /// appears directly before an `impl` block or function. This is by design — guides describe
+    /// file-wide or project-wide conventions, not individual declarations. The checker rejects
+    /// guide on non-impl declarations (when attached via stacking with other annotations).
+    /// Standalone `meta guide` before a function silently goes to file_meta without error.
+    fn isFileLevelMeta(self: *Parser) bool {
+        const next = self.peekNext();
+        if (next.kind == .module) return true;
+        if (next.kind == .identifier) {
+            const text = self.source[next.loc.start..next.loc.end];
+            return std.mem.eql(u8, text, "group") or std.mem.eql(u8, text, "guide") or std.mem.eql(u8, text, "define");
+        }
+        return false;
     }
 
     /// Parse a complete module (file).

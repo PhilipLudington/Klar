@@ -19,6 +19,12 @@ Klar eliminates these problems through deliberate design.
 
 ## Core Principles
 
+Klar is governed by three principles. See [PHILOSOPHY.md](PHILOSOPHY.md) for the full rationale.
+
+1. **No ambiguity. No surprises.** — Syntax is self-describing, parseable at a glance.
+2. **The code explains itself.** — Code carries its own intent, architecture, and decisions via the [meta layer](design/meta-layer.md).
+3. **Explicitness earns its characters.** — Every annotation must justify its verbosity by saving reading time.
+
 ### 1. Everything is Explicit
 
 **No type inference** — Every variable must have a type annotation:
@@ -429,4 +435,4 @@ loop {
 
 ---
 
-*Klar: No ambiguity. No surprises.*
+*Klar: No ambiguity. No surprises. The code explains itself.*

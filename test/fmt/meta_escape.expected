@@ -1,0 +1,18 @@
+meta intent("line1\nline2")
+fn with_escapes() -> i32 {
+    return 1
+}
+
+meta tag("")
+fn with_empty() -> i32 {
+    return 2
+}
+
+meta hint("tab\there")
+fn with_tab() -> i32 {
+    return 3
+}
+
+fn main() -> i32 {
+    return 0
+}

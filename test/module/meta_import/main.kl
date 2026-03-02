@@ -1,0 +1,16 @@
+// main.kl - Uses imported custom meta annotations
+
+import project_meta.*
+
+meta priority("high")
+meta owner("team-core")
+fn important_work() -> i32 {
+    return 42
+}
+
+fn main() -> i32 {
+    if important_work() == 42 {
+        return 0
+    }
+    return 1
+}

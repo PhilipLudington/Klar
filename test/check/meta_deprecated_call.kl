@@ -1,0 +1,16 @@
+// Expected: check-pass
+// Calling a deprecated function emits a warning but does not fail checks
+
+meta deprecated("use new_helper() instead")
+fn old_helper() -> i32 {
+    return 10
+}
+
+fn new_helper() -> i32 {
+    return 20
+}
+
+fn main() -> i32 {
+    let x: i32 = old_helper()
+    return x - 10
+}

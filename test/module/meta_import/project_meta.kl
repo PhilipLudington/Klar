@@ -1,0 +1,4 @@
+// project_meta.kl - Defines project-wide custom meta annotations
+
+meta define priority(level: "high" | "medium" | "low")
+meta define owner(name: string)

@@ -12,7 +12,10 @@ RESULTS_FILE="$SCRIPT_DIR/.native-test-results.json"
 KLAR="$SCRIPT_DIR/zig-out/bin/klar"
 TEST_DIR="$SCRIPT_DIR/test/native"
 HELPER_C="$TEST_DIR/ffi/helper.c"
-HELPER_LIB="/tmp/libklarhelper.a"
+
+# Cross-platform temp directory for test artifacts
+BUILD_DIR="$SCRIPT_DIR/build"
+mkdir -p "$BUILD_DIR"
 
 # Ensure compiler is built
 if [ ! -f "$KLAR" ]; then
@@ -22,9 +25,25 @@ fi
 
 # Build C helper library if helper.c exists
 if [ -f "$HELPER_C" ]; then
-    cc -c "$HELPER_C" -o /tmp/klarhelper.o 2>/dev/null
-    ar rcs "$HELPER_LIB" /tmp/klarhelper.o 2>/dev/null
-    rm -f /tmp/klarhelper.o
+    if [[ "$OS" == "Windows_NT" ]]; then
+        # MSVC toolchain: cl.exe + lib.exe
+        # Use MSYS_NO_PATHCONV to prevent Git Bash from mangling /Fo and /OUT: paths
+        HELPER_C_WIN="$(cygpath -w "$HELPER_C")"
+        OBJ_WIN="$(cygpath -w "$BUILD_DIR/klarhelper.obj")"
+        LIB_WIN="$(cygpath -w "$BUILD_DIR/klarhelper.lib")"
+        MSYS_NO_PATHCONV=1 cl.exe /nologo /c "$HELPER_C_WIN" /Fo"$OBJ_WIN" || echo "Warning: cl.exe compile failed"
+        MSYS_NO_PATHCONV=1 lib.exe /NOLOGO /OUT:"$LIB_WIN" "$OBJ_WIN" || echo "Warning: lib.exe failed"
+        rm -f "$BUILD_DIR/klarhelper.obj"
+        if [ -f "$BUILD_DIR/klarhelper.lib" ]; then
+            echo "Built C helper library: $BUILD_DIR/klarhelper.lib"
+        else
+            echo "Warning: C helper library was not built"
+        fi
+    else
+        cc -c "$HELPER_C" -o "$BUILD_DIR/klarhelper.o" 2>/dev/null
+        ar rcs "$BUILD_DIR/libklarhelper.a" "$BUILD_DIR/klarhelper.o" 2>/dev/null
+        rm -f "$BUILD_DIR/klarhelper.o"
+    fi
 fi
 
 PASSED=0
@@ -39,6 +58,11 @@ expects_build_error() {
 # Check if test requires external C helper library
 requires_c_helper() {
     head -5 "$1" | grep -q "// Requires: c-helper"
+}
+
+# Extract -l flags from "// Requires: -lXXX" comments in first 5 lines
+get_link_flags() {
+    head -5 "$1" | grep '// Requires:' | grep -o -- '-l[^ ]*' | tr '\n' ' '
 }
 
 # Check if test should be skipped (handled by different runner)
@@ -83,6 +107,10 @@ get_expected() {
         list_string_drop) echo 42 ;;
         list_index_assign) echo 42 ;;
         list_nested_basic) echo 42 ;;
+        env_get_set) echo 42 ;;
+        fs_stat) echo 42 ;;
+        process_run) echo 42 ;;
+        timestamp_now) echo 42 ;;
         *) echo -1 ;;  # -1 means accept any result
     esac
 }
@@ -92,7 +120,7 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
     [ -f "$f" ] || continue
 
     name=$(basename "$f" .kl)
-    temp_bin="/tmp/klar_test_$name"
+    temp_bin="$BUILD_DIR/klar_test_$name"
 
     # Check if test should be skipped
     if should_skip "$f"; then
@@ -120,14 +148,21 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
     fi
 
     # Normal test - compile and run
-    # Add linker flags for tests requiring C helper
+    # Add linker flags for tests requiring C helper or external libraries
+    LINK_FLAGS=$(get_link_flags "$f")
     if requires_c_helper "$f"; then
-        BUILD_CMD="$KLAR build $f -o $temp_bin -L/tmp -lklarhelper"
+        BUILD_CMD="$KLAR build $f -o $temp_bin -L$BUILD_DIR -lklarhelper $LINK_FLAGS"
+    elif [ -n "$LINK_FLAGS" ]; then
+        BUILD_CMD="$KLAR build $f -o $temp_bin $LINK_FLAGS"
     else
         BUILD_CMD="$KLAR build $f -o $temp_bin"
     fi
 
-    if $BUILD_CMD 2>/dev/null | grep -q "^Built"; then
+    build_stdout=$($BUILD_CMD 2>"$BUILD_DIR/klar_build_stderr_$$" || true)
+    build_stderr=$(cat "$BUILD_DIR/klar_build_stderr_$$" 2>/dev/null || true)
+    rm -f "$BUILD_DIR/klar_build_stderr_$$"
+
+    if echo "$build_stdout" | grep -q "^Built"; then
         # Run and get exit code
         "$temp_bin" 2>/dev/null
         result=$?
@@ -149,7 +184,19 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
 
         rm -f "$temp_bin"
     else
-        echo "✗ $name (build failed)"
+        # Show build error for diagnosis (first 3 lines)
+        build_err_line=$(echo "$build_stderr" | head -3 | tr '\n' ' ')
+        if [ -n "$build_err_line" ]; then
+            echo "✗ $name (build failed: $build_err_line)"
+        else
+            # Check stdout for linker messages (MSVC link.exe outputs some errors to stdout)
+            build_out_err=$(echo "$build_stdout" | head -3 | tr '\n' ' ')
+            if [ -n "$build_out_err" ]; then
+                echo "✗ $name (build failed: $build_out_err)"
+            else
+                echo "✗ $name (build failed)"
+            fi
+        fi
         FAILED=$((FAILED + 1))
         if [ -n "$FAILURES" ]; then
             FAILURES="$FAILURES,"

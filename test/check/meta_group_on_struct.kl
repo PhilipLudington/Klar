@@ -1,0 +1,10 @@
+// Expected: check-error meta group can only appear at file level
+struct Config {
+    meta group "helpers" {
+        meta tag("util")
+    }
+    x: i32
+}
+fn main() -> i32 {
+    return 0
+}

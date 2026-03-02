@@ -1,0 +1,7 @@
+// Expected: check-error meta related
+// meta related referencing a nonexistent declaration should be an error
+
+meta related(nonexistent_fn)
+fn process(x: i32) -> i32 {
+    return x + 1
+}

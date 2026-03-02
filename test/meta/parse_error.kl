@@ -1,0 +1,2 @@
+// This file intentionally has a parse error for testing meta query skip behavior
+fn broken( {

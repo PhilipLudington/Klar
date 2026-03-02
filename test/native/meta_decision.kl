@@ -1,0 +1,18 @@
+// Test: meta decision annotation on a function
+meta decision("use iterative approach over recursive for stack safety")
+fn factorial(n: i32) -> i32 {
+    var result: i32 = 1
+    var i: i32 = 2
+    while i <= n {
+        result = result * i
+        i = i + 1
+    }
+    return result
+}
+
+fn main() -> i32 {
+    if factorial(5) == 120 {
+        println("ok")
+    }
+    return 0
+}

@@ -1,0 +1,6 @@
+// Expected: check-error expected string literal in meta annotation
+
+meta intent(42)
+fn foo() -> i32 {
+    return 0
+}

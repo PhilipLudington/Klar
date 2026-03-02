@@ -1,0 +1,24 @@
+meta define priority(level: "high" | "medium" | "low")
+meta define owner(name: string)
+meta define endpoint(method: "GET" | "POST", path: string)
+meta define related_to(target: path)
+meta define marker()
+meta define api_version(version: string) for fn
+meta define domain_model(layer: string) for struct
+meta define status_code(code: string) for variant
+meta define test_category(cat: string) for test
+
+meta priority("high")
+meta owner("core-team")
+fn compute(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+meta endpoint("GET", "/api/users")
+fn list_users() -> i32 {
+    return 0
+}
+
+fn main() -> i32 {
+    return 0
+}

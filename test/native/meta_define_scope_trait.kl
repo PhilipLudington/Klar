@@ -1,0 +1,23 @@
+// Test: custom annotation with trait scope
+meta define contract(version: string) for trait
+
+meta contract("v1")
+trait Serializable {
+    fn serialize(self: Self) -> string
+}
+
+struct Point { x: i32, y: i32 }
+
+impl Point: Serializable {
+    fn serialize(self: Point) -> string {
+        return "point"
+    }
+}
+
+fn main() -> i32 {
+    let p: Point = Point { x: 1, y: 2 }
+    if p.serialize() == "point" {
+        return 0
+    }
+    return 1
+}

@@ -1,0 +1,7 @@
+// Expected: check-error meta in
+// meta in referencing an undefined group should be an error
+
+meta in("nogroup")
+fn login() -> i32 {
+    return 1
+}

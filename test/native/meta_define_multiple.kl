@@ -1,0 +1,23 @@
+// Test: multiple meta define declarations in the same file
+meta define priority(level: "high" | "medium" | "low")
+meta define owner(name: string)
+meta define reviewed()
+
+meta priority("high")
+meta owner("core-team")
+meta reviewed()
+fn important_fn() -> i32 {
+    return 42
+}
+
+meta priority("low")
+fn helper() -> i32 {
+    return 1
+}
+
+fn main() -> i32 {
+    if important_fn() + helper() == 43 {
+        return 0
+    }
+    return 1
+}

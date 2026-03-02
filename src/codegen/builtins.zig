@@ -19,6 +19,24 @@
 //! Introspection: `type_name`, `len`
 //! String: `from_byte`, `parse_int`, `parse_float`
 //! Comptime: `repeat`, `comptime_print`
+//!
+//! ### Phase 0: Environment, Process, Stat, Timestamp
+//!
+//! | Function         | Signature                                        | Description                     |
+//! |------------------|--------------------------------------------------|---------------------------------|
+//! | `env_get`        | `fn(string) -> ?string`                          | Get environment variable        |
+//! | `env_set`        | `fn(string, string) -> Result#[void, IoError]`   | Set environment variable        |
+//! | `fs_stat`        | `fn(string) -> Result#[FileStat, IoError]`       | Stat a filesystem path          |
+//! | `timestamp_now`  | `fn() -> i64`                                    | Current Unix epoch (seconds)    |
+//! | `process_run`    | `fn(string, [string]) -> Result#[ProcessOutput, IoError]` | Run subprocess via shell (CAUTION: args are shell-interpreted, not isolated — see security note) |
+//!
+//! Struct types: `FileStat { size: i64, modified_epoch: i64, is_dir: bool, is_file: bool }`,
+//! `ProcessOutput { stdout: string, stderr: string (always "" — not yet captured), exit_code: i32 }`
+//!
+//! **Security note:** `process_run` uses `popen()` internally. The command and arguments are
+//! concatenated into a single string and passed to `/bin/sh`. Shell metacharacters in any
+//! argument (`;`, `|`, `$()`, `` ` ``, `&&`, etc.) WILL be interpreted. Only pass trusted,
+//! literal strings. A future `process_spawn` builtin will use `execvp()` for safe arg passing.
 
 const std = @import("std");
 const llvm = @import("llvm.zig");
@@ -43,6 +61,12 @@ pub const BuiltinName = struct {
     pub const from_byte = "from_byte";
     pub const parse_int = "parse_int";
     pub const parse_float = "parse_float";
+    // Phase 0: environment, process, stat, timestamp
+    pub const env_get = "env_get";
+    pub const env_set = "env_set";
+    pub const fs_stat = "fs_stat";
+    pub const timestamp_now = "timestamp_now";
+    pub const process_run = "process_run";
 };
 
 /// Check if a function name is a built-in.
@@ -64,7 +88,12 @@ pub fn isBuiltin(name: []const u8) bool {
         std.mem.eql(u8, name, BuiltinName.comptime_print) or
         std.mem.eql(u8, name, BuiltinName.from_byte) or
         std.mem.eql(u8, name, BuiltinName.parse_int) or
-        std.mem.eql(u8, name, BuiltinName.parse_float);
+        std.mem.eql(u8, name, BuiltinName.parse_float) or
+        std.mem.eql(u8, name, BuiltinName.env_get) or
+        std.mem.eql(u8, name, BuiltinName.env_set) or
+        std.mem.eql(u8, name, BuiltinName.fs_stat) or
+        std.mem.eql(u8, name, BuiltinName.timestamp_now) or
+        std.mem.eql(u8, name, BuiltinName.process_run);
 }
 
 /// Check if a built-in is a print function.

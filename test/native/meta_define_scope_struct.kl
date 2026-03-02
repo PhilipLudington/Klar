@@ -1,0 +1,16 @@
+// Test: custom annotation with struct scope
+meta define model(layer: string) for struct
+
+meta model("domain")
+struct User {
+    name: string,
+    age: i32,
+}
+
+fn main() -> i32 {
+    let u: User = User { name: "Alice", age: 30 }
+    if u.age == 30 {
+        return 0
+    }
+    return 1
+}

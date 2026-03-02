@@ -20,6 +20,7 @@ zig-out/
 .fmt-test-results.json
 .doc-test-results.json
 .selfhost-test-results.json
+.meta-test-results.json
 
 # Python bytecode cache
 __pycache__/

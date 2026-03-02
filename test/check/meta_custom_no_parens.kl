@@ -1,0 +1,6 @@
+// Expected: check-error unknown meta annotation; custom annotations require parentheses
+
+meta frobnicate
+fn foo() -> i32 {
+    return 0
+}

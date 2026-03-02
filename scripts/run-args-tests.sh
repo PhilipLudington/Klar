@@ -522,6 +522,22 @@ fi
 rm -f "$expected_method_fixture"
 
 echo ""
+# Cross-platform temp directory for LSP test fixtures
+LSP_TMP="$SCRIPT_DIR/build/lsp_test"
+mkdir -p "$LSP_TMP"
+
+# Create file:// URI from a filesystem path (handles Windows path translation)
+make_file_uri() {
+    local path="$1"
+    if [[ "$OS" == "Windows_NT" ]]; then
+        local win_path
+        win_path=$(cygpath -m "$path")
+        echo "file:///${win_path}"
+    else
+        echo "file://${path}"
+    fi
+}
+
 echo "--- Test: klar lsp transport ---"
 
 init_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
@@ -589,24 +605,24 @@ else
     fail "lsp command: unknown method handling failed"
 fi
 
-if printf 'Content-Length: 99999999\r\n\r\n{}' | $KLAR lsp >/tmp/klar_lsp_oversize.out 2>&1; then
+if printf 'Content-Length: 99999999\r\n\r\n{}' | $KLAR lsp >$LSP_TMP/oversize.out 2>&1; then
     fail "lsp command: oversized content-length should fail"
 else
     pass "lsp command: oversized content-length is rejected"
 fi
-rm -f /tmp/klar_lsp_oversize.out
+rm -f $LSP_TMP/oversize.out
 
 exit_only_payload='{"jsonrpc":"2.0","method":"exit","params":null}'
 if {
     printf 'Content-Length: %d\r\n\r\n%s' "${#exit_only_payload}" "$exit_only_payload"
-} | $KLAR lsp >/tmp/klar_lsp_exit_only.out 2>&1; then
+} | $KLAR lsp >$LSP_TMP/exit_only.out 2>&1; then
     fail "lsp command: exit without shutdown should return non-zero"
 else
     pass "lsp command: exit without shutdown returns non-zero"
 fi
-rm -f /tmp/klar_lsp_exit_only.out
+rm -f $LSP_TMP/exit_only.out
 
-diag_fixture="/tmp/klar_lsp_diagnostic_fixture.kl"
+diag_fixture="$LSP_TMP/klar_lsp_diagnostic_fixture.kl"
 cat > "$diag_fixture" << 'EOF'
 fn main() -> i32 {
     let value: i32 = "oops"
@@ -614,7 +630,7 @@ fn main() -> i32 {
 }
 EOF
 
-diag_uri="file://${diag_fixture}"
+diag_uri="$(make_file_uri "$diag_fixture")"
 diag_payload=$(printf '{"jsonrpc":"2.0","id":11,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"%s"}}}' "$diag_uri")
 diag_output=$(
     {
@@ -660,14 +676,14 @@ else
     fail "lsp command: in-memory document diagnostics lifecycle failed"
 fi
 
-diag_uri_fixture="/tmp/klar lsp uri fixture.kl"
+diag_uri_fixture="$LSP_TMP/klar lsp uri fixture.kl"
 cat > "$diag_uri_fixture" << 'EOF'
 fn main() -> i32 {
     let value: i32 = "oops"
     return value
 }
 EOF
-diag_uri_encoded='file:///tmp/klar%20lsp%20uri%20fixture.kl'
+diag_uri_encoded="$(make_file_uri "$diag_uri_fixture" | sed 's/ /%20/g')"
 diag_uri_payload=$(printf '{"jsonrpc":"2.0","id":15,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"%s"}}}' "$diag_uri_encoded")
 diag_uri_output=$(
     {
@@ -682,7 +698,7 @@ else
 fi
 rm -f "$diag_uri_fixture"
 
-completion_fixture="/tmp/klar_lsp_completion_fixture.kl"
+completion_fixture="$LSP_TMP/klar_lsp_completion_fixture.kl"
 cat > "$completion_fixture" << 'EOF'
 fn main() -> i32 {
     let number: i32 = 1
@@ -690,7 +706,7 @@ fn main() -> i32 {
     return nu
 }
 EOF
-completion_uri="file://${completion_fixture}"
+completion_uri="$(make_file_uri "$completion_fixture")"
 completion_payload=$(printf '{"jsonrpc":"2.0","id":16,"method":"textDocument/completion","params":{"textDocument":{"uri":"%s"},"position":{"line":3,"character":11}}}' "$completion_uri")
 completion_output=$(
     {
@@ -710,14 +726,14 @@ else
 fi
 rm -f "$completion_fixture"
 
-completion_async_fixture="/tmp/klar_lsp_completion_async_fixture.kl"
+completion_async_fixture="$LSP_TMP/klar_lsp_completion_async_fixture.kl"
 cat > "$completion_async_fixture" << 'EOF'
 fn main() -> i32 {
     aw
     return 0
 }
 EOF
-completion_async_uri="file://${completion_async_fixture}"
+completion_async_uri="$(make_file_uri "$completion_async_fixture")"
 completion_async_payload=$(printf '{"jsonrpc":"2.0","id":160,"method":"textDocument/completion","params":{"textDocument":{"uri":"%s"},"position":{"line":1,"character":6}}}' "$completion_async_uri")
 completion_async_output=$(
     {
@@ -733,14 +749,14 @@ else
 fi
 rm -f "$completion_async_fixture"
 
-hover_fixture="/tmp/klar_lsp_hover_fixture.kl"
+hover_fixture="$LSP_TMP/klar_lsp_hover_fixture.kl"
 cat > "$hover_fixture" << 'EOF'
 fn main() -> i32 {
     let number: i32 = 1
     return number
 }
 EOF
-hover_uri="file://${hover_fixture}"
+hover_uri="$(make_file_uri "$hover_fixture")"
 hover_payload=$(printf '{"jsonrpc":"2.0","id":17,"method":"textDocument/hover","params":{"textDocument":{"uri":"%s"},"position":{"line":2,"character":11}}}' "$hover_uri")
 hover_output=$(
     {
@@ -756,13 +772,13 @@ else
 fi
 rm -f "$hover_fixture"
 
-hover_async_fixture="/tmp/klar_lsp_hover_async_fixture.kl"
+hover_async_fixture="$LSP_TMP/klar_lsp_hover_async_fixture.kl"
 cat > "$hover_async_fixture" << 'EOF'
 async fn fetch() -> i32 {
     return 1
 }
 EOF
-hover_async_uri="file://${hover_async_fixture}"
+hover_async_uri="$(make_file_uri "$hover_async_fixture")"
 hover_async_payload=$(printf '{"jsonrpc":"2.0","id":170,"method":"textDocument/hover","params":{"textDocument":{"uri":"%s"},"position":{"line":0,"character":2}}}' "$hover_async_uri")
 hover_async_output=$(
     {
@@ -778,14 +794,14 @@ else
 fi
 rm -f "$hover_async_fixture"
 
-diag_async_fixture="/tmp/klar_lsp_diag_async_fixture.kl"
+diag_async_fixture="$LSP_TMP/klar_lsp_diag_async_fixture.kl"
 cat > "$diag_async_fixture" << 'EOF'
 fn main() -> i32 {
     let value: i32 = await 1
     return value
 }
 EOF
-diag_async_uri="file://${diag_async_fixture}"
+diag_async_uri="$(make_file_uri "$diag_async_fixture")"
 diag_async_payload=$(printf '{"jsonrpc":"2.0","id":175,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":"%s"}}}' "$diag_async_uri")
 diag_async_output=$(
     {
@@ -801,14 +817,14 @@ else
 fi
 rm -f "$diag_async_fixture"
 
-definition_fixture="/tmp/klar_lsp_definition_fixture.kl"
+definition_fixture="$LSP_TMP/klar_lsp_definition_fixture.kl"
 cat > "$definition_fixture" << 'EOF'
 fn main() -> i32 {
     let number: i32 = 1
     return number
 }
 EOF
-definition_uri="file://${definition_fixture}"
+definition_uri="$(make_file_uri "$definition_fixture")"
 definition_payload=$(printf '{"jsonrpc":"2.0","id":18,"method":"textDocument/definition","params":{"textDocument":{"uri":"%s"},"position":{"line":2,"character":11}}}' "$definition_uri")
 definition_output=$(
     {

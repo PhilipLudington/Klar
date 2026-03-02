@@ -1,0 +1,6 @@
+// Expected: check-error unknown custom meta annotation
+
+meta priority("high")
+fn foo() -> i32 {
+    return 0
+}

@@ -41,6 +41,9 @@ if [ $? -eq 0 ] && [ -f /tmp/bare_metal_target.o ]; then
         FAILED=$((FAILED + 1))
     fi
     rm -f /tmp/bare_metal_target.o
+elif echo "$OUTPUT" | grep -q "No available targets"; then
+    echo "  SKIP: LLVM build does not include aarch64 target"
+    SKIPPED=$((SKIPPED + 1))
 else
     echo "  FAIL: Compilation failed"
     echo "  $OUTPUT"
@@ -76,6 +79,9 @@ if [ $? -eq 0 ] && [ -f /tmp/custom_entry.o ]; then
         PASSED=$((PASSED + 1))
     fi
     rm -f /tmp/custom_entry.o
+elif echo "$OUTPUT" | grep -q "No available targets"; then
+    echo "  SKIP: LLVM build does not include aarch64 target"
+    SKIPPED=$((SKIPPED + 1))
 else
     echo "  FAIL: Compilation failed"
     echo "  $OUTPUT"

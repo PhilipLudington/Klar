@@ -1,0 +1,18 @@
+// Test fixture: multiple related annotations on one function
+meta related(validate, "validates input before processing")
+meta related(format_output, "formats the result")
+fn process(x: i32) -> i32 {
+    return validate(format_output(x))
+}
+
+fn validate(x: i32) -> i32 {
+    return x
+}
+
+fn format_output(x: i32) -> i32 {
+    return x
+}
+
+fn main() -> i32 {
+    return 0
+}

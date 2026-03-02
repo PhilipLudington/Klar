@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Klar is an **AI-native application programming language** designed for AI code generation. The core philosophy is **"No ambiguity. No surprises."**
+Klar is an **AI-native application programming language** designed for AI code generation. Three principles govern the design: **"No ambiguity. No surprises."** + **"The code explains itself."** + **"Explicitness earns its characters."** (See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md))
 
 ### Design Principles
 

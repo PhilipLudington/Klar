@@ -1,0 +1,12 @@
+// Expected: check-error can only appear on variant declarations
+
+meta define status_code(code: string) for variant
+
+meta status_code("v1")
+fn wrong_place() -> i32 {
+    return 0
+}
+
+fn main() -> i32 {
+    return 0
+}

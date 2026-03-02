@@ -1,0 +1,62 @@
+// Test fs_stat builtin
+// Expected exit code: 42
+fn main() -> i32 {
+    // Stat a directory that exists (current directory works on all platforms)
+    let dir_result: Result#[FileStat, IoError] = fs_stat(".")
+    if not dir_result.is_ok() {
+        return 1  // Stat of . failed
+    }
+
+    let dir_stat: FileStat = dir_result!
+    if not dir_stat.is_dir {
+        return 2  // . should be a directory
+    }
+    if dir_stat.is_file {
+        return 3  // . should not be a regular file
+    }
+
+    // Stat a non-existent path
+    let missing_result: Result#[FileStat, IoError] = fs_stat("klar_nonexistent_dir_12345/nonexistent_file")
+    if missing_result.is_ok() {
+        return 4  // Should fail for non-existent path
+    }
+
+    // Create a temporary file and stat it
+    let write_res: Result#[void, IoError] = fs_write_string("klar_stat_test.txt", "hello")
+    if not write_res.is_ok() {
+        return 5  // Write failed
+    }
+
+    // Run all checks, tracking result so we always clean up
+    let check_result: i32 = check_file_stat()
+
+    // Always clean up, regardless of check_result
+    let _ : Result#[void, IoError] = fs_remove_file("klar_stat_test.txt")
+
+    return check_result
+}
+
+fn check_file_stat() -> i32 {
+    let file_result: Result#[FileStat, IoError] = fs_stat("klar_stat_test.txt")
+    if not file_result.is_ok() {
+        return 6  // Stat of created file failed
+    }
+
+    let file_stat: FileStat = file_result!
+    if not file_stat.is_file {
+        return 7  // Should be a regular file
+    }
+    if file_stat.is_dir {
+        return 8  // Should not be a directory
+    }
+    let expected_size: i64 = 5
+    if file_stat.size != expected_size {
+        return 9  // "hello" is 5 bytes
+    }
+    let min_epoch: i64 = 1577836800
+    if file_stat.modified_epoch < min_epoch {
+        return 10  // Modified time should be recent
+    }
+
+    return 42
+}

@@ -1,0 +1,6 @@
+// Test: meta intent annotation on a function
+meta intent("primary entry point for the application")
+fn main() -> i32 {
+    println("ok")
+    return 0
+}

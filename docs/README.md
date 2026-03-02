@@ -1,6 +1,6 @@
 # Klar Programming Language
 
-**No ambiguity. No surprises.**
+**No ambiguity. No surprises. The code explains itself.**
 
 Klar is an AI-native application programming language designed for AI code generation. Every construct is self-describing, parseable at a glance, and has defined semantics.
 
@@ -21,6 +21,10 @@ klar run hello.kl
 ```
 
 ## Documentation
+
+### Philosophy
+
+- [Design Philosophy](PHILOSOPHY.md) - The three principles behind every design decision
 
 ### Getting Started
 
@@ -70,6 +74,13 @@ klar run hello.kl
 - [Comptime](advanced/comptime.md) - Compile-time programming
 - [Builtin Traits](advanced/builtin-traits.md) - Eq, Ordered, Clone, Drop, etc.
 - [FFI](advanced/ffi.md) - Foreign Function Interface for C interop
+
+### Design
+
+- [Meta Layer](design/meta-layer.md) - Self-describing code with `meta` annotations
+- [DSPy Opportunities](design/dspy-opportunities.md) - DSPy-inspired language features
+- [MoonBit Semantic Sampler](design/moonbit-semantic-sampler.md) - MoonBit-inspired design
+- [Nanolang Inspiration](design/nanolang-inspiration.md) - Nanolang-inspired features
 
 ### Appendix
 

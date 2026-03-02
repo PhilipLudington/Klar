@@ -1,0 +1,10 @@
+// Expected: check-error meta guide
+// meta guide on a function should be an error (only file-level and impl blocks)
+
+meta tag("test")
+meta guide {
+    pattern: "factory"
+}
+fn create_widget() -> i32 {
+    return 42
+}
