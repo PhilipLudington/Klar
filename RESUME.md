@@ -14,27 +14,19 @@ These bugs were discovered during the TOML parser implementation (Phase 3) and w
 
 ---
 
-## [ ] Bug 2: List.push() on lists extracted from Map.get() doesn't persist
+## [x] Bug 2: List.push() on lists extracted from Map.get() doesn't persist (fixed 2026-03-01)
 
 **Symptom:** Extracting a `List` from a `Map` via `.get()` + match, then calling `.push()` on it, modifies a copy. The original list in the map is unchanged.
 
-**Root cause:** `Map.get()` returns a copy of the value. For `Map` values, the copy shares the underlying hash table (pointer semantics), so `.insert()` works. For `List` values, the copy creates an independent list header (pointer + length + capacity), so `.push()` updates the copy's length but not the original's.
+**Root cause:** `Map.get()` returns a copy of the value. For `Map` values, the copy shares the underlying hash table (pointer semantics), so `.insert()` works. For `List` values, the copy created an independent list header (pointer + length + capacity), so `.push()` updated the copy's length but not the original's.
 
-**Workaround:** After pushing, re-insert the modified list back into the map:
-```klar
-let got: ?List#[i32] = m.get("items")
-match got {
-    Some(a) => {
-        a.push(new_item)
-        m.insert("items", a)  // re-insert to persist the push
-    }
-    None => {}
-}
-```
+**Fix:** Changed List from a flat `{ ptr, len, capacity }` struct (16 bytes) to a heap-indirected `{ header_ptr }` struct (8 bytes) where the header `{ ptr, len, capacity }` lives on the heap. When a List is copied (passed to functions, extracted from Map.get(), etc.), both copies share the same heap header, so mutations like `.push()` are visible through both.
 
-**Fix approach:** Make `List` use a double-indirection (pointer to heap header) so copies share the same length/capacity metadata, or make `Map.get()` return a reference rather than a copy.
+Key changes:
+- `src/codegen/list.zig`: New `ListHeaderField`, `createListHeaderType()`, updated `ListField` and `createListStructType()` for single-pointer wrapper
+- `src/codegen/emit.zig`: New helpers `getListHeaderType()`, `derefListHeader()`, `allocateListHeader()`, `buildListFromHeader()`. Updated all ~30 call sites that access list internals (emitListNew, emitListPush, emitListGet, emitListLen, emitListDrop, emitMapKeys, emitMapValues, emitSetMap, emitSetEnumerate, emitSetZip, emitForLoopList, emitListPushInline, etc.)
 
-**Repro:** `scratch/list_match_push.kl`, `scratch/list_reinsert.kl`
+**Tests:** `test/native/list_shared_push.kl`
 
 ---
 
@@ -61,27 +53,15 @@ fn build_string() -> string {
 
 ---
 
-## [ ] Bug 4: Key string corruption in recursive functions passing List#[string]
+## [x] Bug 4: Key string corruption in recursive functions passing List#[string] (fixed 2026-03-01)
 
 **Symptom:** When a `List#[string]` (e.g., map keys) is passed through recursive function calls, key string pointers become corrupted after ~2 iterations. Accessing `keys.get(i)!` returns a pointer to invalid memory, causing SIGSEGV in `strcmp`.
 
-**Root cause:** Unclear. Possibly related to how `List` backing data interacts with stack frames during recursion — the list's backing array pointer may become stale after intermediate function calls (like `stringify_inline_value`) allocate memory.
+**Root cause:** The old flat `List` struct `{ ptr, i32, i32 }` was passed by value. When a function pushed to the list (causing realloc), the caller's copy still had the old data pointer. In recursive scenarios, the stack copies diverged further with each call.
 
-**Workaround:** Don't pass the keys list through recursive calls. Instead, use iterative loops with helper functions that receive the map and individual key strings:
-```klar
-// Instead of recursive: stringify_keys(m, keys, idx, total)
-// Do iterative with per-key helper:
-var i: i32 = 0
-while i < num_keys {
-    let k: string = key_strs.get(i)!
-    result = result + stringify_one_kv(m, k)
-    i = i + 1
-}
-```
+**Fix:** Fixed by the same List heap-indirection change as Bug 2. The list is now `{ header_ptr }` — a single pointer to a shared heap header. Recursive function calls copy only the 8-byte pointer, not the data/len/capacity. All copies point to the same header, so reallocs update the shared data pointer.
 
-**Fix approach:** Investigate LLVM IR generation for recursive functions with `List` parameters. The list struct `{ ptr, i32, i32 }` is passed by value — check if the pointer component becomes invalid after callee functions allocate.
-
-**Repro:** `scratch/toml_str20.kl` through `scratch/toml_str27.kl` (various isolation attempts). Use `lldb` on the compiled binary to see the crash in `strcmp` called from the recursive function.
+**Test:** `test/native/list_recursive_pass.kl`
 
 ---
 

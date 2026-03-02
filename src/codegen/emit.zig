@@ -30,6 +30,7 @@ const RepeatInfo = checker_mod.RepeatInfo;
 const llvm = @import("llvm.zig");
 const target = @import("target.zig");
 const layout = @import("layout.zig");
+const list_constants = @import("list.zig");
 const map_constants = @import("map.zig");
 
 // Supporting documentation modules (pure doc comments, see each file for details):
@@ -3061,7 +3062,7 @@ pub const Emitter = struct {
     }
 
     /// Emit for-loop for List#[T] types using index iteration.
-    /// List layout: { ptr: *T, len: i32, capacity: i32 }
+    /// List layout: { header_ptr } -> { ptr: *T, len: i32, capacity: i32 }
     fn emitForLoopList(
         self: *Emitter,
         func: llvm.ValueRef,
@@ -3076,7 +3077,7 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
 
         const i32_type = llvm.Types.int32(self.ctx);
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
 
         // Allocate index counter
         const idx_alloca = self.builder.buildAlloca(i32_type, "forlist.idx");
@@ -3117,8 +3118,9 @@ pub const Emitter = struct {
         // Emit condition: idx < len
         self.builder.positionAtEnd(cond_bb);
         const cur_idx = self.builder.buildLoad(i32_type, idx_alloca, "forlist.idx.cur");
-        // Load current length from list (it may change during iteration, but we snapshot it)
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, "forlist.len_ptr");
+        // Dereference header and load current length
+        const forlist_header = self.derefListHeader(list_alloca);
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, forlist_header, 1, "forlist.len_ptr");
         const list_len = self.builder.buildLoad(i32_type, len_ptr, "forlist.len");
         const cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, cur_idx, list_len, "forlist.cmp");
         _ = self.builder.buildCondBr(cmp, body_bb, end_bb);
@@ -3127,8 +3129,8 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(body_bb);
         self.has_terminator = false;
 
-        // Load data pointer from list
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "forlist.ptr_ptr");
+        // Load data pointer from header
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, forlist_header, 0, "forlist.ptr_ptr");
         const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "forlist.data_ptr");
 
         // Load current element: data_ptr[idx]
@@ -6357,7 +6359,7 @@ pub const Emitter = struct {
                         };
                         return llvm.Types.struct_(self.ctx, &future_fields, false);
                     }
-                    // List#[T] is { ptr, len: i32, capacity: i32 }
+                    // List#[T] is { header_ptr } (pointer to heap-allocated ListHeader)
                     if (std.mem.eql(u8, base_name, "List") and g.args.len == 1) {
                         return self.getListStructType();
                     }
@@ -8961,13 +8963,14 @@ pub const Emitter = struct {
                     if (local.list_element_type != null) {
                         const element_type = self.typeToLLVM(local.list_element_type.?);
                         const element_size = self.getLLVMTypeSize(element_type);
-                        const list_type = self.getListStructType();
+                        const idx_header_type = self.getListHeaderType();
                         const i32_type = llvm.Types.int32(self.ctx);
                         const i64_type = llvm.Types.int64(self.ctx);
                         const i8_type = llvm.Types.int8(self.ctx);
 
-                        // Load len from list struct (field 1)
-                        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, local.value, 1, "list.len_ptr");
+                        // Dereference header and load len
+                        const idx_header = self.derefListHeader(local.value);
+                        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, idx_header_type, idx_header, 1, "list.len_ptr");
                         const current_len = self.builder.buildLoad(i32_type, len_ptr, "list.len");
 
                         // Bounds check: 0 <= index < len
@@ -8985,9 +8988,9 @@ pub const Emitter = struct {
                         self.builder.positionAtEnd(fail_block);
                         _ = self.builder.buildUnreachable();
 
-                        // OK: load element
+                        // OK: load element from header's data pointer
                         self.builder.positionAtEnd(ok_block);
-                        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, local.value, 0, "list.ptr_ptr");
+                        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, idx_header_type, idx_header, 0, "list.ptr_ptr");
                         const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "list.data_ptr");
                         const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index_val, i64_type, "list.idx_i64");
                         const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
@@ -9157,8 +9160,8 @@ pub const Emitter = struct {
                 return self.builder.buildLoad(element_llvm_type, elem_ptr, "slice.elem.val");
             }
 
-            // List indexing (fallback for non-identifier): 3-field struct { ptr, i32, i32 }
-            if (num_elements == 3) {
+            // List indexing (fallback for non-identifier): 1-field struct { ptr } (header pointer)
+            if (num_elements == 1) {
                 // Use type checker to get element type
                 if (self.type_checker) |tc| {
                     const tc_mut = @constCast(tc);
@@ -9166,17 +9169,19 @@ pub const Emitter = struct {
                     if (obj_klar_type == .list) {
                         const element_type = self.typeToLLVM(obj_klar_type.list.element);
                         const element_size = self.getLLVMTypeSize(element_type);
-                        const list_type = self.getListStructType();
+                        const fb_list_type = self.getListStructType();
+                        const fb_header_type = self.getListHeaderType();
                         const i32_type = llvm.Types.int32(self.ctx);
                         const i64_type = llvm.Types.int64(self.ctx);
                         const i8_type = llvm.Types.int8(self.ctx);
 
-                        // Store to temp alloca for GEP
-                        const list_alloca = self.builder.buildAlloca(list_type, "list.tmp");
+                        // Store to temp alloca for deref
+                        const list_alloca = self.builder.buildAlloca(fb_list_type, "list.tmp");
                         _ = self.builder.buildStore(obj, list_alloca);
 
-                        // Load len from list struct (field 1)
-                        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, "list.len_ptr");
+                        // Dereference header and load len
+                        const fb_header = self.derefListHeader(list_alloca);
+                        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fb_header_type, fb_header, 1, "list.len_ptr");
                         const current_len = self.builder.buildLoad(i32_type, len_ptr, "list.len");
 
                         // Bounds check: 0 <= index < len
@@ -9194,7 +9199,7 @@ pub const Emitter = struct {
                         _ = self.builder.buildUnreachable();
 
                         self.builder.positionAtEnd(ok_block);
-                        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "list.ptr_ptr");
+                        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, fb_header_type, fb_header, 0, "list.ptr_ptr");
                         const data_ptr = self.builder.buildLoad(llvm.Types.pointer(self.ctx), ptr_ptr, "list.data_ptr");
                         const idx_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, index_val, i64_type, "list.idx_i64");
                         const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
@@ -14747,22 +14752,29 @@ pub const Emitter = struct {
     fn isListExpr(self: *Emitter, expr: ast.Expr) bool {
         switch (expr) {
             .identifier => |id| {
-                // Check the stored LLVM type structure
                 if (self.named_values.get(id.name)) |local| {
-                    // Exclude String types - String and List have same LLVM structure
-                    // but String has is_string_data flag set
+                    // Use the list_element_type flag — set during variable
+                    // registration when the type is known to be List#[T].
+                    // This is more reliable than structural LLVM type detection
+                    // which can false-positive on single-pointer user structs.
+                    if (local.list_element_type != null) {
+                        return true;
+                    }
+                    // Exclude String types
                     if (local.is_string_data) {
                         return false;
                     }
-                    // Check LLVM type structure first
-                    if (self.isListType(local.ty)) {
-                        return true;
-                    }
-                    // Fallback: check via type checker
+                    // Prefer type checker over structural heuristic to avoid
+                    // false positives on single-pointer user structs
                     if (self.type_checker) |tc| {
                         const tc_mut = @constCast(tc);
                         const expr_type = tc_mut.checkExpr(expr);
                         return expr_type == .list;
+                    }
+                    // Last resort: structural LLVM type check (when no type
+                    // checker available, e.g. freestanding codegen)
+                    if (self.isListType(local.ty)) {
+                        return true;
                     }
                 }
                 return false;
@@ -14780,34 +14792,22 @@ pub const Emitter = struct {
     }
 
     /// Check if an LLVM type is a List type by checking its structure.
-    /// List has layout: { ptr, i32, i32 } (ptr, len, capacity)
+    /// List has layout: { ptr } (single header pointer).
+    /// Note: isListExpr also uses the type checker as fallback, so this heuristic is secondary.
     fn isListType(self: *Emitter, ty: llvm.TypeRef) bool {
         _ = self;
         const type_kind = llvm.getTypeKind(ty);
         if (type_kind != llvm.c.LLVMStructTypeKind) return false;
 
-        // List struct has exactly 3 fields: ptr, i32, i32
+        // List struct has exactly 1 field: ptr (header pointer)
         const num_fields = llvm.c.LLVMCountStructElementTypes(ty);
-        if (num_fields != 3) return false;
+        if (num_fields != 1) return false;
 
-        // Check field types
+        // Check that the single field is a pointer
         const field0 = llvm.c.LLVMStructGetTypeAtIndex(ty, 0);
-        const field1 = llvm.c.LLVMStructGetTypeAtIndex(ty, 1);
-        const field2 = llvm.c.LLVMStructGetTypeAtIndex(ty, 2);
-
-        // Field 0 should be pointer, fields 1-2 should be i32
         const kind0 = llvm.getTypeKind(field0);
-        const kind1 = llvm.getTypeKind(field1);
-        const kind2 = llvm.getTypeKind(field2);
 
-        if (kind0 != llvm.c.LLVMPointerTypeKind) return false;
-        if (kind1 != llvm.c.LLVMIntegerTypeKind or kind2 != llvm.c.LLVMIntegerTypeKind) return false;
-
-        // Check bit widths: should be 32
-        const width1 = llvm.c.LLVMGetIntTypeWidth(field1);
-        const width2 = llvm.c.LLVMGetIntTypeWidth(field2);
-
-        return width1 == 32 and width2 == 32;
+        return kind0 == llvm.c.LLVMPointerTypeKind;
     }
 
     /// Check if an expression is a Map type.
@@ -16364,25 +16364,17 @@ pub const Emitter = struct {
     // ========================================================================
 
     /// Emit List.new#[T]() - creates an empty list.
-    /// Returns a List struct initialized to { ptr: null, len: 0, capacity: 0 }
+    /// Allocates a ListHeader on the heap and returns { header_ptr }.
     fn emitListNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         _ = method;
 
-        // Build list struct type
-        const list_type = self.getListStructType();
-
-        // Create an empty list struct { null, 0, 0 } directly
-        const null_ptr = llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
-        const zero_i32 = llvm.Const.int32(self.ctx, 0);
-
-        // Build constant struct value
-        var values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32 };
-        return llvm.c.LLVMConstNamedStruct(list_type, &values, 3);
+        // Allocate a new header on the heap, initialized to { null, 0, 0 }
+        const header_ptr = self.allocateListHeader();
+        return self.buildListFromHeader(header_ptr);
     }
 
     /// Emit List.with_capacity#[T](n) - creates a list with pre-allocated capacity.
-    /// Returns a List struct with allocated memory for n elements.
-    /// Implemented inline: allocates memory using malloc, returns { ptr, 0, capacity }.
+    /// Allocates a ListHeader on the heap with pre-allocated data buffer.
     fn emitListWithCapacity(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         // Get element type from type_args
         const type_args = method.type_args orelse return EmitError.InvalidAST;
@@ -16403,7 +16395,7 @@ pub const Emitter = struct {
 
         const i64_type = llvm.Types.int64(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
 
         // Convert capacity to i32 if needed (it could be i64)
         const cap_type = llvm.typeOf(capacity);
@@ -16417,38 +16409,40 @@ pub const Emitter = struct {
         const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
         const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, cap_i64, elem_size_val, "alloc_size");
 
-        // Call malloc(size)
+        // Call malloc(size) for data buffer
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const data_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "list.data_ptr");
 
-        // Build the list struct { ptr, len: 0, capacity }
-        const list_alloca = self.builder.buildAlloca(list_type, "list.with_cap");
+        // Allocate header on the heap
+        const header_size = llvm.Const.int64(self.ctx, list_constants.list_header_size);
+        var hdr_malloc_args = [_]llvm.ValueRef{header_size};
+        const header_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &hdr_malloc_args, "list.header");
 
-        // Store ptr (field 0)
-        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "list.ptr_field");
+        // Store data ptr (field 0)
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "list.hdr.ptr_field");
         _ = self.builder.buildStore(data_ptr, ptr_field);
 
         // Store len = 0 (field 1)
-        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, "list.len_field");
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "list.hdr.len_field");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_field);
 
         // Store capacity (field 2)
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 2, "list.cap_field");
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "list.hdr.cap_field");
         _ = self.builder.buildStore(cap_i32, cap_field);
 
-        // Load and return the struct value
-        return self.builder.buildLoad(list_type, list_alloca, "list.with_cap_val");
+        // Wrap header pointer in list struct and return
+        return self.buildListFromHeader(header_ptr);
     }
 
     /// Emit list.len() - returns length as i32.
-    /// List layout: { ptr, len, capacity } - len is at index 1.
+    /// Dereferences the header pointer and reads len field.
     fn emitListLen(self: *Emitter, list_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
 
-        // GEP to the len field (index 1)
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "list.len.ptr");
+        const header_ptr = self.derefListHeader(list_ptr);
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "list.len.ptr");
         return self.builder.buildLoad(i32_type, len_ptr, "list.len");
     }
 
@@ -16460,18 +16454,19 @@ pub const Emitter = struct {
     }
 
     /// Emit list.capacity() - returns capacity as i32.
-    /// List layout: { ptr, len, capacity } - capacity is at index 2.
+    /// Dereferences the header pointer and reads capacity field.
     fn emitListCapacity(self: *Emitter, list_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
 
-        // GEP to the capacity field (index 2)
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 2, "list.cap.ptr");
+        const header_ptr = self.derefListHeader(list_ptr);
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "list.cap.ptr");
         return self.builder.buildLoad(i32_type, cap_ptr, "list.capacity");
     }
 
     /// Emit list.push(value) - adds an element to the list.
-    /// Implemented inline: checks capacity, grows if needed, stores value, increments len.
+    /// Implemented inline: dereferences header, checks capacity, grows if needed,
+    /// stores value, increments len. All writes go through the shared header.
     fn emitListPush(self: *Emitter, list_ptr: llvm.ValueRef, method: *ast.MethodCall, value: llvm.ValueRef) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
@@ -16491,15 +16486,18 @@ pub const Emitter = struct {
             }
         }
 
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
-        // Load current ptr, len, capacity
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "push.ptr_ptr");
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "push.len_ptr");
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 2, "push.cap_ptr");
+        // Dereference header pointer
+        const header_ptr = self.derefListHeader(list_ptr);
+
+        // Load current ptr, len, capacity from header
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "push.ptr_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "push.len_ptr");
+        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "push.cap_ptr");
 
         const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "push.current_ptr");
         const current_len = self.builder.buildLoad(i32_type, len_ptr, "push.current_len");
@@ -16536,7 +16534,7 @@ pub const Emitter = struct {
         var realloc_args = [_]llvm.ValueRef{ current_ptr, new_size };
         const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "push.new_ptr");
 
-        // Store new ptr and capacity
+        // Store new ptr and capacity into header
         _ = self.builder.buildStore(new_ptr, ptr_ptr);
         _ = self.builder.buildStore(new_cap, cap_ptr);
 
@@ -16546,8 +16544,6 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(store_bb);
 
         // PHI for the data pointer (either current_ptr or new_ptr from grow)
-        // Use saved entry_bb (not LLVMGetPreviousBasicBlock) to correctly handle
-        // cases where emitting the value created intermediate basic blocks
         const phi = llvm.c.LLVMBuildPhi(self.builder.ref, ptr_type, "push.data_ptr");
         var incoming_values = [_]llvm.ValueRef{ current_ptr, new_ptr };
         var incoming_blocks = [_]llvm.BasicBlockRef{ entry_bb, grow_bb };
@@ -16563,7 +16559,7 @@ pub const Emitter = struct {
         // Store the value (use actual_value which may have been promoted for List#[String])
         _ = self.builder.buildStore(actual_value, elem_ptr);
 
-        // Increment len and store back
+        // Increment len and store back into header
         const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, current_len, llvm.Const.int32(self.ctx, 1), "push.new_len");
         _ = self.builder.buildStore(new_len, len_ptr);
 
@@ -16581,15 +16577,18 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i1_type = llvm.Types.int1(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
 
-        // Load current len
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "pop.len_ptr");
+        // Dereference header
+        const header_ptr = self.derefListHeader(list_ptr);
+
+        // Load current len from header
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "pop.len_ptr");
         const current_len = self.builder.buildLoad(i32_type, len_ptr, "pop.current_len");
 
         // Check if empty: len > 0
@@ -16615,8 +16614,8 @@ pub const Emitter = struct {
         const one = llvm.Const.int32(self.ctx, 1);
         const new_len = self.builder.buildSub(current_len, one, "pop.new_len");
 
-        // Load data pointer
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "pop.ptr_ptr");
+        // Load data pointer from header
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "pop.ptr_ptr");
         const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "pop.current_ptr");
 
         // Calculate address of last element: ptr + new_len * element_size
@@ -16629,7 +16628,7 @@ pub const Emitter = struct {
         // Load the value
         const loaded_value = self.builder.buildLoad(element_llvm_type, elem_ptr, "pop.loaded");
 
-        // Decrement len
+        // Decrement len in header
         _ = self.builder.buildStore(new_len, len_ptr);
 
         // Store success (true) and value
@@ -16664,16 +16663,17 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i1_type = llvm.Types.int1(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
 
-        // Load current ptr and len from the list struct
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "get.ptr_ptr");
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "get.len_ptr");
+        // Dereference header and load ptr + len
+        const header_ptr = self.derefListHeader(list_ptr);
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "get.ptr_ptr");
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "get.len_ptr");
 
         const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "get.current_ptr");
         const current_len = self.builder.buildLoad(i32_type, len_ptr, "get.current_len");
@@ -16736,7 +16736,7 @@ pub const Emitter = struct {
     }
 
     /// Emit list.clone() - creates a deep copy of the list.
-    /// Uses inline LLVM codegen (no runtime function call).
+    /// Allocates a NEW header (independent copy) and copies the data buffer.
     fn emitListClone(self: *Emitter, list_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
@@ -16745,19 +16745,21 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
+        const header_type = self.getListHeaderType();
         const list_type = self.getListStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
-        // Load current ptr and len from the source list
-        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "clone.src_ptr_ptr");
-        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "clone.src_len_ptr");
+        // Dereference source header and load ptr + len
+        const src_header = self.derefListHeader(list_ptr);
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 0, "clone.src_ptr_ptr");
+        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 1, "clone.src_len_ptr");
 
         const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "clone.src_ptr");
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "clone.src_len");
 
-        // Allocate result list on the stack
+        // Allocate result list struct on the stack
         const result_alloca = self.builder.buildAlloca(list_type, "clone.result");
 
         // Check if source list is empty
@@ -16771,20 +16773,16 @@ pub const Emitter = struct {
 
         _ = self.builder.buildCondBr(is_empty, empty_bb, copy_bb);
 
-        // --- Empty block: return empty list ---
+        // --- Empty block: return empty list with new header ---
         self.builder.positionAtEnd(empty_bb);
 
-        // Store null ptr, 0 len, 0 capacity
-        const empty_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "clone.empty_ptr_field");
-        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), empty_ptr_field);
-        const empty_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "clone.empty_len_field");
-        _ = self.builder.buildStore(zero, empty_len_field);
-        const empty_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "clone.empty_cap_field");
-        _ = self.builder.buildStore(zero, empty_cap_field);
+        const empty_header = self.allocateListHeader();
+        const empty_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "clone.empty_hdr");
+        _ = self.builder.buildStore(empty_header, empty_hdr_field);
 
         _ = self.builder.buildBr(merge_bb);
 
-        // --- Copy block: allocate and copy data ---
+        // --- Copy block: allocate new header and copy data ---
         self.builder.positionAtEnd(copy_bb);
 
         // Calculate allocation size: len * element_size
@@ -16792,62 +16790,86 @@ pub const Emitter = struct {
         const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
         const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, len_i64, elem_size_val, "clone.alloc_size");
 
-        // Allocate new memory
+        // Allocate new data buffer
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_size};
-        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "clone.new_ptr");
+        const new_data_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "clone.new_ptr");
 
         // Copy data using memcpy
         const memcpy_fn = self.getOrDeclareMemcpy();
-        var memcpy_args = [_]llvm.ValueRef{ new_ptr, src_ptr, alloc_size };
+        var memcpy_args = [_]llvm.ValueRef{ new_data_ptr, src_ptr, alloc_size };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
-        // Store new ptr, same len, capacity = len
-        const copy_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "clone.copy_ptr_field");
-        _ = self.builder.buildStore(new_ptr, copy_ptr_field);
-        const copy_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "clone.copy_len_field");
+        // Allocate a new header on the heap
+        const header_size = llvm.Const.int64(self.ctx, list_constants.list_header_size);
+        var hdr_malloc_args = [_]llvm.ValueRef{header_size};
+        const new_header = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &hdr_malloc_args, "clone.new_header");
+
+        // Store data ptr, len, capacity into new header
+        const copy_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, new_header, 0, "clone.copy_ptr_field");
+        _ = self.builder.buildStore(new_data_ptr, copy_ptr_field);
+        const copy_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, new_header, 1, "clone.copy_len_field");
         _ = self.builder.buildStore(src_len, copy_len_field);
-        const copy_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "clone.copy_cap_field");
+        const copy_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, new_header, 2, "clone.copy_cap_field");
         _ = self.builder.buildStore(src_len, copy_cap_field);
+
+        // Store new header into result list struct
+        const copy_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "clone.copy_hdr");
+        _ = self.builder.buildStore(new_header, copy_hdr_field);
 
         _ = self.builder.buildBr(merge_bb);
 
         // --- Merge block ---
         self.builder.positionAtEnd(merge_bb);
 
-        // Load and return the result list
         return self.builder.buildLoad(list_type, result_alloca, "clone.result_val");
     }
 
-    /// Emit list.drop() - frees the list's memory.
-    /// For List#[String], iterates to free each string's buffer before freeing the list buffer.
-    /// For other element types, uses inline LLVM codegen.
+    /// Emit list.drop() - frees the list's data buffer and resets the header in place.
+    /// The header is NOT freed — when data is non-null, it is freed and the header is
+    /// zeroed to { null, 0, 0 } so the list remains usable (empty state) and aliases
+    /// see the empty state instead of a dangling pointer. When data is already null
+    /// (empty or already-dropped list), drop is a no-op — the header is already clean.
+    /// For List#[String], iterates to free each string's buffer first.
     fn emitListDrop(self: *Emitter, list_ptr: llvm.ValueRef, method: *ast.MethodCall) EmitError!llvm.ValueRef {
         const func = self.current_function orelse return EmitError.InvalidAST;
 
         // Get element type info
         const element_type = self.getListElementType(method.object) orelse return EmitError.InvalidAST;
 
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
 
-        // Load the data pointer from the list
-        const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "drop.data_ptr_ptr");
-        const data_ptr = self.builder.buildLoad(ptr_type, data_ptr_ptr, "drop.data_ptr");
+        // Load header pointer
+        const header_ptr = self.derefListHeader(list_ptr);
 
-        // Check if pointer is null
+        // Check if header pointer is null (safety for edge cases)
         const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
-        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, data_ptr, null_ptr, "drop.is_null");
+        const hdr_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, header_ptr, null_ptr, "drop.hdr_is_null");
 
         // Create basic blocks
         const free_bb = llvm.appendBasicBlock(self.ctx, func, "drop.free");
         const done_bb = llvm.appendBasicBlock(self.ctx, func, "drop.done");
 
-        _ = self.builder.buildCondBr(is_null, done_bb, free_bb);
+        _ = self.builder.buildCondBr(hdr_is_null, done_bb, free_bb);
 
-        // --- Free block: ptr is not null ---
+        // --- Free block: header is not null ---
         self.builder.positionAtEnd(free_bb);
+
+        // Load data pointer from header
+        const data_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "drop.data_ptr_ptr");
+        const data_ptr = self.builder.buildLoad(ptr_type, data_ptr_ptr, "drop.data_ptr");
+
+        // Check if data pointer is null (already dropped or empty list)
+        const data_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, data_ptr, null_ptr, "drop.data_is_null");
+        const free_data_bb = llvm.appendBasicBlock(self.ctx, func, "drop.free_data");
+        const reset_header_bb = llvm.appendBasicBlock(self.ctx, func, "drop.reset_header");
+
+        _ = self.builder.buildCondBr(data_is_null, done_bb, free_data_bb);
+
+        // --- Free data block ---
+        self.builder.positionAtEnd(free_data_bb);
 
         // For List#[String], iterate and free each string's buffer first
         if (element_type == .string_data) {
@@ -16856,8 +16878,8 @@ pub const Emitter = struct {
             const i8_type = llvm.Types.int8(self.ctx);
             const string_size = self.getLLVMTypeSize(string_type);
 
-            // Load len
-            const len_ptr_loop = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "drop.len_for_loop");
+            // Load len from header
+            const len_ptr_loop = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "drop.len_for_loop");
             const list_len = self.builder.buildLoad(i32_type, len_ptr_loop, "drop.list_len");
 
             // Loop: i = 0; while i < len
@@ -16906,22 +16928,27 @@ pub const Emitter = struct {
             _ = self.builder.buildStore(next_i, i_alloca);
             _ = self.builder.buildBr(loop_cond_bb);
 
-            // After loop: free the list buffer
+            // After loop: free the data buffer
             self.builder.positionAtEnd(loop_end_bb);
         }
 
-        // Call free(data_ptr) to free the list buffer
+        // Free the data buffer
         const free_fn = self.getOrDeclareFree();
         var free_args = [_]llvm.ValueRef{data_ptr};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, "");
 
-        // Reset the list to empty state
-        const zero = llvm.Const.int32(self.ctx, 0);
+        _ = self.builder.buildBr(reset_header_bb);
+
+        // --- Reset header block: zero out the header in place ---
+        // Don't free the header — keep it alive so aliases remain valid.
+        // Reset to { null, 0, 0 } so the list is in a clean empty state.
+        self.builder.positionAtEnd(reset_header_bb);
+
         _ = self.builder.buildStore(null_ptr, data_ptr_ptr);
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "drop.len_ptr");
-        _ = self.builder.buildStore(zero, len_ptr);
-        const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 2, "drop.cap_ptr");
-        _ = self.builder.buildStore(zero, cap_ptr);
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "drop.len_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_field);
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "drop.cap_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), cap_field);
 
         _ = self.builder.buildBr(done_bb);
 
@@ -16941,19 +16968,21 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
+        const header_type = self.getListHeaderType();
         const list_type = self.getListStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
-        // Load current ptr and len from the source list
-        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "take.src_ptr_ptr");
-        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "take.src_len_ptr");
+        // Dereference source header and load ptr + len
+        const src_header = self.derefListHeader(list_ptr);
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 0, "take.src_ptr_ptr");
+        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 1, "take.src_len_ptr");
 
         const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "take.src_ptr");
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "take.src_len");
 
-        // Allocate result list on the stack
+        // Allocate result list struct on the stack
         const result_alloca = self.builder.buildAlloca(list_type, "take.result");
 
         // Compute actual count = min(count, len)
@@ -16984,19 +17013,16 @@ pub const Emitter = struct {
 
         _ = self.builder.buildCondBr(is_empty, empty_bb, copy_bb);
 
-        // --- Empty block: return empty list ---
+        // --- Empty block: return empty list with new header ---
         self.builder.positionAtEnd(empty_bb);
 
-        const empty_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "take.empty_ptr_field");
-        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), empty_ptr_field);
-        const empty_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "take.empty_len_field");
-        _ = self.builder.buildStore(zero, empty_len_field);
-        const empty_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "take.empty_cap_field");
-        _ = self.builder.buildStore(zero, empty_cap_field);
+        const empty_header = self.allocateListHeader();
+        const empty_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "take.empty_hdr");
+        _ = self.builder.buildStore(empty_header, empty_hdr_field);
 
         _ = self.builder.buildBr(merge_bb);
 
-        // --- Copy block: allocate and copy data ---
+        // --- Copy block: allocate new header and copy data ---
         self.builder.positionAtEnd(copy_bb);
 
         // Calculate allocation size: actual_count * element_size
@@ -17004,23 +17030,31 @@ pub const Emitter = struct {
         const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
         const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, count_i64, elem_size_val, "take.alloc_size");
 
-        // Allocate new memory
+        // Allocate new data buffer
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_size};
-        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "take.new_ptr");
+        const new_data_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "take.new_ptr");
 
         // Copy data using memcpy
         const memcpy_fn = self.getOrDeclareMemcpy();
-        var memcpy_args = [_]llvm.ValueRef{ new_ptr, src_ptr, alloc_size };
+        var memcpy_args = [_]llvm.ValueRef{ new_data_ptr, src_ptr, alloc_size };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
-        // Store new ptr, count, capacity = count
-        const copy_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "take.copy_ptr_field");
-        _ = self.builder.buildStore(new_ptr, copy_ptr_field);
-        const copy_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "take.copy_len_field");
+        // Allocate new header and fill it
+        const header_size = llvm.Const.int64(self.ctx, list_constants.list_header_size);
+        var hdr_malloc_args = [_]llvm.ValueRef{header_size};
+        const new_header = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &hdr_malloc_args, "take.new_header");
+
+        const copy_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, new_header, 0, "take.copy_ptr_field");
+        _ = self.builder.buildStore(new_data_ptr, copy_ptr_field);
+        const copy_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, new_header, 1, "take.copy_len_field");
         _ = self.builder.buildStore(actual_count, copy_len_field);
-        const copy_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "take.copy_cap_field");
+        const copy_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, new_header, 2, "take.copy_cap_field");
         _ = self.builder.buildStore(actual_count, copy_cap_field);
+
+        // Store new header into result list struct
+        const copy_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "take.copy_hdr");
+        _ = self.builder.buildStore(new_header, copy_hdr_field);
 
         _ = self.builder.buildBr(merge_bb);
 
@@ -17039,19 +17073,21 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
+        const header_type = self.getListHeaderType();
         const list_type = self.getListStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
-        // Load current ptr and len from the source list
-        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "skip.src_ptr_ptr");
-        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "skip.src_len_ptr");
+        // Dereference source header and load ptr + len
+        const src_header = self.derefListHeader(list_ptr);
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 0, "skip.src_ptr_ptr");
+        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 1, "skip.src_len_ptr");
 
         const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "skip.src_ptr");
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "skip.src_len");
 
-        // Allocate result list on the stack
+        // Allocate result list struct on the stack
         const result_alloca = self.builder.buildAlloca(list_type, "skip.result");
 
         // Compute start = min(count, len), clamped to >= 0
@@ -17087,16 +17123,13 @@ pub const Emitter = struct {
         // --- Empty block: return empty list ---
         self.builder.positionAtEnd(empty_bb);
 
-        const empty_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "skip.empty_ptr_field");
-        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), empty_ptr_field);
-        const empty_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "skip.empty_len_field");
-        _ = self.builder.buildStore(zero, empty_len_field);
-        const empty_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "skip.empty_cap_field");
-        _ = self.builder.buildStore(zero, empty_cap_field);
+        const empty_header = self.allocateListHeader();
+        const empty_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "skip.empty_hdr");
+        _ = self.builder.buildStore(empty_header, empty_hdr_field);
 
         _ = self.builder.buildBr(merge_bb);
 
-        // --- Copy block: allocate and copy data ---
+        // --- Copy block: allocate new header and copy data ---
         self.builder.positionAtEnd(copy_bb);
 
         // Calculate allocation size: result_len * element_size
@@ -17104,10 +17137,10 @@ pub const Emitter = struct {
         const elem_size_val = llvm.Const.int64(self.ctx, @intCast(element_size));
         const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, result_len_i64, elem_size_val, "skip.alloc_size");
 
-        // Allocate new memory
+        // Allocate new data buffer
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_size};
-        const new_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "skip.new_ptr");
+        const new_data_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "skip.new_ptr");
 
         // Calculate source offset: start * element_size
         const start_i64 = llvm.c.LLVMBuildSExt(self.builder.ref, start, i64_type, "skip.start_i64");
@@ -17118,16 +17151,23 @@ pub const Emitter = struct {
 
         // Copy data using memcpy
         const memcpy_fn = self.getOrDeclareMemcpy();
-        var memcpy_args = [_]llvm.ValueRef{ new_ptr, src_start_ptr, alloc_size };
+        var memcpy_args = [_]llvm.ValueRef{ new_data_ptr, src_start_ptr, alloc_size };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, "");
 
-        // Store new ptr, result_len, capacity = result_len
-        const copy_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "skip.copy_ptr_field");
-        _ = self.builder.buildStore(new_ptr, copy_ptr_field);
-        const copy_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "skip.copy_len_field");
+        // Allocate new header and fill it
+        const header_size = llvm.Const.int64(self.ctx, list_constants.list_header_size);
+        var hdr_malloc_args = [_]llvm.ValueRef{header_size};
+        const new_header = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &hdr_malloc_args, "skip.new_header");
+
+        const copy_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, new_header, 0, "skip.copy_ptr_field");
+        _ = self.builder.buildStore(new_data_ptr, copy_ptr_field);
+        const copy_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, new_header, 1, "skip.copy_len_field");
         _ = self.builder.buildStore(result_len, copy_len_field);
-        const copy_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "skip.copy_cap_field");
+        const copy_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, new_header, 2, "skip.copy_cap_field");
         _ = self.builder.buildStore(result_len, copy_cap_field);
+
+        const copy_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "skip.copy_hdr");
+        _ = self.builder.buildStore(new_header, copy_hdr_field);
 
         _ = self.builder.buildBr(merge_bb);
 
@@ -17276,30 +17316,29 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
+        const header_type = self.getListHeaderType();
         const list_type = self.getListStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i1_type = llvm.Types.int1(self.ctx);
 
-        // Load current ptr and len from the source list
-        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "filter.src_ptr_ptr");
-        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "filter.src_len_ptr");
+        // Dereference source header and load ptr + len
+        const src_header = self.derefListHeader(list_ptr);
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 0, "filter.src_ptr_ptr");
+        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 1, "filter.src_len_ptr");
 
         const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "filter.src_ptr");
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "filter.src_len");
 
-        // Allocate result list on the stack (start with empty list)
+        // Allocate result list on the stack and initialize with new empty header
         const result_alloca = self.builder.buildAlloca(list_type, "filter.result");
         const zero = llvm.Const.int32(self.ctx, 0);
 
-        // Initialize result to empty list
-        const init_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "filter.init_ptr_field");
-        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), init_ptr_field);
-        const init_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "filter.init_len_field");
-        _ = self.builder.buildStore(zero, init_len_field);
-        const init_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "filter.init_cap_field");
-        _ = self.builder.buildStore(zero, init_cap_field);
+        // Allocate a new header for the result (starts empty)
+        const result_header = self.allocateListHeader();
+        const init_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "filter.init_hdr");
+        _ = self.builder.buildStore(result_header, init_hdr_field);
 
         // Extract closure function pointer and environment pointer
         const closure_struct_type = self.getClosureStructType();
@@ -17364,11 +17403,11 @@ pub const Emitter = struct {
         // --- Push block: add element to result list ---
         self.builder.positionAtEnd(push_bb);
 
-        // Use inline push logic (similar to emitListPush but simplified)
-        // Load result list state
-        const res_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "filter.res_ptr_ptr");
-        const res_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "filter.res_len_ptr");
-        const res_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "filter.res_cap_ptr");
+        // Dereference result header to access fields
+        const res_header = self.derefListHeader(result_alloca);
+        const res_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, res_header, 0, "filter.res_ptr_ptr");
+        const res_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, res_header, 1, "filter.res_len_ptr");
+        const res_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, res_header, 2, "filter.res_cap_ptr");
 
         const res_ptr = self.builder.buildLoad(ptr_type, res_ptr_ptr, "filter.res_ptr");
         const res_len = self.builder.buildLoad(i32_type, res_len_ptr, "filter.res_len");
@@ -17460,19 +17499,21 @@ pub const Emitter = struct {
         const dest_element_llvm_type = self.typeToLLVM(dest_element_type);
         const dest_element_size = self.getLLVMTypeSize(dest_element_llvm_type);
 
+        const header_type = self.getListHeaderType();
         const list_type = self.getListStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
 
-        // Load current ptr and len from the source list
-        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "map.src_ptr_ptr");
-        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "map.src_len_ptr");
+        // Dereference source header and load ptr + len
+        const src_header = self.derefListHeader(list_ptr);
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 0, "map.src_ptr_ptr");
+        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 1, "map.src_len_ptr");
 
         const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "map.src_ptr");
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "map.src_len");
 
-        // Allocate result list on the stack
+        // Allocate result list struct on the stack
         const result_alloca = self.builder.buildAlloca(list_type, "map.result");
         const zero = llvm.Const.int32(self.ctx, 0);
 
@@ -17488,15 +17529,12 @@ pub const Emitter = struct {
 
         _ = self.builder.buildCondBr(is_empty, empty_bb, alloc_bb);
 
-        // --- Empty block: return empty list ---
+        // --- Empty block: return empty list with new header ---
         self.builder.positionAtEnd(empty_bb);
 
-        const empty_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.empty_ptr_field");
-        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), empty_ptr_field);
-        const empty_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "map.empty_len_field");
-        _ = self.builder.buildStore(zero, empty_len_field);
-        const empty_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "map.empty_cap_field");
-        _ = self.builder.buildStore(zero, empty_cap_field);
+        const empty_header = self.allocateListHeader();
+        const empty_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.empty_hdr");
+        _ = self.builder.buildStore(empty_header, empty_hdr_field);
 
         _ = self.builder.buildBr(loop_end_bb);
 
@@ -17535,13 +17573,21 @@ pub const Emitter = struct {
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const dest_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "map.dest_ptr");
 
-        // Store result list header
-        const alloc_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.alloc_ptr_field");
+        // Allocate new header and fill it
+        const map_header_size = llvm.Const.int64(self.ctx, list_constants.list_header_size);
+        var hdr_malloc_args = [_]llvm.ValueRef{map_header_size};
+        const map_new_header = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &hdr_malloc_args, "map.new_header");
+
+        const alloc_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, map_new_header, 0, "map.alloc_ptr_field");
         _ = self.builder.buildStore(dest_ptr, alloc_ptr_field);
-        const alloc_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "map.alloc_len_field");
+        const alloc_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, map_new_header, 1, "map.alloc_len_field");
         _ = self.builder.buildStore(src_len, alloc_len_field);
-        const alloc_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "map.alloc_cap_field");
+        const alloc_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, map_new_header, 2, "map.alloc_cap_field");
         _ = self.builder.buildStore(src_len, alloc_cap_field);
+
+        // Store header pointer in result list struct
+        const map_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.alloc_hdr");
+        _ = self.builder.buildStore(map_new_header, map_hdr_field);
 
         // Create loop counter alloca
         const i_alloca = self.builder.buildAlloca(i32_type, "map.i");
@@ -17598,6 +17644,7 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
+        const header_type = self.getListHeaderType();
         const list_type = self.getListStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -17608,14 +17655,15 @@ pub const Emitter = struct {
         const tuple_type = llvm.Types.struct_(self.ctx, &tuple_elem_types, false);
         const tuple_size = self.getLLVMTypeSize(tuple_type);
 
-        // Load current ptr and len from the source list
-        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "enum.src_ptr_ptr");
-        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "enum.src_len_ptr");
+        // Dereference source header and load ptr + len
+        const src_header = self.derefListHeader(list_ptr);
+        const src_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 0, "enum.src_ptr_ptr");
+        const src_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src_header, 1, "enum.src_len_ptr");
 
         const src_ptr = self.builder.buildLoad(ptr_type, src_ptr_ptr, "enum.src_ptr");
         const src_len = self.builder.buildLoad(i32_type, src_len_ptr, "enum.src_len");
 
-        // Allocate result list on the stack
+        // Allocate result list struct on the stack
         const result_alloca = self.builder.buildAlloca(list_type, "enum.result");
         const zero = llvm.Const.int32(self.ctx, 0);
 
@@ -17631,15 +17679,12 @@ pub const Emitter = struct {
 
         _ = self.builder.buildCondBr(is_empty, empty_bb, alloc_bb);
 
-        // --- Empty block: return empty list ---
+        // --- Empty block: return empty list with new header ---
         self.builder.positionAtEnd(empty_bb);
 
-        const empty_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "enum.empty_ptr_field");
-        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), empty_ptr_field);
-        const empty_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "enum.empty_len_field");
-        _ = self.builder.buildStore(zero, empty_len_field);
-        const empty_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "enum.empty_cap_field");
-        _ = self.builder.buildStore(zero, empty_cap_field);
+        const empty_header = self.allocateListHeader();
+        const empty_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "enum.empty_hdr");
+        _ = self.builder.buildStore(empty_header, empty_hdr_field);
 
         _ = self.builder.buildBr(loop_end_bb);
 
@@ -17655,13 +17700,20 @@ pub const Emitter = struct {
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const dest_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "enum.dest_ptr");
 
-        // Store result list header
-        const alloc_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "enum.alloc_ptr_field");
+        // Allocate new header and fill it
+        const enum_header_size = llvm.Const.int64(self.ctx, list_constants.list_header_size);
+        var hdr_malloc_args = [_]llvm.ValueRef{enum_header_size};
+        const enum_new_header = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &hdr_malloc_args, "enum.new_header");
+
+        const alloc_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, enum_new_header, 0, "enum.alloc_ptr_field");
         _ = self.builder.buildStore(dest_ptr, alloc_ptr_field);
-        const alloc_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "enum.alloc_len_field");
+        const alloc_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, enum_new_header, 1, "enum.alloc_len_field");
         _ = self.builder.buildStore(src_len, alloc_len_field);
-        const alloc_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "enum.alloc_cap_field");
+        const alloc_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, enum_new_header, 2, "enum.alloc_cap_field");
         _ = self.builder.buildStore(src_len, alloc_cap_field);
+
+        const enum_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "enum.alloc_hdr");
+        _ = self.builder.buildStore(enum_new_header, enum_hdr_field);
 
         // Create loop counter alloca
         const i_alloca = self.builder.buildAlloca(i32_type, "enum.i");
@@ -17740,6 +17792,7 @@ pub const Emitter = struct {
         const element_llvm_type2 = self.typeToLLVM(element_type2);
         const element_size2 = self.getLLVMTypeSize(element_llvm_type2);
 
+        const header_type = self.getListHeaderType();
         const list_type = self.getListStructType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
@@ -17750,9 +17803,10 @@ pub const Emitter = struct {
         const tuple_type = llvm.Types.struct_(self.ctx, &tuple_elem_types, false);
         const tuple_size = self.getLLVMTypeSize(tuple_type);
 
-        // Load ptr and len from first list
-        const src1_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "zip.src1_ptr_ptr");
-        const src1_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "zip.src1_len_ptr");
+        // Dereference first list header and load ptr + len
+        const src1_header = self.derefListHeader(list_ptr);
+        const src1_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src1_header, 0, "zip.src1_ptr_ptr");
+        const src1_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src1_header, 1, "zip.src1_len_ptr");
         const src1_ptr = self.builder.buildLoad(ptr_type, src1_ptr_ptr, "zip.src1_ptr");
         const src1_len = self.builder.buildLoad(i32_type, src1_len_ptr, "zip.src1_len");
 
@@ -17772,9 +17826,10 @@ pub const Emitter = struct {
             break :blk tmp_alloca;
         };
 
-        // Load ptr and len from second list
-        const src2_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_ptr, 0, "zip.src2_ptr_ptr");
-        const src2_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_ptr, 1, "zip.src2_len_ptr");
+        // Dereference second list header and load ptr + len
+        const src2_header = self.derefListHeader(list2_ptr);
+        const src2_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src2_header, 0, "zip.src2_ptr_ptr");
+        const src2_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, src2_header, 1, "zip.src2_len_ptr");
         const src2_ptr = self.builder.buildLoad(ptr_type, src2_ptr_ptr, "zip.src2_ptr");
         const src2_len = self.builder.buildLoad(i32_type, src2_len_ptr, "zip.src2_len");
 
@@ -17803,15 +17858,12 @@ pub const Emitter = struct {
 
         _ = self.builder.buildCondBr(is_empty, empty_bb, alloc_bb);
 
-        // --- Empty block: return empty list ---
+        // --- Empty block: return empty list with new header ---
         self.builder.positionAtEnd(empty_bb);
 
-        const empty_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "zip.empty_ptr_field");
-        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), empty_ptr_field);
-        const empty_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "zip.empty_len_field");
-        _ = self.builder.buildStore(zero, empty_len_field);
-        const empty_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "zip.empty_cap_field");
-        _ = self.builder.buildStore(zero, empty_cap_field);
+        const zip_empty_header = self.allocateListHeader();
+        const zip_empty_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "zip.empty_hdr");
+        _ = self.builder.buildStore(zip_empty_header, zip_empty_hdr_field);
 
         _ = self.builder.buildBr(loop_end_bb);
 
@@ -17827,13 +17879,20 @@ pub const Emitter = struct {
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const dest_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "zip.dest_ptr");
 
-        // Store result list header
-        const alloc_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "zip.alloc_ptr_field");
+        // Allocate new header and fill it
+        const zip_header_size = llvm.Const.int64(self.ctx, list_constants.list_header_size);
+        var zip_hdr_malloc_args = [_]llvm.ValueRef{zip_header_size};
+        const zip_new_header = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &zip_hdr_malloc_args, "zip.new_header");
+
+        const alloc_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, zip_new_header, 0, "zip.alloc_ptr_field");
         _ = self.builder.buildStore(dest_ptr, alloc_ptr_field);
-        const alloc_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "zip.alloc_len_field");
+        const alloc_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, zip_new_header, 1, "zip.alloc_len_field");
         _ = self.builder.buildStore(result_len, alloc_len_field);
-        const alloc_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "zip.alloc_cap_field");
+        const alloc_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, zip_new_header, 2, "zip.alloc_cap_field");
         _ = self.builder.buildStore(result_len, alloc_cap_field);
+
+        const zip_hdr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "zip.alloc_hdr");
+        _ = self.builder.buildStore(zip_new_header, zip_hdr_field);
 
         // Create loop counter alloca
         const i_alloca = self.builder.buildAlloca(i32_type, "zip.i");
@@ -17912,14 +17971,15 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
 
-        // Load current len for bounds check
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "set.len_ptr");
+        // Dereference header and load len for bounds check
+        const header_ptr = self.derefListHeader(list_ptr);
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "set.len_ptr");
         const current_len = self.builder.buildLoad(i32_type, len_ptr, "set.current_len");
 
         // Bounds check: index >= 0 and index < len
@@ -17940,7 +18000,7 @@ pub const Emitter = struct {
         // OK block: perform the set
         self.builder.positionAtEnd(ok_bb);
 
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "set.ptr_ptr");
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "set.ptr_ptr");
         const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "set.current_ptr");
 
         // Calculate address: ptr + index * element_size
@@ -17968,8 +18028,10 @@ pub const Emitter = struct {
         // Allocate stack space for the output value
         const value_out = self.builder.buildAlloca(element_llvm_type, "first.value");
 
+        // Pass the dereferenced header pointer to the runtime function
+        const header_ptr = self.derefListHeader(list_ptr);
         var args = [_]llvm.ValueRef{
-            list_ptr,
+            header_ptr,
             llvm.Const.int64(self.ctx, @intCast(element_size)),
             value_out,
         };
@@ -18006,15 +18068,16 @@ pub const Emitter = struct {
         const element_llvm_type = self.typeToLLVM(element_type);
         const element_size = self.getLLVMTypeSize(element_llvm_type);
 
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
         const ptr_type = llvm.Types.pointer(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const i1_type = llvm.Types.int1(self.ctx);
         const i8_type = llvm.Types.int8(self.ctx);
 
-        // Load current len
-        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 1, "last.len_ptr");
+        // Dereference header and load len
+        const header_ptr = self.derefListHeader(list_ptr);
+        const len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "last.len_ptr");
         const current_len = self.builder.buildLoad(i32_type, len_ptr, "last.current_len");
 
         // Check if empty: len > 0
@@ -18036,8 +18099,8 @@ pub const Emitter = struct {
         // --- Valid block: list is non-empty ---
         self.builder.positionAtEnd(valid_bb);
 
-        // Load data pointer
-        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "last.ptr_ptr");
+        // Load data pointer from header
+        const ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "last.ptr_ptr");
         const current_ptr = self.builder.buildLoad(ptr_type, ptr_ptr, "last.current_ptr");
 
         // Calculate address of last element: ptr + (len - 1) * element_size
@@ -18077,7 +18140,9 @@ pub const Emitter = struct {
     /// Emit list.clear() - clears the list.
     fn emitListClear(self: *Emitter, list_ptr: llvm.ValueRef) EmitError!llvm.ValueRef {
         const list_clear_fn = self.getOrDeclareListClear();
-        var args = [_]llvm.ValueRef{list_ptr};
+        // Pass the dereferenced header pointer to the runtime function
+        const header_ptr = self.derefListHeader(list_ptr);
+        var args = [_]llvm.ValueRef{header_ptr};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(list_clear_fn), list_clear_fn, &args, "");
         return llvm.Const.int32(self.ctx, 0);
     }
@@ -18940,11 +19005,12 @@ pub const Emitter = struct {
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Create empty list for result
+        const header_type = self.getListHeaderType();
+
+        // Create empty list: allocate header on heap, store in list struct
         const list_alloca = self.builder.buildAlloca(list_type, "keys_list");
-        _ = self.builder.buildStore(llvm.c.LLVMConstNull(ptr_type), llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, ""));
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, ""));
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 2, ""));
+        const keys_header = self.allocateListHeader();
+        _ = self.builder.buildStore(keys_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, ""));
 
         // Get map len and capacity
         const len = try self.emitMapLen(map_ptr);
@@ -18972,9 +19038,10 @@ pub const Emitter = struct {
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const keys_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "keys_ptr");
 
-        // Store to list
-        _ = self.builder.buildStore(keys_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, ""));
-        _ = self.builder.buildStore(len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 2, ""));
+        // Store to list header (data ptr and capacity)
+        const collect_header = self.derefListHeader(list_alloca);
+        _ = self.builder.buildStore(keys_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, collect_header, 0, ""));
+        _ = self.builder.buildStore(len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, collect_header, 2, ""));
 
         // Loop through entries
         const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
@@ -19035,7 +19102,8 @@ pub const Emitter = struct {
         // End loop
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, end_loop_block);
         const final_list_len = self.builder.buildLoad(i32_type, list_idx_alloca, "final_len");
-        _ = self.builder.buildStore(final_list_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, ""));
+        const endloop_header = self.derefListHeader(list_alloca);
+        _ = self.builder.buildStore(final_list_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, endloop_header, 1, ""));
         _ = llvm.c.LLVMBuildBr(self.builder.ref, done_block);
 
         // Done
@@ -19056,16 +19124,16 @@ pub const Emitter = struct {
 
         const map_type = self.getMapStructType();
         const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
 
-        // Create empty list
+        // Create empty list: allocate header on heap
         const list_alloca = self.builder.buildAlloca(list_type, "values_list");
-        _ = self.builder.buildStore(llvm.c.LLVMConstNull(ptr_type), llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, ""));
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, ""));
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 2, ""));
+        const vals_header = self.allocateListHeader();
+        _ = self.builder.buildStore(vals_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, ""));
 
         const len = try self.emitMapLen(map_ptr);
         const cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 2, "map.cap_ptr");
@@ -19090,8 +19158,9 @@ pub const Emitter = struct {
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const values_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "values_ptr");
 
-        _ = self.builder.buildStore(values_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, ""));
-        _ = self.builder.buildStore(len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 2, ""));
+        const collect_vals_header = self.derefListHeader(list_alloca);
+        _ = self.builder.buildStore(values_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, collect_vals_header, 0, ""));
+        _ = self.builder.buildStore(len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, collect_vals_header, 2, ""));
 
         const entries_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_ptr, 0, "map.entries_ptr_field");
         const entries_ptr_val = self.builder.buildLoad(ptr_type, entries_ptr_field, "map.entries");
@@ -19146,7 +19215,8 @@ pub const Emitter = struct {
 
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, end_loop_block);
         const final_list_len = self.builder.buildLoad(i32_type, list_idx_alloca, "final_len");
-        _ = self.builder.buildStore(final_list_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, ""));
+        const endloop_vals_header = self.derefListHeader(list_alloca);
+        _ = self.builder.buildStore(final_list_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, endloop_vals_header, 1, ""));
         _ = llvm.c.LLVMBuildBr(self.builder.ref, done_block);
 
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
@@ -20975,6 +21045,7 @@ pub const Emitter = struct {
 
         const set_type = self.getSetStructType();
         const list_type = self.getListStructType();
+        const sm_header_type = self.getListHeaderType();
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
@@ -21006,14 +21077,10 @@ pub const Emitter = struct {
 
         _ = self.builder.buildCondBr(is_empty, empty_bb, alloc_bb);
 
-        // --- Empty block: return empty list ---
+        // --- Empty block: return empty list with heap-allocated header ---
         self.builder.positionAtEnd(empty_bb);
-        const empty_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.empty_ptr_field");
-        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), empty_ptr_field);
-        const empty_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "map.empty_len_field");
-        _ = self.builder.buildStore(zero, empty_len_field);
-        const empty_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "map.empty_cap_field");
-        _ = self.builder.buildStore(zero, empty_cap_field);
+        const empty_header = self.allocateListHeader();
+        _ = self.builder.buildStore(empty_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.empty_hdr_field"));
         _ = self.builder.buildBr(done_bb);
 
         // --- Allocate block: pre-allocate result array based on set len ---
@@ -21045,13 +21112,12 @@ pub const Emitter = struct {
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const dest_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "map.dest_ptr");
 
-        // Store result list header (ptr, len=set_len, cap=set_len)
-        const alloc_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.alloc_ptr_field");
-        _ = self.builder.buildStore(dest_ptr, alloc_ptr_field);
-        const alloc_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "map.alloc_len_field");
-        _ = self.builder.buildStore(set_len, alloc_len_field);
-        const alloc_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "map.alloc_cap_field");
-        _ = self.builder.buildStore(set_len, alloc_cap_field);
+        // Store result list header on heap: { dest_ptr, set_len, set_len }
+        const alloc_header = self.allocateListHeader();
+        _ = self.builder.buildStore(dest_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sm_header_type, alloc_header, 0, "map.alloc_ptr_field"));
+        _ = self.builder.buildStore(set_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sm_header_type, alloc_header, 1, "map.alloc_len_field"));
+        _ = self.builder.buildStore(set_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sm_header_type, alloc_header, 2, "map.alloc_cap_field"));
+        _ = self.builder.buildStore(alloc_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "map.alloc_hdr_field"));
 
         // Loop counters: source index (over capacity) and result index (over elements found)
         const src_idx_alloca = self.builder.buildAlloca(i32_type, "map.src_idx");
@@ -21122,6 +21188,7 @@ pub const Emitter = struct {
         // Build tuple type (i32, T)
         const set_type = self.getSetStructType();
         const list_type = self.getListStructType();
+        const se_header_type = self.getListHeaderType();
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
@@ -21131,13 +21198,11 @@ pub const Emitter = struct {
         const tuple_type = llvm.Types.struct_(self.ctx, &tuple_fields, false);
         const tuple_size = self.getLLVMTypeSize(tuple_type);
 
-        // Create empty result list
-        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        // Create empty result list with heap-allocated header
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
         const result_alloca = self.builder.buildAlloca(list_type, "enum_result");
-        _ = self.builder.buildStore(null_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, ""));
-        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, ""));
-        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, ""));
+        const enum_header = self.allocateListHeader();
+        _ = self.builder.buildStore(enum_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, ""));
 
         // Load set fields
         const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_field");
@@ -21182,10 +21247,11 @@ pub const Emitter = struct {
         tuple_val = llvm.c.LLVMBuildInsertValue(self.builder.ref, tuple_val, enum_idx, 0, "tuple.0");
         tuple_val = llvm.c.LLVMBuildInsertValue(self.builder.ref, tuple_val, elem, 1, "tuple.1");
 
-        // Push to result list (inline push logic)
-        const res_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, "res_ptr_ptr");
-        const res_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, "res_len_ptr");
-        const res_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, "res_cap_ptr");
+        // Push to result list (inline push logic via heap header)
+        const enum_push_header = self.derefListHeader(result_alloca);
+        const res_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, se_header_type, enum_push_header, 0, "res_ptr_ptr");
+        const res_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, se_header_type, enum_push_header, 1, "res_len_ptr");
+        const res_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, se_header_type, enum_push_header, 2, "res_cap_ptr");
 
         const res_ptr = self.builder.buildLoad(ptr_type, res_ptr_ptr, "res_ptr");
         const res_len = self.builder.buildLoad(i32_type, res_len_ptr, "res_len");
@@ -21266,6 +21332,7 @@ pub const Emitter = struct {
         // Build tuple type (T, U)
         const set_type = self.getSetStructType();
         const list_type = self.getListStructType();
+        const sz_header_type = self.getListHeaderType();
         const i8_type = llvm.Types.int8(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
@@ -21275,13 +21342,11 @@ pub const Emitter = struct {
         const tuple_type = llvm.Types.struct_(self.ctx, &tuple_fields, false);
         const tuple_size = self.getLLVMTypeSize(tuple_type);
 
-        // Create empty result list
-        const null_ptr = llvm.c.LLVMConstNull(ptr_type);
+        // Create empty result list with heap-allocated header
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
         const result_alloca = self.builder.buildAlloca(list_type, "zip_result");
-        _ = self.builder.buildStore(null_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, ""));
-        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, ""));
-        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, ""));
+        const zip_result_header = self.allocateListHeader();
+        _ = self.builder.buildStore(zip_result_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, ""));
 
         // Load set fields
         const entries_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, set_type, set_ptr, 0, "entries_field");
@@ -21306,16 +21371,14 @@ pub const Emitter = struct {
         const next2_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_next2");
         const done_block = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_done");
 
-        // Collect elements from first set into a temp buffer
+        // Collect elements from first set into a temp buffer (heap-indirected)
         const list1_alloca = self.builder.buildAlloca(list_type, "list1");
-        _ = self.builder.buildStore(null_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 0, ""));
-        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 1, ""));
-        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 2, ""));
+        const list1_header = self.allocateListHeader();
+        _ = self.builder.buildStore(list1_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 0, ""));
 
         const list2_alloca = self.builder.buildAlloca(list_type, "list2");
-        _ = self.builder.buildStore(null_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 0, ""));
-        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 1, ""));
-        _ = self.builder.buildStore(zero_i32, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 2, ""));
+        const list2_header = self.allocateListHeader();
+        _ = self.builder.buildStore(list2_header, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 0, ""));
 
         const idx1_alloca = self.builder.buildAlloca(i32_type, "idx1");
         _ = self.builder.buildStore(zero_i32, idx1_alloca);
@@ -21382,11 +21445,13 @@ pub const Emitter = struct {
         _ = llvm.c.LLVMBuildBr(self.builder.ref, check2_block);
 
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, done_block);
-        // Now pair elements from list1 and list2
-        const list1_ptr = self.builder.buildLoad(ptr_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 0, ""), "list1_ptr");
-        const list1_len = self.builder.buildLoad(i32_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list1_alloca, 1, ""), "list1_len");
-        const list2_ptr = self.builder.buildLoad(ptr_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 0, ""), "list2_ptr");
-        const list2_len = self.builder.buildLoad(i32_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list2_alloca, 1, ""), "list2_len");
+        // Now pair elements from list1 and list2 (read from heap headers)
+        const done_hdr1 = self.derefListHeader(list1_alloca);
+        const list1_ptr = self.builder.buildLoad(ptr_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sz_header_type, done_hdr1, 0, ""), "list1_ptr");
+        const list1_len = self.builder.buildLoad(i32_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sz_header_type, done_hdr1, 1, ""), "list1_len");
+        const done_hdr2 = self.derefListHeader(list2_alloca);
+        const list2_ptr = self.builder.buildLoad(ptr_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sz_header_type, done_hdr2, 0, ""), "list2_ptr");
+        const list2_len = self.builder.buildLoad(i32_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sz_header_type, done_hdr2, 1, ""), "list2_len");
 
         // min_len = min(list1_len, list2_len)
         const len_cmp = self.builder.buildICmp(llvm.c.LLVMIntSLT, list1_len, list2_len, "len_cmp");
@@ -21409,9 +21474,11 @@ pub const Emitter = struct {
         const malloc_fn = self.getOrDeclareMalloc();
         var malloc_args = [_]llvm.ValueRef{alloc_size};
         const result_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "result_ptr");
-        _ = self.builder.buildStore(result_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 0, ""));
-        _ = self.builder.buildStore(min_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 1, ""));
-        _ = self.builder.buildStore(min_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, result_alloca, 2, ""));
+        // Write to the result's heap header
+        const zip_alloc_header = self.derefListHeader(result_alloca);
+        _ = self.builder.buildStore(result_ptr, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sz_header_type, zip_alloc_header, 0, ""));
+        _ = self.builder.buildStore(min_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sz_header_type, zip_alloc_header, 1, ""));
+        _ = self.builder.buildStore(min_len, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sz_header_type, zip_alloc_header, 2, ""));
 
         // Build tuples
         const build_idx = self.builder.buildAlloca(i32_type, "build_idx");
@@ -21449,21 +21516,54 @@ pub const Emitter = struct {
         _ = llvm.c.LLVMBuildBr(self.builder.ref, build_block);
 
         llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, final_block);
+
+        // Free temporary list1 and list2 (data buffers + headers)
+        const free_fn_zip = self.getOrDeclareFree();
+        const cleanup_hdr1 = self.derefListHeader(list1_alloca);
+        const cleanup_data1 = self.builder.buildLoad(ptr_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sz_header_type, cleanup_hdr1, 0, ""), "cleanup.data1");
+        const data1_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, cleanup_data1, llvm.c.LLVMConstPointerNull(ptr_type), "data1_null");
+        const free_data1_bb = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_free_data1");
+        const after_data1_bb = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_after_data1");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, data1_is_null, after_data1_bb, free_data1_bb);
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, free_data1_bb);
+        var fd1_args = [_]llvm.ValueRef{cleanup_data1};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn_zip), free_fn_zip, &fd1_args, "");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, after_data1_bb);
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, after_data1_bb);
+        var fh1_args = [_]llvm.ValueRef{cleanup_hdr1};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn_zip), free_fn_zip, &fh1_args, "");
+
+        const cleanup_hdr2 = self.derefListHeader(list2_alloca);
+        const cleanup_data2 = self.builder.buildLoad(ptr_type, llvm.c.LLVMBuildStructGEP2(self.builder.ref, sz_header_type, cleanup_hdr2, 0, ""), "cleanup.data2");
+        const data2_is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, cleanup_data2, llvm.c.LLVMConstPointerNull(ptr_type), "data2_null");
+        const free_data2_bb = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_free_data2");
+        const after_data2_bb = llvm.c.LLVMAppendBasicBlock(current_fn, "zip_after_data2");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, data2_is_null, after_data2_bb, free_data2_bb);
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, free_data2_bb);
+        var fd2_args = [_]llvm.ValueRef{cleanup_data2};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn_zip), free_fn_zip, &fd2_args, "");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, after_data2_bb);
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, after_data2_bb);
+        var fh2_args = [_]llvm.ValueRef{cleanup_hdr2};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(free_fn_zip), free_fn_zip, &fh2_args, "");
+
         return self.builder.buildLoad(list_type, result_alloca, "zip.result");
     }
 
     /// Helper to push an element to a list inline
     fn emitListPushInline(self: *Emitter, list_alloca: llvm.ValueRef, elem: llvm.ValueRef, elem_type: llvm.TypeRef) EmitError!void {
-        const list_type = self.getListStructType();
+        const header_type = self.getListHeaderType();
         const i32_type = llvm.Types.int32(self.ctx);
         const i64_type = llvm.Types.int64(self.ctx);
         const ptr_type = llvm.Types.pointer(self.ctx);
 
         const elem_size = self.getLLVMTypeSize(elem_type);
 
-        const res_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "res_ptr_ptr");
-        const res_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, "res_len_ptr");
-        const res_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 2, "res_cap_ptr");
+        // Dereference list header
+        const hdr_ptr = self.derefListHeader(list_alloca);
+        const res_ptr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 0, "res_ptr_ptr");
+        const res_len_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 1, "res_len_ptr");
+        const res_cap_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 2, "res_cap_ptr");
 
         const res_ptr = self.builder.buildLoad(ptr_type, res_ptr_ptr, "res_ptr");
         const res_len = self.builder.buildLoad(i32_type, res_len_ptr, "res_len");
@@ -22761,19 +22861,25 @@ pub const Emitter = struct {
         var fclose_args = [_]llvm.ValueRef{file_ptr};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "readall.close");
 
-        // Build List#[u8] struct { ptr, len, capacity }
-        // Store ptr (field 0)
-        const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readall.list_ptr_field");
-        _ = self.builder.buildStore(buffer, list_ptr_field);
+        // Build List#[u8] struct: allocate header on heap, store { ptr, len, capacity }
+        const readall_header_type = self.getListHeaderType();
+        const readall_hdr_size = llvm.Const.int64(self.ctx, list_constants.list_header_size);
+        var readall_hdr_args = [_]llvm.ValueRef{readall_hdr_size};
+        const readall_hdr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &readall_hdr_args, "readall.header");
 
-        // Store len (field 1) - truncate i64 to i32
+        const readall_hdr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, readall_header_type, readall_hdr, 0, "readall.hdr_ptr");
+        _ = self.builder.buildStore(buffer, readall_hdr_ptr);
+
         const len_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, file_size, i32_type, "readall.len_i32");
-        const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 1, "readall.list_len_field");
-        _ = self.builder.buildStore(len_i32, list_len_field);
+        const readall_hdr_len = llvm.c.LLVMBuildStructGEP2(self.builder.ref, readall_header_type, readall_hdr, 1, "readall.hdr_len");
+        _ = self.builder.buildStore(len_i32, readall_hdr_len);
 
-        // Store capacity (field 2) - same as len
-        const list_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 2, "readall.list_cap_field");
-        _ = self.builder.buildStore(len_i32, list_cap_field);
+        const readall_hdr_cap = llvm.c.LLVMBuildStructGEP2(self.builder.ref, readall_header_type, readall_hdr, 2, "readall.hdr_cap");
+        _ = self.builder.buildStore(len_i32, readall_hdr_cap);
+
+        // Store header pointer into list struct (field 0)
+        const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readall.list_hdr_field");
+        _ = self.builder.buildStore(readall_hdr, list_ptr_field);
 
         // Store Ok result
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr); // tag = 1 (Ok)
@@ -24511,15 +24617,25 @@ pub const Emitter = struct {
             // OK path - process first entry and loop
             self.builder.positionAtEnd(ff_ok_bb);
 
-            // Initialize list
+            // Initialize list with heap-allocated header
+            const win_header_type = self.getListHeaderType();
             var init_malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, initial_cap * string_size)};
             const arr_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &init_malloc_args, "readdir.arr");
-            const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readdir.list_ptr_field");
-            _ = self.builder.buildStore(arr_ptr, list_ptr_field);
-            const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 1, "readdir.list_len_field");
+
+            // Allocate header
+            var win_hdr_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, list_constants.list_header_size)};
+            const win_hdr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &win_hdr_args, "readdir.header");
+
+            const win_hdr_ptr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, win_header_type, win_hdr, 0, "readdir.hdr_ptr");
+            _ = self.builder.buildStore(arr_ptr, win_hdr_ptr_f);
+            const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, win_header_type, win_hdr, 1, "readdir.hdr_len");
             _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), list_len_field);
-            const list_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 2, "readdir.list_cap_field");
+            const list_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, win_header_type, win_hdr, 2, "readdir.hdr_cap");
             _ = self.builder.buildStore(llvm.Const.int32(self.ctx, initial_cap), list_cap_field);
+
+            // Store header pointer into list struct
+            const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readdir.list_hdr_field");
+            _ = self.builder.buildStore(win_hdr, list_ptr_field);
 
             // Process entries loop (first entry already in finddata from _findfirst64)
             const process_bb = llvm.appendBasicBlock(self.ctx, func, "readdir.process");
@@ -24566,11 +24682,11 @@ pub const Emitter = struct {
             const new_cap = llvm.c.LLVMBuildMul(self.builder.ref, cur_cap, llvm.Const.int32(self.ctx, 2), "readdir.new_cap");
             const new_cap_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, new_cap, i64_type, "readdir.new_cap_i64");
             const new_size = llvm.c.LLVMBuildMul(self.builder.ref, new_cap_i64, llvm.Const.int64(self.ctx, string_size), "readdir.new_size");
-            const cur_arr = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr");
+            const cur_arr = self.builder.buildLoad(ptr_type, win_hdr_ptr_f, "readdir.cur_arr");
             const realloc_fn = self.getOrDeclareRealloc();
             var realloc_args = [_]llvm.ValueRef{ cur_arr, new_size };
             const new_arr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "readdir.new_arr");
-            _ = self.builder.buildStore(new_arr, list_ptr_field);
+            _ = self.builder.buildStore(new_arr, win_hdr_ptr_f);
             _ = self.builder.buildStore(new_cap, list_cap_field);
             _ = self.builder.buildBr(add_bb);
 
@@ -24588,7 +24704,7 @@ pub const Emitter = struct {
             const cur_len2 = self.builder.buildLoad(i32_type, list_len_field, "readdir.cur_len2");
             const cur_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, cur_len2, i64_type, "readdir.cur_len_i64");
             const slot_offset = llvm.c.LLVMBuildMul(self.builder.ref, cur_len_i64, llvm.Const.int64(self.ctx, string_size), "readdir.slot_offset");
-            const cur_arr2 = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr2");
+            const cur_arr2 = self.builder.buildLoad(ptr_type, win_hdr_ptr_f, "readdir.cur_arr2");
             var slot_idx = [_]llvm.ValueRef{slot_offset};
             const slot_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, cur_arr2, &slot_idx, 1, "readdir.slot_ptr");
 
@@ -24647,15 +24763,25 @@ pub const Emitter = struct {
             // Open OK - initialize list
             self.builder.positionAtEnd(open_ok_bb);
 
+            // Initialize list with heap-allocated header (POSIX path)
+            const posix_header_type = self.getListHeaderType();
             var init_malloc_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, initial_cap * string_size)};
             const arr_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &init_malloc_args, "readdir.arr");
 
-            const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readdir.list_ptr_field");
-            _ = self.builder.buildStore(arr_ptr, list_ptr_field);
-            const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 1, "readdir.list_len_field");
+            // Allocate header
+            var posix_hdr_args = [_]llvm.ValueRef{llvm.Const.int64(self.ctx, list_constants.list_header_size)};
+            const posix_hdr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &posix_hdr_args, "readdir.header");
+
+            const posix_hdr_ptr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, posix_header_type, posix_hdr, 0, "readdir.hdr_ptr");
+            _ = self.builder.buildStore(arr_ptr, posix_hdr_ptr_f);
+            const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, posix_header_type, posix_hdr, 1, "readdir.hdr_len");
             _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), list_len_field);
-            const list_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 2, "readdir.list_cap_field");
+            const list_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, posix_header_type, posix_hdr, 2, "readdir.hdr_cap");
             _ = self.builder.buildStore(llvm.Const.int32(self.ctx, initial_cap), list_cap_field);
+
+            // Store header pointer into list struct
+            const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_field_ptr, 0, "readdir.list_hdr_field");
+            _ = self.builder.buildStore(posix_hdr, list_ptr_field);
 
             _ = self.builder.buildBr(loop_bb);
 
@@ -24723,11 +24849,11 @@ pub const Emitter = struct {
             const new_cap = llvm.c.LLVMBuildMul(self.builder.ref, cur_cap, llvm.Const.int32(self.ctx, 2), "readdir.new_cap");
             const new_cap_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, new_cap, i64_type, "readdir.new_cap_i64");
             const new_size = llvm.c.LLVMBuildMul(self.builder.ref, new_cap_i64, llvm.Const.int64(self.ctx, string_size), "readdir.new_size");
-            const cur_arr = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr");
+            const cur_arr = self.builder.buildLoad(ptr_type, posix_hdr_ptr_f, "readdir.cur_arr");
             const realloc_fn = self.getOrDeclareRealloc();
             var realloc_args = [_]llvm.ValueRef{ cur_arr, new_size };
             const new_arr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &realloc_args, "readdir.new_arr");
-            _ = self.builder.buildStore(new_arr, list_ptr_field);
+            _ = self.builder.buildStore(new_arr, posix_hdr_ptr_f);
             _ = self.builder.buildStore(new_cap, list_cap_field);
             _ = self.builder.buildBr(add_bb);
 
@@ -24749,7 +24875,7 @@ pub const Emitter = struct {
             const cur_len2 = self.builder.buildLoad(i32_type, list_len_field, "readdir.cur_len2");
             const cur_len_i64 = llvm.c.LLVMBuildZExt(self.builder.ref, cur_len2, i64_type, "readdir.cur_len_i64");
             const slot_offset = llvm.c.LLVMBuildMul(self.builder.ref, cur_len_i64, llvm.Const.int64(self.ctx, string_size), "readdir.slot_offset");
-            const cur_arr2 = self.builder.buildLoad(ptr_type, list_ptr_field, "readdir.cur_arr2");
+            const cur_arr2 = self.builder.buildLoad(ptr_type, posix_hdr_ptr_f, "readdir.cur_arr2");
             var slot_idx = [_]llvm.ValueRef{slot_offset};
             const slot_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), cur_arr2, &slot_idx, 1, "readdir.slot_ptr");
 
@@ -25095,14 +25221,16 @@ pub const Emitter = struct {
         // First pass: compute total length = strlen(cmd) + sum(1 + strlen(arg_i))
         const cmd_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{cmd_val}, "procrun.cmd_len");
 
-        // Extract list ptr and len
-        const list_type = self.getListStructType();
-        const list_alloca = self.builder.buildAlloca(list_type, "procrun.list");
-        _ = self.builder.buildStore(args_val, list_alloca);
-        const list_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "procrun.list_ptr");
-        const list_ptr = self.builder.buildLoad(ptr_type, list_ptr_field, "procrun.list_ptr_val");
-        const list_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 1, "procrun.list_len");
-        const list_len = self.builder.buildLoad(i32_type, list_len_field, "procrun.list_len_val");
+        // Extract list ptr and len via header indirection
+        const proc_list_type = self.getListStructType();
+        const proc_header_type = self.getListHeaderType();
+        const proc_list_alloca = self.builder.buildAlloca(proc_list_type, "procrun.list");
+        _ = self.builder.buildStore(args_val, proc_list_alloca);
+        const proc_header = self.derefListHeader(proc_list_alloca);
+        const proc_hdr_ptr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_header_type, proc_header, 0, "procrun.list_ptr");
+        const list_ptr = self.builder.buildLoad(ptr_type, proc_hdr_ptr_f, "procrun.list_ptr_val");
+        const proc_hdr_len_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_header_type, proc_header, 1, "procrun.list_len");
+        const list_len = self.builder.buildLoad(i32_type, proc_hdr_len_f, "procrun.list_len_val");
 
         // Two-pass approach: first sum actual argument lengths, then allocate exact buffer.
         // Pass 1: total_args_len = sum of (1 + strlen(args[i])) for each arg (1 for space separator)
@@ -26373,14 +26501,58 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Get the LLVM struct type for List: { ptr, i32, i32 }
+    /// Get the LLVM struct type for List (outer wrapper): { ptr }
+    /// The single field is a pointer to the heap-allocated ListHeader.
     fn getListStructType(self: *Emitter) llvm.TypeRef {
-        var fields = [_]llvm.TypeRef{
-            llvm.Types.pointer(self.ctx), // ptr
-            llvm.Types.int32(self.ctx), // len
-            llvm.Types.int32(self.ctx), // capacity
-        };
-        return llvm.Types.struct_(self.ctx, &fields, false);
+        return list_constants.createListStructType(self.ctx);
+    }
+
+    /// Get the LLVM struct type for ListHeader (heap-allocated): { ptr, i32, i32 }
+    fn getListHeaderType(self: *Emitter) llvm.TypeRef {
+        return list_constants.createListHeaderType(self.ctx);
+    }
+
+    /// Dereference a list pointer to get the heap-allocated header pointer.
+    /// list_ptr is a pointer to a List struct { header_ptr }.
+    /// Returns the loaded header_ptr (pointer to ListHeader on heap).
+    fn derefListHeader(self: *Emitter, list_ptr: llvm.ValueRef) llvm.ValueRef {
+        const list_type = self.getListStructType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_ptr, 0, "list.header_field");
+        return self.builder.buildLoad(ptr_type, header_field, "list.header_ptr");
+    }
+
+    /// Allocate a new ListHeader on the heap and return the pointer.
+    /// Initializes to { null, 0, 0 }.
+    fn allocateListHeader(self: *Emitter) llvm.ValueRef {
+        const header_type = self.getListHeaderType();
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const header_size = llvm.Const.int64(self.ctx, list_constants.list_header_size);
+
+        // malloc for the header
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{header_size};
+        const header_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "list.new_header");
+
+        // Initialize to { null, 0, 0 }
+        const data_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 0, "list.hdr.data_field");
+        _ = self.builder.buildStore(llvm.c.LLVMConstPointerNull(ptr_type), data_field);
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 1, "list.hdr.len_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_field);
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, header_ptr, 2, "list.hdr.cap_field");
+        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), cap_field);
+
+        return header_ptr;
+    }
+
+    /// Build a list value { header_ptr } from a header pointer.
+    /// Returns a loaded list struct value.
+    fn buildListFromHeader(self: *Emitter, header_ptr: llvm.ValueRef) llvm.ValueRef {
+        const list_type = self.getListStructType();
+        const list_alloca = self.builder.buildAlloca(list_type, "list.wrap");
+        const header_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, list_type, list_alloca, 0, "list.wrap.hdr");
+        _ = self.builder.buildStore(header_ptr, header_field);
+        return self.builder.buildLoad(list_type, list_alloca, "list.wrap.val");
     }
 
     /// Convert a fixed-size array value to a slice struct { ptr, len }.
@@ -31220,8 +31392,8 @@ pub const Emitter = struct {
             .range => 16, // start + end
             .context_error => 8, // pointer
             // Collection types have fixed struct layouts (NOT pointers)
-            // List: { ptr, len: i32, cap: i32 } = 8 + 4 + 4 = 16 bytes
-            .list => 16,
+            // List: { header_ptr } = 8 bytes (heap-indirected)
+            .list => list_constants.list_struct_size,
             // Map: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
             .map => 20,
             // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
@@ -31369,7 +31541,7 @@ pub const Emitter = struct {
                 // For generic types like List#[T], Map#[K,V], etc.
                 if (g.base == .named) {
                     const base_name = g.base.named.name;
-                    if (std.mem.eql(u8, base_name, "List")) return 16;
+                    if (std.mem.eql(u8, base_name, "List")) return list_constants.list_struct_size;
                     if (std.mem.eql(u8, base_name, "Map") or std.mem.eql(u8, base_name, "Set")) return 20;
                     if (std.mem.eql(u8, base_name, "Result") and g.args.len == 2) {
                         const ok_size = self.getSizeOfTypeExpr(g.args[0]);
@@ -31550,13 +31722,8 @@ pub const Emitter = struct {
                 return llvm.Types.struct_(self.ctx, &fields, false);
             },
             .list => {
-                // List LLVM layout: { ptr: *T, len: i32, capacity: i32 }
-                var fields = [_]llvm.TypeRef{
-                    llvm.Types.pointer(self.ctx), // ptr
-                    llvm.Types.int32(self.ctx), // len
-                    llvm.Types.int32(self.ctx), // capacity
-                };
-                return llvm.Types.struct_(self.ctx, &fields, false);
+                // List LLVM layout: { header_ptr } (heap-indirected)
+                return self.getListStructType();
             },
             .map => {
                 // Map LLVM layout: { entries: *Entry, len: i32, capacity: i32, tombstone_count: i32 }
@@ -31952,8 +32119,8 @@ pub const Emitter = struct {
                 break :blk if (size == 0) 8 else size;
             },
             // Collection types have fixed struct layouts:
-            // List: { ptr, len: i32, cap: i32 } = 8 + 4 + 4 = 16 bytes
-            .list => 16,
+            // List: { header_ptr } = 8 bytes (heap-indirected)
+            .list => list_constants.list_struct_size,
             // Map: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
             .map => 20,
             // Set: { entries: ptr, len: i32, cap: i32, tombstones: i32 } = 8 + 4 + 4 + 4 = 20 bytes
