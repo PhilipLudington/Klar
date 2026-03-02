@@ -30,5 +30,10 @@ __pycache__/
 # AI scratch/sandbox directory
 scratch/
 
+# Local planning files
+PLAN.md
+BUG.md
+RESUME.md
+
 # Generated lock files in test fixtures (contain machine-specific absolute paths)
 test/pkg/**/klar.lock
