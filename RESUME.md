@@ -2,21 +2,15 @@
 
 These bugs were discovered during the TOML parser implementation (Phase 3) and worked around in `stdlib/toml.kl`. They should be fixed in the compiler to prevent future stdlib/user code from hitting the same issues.
 
-## [ ] Bug 1: Map.new() doesn't allocate backing storage
+## [x] Bug 1: Map.new() doesn't allocate backing storage (fixed 2026-03-01)
 
 **Symptom:** A freshly created `Map.new#[K,V]()` passed to a function or stored in an enum before any `.insert()` call silently loses all subsequent inserts made by the callee.
 
-**Root cause:** `Map.new()` returns a map with null/zero backing storage. The first `.insert()` allocates the hash table. If the map is passed by value to a function before any insert, the callee's insert allocates new storage on the callee's copy, which the caller never sees.
+**Root cause:** `Map.new()` returned a map with null/zero backing storage. The first `.insert()` allocated the hash table. If the map was passed by value to a function before any insert, the callee's insert allocated new storage on the callee's copy, which the caller never saw.
 
-**Workaround:** "Prime" every map immediately after creation:
-```klar
-var m: Map#[string, TomlValue] = Map.new#[string, TomlValue]()
-m.insert("", TomlValue::Bool(false))  // forces backing allocation
-```
+**Fix:** `emitMapNew()` in `src/codegen/emit.zig` now eagerly allocates a backing table with `map_constants.initial_capacity` (8) entries via malloc+memset, matching what `Map.with_capacity()` already did. Extracted shared helpers `emitMapAlloc` and `resolveMapEntrySize` to deduplicate with `emitMapWithCapacity`.
 
-**Fix approach:** Either (a) `Map.new()` should eagerly allocate a small backing table, or (b) the map struct should use a pointer to heap-allocated state so copies share the same backing storage.
-
-**Repro:** `scratch/toml_prime.kl`
+**Test:** `test/native/map_eager_alloc.kl`
 
 ---
 

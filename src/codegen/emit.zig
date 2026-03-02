@@ -30,6 +30,7 @@ const RepeatInfo = checker_mod.RepeatInfo;
 const llvm = @import("llvm.zig");
 const target = @import("target.zig");
 const layout = @import("layout.zig");
+const map_constants = @import("map.zig");
 
 // Supporting documentation modules (pure doc comments, see each file for details):
 // generics.zig, types_emit.zig, strings_emit.zig, list.zig, map.zig, set.zig,
@@ -18105,28 +18106,45 @@ pub const Emitter = struct {
         return llvm.Types.struct_(self.ctx, &fields, false);
     }
 
-    /// Emit Map.new#[K,V]() - creates an empty map.
-    /// Returns a Map struct with { null, 0, 0, 0 }.
-    fn emitMapNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
-        _ = method; // Type args already validated by checker
-
+    /// Shared helper: allocate a map with the given capacity (as an LLVM i32 value),
+    /// malloc + memset the entries buffer, and return the loaded map struct value.
+    fn emitMapAlloc(self: *Emitter, cap_i32: llvm.ValueRef, alloc_size: llvm.ValueRef, name: [:0]const u8) llvm.ValueRef {
         const map_type = self.getMapStructType();
 
-        // Create an empty map struct { null, 0, 0, 0 }
-        const null_ptr = llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx));
+        // Call malloc(size)
+        const malloc_fn = self.getOrDeclareMalloc();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const entries_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "map.entries_ptr");
+
+        // Zero-initialize the entries (all states = EMPTY = 0)
+        const memset_fn = self.getOrDeclareMemset();
+        var memset_args = [_]llvm.ValueRef{ entries_ptr, llvm.Const.int32(self.ctx, 0), alloc_size };
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &memset_args, "");
+
+        // Build the map struct { entries_ptr, 0, capacity, 0 }
+        const map_alloca = self.builder.buildAlloca(map_type, name);
         const zero_i32 = llvm.Const.int32(self.ctx, 0);
 
-        var values = [_]llvm.ValueRef{ null_ptr, zero_i32, zero_i32, zero_i32 };
-        return llvm.c.LLVMConstNamedStruct(map_type, &values, 4);
+        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, map_constants.MapField.entries, "map.ptr_field");
+        _ = self.builder.buildStore(entries_ptr, ptr_field);
+
+        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, map_constants.MapField.len, "map.len_field");
+        _ = self.builder.buildStore(zero_i32, len_field);
+
+        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, map_constants.MapField.capacity, "map.cap_field");
+        _ = self.builder.buildStore(cap_i32, cap_field);
+
+        const tomb_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, map_constants.MapField.tombstones, "map.tomb_field");
+        _ = self.builder.buildStore(zero_i32, tomb_field);
+
+        return self.builder.buildLoad(map_type, map_alloca, "map.val");
     }
 
-    /// Emit Map.with_capacity#[K,V](n) - creates a map with pre-allocated capacity.
-    fn emitMapWithCapacity(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
-        // Get key/value types from type_args
+    /// Resolve key/value LLVM types and entry size from a method call's type_args.
+    fn resolveMapEntrySize(self: *Emitter, method: *ast.MethodCall) EmitError!usize {
         const type_args = method.type_args orelse return EmitError.InvalidAST;
         if (type_args.len != 2) return EmitError.InvalidAST;
 
-        // Resolve types using type checker
         var key_type_klar: types.Type = undefined;
         var value_type_klar: types.Type = undefined;
         if (self.type_checker) |tc| {
@@ -18140,15 +18158,29 @@ pub const Emitter = struct {
         const key_llvm_type = self.typeToLLVM(key_type_klar);
         const value_llvm_type = self.typeToLLVM(value_type_klar);
         const entry_type = self.getMapEntryType(key_llvm_type, value_llvm_type);
-        const entry_size = self.getLLVMTypeSize(entry_type);
+        return self.getLLVMTypeSize(entry_type);
+    }
 
-        // Emit the capacity argument
+    /// Emit Map.new#[K,V]() - creates an empty map with eager allocation.
+    /// Eagerly allocates backing storage so that maps passed to functions before any
+    /// insert share the same entries pointer, avoiding silent data loss.
+    fn emitMapNew(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const entry_size = try self.resolveMapEntrySize(method);
+        const cap = map_constants.initial_capacity;
+        const cap_i32 = llvm.Const.int32(self.ctx, @intCast(cap));
+        const alloc_size = llvm.Const.int64(self.ctx, @intCast(cap * entry_size));
+        return self.emitMapAlloc(cap_i32, alloc_size, "map.new");
+    }
+
+    /// Emit Map.with_capacity#[K,V](n) - creates a map with pre-allocated capacity.
+    fn emitMapWithCapacity(self: *Emitter, method: *ast.MethodCall) EmitError!llvm.ValueRef {
+        const entry_size = try self.resolveMapEntrySize(method);
+
         if (method.args.len != 1) return EmitError.InvalidAST;
         const capacity = try self.emitExpr(method.args[0]);
 
         const i64_type = llvm.Types.int64(self.ctx);
         const i32_type = llvm.Types.int32(self.ctx);
-        const map_type = self.getMapStructType();
 
         // Convert capacity to i32 if needed
         const cap_type = llvm.typeOf(capacity);
@@ -18162,37 +18194,7 @@ pub const Emitter = struct {
         const entry_size_val = llvm.Const.int64(self.ctx, @intCast(entry_size));
         const alloc_size = llvm.c.LLVMBuildMul(self.builder.ref, cap_i64, entry_size_val, "alloc_size");
 
-        // Call malloc(size)
-        const malloc_fn = self.getOrDeclareMalloc();
-        var malloc_args = [_]llvm.ValueRef{alloc_size};
-        const entries_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, "map.entries_ptr");
-
-        // Zero-initialize the entries (all states = EMPTY = 0)
-        const memset_fn = self.getOrDeclareMemset();
-        var memset_args = [_]llvm.ValueRef{ entries_ptr, llvm.Const.int32(self.ctx, 0), alloc_size };
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(memset_fn), memset_fn, &memset_args, "");
-
-        // Build the map struct { entries_ptr, 0, capacity, 0 }
-        const map_alloca = self.builder.buildAlloca(map_type, "map.with_cap");
-
-        // Store entries ptr (field 0)
-        const ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, 0, "map.ptr_field");
-        _ = self.builder.buildStore(entries_ptr, ptr_field);
-
-        // Store len = 0 (field 1)
-        const len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, 1, "map.len_field");
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), len_field);
-
-        // Store capacity (field 2)
-        const cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, 2, "map.cap_field");
-        _ = self.builder.buildStore(cap_i32, cap_field);
-
-        // Store tombstone_count = 0 (field 3)
-        const tomb_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, map_type, map_alloca, 3, "map.tomb_field");
-        _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), tomb_field);
-
-        // Load and return the struct value
-        return self.builder.buildLoad(map_type, map_alloca, "map.with_cap_val");
+        return self.emitMapAlloc(cap_i32, alloc_size, "map.with_cap");
     }
 
     /// Emit map.len() - returns length as i32.

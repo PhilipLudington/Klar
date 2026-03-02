@@ -1,0 +1,71 @@
+// Test: Map.new() eagerly allocates backing storage so that
+// inserts from a callee are visible to the caller without priming.
+
+fn do_insert(m: Map#[string, i32], key: string, value: i32) -> void {
+    m.insert(key, value)
+}
+
+fn create_and_return() -> Map#[string, i32] {
+    var m: Map#[string, i32] = Map.new#[string, i32]()
+    return m
+}
+
+fn main() -> i32 {
+    // Test 1: Insert from callee visible to caller
+    var m1: Map#[string, i32] = Map.new#[string, i32]()
+    do_insert(m1, "hello", 42)
+    let r1: ?i32 = m1.get("hello")
+    match r1 {
+        Some(v) => {
+            if v != 42 {
+                println("FAIL: expected 42")
+                return 1
+            }
+        }
+        None => {
+            println("FAIL: key not found after callee insert")
+            return 1
+        }
+    }
+
+    // Test 2: Map returned from helper, then inserted via callee
+    var m2: Map#[string, i32] = create_and_return()
+    do_insert(m2, "world", 99)
+    let r2: ?i32 = m2.get("world")
+    match r2 {
+        Some(v) => {
+            if v != 99 {
+                println("FAIL: expected 99")
+                return 1
+            }
+        }
+        None => {
+            println("FAIL: key not found after helper + callee insert")
+            return 1
+        }
+    }
+
+    // Test 3: Multiple inserts from callee
+    var m3: Map#[string, i32] = Map.new#[string, i32]()
+    do_insert(m3, "a", 1)
+    do_insert(m3, "b", 2)
+    do_insert(m3, "c", 3)
+    let ra: ?i32 = m3.get("a")
+    let rb: ?i32 = m3.get("b")
+    let rc: ?i32 = m3.get("c")
+    match ra {
+        Some(v) => { if v != 1 { println("FAIL: a != 1"); return 1 } }
+        None => { println("FAIL: a not found"); return 1 }
+    }
+    match rb {
+        Some(v) => { if v != 2 { println("FAIL: b != 2"); return 1 } }
+        None => { println("FAIL: b not found"); return 1 }
+    }
+    match rc {
+        Some(v) => { if v != 3 { println("FAIL: c != 3"); return 1 } }
+        None => { println("FAIL: c not found"); return 1 }
+    }
+
+    println("ALL PASS")
+    return 0
+}
