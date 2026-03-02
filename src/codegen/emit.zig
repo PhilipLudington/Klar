@@ -26669,7 +26669,7 @@ pub const Emitter = struct {
     fn getLLVMTypeSize(self: *Emitter, ty: llvm.TypeRef) u64 {
         const type_kind = llvm.getTypeKind(ty);
         return switch (type_kind) {
-            llvm.c.LLVMIntegerTypeKind => @as(u64, llvm.c.LLVMGetIntTypeWidth(ty)) / 8,
+            llvm.c.LLVMIntegerTypeKind => @as(u64, llvm.c.LLVMGetIntTypeWidth(ty) + 7) / 8,
             llvm.c.LLVMFloatTypeKind => 4,
             llvm.c.LLVMDoubleTypeKind => 8,
             llvm.c.LLVMPointerTypeKind => 8, // 64-bit pointers
