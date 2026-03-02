@@ -1,0 +1,505 @@
+//! stdlib/cli.kl - CLI argument parsing
+//!
+//! Pure Klar CLI argument parsing library providing:
+//! - Builder: cli_new_flags, cli_add_flag, cli_new_options, cli_add_option,
+//!            cli_new_subcommands, cli_add_subcommand, cli_build_parser
+//! - Parsing: cli_parse(parser, args) -> Result#[ParsedArgs, ArgError]
+//! - Accessors: cli_get_flag, cli_get_option, cli_has_subcommand
+//! - Help: cli_help, cli_subcommand_help
+//!
+//! Workaround: struct field mutation doesn't persist in native codegen,
+//! so lists are built standalone and passed to cli_build_parser.
+
+module stdlib.cli
+
+// ============================================================================
+// Types
+// ============================================================================
+
+pub struct ArgParser {
+    pub name: string,
+    pub description: string,
+    pub flag_names: List#[string],
+    pub flag_shorts: List#[string],
+    pub flag_descs: List#[string],
+    pub opt_names: List#[string],
+    pub opt_shorts: List#[string],
+    pub opt_descs: List#[string],
+    pub opt_defaults: List#[string],
+    pub sub_names: List#[string],
+    pub sub_descs: List#[string],
+}
+
+pub struct ParsedArgs {
+    pub subcommand: string,
+    pub flags: Map#[string, bool],
+    pub options: Map#[string, string],
+    pub positional: List#[string],
+}
+// Note: subcommand is "" when no subcommand was matched.
+
+pub struct ArgError {
+    pub message: string,
+}
+
+// ============================================================================
+// String Helpers
+// ============================================================================
+
+fn char_to_str(c: char) -> string {
+    return from_byte(c.as#[i32].as#[u8])
+}
+
+fn chars_to_string(chars: [char], start: i32, end: i32) -> string {
+    var result: string = ""
+    var i: i32 = start
+    while i < end {
+        result = result + char_to_str(chars[i])
+        i = i + 1
+    }
+    return result
+}
+
+fn has_long_prefix(s: string) -> bool {
+    let chars: [char] = s.chars()
+    if chars.len() < 2 { return false }
+    return chars[0] == '-' and chars[1] == '-'
+}
+
+fn has_short_prefix(s: string) -> bool {
+    let chars: [char] = s.chars()
+    if chars.len() < 2 { return false }
+    return chars[0] == '-' and chars[1] != '-'
+}
+
+fn strip_long_prefix(s: string) -> string {
+    let chars: [char] = s.chars()
+    return chars_to_string(chars, 2, chars.len())
+}
+
+fn strip_short_prefix(s: string) -> string {
+    let chars: [char] = s.chars()
+    return chars_to_string(chars, 1, chars.len())
+}
+
+fn find_eq(s: string) -> i32 {
+    let chars: [char] = s.chars()
+    var i: i32 = 0
+    while i < chars.len() {
+        if chars[i] == '=' {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+fn eq_key(s: string) -> string {
+    let pos: i32 = find_eq(s)
+    let chars: [char] = s.chars()
+    return chars_to_string(chars, 0, pos)
+}
+
+fn eq_value(s: string) -> string {
+    let pos: i32 = find_eq(s)
+    let chars: [char] = s.chars()
+    return chars_to_string(chars, pos + 1, chars.len())
+}
+
+fn pad_right(s: string, width: i32) -> string {
+    var result: string = s
+    var i: i32 = s.len()
+    while i < width {
+        result = result + " "
+        i = i + 1
+    }
+    return result
+}
+
+// ============================================================================
+// Builder Helpers
+// ============================================================================
+// Usage: build Lists standalone, push to them directly, then construct
+// ArgParser struct literal. Struct field mutation doesn't persist in
+// native codegen, so all pushes must happen BEFORE struct construction.
+//
+// Example:
+//   var flag_names: List#[string] = List.new#[string]()
+//   var flag_shorts: List#[string] = List.new#[string]()
+//   var flag_descs: List#[string] = List.new#[string]()
+//   cli_def_flag(flag_names, flag_shorts, flag_descs, "json", "j", "Output as JSON")
+//   let parser: ArgParser = ArgParser { name: "tool", description: "desc",
+//       flag_names: flag_names, flag_shorts: flag_shorts, flag_descs: flag_descs,
+//       opt_names: ..., opt_shorts: ..., opt_descs: ..., opt_defaults: ...,
+//       sub_names: ..., sub_descs: ... }
+
+pub fn cli_def_flag(names: List#[string], shorts: List#[string], descs: List#[string],
+                    name: string, short: string, description: string) -> void {
+    names.push(name)
+    shorts.push(short)
+    descs.push(description)
+}
+
+pub fn cli_def_option(names: List#[string], shorts: List#[string], descs: List#[string],
+                      defaults: List#[string],
+                      name: string, short: string, description: string, default_value: string) -> void {
+    names.push(name)
+    shorts.push(short)
+    descs.push(description)
+    defaults.push(default_value)
+}
+
+pub fn cli_def_subcommand(names: List#[string], descs: List#[string],
+                          name: string, description: string) -> void {
+    names.push(name)
+    descs.push(description)
+}
+
+// ============================================================================
+// Lookup Helpers
+// ============================================================================
+
+fn find_in_list(items: List#[string], target: string) -> bool {
+    var i: i32 = 0
+    while i < items.len() {
+        let n: string = items.get(i)!
+        if n == target { return true }
+        i = i + 1
+    }
+    return false
+}
+
+fn find_index_in_list(items: List#[string], target: string) -> i32 {
+    var i: i32 = 0
+    while i < items.len() {
+        let n: string = items.get(i)!
+        if n == target { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+fn is_known_flag(flag_names: List#[string], name: string) -> bool {
+    return find_in_list(flag_names, name)
+}
+
+fn is_known_option(opt_names: List#[string], name: string) -> bool {
+    return find_in_list(opt_names, name)
+}
+
+fn resolve_short(flag_shorts: List#[string], flag_names: List#[string],
+                 opt_shorts: List#[string], opt_names: List#[string],
+                 short: string) -> ?string {
+    var i: i32 = 0
+    while i < flag_shorts.len() {
+        let s: string = flag_shorts.get(i)!
+        if s == short and s != "" {
+            return Some(flag_names.get(i)!)
+        }
+        i = i + 1
+    }
+    var j: i32 = 0
+    while j < opt_shorts.len() {
+        let s: string = opt_shorts.get(j)!
+        if s == short and s != "" {
+            return Some(opt_names.get(j)!)
+        }
+        j = j + 1
+    }
+    if short == "h" {
+        return Some("help")
+    }
+    return None
+}
+
+// ============================================================================
+// Parsing
+// ============================================================================
+
+pub fn cli_parse(parser: ArgParser, args: List#[string]) -> Result#[ParsedArgs, ArgError] {
+    var flags: Map#[string, bool] = Map.new#[string, bool]()
+    var options: Map#[string, string] = Map.new#[string, string]()
+    var positional: List#[string] = List.new#[string]()
+    var subcmd_name: string = ""
+
+    // Extract lists to locals (struct field access workaround)
+    let p_flag_names: List#[string] = parser.flag_names
+    let p_flag_shorts: List#[string] = parser.flag_shorts
+    let p_opt_names: List#[string] = parser.opt_names
+    let p_opt_shorts: List#[string] = parser.opt_shorts
+    let p_opt_defaults: List#[string] = parser.opt_defaults
+    let p_sub_names: List#[string] = parser.sub_names
+
+    // Initialize all registered flags to false
+    var fi: i32 = 0
+    while fi < p_flag_names.len() {
+        let fname: string = p_flag_names.get(fi)!
+        flags.insert(fname, false)
+        fi = fi + 1
+    }
+    flags.insert("help", false)
+
+    // Initialize options with defaults
+    var oi: i32 = 0
+    while oi < p_opt_names.len() {
+        let oname: string = p_opt_names.get(oi)!
+        let odefault: string = p_opt_defaults.get(oi)!
+        if odefault != "" {
+            options.insert(oname, odefault)
+        }
+        oi = oi + 1
+    }
+
+    let len: i32 = args.len()
+    var i: i32 = 0
+    var has_subcmd: bool = false
+    var past_separator: bool = false
+
+    while i < len {
+        let arg: string = args.get(i)!
+
+        if past_separator {
+            positional.push(arg)
+            i = i + 1
+        } else if arg == "--" {
+            past_separator = true
+            i = i + 1
+        } else if has_long_prefix(arg) {
+            let name_part: string = strip_long_prefix(arg)
+
+            let eq_pos: i32 = find_eq(name_part)
+            if eq_pos >= 0 {
+                let key: string = eq_key(name_part)
+                let value: string = eq_value(name_part)
+                if is_known_option(p_opt_names, key) {
+                    options.insert(key, value)
+                } else {
+                    return Err(ArgError { message: "unknown option: --" + key })
+                }
+            } else if name_part == "help" {
+                flags.insert("help", true)
+            } else if is_known_flag(p_flag_names, name_part) {
+                flags.insert(name_part, true)
+            } else if is_known_option(p_opt_names, name_part) {
+                if i + 1 >= len {
+                    return Err(ArgError { message: "option --" + name_part + " requires a value" })
+                }
+                i = i + 1
+                let val: string = args.get(i)!
+                options.insert(name_part, val)
+            } else {
+                return Err(ArgError { message: "unknown flag: --" + name_part })
+            }
+            i = i + 1
+        } else if has_short_prefix(arg) {
+            let short_char: string = strip_short_prefix(arg)
+
+            if short_char == "h" {
+                flags.insert("help", true)
+                i = i + 1
+            } else {
+                let long_name: ?string = resolve_short(p_flag_shorts, p_flag_names, p_opt_shorts, p_opt_names, short_char)
+                match long_name {
+                    Some(name) => {
+                        if is_known_flag(p_flag_names, name) {
+                            flags.insert(name, true)
+                        } else if is_known_option(p_opt_names, name) {
+                            if i + 1 >= len {
+                                return Err(ArgError { message: "option -" + short_char + " requires a value" })
+                            }
+                            i = i + 1
+                            let val: string = args.get(i)!
+                            options.insert(name, val)
+                        }
+                    }
+                    None => {
+                        return Err(ArgError { message: "unknown flag: -" + short_char })
+                    }
+                }
+                i = i + 1
+            }
+        } else {
+            if not has_subcmd and p_sub_names.len() > 0 and find_in_list(p_sub_names, arg) {
+                subcmd_name = arg
+                has_subcmd = true
+            } else {
+                positional.push(arg)
+            }
+            i = i + 1
+        }
+    }
+
+    return Ok(ParsedArgs {
+        subcommand: subcmd_name,
+        flags: flags,
+        options: options,
+        positional: positional,
+    })
+}
+
+// ============================================================================
+// Accessors
+// ============================================================================
+
+pub fn cli_get_flag(parsed: ParsedArgs, name: string) -> bool {
+    let flag_map: Map#[string, bool] = parsed.flags
+    let val: ?bool = flag_map.get(name)
+    match val {
+        Some(v) => { return v }
+        None => { return false }
+    }
+}
+
+pub fn cli_has_subcommand(parsed: ParsedArgs) -> bool {
+    return parsed.subcommand != ""
+}
+
+pub fn cli_get_option(parsed: ParsedArgs, name: string) -> ?string {
+    let opt_map: Map#[string, string] = parsed.options
+    return opt_map.get(name)
+}
+
+// ============================================================================
+// Help Generation
+// ============================================================================
+
+pub fn cli_help(parser: ArgParser) -> string {
+    let p_flag_names: List#[string] = parser.flag_names
+    let p_flag_shorts: List#[string] = parser.flag_shorts
+    let p_flag_descs: List#[string] = parser.flag_descs
+    let p_opt_names: List#[string] = parser.opt_names
+    let p_opt_shorts: List#[string] = parser.opt_shorts
+    let p_opt_descs: List#[string] = parser.opt_descs
+    let p_opt_defaults: List#[string] = parser.opt_defaults
+    let p_sub_names: List#[string] = parser.sub_names
+    let p_sub_descs: List#[string] = parser.sub_descs
+
+    var out: string = "Usage: " + parser.name
+
+    if p_opt_names.len() > 0 or p_flag_names.len() > 0 {
+        out = out + " [OPTIONS]"
+    }
+    if p_sub_names.len() > 0 {
+        out = out + " <COMMAND>"
+    }
+    out = out + "\n\n" + parser.description + "\n"
+
+    if p_sub_names.len() > 0 {
+        out = out + "\nCommands:\n"
+        var si: i32 = 0
+        while si < p_sub_names.len() {
+            let sname: string = p_sub_names.get(si)!
+            let sdesc: string = p_sub_descs.get(si)!
+            out = out + "  " + pad_right(sname, 16) + sdesc + "\n"
+            si = si + 1
+        }
+    }
+
+    if p_flag_names.len() > 0 or p_opt_names.len() > 0 {
+        out = out + "\nOptions:\n"
+        var fi2: i32 = 0
+        while fi2 < p_flag_names.len() {
+            let fn2: string = p_flag_names.get(fi2)!
+            let fs2: string = p_flag_shorts.get(fi2)!
+            let fd2: string = p_flag_descs.get(fi2)!
+            var flag_str: string = "  "
+            if fs2 != "" {
+                flag_str = flag_str + "-" + fs2 + ", "
+            } else {
+                flag_str = flag_str + "    "
+            }
+            flag_str = flag_str + "--" + fn2
+            out = out + pad_right(flag_str, 24) + fd2 + "\n"
+            fi2 = fi2 + 1
+        }
+        var oi2: i32 = 0
+        while oi2 < p_opt_names.len() {
+            let on2: string = p_opt_names.get(oi2)!
+            let os2: string = p_opt_shorts.get(oi2)!
+            let od2: string = p_opt_descs.get(oi2)!
+            let odef2: string = p_opt_defaults.get(oi2)!
+            var opt_str: string = "  "
+            if os2 != "" {
+                opt_str = opt_str + "-" + os2 + ", "
+            } else {
+                opt_str = opt_str + "    "
+            }
+            opt_str = opt_str + "--" + on2 + " <value>"
+            out = out + pad_right(opt_str, 28) + od2
+            if odef2 != "" {
+                out = out + " [default: " + odef2 + "]"
+            }
+            out = out + "\n"
+            oi2 = oi2 + 1
+        }
+        out = out + "  -h, --help            Print help\n"
+    }
+
+    return out
+}
+
+pub fn cli_subcommand_help(parser: ArgParser, subcmd: string) -> string {
+    let p_flag_names: List#[string] = parser.flag_names
+    let p_flag_shorts: List#[string] = parser.flag_shorts
+    let p_flag_descs: List#[string] = parser.flag_descs
+    let p_opt_names: List#[string] = parser.opt_names
+    let p_opt_shorts: List#[string] = parser.opt_shorts
+    let p_opt_descs: List#[string] = parser.opt_descs
+    let p_opt_defaults: List#[string] = parser.opt_defaults
+    let p_sub_names: List#[string] = parser.sub_names
+    let p_sub_descs: List#[string] = parser.sub_descs
+
+    var desc: string = ""
+    let idx: i32 = find_index_in_list(p_sub_names, subcmd)
+    if idx >= 0 {
+        desc = p_sub_descs.get(idx)!
+    }
+
+    var out: string = "Usage: " + parser.name + " " + subcmd
+    if p_opt_names.len() > 0 or p_flag_names.len() > 0 {
+        out = out + " [OPTIONS]"
+    }
+    out = out + "\n\n" + desc + "\n"
+
+    if p_flag_names.len() > 0 or p_opt_names.len() > 0 {
+        out = out + "\nOptions:\n"
+        var fi2: i32 = 0
+        while fi2 < p_flag_names.len() {
+            let fn2: string = p_flag_names.get(fi2)!
+            let fs2: string = p_flag_shorts.get(fi2)!
+            let fd2: string = p_flag_descs.get(fi2)!
+            var flag_str: string = "  "
+            if fs2 != "" {
+                flag_str = flag_str + "-" + fs2 + ", "
+            } else {
+                flag_str = flag_str + "    "
+            }
+            flag_str = flag_str + "--" + fn2
+            out = out + pad_right(flag_str, 24) + fd2 + "\n"
+            fi2 = fi2 + 1
+        }
+        var oi2: i32 = 0
+        while oi2 < p_opt_names.len() {
+            let on2: string = p_opt_names.get(oi2)!
+            let os2: string = p_opt_shorts.get(oi2)!
+            let od2: string = p_opt_descs.get(oi2)!
+            let odef2: string = p_opt_defaults.get(oi2)!
+            var opt_str: string = "  "
+            if os2 != "" {
+                opt_str = opt_str + "-" + os2 + ", "
+            } else {
+                opt_str = opt_str + "    "
+            }
+            opt_str = opt_str + "--" + on2 + " <value>"
+            out = out + pad_right(opt_str, 28) + od2
+            if odef2 != "" {
+                out = out + " [default: " + odef2 + "]"
+            }
+            out = out + "\n"
+            oi2 = oi2 + 1
+        }
+        out = out + "  -h, --help            Print help\n"
+    }
+
+    return out
+}

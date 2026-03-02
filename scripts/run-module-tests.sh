@@ -278,7 +278,31 @@ else
     echo "⊘ sha256 (test not found, skipping)"
 fi
 
-# Test 12: TOML library (stdlib/toml.kl)
+# Test 12: CLI library (stdlib/cli.kl)
+echo "--- cli: CLI argument parsing (stdlib/cli.kl) ---"
+temp_bin="/tmp/klar_module_cli"
+if [ -d "$TEST_DIR/cli" ]; then
+    if $KLAR build $TEST_DIR/cli/main.kl -o "$temp_bin" 2>/dev/null; then
+        output=$("$temp_bin" 2>/dev/null)
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ cli (exit: $result)"
+            record_success "cli"
+        else
+            echo "✗ cli (expected: 0, got: $result)"
+            echo "    output: $output"
+            record_failure "cli" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ cli (build failed)"
+        record_failure "cli" "build failed"
+    fi
+else
+    echo "⊘ cli (test not found, skipping)"
+fi
+
+# Test 13: TOML library (stdlib/toml.kl)
 echo "--- toml: TOML library (stdlib/toml.kl) ---"
 temp_bin="/tmp/klar_module_toml"
 if [ -d "$TEST_DIR/toml" ]; then
