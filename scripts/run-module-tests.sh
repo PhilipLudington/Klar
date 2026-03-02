@@ -325,7 +325,30 @@ else
     echo "⊘ string_enum (test not found, skipping)"
 fi
 
-# Test 14: TOML library (stdlib/toml.kl)
+# Test 14: Cross-module string enum complex (index_of, starts_with, contains)
+echo "--- string_enum_complex: Cross-module string enum methods ---"
+temp_bin="/tmp/klar_module_string_enum_complex"
+if [ -d "$TEST_DIR/string_enum_complex" ]; then
+    if $KLAR build $TEST_DIR/string_enum_complex/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_enum_complex (exit: $result)"
+            record_success "string_enum_complex"
+        else
+            echo "✗ string_enum_complex (expected: 0, got: $result)"
+            record_failure "string_enum_complex" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_enum_complex (build failed)"
+        record_failure "string_enum_complex" "build failed"
+    fi
+else
+    echo "⊘ string_enum_complex (test not found, skipping)"
+fi
+
+# Test 15: TOML library (stdlib/toml.kl)
 echo "--- toml: TOML library (stdlib/toml.kl) ---"
 temp_bin="/tmp/klar_module_toml"
 if [ -d "$TEST_DIR/toml" ]; then

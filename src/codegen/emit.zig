@@ -6060,6 +6060,10 @@ pub const Emitter = struct {
                         else => {},
                     }
                 }
+                // Note: no LLVM-type fallback here — after heap indirection,
+                // List, Map, String, and string are all single pointers.
+                // We rely on resolveTypeExprDirect (with lookupSymbolAcrossModules
+                // fallback) to correctly resolve cross-module payload types.
 
                 self.named_values.put(b.name, local_value) catch return EmitError.OutOfMemory;
             },
@@ -6622,7 +6626,13 @@ pub const Emitter = struct {
                 // For other named types, try type checker
                 if (self.type_checker) |tc| {
                     const tc_mut = @constCast(tc);
-                    return tc_mut.resolveTypeExpr(type_expr) catch return null;
+                    if (tc_mut.resolveTypeExpr(type_expr) catch null) |resolved| {
+                        return resolved;
+                    }
+                    // Cross-module fallback: search all module scopes
+                    if (tc.lookupSymbolAcrossModules(n.name)) |sym| {
+                        return sym.type_;
+                    }
                 }
                 return null;
             },

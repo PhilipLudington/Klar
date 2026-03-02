@@ -1,0 +1,29 @@
+// Library module: multi-variant enum with various payloads (JSON/TOML pattern)
+
+pub enum JsonValue {
+    Str(string),
+    Num(i32),
+    Bool(bool),
+    Null
+}
+
+pub fn make_str(s: string) -> JsonValue {
+    return JsonValue::Str(s)
+}
+
+pub fn make_num(n: i32) -> JsonValue {
+    return JsonValue::Num(n)
+}
+
+pub fn make_bool(b: bool) -> JsonValue {
+    return JsonValue::Bool(b)
+}
+
+pub fn make_null() -> JsonValue {
+    return JsonValue::Null
+}
+
+// Return an enum from a function (tests return-value resolution)
+pub fn get_greeting() -> JsonValue {
+    return JsonValue::Str("hello world")
+}

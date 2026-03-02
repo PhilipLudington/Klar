@@ -2,6 +2,19 @@
 
 ## Recently Completed
 
+### Map Heap-Indirection + QA Fixes (committed 2026-03-02)
+
+- **Map heap-indirection:** Changed Map from flat `{ entries, len, cap, tombstones }` (20 bytes) to `{ header_ptr }` (8 bytes) with shared heap header. Same pattern as List (Bug 2) and String (Bug 3). Enables shared mutation — passing a Map by value to a function that inserts is now visible to the caller.
+- **QA fixes from review:**
+  - `requiresSretForTypeExpr`: Map no longer hardcoded to sret (8 bytes fits in register); uses dynamic size check like List
+  - `getSizeOfTypeExpr`: Map returns 8 (was 20); Set correctly stays at 20
+  - `buildMapFromHeader`: Now accepts `name` parameter for LLVM IR readability (was discarded)
+  - Stale comments updated to reflect heap-indirected layout
+- **`src/codegen/map.zig`** — New `MapField`, `MapHeaderField`, `createMapHeaderType()`, size constants
+- **`src/codegen/emit.zig`** — New helpers `getMapHeaderType()`, `derefMapHeader()`, `allocateMapHeader()`, `buildMapFromHeader()`. Updated all ~20 Map emitter call sites.
+- **`test/native/map_shared_insert.kl`** — Shared mutation test (analogous to `list_shared_push.kl`)
+- All 357 native tests pass.
+
 ### CLI Argument Parsing Library (committed 2026-03-02)
 
 - **`stdlib/cli.kl`** — Builder-pattern API: `cli_def_flag`, `cli_def_option`, `cli_def_subcommand`, `cli_parse`, accessors (`cli_get_flag`, `cli_get_option`, `cli_has_subcommand`), help generation (`cli_help`, `cli_subcommand_help`)
@@ -71,22 +84,34 @@ Key changes:
 
 ---
 
-## [ ] Bug 5: Cross-module string length metadata corruption
+## [x] Bug 8: Map passed to functions creates independent copy (fixed 2026-03-02)
+
+**Symptom:** A `Map#[K,V]` passed to a function and mutated via `.insert()` inside the function does not affect the caller's map. The caller's map remains unchanged.
+
+**Root cause:** Same value-copy semantics as Bugs 2–4. Map was `{ entries_ptr, len, capacity, tombstones }` (20 bytes) — passing it copied the flat struct. The callee's `.insert()` (and potential rehash) updated the callee's copy only.
+
+**Fix:** Changed Map from flat `{ entries_ptr, len, capacity, tombstones }` (20 bytes) to heap-indirected `{ header_ptr }` (8 bytes), identical to the List (Bug 2) and String (Bug 3) fixes. The header `{ entries_ptr, len, capacity, tombstones }` lives on the heap. When a Map is copied, both copies share the same heap header, so mutations like `.insert()` are visible through both.
+
+Key changes:
+- `src/codegen/map.zig`: New `MapField`, `MapHeaderField`, `createMapHeaderType()`, `createMapStructType()` for single-pointer wrapper, size constants (`map_struct_size=8`, `map_header_size=20`)
+- `src/codegen/emit.zig`: New helpers `getMapHeaderType()`, `derefMapHeader()`, `allocateMapHeader()`, `buildMapFromHeader()`. Updated all ~20 call sites that access Map internals (emitMapNew, emitMapWithCapacity, emitMapInsert, emitMapGet, emitMapRemove, emitMapLen, emitMapContains, emitMapKeys, emitMapValues, emitMapClone, emitMapDrop, emitMapTake, emitMapSkip, emitMapFilter, emitForLoopMap, emitSetMap, etc.)
+- QA fixes: `requiresSretForTypeExpr` (Map now uses dynamic size check), `getSizeOfTypeExpr` (returns 8 for Map), stale comments updated, `buildMapFromHeader` name passthrough
+
+**Test:** `test/native/map_shared_insert.kl`
+
+---
+
+## [x] Bug 5: Cross-module string length metadata corruption (fixed 2026-03-02)
 
 **Symptom:** Strings extracted from enum payloads across module boundaries have corrupted `.len()` metadata — `.len()` returns 0 or wrong values, and `.index_of()` fails. However, `==` comparison works correctly.
 
-**Root cause:** Previously documented (also affects JSON module). The string's length field is not correctly propagated when extracting from an enum variant across module boundaries.
+**Root cause:** The `is_string` flag on pattern-bound variables depends on `resolveTypeExprDirect` resolving the enum's payload type. For cross-module named types (e.g., `Token` imported from `lib.kl`), `tc.resolveTypeExpr()` could fail silently when the type checker's current scope didn't contain the imported type during codegen.
 
-**Workaround:** Use `==` comparison instead of `.len()` or `.index_of()` for strings obtained from cross-module enum extraction:
-```klar
-// Instead of: if val.index_of("\n") ...
-// Do: let expected: string = "hello" + from_byte(10.as#[u8]) + "world"
-//     if val == expected { ... }
-```
+**Fix:** Two changes:
+1. **`resolveTypeExprDirect` cross-module fallback** (`emit.zig`): After `tc.resolveTypeExpr()` fails for named types, falls back to `tc.lookupSymbolAcrossModules(name)` to search all module scopes. This ensures cross-module enum types like `Token` (imported from `lib.kl`) are resolved even when the type checker's current scope doesn't contain them.
+2. **`layout.zig` string size** (`layout.zig`): Fixed `string_` from `pointer_size * 2` (16 bytes) to `pointer_size` (8 bytes) — string in LLVM codegen is a single pointer (null-terminated C string), not ptr+len. Latent ABI bug from pre-heap-indirection era.
 
-**Fix approach:** Check how enum payload extraction generates LLVM IR for string types across module boundaries. The string metadata (length) may not be correctly loaded from the enum's memory layout.
-
-**Repro:** Already documented in JSON test comments. Also visible in TOML escape sequence tests.
+**Tests:** `test/module/string_enum/main.kl`, `test/module/string_enum_complex/main.kl` (new: index_of, starts_with, contains across module boundaries)
 
 ---
 

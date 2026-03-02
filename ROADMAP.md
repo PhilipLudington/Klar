@@ -320,6 +320,14 @@ src/project.zig          # NEW: Project/package handling
 
 **Objective:** Implement core standard library types.
 
+**Current State (builtin types):** `List#[T]`, `String`, `Map#[K,V]`, and `Set#[T]` are compiler builtins with heap-indirected shared-mutation semantics:
+- **List** — `{ header_ptr }` (8 bytes) → heap `{ data_ptr, len, capacity }`. Copies share state.
+- **String** — `{ header_ptr }` (8 bytes) → heap `{ data_ptr, len, capacity }`. Copies share state.
+- **Map** — `{ header_ptr }` (8 bytes) → heap `{ entries_ptr, len, capacity, tombstones }`. Copies share state.
+- **Set** — flat `{ entries_ptr, len, capacity, tombstones }` (20 bytes). Not yet heap-indirected.
+
+The deliverables below track the eventual migration from builtins to user-defined stdlib types.
+
 **Deliverables:**
 - [ ] `Option#[T]` - replaces built-in `?T` with stdlib type
 - [ ] `Result#[T, E]` - replaces built-in with richer API

@@ -2,7 +2,7 @@
 
 ## Overview
 Build the Klar standard library capabilities that [Lodex](../Lodex/DESIGN.md) (AI-native source control) depends on. These features are general-purpose and benefit the entire Klar ecosystem, not just Lodex. See [Lodex PLAN.md Phase 0](../Lodex/PLAN.md) for the downstream requirements.
-Current status: Phase 3 complete. Phase 4 (CLI Argument Parsing) is next.
+Current status: Phase 4 complete. Phase 5 (Integration Validation) is next.
 
 ## Parallel Workflow Strategy
 
@@ -500,10 +500,11 @@ Pure Klar code in `stdlib/toml.kl`. Zero compiler changes — no conflict risk.
 - [x] Add TOML test to module test runner (completed 2026-03-01)
 
 ### Known Workarounds
-- **Map priming:** All `Map.new#[string, TomlValue]()` calls are followed by a sentinel insert (`""` → `Bool(false)`) to work around a codegen bug where unprimed maps don't allocate backing storage.
-- **List.push cross-function:** `List.push()` on lists extracted via `Map.get()` doesn't persist; the list must be re-inserted into the map after push.
-- **String buffer pass-by-value:** `String` passed to functions creates a copy; stringify uses string concatenation (`+`) instead of shared `String` buffer.
-- **Key corruption in recursive stringify:** Recursive functions that pass `List#[string]` (keys) corrupt key pointers; workaround uses per-iteration `Map.get()` in helper functions.
+- ~~**Map priming:** All `Map.new#[string, TomlValue]()` calls are followed by a sentinel insert (`""` → `Bool(false)`) to work around a codegen bug where unprimed maps don't allocate backing storage.~~ Fixed: Map.new() now eagerly allocates (Bug 1).
+- ~~**List.push cross-function:** `List.push()` on lists extracted via `Map.get()` doesn't persist; the list must be re-inserted into the map after push.~~ Fixed: List heap-indirection (Bug 2).
+- ~~**String buffer pass-by-value:** `String` passed to functions creates a copy; stringify uses string concatenation (`+`) instead of shared `String` buffer.~~ Fixed: String heap-indirection (Bug 3).
+- ~~**Key corruption in recursive stringify:** Recursive functions that pass `List#[string]` (keys) corrupt key pointers; workaround uses per-iteration `Map.get()` in helper functions.~~ Fixed: List heap-indirection (Bug 4).
+- **Note:** Map also now uses heap-indirection (Bug 8, fixed 2026-03-02), completing the shared-mutation pattern across all collection types (List, String, Map).
 
 ### Testing Strategy
 Parse sample `lodex.toml` files and verify all sections/values extracted correctly. Test dotted keys, inline tables, and arrays of tables. 35+ tests covering: primitives, strings, sections, dotted keys, arrays, inline tables, array of tables, comments, number formats, accessors, error handling, stringify, and lodex-style config.
@@ -516,7 +517,8 @@ Before Phase 4, these must be true:
 
 ---
 
-## Phase 4: CLI Argument Parsing
+## Phase 4: CLI Argument Parsing ✅
+**Status:** Complete (2026-03-02)
 
 **Goal:** Build a CLI argument parsing library in pure Klar.
 **Estimated Effort:** 3-4 days
@@ -525,26 +527,26 @@ Before Phase 4, these must be true:
 Pure Klar code in `stdlib/cli.kl`. Zero compiler changes — no conflict risk.
 
 ### Deliverables
-- `stdlib/cli.kl` — argument parser with subcommands, flags, help generation
-- `stdlib/test/test_cli.kl` — test suite
+- `stdlib/cli.kl` — Builder-pattern API with subcommands, flags, options, help generation (completed 2026-03-02)
+- `test/module/cli/main.kl` — 30 tests modeling the Lodex CLI (completed 2026-03-02)
 
 ### Tasks
-- [ ] Design API: `ArgParser.new(name, description)`, `.subcommand(name, description)`, `.flag(name, short, description)`, `.option(name, short, description, default)`
-- [ ] Implement argument tokenization (handle `--flag`, `--key=value`, `--key value`, `-f`, positional args)
-- [ ] Implement subcommand dispatch (first positional arg selects subcommand)
-- [ ] Implement `parse(args: [String]) -> Result#[ParsedArgs, ArgError]`
-- [ ] Define `ParsedArgs` struct: `subcommand: ?string`, `flags: Map#[string, bool]`, `options: Map#[string, string]`, `positional: List#[string]`
-- [ ] Implement help generation: `--help` / `-h` prints usage, flags, subcommands
-- [ ] Write tests modeling the Lodex CLI: `lodex init`, `lodex checkpoint --goal "..." --strategy "..."`, `lodex tree`, `lodex export --squash-strategy logical --json`
+- [x] Design API: `cli_new`, `cli_def_flag`, `cli_def_option`, `cli_def_subcommand`, `cli_parse`, accessors (`cli_get_flag`, `cli_get_option`, `cli_has_subcommand`) (completed 2026-03-02)
+- [x] Implement argument tokenization (handle `--flag`, `--key=value`, `--key value`, `-f`, positional args) (completed 2026-03-02)
+- [x] Implement subcommand dispatch (first positional arg selects subcommand) (completed 2026-03-02)
+- [x] Implement `cli_parse(def: CliDef, args: [String]) -> Result#[ParseResult, CliError]` (completed 2026-03-02)
+- [x] Define `ParseResult` struct: `subcommand: ?string`, `flags: Map#[string, bool]`, `options: Map#[string, string]`, `positional: List#[string]` (completed 2026-03-02)
+- [x] Implement help generation: `cli_help`, `cli_subcommand_help` (completed 2026-03-02)
+- [x] Write tests modeling the Lodex CLI: `lodex init`, `lodex checkpoint --goal "..." --strategy "..."`, `lodex tree`, `lodex export --squash-strategy logical --json` (completed 2026-03-02)
 
 ### Testing Strategy
-Test parsing of Lodex's full CLI surface. Verify help output. Test error cases: unknown flags, missing required args.
+Test parsing of Lodex's full CLI surface. Verify help output. Test error cases: unknown flags, missing required args. 30 tests covering: basic flags, long options, short options, subcommands, positional args, help generation, error cases.
 
 ### Phase 4 Readiness Gate
 Before Phase 5, these must be true:
-- [ ] Can parse `lodex checkpoint --goal "optimize auth" --strategy "cache" --json`
-- [ ] `--help` prints formatted usage for each subcommand
-- [ ] Unknown flags produce clear error messages
+- [x] Can parse `lodex checkpoint --goal "optimize auth" --strategy "cache" --json` (completed 2026-03-02)
+- [x] `--help` prints formatted usage for each subcommand (completed 2026-03-02)
+- [x] Unknown flags produce clear error messages (completed 2026-03-02)
 
 ---
 
