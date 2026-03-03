@@ -41,6 +41,11 @@
       "command": "./scripts/run-fmt-tests.sh"
     },
     {
+      "name": "Meta Tests",
+      "resultsFile": ".meta-test-results.json",
+      "command": "./scripts/run-meta-tests.sh"
+    },
+    {
       "name": "Selfhost Tests",
       "resultsFile": ".selfhost-test-results.json",
       "command": "./scripts/run-selfhost-tests.sh"

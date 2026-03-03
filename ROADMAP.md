@@ -1,205 +1,208 @@
-# Klar — Roadmap
+# Klar — Project Roadmap
 
-## Phase 0: Tree-walking Interpreter ✅
-**Status:** Complete
+> **"No ambiguity. No surprises."** — An AI-native application programming language.
 
-## Phase 1: Bytecode VM ✅
-**Status:** Complete
-
-## Phase 2: Native Compiler (LLVM) ✅
-**Status:** Complete
+For the language specification and design philosophy, see [DESIGN.md](DESIGN.md).
+For the active milestone plan, see [PLAN.md](PLAN.md).
 
 ---
 
-## Phase 3: Language Completion
+## Overview
 
-### Generic Type Checking
-- [x] Track type parameters in checker scope
-- [x] Implement type parameter substitution
-- [x] Implement monomorphization (generate concrete types at call sites)
-- [x] Support generic structs
-- [x] Support generic enums
-- [x] Support generic functions
-- [x] Implement type inference at call sites
-- [x] Cache monomorphized instances to avoid duplication
+Klar is a compiled language targeting application-level programming (like C#/Go) with ownership-based memory safety, explicit types, and AI-optimized syntax. The compiler is implemented in Zig with LLVM codegen, a bytecode VM, and a tree-walking interpreter.
 
-### Trait System
-- [x] Trait definition parsing and checking
-- [x] Trait implementation
-- [x] Trait bounds on generics
-- [x] Multiple trait bounds
-- [ ] Default method implementations
-- [x] Associated types
-- [x] Self type in trait methods
-- [ ] Derive macro basics
-
-### Module System
-- [ ] Module declaration
-- [x] Import resolution
-- [x] Selective imports
-- [ ] Glob imports
-- [x] Relative imports
-- [ ] Visibility modifiers
-- [x] Module dependency graph construction
-- [x] Cycle detection in imports
-- [x] Compile multiple files into single binary
-
-### Standard Library — Core
-
-Core types (`List#[T]`, `String`, `Map#[K,V]`, `Set#[T]`) are currently compiler builtins. Implemented so far: `stdlib/toml.kl` (TOML parser), `stdlib/cli.kl` (CLI argument parser).
-
-- [ ] `Option#[T]` — replace built-in `?T` with stdlib type
-- [ ] `Result#[T, E]` — replace built-in with richer API
-- [ ] `String` — owned, growable string type
-- [ ] `List#[T]` — dynamic array
-- [ ] `Map#[K, V]` — hash map
-- [ ] `Set#[T]` — hash set
-- [ ] `Range` — iteration support
-
-### Standard Library — I/O
-- [ ] `File` type with read/write
-- [ ] `stdin`, `stdout`, `stderr` handles
-- [ ] `Read` and `Write` traits
-- [ ] `BufReader` and `BufWriter`
-- [ ] Path manipulation
-- [ ] Directory operations
-
-### Iterator Protocol
-- [ ] `Iterator` trait with `next()` method
-- [ ] `IntoIterator` trait for for-loop support
-- [ ] Iterator adapters: `map`, `filter`, `take`, `skip`
-- [ ] `collect()` to gather into collections
-- [ ] Range iterators (`0..10`, `0..=10`)
-
-### Error Handling Improvements
-- [ ] Full `?` operator implementation (early return on Err/None)
-- [ ] `try` blocks for localized error handling
-- [ ] Error conversion with `From` trait
-- [ ] `anyhow`-style error boxing
-- [ ] Stack traces in debug mode
-
-### Package Manager
-- [ ] `klar.toml` manifest format
-- [ ] `klar init` — create new project
-- [ ] `klar build` — enhance existing command
-- [ ] `klar run` — build and run
-- [ ] `klar test` — run tests
-- [ ] `klar add <package>` — add dependency
-- [ ] Dependency resolution
-- [ ] Package registry integration
-
-### Tooling
-- [x] `klar fmt` — code formatter
-- [x] `klar check` — type check without compiling
-- [ ] `klar doc` — documentation generator
-- [ ] Language Server Protocol (LSP) implementation
-- [ ] Syntax highlighting definitions
+Current status: **Phase 5, Milestone 9 (Self-Hosting)** in progress.
 
 ---
 
-## Phase 4: C Interoperability
+## Phase 1–3: Compiler Foundation ✅
 
-See [DESIGN.md](DESIGN.md#c-interoperability) for detailed FFI design.
+**Status:** Complete
 
-### Extern Functions
-- [ ] `extern fn` declarations for C functions
-- [ ] C calling convention support
-- [ ] Symbol name specification with `@link_name`
-- [ ] Variadic function support (`...`)
-- [ ] ABI handling (System V AMD64, Win64, ARM64)
+Built the full compilation pipeline from scratch:
+- Lexer → Parser → AST → Type Checker → three backends (interpreter, bytecode VM, LLVM native)
+- Ownership-based memory management (Rc/Arc, automatic drop)
+- Basic types, structs, enums, closures, optionals, results
+- 252x speedup for native vs VM
 
-### C-Compatible Types
-- [ ] Raw pointer types: `*T`, `*mut T`, `*const T`
-- [ ] Void pointer: `*void`, `*mut void`
-- [ ] C integer types: `c_int`, `c_long`, `c_size_t`, etc.
-- [ ] Null pointer constant: `null`
-- [ ] Pointer arithmetic in unsafe blocks
-- [ ] Array-to-pointer decay for C interop
+### Implementation Language: Zig
 
-### C Structs and Unions
-- [ ] `@repr(C)` attribute for C-compatible layout
-- [ ] `@packed` attribute for packed structs
-- [ ] Union types
-- [ ] Opaque types for incomplete C types
-- [ ] Bitfields (basic support)
-
-### Library Linking
-- [ ] `@link` attribute to specify libraries
-- [ ] Static library linking (`.a`, `.lib`)
-- [ ] Dynamic library linking (`.so`, `.dylib`, `.dll`)
-- [ ] System library paths
-- [ ] pkg-config integration
-- [ ] Build system support in `klar.toml`
-
-### Binding Generator
-- [ ] `klar bindgen` command
-- [ ] Parse C headers using libclang
-- [ ] Generate `extern fn` declarations
-- [ ] Generate `@repr(C)` struct definitions
-- [ ] Generate type aliases
-- [ ] Handle preprocessor macros (constants)
-- [ ] Configurable naming conventions
-
-### Safe Wrappers
-- [ ] RAII wrappers for C resources
-- [ ] Error handling integration
-- [ ] Slice-to-pointer conversions
-- [ ] String conversions (Klar string ↔ C string)
-- [ ] Callback wrappers
-- [ ] Standard wrapper patterns documentation
+**Reasons:** Simple, fast, explicit. Powerful comptime. No hidden allocations. Fast compilation.
 
 ---
 
-## Phase 5: Bootstrap and Self-Hosting
+## Phase 4: Language Completion ✅
 
-### Compiler Infrastructure in Klar
-- [ ] String interning / symbol table
-- [ ] Source location tracking
-- [ ] Diagnostic/error reporting system
-- [ ] Arena allocator for AST nodes
-- [ ] File I/O for source reading
-- [x] Command-line argument parsing (`stdlib/cli.kl`)
+**Status:** Complete (13 milestones)
 
-### Lexer in Klar
-- [ ] Token definitions
-- [ ] Lexer state machine
-- [ ] String/number literal parsing
-- [ ] Comment handling
-- [ ] Error recovery and diagnostics
+> **Goal:** Complete the Klar language with generics, traits, modules, and standard library.
+>
+> **Archive:** [docs/history/phase4-language-completion.md](docs/history/phase4-language-completion.md)
 
-### AST and Parser in Klar
-- [ ] Complete AST node definitions
-- [ ] Recursive descent parser
-- [ ] Operator precedence parsing (Pratt parser)
-- [ ] Error recovery with synchronization
-- [ ] Source location preservation
+| # | Milestone | Status |
+|---|-----------|--------|
+| 1 | Generic type checking | ✅ |
+| 2 | Generic structs and enums | ✅ |
+| 3 | Trait definitions and implementations | ✅ |
+| 4 | Trait bounds and method dispatch | ✅ |
+| 5 | Trait inheritance | ✅ |
+| 6 | Builtin traits (Eq, Ordered, Clone, Drop) | ✅ |
+| 7 | Associated types | ✅ |
+| 8 | Module system (imports) | ✅ |
+| 9 | Standard library (List, Map, Set, String) | ✅ |
+| 10 | Iterators and error handling (`?` operator) | ✅ |
+| 11 | REPL and comptime | ✅ |
+| 12 | FFI (including function pointers) | ✅ |
+| 13 | Package manager, formatter, doc generator | ✅ |
 
-### Type Checker in Klar
-- [ ] Type representation and equality
-- [ ] Type inference engine
-- [ ] Generic instantiation
-- [ ] Trait resolution
-- [ ] Borrow checking (if applicable)
-- [ ] Semantic error reporting
+---
 
-### Code Generator in Klar
-- [ ] LLVM C API bindings (via Phase 4 FFI)
-- [ ] IR generation from typed AST
-- [ ] Function codegen with proper ABI
-- [ ] Struct layout and access
-- [ ] Control flow (if, match, loops)
-- [ ] Optimization pipeline integration
+## Phase 5: AI-Native Language Improvements
 
-### Bootstrap Validation
-- [ ] Stage 1 compiler (Klar compiler compiled by Zig compiler)
-- [ ] Stage 2 compiler (Klar compiler compiled by Stage 1)
-- [ ] Stage 3 compiler (Klar compiler compiled by Stage 2)
-- [ ] Binary comparison: Stage 2 == Stage 3 (fixed point)
-- [ ] Full test suite passes on all stages
+> **Goal:** Strengthen Klar's AI-native story across documentation, language features, testing, and tooling.
+>
+> **Inspiration:** [Nanolang](docs/design/nanolang-inspiration.md) · [MoonBit Semantic Sampler](docs/design/moonbit-semantic-sampler.md) · [DSPy](docs/design/dspy-opportunities.md)
+>
+> **Archive (Milestones 1–6, 8):** [docs/history/phase5-milestones.md](docs/history/phase5-milestones.md)
 
-### Transition to Self-Hosting
-- [ ] CI/CD builds using Klar compiler
-- [ ] Distribution packages built with Klar compiler
-- [ ] Documentation updated for self-hosted workflow
-- [ ] Zig implementation archived
-- [ ] Contributing guide for Klar-based development
+### Completed Milestones
+
+| # | Milestone | Source | Status |
+|---|-----------|--------|--------|
+| 1 | LLM Reference File (MEMORY.md) | Nanolang | ✅ |
+| 2 | Mandatory Function Return Types | MoonBit | ✅ |
+| 3 | Inline Test Blocks (`test`) | Nanolang | ✅ |
+| 4 | Structured Test Output (`--json`) | DSPy | ✅ |
+| 5 | LSP and Incremental Type Checking | MoonBit | ✅ |
+| 6 | Async/Await | — | ✅ |
+| 8 | WebAssembly Target | — | ✅ |
+| 10 | Unambiguous Generic Syntax (`#[T]`) | — | ✅ |
+
+### In Progress
+
+| # | Milestone | Status |
+|---|-----------|--------|
+| 7 | [Windows Support](#milestone-7-windows-support) | ✅ Complete |
+| 9 | [Self-Hosting](#milestone-9-self-hosting) | **Active** — see [PLAN.md](PLAN.md) |
+
+---
+
+### Milestone 7: Windows Support ✅
+
+**Objective:** First-class Windows developer and runtime support across build, test, and tooling workflows.
+
+**Status:** Complete
+
+- [x] **7.1–7.11** Compiler cross-platform changes
+- [x] **7.12** Windows on-device testing (CI runs on `windows-latest` with MSVC + LLVM)
+- [x] **7.13** CI: Windows matrix job in `.github/workflows/ci.yml`
+- [x] **7.14** Documentation: Windows setup guide in `docs/getting-started/installation.md`
+
+**Known Limitations:**
+- Test scripts (`run-tests.sh`, etc.) require WSL or Git Bash on Windows
+- `klar run` on Windows shows temp binary path as `args[0]` instead of source path
+- Cross-compilation of filesystem operations to Windows from non-Windows is not supported
+
+**Success Criteria:**
+- [x] Repository builds on macOS with zero regressions
+- [x] Repository builds and full test suite pass on supported Windows environments
+- [x] CLI and LSP workflows behave consistently with macOS/Linux
+- [x] Windows-specific path/stdio regressions are covered by tests
+- [x] Contributor docs include complete Windows development setup
+
+---
+
+### Milestone 9: Self-Hosting
+
+**Objective:** Implement the Klar compiler front-end (lexer through type checker) in Klar itself, enabling the language to compile its own compiler.
+
+**Status:** Active — Phases 9A–9E complete. Frontend self-hosting achieved with full parity (284/284 checker tests, 254/258 E2E). Bootstrap validation passed. Stretch goal (9.13 Tooling) remaining.
+
+**Scope:** Frontend only (lexer through type checker). The 33K-line LLVM codegen stays in Zig. The self-hosted frontend serializes AST/typed-AST for the Zig backend to consume.
+
+**Estimated Total:** ~11,000–16,000 lines of Klar
+
+> **Full detail and active tasks:** [PLAN.md](PLAN.md)
+
+---
+
+### Milestone 10: Unambiguous Generic Syntax (`#[T]`) ✅
+
+**Status:** Complete
+
+Eliminated syntactic ambiguity between generics and array indexing. `[` is **always** arrays; `#[` is **always** generics. Deleted `isTypeArgsFollowedByCall()` lookahead heuristic entirely. Updated all 139+ `.kl` source files, selfhost parser, and documentation.
+
+**Design Decisions:**
+1. Two tokens (`hash` + `l_bracket`), not one compound token — lexer stays simple
+2. `#[T]` everywhere — declarations, type applications, method calls, casts
+3. `isTypeArgsFollowedByCall()` deleted — the entire lookahead heuristic became unnecessary
+
+---
+
+## Future Phases
+
+### Phase 6: Standard Library & Ecosystem (Planned)
+
+**Goal:** Build a production-quality standard library and package ecosystem.
+
+| Area | Description |
+|------|-------------|
+| Collections | HashMap improvements, BTreeMap, Deque, PriorityQueue |
+| I/O | Buffered readers/writers, path manipulation, directory walking |
+| Networking | TCP/UDP sockets, HTTP client |
+| Serialization | JSON (beyond TOML), YAML, binary formats |
+| Concurrency | Channel-based communication, thread pool, async I/O integration |
+| Package registry | Central package repository, versioned dependencies |
+| Documentation site | Auto-generated API docs from doc comments |
+
+### Phase 7: Production Readiness (Planned)
+
+**Goal:** Polish for real-world adoption.
+
+| Area | Description |
+|------|-------------|
+| Error messages | Rich diagnostics with source snippets and suggestions |
+| Debugging | DWARF debug info improvements, debugger integration |
+| Performance | Compilation speed, runtime benchmarks, optimization passes |
+| Stability | Fuzzing, property-based testing of compiler |
+| Platform support | Linux ARM64, Windows ARM64 |
+
+### Phase 8: Advanced Language Features (Exploratory)
+
+**Goal:** Evaluate and selectively adopt features that align with Klar's philosophy.
+
+| Feature | Notes |
+|---------|-------|
+| Effect system | Algebraic effects for controlled side effects |
+| Constrained decoding | Grammar spec for LLM-guided code generation (MoonBit-inspired) |
+| Formal verification | Lightweight contracts and invariants (Nanolang-inspired) |
+| Incremental compilation | Module-level caching for faster rebuilds |
+
+---
+
+## References
+
+**Nanolang:**
+- [Nanolang GitHub](https://github.com/jordanhubbard/nanolang)
+- [Design Analysis](docs/design/nanolang-inspiration.md)
+
+**MoonBit:**
+- [MoonBit Paper (IEEE)](https://ieeexplore.ieee.org/document/10734654/)
+- [MoonBit Paper (ACM)](https://dl.acm.org/doi/10.1145/3643795.3648376)
+- [Design Analysis](docs/design/moonbit-semantic-sampler.md)
+
+**DSPy:**
+- [DSPy Paper (arXiv)](https://arxiv.org/abs/2310.03714)
+- [DSPy Paper (ICLR 2024)](https://openreview.net/pdf?id=sY5N0zY5Od)
+- [Design Analysis](docs/design/dspy-opportunities.md)
+
+---
+
+## Backlog: Selfhost Parser Known Limitations
+
+Deferred tech debt from the Milestone 9.6 selfhost parser work.
+
+- [ ] `parse_int_value`: hex/binary/octal literals use i64 computation (overflow possible for values > i64 max)
+- [ ] `process_string_escapes`: `\u` and `\x` escape sequences not handled (falls through to unknown escape)
+- [ ] `final_expr` detection in `parse_block` uses fragile JSON prefix string matching (acknowledged by COUPLING comment)
+- [ ] `is_extern` exemption in mandatory return type check is moot: Zig parser rejects standalone `extern fn`, so the selfhost exemption has no test coverage

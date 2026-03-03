@@ -1,0 +1,5301 @@
+// selfhost/checker_main.kl — Type checker test harness
+// Milestone 9.9: End-to-end tests for the self-hosted type checker
+//
+// Strategy: manually construct AST nodes (expressions, statements,
+// declarations, type expressions) in the TypeChecker's arenas, then
+// run the checker and verify it accepts valid programs and rejects
+// invalid ones with the correct errors.
+//
+// This harness tests the full pipeline: register_declarations → check_declarations.
+
+import types.{
+    KlarType, TypeKind, TypeId, PrimitiveKind,
+    type_i32, type_i64, type_f64, type_bool, type_char, type_string,
+    type_u8, type_void, type_never, type_unknown, type_error,
+    type_eq_simple, type_to_string_simple, type_kind_name,
+    ArrayData, FunctionData, StructData, StructFieldData, EnumData,
+    WrapperData, MapData, ResultData,
+    TraitData, TraitMethodData, TypeVarData,
+    ErrorKind, error_kind_name
+}
+
+import ast.{
+    Span, ExprId, StmtId, DeclId, TypeExprId, PatternId,
+    Expr, Stmt, Decl, TypeExpr, Pattern,
+    BinaryOp, UnaryOp, PostfixOp, AssignOp,
+    IntLiteralData, FloatLiteralData, StringLiteralData,
+    CharLiteralData, BoolLiteralData, IdentifierData,
+    BinaryData, UnaryData, PostfixData,
+    CallData, MethodCallData, FieldAccessData, IndexData,
+    CastData, ClosureData, BlockData,
+    IfExprData, MatchExprData,
+    GroupedData, StructLiteralData, ArrayLiteralData,
+    EnumVariantData,
+    LetDeclData, VarDeclData, AssignmentData,
+    ExprStmtData, ReturnStmtData, BreakStmtData, ContinueStmtData,
+    ForLoopData, WhileLoopData, LoopStmtData,
+    IfStmtData, MatchStmtData,
+    FunctionDeclData, StructDeclData, EnumDeclData,
+    ImplDeclData, TraitDeclData, ImportDeclData, ImportItem,
+    GenericParam,
+    FnParam, StructField, EnumVariantDecl,
+    NamedTypeData, ArrayTypeData, OptionalTypeData, GenericApplyData,
+    FunctionTypeData,
+    InterpolatedStringData,
+    MatchArm, FieldInit,
+    BindingPatData, WildcardData, VariantPatData,
+    no_expr, has_expr, no_type_expr, has_type_expr, no_span, no_pattern
+}
+
+import checker.{
+    TypeChecker, SymbolInfo, SymbolKind,
+    lookup, add_error, add_error_msg,
+    add_typed_error, add_typed_error_with_type,
+    format_error, format_all_errors,
+    resolve_type_expr,
+    type_eq, type_compatible, is_error_type, is_void_type,
+    type_display,
+    register_builtins,
+    push_type_ref, get_resolved_type,
+    make_optional_type, make_result_type, make_list_type, make_map_type,
+    unwrap_optional_inner, unwrap_result_ok, unwrap_result_err,
+    clear_substitutions, add_substitution, get_substitution, has_substitution,
+    make_type_var, make_type_var_with_bounds, mangle_generic_name, type_mangle_name,
+    record_trait_impl, has_trait_impl, find_trait_method,
+    bind_pattern,
+    has_module, begin_module_exports, end_module_exports,
+    register_module_export, lookup_module_export
+}
+
+import checker_expr.{check_expr}
+import checker_stmt.{check_stmt, check_stmts}
+import checker_decl.{register_declarations, check_declarations, check_module, process_imports}
+
+// ─── Helpers ────────────────────────────────────────────────────────
+
+fn s() -> Span {
+    return Span { line: 1, column: 1, start: 0, end: 10 }
+}
+
+// Add a type expression and return its ID
+fn add_type_named(tc: TypeChecker, name: string) -> (TypeChecker, TypeExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.type_exprs.len()
+    c.type_exprs.push(TypeExpr::Named(NamedTypeData { type_name: name, span: s() }))
+    return (c, TypeExprId { id: idx })
+}
+
+// Add an expression and return its ID
+fn add_int_expr(tc: TypeChecker, val: string) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::IntLiteral(IntLiteralData { text: val, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_str_expr(tc: TypeChecker, val: string) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::StringLiteral(StringLiteralData { value: val, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_bool_expr(tc: TypeChecker, val: bool) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::BoolLiteral(BoolLiteralData { value: val, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_ident_expr(tc: TypeChecker, name: string) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::Identifier(IdentifierData { ident_name: name, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_binary_expr(tc: TypeChecker, left: ExprId, op: BinaryOp, right: ExprId) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::Binary(BinaryData { left: left, op: op, right: right, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_unary_expr(tc: TypeChecker, op: UnaryOp, operand: ExprId) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::Unary(UnaryData { op: op, operand: operand, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_call_expr(tc: TypeChecker, callee: ExprId, args_start: i32, args_count: i32) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::Call(CallData {
+        callee: callee,
+        args_start: args_start,
+        args_count: args_count,
+        type_args_start: 0,
+        type_args_count: 0,
+        span: s(),
+    }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_field_expr(tc: TypeChecker, obj: ExprId, name: string) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::FieldAccess(FieldAccessData { object: obj, field_name: name, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_grouped_expr(tc: TypeChecker, inner: ExprId) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::Grouped(GroupedData { inner: inner, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_float_expr(tc: TypeChecker, val: string) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::FloatLiteral(FloatLiteralData { text: val, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_method_call_expr(tc: TypeChecker, recv: ExprId, method: string,
+    args_start: i32, args_count: i32) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::MethodCall(MethodCallData {
+        receiver: recv,
+        method_name: method,
+        args_start: args_start,
+        args_count: args_count,
+        type_args_start: 0,
+        type_args_count: 0,
+        span: s(),
+    }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_postfix_expr(tc: TypeChecker, op: PostfixOp, operand: ExprId) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::Postfix(PostfixData { op: op, operand: operand, span: s() }))
+    return (c, ExprId { id: idx })
+}
+
+fn add_type_optional(tc: TypeChecker, inner: TypeExprId) -> (TypeChecker, TypeExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.type_exprs.len()
+    c.type_exprs.push(TypeExpr::Optional(OptionalTypeData { inner: inner, span: s() }))
+    return (c, TypeExprId { id: idx })
+}
+
+fn add_type_generic_apply(tc: TypeChecker, base: TypeExprId,
+    args_start: i32, args_count: i32) -> (TypeChecker, TypeExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.type_exprs.len()
+    c.type_exprs.push(TypeExpr::GenericApply(GenericApplyData {
+        base: base, args_start: args_start, args_count: args_count, span: s(),
+    }))
+    return (c, TypeExprId { id: idx })
+}
+
+// Add a statement and return its ID
+fn add_let_stmt(tc: TypeChecker, name: string, te: TypeExprId, val: ExprId) -> (TypeChecker, StmtId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.stmts.len()
+    c.stmts.push(Stmt::LetDecl(LetDeclData {
+        decl_name: name, type_expr: te, value: val, is_shadow: false, span: s(),
+    }))
+    return (c, StmtId { id: idx })
+}
+
+fn add_var_stmt(tc: TypeChecker, name: string, te: TypeExprId, val: ExprId) -> (TypeChecker, StmtId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.stmts.len()
+    c.stmts.push(Stmt::VarDecl(VarDeclData {
+        decl_name: name, type_expr: te, value: val, is_shadow: false, span: s(),
+    }))
+    return (c, StmtId { id: idx })
+}
+
+fn add_return_stmt(tc: TypeChecker, val: ExprId) -> (TypeChecker, StmtId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.stmts.len()
+    c.stmts.push(Stmt::ReturnStmt(ReturnStmtData { value: val, span: s() }))
+    return (c, StmtId { id: idx })
+}
+
+fn add_expr_stmt(tc: TypeChecker, val: ExprId) -> (TypeChecker, StmtId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.stmts.len()
+    c.stmts.push(Stmt::ExprStmt(ExprStmtData { expr: val, span: s() }))
+    return (c, StmtId { id: idx })
+}
+
+fn add_assign_stmt(tc: TypeChecker, target: ExprId, val: ExprId) -> (TypeChecker, StmtId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.stmts.len()
+    c.stmts.push(Stmt::Assignment(AssignmentData {
+        target: target, op: AssignOp::Plain, value: val, span: s(),
+    }))
+    return (c, StmtId { id: idx })
+}
+
+fn add_if_stmt(tc: TypeChecker, cond: ExprId, then_start: i32, then_count: i32, else_start: i32, else_count: i32) -> (TypeChecker, StmtId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.stmts.len()
+    c.stmts.push(Stmt::IfStmt(IfStmtData {
+        condition: cond,
+        then_start: then_start, then_count: then_count,
+        else_start: else_start, else_count: else_count,
+        span: s(),
+    }))
+    return (c, StmtId { id: idx })
+}
+
+fn add_while_stmt(tc: TypeChecker, cond: ExprId, body_start: i32, body_count: i32) -> (TypeChecker, StmtId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.stmts.len()
+    c.stmts.push(Stmt::WhileLoop(WhileLoopData {
+        condition: cond,
+        body_start: body_start, body_count: body_count,
+        span: s(),
+    }))
+    return (c, StmtId { id: idx })
+}
+
+fn add_break_stmt(tc: TypeChecker) -> (TypeChecker, StmtId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.stmts.len()
+    c.stmts.push(Stmt::BreakStmt(BreakStmtData { value: no_expr(), span: s() }))
+    return (c, StmtId { id: idx })
+}
+
+// ─── Test Helpers ───────────────────────────────────────────────────
+
+fn expect_ok(tc: TypeChecker, test_name: string) -> bool {
+    if tc.error_count > 0 {
+        println("FAIL: " + test_name + " — expected no errors, got " + tc.error_count.to_string().as_str())
+        var i: i32 = 0
+        while i < tc.errors.len() {
+            println("  error: " + tc.errors[i])
+            i = i + 1
+        }
+        return false
+    }
+    return true
+}
+
+fn expect_errors(tc: TypeChecker, expected_count: i32, test_name: string) -> bool {
+    if tc.error_count != expected_count {
+        println("FAIL: " + test_name + " — expected " + expected_count.to_string().as_str() +
+            " error(s), got " + tc.error_count.to_string().as_str())
+        var i: i32 = 0
+        while i < tc.errors.len() {
+            println("  error: " + tc.errors[i])
+            i = i + 1
+        }
+        return false
+    }
+    return true
+}
+
+fn expect_type(actual: KlarType, expected: KlarType, test_name: string) -> bool {
+    if not type_eq_simple(actual, expected) {
+        println("FAIL: " + test_name + " — expected type " + type_to_string_simple(expected) +
+            ", got " + type_to_string_simple(actual))
+        return false
+    }
+    return true
+}
+
+fn expect_kind(actual: KlarType, kind_name: string, test_name: string) -> bool {
+    let actual_name: string = type_kind_name(actual.kind)
+    if actual_name != kind_name {
+        println("FAIL: " + test_name + " — expected kind " + kind_name + ", got " + actual_name)
+        return false
+    }
+    return true
+}
+
+fn expect_error_kind(tc: TypeChecker, idx: i32, expected_kind: ErrorKind, test_name: string) -> bool {
+    if idx >= tc.error_kinds.len() {
+        println("FAIL: " + test_name + " — error index " + idx.to_string().as_str() + " out of range (have " + tc.error_kinds.len().to_string().as_str() + ")")
+        return false
+    }
+    let actual: ErrorKind = tc.error_kinds[idx]
+    let actual_name: string = error_kind_name(actual)
+    let expected_name: string = error_kind_name(expected_kind)
+    if actual_name != expected_name {
+        println("FAIL: " + test_name + " — expected error kind " + expected_name + ", got " + actual_name)
+        return false
+    }
+    return true
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+fn test_literal_types() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // int literal → i32
+    let r1: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r1.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r1.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "int literal → i32") { return 1 }
+
+    // string literal → string
+    let r2: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r2.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r2.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_string(), "string literal → string") { return 1 }
+
+    // bool literal → bool
+    let r3: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r3.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r3.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_bool(), "bool literal → bool") { return 1 }
+
+    if not expect_ok(tc, "literal types") { return 1 }
+    return 0
+}
+
+fn test_identifier_lookup() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Define x: i32
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // Lookup x → i32
+    let r1: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r1.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r1.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "identifier x → i32") { return 2 }
+
+    // Lookup undefined → error
+    let r2: (TypeChecker, ExprId) = add_ident_expr(tc, "undefined_var")
+    tc = r2.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r2.1)
+    tc = re2.0
+    if not expect_errors(tc, 1, "undefined variable error") { return 2 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedVariable, "undefined variable kind") { return 2 }
+
+    return 0
+}
+
+fn test_binary_ops() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // i32 + i32 → i32
+    let r1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r1.0
+    let r2: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r2.0
+    let r_add: (TypeChecker, ExprId) = add_binary_expr(tc, r1.1, BinaryOp::Add, r2.1)
+    tc = r_add.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_add.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "i32 + i32 → i32") { return 3 }
+    if not expect_ok(tc, "arithmetic add") { return 3 }
+
+    // i32 < i32 → bool
+    let r3: (TypeChecker, ExprId) = add_int_expr(tc, "3")
+    tc = r3.0
+    let r4: (TypeChecker, ExprId) = add_int_expr(tc, "4")
+    tc = r4.0
+    let r_lt: (TypeChecker, ExprId) = add_binary_expr(tc, r3.1, BinaryOp::Lt, r4.1)
+    tc = r_lt.0
+    let re_lt: (TypeChecker, KlarType) = check_expr(tc, r_lt.1)
+    tc = re_lt.0
+    if not expect_type(re_lt.1, type_bool(), "i32 < i32 → bool") { return 3 }
+
+    // bool and bool → bool
+    let r5: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r5.0
+    let r6: (TypeChecker, ExprId) = add_bool_expr(tc, false)
+    tc = r6.0
+    let r_and: (TypeChecker, ExprId) = add_binary_expr(tc, r5.1, BinaryOp::And, r6.1)
+    tc = r_and.0
+    let re_and: (TypeChecker, KlarType) = check_expr(tc, r_and.1)
+    tc = re_and.0
+    if not expect_type(re_and.1, type_bool(), "bool and bool → bool") { return 3 }
+
+    if not expect_ok(tc, "binary ops") { return 3 }
+    return 0
+}
+
+fn test_binary_type_errors() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // i32 + string → error
+    let r1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r1.0
+    let r2: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r2.0
+    let r_bad: (TypeChecker, ExprId) = add_binary_expr(tc, r1.1, BinaryOp::Add, r2.1)
+    tc = r_bad.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_bad.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "i32 + string → error") { return 4 }
+    if not expect_error_kind(tc, 0, ErrorKind::TypeMismatch, "binary type error kind") { return 4 }
+
+    return 0
+}
+
+fn test_unary_ops() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // -42 → i32
+    let r1: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r1.0
+    let r_neg: (TypeChecker, ExprId) = add_unary_expr(tc, UnaryOp::Negate, r1.1)
+    tc = r_neg.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_neg.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "- i32 → i32") { return 5 }
+
+    // not true → bool
+    let r2: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r2.0
+    let r_not: (TypeChecker, ExprId) = add_unary_expr(tc, UnaryOp::Not, r2.1)
+    tc = r_not.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_not.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_bool(), "not bool → bool") { return 5 }
+
+    if not expect_ok(tc, "unary ops") { return 5 }
+
+    // not 42 → error
+    let r3: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r3.0
+    let r_bad: (TypeChecker, ExprId) = add_unary_expr(tc, UnaryOp::Not, r3.1)
+    tc = r_bad.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_bad.1)
+    tc = re3.0
+    if not expect_errors(tc, 1, "not i32 → error") { return 5 }
+
+    return 0
+}
+
+fn test_let_decl() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // let x: i32 = 42 → OK
+    let rt: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = rt.0
+    let rv: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = rv.0
+    let rs: (TypeChecker, StmtId) = add_let_stmt(tc, "x", rt.1, rv.1)
+    tc = rs.0
+    tc = check_stmt(tc, rs.1)
+    if not expect_ok(tc, "let x: i32 = 42") { return 6 }
+
+    // x should be in scope with type i32
+    let found: ?SymbolInfo = lookup(tc, "x")
+    match found {
+        Some(info) => {
+            if not expect_type(info.sym_type, type_i32(), "x has type i32") { return 6 }
+            if info.mutable {
+                println("FAIL: x should be immutable")
+                return 6
+            }
+        }
+        None => {
+            println("FAIL: x not found after let decl")
+            return 6
+        }
+    }
+
+    return 0
+}
+
+fn test_let_type_mismatch() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // let x: i32 = "hello" → error
+    let rt: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = rt.0
+    let rv: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = rv.0
+    let rs: (TypeChecker, StmtId) = add_let_stmt(tc, "x", rt.1, rv.1)
+    tc = rs.0
+    tc = check_stmt(tc, rs.1)
+    if not expect_errors(tc, 1, "let x: i32 = \"hello\" → type mismatch") { return 7 }
+    if not expect_error_kind(tc, 0, ErrorKind::TypeMismatch, "let type mismatch kind") { return 7 }
+
+    return 0
+}
+
+fn test_var_and_assignment() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // var x: i32 = 0; x = 1 → OK
+    let rt: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = rt.0
+    let rv: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = rv.0
+    let rs: (TypeChecker, StmtId) = add_var_stmt(tc, "x", rt.1, rv.1)
+    tc = rs.0
+    tc = check_stmt(tc, rs.1)
+
+    // x = 1
+    let r_target: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_target.0
+    let r_val: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_val.0
+    let r_assign: (TypeChecker, StmtId) = add_assign_stmt(tc, r_target.1, r_val.1)
+    tc = r_assign.0
+    tc = check_stmt(tc, r_assign.1)
+    if not expect_ok(tc, "var x = 0; x = 1") { return 8 }
+
+    return 0
+}
+
+fn test_assign_to_immutable() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // let x: i32 = 0; x = 1 → error (immutable)
+    let rt: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = rt.0
+    let rv: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = rv.0
+    let rs: (TypeChecker, StmtId) = add_let_stmt(tc, "x", rt.1, rv.1)
+    tc = rs.0
+    tc = check_stmt(tc, rs.1)
+
+    let r_target: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_target.0
+    let r_val: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_val.0
+    let r_assign: (TypeChecker, StmtId) = add_assign_stmt(tc, r_target.1, r_val.1)
+    tc = r_assign.0
+    tc = check_stmt(tc, r_assign.1)
+    if not expect_errors(tc, 1, "assign to immutable x → error") { return 9 }
+    if not expect_error_kind(tc, 0, ErrorKind::MutabilityError, "assign to immutable kind") { return 9 }
+
+    return 0
+}
+
+fn test_return_type_check() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // Set expected return type to i32
+    tc.current_return_type = type_i32()
+
+    // return 42 → OK
+    let rv: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = rv.0
+    let rs: (TypeChecker, StmtId) = add_return_stmt(tc, rv.1)
+    tc = rs.0
+    tc = check_stmt(tc, rs.1)
+    if not expect_ok(tc, "return 42 (i32)") { return 10 }
+
+    // return "hello" → error
+    let rv2: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = rv2.0
+    let rs2: (TypeChecker, StmtId) = add_return_stmt(tc, rv2.1)
+    tc = rs2.0
+    tc = check_stmt(tc, rs2.1)
+    if not expect_errors(tc, 1, "return \"hello\" in i32 function → error") { return 10 }
+    if not expect_error_kind(tc, 0, ErrorKind::ReturnTypeMismatch, "return type mismatch kind") { return 10 }
+
+    return 0
+}
+
+fn test_if_condition_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // if true { } → OK
+    let r_cond: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_cond.0
+    let r_if: (TypeChecker, StmtId) = add_if_stmt(tc, r_cond.1, 0, 0, 0, 0)
+    tc = r_if.0
+    tc = check_stmt(tc, r_if.1)
+    if not expect_ok(tc, "if true { }") { return 11 }
+
+    // if 42 { } → error (not bool)
+    let r_bad: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_bad.0
+    let r_if2: (TypeChecker, StmtId) = add_if_stmt(tc, r_bad.1, 0, 0, 0, 0)
+    tc = r_if2.0
+    tc = check_stmt(tc, r_if2.1)
+    if not expect_errors(tc, 1, "if 42 → error") { return 11 }
+
+    return 0
+}
+
+fn test_while_condition_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // while true { } → OK
+    let r_cond: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_cond.0
+    let r_while: (TypeChecker, StmtId) = add_while_stmt(tc, r_cond.1, 0, 0)
+    tc = r_while.0
+    tc = check_stmt(tc, r_while.1)
+    if not expect_ok(tc, "while true { }") { return 12 }
+
+    // while 42 { } → error
+    let r_bad: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_bad.0
+    let r_while2: (TypeChecker, StmtId) = add_while_stmt(tc, r_bad.1, 0, 0)
+    tc = r_while2.0
+    tc = check_stmt(tc, r_while2.1)
+    if not expect_errors(tc, 1, "while 42 → error") { return 12 }
+
+    return 0
+}
+
+fn test_break_outside_loop() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // break outside loop → error
+    let r_break: (TypeChecker, StmtId) = add_break_stmt(tc)
+    tc = r_break.0
+    tc = check_stmt(tc, r_break.1)
+    if not expect_errors(tc, 1, "break outside loop → error") { return 13 }
+    if not expect_error_kind(tc, 0, ErrorKind::BreakOutsideLoop, "break outside loop kind") { return 13 }
+
+    return 0
+}
+
+fn test_continue_outside_loop() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // continue outside loop → error
+    let idx: i32 = tc.stmts.len()
+    tc.stmts.push(Stmt::ContinueStmt(ContinueStmtData { span: s() }))
+    let stmt_id: StmtId = StmtId { id: idx }
+    tc = check_stmt(tc, stmt_id)
+    if not expect_errors(tc, 1, "continue outside loop → error") { return 13 }
+    if not expect_error_kind(tc, 0, ErrorKind::ContinueOutsideLoop, "continue outside loop kind") { return 13 }
+
+    return 0
+}
+
+fn test_invalid_index() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Create an array variable: let arr: [i32; 3]
+    // Push element type into resolved_types arena, then create ArrayData
+    let elem_ref: i32 = tc.resolved_types.len()
+    tc.resolved_types.push(type_i32())
+    let arr_idx: i32 = tc.type_arrays.len()
+    tc.type_arrays.push(ArrayData { element: TypeId { id: elem_ref }, size: 3 })
+    tc.define("arr", SymbolInfo {
+        sym_name: "arr",
+        sym_type: KlarType { kind: TypeKind::Array, payload: arr_idx },
+        mutable: false,
+        kind: SymbolKind::Variable,
+    })
+
+    // Index with a bool (invalid) — arr[true]
+    let r_arr: (TypeChecker, ExprId) = add_ident_expr(tc, "arr")
+    tc = r_arr.0
+    let r_idx: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_idx.0
+    let idx2: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::Index(IndexData { object: r_arr.1, index: r_idx.1, span: s() }))
+    let index_expr: ExprId = ExprId { id: idx2 }
+    let r: (TypeChecker, KlarType) = check_expr(tc, index_expr)
+    tc = r.0
+    if not expect_errors(tc, 1, "index with bool → error") { return 14 }
+    if not expect_error_kind(tc, 0, ErrorKind::InvalidIndex, "index with bool kind") { return 14 }
+
+    return 0
+}
+
+fn test_function_call() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // println("hello") → void, no error
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "println")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_arg.0
+    // Store arg in extra_expr_ids
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_start, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_type(re.1, type_void(), "println returns void") { return 14 }
+    if not expect_ok(tc, "println(\"hello\")") { return 14 }
+
+    return 0
+}
+
+fn test_function_wrong_arg_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // println(42) → error (expected string, got i32)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "println")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_arg.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_start, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "println(42) → wrong arg type") { return 15 }
+    if not expect_error_kind(tc, 0, ErrorKind::TypeMismatch, "wrong arg type kind") { return 15 }
+
+    return 0
+}
+
+fn test_function_wrong_arg_count() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // println() → error (expected 1 arg, got 0)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "println")
+    tc = r_callee.0
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "println() → wrong arg count") { return 16 }
+    if not expect_error_kind(tc, 0, ErrorKind::WrongNumberOfArgs, "wrong arg count kind") { return 16 }
+
+    return 0
+}
+
+fn test_function_declaration() -> i32 {
+    // Build AST for:
+    //   fn add(a: i32, b: i32) -> i32 { return a + b }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Type expressions: i32, i32, i32
+    let t1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t1.0
+    let t2: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t2.0
+    let t3: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t3.0
+
+    // Params: a: i32, b: i32
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "a", type_expr: t1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+    tc.extra_params.push(FnParam {
+        param_name: "b", type_expr: t2.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Body: return a + b
+    let r_a: (TypeChecker, ExprId) = add_ident_expr(tc, "a")
+    tc = r_a.0
+    let r_b: (TypeChecker, ExprId) = add_ident_expr(tc, "b")
+    tc = r_b.0
+    let r_add: (TypeChecker, ExprId) = add_binary_expr(tc, r_a.1, BinaryOp::Add, r_b.1)
+    tc = r_add.0
+    let r_ret: (TypeChecker, StmtId) = add_return_stmt(tc, r_add.1)
+    tc = r_ret.0
+    let body_start: i32 = tc.extra_stmt_ids.len()
+    tc.extra_stmt_ids.push(r_ret.1)
+
+    // Function declaration
+    let decl_idx: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "add",
+        generics_start: 0, generics_count: 0,
+        params_start: params_start, params_count: 2,
+        return_type: t3.1,
+        body_start: body_start, body_count: 1,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    // Run full pipeline
+    tc = check_module(tc, decl_idx, 1)
+    if not expect_ok(tc, "fn add(a: i32, b: i32) -> i32") { return 17 }
+
+    // Verify add is callable
+    let found: ?SymbolInfo = lookup(tc, "add")
+    match found {
+        Some(info) => {
+            if info.sym_type.payload < 0 {
+                println("FAIL: add should have valid function payload")
+                return 17
+            }
+        }
+        None => {
+            println("FAIL: add not found after declaration")
+            return 17
+        }
+    }
+
+    return 0
+}
+
+fn test_struct_declaration_and_field() -> i32 {
+    // Build AST for:
+    //   struct Point { x: i32, y: i32 }
+    //   fn get_x(p: Point) -> i32 { return p.x }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Type expressions
+    let t_i32_1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_1.0
+    let t_i32_2: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_2.0
+    let t_point: (TypeChecker, TypeExprId) = add_type_named(tc, "Point")
+    tc = t_point.0
+    let t_i32_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_ret.0
+
+    // Struct fields
+    let fields_start: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField {
+        field_name: "x", type_expr: t_i32_1.1, span: s(),
+    })
+    tc.extra_struct_fields.push(StructField {
+        field_name: "y", type_expr: t_i32_2.1, span: s(),
+    })
+
+    // Struct decl
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Point",
+        generics_start: 0, generics_count: 0,
+        fields_start: fields_start, fields_count: 2,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    }))
+
+    // Function: fn get_x(p: Point) -> i32 { return p.x }
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "p", type_expr: t_point.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Body: return p.x
+    let r_p: (TypeChecker, ExprId) = add_ident_expr(tc, "p")
+    tc = r_p.0
+    let r_px: (TypeChecker, ExprId) = add_field_expr(tc, r_p.1, "x")
+    tc = r_px.0
+    let r_ret: (TypeChecker, StmtId) = add_return_stmt(tc, r_px.1)
+    tc = r_ret.0
+    let body_start: i32 = tc.extra_stmt_ids.len()
+    tc.extra_stmt_ids.push(r_ret.1)
+
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "get_x",
+        generics_start: 0, generics_count: 0,
+        params_start: params_start, params_count: 1,
+        return_type: t_i32_ret.1,
+        body_start: body_start, body_count: 1,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    // Run checker
+    tc = check_module(tc, decl_start, 2)
+    if not expect_ok(tc, "struct Point + fn get_x") { return 18 }
+
+    return 0
+}
+
+fn test_struct_unknown_field() -> i32 {
+    // struct Point { x: i32, y: i32 }
+    // fn bad(p: Point) -> i32 { return p.z }  ← error
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let t_i32_1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_1.0
+    let t_i32_2: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_2.0
+    let t_point: (TypeChecker, TypeExprId) = add_type_named(tc, "Point")
+    tc = t_point.0
+    let t_i32_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_ret.0
+
+    let fields_start: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t_i32_1.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "y", type_expr: t_i32_2.1, span: s() })
+
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Point",
+        generics_start: 0, generics_count: 0,
+        fields_start: fields_start, fields_count: 2,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    }))
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "p", type_expr: t_point.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Body: return p.z  (unknown field)
+    let r_p: (TypeChecker, ExprId) = add_ident_expr(tc, "p")
+    tc = r_p.0
+    let r_pz: (TypeChecker, ExprId) = add_field_expr(tc, r_p.1, "z")
+    tc = r_pz.0
+    let r_ret: (TypeChecker, StmtId) = add_return_stmt(tc, r_pz.1)
+    tc = r_ret.0
+    let body_start: i32 = tc.extra_stmt_ids.len()
+    tc.extra_stmt_ids.push(r_ret.1)
+
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "bad",
+        generics_start: 0, generics_count: 0,
+        params_start: params_start, params_count: 1,
+        return_type: t_i32_ret.1,
+        body_start: body_start, body_count: 1,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    tc = check_module(tc, decl_start, 2)
+    if not expect_errors(tc, 1, "p.z → unknown field error") { return 19 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedField, "unknown field kind") { return 19 }
+
+    return 0
+}
+
+fn test_user_function_call() -> i32 {
+    // fn add(a: i32, b: i32) -> i32 { return a + b }
+    // fn main() -> i32 { let x: i32 = add(1, 2); return x }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Type exprs
+    let t1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t1.0
+    let t2: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t2.0
+    let t3: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t3.0
+    let t4: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t4.0
+    let t5: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t5.0
+
+    // add params
+    let add_params: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam { param_name: "a", type_expr: t1.1, default_value: no_expr(), is_mut: false, span: s() })
+    tc.extra_params.push(FnParam { param_name: "b", type_expr: t2.1, default_value: no_expr(), is_mut: false, span: s() })
+
+    // add body: return a + b
+    let r_a: (TypeChecker, ExprId) = add_ident_expr(tc, "a")
+    tc = r_a.0
+    let r_b: (TypeChecker, ExprId) = add_ident_expr(tc, "b")
+    tc = r_b.0
+    let r_plus: (TypeChecker, ExprId) = add_binary_expr(tc, r_a.1, BinaryOp::Add, r_b.1)
+    tc = r_plus.0
+    let r_ret1: (TypeChecker, StmtId) = add_return_stmt(tc, r_plus.1)
+    tc = r_ret1.0
+    let add_body: i32 = tc.extra_stmt_ids.len()
+    tc.extra_stmt_ids.push(r_ret1.1)
+
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "add",
+        generics_start: 0, generics_count: 0,
+        params_start: add_params, params_count: 2,
+        return_type: t3.1,
+        body_start: add_body, body_count: 1,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    // main body: let x: i32 = add(1, 2); return x
+    let r_add_ident: (TypeChecker, ExprId) = add_ident_expr(tc, "add")
+    tc = r_add_ident.0
+    let r_arg1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_arg1.0
+    let r_arg2: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_arg2.0
+    let call_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg1.1)
+    tc.extra_expr_ids.push(r_arg2.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_add_ident.1, call_args, 2)
+    tc = r_call.0
+
+    let r_let: (TypeChecker, StmtId) = add_let_stmt(tc, "x", t4.1, r_call.1)
+    tc = r_let.0
+
+    let r_x: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x.0
+    let r_ret2: (TypeChecker, StmtId) = add_return_stmt(tc, r_x.1)
+    tc = r_ret2.0
+
+    let main_body: i32 = tc.extra_stmt_ids.len()
+    tc.extra_stmt_ids.push(r_let.1)
+    tc.extra_stmt_ids.push(r_ret2.1)
+
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "test_main",
+        generics_start: 0, generics_count: 0,
+        params_start: tc.extra_params.len(), params_count: 0,
+        return_type: t5.1,
+        body_start: main_body, body_count: 2,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    tc = check_module(tc, decl_start, 2)
+    if not expect_ok(tc, "fn add + fn main calling add") { return 20 }
+
+    return 0
+}
+
+// ─── 9.10 Phase A Tests ─────────────────────────────────────────────
+
+fn test_expanded_builtins() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_eq(1, 2) → void (no error, polymorphic)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_eq")
+    tc = r_callee.0
+    let r_a1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_a1.0
+    let r_a2: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_a2.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_a1.1)
+    tc.extra_expr_ids.push(r_a2.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 2)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_type(re.1, type_void(), "assert_eq returns void") { return 21 }
+    if not expect_ok(tc, "assert_eq(1, 2)") { return 21 }
+
+    // panic("msg") → never
+    let r_panic: (TypeChecker, ExprId) = add_ident_expr(tc, "panic")
+    tc = r_panic.0
+    let r_msg: (TypeChecker, ExprId) = add_str_expr(tc, "error")
+    tc = r_msg.0
+    let args_p: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_msg.1)
+    let r_call2: (TypeChecker, ExprId) = add_call_expr(tc, r_panic.1, args_p, 1)
+    tc = r_call2.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_call2.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_never(), "panic returns never") { return 21 }
+
+    // exit(0) → never
+    let r_exit: (TypeChecker, ExprId) = add_ident_expr(tc, "exit")
+    tc = r_exit.0
+    let r_code: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_code.0
+    let args_e: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_code.1)
+    let r_call3: (TypeChecker, ExprId) = add_call_expr(tc, r_exit.1, args_e, 1)
+    tc = r_call3.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_call3.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_never(), "exit returns never") { return 21 }
+
+    // sqrt(1.0) → f64
+    let r_sqrt: (TypeChecker, ExprId) = add_ident_expr(tc, "sqrt")
+    tc = r_sqrt.0
+    let r_fv: (TypeChecker, ExprId) = add_float_expr(tc, "1.0")
+    tc = r_fv.0
+    let args_sq: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_fv.1)
+    let r_call4: (TypeChecker, ExprId) = add_call_expr(tc, r_sqrt.1, args_sq, 1)
+    tc = r_call4.0
+    let re4: (TypeChecker, KlarType) = check_expr(tc, r_call4.1)
+    tc = re4.0
+    if not expect_type(re4.1, type_f64(), "sqrt returns f64") { return 21 }
+
+    // readline() → string
+    let r_rl: (TypeChecker, ExprId) = add_ident_expr(tc, "readline")
+    tc = r_rl.0
+    let r_call5: (TypeChecker, ExprId) = add_call_expr(tc, r_rl.1, 0, 0)
+    tc = r_call5.0
+    let re5: (TypeChecker, KlarType) = check_expr(tc, r_call5.1)
+    tc = re5.0
+    if not expect_type(re5.1, type_string(), "readline returns string") { return 21 }
+
+    if not expect_ok(tc, "expanded builtins") { return 21 }
+    return 0
+}
+
+fn test_string_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // "hello".len() → i32
+    let r_s: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_s.0
+    let r_len: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s.1, "len", 0, 0)
+    tc = r_len.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_len.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "string.len() → i32") { return 22 }
+
+    // "hello".is_empty() → bool
+    let r_s2: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_s2.0
+    let r_ie: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s2.1, "is_empty", 0, 0)
+    tc = r_ie.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_ie.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_bool(), "string.is_empty() → bool") { return 22 }
+
+    // "hello".contains("ell") → bool
+    let r_s3: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_s3.0
+    let r_arg: (TypeChecker, ExprId) = add_str_expr(tc, "ell")
+    tc = r_arg.0
+    let c_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_con: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s3.1, "contains", c_args, 1)
+    tc = r_con.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_con.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_bool(), "string.contains() → bool") { return 22 }
+
+    // "hello".trim() → string
+    let r_s4: (TypeChecker, ExprId) = add_str_expr(tc, " hello ")
+    tc = r_s4.0
+    let r_trim: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s4.1, "trim", 0, 0)
+    tc = r_trim.0
+    let re4: (TypeChecker, KlarType) = check_expr(tc, r_trim.1)
+    tc = re4.0
+    if not expect_type(re4.1, type_string(), "string.trim() → string") { return 22 }
+
+    // "hello".split(",") → List#[string]
+    let r_s5: (TypeChecker, ExprId) = add_str_expr(tc, "a,b")
+    tc = r_s5.0
+    let r_delim: (TypeChecker, ExprId) = add_str_expr(tc, ",")
+    tc = r_delim.0
+    let sp_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_delim.1)
+    let r_split: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s5.1, "split", sp_args, 1)
+    tc = r_split.0
+    let re5: (TypeChecker, KlarType) = check_expr(tc, r_split.1)
+    tc = re5.0
+    if not expect_kind(re5.1, "ListType", "string.split() → List") { return 22 }
+
+    // "hello".byte_at(0) → u8
+    let r_s6: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_s6.0
+    let r_idx: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_idx.0
+    let ba_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_idx.1)
+    let r_ba: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s6.1, "byte_at", ba_args, 1)
+    tc = r_ba.0
+    let re6: (TypeChecker, KlarType) = check_expr(tc, r_ba.1)
+    tc = re6.0
+    if not expect_type(re6.1, type_u8(), "string.byte_at() → u8") { return 22 }
+
+    if not expect_ok(tc, "string methods") { return 22 }
+    return 0
+}
+
+fn test_integer_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+    tc.define("x", SymbolInfo { sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable })
+
+    // x.abs() → i32
+    let r_x: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x.0
+    let r_abs: (TypeChecker, ExprId) = add_method_call_expr(tc, r_x.1, "abs", 0, 0)
+    tc = r_abs.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_abs.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "i32.abs() → i32") { return 23 }
+
+    // x.min(other) → i32
+    let r_x2: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x2.0
+    let r_other: (TypeChecker, ExprId) = add_int_expr(tc, "5")
+    tc = r_other.0
+    let min_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_other.1)
+    let r_min: (TypeChecker, ExprId) = add_method_call_expr(tc, r_x2.1, "min", min_args, 1)
+    tc = r_min.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_min.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_i32(), "i32.min() → i32") { return 23 }
+
+    if not expect_ok(tc, "integer methods") { return 23 }
+    return 0
+}
+
+fn test_float_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // 3.14.sqrt() → f64
+    let r_f: (TypeChecker, ExprId) = add_float_expr(tc, "3.14")
+    tc = r_f.0
+    let r_sqrt: (TypeChecker, ExprId) = add_method_call_expr(tc, r_f.1, "sqrt", 0, 0)
+    tc = r_sqrt.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_sqrt.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_f64(), "f64.sqrt() → f64") { return 24 }
+
+    // 3.14.floor() → f64
+    let r_f2: (TypeChecker, ExprId) = add_float_expr(tc, "3.14")
+    tc = r_f2.0
+    let r_floor: (TypeChecker, ExprId) = add_method_call_expr(tc, r_f2.1, "floor", 0, 0)
+    tc = r_floor.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_floor.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_f64(), "f64.floor() → f64") { return 24 }
+
+    // 3.14.ceil() → f64
+    let r_f3: (TypeChecker, ExprId) = add_float_expr(tc, "3.14")
+    tc = r_f3.0
+    let r_ceil: (TypeChecker, ExprId) = add_method_call_expr(tc, r_f3.1, "ceil", 0, 0)
+    tc = r_ceil.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_ceil.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_f64(), "f64.ceil() → f64") { return 24 }
+
+    if not expect_ok(tc, "float methods") { return 24 }
+    return 0
+}
+
+fn test_array_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // [1, 2, 3].len() → i32
+    let r_e1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_e1.0
+    let r_e2: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_e2.0
+    let r_e3: (TypeChecker, ExprId) = add_int_expr(tc, "3")
+    tc = r_e3.0
+    let arr_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_e1.1)
+    tc.extra_expr_ids.push(r_e2.1)
+    tc.extra_expr_ids.push(r_e3.1)
+    let arr_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::ArrayLiteral(ArrayLiteralData {
+        elems_start: arr_start, elems_count: 3, span: s(),
+    }))
+    let arr_eid: ExprId = ExprId { id: arr_idx }
+
+    let r_len: (TypeChecker, ExprId) = add_method_call_expr(tc, arr_eid, "len", 0, 0)
+    tc = r_len.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_len.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "array.len() → i32") { return 25 }
+
+    if not expect_ok(tc, "array methods") { return 25 }
+    return 0
+}
+
+fn test_generic_apply_list() -> i32 {
+    // Build TypeExpr for List#[i32] and resolve it
+    var tc: TypeChecker = TypeChecker.new()
+
+    // TypeExpr::Named("List") for the base
+    let r_base: (TypeChecker, TypeExprId) = add_type_named(tc, "List")
+    tc = r_base.0
+
+    // TypeExpr::Named("i32") for the type arg
+    let r_arg: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = r_arg.0
+
+    // Store type arg in extra_type_expr_ids
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(r_arg.1)
+
+    // GenericApply: List#[i32]
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, r_base.1, te_args_start, 1)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    if not expect_kind(res.1, "ListType", "List#[i32] resolves to ListType") { return 26 }
+    if not expect_ok(tc, "GenericApply List#[i32]") { return 26 }
+
+    return 0
+}
+
+fn test_generic_apply_map() -> i32 {
+    // Build TypeExpr for Map#[string, i32] and resolve it
+    var tc: TypeChecker = TypeChecker.new()
+
+    let r_base: (TypeChecker, TypeExprId) = add_type_named(tc, "Map")
+    tc = r_base.0
+
+    let r_k: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = r_k.0
+    let r_v: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = r_v.0
+
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(r_k.1)
+    tc.extra_type_expr_ids.push(r_v.1)
+
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, r_base.1, te_args_start, 2)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    if not expect_kind(res.1, "MapType", "Map#[string, i32] resolves to MapType") { return 27 }
+    if not expect_ok(tc, "GenericApply Map#[string, i32]") { return 27 }
+
+    return 0
+}
+
+fn test_list_methods() -> i32 {
+    // Create a List#[i32] variable and test method types
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build List#[i32] type programmatically
+    let lr: (TypeChecker, KlarType) = make_list_type(tc, type_i32())
+    tc = lr.0
+    let list_type: KlarType = lr.1
+
+    tc.define("items", SymbolInfo {
+        sym_name: "items", sym_type: list_type, mutable: true, kind: SymbolKind::Variable,
+    })
+
+    // items.len() → i32
+    let r_items: (TypeChecker, ExprId) = add_ident_expr(tc, "items")
+    tc = r_items.0
+    let r_len: (TypeChecker, ExprId) = add_method_call_expr(tc, r_items.1, "len", 0, 0)
+    tc = r_len.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_len.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "List.len() → i32") { return 28 }
+
+    // items.push(42) → void
+    let r_items2: (TypeChecker, ExprId) = add_ident_expr(tc, "items")
+    tc = r_items2.0
+    let r_val: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_val.0
+    let push_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_val.1)
+    let r_push: (TypeChecker, ExprId) = add_method_call_expr(tc, r_items2.1, "push", push_args, 1)
+    tc = r_push.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_push.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_void(), "List.push() → void") { return 28 }
+
+    // items.pop() → ?i32
+    let r_items3: (TypeChecker, ExprId) = add_ident_expr(tc, "items")
+    tc = r_items3.0
+    let r_pop: (TypeChecker, ExprId) = add_method_call_expr(tc, r_items3.1, "pop", 0, 0)
+    tc = r_pop.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_pop.1)
+    tc = re3.0
+    if not expect_kind(re3.1, "Optional", "List.pop() → Optional") { return 28 }
+
+    // items.contains(1) → bool
+    let r_items4: (TypeChecker, ExprId) = add_ident_expr(tc, "items")
+    tc = r_items4.0
+    let r_cv: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_cv.0
+    let con_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_cv.1)
+    let r_con: (TypeChecker, ExprId) = add_method_call_expr(tc, r_items4.1, "contains", con_args, 1)
+    tc = r_con.0
+    let re4: (TypeChecker, KlarType) = check_expr(tc, r_con.1)
+    tc = re4.0
+    if not expect_type(re4.1, type_bool(), "List.contains() → bool") { return 28 }
+
+    if not expect_ok(tc, "list methods") { return 28 }
+    return 0
+}
+
+fn test_map_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build Map#[string, i32] type
+    let mr: (TypeChecker, KlarType) = make_map_type(tc, type_string(), type_i32())
+    tc = mr.0
+    let map_type: KlarType = mr.1
+
+    tc.define("scores", SymbolInfo {
+        sym_name: "scores", sym_type: map_type, mutable: true, kind: SymbolKind::Variable,
+    })
+
+    // scores.len() → i32
+    let r_m: (TypeChecker, ExprId) = add_ident_expr(tc, "scores")
+    tc = r_m.0
+    let r_len: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m.1, "len", 0, 0)
+    tc = r_len.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_len.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "Map.len() → i32") { return 29 }
+
+    // scores.contains_key("alice") → bool
+    let r_m2: (TypeChecker, ExprId) = add_ident_expr(tc, "scores")
+    tc = r_m2.0
+    let r_key: (TypeChecker, ExprId) = add_str_expr(tc, "alice")
+    tc = r_key.0
+    let ck_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_key.1)
+    let r_ck: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m2.1, "contains_key", ck_args, 1)
+    tc = r_ck.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_ck.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_bool(), "Map.contains_key() → bool") { return 29 }
+
+    // scores.get("alice") → ?i32
+    let r_m3: (TypeChecker, ExprId) = add_ident_expr(tc, "scores")
+    tc = r_m3.0
+    let r_key2: (TypeChecker, ExprId) = add_str_expr(tc, "alice")
+    tc = r_key2.0
+    let g_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_key2.1)
+    let r_get: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m3.1, "get", g_args, 1)
+    tc = r_get.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_get.1)
+    tc = re3.0
+    if not expect_kind(re3.1, "Optional", "Map.get() → Optional") { return 29 }
+
+    // scores.keys() → List#[string]
+    let r_m4: (TypeChecker, ExprId) = add_ident_expr(tc, "scores")
+    tc = r_m4.0
+    let r_keys: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m4.1, "keys", 0, 0)
+    tc = r_keys.0
+    let re4: (TypeChecker, KlarType) = check_expr(tc, r_keys.1)
+    tc = re4.0
+    if not expect_kind(re4.1, "ListType", "Map.keys() → ListType") { return 29 }
+
+    if not expect_ok(tc, "map methods") { return 29 }
+    return 0
+}
+
+fn test_some_constructor() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // Some(42) → ?i32
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Some")
+    tc = r_callee.0
+    let r_val: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_val.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_val.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "Optional", "Some(42) → Optional") { return 30 }
+
+    // Verify inner type is i32
+    let inner: KlarType = unwrap_optional_inner(tc, re.1)
+    if not expect_type(inner, type_i32(), "Some(42) inner is i32") { return 30 }
+
+    if not expect_ok(tc, "Some constructor") { return 30 }
+    return 0
+}
+
+fn test_ok_err_constructor() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // Ok(42) → Result#[i32, ?]
+    let r_ok_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Ok")
+    tc = r_ok_callee.0
+    let r_val: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_val.0
+    let ok_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_val.1)
+    let r_ok_call: (TypeChecker, ExprId) = add_call_expr(tc, r_ok_callee.1, ok_args, 1)
+    tc = r_ok_call.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_ok_call.1)
+    tc = re1.0
+    if not expect_kind(re1.1, "Result", "Ok(42) → Result") { return 31 }
+    let ok_inner: KlarType = unwrap_result_ok(tc, re1.1)
+    if not expect_type(ok_inner, type_i32(), "Ok(42) ok type is i32") { return 31 }
+
+    // Err("msg") → Result#[?, string]
+    let r_err_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Err")
+    tc = r_err_callee.0
+    let r_msg: (TypeChecker, ExprId) = add_str_expr(tc, "error")
+    tc = r_msg.0
+    let err_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_msg.1)
+    let r_err_call: (TypeChecker, ExprId) = add_call_expr(tc, r_err_callee.1, err_args, 1)
+    tc = r_err_call.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_err_call.1)
+    tc = re2.0
+    if not expect_kind(re2.1, "Result", "Err(\"msg\") → Result") { return 31 }
+    let err_inner: KlarType = unwrap_result_err(tc, re2.1)
+    if not expect_type(err_inner, type_string(), "Err(\"msg\") err type is string") { return 31 }
+
+    if not expect_ok(tc, "Ok/Err constructors") { return 31 }
+    return 0
+}
+
+fn test_postfix_try() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build ?i32 variable
+    let otr: (TypeChecker, KlarType) = make_optional_type(tc, type_i32())
+    tc = otr.0
+    tc.define("maybe", SymbolInfo {
+        sym_name: "maybe", sym_type: otr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // maybe? → i32
+    let r_m: (TypeChecker, ExprId) = add_ident_expr(tc, "maybe")
+    tc = r_m.0
+    let r_try: (TypeChecker, ExprId) = add_postfix_expr(tc, PostfixOp::Try, r_m.1)
+    tc = r_try.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_try.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "?i32 ? → i32") { return 32 }
+
+    if not expect_ok(tc, "postfix try") { return 32 }
+    return 0
+}
+
+fn test_postfix_try_result() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build Result#[i32, string] variable
+    let rr: (TypeChecker, KlarType) = make_result_type(tc, type_i32(), type_string())
+    tc = rr.0
+    tc.define("result", SymbolInfo {
+        sym_name: "result", sym_type: rr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // result? → i32
+    let r_res: (TypeChecker, ExprId) = add_ident_expr(tc, "result")
+    tc = r_res.0
+    let r_try: (TypeChecker, ExprId) = add_postfix_expr(tc, PostfixOp::Try, r_res.1)
+    tc = r_try.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_try.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "Result? → i32 (ok type)") { return 33 }
+
+    if not expect_ok(tc, "postfix try on result") { return 33 }
+    return 0
+}
+
+fn test_null_coalesce() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build ?i32 variable
+    let otr: (TypeChecker, KlarType) = make_optional_type(tc, type_i32())
+    tc = otr.0
+    tc.define("maybe", SymbolInfo {
+        sym_name: "maybe", sym_type: otr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // maybe ?? 0 → i32
+    let r_m: (TypeChecker, ExprId) = add_ident_expr(tc, "maybe")
+    tc = r_m.0
+    let r_default: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_default.0
+    let r_nc: (TypeChecker, ExprId) = add_binary_expr(tc, r_m.1, BinaryOp::NullCoalesce, r_default.1)
+    tc = r_nc.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_nc.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "?i32 ?? 0 → i32") { return 34 }
+
+    if not expect_ok(tc, "null coalesce") { return 34 }
+    return 0
+}
+
+fn test_optional_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build ?i32 variable
+    let otr: (TypeChecker, KlarType) = make_optional_type(tc, type_i32())
+    tc = otr.0
+    tc.define("maybe", SymbolInfo {
+        sym_name: "maybe", sym_type: otr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // maybe.is_some() → bool
+    let r_m: (TypeChecker, ExprId) = add_ident_expr(tc, "maybe")
+    tc = r_m.0
+    let r_is: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m.1, "is_some", 0, 0)
+    tc = r_is.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_is.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_bool(), "Optional.is_some() → bool") { return 35 }
+
+    // maybe.unwrap() → i32
+    let r_m2: (TypeChecker, ExprId) = add_ident_expr(tc, "maybe")
+    tc = r_m2.0
+    let r_uw: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m2.1, "unwrap", 0, 0)
+    tc = r_uw.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_uw.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_i32(), "Optional.unwrap() → i32") { return 35 }
+
+    // maybe.unwrap_or(0) → i32
+    let r_m3: (TypeChecker, ExprId) = add_ident_expr(tc, "maybe")
+    tc = r_m3.0
+    let r_def: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_def.0
+    let uo_args: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_def.1)
+    let r_uo: (TypeChecker, ExprId) = add_method_call_expr(tc, r_m3.1, "unwrap_or", uo_args, 1)
+    tc = r_uo.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_uo.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_i32(), "Optional.unwrap_or() → i32") { return 35 }
+
+    if not expect_ok(tc, "optional methods") { return 35 }
+    return 0
+}
+
+fn test_result_methods() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // Build Result#[i32, string] variable
+    let rr: (TypeChecker, KlarType) = make_result_type(tc, type_i32(), type_string())
+    tc = rr.0
+    tc.define("res", SymbolInfo {
+        sym_name: "res", sym_type: rr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // res.is_ok() → bool
+    let r_r: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_r.0
+    let r_iok: (TypeChecker, ExprId) = add_method_call_expr(tc, r_r.1, "is_ok", 0, 0)
+    tc = r_iok.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_iok.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_bool(), "Result.is_ok() → bool") { return 36 }
+
+    // res.unwrap() → i32
+    let r_r2: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_r2.0
+    let r_uw: (TypeChecker, ExprId) = add_method_call_expr(tc, r_r2.1, "unwrap", 0, 0)
+    tc = r_uw.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_uw.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_i32(), "Result.unwrap() → i32") { return 36 }
+
+    // res.unwrap_err() → string
+    let r_r3: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_r3.0
+    let r_ue: (TypeChecker, ExprId) = add_method_call_expr(tc, r_r3.1, "unwrap_err", 0, 0)
+    tc = r_ue.0
+    let re3: (TypeChecker, KlarType) = check_expr(tc, r_ue.1)
+    tc = re3.0
+    if not expect_type(re3.1, type_string(), "Result.unwrap_err() → string") { return 36 }
+
+    // res.ok() → ?i32
+    let r_r4: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_r4.0
+    let r_ok: (TypeChecker, ExprId) = add_method_call_expr(tc, r_r4.1, "ok", 0, 0)
+    tc = r_ok.0
+    let re4: (TypeChecker, KlarType) = check_expr(tc, r_ok.1)
+    tc = re4.0
+    if not expect_kind(re4.1, "Optional", "Result.ok() → Optional") { return 36 }
+
+    if not expect_ok(tc, "result methods") { return 36 }
+    return 0
+}
+
+fn test_parse_int_builtin() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // parse_int("42") → ?i32
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "parse_int")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_str_expr(tc, "42")
+    tc = r_arg.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "Optional", "parse_int() → Optional") { return 37 }
+
+    // Verify inner is i64 (Zig checker parity)
+    let inner: KlarType = unwrap_optional_inner(tc, re.1)
+    if not expect_type(inner, type_i64(), "parse_int inner is i64") { return 37 }
+
+    if not expect_ok(tc, "parse_int builtin") { return 37 }
+    return 0
+}
+
+fn test_none_constructor() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // None → ?unknown (no-arg call treated as None constructor)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "None")
+    tc = r_callee.0
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "Optional", "None → Optional") { return 38 }
+
+    if not expect_ok(tc, "None constructor") { return 38 }
+    return 0
+}
+
+fn test_generic_apply_result() -> i32 {
+    // Build TypeExpr for Result#[i32, string] and resolve it
+    var tc: TypeChecker = TypeChecker.new()
+
+    let r_base: (TypeChecker, TypeExprId) = add_type_named(tc, "Result")
+    tc = r_base.0
+    let r_ok: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = r_ok.0
+    let r_err: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = r_err.0
+
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(r_ok.1)
+    tc.extra_type_expr_ids.push(r_err.1)
+
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, r_base.1, te_args_start, 2)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    if not expect_kind(res.1, "Result", "Result#[i32, string] resolves to Result") { return 39 }
+
+    // Verify inner types
+    let ok_t: KlarType = unwrap_result_ok(tc, res.1)
+    if not expect_type(ok_t, type_i32(), "Result ok type is i32") { return 39 }
+    let err_t: KlarType = unwrap_result_err(tc, res.1)
+    if not expect_type(err_t, type_string(), "Result err type is string") { return 39 }
+
+    if not expect_ok(tc, "GenericApply Result#[i32, string]") { return 39 }
+    return 0
+}
+
+fn test_method_call_arg_checking() -> i32 {
+    // "hello".contains(undefined_var) → should catch undefined variable in arg
+    var tc: TypeChecker = TypeChecker.new()
+
+    let r_s: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_s.0
+    let r_bad: (TypeChecker, ExprId) = add_ident_expr(tc, "undefined_var")
+    tc = r_bad.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_bad.1)
+    let r_call: (TypeChecker, ExprId) = add_method_call_expr(tc, r_s.1, "contains", args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "method arg with undefined var → error") { return 41 }
+
+    return 0
+}
+
+fn test_generic_apply_option() -> i32 {
+    // Build TypeExpr for Option#[i32] and resolve it
+    var tc: TypeChecker = TypeChecker.new()
+
+    let r_base: (TypeChecker, TypeExprId) = add_type_named(tc, "Option")
+    tc = r_base.0
+    let r_arg: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = r_arg.0
+
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(r_arg.1)
+
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, r_base.1, te_args_start, 1)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    if not expect_kind(res.1, "Optional", "Option#[i32] resolves to Optional") { return 42 }
+
+    // Verify inner type is i32
+    let inner: KlarType = unwrap_optional_inner(tc, res.1)
+    if not expect_type(inner, type_i32(), "Option#[i32] inner is i32") { return 42 }
+
+    if not expect_ok(tc, "GenericApply Option#[i32]") { return 42 }
+    return 0
+}
+
+// ─── 9.10.1 Helpers ──────────────────────────────────────────────────
+
+fn add_generic_param(tc: TypeChecker, name: string) -> (TypeChecker, i32) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.extra_generic_params.len()
+    c.extra_generic_params.push(GenericParam {
+        param_name: name,
+        bound: no_type_expr(),
+        span: s(),
+    })
+    return (c, idx)
+}
+
+fn add_call_expr_generic(tc: TypeChecker, callee: ExprId, args_start: i32, args_count: i32,
+    ta_start: i32, ta_count: i32) -> (TypeChecker, ExprId) {
+    var c: TypeChecker = tc
+    let idx: i32 = c.exprs.len()
+    c.exprs.push(Expr::Call(CallData {
+        callee: callee,
+        args_start: args_start,
+        args_count: args_count,
+        type_args_start: ta_start,
+        type_args_count: ta_count,
+        span: s(),
+    }))
+    return (c, ExprId { id: idx })
+}
+
+fn register_generic_fn(tc: TypeChecker, name: string, data: FunctionDeclData) -> TypeChecker {
+    var c: TypeChecker = tc
+    let idx: i32 = c.generic_fn_data.len()
+    c.generic_fn_data.push(data)
+    c.generic_fn_decls.insert(name, idx)
+    return c
+}
+
+fn register_generic_struct(tc: TypeChecker, name: string, data: StructDeclData) -> TypeChecker {
+    var c: TypeChecker = tc
+    let idx: i32 = c.generic_struct_data.len()
+    c.generic_struct_data.push(data)
+    c.generic_struct_decls.insert(name, idx)
+    return c
+}
+
+// ─── 9.10.1 Generic Monomorphization Tests ──────────────────────────
+
+fn test_generic_fn_explicit() -> i32 {
+    // fn identity#[T](x: T) -> T
+    // identity#[i32](42) → i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // GenericParam "T"
+    let gp_r: (TypeChecker, i32) = add_generic_param(tc, "T")
+    tc = gp_r.0
+    let gp_start: i32 = gp_r.1
+
+    // Type expressions for param and return (both "T")
+    let t_T1: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T1.0
+    let t_T2: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T2.0
+
+    // Param: x: T
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_T1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Register generic function directly
+    tc = register_generic_fn(tc, "identity", FunctionDeclData {
+        fn_name: "identity",
+        generics_start: gp_start, generics_count: 1,
+        params_start: params_start, params_count: 1,
+        return_type: t_T2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // Build call: identity#[i32](42)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_arg.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+
+    // Type arg: i32
+    let ta_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = ta_te.0
+    let ta_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(ta_te.1)
+
+    let r_call: (TypeChecker, ExprId) = add_call_expr_generic(tc, r_callee.1, args_start, 1, ta_start, 1)
+    tc = r_call.0
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "identity#[i32](42) → i32") { return 50 }
+    if not expect_ok(tc, "generic fn explicit") { return 50 }
+
+    return 0
+}
+
+fn test_generic_fn_inferred() -> i32 {
+    // fn identity#[T](x: T) -> T
+    // identity(42) infers T=i32 → returns i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let gp_r: (TypeChecker, i32) = add_generic_param(tc, "T")
+    tc = gp_r.0
+    let gp_start: i32 = gp_r.1
+
+    let t_T1: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T1.0
+    let t_T2: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T2.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_T1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    tc = register_generic_fn(tc, "identity", FunctionDeclData {
+        fn_name: "identity",
+        generics_start: gp_start, generics_count: 1,
+        params_start: params_start, params_count: 1,
+        return_type: t_T2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // Build call: identity(42) — no type args, inferred
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_arg.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_start, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "identity(42) inferred → i32") { return 51 }
+    if not expect_ok(tc, "generic fn inferred") { return 51 }
+
+    return 0
+}
+
+fn test_generic_fn_cache() -> i32 {
+    // Two calls with same type args should use cached monomorphization
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let gp_r: (TypeChecker, i32) = add_generic_param(tc, "T")
+    tc = gp_r.0
+    let gp_start: i32 = gp_r.1
+
+    let t_T1: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T1.0
+    let t_T2: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T2.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_T1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    tc = register_generic_fn(tc, "identity", FunctionDeclData {
+        fn_name: "identity",
+        generics_start: gp_start, generics_count: 1,
+        params_start: params_start, params_count: 1,
+        return_type: t_T2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // First call: identity(42)
+    let r_c1: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_c1.0
+    let r_a1: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_a1.0
+    let as1: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_a1.1)
+    let r_call1: (TypeChecker, ExprId) = add_call_expr(tc, r_c1.1, as1, 1)
+    tc = r_call1.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_call1.1)
+    tc = re1.0
+
+    let fns_after_first: i32 = tc.mono_functions.len()
+
+    // Second call: identity(99) — same type, should hit cache
+    let r_c2: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_c2.0
+    let r_a2: (TypeChecker, ExprId) = add_int_expr(tc, "99")
+    tc = r_a2.0
+    let as2: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_a2.1)
+    let r_call2: (TypeChecker, ExprId) = add_call_expr(tc, r_c2.1, as2, 1)
+    tc = r_call2.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_call2.1)
+    tc = re2.0
+
+    if not expect_type(re1.1, type_i32(), "first call → i32") { return 52 }
+    if not expect_type(re2.1, type_i32(), "second call → i32 (cached)") { return 52 }
+    // Cache size should not grow
+    if tc.mono_functions.len() != fns_after_first {
+        println("FAIL: test_generic_fn_cache — cache should not grow for same type args")
+        return 52
+    }
+    if not expect_ok(tc, "generic fn cache") { return 52 }
+
+    return 0
+}
+
+fn test_generic_fn_two_params() -> i32 {
+    // fn first#[A, B](a: A, b: B) -> A
+    // first#[i32, string](42, "hello") → i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let gp_a: (TypeChecker, i32) = add_generic_param(tc, "A")
+    tc = gp_a.0
+    let gp_start: i32 = gp_a.1
+    let gp_b: (TypeChecker, i32) = add_generic_param(tc, "B")
+    tc = gp_b.0
+
+    let t_A1: (TypeChecker, TypeExprId) = add_type_named(tc, "A")
+    tc = t_A1.0
+    let t_B1: (TypeChecker, TypeExprId) = add_type_named(tc, "B")
+    tc = t_B1.0
+    let t_A2: (TypeChecker, TypeExprId) = add_type_named(tc, "A")
+    tc = t_A2.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "a", type_expr: t_A1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+    tc.extra_params.push(FnParam {
+        param_name: "b", type_expr: t_B1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    tc = register_generic_fn(tc, "first", FunctionDeclData {
+        fn_name: "first",
+        generics_start: gp_start, generics_count: 2,
+        params_start: params_start, params_count: 2,
+        return_type: t_A2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // Build call with explicit type args: first#[i32, string](42, "hello")
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "first")
+    tc = r_callee.0
+    let r_a1: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_a1.0
+    let r_a2: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_a2.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_a1.1)
+    tc.extra_expr_ids.push(r_a2.1)
+
+    let ta_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = ta_i32.0
+    let ta_str: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = ta_str.0
+    let ta_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(ta_i32.1)
+    tc.extra_type_expr_ids.push(ta_str.1)
+
+    let r_call: (TypeChecker, ExprId) = add_call_expr_generic(tc, r_callee.1, args_start, 2, ta_start, 2)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_type(re.1, type_i32(), "first#[i32, string](42, \"hello\") → i32") { return 53 }
+    if not expect_ok(tc, "generic fn two params") { return 53 }
+
+    return 0
+}
+
+fn test_generic_fn_wrong_args() -> i32 {
+    // fn identity#[T](x: T) -> T
+    // identity(1, 2) → error (wrong arg count)
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let gp_r: (TypeChecker, i32) = add_generic_param(tc, "T")
+    tc = gp_r.0
+    let gp_start: i32 = gp_r.1
+
+    let t_T1: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T1.0
+    let t_T2: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T2.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_T1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    tc = register_generic_fn(tc, "identity", FunctionDeclData {
+        fn_name: "identity",
+        generics_start: gp_start, generics_count: 1,
+        params_start: params_start, params_count: 1,
+        return_type: t_T2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // Call with wrong arg count: identity(1, 2)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_callee.0
+    let r_a1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_a1.0
+    let r_a2: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_a2.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_a1.1)
+    tc.extra_expr_ids.push(r_a2.1)
+
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_start, 2)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "identity(1, 2) → wrong arg count error") { return 54 }
+    if not expect_error_kind(tc, 0, ErrorKind::WrongNumberOfArgs, "generic fn wrong args kind") { return 54 }
+
+    return 0
+}
+
+fn test_generic_struct_instantiation() -> i32 {
+    // struct Pair#[A, B] { first: A, second: B }
+    // Pair#[i32, string] → StructType
+    var tc: TypeChecker = TypeChecker.new()
+
+    let gp_a: (TypeChecker, i32) = add_generic_param(tc, "A")
+    tc = gp_a.0
+    let gp_start: i32 = gp_a.1
+    let gp_b: (TypeChecker, i32) = add_generic_param(tc, "B")
+    tc = gp_b.0
+
+    let t_A: (TypeChecker, TypeExprId) = add_type_named(tc, "A")
+    tc = t_A.0
+    let t_B: (TypeChecker, TypeExprId) = add_type_named(tc, "B")
+    tc = t_B.0
+
+    let fields_start: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, span: s() })
+
+    tc = register_generic_struct(tc, "Pair", StructDeclData {
+        struct_name: "Pair",
+        generics_start: gp_start, generics_count: 2,
+        fields_start: fields_start, fields_count: 2,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    })
+
+    // Build type expr: Pair#[i32, string]
+    let t_base: (TypeChecker, TypeExprId) = add_type_named(tc, "Pair")
+    tc = t_base.0
+    let t_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32.0
+    let t_str: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = t_str.0
+
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(t_i32.1)
+    tc.extra_type_expr_ids.push(t_str.1)
+
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, t_base.1, te_args_start, 2)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    if not expect_kind(res.1, "StructType", "Pair#[i32, string] → StructType") { return 55 }
+    if not expect_ok(tc, "generic struct instantiation") { return 55 }
+
+    return 0
+}
+
+fn test_generic_struct_field_access() -> i32 {
+    // struct Pair#[A, B] { first: A, second: B }
+    // p: Pair#[i32, string]; p.first → i32, p.second → string
+    var tc: TypeChecker = TypeChecker.new()
+
+    let gp_a: (TypeChecker, i32) = add_generic_param(tc, "A")
+    tc = gp_a.0
+    let gp_start: i32 = gp_a.1
+    let gp_b: (TypeChecker, i32) = add_generic_param(tc, "B")
+    tc = gp_b.0
+
+    let t_A: (TypeChecker, TypeExprId) = add_type_named(tc, "A")
+    tc = t_A.0
+    let t_B: (TypeChecker, TypeExprId) = add_type_named(tc, "B")
+    tc = t_B.0
+
+    let fields_start: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, span: s() })
+
+    tc = register_generic_struct(tc, "Pair", StructDeclData {
+        struct_name: "Pair",
+        generics_start: gp_start, generics_count: 2,
+        fields_start: fields_start, fields_count: 2,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    })
+
+    // Resolve Pair#[i32, string]
+    let t_base: (TypeChecker, TypeExprId) = add_type_named(tc, "Pair")
+    tc = t_base.0
+    let t_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32.0
+    let t_str: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = t_str.0
+
+    let te_args_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(t_i32.1)
+    tc.extra_type_expr_ids.push(t_str.1)
+
+    let r_ga: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, t_base.1, te_args_start, 2)
+    tc = r_ga.0
+
+    let res: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga.1)
+    tc = res.0
+    let pair_type: KlarType = res.1
+
+    // Define variable p of this type
+    tc.push_scope()
+    tc.define("p", SymbolInfo {
+        sym_name: "p", sym_type: pair_type, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // p.first → i32
+    let r_p1: (TypeChecker, ExprId) = add_ident_expr(tc, "p")
+    tc = r_p1.0
+    let r_first: (TypeChecker, ExprId) = add_field_expr(tc, r_p1.1, "first")
+    tc = r_first.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_first.1)
+    tc = re1.0
+    if not expect_type(re1.1, type_i32(), "Pair.first → i32") { return 56 }
+
+    // p.second → string
+    let r_p2: (TypeChecker, ExprId) = add_ident_expr(tc, "p")
+    tc = r_p2.0
+    let r_second: (TypeChecker, ExprId) = add_field_expr(tc, r_p2.1, "second")
+    tc = r_second.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_second.1)
+    tc = re2.0
+    if not expect_type(re2.1, type_string(), "Pair.second → string") { return 56 }
+
+    if not expect_ok(tc, "generic struct field access") { return 56 }
+
+    return 0
+}
+
+fn test_generic_struct_cache() -> i32 {
+    // Same type args should reuse cached struct
+    var tc: TypeChecker = TypeChecker.new()
+
+    let gp_a: (TypeChecker, i32) = add_generic_param(tc, "A")
+    tc = gp_a.0
+    let gp_start: i32 = gp_a.1
+    let gp_b: (TypeChecker, i32) = add_generic_param(tc, "B")
+    tc = gp_b.0
+
+    let t_A: (TypeChecker, TypeExprId) = add_type_named(tc, "A")
+    tc = t_A.0
+    let t_B: (TypeChecker, TypeExprId) = add_type_named(tc, "B")
+    tc = t_B.0
+
+    let fields_start: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, span: s() })
+
+    tc = register_generic_struct(tc, "Pair", StructDeclData {
+        struct_name: "Pair",
+        generics_start: gp_start, generics_count: 2,
+        fields_start: fields_start, fields_count: 2,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    })
+
+    // First resolution: Pair#[i32, string]
+    let t_base1: (TypeChecker, TypeExprId) = add_type_named(tc, "Pair")
+    tc = t_base1.0
+    let t_i32_1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_1.0
+    let t_str_1: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = t_str_1.0
+    let te_as1: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(t_i32_1.1)
+    tc.extra_type_expr_ids.push(t_str_1.1)
+    let r_ga1: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, t_base1.1, te_as1, 2)
+    tc = r_ga1.0
+    let res1: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga1.1)
+    tc = res1.0
+
+    let structs_after_first: i32 = tc.mono_structs.len()
+
+    // Second resolution: Pair#[i32, string] (same args)
+    let t_base2: (TypeChecker, TypeExprId) = add_type_named(tc, "Pair")
+    tc = t_base2.0
+    let t_i32_2: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_2.0
+    let t_str_2: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = t_str_2.0
+    let te_as2: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(t_i32_2.1)
+    tc.extra_type_expr_ids.push(t_str_2.1)
+    let r_ga2: (TypeChecker, TypeExprId) = add_type_generic_apply(tc, t_base2.1, te_as2, 2)
+    tc = r_ga2.0
+    let res2: (TypeChecker, KlarType) = resolve_type_expr(tc, r_ga2.1)
+    tc = res2.0
+
+    // Both should be StructType
+    if not expect_kind(res1.1, "StructType", "first Pair#[i32, string]") { return 57 }
+    if not expect_kind(res2.1, "StructType", "second Pair#[i32, string]") { return 57 }
+
+    // Cache should not grow
+    if tc.mono_structs.len() != structs_after_first {
+        println("FAIL: test_generic_struct_cache — cache should not grow for same type args")
+        return 57
+    }
+
+    // Both should have same payload (same struct index)
+    if res1.1.payload != res2.1.payload {
+        println("FAIL: test_generic_struct_cache — cached struct should have same payload")
+        return 57
+    }
+
+    if not expect_ok(tc, "generic struct cache") { return 57 }
+    return 0
+}
+
+fn test_postfix_try_error_on_non_optional() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc.push_scope()
+
+    // x: i32, x? → error
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+    let r_x: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x.0
+    let r_try: (TypeChecker, ExprId) = add_postfix_expr(tc, PostfixOp::Try, r_x.1)
+    tc = r_try.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_try.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "postfix ? on i32 → error") { return 40 }
+    if not expect_error_kind(tc, 0, ErrorKind::InvalidOperation, "postfix try on non-optional kind") { return 40 }
+
+    return 0
+}
+
+fn test_generic_fn_explicit_wrong_arg_type() -> i32 {
+    // fn identity#[T](x: T) -> T
+    // identity#[i32]("hello") → error (expected i32, got string)
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let gp_r: (TypeChecker, i32) = add_generic_param(tc, "T")
+    tc = gp_r.0
+    let gp_start: i32 = gp_r.1
+
+    let t_T1: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T1.0
+    let t_T2: (TypeChecker, TypeExprId) = add_type_named(tc, "T")
+    tc = t_T2.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_T1.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    tc = register_generic_fn(tc, "identity", FunctionDeclData {
+        fn_name: "identity",
+        generics_start: gp_start, generics_count: 1,
+        params_start: params_start, params_count: 1,
+        return_type: t_T2.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    })
+
+    // Build call: identity#[i32]("hello") — type arg says i32, but arg is string
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "identity")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_arg.0
+    let args_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+
+    let ta_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = ta_te.0
+    let ta_start: i32 = tc.extra_type_expr_ids.len()
+    tc.extra_type_expr_ids.push(ta_te.1)
+
+    let r_call: (TypeChecker, ExprId) = add_call_expr_generic(tc, r_callee.1, args_start, 1, ta_start, 1)
+    tc = r_call.0
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "identity#[i32](\"hello\") → type mismatch error") { return 58 }
+
+    return 0
+}
+
+fn test_interpolated_string_checks_parts() -> i32 {
+    // "hello {undefined_var}" → should catch undefined variable in interpolation part
+    var tc: TypeChecker = TypeChecker.new()
+
+    // Build parts: string literal "hello ", then identifier "undefined_var"
+    let r_s: (TypeChecker, ExprId) = add_str_expr(tc, "hello ")
+    tc = r_s.0
+    let r_bad: (TypeChecker, ExprId) = add_ident_expr(tc, "undefined_var")
+    tc = r_bad.0
+
+    let parts_start: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_s.1)
+    tc.extra_expr_ids.push(r_bad.1)
+
+    let interp_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::InterpolatedString(InterpolatedStringData {
+        parts_start: parts_start, parts_count: 2, span: s(),
+    }))
+    let interp_eid: ExprId = ExprId { id: interp_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, interp_eid)
+    tc = re.0
+    if not expect_errors(tc, 1, "interpolated string with undefined var → error") { return 59 }
+    if not expect_type(re.1, type_string(), "interpolated string → string") { return 59 }
+
+    return 0
+}
+
+// ─── 9.10.2 Trait Resolution Tests ───────────────────────────────────
+
+fn test_trait_definition() -> i32 {
+    // Register a user-defined trait via the decl pipeline
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build trait: trait Summable { fn sum(self) -> i32 }
+    // Method decl
+    let t_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_ret.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = self_te.0
+
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    let method_decl_idx: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "sum",
+        generics_start: 0, generics_count: 0,
+        params_start: params_start, params_count: 1,
+        return_type: t_ret.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    // TraitDecl
+    let trait_decl_idx: i32 = tc.decls.len()
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Summable",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: method_decl_idx, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    tc = register_declarations(tc, trait_decl_idx, 1)
+    if not expect_ok(tc, "register trait Summable") { return 60 }
+
+    // Verify trait is in trait_types
+    if not tc.trait_types.contains_key("Summable") {
+        println("FAIL: test_trait_definition — Summable not in trait_types")
+        return 60
+    }
+    let opt: ?KlarType = tc.trait_types.get("Summable")
+    match opt {
+        Some(t) => {
+            if not expect_kind(t, "TraitType", "Summable is TraitType") { return 60 }
+        }
+        None => {
+            println("FAIL: test_trait_definition — Summable get returned None")
+            return 60
+        }
+    }
+
+    return 0
+}
+
+fn test_trait_impl_registers_methods() -> i32 {
+    // struct Foo { val: i32 }
+    // trait Summable { fn sum(self) -> i32 }
+    // impl Foo: Summable { fn sum(self) -> i32 { return self.val } }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Struct Foo
+    let t_i32_1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32_1.0
+    let fields_start: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "val", type_expr: t_i32_1.1, span: s() })
+
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Foo",
+        generics_start: 0, generics_count: 0,
+        fields_start: fields_start, fields_count: 1,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    }))
+
+    // Trait Summable: fn sum(self) -> i32
+    let t_sum_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_sum_ret.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = self_te.0
+    let tp_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+    let method_decl_idx: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "sum",
+        generics_start: 0, generics_count: 0,
+        params_start: tp_start, params_count: 1,
+        return_type: t_sum_ret.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Summable",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: method_decl_idx, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    // Impl Foo: Summable { fn sum(self) -> i32 { return self.val } }
+    let impl_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = impl_ret.0
+    let self_te2: (TypeChecker, TypeExprId) = add_type_named(tc, "Foo")
+    tc = self_te2.0
+    let imp_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te2.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Body: return self.val
+    let r_self: (TypeChecker, ExprId) = add_ident_expr(tc, "self")
+    tc = r_self.0
+    let r_val: (TypeChecker, ExprId) = add_field_expr(tc, r_self.1, "val")
+    tc = r_val.0
+    let r_ret: (TypeChecker, StmtId) = add_return_stmt(tc, r_val.1)
+    tc = r_ret.0
+    let body_start: i32 = tc.extra_stmt_ids.len()
+    tc.extra_stmt_ids.push(r_ret.1)
+
+    let impl_method_idx: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "sum",
+        generics_start: 0, generics_count: 0,
+        params_start: imp_start, params_count: 1,
+        return_type: impl_ret.1,
+        body_start: body_start, body_count: 1,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    tc.decls.push(Decl::ImplDecl(ImplDeclData {
+        target_type: "Foo",
+        impl_trait: "Summable",
+        generics_start: 0, generics_count: 0,
+        methods_start: impl_method_idx, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        span: s(),
+    }))
+
+    // Run full pipeline
+    let decl_count: i32 = tc.decls.len() - decl_start
+    tc = check_module(tc, decl_start, decl_count)
+    if not expect_ok(tc, "impl Foo: Summable") { return 61 }
+
+    // Verify method is registered
+    if not tc.methods.contains_key("Foo.sum") {
+        println("FAIL: test_trait_impl_registers_methods — Foo.sum not in methods")
+        return 61
+    }
+
+    return 0
+}
+
+fn test_trait_impl_records_key() -> i32 {
+    // Verify that impl Foo: Summable creates "Foo:Summable" in trait_impl_keys
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Must have the trait and struct registered
+    let t1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t1.0
+    let fs: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t1.1, span: s() })
+
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Bar",
+        generics_start: 0, generics_count: 0,
+        fields_start: fs, fields_count: 1,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    }))
+
+    // Trait Marker (no methods)
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Marker",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: 0, methods_count: 0,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    // impl Bar: Marker {}
+    tc.decls.push(Decl::ImplDecl(ImplDeclData {
+        target_type: "Bar",
+        impl_trait: "Marker",
+        generics_start: 0, generics_count: 0,
+        methods_start: 0, methods_count: 0,
+        assoc_types_start: 0, assoc_types_count: 0,
+        span: s(),
+    }))
+
+    let dc: i32 = tc.decls.len() - ds
+    tc = check_module(tc, ds, dc)
+    if not expect_ok(tc, "impl Bar: Marker") { return 62 }
+
+    if not has_trait_impl(tc, "Bar", "Marker") {
+        println("FAIL: test_trait_impl_records_key — Bar:Marker not recorded")
+        return 62
+    }
+
+    return 0
+}
+
+fn test_trait_method_through_bounds() -> i32 {
+    // Test: generic fn with T: Summable bound, call item.sum()
+    // trait Summable { fn sum(self) -> i32 }
+    // fn total#[T: Summable](item: T) -> i32 { return item.sum() }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Register trait Summable with method sum -> i32
+    let t_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_ret.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = self_te.0
+    let tp_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+    let method_di: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "sum",
+        generics_start: 0, generics_count: 0,
+        params_start: tp_start, params_count: 1,
+        return_type: t_ret.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Summable",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: method_di, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    // Register declarations first (so trait is available)
+    let dc: i32 = tc.decls.len() - ds
+    tc = register_declarations(tc, ds, dc)
+    if not expect_ok(tc, "register trait Summable for bounds test") { return 63 }
+
+    // Now manually create a TypeVar with Summable bound
+    // Get the trait index
+    let summable_opt: ?KlarType = tc.trait_types.get("Summable")
+    var summable_trait_idx: i32 = 0
+    match summable_opt {
+        Some(t) => { summable_trait_idx = t.payload }
+        None => {
+            println("FAIL: test_trait_method_through_bounds — Summable not found")
+            return 63
+        }
+    }
+
+    // Create TypeVar T with bounds [Summable]
+    let tvr: (TypeChecker, KlarType) = make_type_var_with_bounds(tc, 0, "T", summable_trait_idx, 1)
+    tc = tvr.0
+    let tv_type: KlarType = tvr.1
+
+    // Define 'item' as type T in scope
+    tc.push_scope()
+    tc.define("item", SymbolInfo {
+        sym_name: "item", sym_type: tv_type, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // Build: item.sum()
+    let r_item: (TypeChecker, ExprId) = add_ident_expr(tc, "item")
+    tc = r_item.0
+    let r_call: (TypeChecker, ExprId) = add_method_call_expr(tc, r_item.1, "sum", 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+
+    if not expect_ok(tc, "item.sum() through Summable bound") { return 63 }
+    if not expect_type(re.1, type_i32(), "item.sum() returns i32") { return 63 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_trait_unknown_method_error() -> i32 {
+    // TypeVar T with Summable bound, call item.nonexistent() → error
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Register trait Summable
+    let t_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_ret.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = self_te.0
+    let tp_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+    let method_di: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "sum",
+        generics_start: 0, generics_count: 0,
+        params_start: tp_start, params_count: 1,
+        return_type: t_ret.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Summable",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: method_di, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+    tc = register_declarations(tc, ds, tc.decls.len() - ds)
+
+    // TypeVar with Summable bound
+    let summable_opt: ?KlarType = tc.trait_types.get("Summable")
+    var idx: i32 = 0
+    match summable_opt {
+        Some(t) => { idx = t.payload }
+        None => { return 64 }
+    }
+    let tvr: (TypeChecker, KlarType) = make_type_var_with_bounds(tc, 0, "T", idx, 1)
+    tc = tvr.0
+
+    tc.push_scope()
+    tc.define("item", SymbolInfo {
+        sym_name: "item", sym_type: tvr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // item.nonexistent() → error
+    let r_item: (TypeChecker, ExprId) = add_ident_expr(tc, "item")
+    tc = r_item.0
+    let r_call: (TypeChecker, ExprId) = add_method_call_expr(tc, r_item.1, "nonexistent", 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+
+    if not expect_errors(tc, 1, "item.nonexistent() on bounded TypeVar → error") { return 64 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedMethod, "trait unknown method kind") { return 64 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_builtin_eq_trait() -> i32 {
+    // Verify builtin Eq trait is registered
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    if not tc.trait_types.contains_key("Eq") {
+        println("FAIL: test_builtin_eq_trait — Eq not in trait_types")
+        return 65
+    }
+
+    // Verify i32 implements Eq
+    if not has_trait_impl(tc, "i32", "Eq") {
+        println("FAIL: test_builtin_eq_trait — i32:Eq not recorded")
+        return 65
+    }
+    // Verify string implements Eq
+    if not has_trait_impl(tc, "string", "Eq") {
+        println("FAIL: test_builtin_eq_trait — string:Eq not recorded")
+        return 65
+    }
+    // Verify f64 implements Eq
+    if not has_trait_impl(tc, "f64", "Eq") {
+        println("FAIL: test_builtin_eq_trait — f64:Eq not recorded")
+        return 65
+    }
+
+    // Verify Eq has method "eq"
+    let eq_opt: ?KlarType = tc.trait_types.get("Eq")
+    match eq_opt {
+        Some(t) => {
+            let td: TraitData = tc.type_traits[t.payload]
+            let found: ?TraitMethodData = find_trait_method(tc, td, "eq")
+            match found {
+                Some(_) => {}
+                None => {
+                    println("FAIL: test_builtin_eq_trait — Eq has no 'eq' method")
+                    return 65
+                }
+            }
+        }
+        None => {
+            println("FAIL: test_builtin_eq_trait — Eq get returned None")
+            return 65
+        }
+    }
+
+    return 0
+}
+
+fn test_builtin_ordered_trait() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    if not tc.trait_types.contains_key("Ordered") {
+        println("FAIL: test_builtin_ordered_trait — Ordered not in trait_types")
+        return 66
+    }
+
+    if not has_trait_impl(tc, "i32", "Ordered") {
+        println("FAIL: test_builtin_ordered_trait — i32:Ordered not recorded")
+        return 66
+    }
+    if not has_trait_impl(tc, "string", "Ordered") {
+        println("FAIL: test_builtin_ordered_trait — string:Ordered not recorded")
+        return 66
+    }
+
+    // Verify Ordered has 4 methods: lt, le, gt, ge
+    let ord_opt: ?KlarType = tc.trait_types.get("Ordered")
+    match ord_opt {
+        Some(t) => {
+            let td: TraitData = tc.type_traits[t.payload]
+            if td.methods_count != 4 {
+                println("FAIL: test_builtin_ordered_trait — expected 4 methods, got " + td.methods_count.to_string().as_str())
+                return 66
+            }
+        }
+        None => {
+            println("FAIL: test_builtin_ordered_trait — Ordered get returned None")
+            return 66
+        }
+    }
+
+    return 0
+}
+
+fn test_builtin_clone_trait() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    if not tc.trait_types.contains_key("Clone") {
+        println("FAIL: test_builtin_clone_trait — Clone not in trait_types")
+        return 67
+    }
+
+    if not has_trait_impl(tc, "i32", "Clone") {
+        println("FAIL: test_builtin_clone_trait — i32:Clone not recorded")
+        return 67
+    }
+    if not has_trait_impl(tc, "string", "Clone") {
+        println("FAIL: test_builtin_clone_trait — string:Clone not recorded")
+        return 67
+    }
+
+    // TypeVar with Clone bound — clone() returns Self (TypeVar)
+    let clone_opt: ?KlarType = tc.trait_types.get("Clone")
+    var clone_idx: i32 = 0
+    match clone_opt {
+        Some(t) => { clone_idx = t.payload }
+        None => { return 67 }
+    }
+
+    let tvr: (TypeChecker, KlarType) = make_type_var_with_bounds(tc, 0, "T", clone_idx, 1)
+    tc = tvr.0
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: tvr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_x: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x.0
+    let r_call: (TypeChecker, ExprId) = add_method_call_expr(tc, r_x.1, "clone", 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+
+    if not expect_ok(tc, "x.clone() with T: Clone") { return 67 }
+    // clone() returns Self → TypeVar
+    if not expect_kind(re.1, "TypeVar", "clone() returns TypeVar (Self)") { return 67 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_builtin_hash_trait() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    if not tc.trait_types.contains_key("Hash") {
+        println("FAIL: test_builtin_hash_trait — Hash not in trait_types")
+        return 68
+    }
+
+    if not has_trait_impl(tc, "i32", "Hash") {
+        println("FAIL: test_builtin_hash_trait — i32:Hash not recorded")
+        return 68
+    }
+
+    // TypeVar with Hash bound — hash() returns i64
+    let hash_opt: ?KlarType = tc.trait_types.get("Hash")
+    var hash_idx: i32 = 0
+    match hash_opt {
+        Some(t) => { hash_idx = t.payload }
+        None => { return 68 }
+    }
+
+    let tvr: (TypeChecker, KlarType) = make_type_var_with_bounds(tc, 0, "T", hash_idx, 1)
+    tc = tvr.0
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: tvr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_x: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_x.0
+    let r_call: (TypeChecker, ExprId) = add_method_call_expr(tc, r_x.1, "hash", 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+
+    if not expect_ok(tc, "x.hash() with T: Hash") { return 68 }
+    if not expect_type(re.1, type_i64(), "hash() returns i64") { return 68 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_trait_impl_method_body_checked() -> i32 {
+    // Verify that impl method bodies are type-checked
+    // impl Foo { fn bad(self) -> i32 { return "hello" } } → error
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Struct Foo
+    let t_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32.0
+    let fs: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t_i32.1, span: s() })
+
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Foo",
+        generics_start: 0, generics_count: 0,
+        fields_start: fs, fields_count: 1,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    }))
+
+    // impl Foo { fn bad(self) -> i32 { return "hello" } }
+    let impl_ret: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = impl_ret.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "Foo")
+    tc = self_te.0
+    let ps: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Body: return "hello" (should error: expected i32)
+    let r_str: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_str.0
+    let r_ret: (TypeChecker, StmtId) = add_return_stmt(tc, r_str.1)
+    tc = r_ret.0
+    let bs: i32 = tc.extra_stmt_ids.len()
+    tc.extra_stmt_ids.push(r_ret.1)
+
+    let mi: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "bad",
+        generics_start: 0, generics_count: 0,
+        params_start: ps, params_count: 1,
+        return_type: impl_ret.1,
+        body_start: bs, body_count: 1,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    tc.decls.push(Decl::ImplDecl(ImplDeclData {
+        target_type: "Foo",
+        impl_trait: "",
+        generics_start: 0, generics_count: 0,
+        methods_start: mi, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        span: s(),
+    }))
+
+    let dc: i32 = tc.decls.len() - ds
+    tc = check_module(tc, ds, dc)
+    if not expect_errors(tc, 1, "impl method body type error") { return 69 }
+
+    return 0
+}
+
+fn test_trait_inheritance_registered() -> i32 {
+    // Register a trait with a parent count > 0 to verify super_traits_count is stored
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Trait SubTrait (claims 1 parent — we just check the count is recorded)
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "SubTrait",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 1,
+        methods_start: 0, methods_count: 0,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    tc = register_declarations(tc, ds, 1)
+    if not expect_ok(tc, "register SubTrait with parent") { return 70 }
+
+    let opt: ?KlarType = tc.trait_types.get("SubTrait")
+    match opt {
+        Some(t) => {
+            let td: TraitData = tc.type_traits[t.payload]
+            if td.super_traits_count != 1 {
+                println("FAIL: test_trait_inheritance — expected super_traits_count 1, got " +
+                    td.super_traits_count.to_string().as_str())
+                return 70
+            }
+        }
+        None => {
+            println("FAIL: test_trait_inheritance — SubTrait not found")
+            return 70
+        }
+    }
+
+    return 0
+}
+
+fn test_multiple_bounds() -> i32 {
+    // TypeVar T with bounds [Eq, Clone] — both trait methods available
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Get Eq and Clone trait indices (they are sequential from register_builtin_traits)
+    let eq_opt: ?KlarType = tc.trait_types.get("Eq")
+    var eq_idx: i32 = 0
+    match eq_opt {
+        Some(t) => { eq_idx = t.payload }
+        None => { return 71 }
+    }
+
+    let clone_opt: ?KlarType = tc.trait_types.get("Clone")
+    var clone_idx: i32 = 0
+    match clone_opt {
+        Some(t) => { clone_idx = t.payload }
+        None => { return 71 }
+    }
+
+    // For multiple bounds, they need to be in sequential trait indices.
+    // Since Eq is registered first, its index should be less than Clone's.
+    // We can only use contiguous bounds_start..bounds_start+count.
+    // If Eq=0 and Clone=2, we can't do [0,2] as contiguous range.
+    // So let's test with Ordered (which has 4 methods: lt,le,gt,ge) — that's index 1.
+    // Eq is index 0, Ordered is index 1 — they ARE contiguous!
+    let tvr: (TypeChecker, KlarType) = make_type_var_with_bounds(tc, 0, "T", eq_idx, 2)
+    tc = tvr.0
+
+    tc.push_scope()
+    tc.define("a", SymbolInfo {
+        sym_name: "a", sym_type: tvr.1, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // a.eq(...) should work through Eq bound
+    let r_a1: (TypeChecker, ExprId) = add_ident_expr(tc, "a")
+    tc = r_a1.0
+    let r_eq: (TypeChecker, ExprId) = add_method_call_expr(tc, r_a1.1, "eq", 0, 0)
+    tc = r_eq.0
+    let re1: (TypeChecker, KlarType) = check_expr(tc, r_eq.1)
+    tc = re1.0
+    if not expect_ok(tc, "a.eq() with T: Eq + Ordered") { return 71 }
+    if not expect_type(re1.1, type_bool(), "eq() returns bool") { return 71 }
+
+    // a.lt(...) should work through Ordered bound
+    let r_a2: (TypeChecker, ExprId) = add_ident_expr(tc, "a")
+    tc = r_a2.0
+    let r_lt: (TypeChecker, ExprId) = add_method_call_expr(tc, r_a2.1, "lt", 0, 0)
+    tc = r_lt.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc, r_lt.1)
+    tc = re2.0
+    if not expect_ok(tc, "a.lt() with T: Eq + Ordered") { return 71 }
+    if not expect_type(re2.1, type_bool(), "lt() returns bool") { return 71 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_trait_impl_wrong_method() -> i32 {
+    // impl Bar: Marker { fn nonexistent() -> void {} } → error
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Struct Bar
+    let t1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t1.0
+    let fs: i32 = tc.extra_struct_fields.len()
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t1.1, span: s() })
+
+    let ds: i32 = tc.decls.len()
+    tc.decls.push(Decl::StructDecl(StructDeclData {
+        struct_name: "Bar",
+        generics_start: 0, generics_count: 0,
+        fields_start: fs, fields_count: 1,
+        is_pub: true, is_extern: false, is_packed: false,
+        span: s(),
+    }))
+
+    // Empty trait Marker
+    tc.decls.push(Decl::TraitDecl(TraitDeclData {
+        trait_name: "Marker",
+        generics_start: 0, generics_count: 0,
+        parents_start: 0, parents_count: 0,
+        methods_start: 0, methods_count: 0,
+        assoc_types_start: 0, assoc_types_count: 0,
+        is_pub: false, span: s(),
+    }))
+
+    // impl Bar: Marker { fn nonexistent(self) -> void {} }
+    let void_te: (TypeChecker, TypeExprId) = add_type_named(tc, "void")
+    tc = void_te.0
+    let self_te: (TypeChecker, TypeExprId) = add_type_named(tc, "Bar")
+    tc = self_te.0
+    let ps: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "self", type_expr: self_te.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    let mi: i32 = tc.decls.len()
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "nonexistent",
+        generics_start: 0, generics_count: 0,
+        params_start: ps, params_count: 1,
+        return_type: void_te.1,
+        body_start: 0, body_count: 0,
+        is_pub: false, is_extern: false, is_unsafe: false,
+        is_comptime: false, is_variadic: false,
+        span: s(),
+    }))
+
+    tc.decls.push(Decl::ImplDecl(ImplDeclData {
+        target_type: "Bar",
+        impl_trait: "Marker",
+        generics_start: 0, generics_count: 0,
+        methods_start: mi, methods_count: 1,
+        assoc_types_start: 0, assoc_types_count: 0,
+        span: s(),
+    }))
+
+    let dc: i32 = tc.decls.len() - ds
+    tc = check_module(tc, ds, dc)
+    if not expect_errors(tc, 1, "impl with wrong method → error") { return 72 }
+    if not expect_error_kind(tc, 0, ErrorKind::TraitNotImplemented, "trait impl wrong method kind") { return 72 }
+
+    return 0
+}
+
+// ─── 9.10.3 Phase B: Closure, If Expr, Match Expr Tests ─────────────
+
+fn test_closure_basic() -> i32 {
+    // Closure: |x: i32| -> i32 { return x + 1 }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build closure: |x: i32| -> i32 { <body> }
+    // Parameter: x: i32
+    let t_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = t_i32.0
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "x", type_expr: t_i32.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Return type: i32
+    let ret_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = ret_te.0
+
+    // Body: just an int literal (simplified — body is an expression)
+    let r_body: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_body.0
+
+    // Build closure expression
+    let closure_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::Closure(ClosureData {
+        params_start: params_start,
+        params_count: 1,
+        return_type: ret_te.1,
+        body: r_body.1,
+        span: s(),
+    }))
+    let closure_eid: ExprId = ExprId { id: closure_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, closure_eid)
+    tc = re.0
+    if not expect_ok(tc, "closure |x: i32| -> i32") { return 73 }
+    if not expect_kind(re.1, "Function", "closure type is Function") { return 73 }
+
+    return 0
+}
+
+fn test_closure_param_scope() -> i32 {
+    // Closure params should be accessible in body
+    // |name: string| -> string { return name }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Parameter: name: string
+    let t_str: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = t_str.0
+    let params_start: i32 = tc.extra_params.len()
+    tc.extra_params.push(FnParam {
+        param_name: "name", type_expr: t_str.1, default_value: no_expr(), is_mut: false, span: s(),
+    })
+
+    // Return type: string
+    let ret_te: (TypeChecker, TypeExprId) = add_type_named(tc, "string")
+    tc = ret_te.0
+
+    // Body: identifier "name" (should resolve to string parameter)
+    let r_body: (TypeChecker, ExprId) = add_ident_expr(tc, "name")
+    tc = r_body.0
+
+    let closure_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::Closure(ClosureData {
+        params_start: params_start,
+        params_count: 1,
+        return_type: ret_te.1,
+        body: r_body.1,
+        span: s(),
+    }))
+    let closure_eid: ExprId = ExprId { id: closure_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, closure_eid)
+    tc = re.0
+    if not expect_ok(tc, "closure param in scope") { return 74 }
+
+    return 0
+}
+
+fn test_if_expr_basic() -> i32 {
+    // if true { 1 } else { 2 } → i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let r_cond: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_cond.0
+    let r_then: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_then.0
+    let r_else: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_else.0
+
+    let if_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::IfExpr(IfExprData {
+        condition: r_cond.1,
+        then_body: r_then.1,
+        else_body: r_else.1,
+        span: s(),
+    }))
+    let if_eid: ExprId = ExprId { id: if_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, if_eid)
+    tc = re.0
+    if not expect_ok(tc, "if expr basic") { return 75 }
+    if not expect_type(re.1, type_i32(), "if expr → i32") { return 75 }
+
+    return 0
+}
+
+fn test_if_expr_condition_error() -> i32 {
+    // if 42 { 1 } else { 2 } → error (condition not bool)
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let r_cond: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_cond.0
+    let r_then: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_then.0
+    let r_else: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = r_else.0
+
+    let if_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::IfExpr(IfExprData {
+        condition: r_cond.1,
+        then_body: r_then.1,
+        else_body: r_else.1,
+        span: s(),
+    }))
+    let if_eid: ExprId = ExprId { id: if_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, if_eid)
+    tc = re.0
+    if not expect_errors(tc, 1, "if expr non-bool condition → error") { return 76 }
+
+    return 0
+}
+
+fn test_match_expr_basic() -> i32 {
+    // match x { 1 => { "one" }, _ => { "other" } } → string
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Define x: i32
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // Subject: x
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_subj.0
+
+    // Arm 1: wildcard pattern => "one"
+    let wild_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let r_body1: (TypeChecker, ExprId) = add_str_expr(tc, "one")
+    tc = r_body1.0
+
+    // Arm 2: wildcard => "other"
+    let wild2_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let r_body2: (TypeChecker, ExprId) = add_str_expr(tc, "other")
+    tc = r_body2.0
+
+    // Build match arms
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: wild_pid },
+        guard: no_expr(),
+        body: r_body1.1,
+        span: s(),
+    })
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: wild2_pid },
+        guard: no_expr(),
+        body: r_body2.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 2,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match expr basic") { return 77 }
+    if not expect_type(re.1, type_string(), "match expr → string") { return 77 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_match_optional_pattern() -> i32 {
+    // match opt { Some(val) => { val }, None => { 0 } }
+    // opt: ?i32 → val should be i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build ?i32 type
+    let opt_r: (TypeChecker, KlarType) = make_optional_type(tc, type_i32())
+    tc = opt_r.0
+    let opt_type: KlarType = opt_r.1
+
+    tc.push_scope()
+    tc.define("opt", SymbolInfo {
+        sym_name: "opt", sym_type: opt_type, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // Subject: opt
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "opt")
+    tc = r_subj.0
+
+    // Arm 1: Some(val) => val
+    // Inner pattern: binding "val"
+    let inner_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "val", is_mut: false, span: s(),
+    }))
+    let inner_start: i32 = tc.extra_pattern_ids.len()
+    tc.extra_pattern_ids.push(PatternId { id: inner_pid })
+
+    let some_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Some",
+        fields_start: inner_start,
+        fields_count: 1,
+        span: s(),
+    }))
+
+    // Body: identifier "val" (should be i32 from pattern binding)
+    let r_val: (TypeChecker, ExprId) = add_ident_expr(tc, "val")
+    tc = r_val.0
+
+    // Arm 2: None => 0
+    let none_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "None",
+        fields_start: 0,
+        fields_count: 0,
+        span: s(),
+    }))
+    let r_zero: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_zero.0
+
+    // Build match arms
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: some_pid },
+        guard: no_expr(),
+        body: r_val.1,
+        span: s(),
+    })
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: none_pid },
+        guard: no_expr(),
+        body: r_zero.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 2,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match ?i32 with Some(val)/None") { return 78 }
+    // First arm body is "val" which should resolve to i32 (inner of ?i32)
+    if not expect_type(re.1, type_i32(), "match ?i32 result → i32") { return 78 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_match_result_pattern() -> i32 {
+    // match res { Ok(v) => { v }, Err(_) => { -1 } }
+    // res: Result#[i32, string] → both arms yield i32
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build Result#[i32, string] type
+    let res_r: (TypeChecker, KlarType) = make_result_type(tc, type_i32(), type_string())
+    tc = res_r.0
+    let res_type: KlarType = res_r.1
+
+    tc.push_scope()
+    tc.define("res", SymbolInfo {
+        sym_name: "res", sym_type: res_type, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    // Subject: res
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_subj.0
+
+    // Arm 1: Ok(v) => v (i32)
+    let ok_inner_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "v", is_mut: false, span: s(),
+    }))
+    let ok_fields_start: i32 = tc.extra_pattern_ids.len()
+    tc.extra_pattern_ids.push(PatternId { id: ok_inner_pid })
+
+    let ok_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Ok",
+        fields_start: ok_fields_start,
+        fields_count: 1,
+        span: s(),
+    }))
+
+    let r_v: (TypeChecker, ExprId) = add_ident_expr(tc, "v")
+    tc = r_v.0
+
+    // Arm 2: Err(_) => -1 (i32, consistent with Ok arm)
+    let err_wild_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let err_fields_start: i32 = tc.extra_pattern_ids.len()
+    tc.extra_pattern_ids.push(PatternId { id: err_wild_pid })
+
+    let err_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Err",
+        fields_start: err_fields_start,
+        fields_count: 1,
+        span: s(),
+    }))
+
+    let r_default: (TypeChecker, ExprId) = add_int_expr(tc, "0")
+    tc = r_default.0
+
+    // Build match arms
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: ok_pid },
+        guard: no_expr(),
+        body: r_v.1,
+        span: s(),
+    })
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: err_pid },
+        guard: no_expr(),
+        body: r_default.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 2,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match Result#[i32, string] with Ok/Err") { return 79 }
+    // Both arms yield i32
+    if not expect_type(re.1, type_i32(), "Ok(v) body → i32") { return 79 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_match_binding_pattern() -> i32 {
+    // match x { val => { val + 1 } } — binding pattern gets subject type
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_subj.0
+
+    // Binding pattern: val
+    let bind_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "val", is_mut: false, span: s(),
+    }))
+
+    // Body: val + 1
+    let r_val: (TypeChecker, ExprId) = add_ident_expr(tc, "val")
+    tc = r_val.0
+    let r_one: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_one.0
+    let r_add: (TypeChecker, ExprId) = add_binary_expr(tc, r_val.1, BinaryOp::Add, r_one.1)
+    tc = r_add.0
+
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: bind_pid },
+        guard: no_expr(),
+        body: r_add.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 1,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match binding pattern val + 1") { return 80 }
+    if not expect_type(re.1, type_i32(), "binding val + 1 → i32") { return 80 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_if_expr_mismatched_branches() -> i32 {
+    // if true { 1 } else { "hello" } → error (branch type mismatch)
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let r_cond: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_cond.0
+    let r_then: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_then.0
+    let r_else: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_else.0
+
+    let if_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::IfExpr(IfExprData {
+        condition: r_cond.1,
+        then_body: r_then.1,
+        else_body: r_else.1,
+        span: s(),
+    }))
+    let if_eid: ExprId = ExprId { id: if_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, if_eid)
+    tc = re.0
+    if not expect_errors(tc, 1, "if expr mismatched branches → error") { return 81 }
+
+    return 0
+}
+
+fn test_match_expr_mismatched_arms() -> i32 {
+    // match x { _ => { 1 }, _ => { "hello" } } → error (arm type mismatch)
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_subj.0
+
+    // Arm 1: _ => 1 (i32)
+    let w1: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let r_body1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = r_body1.0
+
+    // Arm 2: _ => "hello" (string)
+    let w2: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let r_body2: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_body2.0
+
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: w1 },
+        guard: no_expr(),
+        body: r_body1.1,
+        span: s(),
+    })
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: w2 },
+        guard: no_expr(),
+        body: r_body2.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 2,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_errors(tc, 1, "match expr mismatched arms → error") { return 82 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_match_expr_guard() -> i32 {
+    // match x { val when val > 0 => { val } } — valid guard
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_subj.0
+
+    // Binding pattern: val
+    let bind_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "val", is_mut: false, span: s(),
+    }))
+
+    // Guard: true (bool — valid)
+    let r_guard: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_guard.0
+
+    // Body: val
+    let r_val: (TypeChecker, ExprId) = add_ident_expr(tc, "val")
+    tc = r_val.0
+
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: bind_pid },
+        guard: r_guard.1,
+        body: r_val.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 1,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match with valid bool guard") { return 83 }
+    if not expect_type(re.1, type_i32(), "guarded match → i32") { return 83 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_match_expr_guard_error() -> i32 {
+    // match x { val when 42 => { val } } — non-bool guard → error
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    tc.push_scope()
+    tc.define("x", SymbolInfo {
+        sym_name: "x", sym_type: type_i32(), mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "x")
+    tc = r_subj.0
+
+    let bind_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "val", is_mut: false, span: s(),
+    }))
+
+    // Guard: 42 (i32 — invalid, not bool)
+    let r_guard: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_guard.0
+
+    let r_val: (TypeChecker, ExprId) = add_ident_expr(tc, "val")
+    tc = r_val.0
+
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: bind_pid },
+        guard: r_guard.1,
+        body: r_val.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 1,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_errors(tc, 1, "match with non-bool guard → error") { return 84 }
+
+    tc.pop_scope()
+    return 0
+}
+
+fn test_closure_no_params() -> i32 {
+    // Closure: || -> i32 { 42 }
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let ret_te: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = ret_te.0
+
+    let r_body: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_body.0
+
+    let closure_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::Closure(ClosureData {
+        params_start: 0,
+        params_count: 0,
+        return_type: ret_te.1,
+        body: r_body.1,
+        span: s(),
+    }))
+    let closure_eid: ExprId = ExprId { id: closure_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, closure_eid)
+    tc = re.0
+    if not expect_ok(tc, "closure || -> i32") { return 85 }
+    if not expect_kind(re.1, "Function", "zero-param closure is Function") { return 85 }
+
+    return 0
+}
+
+fn test_match_result_err_binding() -> i32 {
+    // match res { Ok(_) => { 0 }, Err(e) => { e } }
+    // res: Result#[i32, string] → Err arm binds e as string
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    let res_r: (TypeChecker, KlarType) = make_result_type(tc, type_i32(), type_string())
+    tc = res_r.0
+    let res_type: KlarType = res_r.1
+
+    tc.push_scope()
+    tc.define("res", SymbolInfo {
+        sym_name: "res", sym_type: res_type, mutable: false, kind: SymbolKind::Variable,
+    })
+
+    let r_subj: (TypeChecker, ExprId) = add_ident_expr(tc, "res")
+    tc = r_subj.0
+
+    // Arm 1: Ok(_) => 0
+    let ok_wild_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::Wildcard(WildcardData { span: s() }))
+    let ok_fields_start: i32 = tc.extra_pattern_ids.len()
+    tc.extra_pattern_ids.push(PatternId { id: ok_wild_pid })
+
+    let ok_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Ok",
+        fields_start: ok_fields_start,
+        fields_count: 1,
+        span: s(),
+    }))
+    let r_zero: (TypeChecker, ExprId) = add_str_expr(tc, "fallback")
+    tc = r_zero.0
+
+    // Arm 2: Err(e) => e (should be string)
+    let err_inner_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::BindingPat(BindingPatData {
+        binding_name: "e", is_mut: false, span: s(),
+    }))
+    let err_fields_start: i32 = tc.extra_pattern_ids.len()
+    tc.extra_pattern_ids.push(PatternId { id: err_inner_pid })
+
+    let err_pid: i32 = tc.patterns.len()
+    tc.patterns.push(Pattern::VariantPat(VariantPatData {
+        type_expr: no_type_expr(),
+        variant_name: "Err",
+        fields_start: err_fields_start,
+        fields_count: 1,
+        span: s(),
+    }))
+    let r_e: (TypeChecker, ExprId) = add_ident_expr(tc, "e")
+    tc = r_e.0
+
+    let arms_start: i32 = tc.extra_match_arms.len()
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: ok_pid },
+        guard: no_expr(),
+        body: r_zero.1,
+        span: s(),
+    })
+    tc.extra_match_arms.push(MatchArm {
+        pattern: PatternId { id: err_pid },
+        guard: no_expr(),
+        body: r_e.1,
+        span: s(),
+    })
+
+    let match_idx: i32 = tc.exprs.len()
+    tc.exprs.push(Expr::MatchExpr(MatchExprData {
+        subject: r_subj.1,
+        arms_start: arms_start,
+        arms_count: 2,
+        span: s(),
+    }))
+    let match_eid: ExprId = ExprId { id: match_idx }
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, match_eid)
+    tc = re.0
+    if not expect_ok(tc, "match Result Err(e) binding") { return 86 }
+    // First arm returns "fallback" (string), second returns e (string)
+    if not expect_type(re.1, type_string(), "Err(e) binding → string") { return 86 }
+
+    tc.pop_scope()
+    return 0
+}
+
+// ─── 9.10.4 Module Import Resolution Tests ────────────────────────
+
+// Helper: register a mock module with a single function export
+fn register_mock_module_fn(tc: TypeChecker, mod_name: string,
+    fn_name: string, fn_type: KlarType) -> TypeChecker {
+    var c: TypeChecker = tc
+    c = begin_module_exports(c, mod_name)
+    c = register_module_export(c, mod_name, fn_name, fn_type, 0)
+    c = end_module_exports(c, mod_name)
+    return c
+}
+
+fn test_import_selective() -> i32 {
+    // Register a mock module "math" with `add: fn(i32,i32)->i32`
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build fn(i32,i32)->i32 type
+    let p_start: i32 = tc.resolved_types.len()
+    let p1: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = p1.0
+    let p2: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = p2.0
+    let pr: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = pr.0
+    let fn_idx: i32 = tc.type_functions.len()
+    tc.type_functions.push(FunctionData {
+        params_start: p_start,
+        params_count: 2,
+        return_type: TypeId { id: pr.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    let add_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn_idx }
+
+    // Register module
+    tc = register_mock_module_fn(tc, "math", "add", add_type)
+
+    // Build ImportDecl with selective import {add}
+    let items_start: i32 = tc.extra_import_items.len()
+    tc.extra_import_items.push(ImportItem { item_name: "add", alias: "" })
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "math",
+        items_start: items_start,
+        items_count: 1,
+        is_glob: false,
+        span: s(),
+    }))
+
+    // Process imports
+    tc = process_imports(tc, decl_start, 1)
+
+    // Verify "add" is now in scope
+    let found: ?SymbolInfo = lookup(tc, "add")
+    match found {
+        Some(info) => {
+            if not expect_kind(info.sym_type, "Function", "import add type") { return 90 }
+        }
+        None => {
+            println("FAIL: test_import_selective — 'add' not found in scope after import")
+            return 90
+        }
+    }
+    if not expect_ok(tc, "import selective") { return 90 }
+    return 0
+}
+
+fn test_import_selective_alias() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build fn type for add
+    let p_start: i32 = tc.resolved_types.len()
+    let p1: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = p1.0
+    let p2: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = p2.0
+    let pr: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = pr.0
+    let fn_idx: i32 = tc.type_functions.len()
+    tc.type_functions.push(FunctionData {
+        params_start: p_start,
+        params_count: 2,
+        return_type: TypeId { id: pr.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    let add_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn_idx }
+    tc = register_mock_module_fn(tc, "math", "add", add_type)
+
+    // Import "add as sum"
+    let items_start: i32 = tc.extra_import_items.len()
+    tc.extra_import_items.push(ImportItem { item_name: "add", alias: "sum" })
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "math",
+        items_start: items_start,
+        items_count: 1,
+        is_glob: false,
+        span: s(),
+    }))
+
+    tc = process_imports(tc, decl_start, 1)
+
+    // "sum" should be in scope
+    let found_sum: ?SymbolInfo = lookup(tc, "sum")
+    match found_sum {
+        Some(_) => {}
+        None => {
+            println("FAIL: test_import_selective_alias — 'sum' not found in scope")
+            return 91
+        }
+    }
+
+    // "add" should NOT be in scope
+    let found_add: ?SymbolInfo = lookup(tc, "add")
+    match found_add {
+        Some(_) => {
+            println("FAIL: test_import_selective_alias — 'add' should not be in scope")
+            return 91
+        }
+        None => {}
+    }
+
+    if not expect_ok(tc, "import selective alias") { return 91 }
+    return 0
+}
+
+fn test_import_glob() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Register module with 2 functions
+    let p1_start: i32 = tc.resolved_types.len()
+    let p1: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = p1.0
+    let pr1: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = pr1.0
+    let fn1_idx: i32 = tc.type_functions.len()
+    tc.type_functions.push(FunctionData {
+        params_start: p1_start,
+        params_count: 1,
+        return_type: TypeId { id: pr1.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    let abs_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn1_idx }
+
+    let p2_start: i32 = tc.resolved_types.len()
+    let p2: (TypeChecker, i32) = push_type_ref(tc, type_f64())
+    tc = p2.0
+    let pr2: (TypeChecker, i32) = push_type_ref(tc, type_f64())
+    tc = pr2.0
+    let fn2_idx: i32 = tc.type_functions.len()
+    tc.type_functions.push(FunctionData {
+        params_start: p2_start,
+        params_count: 1,
+        return_type: TypeId { id: pr2.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    let sqrt_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn2_idx }
+
+    tc = begin_module_exports(tc, "math")
+    tc = register_module_export(tc, "math", "abs", abs_type, 0)
+    tc = register_module_export(tc, "math", "sqrt", sqrt_type, 0)
+    tc = end_module_exports(tc, "math")
+
+    // Glob import
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "math",
+        items_start: 0,
+        items_count: 0,
+        is_glob: true,
+        span: s(),
+    }))
+
+    tc = process_imports(tc, decl_start, 1)
+
+    // Both should be in scope
+    let f1: ?SymbolInfo = lookup(tc, "abs")
+    match f1 {
+        Some(_) => {}
+        None => {
+            println("FAIL: test_import_glob — 'abs' not found")
+            return 92
+        }
+    }
+    let f2: ?SymbolInfo = lookup(tc, "sqrt")
+    match f2 {
+        Some(_) => {}
+        None => {
+            println("FAIL: test_import_glob — 'sqrt' not found")
+            return 92
+        }
+    }
+
+    if not expect_ok(tc, "import glob") { return 92 }
+    return 0
+}
+
+fn test_import_unknown_module() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Import from a module that doesn't exist
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "nonexistent",
+        items_start: 0,
+        items_count: 0,
+        is_glob: true,
+        span: s(),
+    }))
+
+    tc = process_imports(tc, decl_start, 1)
+
+    if not expect_errors(tc, 1, "import unknown module") { return 93 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedModule, "import unknown module kind") { return 93 }
+    return 0
+}
+
+fn test_import_unknown_symbol() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Register empty module
+    tc = begin_module_exports(tc, "empty_mod")
+    tc = end_module_exports(tc, "empty_mod")
+
+    // Try to import a symbol that doesn't exist
+    let items_start: i32 = tc.extra_import_items.len()
+    tc.extra_import_items.push(ImportItem { item_name: "missing_fn", alias: "" })
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "empty_mod",
+        items_start: items_start,
+        items_count: 1,
+        is_glob: false,
+        span: s(),
+    }))
+
+    tc = process_imports(tc, decl_start, 1)
+
+    if not expect_errors(tc, 1, "import unknown symbol") { return 94 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedExport, "import unknown symbol kind") { return 94 }
+    return 0
+}
+
+fn test_import_use_function() -> i32 {
+    // Import a function and then call it in code
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build fn(i32) -> i32
+    let p_start: i32 = tc.resolved_types.len()
+    let p1: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = p1.0
+    let pr: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = pr.0
+    let fn_idx: i32 = tc.type_functions.len()
+    tc.type_functions.push(FunctionData {
+        params_start: p_start,
+        params_count: 1,
+        return_type: TypeId { id: pr.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    let double_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn_idx }
+    tc = register_mock_module_fn(tc, "utils", "double", double_type)
+
+    // Build import decl
+    let items_start: i32 = tc.extra_import_items.len()
+    tc.extra_import_items.push(ImportItem { item_name: "double", alias: "" })
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "utils",
+        items_start: items_start,
+        items_count: 1,
+        is_glob: false,
+        span: s(),
+    }))
+
+    tc = process_imports(tc, decl_start, 1)
+
+    // Now call double(5) — build the AST for calling it
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "double")
+    tc = r_callee.0
+    let arg_start: i32 = tc.extra_expr_ids.len()
+    let r_arg: (TypeChecker, ExprId) = add_int_expr(tc, "5")
+    tc = r_arg.0
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, arg_start, 1)
+    tc = r_call.0
+
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_ok(tc, "import use function") { return 95 }
+    if not expect_type(re.1, type_i32(), "double(5) → i32") { return 95 }
+    return 0
+}
+
+fn test_import_struct_type() -> i32 {
+    // Import a struct type and use it in a let declaration
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Create a StructData for Point { x: f64, y: f64 }
+    let fs: i32 = tc.struct_fields.len()
+    let p1: (TypeChecker, i32) = push_type_ref(tc, type_f64())
+    tc = p1.0
+    tc.struct_fields.push(StructFieldData { name: "x", field_type: TypeId { id: p1.1 }, is_pub: true })
+    let p2: (TypeChecker, i32) = push_type_ref(tc, type_f64())
+    tc = p2.0
+    tc.struct_fields.push(StructFieldData { name: "y", field_type: TypeId { id: p2.1 }, is_pub: true })
+    let si: i32 = tc.type_structs.len()
+    tc.type_structs.push(StructData {
+        name: "Point",
+        type_params_start: 0,
+        type_params_count: 0,
+        fields_start: fs,
+        fields_count: 2,
+        is_copy: false,
+        is_extern: false,
+        is_packed: false,
+    })
+    let point_type: KlarType = KlarType { kind: TypeKind::StructType, payload: si }
+
+    // Register module with struct export (kind=1)
+    tc = begin_module_exports(tc, "geom")
+    tc = register_module_export(tc, "geom", "Point", point_type, 1)
+    tc = end_module_exports(tc, "geom")
+
+    // Import
+    let items_start: i32 = tc.extra_import_items.len()
+    tc.extra_import_items.push(ImportItem { item_name: "Point", alias: "" })
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "geom",
+        items_start: items_start,
+        items_count: 1,
+        is_glob: false,
+        span: s(),
+    }))
+
+    tc = process_imports(tc, decl_start, 1)
+
+    // Verify Point is in scope as a struct type
+    let found: ?SymbolInfo = lookup(tc, "Point")
+    match found {
+        Some(info) => {
+            if not expect_kind(info.sym_type, "StructType", "import Point type") { return 96 }
+        }
+        None => {
+            println("FAIL: test_import_struct_type — 'Point' not found in scope")
+            return 96
+        }
+    }
+
+    // Also verify it's in struct_types registry
+    if not tc.struct_types.contains_key("Point") {
+        println("FAIL: test_import_struct_type — 'Point' not in struct_types registry")
+        return 96
+    }
+
+    if not expect_ok(tc, "import struct type") { return 96 }
+    return 0
+}
+
+fn test_import_multiple_modules() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Register module "io" with fn print(string)->void
+    let p1_start: i32 = tc.resolved_types.len()
+    let p1: (TypeChecker, i32) = push_type_ref(tc, type_string())
+    tc = p1.0
+    let pr1: (TypeChecker, i32) = push_type_ref(tc, type_void())
+    tc = pr1.0
+    let fn1_idx: i32 = tc.type_functions.len()
+    tc.type_functions.push(FunctionData {
+        params_start: p1_start,
+        params_count: 1,
+        return_type: TypeId { id: pr1.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    let print_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn1_idx }
+    tc = register_mock_module_fn(tc, "io", "write", print_type)
+
+    // Register module "math" with fn abs(i32)->i32
+    let p2_start: i32 = tc.resolved_types.len()
+    let p2: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = p2.0
+    let pr2: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = pr2.0
+    let fn2_idx: i32 = tc.type_functions.len()
+    tc.type_functions.push(FunctionData {
+        params_start: p2_start,
+        params_count: 1,
+        return_type: TypeId { id: pr2.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    let abs_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn2_idx }
+    tc = register_mock_module_fn(tc, "math", "abs", abs_type)
+
+    // Import from both modules
+    let items1_start: i32 = tc.extra_import_items.len()
+    tc.extra_import_items.push(ImportItem { item_name: "write", alias: "" })
+    let items2_start: i32 = tc.extra_import_items.len()
+    tc.extra_import_items.push(ImportItem { item_name: "abs", alias: "" })
+
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "io",
+        items_start: items1_start,
+        items_count: 1,
+        is_glob: false,
+        span: s(),
+    }))
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "math",
+        items_start: items2_start,
+        items_count: 1,
+        is_glob: false,
+        span: s(),
+    }))
+
+    tc = process_imports(tc, decl_start, 2)
+
+    // Both should be in scope
+    let f1: ?SymbolInfo = lookup(tc, "write")
+    match f1 {
+        Some(_) => {}
+        None => {
+            println("FAIL: test_import_multiple_modules — 'write' not found")
+            return 97
+        }
+    }
+    let f2: ?SymbolInfo = lookup(tc, "abs")
+    match f2 {
+        Some(_) => {}
+        None => {
+            println("FAIL: test_import_multiple_modules — 'abs' not found")
+            return 97
+        }
+    }
+
+    if not expect_ok(tc, "import multiple modules") { return 97 }
+    return 0
+}
+
+fn test_module_registry_helpers() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // has_module returns false for unknown module
+    if has_module(tc, "unknown") {
+        println("FAIL: test_module_registry_helpers — has_module should be false for unknown")
+        return 98
+    }
+
+    // Register module
+    tc = begin_module_exports(tc, "test_mod")
+    tc = register_module_export(tc, "test_mod", "foo", type_i32(), 4)
+    tc = end_module_exports(tc, "test_mod")
+
+    // has_module returns true for registered module
+    if not has_module(tc, "test_mod") {
+        println("FAIL: test_module_registry_helpers — has_module should be true")
+        return 98
+    }
+
+    // lookup_module_export finds existing symbol
+    let result: (bool, KlarType, i32) = lookup_module_export(tc, "test_mod", "foo")
+    if not result.0 {
+        println("FAIL: test_module_registry_helpers — lookup should find 'foo'")
+        return 98
+    }
+    if result.2 != 4 {
+        println("FAIL: test_module_registry_helpers — kind should be 4 (const)")
+        return 98
+    }
+
+    // lookup_module_export returns false for missing symbol
+    let result2: (bool, KlarType, i32) = lookup_module_export(tc, "test_mod", "bar")
+    if result2.0 {
+        println("FAIL: test_module_registry_helpers — lookup should not find 'bar'")
+        return 98
+    }
+
+    return 0
+}
+
+fn test_import_check_module_integration() -> i32 {
+    // Test that check_module calls process_imports before register_declarations
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Register a module with a function
+    let p_start: i32 = tc.resolved_types.len()
+    let p1: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = p1.0
+    let pr: (TypeChecker, i32) = push_type_ref(tc, type_i32())
+    tc = pr.0
+    let fn_idx: i32 = tc.type_functions.len()
+    tc.type_functions.push(FunctionData {
+        params_start: p_start,
+        params_count: 1,
+        return_type: TypeId { id: pr.1 },
+        is_async: false,
+        is_unsafe: false,
+    })
+    let negate_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn_idx }
+    tc = register_mock_module_fn(tc, "math", "negate", negate_type)
+
+    // Build an import decl + a function that uses the imported symbol
+    let items_start: i32 = tc.extra_import_items.len()
+    tc.extra_import_items.push(ImportItem { item_name: "negate", alias: "" })
+
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "math",
+        items_start: items_start,
+        items_count: 1,
+        is_glob: false,
+        span: s(),
+    }))
+
+    // Add a function that calls negate(42)
+    // Build AST: fn use_it() -> i32 { return negate(42) }
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "negate")
+    tc = r_callee.0
+    let arg_start: i32 = tc.extra_expr_ids.len()
+    let r_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_arg.0
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, arg_start, 1)
+    tc = r_call.0
+    let r_ret: (TypeChecker, StmtId) = add_return_stmt(tc, r_call.1)
+    tc = r_ret.0
+
+    // Build type expr for i32 return
+    let rt: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = rt.0
+
+    let body_start: i32 = tc.extra_stmt_ids.len()
+    tc.extra_stmt_ids.push(r_ret.1)
+
+    tc.decls.push(Decl::Function(FunctionDeclData {
+        fn_name: "use_it",
+        generics_start: 0,
+        generics_count: 0,
+        params_start: 0,
+        params_count: 0,
+        return_type: rt.1,
+        body_start: body_start,
+        body_count: 1,
+        is_pub: false,
+        is_extern: false,
+        is_unsafe: false,
+        is_comptime: false,
+        is_variadic: false,
+        span: s(),
+    }))
+
+    // Run check_module (which should process imports → register → check)
+    tc = check_module(tc, decl_start, 2)
+
+    if not expect_ok(tc, "import check_module integration") { return 99 }
+    return 0
+}
+
+fn test_import_trait() -> i32 {
+    // Import a trait (kind==3) and verify it's in trait_types registry
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Build a TraitData for a trait "Printable"
+    let trait_idx: i32 = tc.type_traits.len()
+    tc.type_traits.push(TraitData {
+        name: "Printable",
+        type_params_start: 0,
+        type_params_count: 0,
+        methods_start: 0,
+        methods_count: 0,
+        super_traits_start: 0,
+        super_traits_count: 0,
+        assoc_types_start: 0,
+        assoc_types_count: 0,
+    })
+    let trait_type: KlarType = KlarType { kind: TypeKind::TraitType, payload: trait_idx }
+
+    // Register module with trait export (kind=3)
+    tc = begin_module_exports(tc, "display")
+    tc = register_module_export(tc, "display", "Printable", trait_type, 3)
+    tc = end_module_exports(tc, "display")
+
+    // Import selectively
+    let items_start: i32 = tc.extra_import_items.len()
+    tc.extra_import_items.push(ImportItem { item_name: "Printable", alias: "" })
+    let decl_start: i32 = tc.decls.len()
+    tc.decls.push(Decl::ImportDecl(ImportDeclData {
+        path: "display",
+        items_start: items_start,
+        items_count: 1,
+        is_glob: false,
+        span: s(),
+    }))
+
+    tc = process_imports(tc, decl_start, 1)
+
+    // Verify "Printable" is in scope
+    let found: ?SymbolInfo = lookup(tc, "Printable")
+    match found {
+        Some(info) => {
+            if not expect_kind(info.sym_type, "TraitType", "import Printable type") { return 100 }
+        }
+        None => {
+            println("FAIL: test_import_trait — 'Printable' not found in scope")
+            return 100
+        }
+    }
+
+    // Verify it's in trait_types registry (critical for impl checking)
+    if not tc.trait_types.contains_key("Printable") {
+        println("FAIL: test_import_trait — 'Printable' not in trait_types registry")
+        return 100
+    }
+
+    if not expect_ok(tc, "import trait") { return 100 }
+    return 0
+}
+
+// ─── 9.10.5 Assertion Builtin Tests ─────────────────────────────────
+
+fn test_assert_ok_builtin() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_ok(Ok(42)) → void (valid: arg is Result)
+    let r_ok_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Ok")
+    tc = r_ok_callee.0
+    let r_ok_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_ok_arg.0
+    let ok_args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_ok_arg.1)
+    let r_ok_call: (TypeChecker, ExprId) = add_call_expr(tc, r_ok_callee.1, ok_args_s, 1)
+    tc = r_ok_call.0
+
+    // Now call assert_ok with that Ok(42) result
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_ok")
+    tc = r_callee.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_ok_call.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "void", "assert_ok returns void") { return 101 }
+    if not expect_ok(tc, "assert_ok with Result arg") { return 101 }
+
+    return 0
+}
+
+fn test_assert_ok_wrong_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_ok(42) → error (arg is i32, not Result)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_ok")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_arg.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "assert_ok(i32) → type error") { return 102 }
+
+    return 0
+}
+
+fn test_assert_some_builtin() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_some(Some(42)) → void (valid: arg is Optional)
+    let r_some_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Some")
+    tc = r_some_callee.0
+    let r_some_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_some_arg.0
+    let some_args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_some_arg.1)
+    let r_some_call: (TypeChecker, ExprId) = add_call_expr(tc, r_some_callee.1, some_args_s, 1)
+    tc = r_some_call.0
+
+    // Now call assert_some with that Some(42) optional
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_some")
+    tc = r_callee.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_some_call.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "void", "assert_some returns void") { return 103 }
+    if not expect_ok(tc, "assert_some with Optional arg") { return 103 }
+
+    return 0
+}
+
+fn test_assert_err_builtin() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_err(Err(42)) → void (valid: arg is Result)
+    let r_err_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "Err")
+    tc = r_err_callee.0
+    let r_err_arg: (TypeChecker, ExprId) = add_int_expr(tc, "42")
+    tc = r_err_arg.0
+    let err_args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_err_arg.1)
+    let r_err_call: (TypeChecker, ExprId) = add_call_expr(tc, r_err_callee.1, err_args_s, 1)
+    tc = r_err_call.0
+
+    // Now call assert_err with that Err(42) result
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_err")
+    tc = r_callee.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_err_call.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "void", "assert_err returns void") { return 105 }
+    if not expect_ok(tc, "assert_err with Result arg") { return 105 }
+
+    return 0
+}
+
+fn test_assert_err_wrong_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_err(true) → error (arg is bool, not Result)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_err")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_bool_expr(tc, true)
+    tc = r_arg.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "assert_err(bool) → type error") { return 106 }
+
+    return 0
+}
+
+fn test_assert_none_builtin() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_none(None) → void (valid: arg is Optional)
+    // Build None call (0 args)
+    let r_none_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "None")
+    tc = r_none_callee.0
+    let none_args_s: i32 = tc.extra_expr_ids.len()
+    let r_none_call: (TypeChecker, ExprId) = add_call_expr(tc, r_none_callee.1, none_args_s, 0)
+    tc = r_none_call.0
+
+    // Now call assert_none with that None optional
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_none")
+    tc = r_callee.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_none_call.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_kind(re.1, "void", "assert_none returns void") { return 107 }
+    if not expect_ok(tc, "assert_none with Optional arg") { return 107 }
+
+    return 0
+}
+
+fn test_assert_some_wrong_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_some(3.14) → error (arg is f64, not Optional)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_some")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_float_expr(tc, "3.14")
+    tc = r_arg.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "assert_some(f64) → type error") { return 108 }
+
+    return 0
+}
+
+fn test_assert_none_wrong_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_none("hello") → error (arg is string, not Optional)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_none")
+    tc = r_callee.0
+    let r_arg: (TypeChecker, ExprId) = add_str_expr(tc, "hello")
+    tc = r_arg.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    tc.extra_expr_ids.push(r_arg.1)
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 1)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "assert_none(string) → type error") { return 109 }
+
+    return 0
+}
+
+fn test_assert_wrong_arg_count() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // assert_ok() → error (0 args)
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "assert_ok")
+    tc = r_callee.0
+    let args_s: i32 = tc.extra_expr_ids.len()
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, args_s, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "assert_ok() → arg count error") { return 110 }
+
+    // assert_some with 2 args → error
+    var tc2: TypeChecker = TypeChecker.new()
+    tc2 = register_builtins(tc2)
+    let r_callee2: (TypeChecker, ExprId) = add_ident_expr(tc2, "assert_some")
+    tc2 = r_callee2.0
+    let r_arg1: (TypeChecker, ExprId) = add_int_expr(tc2, "1")
+    tc2 = r_arg1.0
+    let r_arg2: (TypeChecker, ExprId) = add_int_expr(tc2, "2")
+    tc2 = r_arg2.0
+    let args_s2: i32 = tc2.extra_expr_ids.len()
+    tc2.extra_expr_ids.push(r_arg1.1)
+    tc2.extra_expr_ids.push(r_arg2.1)
+    let r_call2: (TypeChecker, ExprId) = add_call_expr(tc2, r_callee2.1, args_s2, 2)
+    tc2 = r_call2.0
+    let re2: (TypeChecker, KlarType) = check_expr(tc2, r_call2.1)
+    tc2 = re2.0
+    if not expect_errors(tc2, 1, "assert_some(1, 2) → arg count error") { return 110 }
+
+    return 0
+}
+
+// ─── 9.10.6 Error Kind Tests ─────────────────────────────────────────
+
+fn test_error_kind_undefined_function() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Call undefined function → UndefinedFunction
+    let r_callee: (TypeChecker, ExprId) = add_ident_expr(tc, "no_such_func")
+    tc = r_callee.0
+    let r_call: (TypeChecker, ExprId) = add_call_expr(tc, r_callee.1, 0, 0)
+    tc = r_call.0
+    let re: (TypeChecker, KlarType) = check_expr(tc, r_call.1)
+    tc = re.0
+    if not expect_errors(tc, 1, "undefined function error") { return 111 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedFunction, "undefined function kind") { return 111 }
+    return 0
+}
+
+fn test_error_kind_undefined_type() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // resolve type "NoSuchType" → UndefinedType
+    let rt: (TypeChecker, TypeExprId) = add_type_named(tc, "NoSuchType")
+    tc = rt.0
+    let rr: (TypeChecker, KlarType) = resolve_type_expr(tc, rt.1)
+    tc = rr.0
+    if not expect_errors(tc, 1, "undefined type error") { return 112 }
+    if not expect_error_kind(tc, 0, ErrorKind::UndefinedType, "undefined type kind") { return 112 }
+    return 0
+}
+
+fn test_error_kind_duplicate_definition() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // let x: i32 = 1; let x: i32 = 2 → DuplicateDefinition
+    let rt1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = rt1.0
+    let rv1: (TypeChecker, ExprId) = add_int_expr(tc, "1")
+    tc = rv1.0
+    let rs1: (TypeChecker, StmtId) = add_let_stmt(tc, "x", rt1.1, rv1.1)
+    tc = rs1.0
+    tc = check_stmt(tc, rs1.1)
+    if not expect_ok(tc, "first let x") { return 113 }
+
+    let rt2: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
+    tc = rt2.0
+    let rv2: (TypeChecker, ExprId) = add_int_expr(tc, "2")
+    tc = rv2.0
+    let rs2: (TypeChecker, StmtId) = add_let_stmt(tc, "x", rt2.1, rv2.1)
+    tc = rs2.0
+    tc = check_stmt(tc, rs2.1)
+    if not expect_errors(tc, 1, "duplicate let x → error") { return 113 }
+    if not expect_error_kind(tc, 0, ErrorKind::DuplicateDefinition, "duplicate definition kind") { return 113 }
+    return 0
+}
+
+fn test_error_kind_missing_return() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // return (bare) when expecting i32 → MissingReturn
+    tc.current_return_type = type_i32()
+    let rs: (TypeChecker, StmtId) = add_return_stmt(tc, no_expr())
+    tc = rs.0
+    tc = check_stmt(tc, rs.1)
+    if not expect_errors(tc, 1, "bare return in i32 fn → error") { return 114 }
+    if not expect_error_kind(tc, 0, ErrorKind::MissingReturn, "missing return kind") { return 114 }
+    return 0
+}
+
+fn test_error_kind_format_output() -> i32 {
+    var tc: TypeChecker = TypeChecker.new()
+
+    // Produce an error at a known span
+    let span: Span = Span { line: 5, column: 10, start: 0, end: 10 }
+    tc = add_typed_error(tc, ErrorKind::TypeMismatch, span, "expected i32, got string")
+
+    // Verify format_error produces Zig-compatible output
+    let formatted: string = format_error(tc, 0)
+    let expected: string = "5:10 [type_mismatch]: expected i32, got string"
+    if formatted != expected {
+        println("FAIL: format_error — expected '" + expected + "', got '" + formatted + "'")
+        return 115
+    }
+
+    // Verify format_all_errors header
+    let all: string = format_all_errors(tc)
+    if not all.starts_with("Found 1 error(s):") {
+        println("FAIL: format_all_errors header — got: " + all)
+        return 115
+    }
+
+    return 0
+}
+
+// ─── Main ───────────────────────────────────────────────────────────
+
+fn main() -> i32 {
+    println("=== Self-hosted Type Checker Tests ===")
+    var rc: i32 = 0
+
+    rc = test_literal_types()
+    if rc != 0 { return rc }
+
+    rc = test_identifier_lookup()
+    if rc != 0 { return rc }
+
+    rc = test_binary_ops()
+    if rc != 0 { return rc }
+
+    rc = test_binary_type_errors()
+    if rc != 0 { return rc }
+
+    rc = test_unary_ops()
+    if rc != 0 { return rc }
+
+    rc = test_let_decl()
+    if rc != 0 { return rc }
+
+    rc = test_let_type_mismatch()
+    if rc != 0 { return rc }
+
+    rc = test_var_and_assignment()
+    if rc != 0 { return rc }
+
+    rc = test_assign_to_immutable()
+    if rc != 0 { return rc }
+
+    rc = test_return_type_check()
+    if rc != 0 { return rc }
+
+    rc = test_if_condition_type()
+    if rc != 0 { return rc }
+
+    rc = test_while_condition_type()
+    if rc != 0 { return rc }
+
+    rc = test_break_outside_loop()
+    if rc != 0 { return rc }
+
+    rc = test_continue_outside_loop()
+    if rc != 0 { return rc }
+
+    rc = test_invalid_index()
+    if rc != 0 { return rc }
+
+    rc = test_function_call()
+    if rc != 0 { return rc }
+
+    rc = test_function_wrong_arg_type()
+    if rc != 0 { return rc }
+
+    rc = test_function_wrong_arg_count()
+    if rc != 0 { return rc }
+
+    rc = test_function_declaration()
+    if rc != 0 { return rc }
+
+    rc = test_struct_declaration_and_field()
+    if rc != 0 { return rc }
+
+    rc = test_struct_unknown_field()
+    if rc != 0 { return rc }
+
+    rc = test_user_function_call()
+    if rc != 0 { return rc }
+
+    // 9.10 Phase A tests
+    rc = test_expanded_builtins()
+    if rc != 0 { return rc }
+
+    rc = test_string_methods()
+    if rc != 0 { return rc }
+
+    rc = test_integer_methods()
+    if rc != 0 { return rc }
+
+    rc = test_float_methods()
+    if rc != 0 { return rc }
+
+    rc = test_array_methods()
+    if rc != 0 { return rc }
+
+    rc = test_generic_apply_list()
+    if rc != 0 { return rc }
+
+    rc = test_generic_apply_map()
+    if rc != 0 { return rc }
+
+    rc = test_list_methods()
+    if rc != 0 { return rc }
+
+    rc = test_map_methods()
+    if rc != 0 { return rc }
+
+    rc = test_some_constructor()
+    if rc != 0 { return rc }
+
+    rc = test_ok_err_constructor()
+    if rc != 0 { return rc }
+
+    rc = test_postfix_try()
+    if rc != 0 { return rc }
+
+    rc = test_postfix_try_result()
+    if rc != 0 { return rc }
+
+    rc = test_null_coalesce()
+    if rc != 0 { return rc }
+
+    rc = test_optional_methods()
+    if rc != 0 { return rc }
+
+    rc = test_result_methods()
+    if rc != 0 { return rc }
+
+    rc = test_parse_int_builtin()
+    if rc != 0 { return rc }
+
+    rc = test_none_constructor()
+    if rc != 0 { return rc }
+
+    rc = test_generic_apply_result()
+    if rc != 0 { return rc }
+
+    rc = test_postfix_try_error_on_non_optional()
+    if rc != 0 { return rc }
+
+    rc = test_method_call_arg_checking()
+    if rc != 0 { return rc }
+
+    rc = test_generic_apply_option()
+    if rc != 0 { return rc }
+
+    // 9.10.1 Generic Monomorphization tests
+    rc = test_generic_fn_explicit()
+    if rc != 0 { return rc }
+
+    rc = test_generic_fn_inferred()
+    if rc != 0 { return rc }
+
+    rc = test_generic_fn_cache()
+    if rc != 0 { return rc }
+
+    rc = test_generic_fn_two_params()
+    if rc != 0 { return rc }
+
+    rc = test_generic_fn_wrong_args()
+    if rc != 0 { return rc }
+
+    rc = test_generic_struct_instantiation()
+    if rc != 0 { return rc }
+
+    rc = test_generic_struct_field_access()
+    if rc != 0 { return rc }
+
+    rc = test_generic_struct_cache()
+    if rc != 0 { return rc }
+
+    rc = test_generic_fn_explicit_wrong_arg_type()
+    if rc != 0 { return rc }
+
+    rc = test_interpolated_string_checks_parts()
+    if rc != 0 { return rc }
+
+    // 9.10.2 Trait Resolution tests
+    rc = test_trait_definition()
+    if rc != 0 { return rc }
+
+    rc = test_trait_impl_registers_methods()
+    if rc != 0 { return rc }
+
+    rc = test_trait_impl_records_key()
+    if rc != 0 { return rc }
+
+    rc = test_trait_method_through_bounds()
+    if rc != 0 { return rc }
+
+    rc = test_trait_unknown_method_error()
+    if rc != 0 { return rc }
+
+    rc = test_builtin_eq_trait()
+    if rc != 0 { return rc }
+
+    rc = test_builtin_ordered_trait()
+    if rc != 0 { return rc }
+
+    rc = test_builtin_clone_trait()
+    if rc != 0 { return rc }
+
+    rc = test_builtin_hash_trait()
+    if rc != 0 { return rc }
+
+    rc = test_trait_impl_method_body_checked()
+    if rc != 0 { return rc }
+
+    rc = test_trait_inheritance_registered()
+    if rc != 0 { return rc }
+
+    rc = test_multiple_bounds()
+    if rc != 0 { return rc }
+
+    rc = test_trait_impl_wrong_method()
+    if rc != 0 { return rc }
+
+    // 9.10.3 Phase B: Closure, If Expr, Match Expr tests
+    rc = test_closure_basic()
+    if rc != 0 { return rc }
+
+    rc = test_closure_param_scope()
+    if rc != 0 { return rc }
+
+    rc = test_if_expr_basic()
+    if rc != 0 { return rc }
+
+    rc = test_if_expr_condition_error()
+    if rc != 0 { return rc }
+
+    rc = test_match_expr_basic()
+    if rc != 0 { return rc }
+
+    rc = test_match_optional_pattern()
+    if rc != 0 { return rc }
+
+    rc = test_match_result_pattern()
+    if rc != 0 { return rc }
+
+    rc = test_match_binding_pattern()
+    if rc != 0 { return rc }
+
+    rc = test_if_expr_mismatched_branches()
+    if rc != 0 { return rc }
+
+    rc = test_match_expr_mismatched_arms()
+    if rc != 0 { return rc }
+
+    rc = test_match_expr_guard()
+    if rc != 0 { return rc }
+
+    rc = test_match_expr_guard_error()
+    if rc != 0 { return rc }
+
+    rc = test_closure_no_params()
+    if rc != 0 { return rc }
+
+    rc = test_match_result_err_binding()
+    if rc != 0 { return rc }
+
+    // 9.10.4 Module Import Resolution tests
+    rc = test_import_selective()
+    if rc != 0 { return rc }
+
+    rc = test_import_selective_alias()
+    if rc != 0 { return rc }
+
+    rc = test_import_glob()
+    if rc != 0 { return rc }
+
+    rc = test_import_unknown_module()
+    if rc != 0 { return rc }
+
+    rc = test_import_unknown_symbol()
+    if rc != 0 { return rc }
+
+    rc = test_import_use_function()
+    if rc != 0 { return rc }
+
+    rc = test_import_struct_type()
+    if rc != 0 { return rc }
+
+    rc = test_import_multiple_modules()
+    if rc != 0 { return rc }
+
+    rc = test_module_registry_helpers()
+    if rc != 0 { return rc }
+
+    rc = test_import_check_module_integration()
+    if rc != 0 { return rc }
+
+    rc = test_import_trait()
+    if rc != 0 { return rc }
+
+    // 9.10.5 Assertion Builtin tests
+    rc = test_assert_ok_builtin()
+    if rc != 0 { return rc }
+
+    rc = test_assert_ok_wrong_type()
+    if rc != 0 { return rc }
+
+    rc = test_assert_err_builtin()
+    if rc != 0 { return rc }
+
+    rc = test_assert_err_wrong_type()
+    if rc != 0 { return rc }
+
+    rc = test_assert_some_builtin()
+    if rc != 0 { return rc }
+
+    rc = test_assert_some_wrong_type()
+    if rc != 0 { return rc }
+
+    rc = test_assert_none_builtin()
+    if rc != 0 { return rc }
+
+    rc = test_assert_none_wrong_type()
+    if rc != 0 { return rc }
+
+    rc = test_assert_wrong_arg_count()
+    if rc != 0 { return rc }
+
+    // 9.10.6 Error Kind tests
+    rc = test_error_kind_undefined_function()
+    if rc != 0 { return rc }
+
+    rc = test_error_kind_undefined_type()
+    if rc != 0 { return rc }
+
+    rc = test_error_kind_duplicate_definition()
+    if rc != 0 { return rc }
+
+    rc = test_error_kind_missing_return()
+    if rc != 0 { return rc }
+
+    rc = test_error_kind_format_output()
+    if rc != 0 { return rc }
+
+    println("checker_main.kl: all tests passed (106 tests)")
+    return 0
+}

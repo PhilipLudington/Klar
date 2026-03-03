@@ -21,6 +21,7 @@ zig-out/
 .doc-test-results.json
 .selfhost-test-results.json
 .meta-test-results.json
+.perf-comparison-results.json
 
 # Python bytecode cache
 __pycache__/
@@ -30,6 +31,11 @@ __pycache__/
 
 # AI scratch/sandbox directory
 scratch/
+
+# Local planning files
+PLAN.md
+BUG.md
+RESUME.md
 
 # Generated lock files in test fixtures (contain machine-specific absolute paths)
 test/pkg/**/klar.lock

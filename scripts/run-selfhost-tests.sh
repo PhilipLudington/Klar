@@ -5,6 +5,9 @@
 # Phase 2: Lexer parity testing — compares Zig vs selfhost dump-tokens output
 # Phase 3a: Parser parse check — verify selfhost parser can parse test corpus
 # Phase 3b: Parser AST parity — compare normalized AST output vs Zig dump-ast
+# Phase 4: Checker parity testing — selfhost checker vs Zig checker
+# Phase 5: E2E pipeline — selfhost parser JSON → Zig backend → correct binaries
+# Phase 6: Bootstrap validation — Stage 1 (Zig-compiled selfhost) parses its own source
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESULTS_FILE="$SCRIPT_DIR/.selfhost-test-results.json"
@@ -544,6 +547,360 @@ else
             FAILURES="$FAILURES\"$name: zig should reject\""
         fi
     done
+fi
+
+# Phase 4: Checker parity testing
+# Runs both Zig klar check and selfhost checker on test files.
+# Requires pre-built selfhost parser (from Phase 3) and checker_parity binary.
+echo ""
+echo "Phase 4: Checker parity testing"
+echo "────────────────────────────────────────"
+
+# Temp file cleanup on interrupt
+_CHECKER_TMPJSON=""
+trap 'rm -f "$_CHECKER_TMPJSON"' INT TERM
+
+SELFHOST_CHECKER="$SCRIPT_DIR/build/checker_parity"
+checker_build_output=$("$KLAR" build "$SELFHOST_DIR/checker_parity.kl" -o "$SELFHOST_CHECKER" 2>&1)
+checker_build_exit=$?
+# Check if binary was actually created (build may exit 0 without producing binary)
+if [ ! -f "$SELFHOST_CHECKER" ]; then
+    echo "  ✗ selfhost checker build failed (no binary produced)"
+    echo "    $checker_build_output" | head -3
+    FAILED=$((FAILED + 1))
+    [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+    FAILURES="$FAILURES\"selfhost checker: build failed\""
+else
+    # Test tiers — Tier 1 (basics) + Tier 2 (closures, optionals, strings, traits, arithmetic)
+    CHECKER_TIER1="
+test/native/hello.kl
+test/native/arith.kl
+test/native/local_vars.kl
+test/native/call.kl
+test/native/early_return.kl
+test/native/return_types.kl
+test/native/nested_calls.kl
+test/native/many_params.kl
+test/native/print_hello.kl
+test/native/print_no_newline.kl
+test/native/recursive_deep.kl
+test/native/struct.kl
+test/native/struct_method.kl
+test/native/struct_param.kl
+test/native/struct_order.kl
+test/native/struct_field_assign.kl
+test/native/struct_static_method.kl
+test/native/nested_struct_field.kl
+test/native/for_range.kl
+test/native/for_array.kl
+test/native/range_basic.kl
+test/native/range_inclusive.kl
+test/native/string_simple.kl
+test/native/string_basic.kl
+test/native/string_concat.kl
+test/native/string_eq.kl
+test/native/string_len.kl
+test/native/string_is_empty.kl
+test/native/string_push.kl
+test/native/string_append.kl
+test/native/string_clear.kl
+test/native/string_clone.kl
+test/native/string_as_str.kl
+test/native/string_contains.kl
+test/native/string_starts_with.kl
+test/native/string_ends_with.kl
+test/native/string_trim.kl
+test/native/string_to_uppercase.kl
+test/native/string_to_lowercase.kl
+test/native/string_slice.kl
+test/native/string_hash.kl
+test/native/string_drop.kl
+test/native/string_interp.kl
+test/native/string_primitives.kl
+test/native/eq_trait.kl
+test/native/eq_trait_bool.kl
+test/native/eq_trait_string.kl
+test/native/clone_trait_int.kl
+test/native/clone_trait_bool.kl
+test/native/clone_trait_float.kl
+test/native/clone_trait_string.kl
+test/native/ordered_trait.kl
+test/native/ordered_trait_float.kl
+test/native/ordered_trait_string.kl
+test/native/hash_trait_int.kl
+test/native/hash_trait_bool.kl
+test/native/hash_trait_float.kl
+test/native/hash_trait_string.kl
+test/native/default_trait_int.kl
+test/native/default_trait_bool.kl
+test/native/default_trait_float.kl
+test/native/default_trait_string.kl
+test/native/drop_trait.kl
+test/native/int_abs.kl
+test/native/int_min.kl
+test/native/int_max.kl
+test/native/wrapping_add.kl
+test/native/wrapping_sub.kl
+test/native/wrapping_mul.kl
+test/native/wrapping_arithmetic.kl
+test/native/saturating_add.kl
+test/native/saturating_sub.kl
+test/native/saturating_mul.kl
+test/native/saturating_arithmetic.kl
+test/native/overflow_add.kl
+test/native/overflow_sub.kl
+test/native/overflow_mul.kl
+test/native/closure_simple.kl
+test/native/closure_arg.kl
+test/native/closure_capture.kl
+test/native/closure_multi_capture.kl
+test/native/closure_return_simple.kl
+test/native/optional_some.kl
+test/native/optional_unwrap.kl
+test/native/optional_coalesce.kl
+test/native/optional_coalesce_some.kl
+test/native/optional_unwrap_or.kl
+test/native/optional_expect.kl
+test/native/array.kl
+test/native/array_assign.kl
+test/native/array_sized.kl
+test/native/array_repeat.kl
+test/native/array_return.kl
+test/native/array_methods.kl
+test/native/tuple.kl
+test/native/list_basic.kl
+test/native/list_for.kl
+test/native/list_pop.kl
+test/native/list_last.kl
+test/native/list_with_capacity.kl
+test/native/map_basic.kl
+test/native/set_basic.kl
+test/native/generics_basic.kl
+test/native/generic_struct.kl
+test/native/generic_struct_method.kl
+test/native/trait_basic.kl
+test/native/trait_bounds.kl
+test/native/trait_method_with_args.kl
+test/native/trait_inheritance.kl
+test/native/trait_multi_inherit.kl
+test/native/trait_method_inout_bounds.kl
+test/native/trait_method_ref_bounds.kl
+test/native/meta_pure_generic.kl
+test/native/map_for.kl
+test/native/match_tuple_element.kl
+"
+
+    # Known gaps — features not yet in selfhost checker
+    CHECKER_KNOWN_GAPS="async_ ffi/ ownership_ shadow_ import"
+
+    MATCH_ACCEPT=0
+    MATCH_REJECT=0
+    KNOWN_GAP=0
+    SELFHOST_TOO_PERMISSIVE=0
+    SELFHOST_TOO_STRICT=0
+    CRASH=0
+
+    for f in $CHECKER_TIER1; do
+        [ -f "$SCRIPT_DIR/$f" ] || continue
+        name=$(basename "$f" .kl)
+
+        # Check known gaps
+        skip=0
+        for gap in $CHECKER_KNOWN_GAPS; do
+            case "$name" in
+                ${gap}*) skip=1 ;;
+            esac
+        done
+        if [ $skip -eq 1 ]; then
+            KNOWN_GAP=$((KNOWN_GAP + 1))
+            continue
+        fi
+
+        # Run Zig klar check
+        "$KLAR" check "$SCRIPT_DIR/$f" >/dev/null 2>&1
+        zig_exit=$?
+
+        # Run selfhost: dump-ast directly to temp file, then checker_parity
+        tmpjson=$(mktemp /tmp/checker_parity_XXXXXX.json)
+        _CHECKER_TMPJSON="$tmpjson"
+        "$KLAR" dump-ast "$SCRIPT_DIR/$f" > "$tmpjson" 2>/dev/null
+        dump_exit=$?
+        if [ $dump_exit -ne 0 ]; then
+            rm -f "$tmpjson"
+            KNOWN_GAP=$((KNOWN_GAP + 1))
+            continue
+        fi
+
+        selfhost_output=$("$SELFHOST_CHECKER" "$tmpjson" 2>&1)
+        selfhost_exit=$?
+        rm -f "$tmpjson"
+
+        if [ $selfhost_exit -ge 128 ]; then
+            echo "  ✗ $name (CRASH, exit $selfhost_exit)"
+            CRASH=$((CRASH + 1))
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: checker crash (exit $selfhost_exit)\""
+        elif [ $zig_exit -eq 0 ] && [ $selfhost_exit -eq 0 ]; then
+            echo "  ✓ $name (match-accept)"
+            MATCH_ACCEPT=$((MATCH_ACCEPT + 1))
+            PASSED=$((PASSED + 1))
+        elif [ $zig_exit -ne 0 ] && [ $selfhost_exit -ne 0 ]; then
+            echo "  ✓ $name (match-reject)"
+            MATCH_REJECT=$((MATCH_REJECT + 1))
+            PASSED=$((PASSED + 1))
+        elif [ $zig_exit -eq 0 ] && [ $selfhost_exit -ne 0 ]; then
+            echo "  ✗ $name (selfhost-too-strict)"
+            echo "    selfhost: $selfhost_output" | head -3
+            SELFHOST_TOO_STRICT=$((SELFHOST_TOO_STRICT + 1))
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: selfhost too strict\""
+        else
+            echo "  ✗ $name (selfhost-too-permissive)"
+            SELFHOST_TOO_PERMISSIVE=$((SELFHOST_TOO_PERMISSIVE + 1))
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: selfhost too permissive\""
+        fi
+    done
+
+    echo ""
+    echo "  Checker parity summary:"
+    echo "    match-accept: $MATCH_ACCEPT"
+    echo "    match-reject: $MATCH_REJECT"
+    echo "    known-gap: $KNOWN_GAP"
+    echo "    selfhost-too-strict: $SELFHOST_TOO_STRICT"
+    echo "    selfhost-too-permissive: $SELFHOST_TOO_PERMISSIVE"
+    echo "    crash: $CRASH"
+fi
+
+# Phase 5: End-to-end pipeline test (selfhost parser → JSON → Zig backend)
+# Validates the full round-trip: selfhost AST JSON fed to Zig --ast-input
+# produces the same exit code as the normal Zig pipeline.
+echo ""
+echo "Phase 5: End-to-end pipeline (selfhost → JSON → Zig backend)"
+echo "────────────────────────────────────────"
+
+_E2E_TMPJSON=""
+_E2E_TMPDIR=""
+trap 'rm -f "$_CHECKER_TMPJSON" "$_E2E_TMPJSON"; rm -rf "$_E2E_TMPDIR"' INT TERM
+
+E2E_MATCH=0
+E2E_PARSE_FAIL=0
+E2E_BUILD_FAIL=0
+E2E_MISMATCH=0
+
+if [ $build_exit -ne 0 ] || [ ! -f "$SELFHOST_PARSER" ]; then
+    echo "  (skipped — selfhost parser build failed)"
+elif [ -z "$PARSED_FILES" ]; then
+    echo "  (skipped — no files parsed successfully in Phase 3)"
+else
+    # Create temp directory for JSON files
+    _E2E_TMPDIR=$(mktemp -d /tmp/klar_e2e_XXXXXX)
+
+    for f in $PARSED_FILES; do
+        [ -f "$SCRIPT_DIR/$f" ] || continue
+        name=$(basename "$f" .kl)
+
+        # Step 1: Selfhost parser → JSON
+        tmpjson="$_E2E_TMPDIR/${name}.json"
+        _E2E_TMPJSON="$tmpjson"
+        "$SELFHOST_PARSER" "$SCRIPT_DIR/$f" > "$tmpjson" 2>/dev/null
+        selfhost_exit=$?
+        if [ $selfhost_exit -ne 0 ]; then
+            E2E_PARSE_FAIL=$((E2E_PARSE_FAIL + 1))
+            continue
+        fi
+
+        # Step 2: Zig backend with selfhost AST JSON (native compilation)
+        ast_output=$("$KLAR" run "$SCRIPT_DIR/$f" --ast-input "$tmpjson" 2>/dev/null)
+        ast_exit=$?
+
+        # Step 3: Direct Zig pipeline (reference)
+        direct_output=$("$KLAR" run "$SCRIPT_DIR/$f" 2>/dev/null)
+        direct_exit=$?
+
+        # Step 4: Compare exit codes
+        if [ $ast_exit -eq $direct_exit ]; then
+            echo "  ✓ $name (match, exit $direct_exit)"
+            E2E_MATCH=$((E2E_MATCH + 1))
+            PASSED=$((PASSED + 1))
+        elif [ $ast_exit -ge 128 ] || echo "$ast_output" | grep -q "Error parsing AST JSON\|Error reading AST" 2>/dev/null; then
+            echo "  ✗ $name (build-fail, ast-exit=$ast_exit direct-exit=$direct_exit)"
+            E2E_BUILD_FAIL=$((E2E_BUILD_FAIL + 1))
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: e2e build-fail (ast=$ast_exit direct=$direct_exit)\""
+        else
+            echo "  ✗ $name (mismatch, ast-exit=$ast_exit direct-exit=$direct_exit)"
+            E2E_MISMATCH=$((E2E_MISMATCH + 1))
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: e2e mismatch (ast=$ast_exit direct=$direct_exit)\""
+        fi
+
+        rm -f "$tmpjson"
+    done
+
+    rm -rf "$_E2E_TMPDIR"
+    _E2E_TMPDIR=""
+
+    echo ""
+    echo "  E2E pipeline summary:"
+    echo "    match: $E2E_MATCH"
+    echo "    selfhost-parse-fail: $E2E_PARSE_FAIL"
+    echo "    build-fail: $E2E_BUILD_FAIL"
+    echo "    mismatch: $E2E_MISMATCH"
+fi
+
+# Phase 6: Bootstrap validation (fixed-point test)
+echo ""
+echo "Phase 6: Bootstrap validation (Stage 1 self-parsing)"
+echo "────────────────────────────────────────────────────────────"
+
+BOOTSTRAP_BUILD=0
+BOOTSTRAP_PASS=0
+BOOTSTRAP_FAIL=0
+
+STAGE1_MAIN="$SCRIPT_DIR/build/stage1_main_phase6"
+STAGE1_PARSER="$SCRIPT_DIR/build/stage1_parser_phase6"
+
+# Build Stage 1 binaries
+if "$KLAR" build "$SELFHOST_DIR/main.kl" -o "$STAGE1_MAIN" > /dev/null 2>&1 && \
+   "$KLAR" build "$SELFHOST_DIR/parser_main.kl" -o "$STAGE1_PARSER" > /dev/null 2>&1; then
+    echo "  ✓ Stage 1 binaries built successfully"
+    BOOTSTRAP_BUILD=1
+    PASSED=$((PASSED + 1))
+else
+    echo "  ✗ Stage 1 binary build failed"
+    BOOTSTRAP_BUILD=0
+    FAILED=$((FAILED + 1))
+fi
+
+# Test Stage 2 self-parsing if Stage 1 built successfully
+if [ $BOOTSTRAP_BUILD -eq 1 ]; then
+    for f in "$SELFHOST_DIR"/ast.kl "$SELFHOST_DIR"/types.kl "$SELFHOST_DIR"/lexer.kl; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f" .kl)
+
+        if "$STAGE1_PARSER" "$f" > /dev/null 2>/dev/null; then
+            echo "  ✓ Stage 1 parses $name (fixed-point)"
+            BOOTSTRAP_PASS=$((BOOTSTRAP_PASS + 1))
+            PASSED=$((PASSED + 1))
+        else
+            echo "  ✗ Stage 1 failed to parse $name"
+            BOOTSTRAP_FAIL=$((BOOTSTRAP_FAIL + 1))
+            FAILED=$((FAILED + 1))
+        fi
+    done
+fi
+
+if [ $BOOTSTRAP_BUILD -eq 1 ]; then
+    echo ""
+    echo "  Bootstrap summary:"
+    echo "    stage1-build: ✓"
+    echo "    self-parse: $BOOTSTRAP_PASS/$((BOOTSTRAP_PASS + BOOTSTRAP_FAIL)) pass"
 fi
 
 TOTAL=$((PASSED + FAILED))

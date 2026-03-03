@@ -319,7 +319,7 @@ pub struct EnumData {
     is_extern: bool,
 }
 
-pub struct EnumVariantData {
+pub struct EnumVariantInfo {
     name: string,
     payload_start: i32,
     payload_count: i32,
@@ -639,6 +639,63 @@ pub fn type_is_copy_primitive(t: KlarType) -> bool {
         // StructType needs is_copy check from StructData — handled by type checker
         // All other types are NOT copy
         _ => { return false }
+    }
+}
+
+// ─── ErrorKind (Milestone 9.10.6) ────────────────────────────────────
+// Structured error categories matching the Zig checker's CheckError.Kind subset.
+
+pub enum ErrorKind {
+    TypeMismatch,
+    UndefinedVariable,
+    UndefinedType,
+    UndefinedField,
+    UndefinedMethod,
+    UndefinedVariant,       // TODO: emit in enum variant resolution (future milestone)
+    UndefinedFunction,
+    InvalidOperation,
+    InvalidAssignment,      // TODO: emit for compound assignment type errors (future milestone)
+    InvalidCall,            // TODO: emit for calling non-callable expressions (future milestone)
+    InvalidIndex,
+    BreakOutsideLoop,
+    ContinueOutsideLoop,
+    ReturnTypeMismatch,
+    MissingReturn,
+    DuplicateDefinition,
+    InvalidPattern,         // TODO: emit in match pattern checking (future milestone)
+    TraitNotImplemented,
+    InvalidConversion,      // TODO: emit for .as#[T] conversion failures (future milestone)
+    MutabilityError,
+    WrongNumberOfArgs,
+    UndefinedModule,
+    UndefinedExport,
+}
+
+pub fn error_kind_name(k: ErrorKind) -> string {
+    match k {
+        ErrorKind::TypeMismatch => { return "type_mismatch" }
+        ErrorKind::UndefinedVariable => { return "undefined_variable" }
+        ErrorKind::UndefinedType => { return "undefined_type" }
+        ErrorKind::UndefinedField => { return "undefined_field" }
+        ErrorKind::UndefinedMethod => { return "undefined_method" }
+        ErrorKind::UndefinedVariant => { return "undefined_variant" }
+        ErrorKind::UndefinedFunction => { return "undefined_function" }
+        ErrorKind::InvalidOperation => { return "invalid_operation" }
+        ErrorKind::InvalidAssignment => { return "invalid_assignment" }
+        ErrorKind::InvalidCall => { return "invalid_call" }
+        ErrorKind::InvalidIndex => { return "invalid_index" }
+        ErrorKind::BreakOutsideLoop => { return "break_outside_loop" }
+        ErrorKind::ContinueOutsideLoop => { return "continue_outside_loop" }
+        ErrorKind::ReturnTypeMismatch => { return "return_type_mismatch" }
+        ErrorKind::MissingReturn => { return "missing_return" }
+        ErrorKind::DuplicateDefinition => { return "duplicate_definition" }
+        ErrorKind::InvalidPattern => { return "invalid_pattern" }
+        ErrorKind::TraitNotImplemented => { return "trait_not_implemented" }
+        ErrorKind::InvalidConversion => { return "invalid_conversion" }
+        ErrorKind::MutabilityError => { return "mutability_error" }
+        ErrorKind::WrongNumberOfArgs => { return "wrong_number_of_args" }
+        ErrorKind::UndefinedModule => { return "undefined_module" }
+        ErrorKind::UndefinedExport => { return "undefined_export" }
     }
 }
 
