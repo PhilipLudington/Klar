@@ -169,9 +169,18 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
     rm -f "$BUILD_DIR/klar_build_stderr_$$"
 
     if echo "$build_stdout" | grep -q "^Built"; then
-        # Run and get exit code
-        "$temp_bin" 2>/dev/null
+        # On Windows, MSVC link.exe adds .exe; use that path if it exists
+        run_bin="$temp_bin"
+        if [[ "$OS" == "Windows_NT" ]] && [ -f "$temp_bin.exe" ]; then
+            run_bin="$temp_bin.exe"
+        fi
+
+        # Run and get exit code (capture stderr for diagnostics on failure)
+        run_stderr_file="$BUILD_DIR/klar_run_stderr_$$"
+        "$run_bin" 2>"$run_stderr_file"
         result=$?
+        run_stderr=$(cat "$run_stderr_file" 2>/dev/null | head -3 || true)
+        rm -f "$run_stderr_file"
 
         # Check against expected (if defined)
         expected=$(get_expected "$name")
@@ -181,6 +190,9 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
             PASSED=$((PASSED + 1))
         else
             echo "✗ $name (expected: $expected, got: $result)"
+            if [ -n "$run_stderr" ]; then
+                echo "  stderr: $run_stderr"
+            fi
             FAILED=$((FAILED + 1))
             if [ -n "$FAILURES" ]; then
                 FAILURES="$FAILURES,"
@@ -188,7 +200,7 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
             FAILURES="$FAILURES\"$name: expected $expected, got $result\""
         fi
 
-        rm -f "$temp_bin"
+        rm -f "$temp_bin" "$temp_bin.exe"
     else
         # Show build error for diagnosis (first 3 lines)
         build_err_line=$(echo "$build_stderr" | head -3 | tr '\n' ' ')

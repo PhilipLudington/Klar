@@ -9913,10 +9913,11 @@ pub const Emitter = struct {
 
     /// Create an optional None value of the given optional type.
     fn emitNone(self: *Emitter, opt_type: llvm.TypeRef) llvm.ValueRef {
-        // Allocate and set tag to 0 (None)
+        // Allocate and zero-initialize (avoids UB from loading uninitialized value field)
         const opt_alloca = self.builder.buildAlloca(opt_type, "none.tmp");
+        _ = self.builder.buildStore(llvm.Const.null_(opt_type), opt_alloca);
 
-        // Set tag to 0 (None)
+        // Set tag to 0 (None) — redundant after zero-init but explicit
         var tag_indices = [_]llvm.ValueRef{
             llvm.Const.int32(self.ctx, 0),
             llvm.Const.int32(self.ctx, 0),
@@ -9924,11 +9925,10 @@ pub const Emitter = struct {
         const tag_ptr = self.builder.buildGEP(opt_type, opt_alloca, &tag_indices, "none.tag.ptr");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
 
-        // Load and return (value field is undefined/uninitialized)
         return self.builder.buildLoad(opt_type, opt_alloca, "none.val");
     }
 
-    /// Create a Result Ok value: Result#[T, E] = { tag: 1, ok_value: value, err_value: undef }
+    /// Create a Result Ok value: Result#[T, E] = { tag: 1, ok_value: value, err_value: zeroed }
     fn emitOk(self: *Emitter, value: llvm.ValueRef, ok_type: llvm.TypeRef, err_type: llvm.TypeRef) llvm.ValueRef {
         // Result type is { i1, T, E }
         var result_fields = [_]llvm.TypeRef{
@@ -9938,8 +9938,9 @@ pub const Emitter = struct {
         };
         const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
 
-        // Allocate and populate
+        // Allocate and zero-initialize (avoids UB from loading uninitialized err field)
         const result_alloca = self.builder.buildAlloca(result_type, "ok.tmp");
+        _ = self.builder.buildStore(llvm.Const.null_(result_type), result_alloca);
 
         // Set tag to 1 (Ok)
         var tag_indices = [_]llvm.ValueRef{
@@ -9957,11 +9958,10 @@ pub const Emitter = struct {
         const val_ptr = self.builder.buildGEP(result_type, result_alloca, &val_indices, "ok.val.ptr");
         _ = self.builder.buildStore(value, val_ptr);
 
-        // Load and return (err_value field is undefined/uninitialized)
         return self.builder.buildLoad(result_type, result_alloca, "ok.result");
     }
 
-    /// Create a Result Err value: Result#[T, E] = { tag: 0, ok_value: undef, err_value: error }
+    /// Create a Result Err value: Result#[T, E] = { tag: 0, ok_value: zeroed, err_value: error }
     fn emitErr(self: *Emitter, error_val: llvm.ValueRef, ok_type: llvm.TypeRef, err_type: llvm.TypeRef) llvm.ValueRef {
         // Result type is { i1, T, E }
         var result_fields = [_]llvm.TypeRef{
@@ -9971,8 +9971,9 @@ pub const Emitter = struct {
         };
         const result_type = llvm.Types.struct_(self.ctx, &result_fields, false);
 
-        // Allocate and populate
+        // Allocate and zero-initialize (avoids UB from loading uninitialized ok field)
         const result_alloca = self.builder.buildAlloca(result_type, "err.tmp");
+        _ = self.builder.buildStore(llvm.Const.null_(result_type), result_alloca);
 
         // Set tag to 0 (Err)
         var tag_indices = [_]llvm.ValueRef{
@@ -9990,7 +9991,6 @@ pub const Emitter = struct {
         const err_ptr = self.builder.buildGEP(result_type, result_alloca, &err_indices, "err.err.ptr");
         _ = self.builder.buildStore(error_val, err_ptr);
 
-        // Load and return (ok_value field is undefined/uninitialized)
         return self.builder.buildLoad(result_type, result_alloca, "err.result");
     }
 
