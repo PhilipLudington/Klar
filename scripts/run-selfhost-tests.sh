@@ -7,6 +7,7 @@
 # Phase 3b: Parser AST parity — compare normalized AST output vs Zig dump-ast
 # Phase 4: Checker parity testing — selfhost checker vs Zig checker
 # Phase 5: E2E pipeline — selfhost parser JSON → Zig backend → correct binaries
+# Phase 6: Bootstrap validation — Stage 1 (Zig-compiled selfhost) parses its own source
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESULTS_FILE="$SCRIPT_DIR/.selfhost-test-results.json"
@@ -851,6 +852,55 @@ else
     echo "    selfhost-parse-fail: $E2E_PARSE_FAIL"
     echo "    build-fail: $E2E_BUILD_FAIL"
     echo "    mismatch: $E2E_MISMATCH"
+fi
+
+# Phase 6: Bootstrap validation (fixed-point test)
+echo ""
+echo "Phase 6: Bootstrap validation (Stage 1 self-parsing)"
+echo "────────────────────────────────────────────────────────────"
+
+BOOTSTRAP_BUILD=0
+BOOTSTRAP_PASS=0
+BOOTSTRAP_FAIL=0
+
+STAGE1_MAIN="$SCRIPT_DIR/build/stage1_main_phase6"
+STAGE1_PARSER="$SCRIPT_DIR/build/stage1_parser_phase6"
+
+# Build Stage 1 binaries
+if "$KLAR" build "$SELFHOST_DIR/main.kl" -o "$STAGE1_MAIN" > /dev/null 2>&1 && \
+   "$KLAR" build "$SELFHOST_DIR/parser_main.kl" -o "$STAGE1_PARSER" > /dev/null 2>&1; then
+    echo "  ✓ Stage 1 binaries built successfully"
+    BOOTSTRAP_BUILD=1
+    PASSED=$((PASSED + 1))
+else
+    echo "  ✗ Stage 1 binary build failed"
+    BOOTSTRAP_BUILD=0
+    FAILED=$((FAILED + 1))
+fi
+
+# Test Stage 2 self-parsing if Stage 1 built successfully
+if [ $BOOTSTRAP_BUILD -eq 1 ]; then
+    for f in "$SELFHOST_DIR"/ast.kl "$SELFHOST_DIR"/types.kl "$SELFHOST_DIR"/lexer.kl; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f" .kl)
+
+        if "$STAGE1_PARSER" "$f" > /dev/null 2>/dev/null; then
+            echo "  ✓ Stage 1 parses $name (fixed-point)"
+            BOOTSTRAP_PASS=$((BOOTSTRAP_PASS + 1))
+            PASSED=$((PASSED + 1))
+        else
+            echo "  ✗ Stage 1 failed to parse $name"
+            BOOTSTRAP_FAIL=$((BOOTSTRAP_FAIL + 1))
+            FAILED=$((FAILED + 1))
+        fi
+    done
+fi
+
+if [ $BOOTSTRAP_BUILD -eq 1 ]; then
+    echo ""
+    echo "  Bootstrap summary:"
+    echo "    stage1-build: ✓"
+    echo "    self-parse: $BOOTSTRAP_PASS/$((BOOTSTRAP_PASS + BOOTSTRAP_FAIL)) pass"
 fi
 
 TOTAL=$((PASSED + FAILED))
