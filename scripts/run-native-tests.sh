@@ -116,6 +116,7 @@ get_expected() {
         fs_stat) echo 42 ;;
         process_run) echo 42 ;;
         timestamp_now) echo 42 ;;
+        result_tuple_string_helper) echo 42 ;;
         *) echo -1 ;;  # -1 means accept any result
     esac
 }

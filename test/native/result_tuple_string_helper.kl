@@ -1,0 +1,32 @@
+struct TestError { msg: string }
+
+fn make_result(s: string, n: i32) -> Result#[(string, i32), TestError] {
+    return Ok((s, n))
+}
+
+fn use_result() -> Result#[(string, i32), TestError] {
+    let r: Result#[(string, i32), TestError] = make_result("world", 10)
+    match r {
+        Ok((s, n)) => { return Ok((s, n + 1)) }
+        Err(e) => { return Err(e) }
+    }
+}
+
+fn main() -> i32 {
+    let r: Result#[(string, i32), TestError] = make_result("hello", 42)
+    match r {
+        Ok((s, n)) => {
+            println(s)
+        }
+        Err(e) => { return 1 }
+    }
+
+    let r2: Result#[(string, i32), TestError] = use_result()
+    match r2 {
+        Ok((s, n)) => {
+            println(s)
+            return n + 31
+        }
+        Err(e) => { return 1 }
+    }
+}

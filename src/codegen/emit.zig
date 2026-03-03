@@ -5824,15 +5824,31 @@ pub const Emitter = struct {
             },
             .tuple_pattern => |t| {
                 // Check each element matches
+                const subject_llvm_type = llvm.typeOf(subject);
+                const type_kind = llvm.getTypeKind(subject_llvm_type);
                 var result = llvm.Const.int1(self.ctx, true);
                 for (t.elements, 0..) |elem, i| {
-                    // Extract tuple element
-                    var indices = [_]llvm.ValueRef{
-                        llvm.Const.int32(self.ctx, 0),
-                        llvm.Const.int32(self.ctx, @intCast(i)),
-                    };
-                    const subject_llvm_type = llvm.typeOf(subject);
-                    const elem_val = self.builder.buildGEP(subject_llvm_type, subject, &indices, "tuple.elem");
+                    var elem_val: llvm.ValueRef = undefined;
+
+                    if (type_kind == llvm.c.LLVMStructTypeKind) {
+                        // Value type: extract element directly
+                        elem_val = self.builder.buildExtractValue(subject, @intCast(i), "tuple.elem");
+                    } else {
+                        // Pointer type: GEP to element, then load
+                        var indices = [_]llvm.ValueRef{
+                            llvm.Const.int32(self.ctx, 0),
+                            llvm.Const.int32(self.ctx, @intCast(i)),
+                        };
+                        const elem_ptr = self.builder.buildGEP(subject_llvm_type, subject, &indices, "tuple.elem.ptr");
+                        const elem_llvm_type = if (subject_type) |st| blk: {
+                            if (st == .tuple and i < st.tuple.elements.len) {
+                                break :blk self.typeToLLVM(st.tuple.elements[i]);
+                            }
+                            break :blk llvm.Types.int64(self.ctx);
+                        } else llvm.Types.int64(self.ctx);
+                        elem_val = self.builder.buildLoad(elem_llvm_type, elem_ptr, "tuple.elem");
+                    }
+
                     // Get element type from tuple type if available
                     const elem_type: ?types.Type = if (subject_type) |st| blk: {
                         if (st == .tuple and i < st.tuple.elements.len) {
@@ -6143,13 +6159,33 @@ pub const Emitter = struct {
                 }
             },
             .tuple_pattern => |t| {
+                const subject_type = llvm.typeOf(subject);
+                const type_kind = llvm.getTypeKind(subject_type);
+
                 for (t.elements, 0..) |elem, i| {
-                    var indices = [_]llvm.ValueRef{
-                        llvm.Const.int32(self.ctx, 0),
-                        llvm.Const.int32(self.ctx, @intCast(i)),
-                    };
-                    const subject_type = llvm.typeOf(subject);
-                    const elem_val = self.builder.buildGEP(subject_type, subject, &indices, "tuple.elem");
+                    var elem_val: llvm.ValueRef = undefined;
+
+                    if (type_kind == llvm.c.LLVMStructTypeKind) {
+                        // Value type: extract element directly
+                        elem_val = self.builder.buildExtractValue(subject, @intCast(i), "tuple.elem");
+                    } else {
+                        // Pointer type: GEP to element, then load
+                        var indices = [_]llvm.ValueRef{
+                            llvm.Const.int32(self.ctx, 0),
+                            llvm.Const.int32(self.ctx, @intCast(i)),
+                        };
+                        const elem_ptr = self.builder.buildGEP(subject_type, subject, &indices, "tuple.elem.ptr");
+                        const elem_llvm_type = if (expected_type) |et| blk: {
+                            if (et == .tuple) {
+                                const tuple_types = et.tuple.elements;
+                                if (i < tuple_types.len) {
+                                    break :blk self.typeToLLVM(tuple_types[i]);
+                                }
+                            }
+                            break :blk llvm.Types.int64(self.ctx);
+                        } else llvm.Types.int64(self.ctx);
+                        elem_val = self.builder.buildLoad(elem_llvm_type, elem_ptr, "tuple.elem");
+                    }
 
                     // Get element type from tuple
                     const elem_type = if (expected_type) |et| blk: {
