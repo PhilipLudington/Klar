@@ -21,6 +21,7 @@ zig-out/
 .doc-test-results.json
 .selfhost-test-results.json
 .meta-test-results.json
+.perf-comparison-results.json
 
 # Python bytecode cache
 __pycache__/
