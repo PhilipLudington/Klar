@@ -182,7 +182,7 @@ Source (.kl) → Lexer → Parser → AST → Type Checker → [Backend]
 
 ## Current Implementation Status
 
-**Phase 4: Language Completion** (in progress) - See `PLAN.md` for full roadmap.
+**Phase 3: Language Completion** (in progress) - See `PLAN.md` for full roadmap.
 
 | Feature | Status |
 |---------|--------|

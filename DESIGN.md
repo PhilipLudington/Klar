@@ -20,6 +20,7 @@ Klar is not a systems language (like C, Rust, or Zig). It targets the same space
 8. [Generics and Traits](#generics-and-traits)
 9. [Standard Library](#standard-library)
 10. [Module and Package System](#module-and-package-system)
+11. [C Interoperability](#c-interoperability)
 
 ---
 
@@ -1435,6 +1436,217 @@ fn log(msg: string) {
     if comptime DEBUG {
         print(msg)
     }
+}
+```
+
+---
+
+## C Interoperability
+
+### Extern Functions
+
+Klar can declare and call C functions using `extern fn` syntax:
+
+```klar
+// Individual extern declarations
+extern fn printf(format: *const u8, ...) -> i32
+extern fn malloc(size: usize) -> *mut void
+extern fn free(ptr: *mut void)
+
+// Block syntax for grouping
+extern "C" {
+    fn puts(s: *const u8) -> i32
+    fn getenv(name: *const u8) -> *const u8
+    fn exit(status: i32) -> !
+}
+```
+
+Use `@link_name` to map a Klar function name to a different C symbol:
+
+```klar
+@link_name("SDL_Init")
+extern fn sdl_init(flags: u32) -> i32
+```
+
+Variadic functions use `...` after the last typed parameter:
+
+```klar
+extern fn printf(format: *const u8, ...) -> i32
+```
+
+### Raw Pointer Types
+
+C interop introduces raw pointer types for direct memory access:
+
+```klar
+// Immutable pointer (like const T* in C)
+let ptr: *const i32 = &value
+
+// Mutable pointer (like T* in C)
+let ptr: *mut i32 = &mut value
+
+// Void pointer (like void* in C)
+let ptr: *void = raw_ptr
+let ptr: *mut void = raw_mut_ptr
+
+// Nullable pointer (optional pointer)
+let maybe_ptr: ?*i32 = get_optional_ptr()
+
+// Pointer to many (like T* array in C)
+let arr_ptr: [*]i32 = get_array_ptr()
+let arr_ptr: [*:0]u8 = get_null_terminated_string()  // Sentinel-terminated
+```
+
+Pointer arithmetic is allowed inside `unsafe` blocks:
+
+```klar
+unsafe {
+    let next: *i32 = ptr + 1  // Advance by sizeof(i32)
+}
+```
+
+### C-Compatible Integer Types
+
+Platform-specific C integer types ensure correct ABI matching:
+
+```klar
+c_char, c_short, c_int, c_long, c_longlong
+c_uchar, c_ushort, c_uint, c_ulong, c_ulonglong
+c_size_t, c_ssize_t, c_ptrdiff_t
+```
+
+The null pointer constant:
+
+```klar
+let ptr: *void = null
+```
+
+### C-Compatible Structs and Unions
+
+`@repr(C)` ensures C-compatible memory layout (fields in declaration order, C alignment rules). `@packed` eliminates padding.
+
+```klar
+@repr(C)
+struct SDL_Rect {
+    x: c_int
+    y: c_int
+    w: c_int
+    h: c_int
+}
+
+@repr(C)
+@packed
+struct PackedData {
+    flag: u8
+    value: u32  // No padding before this
+}
+```
+
+Opaque types represent incomplete C types:
+
+```klar
+@opaque
+struct SDL_Window
+
+@opaque
+struct SDL_Renderer
+```
+
+Union types provide C-compatible untagged unions:
+
+```klar
+@repr(C)
+union Value {
+    i: c_int
+    f: f64
+    p: *void
+}
+```
+
+### Library Linking
+
+The `@link` attribute specifies which C library to link:
+
+```klar
+@link("SDL3")
+extern fn SDL_Init(flags: u32) -> c_int
+
+@link("ssl")
+@link("crypto")
+extern fn SSL_library_init() -> c_int
+
+// macOS framework
+@link(framework: "Cocoa")
+extern fn NSApplicationMain(argc: c_int, argv: *const *const u8) -> c_int
+```
+
+Libraries can also be specified in `klar.toml`:
+
+```toml
+[native-dependencies]
+SDL3 = { pkg-config = "sdl3" }
+sqlite = { path = "/usr/lib/libsqlite3.a", kind = "static" }
+```
+
+### Binding Generator
+
+`klar bindgen` generates Klar bindings from C headers using libclang:
+
+```bash
+klar bindgen SDL3/SDL.h -o src/sdl3.kl
+klar bindgen sqlite3.h --config bindgen.toml -o src/sqlite.kl
+```
+
+The generator produces `extern fn` declarations, `@repr(C)` struct definitions, type aliases, and preprocessor macro constants.
+
+### Safe Wrapper Patterns
+
+Idiomatic Klar wrappers provide safety over raw C APIs using RAII, error integration, and type-safe conversions:
+
+```klar
+// RAII wrapper — Drop cleans up C resource
+pub struct Window {
+    ptr: *sdl.Window
+}
+
+impl Window {
+    pub fn create(ref title: string, width: i32, height: i32) -> Result#[Window, SdlError] {
+        let c_title: CString = CString.from(title)
+        let ptr: ?*sdl.Window = unsafe {
+            sdl.CreateWindow(c_title.as_ptr(), width, height, sdl.WINDOW_SHOWN)
+        }
+        match ptr {
+            Some(p) => { return Ok(Window { ptr: p }) }
+            None => { return Err(SdlError.from_last()) }
+        }
+    }
+}
+
+impl Window: Drop {
+    fn drop(inout self: Window) -> void {
+        unsafe { sdl.DestroyWindow(self.ptr) }
+    }
+}
+```
+
+**String conversions** between Klar and C:
+
+```klar
+// Klar string → C string
+let c_str: CString = CString.from("hello")
+let ptr: *const u8 = c_str.as_ptr()
+
+// C string → Klar string
+let klar_str: string = CString.to_string(c_ptr)
+```
+
+**Callback wrappers** bridge Klar closures to C function pointers:
+
+```klar
+// C expects: void (*callback)(void* userdata)
+// Klar wrapper provides type safety
+fn set_callback(window: ref Window, handler: fn(Event) -> void) {
+    // Internal: converts closure to C function pointer + userdata
 }
 ```
 
