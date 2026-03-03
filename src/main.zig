@@ -19,6 +19,7 @@ const Compiler = @import("compiler.zig").Compiler;
 const Disassembler = @import("disasm.zig").Disassembler;
 const VM = @import("vm.zig").VM;
 const codegen = if (has_llvm) @import("codegen/mod.zig") else struct {};
+const ast_from_json = @import("ast_from_json.zig");
 const ir = if (has_llvm) @import("ir/mod.zig") else struct {};
 const ownership = @import("ownership/mod.zig");
 const opt = if (has_llvm) @import("opt/mod.zig") else struct {};
@@ -68,6 +69,7 @@ const CheckCommandOptions = struct {
     partial_mode: bool = false,
     expected_line: ?usize = null,
     expected_column: ?usize = null,
+    ast_input_path: ?[]const u8 = null,
 };
 
 const TestFileResult = struct {
@@ -388,6 +390,7 @@ pub fn main() !void {
         var use_vm = false;
         var debug_mode = false;
         var use_interpreter = false;
+        var run_ast_input_path: ?[]const u8 = null;
         var source_file: ?[]const u8 = null;
         var program_args_start: usize = args.len; // Default: no program args
 
@@ -404,6 +407,11 @@ pub fn main() !void {
                 debug_mode = true;
             } else if (std.mem.eql(u8, arg, "--interpret")) {
                 use_interpreter = true;
+            } else if (std.mem.eql(u8, arg, "--ast-input") and i + 1 < args.len) {
+                run_ast_input_path = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--ast-input=")) {
+                run_ast_input_path = arg["--ast-input=".len..];
             } else if (!std.mem.startsWith(u8, arg, "-") and source_file == null) {
                 // First non-flag argument is the source file
                 source_file = arg;
@@ -452,6 +460,10 @@ pub fn main() !void {
         const search_paths = if (dep_resolution) |dr| dr.paths.items else &[_][]const u8{};
 
         if (use_vm or use_interpreter) {
+            if (run_ast_input_path != null) {
+                try getStdErr().writeAll("Error: --ast-input is not compatible with --vm or --interpret\n");
+                return;
+            }
             if (use_interpreter) {
                 try runInterpreterFile(allocator, final_source, program_args);
             } else {
@@ -459,7 +471,7 @@ pub fn main() !void {
             }
         } else if (comptime has_llvm) {
             // Default: compile to native and run
-            try runNativeFileWithOptions(allocator, final_source, program_args, search_paths);
+            try runNativeFileWithOptions(allocator, final_source, program_args, search_paths, run_ast_input_path);
         } else {
             // LLVM not available, fall back to VM
             try runVmFile(allocator, final_source, debug_mode, program_args);
@@ -510,6 +522,7 @@ pub fn main() !void {
         var entry_point: ?[]const u8 = null;
         var linker_script: ?[]const u8 = null;
         var compile_only = false;
+        var ast_input_path: ?[]const u8 = null;
         var source_file: ?[]const u8 = null;
 
         var i: usize = 2;
@@ -587,6 +600,11 @@ pub fn main() !void {
                 linker_script = arg["--linker-script=".len..];
             } else if (std.mem.eql(u8, arg, "-c")) {
                 compile_only = true;
+            } else if (std.mem.eql(u8, arg, "--ast-input") and i + 1 < args.len) {
+                ast_input_path = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--ast-input=")) {
+                ast_input_path = arg["--ast-input=".len..];
             } else if (!std.mem.startsWith(u8, arg, "-") and source_file == null) {
                 // Non-flag argument is the source file
                 source_file = arg;
@@ -660,7 +678,7 @@ pub fn main() !void {
             .linker_script = linker_script,
             .compile_only = compile_only,
             .search_paths = search_paths,
-        });
+        }, ast_input_path);
     } else if (std.mem.eql(u8, command, "check")) {
         var options = CheckCommandOptions{};
         var input_path: ?[]const u8 = null;
@@ -712,6 +730,11 @@ pub fn main() !void {
                 };
                 options.expected_line = parsed.line;
                 options.expected_column = parsed.column;
+            } else if (std.mem.eql(u8, arg, "--ast-input") and i + 1 < args.len) {
+                options.ast_input_path = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--ast-input=")) {
+                options.ast_input_path = arg["--ast-input=".len..];
             } else if (!std.mem.startsWith(u8, arg, "-") and input_path == null) {
                 input_path = arg;
             } else {
@@ -2679,39 +2702,59 @@ fn discoverImports(
     }
 }
 
-fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.CompileOptions) !void {
-    const source = readSourceFile(allocator, path) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
-        try getStdErr().writeAll(msg);
-        return;
-    };
-    defer allocator.free(source);
-
+fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.CompileOptions, ast_input_path: ?[]const u8) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
     const stderr = getStdErr();
     const stdout = getStdOut();
 
-    // Parse the source
-    var lexer = Lexer.init(source);
-    var parser = Parser.init(arena.allocator(), &lexer, source);
+    // Either load AST from JSON or parse from source
+    var source_buf: ?[]u8 = null;
+    defer if (source_buf) |s| allocator.free(s);
 
-    const module = parser.parseModule() catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
-        try stderr.writeAll(msg);
+    const module = if (ast_input_path) |json_path| blk: {
+        const json_content = readSourceFile(allocator, json_path) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error reading AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading AST input\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+        defer allocator.free(json_content);
+        break :blk ast_from_json.moduleFromJson(allocator, arena.allocator(), json_content) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error parsing AST JSON '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error parsing AST JSON\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+    } else blk: {
+        const source = readSourceFile(allocator, path) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+        source_buf = source;
 
-        for (parser.errors.items) |parse_err| {
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                parse_err.span.line,
-                parse_err.span.column,
-                parse_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
-        return;
+        // Parse the source
+        var lexer = Lexer.init(source);
+        var parser = Parser.init(arena.allocator(), &lexer, source);
+
+        break :blk parser.parseModule() catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+            try stderr.writeAll(msg);
+
+            for (parser.errors.items) |parse_err| {
+                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                    parse_err.span.line,
+                    parse_err.span.column,
+                    parse_err.message,
+                }) catch continue;
+                try stderr.writeAll(err_msg);
+            }
+            return;
+        };
     };
 
     // Type check
@@ -3327,10 +3370,10 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
 }
 
 fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8) !void {
-    return runNativeFileWithOptions(allocator, path, program_args, &.{});
+    return runNativeFileWithOptions(allocator, path, program_args, &.{}, null);
 }
 
-fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8) !void {
+fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8, run_ast_input_path: ?[]const u8) !void {
     // Generate a unique temp path for the executable (cross-platform)
     const timestamp = std.time.timestamp();
     const exe_ext = comptime if (builtin.os.tag == .windows) ".exe" else "";
@@ -3360,7 +3403,7 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
     };
 
     // Build the executable
-    buildNative(allocator, path, options) catch {
+    buildNative(allocator, path, options, run_ast_input_path) catch {
         // Errors already printed by buildNative
         return;
     };
@@ -3894,62 +3937,81 @@ fn shouldSkipPath(path: []const u8) bool {
 }
 
 fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckCommandOptions) !void {
-    const source = readSourceFile(allocator, path) catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
-        try getStdErr().writeAll(msg);
-        return;
-    };
-    defer allocator.free(source);
-
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
     const stdout = getStdOut();
     const stderr = getStdErr();
-    var lexer = Lexer.init(source);
-    var parser = Parser.init(arena.allocator(), &lexer, source);
-    var parse_had_errors = false;
 
-    // Parse the module
-    const module = if (options.partial_mode) blk: {
-        const parsed = parser.parseModuleRecovering() catch |err| {
+    var source_buf: ?[]u8 = null;
+    defer if (source_buf) |s| allocator.free(s);
+
+    // Either load AST from JSON or parse from source
+    const module = if (options.ast_input_path) |json_path| blk: {
+        const json_content = readSourceFile(allocator, json_path) catch |err| {
             var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+            const msg = std.fmt.bufPrint(&buf, "Error reading AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading AST input\n";
             try stderr.writeAll(msg);
             return;
         };
-        parse_had_errors = parser.errors.items.len > 0;
-        break :blk parsed;
-    } else parser.parseModule() catch |err| {
-        var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
-        try stderr.writeAll(msg);
+        defer allocator.free(json_content);
+        break :blk ast_from_json.moduleFromJson(allocator, arena.allocator(), json_content) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error parsing AST JSON '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error parsing AST JSON\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+    } else blk: {
+        const source = readSourceFile(allocator, path) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+            try stderr.writeAll(msg);
+            return;
+        };
+        source_buf = source;
 
-        for (parser.errors.items) |parse_err| {
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                parse_err.span.line,
-                parse_err.span.column,
-                parse_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
+        var lexer = Lexer.init(source);
+        var parser = Parser.init(arena.allocator(), &lexer, source);
+
+        if (options.partial_mode) {
+            const parsed = parser.parseModuleRecovering() catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+            if (parser.errors.items.len > 0) {
+                var buf: [512]u8 = undefined;
+                const header = std.fmt.bufPrint(&buf, "Parse diagnostics ({d}):\n", .{parser.errors.items.len}) catch "Parse diagnostics:\n";
+                try stderr.writeAll(header);
+                for (parser.errors.items) |parse_err| {
+                    const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                        parse_err.span.line,
+                        parse_err.span.column,
+                        parse_err.message,
+                    }) catch continue;
+                    try stderr.writeAll(err_msg);
+                }
+            }
+            break :blk parsed;
+        } else {
+            break :blk parser.parseModule() catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+                try stderr.writeAll(msg);
+
+                for (parser.errors.items) |parse_err| {
+                    const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                        parse_err.span.line,
+                        parse_err.span.column,
+                        parse_err.message,
+                    }) catch continue;
+                    try stderr.writeAll(err_msg);
+                }
+                return;
+            };
         }
-        return;
     };
-
-    if (options.partial_mode and parser.errors.items.len > 0) {
-        var buf: [512]u8 = undefined;
-        const header = std.fmt.bufPrint(&buf, "Parse diagnostics ({d}):\n", .{parser.errors.items.len}) catch "Parse diagnostics:\n";
-        try stderr.writeAll(header);
-        for (parser.errors.items) |parse_err| {
-            const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                parse_err.span.line,
-                parse_err.span.column,
-                parse_err.message,
-            }) catch continue;
-            try stderr.writeAll(err_msg);
-        }
-    }
 
     // Type check the module
     var checker = TypeChecker.init(allocator);
@@ -4090,7 +4152,11 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
 
     if (options.scope_line) |scope_line| {
         const scope_column = options.scope_column.?;
-        const cursor_offset = sourceOffsetFromLineColumn(source, scope_line, scope_column) orelse {
+        const source_for_offset = source_buf orelse {
+            try stderr.writeAll("Error: --scope-at requires source file (not compatible with --ast-input)\n");
+            return;
+        };
+        const cursor_offset = sourceOffsetFromLineColumn(source_for_offset, scope_line, scope_column) orelse {
             var out_buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&out_buf, "Error: position {d}:{d} is outside file bounds\n", .{ scope_line, scope_column }) catch "Error: invalid scope position\n";
             try stderr.writeAll(msg);
@@ -4151,7 +4217,11 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
 
     if (options.expected_line) |expected_line| {
         const expected_column = options.expected_column.?;
-        const cursor_offset = sourceOffsetFromLineColumn(source, expected_line, expected_column) orelse {
+        const source_for_offset = source_buf orelse {
+            try stderr.writeAll("Error: --expected-type-at requires source file (not compatible with --ast-input)\n");
+            return;
+        };
+        const cursor_offset = sourceOffsetFromLineColumn(source_for_offset, expected_line, expected_column) orelse {
             var out_buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&out_buf, "Error: position {d}:{d} is outside file bounds\n", .{ expected_line, expected_column }) catch "Error: invalid expected-type position\n";
             try stderr.writeAll(msg);
@@ -4182,7 +4252,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     }
 
     if (options.partial_mode) {
-        if (!parse_had_errors and !has_type_errors) {
+        if (!has_type_errors) {
             try stdout.writeAll("Partial check completed with no diagnostics\n");
         }
         return;
