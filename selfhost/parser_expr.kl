@@ -884,6 +884,11 @@ fn parse_block_expr(p: Parser) -> (Parser, string) {
     return (block_result.0, json)
 }
 
+// Returns true if the given builtin takes type arguments rather than expressions.
+fn builtin_takes_type_args(name: string) -> bool {
+    return name == "typeName" or name == "typeInfo" or name == "fields" or name == "sizeOf"
+}
+
 fn parse_at_expr(p: Parser) -> (Parser, string) {
     var p2: Parser = advance(p) // skip @
 
@@ -899,16 +904,22 @@ fn parse_at_expr(p: Parser) -> (Parser, string) {
     let name_result: (Parser, string) = consume_identifier(p2)
     p2 = name_result.0
     p2 = consume(p2, "l_paren", "expected '('")
+    let builtin_name: string = name_result.1
+    let type_args: bool = builtin_takes_type_args(builtin_name)
     var args: string = ""
     var first: bool = true
     while not tk(p2, "r_paren") and not tk(p2, "eof") {
         if not first { args = args + "," }
         first = false
-        // Builtin args can be types or expressions
-        // For now, try expression
-        let arg_result: (Parser, string) = parse_expression(p2)
-        p2 = arg_result.0
-        args = args + "{\"kind\":\"expr\",\"value\":" + arg_result.1 + "}"
+        if type_args {
+            let type_result: (Parser, string) = parse_type(p2)
+            p2 = type_result.0
+            args = args + "{\"kind\":\"type\",\"value\":" + type_result.1 + "}"
+        } else {
+            let arg_result: (Parser, string) = parse_expression(p2)
+            p2 = arg_result.0
+            args = args + "{\"kind\":\"expr\",\"value\":" + arg_result.1 + "}"
+        }
         let comma_result: (Parser, bool) = match_tok(p2, "comma")
         p2 = comma_result.0
     }
