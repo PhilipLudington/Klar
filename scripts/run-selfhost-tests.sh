@@ -5,6 +5,8 @@
 # Phase 2: Lexer parity testing — compares Zig vs selfhost dump-tokens output
 # Phase 3a: Parser parse check — verify selfhost parser can parse test corpus
 # Phase 3b: Parser AST parity — compare normalized AST output vs Zig dump-ast
+# Phase 4: Checker parity testing — selfhost checker vs Zig checker
+# Phase 5: E2E pipeline — selfhost parser JSON → Zig backend → correct binaries
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESULTS_FILE="$SCRIPT_DIR/.selfhost-test-results.json"
@@ -770,6 +772,85 @@ test/native/match_tuple_element.kl
     echo "    selfhost-too-strict: $SELFHOST_TOO_STRICT"
     echo "    selfhost-too-permissive: $SELFHOST_TOO_PERMISSIVE"
     echo "    crash: $CRASH"
+fi
+
+# Phase 5: End-to-end pipeline test (selfhost parser → JSON → Zig backend)
+# Validates the full round-trip: selfhost AST JSON fed to Zig --ast-input
+# produces the same exit code as the normal Zig pipeline.
+echo ""
+echo "Phase 5: End-to-end pipeline (selfhost → JSON → Zig backend)"
+echo "────────────────────────────────────────"
+
+_E2E_TMPJSON=""
+_E2E_TMPDIR=""
+trap 'rm -f "$_CHECKER_TMPJSON" "$_E2E_TMPJSON"; rm -rf "$_E2E_TMPDIR"' INT TERM
+
+E2E_MATCH=0
+E2E_PARSE_FAIL=0
+E2E_BUILD_FAIL=0
+E2E_MISMATCH=0
+
+if [ $build_exit -ne 0 ] || [ ! -f "$SELFHOST_PARSER" ]; then
+    echo "  (skipped — selfhost parser build failed)"
+elif [ -z "$PARSED_FILES" ]; then
+    echo "  (skipped — no files parsed successfully in Phase 3)"
+else
+    # Create temp directory for JSON files
+    _E2E_TMPDIR=$(mktemp -d /tmp/klar_e2e_XXXXXX)
+
+    for f in $PARSED_FILES; do
+        [ -f "$SCRIPT_DIR/$f" ] || continue
+        name=$(basename "$f" .kl)
+
+        # Step 1: Selfhost parser → JSON
+        tmpjson="$_E2E_TMPDIR/${name}.json"
+        _E2E_TMPJSON="$tmpjson"
+        "$SELFHOST_PARSER" "$SCRIPT_DIR/$f" > "$tmpjson" 2>/dev/null
+        selfhost_exit=$?
+        if [ $selfhost_exit -ne 0 ]; then
+            E2E_PARSE_FAIL=$((E2E_PARSE_FAIL + 1))
+            continue
+        fi
+
+        # Step 2: Zig backend with selfhost AST JSON (native compilation)
+        ast_output=$("$KLAR" run "$SCRIPT_DIR/$f" --ast-input "$tmpjson" 2>/dev/null)
+        ast_exit=$?
+
+        # Step 3: Direct Zig pipeline (reference)
+        direct_output=$("$KLAR" run "$SCRIPT_DIR/$f" 2>/dev/null)
+        direct_exit=$?
+
+        # Step 4: Compare exit codes
+        if [ $ast_exit -eq $direct_exit ]; then
+            echo "  ✓ $name (match, exit $direct_exit)"
+            E2E_MATCH=$((E2E_MATCH + 1))
+            PASSED=$((PASSED + 1))
+        elif [ $ast_exit -ge 128 ] || echo "$ast_output" | grep -q "Error parsing AST JSON\|Error reading AST" 2>/dev/null; then
+            echo "  ✗ $name (build-fail, ast-exit=$ast_exit direct-exit=$direct_exit)"
+            E2E_BUILD_FAIL=$((E2E_BUILD_FAIL + 1))
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: e2e build-fail (ast=$ast_exit direct=$direct_exit)\""
+        else
+            echo "  ✗ $name (mismatch, ast-exit=$ast_exit direct-exit=$direct_exit)"
+            E2E_MISMATCH=$((E2E_MISMATCH + 1))
+            FAILED=$((FAILED + 1))
+            [ -n "$FAILURES" ] && FAILURES="$FAILURES,"
+            FAILURES="$FAILURES\"$name: e2e mismatch (ast=$ast_exit direct=$direct_exit)\""
+        fi
+
+        rm -f "$tmpjson"
+    done
+
+    rm -rf "$_E2E_TMPDIR"
+    _E2E_TMPDIR=""
+
+    echo ""
+    echo "  E2E pipeline summary:"
+    echo "    match: $E2E_MATCH"
+    echo "    selfhost-parse-fail: $E2E_PARSE_FAIL"
+    echo "    build-fail: $E2E_BUILD_FAIL"
+    echo "    mismatch: $E2E_MISMATCH"
 fi
 
 TOTAL=$((PASSED + FAILED))

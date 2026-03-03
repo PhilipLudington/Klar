@@ -443,18 +443,49 @@ fn parse_trait_decl(p: Parser, is_pub: bool) -> (Parser, string) {
         }
     }
 
-    // Parse body: trait methods (signatures, optionally with default bodies)
+    // Parse body: trait methods and associated types
     var methods: string = ""
+    var assoc_types: string = ""
+    var method_first: bool = true
+    var assoc_first: bool = true
     if tk(p2, "l_brace") {
         p2 = advance(p2)
-        var first: bool = true
         while not tk(p2, "r_brace") and not tk(p2, "eof") {
             if tk(p2, "fn_") {
-                if not first { methods = methods + "," }
-                first = false
+                if not method_first { methods = methods + "," }
+                method_first = false
                 let fn_result: (Parser, string) = parse_function_decl(p2, false, false, false, false, false)
                 p2 = fn_result.0
                 methods = methods + fn_result.1
+            } else if tk(p2, "type_") {
+                // Associated type: type Name [: Bound1 + Bound2] [= Default]
+                p2 = advance(p2) // skip 'type'
+                let at_name_result: (Parser, string) = consume_identifier(p2)
+                p2 = at_name_result.0
+                var bounds: string = ""
+                if tk(p2, "colon") {
+                    p2 = advance(p2)
+                    var bfirst: bool = true
+                    while true {
+                        if not bfirst { bounds = bounds + "," }
+                        bfirst = false
+                        let bound_result: (Parser, string) = parse_type(p2)
+                        p2 = bound_result.0
+                        bounds = bounds + bound_result.1
+                        if not tk(p2, "plus") { break }
+                        p2 = advance(p2) // skip '+'
+                    }
+                }
+                var default_val: string = "null"
+                if tk(p2, "eq") {
+                    p2 = advance(p2) // skip '='
+                    let def_result: (Parser, string) = parse_type(p2)
+                    p2 = def_result.0
+                    default_val = def_result.1
+                }
+                if not assoc_first { assoc_types = assoc_types + "," }
+                assoc_first = false
+                assoc_types = assoc_types + "{\"name\":" + json_str(at_name_result.1) + ",\"bounds\":[" + bounds + "],\"default\":" + default_val + "}"
             } else {
                 p2 = advance(p2)
             }
@@ -462,7 +493,7 @@ fn parse_trait_decl(p: Parser, is_pub: bool) -> (Parser, string) {
         p2 = consume(p2, "r_brace", "expected '}'")
     }
 
-    let json: string = "{\"kind\":\"trait_decl\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"is_unsafe\":false,\"type_params\":[],\"super_traits\":[" + super_traits + "],\"associated_types\":[],\"methods\":[" + methods + "]}"
+    let json: string = "{\"kind\":\"trait_decl\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"is_unsafe\":false,\"type_params\":[],\"super_traits\":[" + super_traits + "],\"associated_types\":[" + assoc_types + "],\"methods\":[" + methods + "]}"
     return (p2, json)
 }
 
@@ -493,9 +524,11 @@ fn parse_impl_stub(p: Parser) -> (Parser, string) {
     }
     // Parse body
     var methods: string = ""
+    var assoc_types: string = ""
+    var method_first: bool = true
+    var assoc_first: bool = true
     if tk(p2, "l_brace") {
         p2 = advance(p2)
-        var first: bool = true
         while not tk(p2, "r_brace") and not tk(p2, "eof") {
             // Check for visibility and modifier keywords before fn
             var method_pub: bool = false
@@ -514,11 +547,22 @@ fn parse_impl_stub(p: Parser) -> (Parser, string) {
                 p2 = advance(p2)
             }
             if tk(p2, "fn_") {
-                if not first { methods = methods + "," }
-                first = false
+                if not method_first { methods = methods + "," }
+                method_first = false
                 let fn_result: (Parser, string) = parse_function_decl(p2, method_pub, false, method_unsafe, method_async, false)
                 p2 = fn_result.0
                 methods = methods + fn_result.1
+            } else if tk(p2, "type_") {
+                // Associated type binding: type Name = Type
+                p2 = advance(p2) // skip 'type'
+                let at_name_result: (Parser, string) = consume_identifier(p2)
+                p2 = at_name_result.0
+                p2 = consume(p2, "eq", "expected '=' in associated type binding")
+                let at_val_result: (Parser, string) = parse_type(p2)
+                p2 = at_val_result.0
+                if not assoc_first { assoc_types = assoc_types + "," }
+                assoc_first = false
+                assoc_types = assoc_types + "{\"name\":" + json_str(at_name_result.1) + ",\"value\":" + at_val_result.1 + "}"
             } else if tk(p2, "l_brace") {
                 // Non-fn item with braces — skip with depth tracking
                 p2 = skip_braces(p2)
@@ -528,7 +572,7 @@ fn parse_impl_stub(p: Parser) -> (Parser, string) {
         }
         p2 = consume(p2, "r_brace", "expected '}'")
     }
-    let json: string = "{\"kind\":\"impl_decl\",\"is_unsafe\":false,\"type_params\":" + type_params + ",\"target_type\":" + target_json + ",\"trait_type\":" + trait_type + ",\"associated_types\":[],\"where_clause\":null,\"methods\":[" + methods + "]}"
+    let json: string = "{\"kind\":\"impl_decl\",\"is_unsafe\":false,\"type_params\":" + type_params + ",\"target_type\":" + target_json + ",\"trait_type\":" + trait_type + ",\"associated_types\":[" + assoc_types + "],\"where_clause\":null,\"methods\":[" + methods + "]}"
     return (p2, json)
 }
 
