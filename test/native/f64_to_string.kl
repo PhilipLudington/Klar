@@ -1,0 +1,67 @@
+// Test f64.to_string() — converts float to String
+// Covers normal values, special IEEE 754 values (inf, -inf, NaN), and edge cases
+
+fn main() -> i32 {
+    // Normal values
+    let pi: f64 = 3.14159
+    let pi_str: String = pi.to_string()
+    if pi_str.as_str() != "3.14159" {
+        return 1
+    }
+
+    let neg: f64 = -42.5
+    if neg.to_string().as_str() != "-42.5" {
+        return 2
+    }
+
+    let zero: f64 = 0.0
+    if zero.to_string().as_str() != "0" {
+        return 3
+    }
+
+    let one: f64 = 1.0
+    if one.to_string().as_str() != "1" {
+        return 4
+    }
+
+    let small: f64 = 0.001
+    if small.to_string().as_str() != "0.001" {
+        return 5
+    }
+
+    // Special values: infinity
+    let big: f64 = 1.0e308
+    let inf: f64 = big * 10.0
+    if inf.to_string().as_str() != "inf" {
+        return 6
+    }
+
+    let neg_inf: f64 = -1.0e308 * 10.0
+    if neg_inf.to_string().as_str() != "-inf" {
+        return 7
+    }
+
+    // Special values: NaN
+    let nan: f64 = 0.0 / 0.0
+    if nan.to_string().as_str() != "nan" {
+        return 8
+    }
+
+    // String length is correct
+    let s: String = pi.to_string()
+    if s.len() != 7 {
+        return 9
+    }
+
+    // Negative zero: %g formats -0.0 as "-0"
+    let neg_zero: f64 = -0.0
+    let nz: String = neg_zero.to_string()
+    let nz_str: string = nz.as_str()
+    if nz_str != "-0" {
+        if nz_str != "0" {
+            return 10
+        }
+    }
+
+    return 0
+}

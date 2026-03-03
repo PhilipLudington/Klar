@@ -129,22 +129,19 @@ Key changes:
 
 ---
 
-## [ ] Bug 7: f64 infinity and NaN operations crash native codegen
+## [x] Bug 7: f64 infinity and NaN operations crash native codegen (fixed 2026-03-02)
 
 **Symptom:** Any program that produces or operates on `f64` infinity or NaN values crashes with SIGSEGV. This includes: `1.0e308 * 10.0` (overflow to inf), `0.0 / 0.0` (NaN), `inf.to_string()`, and arithmetic on inf/nan.
 
-**Root cause:** Unclear. Possibly `f64.to_string()` doesn't handle special float values (inf, NaN, -inf) and dereferences an invalid pointer or buffer.
+**Root cause:** `f64.to_string()` was not implemented in `emitMethodCall()`. The method call fell through to the fallback `return llvm.Const.int32(self.ctx, 0)` — a null pointer. When `.as_str()` or `println()` tried to dereference this, it caused SIGSEGV.
 
-**Workaround:** Avoid producing or operating on inf/NaN values in native-compiled code. In `stdlib/toml.kl`, the `try_parse_special_float` function produces inf via `1.0e308 * 10.0` and NaN via `0.0 / 0.0`, but these values can only be safely stored — any operation on them (comparison, stringify, print) may crash.
+**Fix:** Three changes in `src/codegen/emit.zig`:
+1. **`isFloatExpr()`** — New helper (like `isIntegerExpr`, `isCharExpr`) that detects float expressions via literal kind, semantic type, LLVM type, or type checker fallback.
+2. **Float dispatch in `emitMethodCall()`** — After integer methods check, added `isFloatExpr` → `emitF64ToString` dispatch for `to_string()`.
+3. **`emitF64ToString()`** — Full implementation with special value handling:
+   - NaN: detected via `fcmp uno value, value`, returns `"nan"`
+   - Infinity: detected via `fcmp oeq value, ±inf`, returns `"inf"` or `"-inf"`
+   - Normal: uses `snprintf(buf, 64, "%g", value)`, copies to heap, returns heap-indirected String
+4. **`emitStringFromLiteral()`** — Helper to create a heap-indirected String from a compile-time string constant.
 
-**Fix approach:** Check the `f64.to_string()` implementation in the runtime. Likely needs explicit handling for IEEE 754 special values. Also check if LLVM constant folding produces unexpected IR for `1.0e308 * 10.0`.
-
-**Repro:**
-```klar
-fn main() -> i32 {
-    let big: f64 = 1.0e308
-    let inf: f64 = big * 10.0
-    println(inf.to_string().as_str())  // SIGSEGV
-    return 0
-}
-```
+**Test:** `test/native/f64_to_string.kl` — normal values (pi, negative, zero, small), infinity, negative infinity, NaN, String operations on result.

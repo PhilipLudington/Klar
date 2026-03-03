@@ -10929,6 +10929,13 @@ pub const Emitter = struct {
             }
         }
 
+        // Check for float methods
+        if (self.isFloatExpr(method.object)) {
+            if (std.mem.eql(u8, method.method_name, "to_string")) {
+                return self.emitF64ToString(object);
+            }
+        }
+
         // Check for Range methods
         if (self.isRangeExpr(method.object)) {
             // For Range methods, we need the alloca pointer, not the loaded value
@@ -14848,6 +14855,53 @@ pub const Emitter = struct {
         return false;
     }
 
+    /// Check if an expression is a float type (f32 or f64).
+    fn isFloatExpr(self: *Emitter, expr: ast.Expr) bool {
+        switch (expr) {
+            .literal => |lit| {
+                return lit.kind == .float;
+            },
+            .identifier => |id| {
+                if (self.named_values.get(id.name)) |local| {
+                    if (local.semantic_type) |st| {
+                        return st == .primitive and st.primitive.isFloat();
+                    }
+                    // Fallback: check LLVM type
+                    const kind = llvm.getTypeKind(local.ty);
+                    return kind == llvm.c.LLVMFloatTypeKind or kind == llvm.c.LLVMDoubleTypeKind;
+                }
+                return false;
+            },
+            .binary, .unary => {
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const expr_type = tc_mut.checkExpr(expr);
+                    return expr_type.isFloat();
+                }
+                return false;
+            },
+            .field => |f| {
+                if (f.object == .identifier) {
+                    if (self.named_values.get(f.object.identifier.name)) |local| {
+                        if (local.struct_type_name) |struct_name| {
+                            if (self.getFieldType(struct_name, f.field_name)) |field_type| {
+                                return field_type.isFloat();
+                            }
+                        }
+                    }
+                }
+            },
+            else => {},
+        }
+        // Fallback: use type checker if available
+        if (self.type_checker) |tc| {
+            const tc_mut = @constCast(tc);
+            const expr_type = tc_mut.checkExpr(expr);
+            return expr_type.isFloat();
+        }
+        return false;
+    }
+
     /// Check if an expression is a Range type.
     fn isRangeExpr(self: *Emitter, expr: ast.Expr) bool {
         switch (expr) {
@@ -16296,6 +16350,177 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(cap_i32, hdr_cap_field);
 
         // Wrap header_ptr in outer String struct { header_ptr }
+        return self.buildStringFromHeader(hdr_ptr);
+    }
+
+    /// Emit f64.to_string() - converts float to String.
+    /// Handles normal values, infinity, NaN, and negative infinity.
+    /// Control flow:
+    ///   entry -> [is_nan?] -> nan_bb -> merge_bb
+    ///                      -> [is_pos_inf?] -> pos_inf_bb -> merge_bb
+    ///                                       -> [is_neg_inf?] -> neg_inf_bb -> merge_bb
+    ///                                                        -> normal_bb -> merge_bb
+    fn emitF64ToString(self: *Emitter, value: llvm.ValueRef) EmitError!llvm.ValueRef {
+        const i8_type = llvm.Types.int8(self.ctx);
+        const i32_type = llvm.Types.int32(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+        const f64_type = llvm.Types.float64(self.ctx);
+
+        // Widen f32 to f64 if needed (snprintf %g expects double via variadic promotion)
+        const val_type = llvm.c.LLVMTypeOf(value);
+        const f64_val = if (llvm.c.LLVMGetTypeKind(val_type) == llvm.c.LLVMFloatTypeKind)
+            self.builder.buildFPExt(value, f64_type, "f64tostr.fpext")
+        else
+            value;
+
+        const current_fn = llvm.c.LLVMGetBasicBlockParent(llvm.c.LLVMGetInsertBlock(self.builder.ref));
+        const nan_bb = llvm.appendBasicBlock(self.ctx, current_fn, "f64tostr.nan");
+        const check_pos_inf_bb = llvm.appendBasicBlock(self.ctx, current_fn, "f64tostr.check_pos_inf");
+        const pos_inf_bb = llvm.appendBasicBlock(self.ctx, current_fn, "f64tostr.pos_inf");
+        const check_neg_inf_bb = llvm.appendBasicBlock(self.ctx, current_fn, "f64tostr.check_neg_inf");
+        const neg_inf_bb = llvm.appendBasicBlock(self.ctx, current_fn, "f64tostr.neg_inf");
+        const normal_bb = llvm.appendBasicBlock(self.ctx, current_fn, "f64tostr.normal");
+        const merge_bb = llvm.appendBasicBlock(self.ctx, current_fn, "f64tostr.merge");
+
+        // NaN check: fcmp uno value, value (true only for NaN)
+        const is_nan = self.builder.buildFCmp(llvm.c.LLVMRealUNO, f64_val, f64_val, "is_nan");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_nan, nan_bb, check_pos_inf_bb);
+
+        // NaN block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, nan_bb);
+        const nan_str = self.emitStringFromLiteral("nan");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+        const nan_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Check positive infinity
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_pos_inf_bb);
+        const pos_inf_const = llvm.Const.float64(self.ctx, std.math.inf(f64));
+        const is_pos_inf = self.builder.buildFCmp(llvm.c.LLVMRealOEQ, f64_val, pos_inf_const, "is_pos_inf");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_pos_inf, pos_inf_bb, check_neg_inf_bb);
+
+        // Positive infinity block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, pos_inf_bb);
+        const pos_inf_str = self.emitStringFromLiteral("inf");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+        const pos_inf_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Check negative infinity
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, check_neg_inf_bb);
+        const neg_inf_const = llvm.Const.float64(self.ctx, -std.math.inf(f64));
+        const is_neg_inf = self.builder.buildFCmp(llvm.c.LLVMRealOEQ, f64_val, neg_inf_const, "is_neg_inf");
+        _ = llvm.c.LLVMBuildCondBr(self.builder.ref, is_neg_inf, neg_inf_bb, normal_bb);
+
+        // Negative infinity block
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, neg_inf_bb);
+        const neg_inf_str = self.emitStringFromLiteral("-inf");
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+        const neg_inf_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Normal float: use snprintf with %g
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, normal_bb);
+
+        const buf_size: u32 = 64;
+        const buf_type = llvm.c.LLVMArrayType(i8_type, buf_size);
+        const buf = self.builder.buildAlloca(buf_type, "f64tostr.buf");
+
+        const zero = llvm.Const.int32(self.ctx, 0);
+        var indices = [_]llvm.ValueRef{ zero, zero };
+        const buf_ptr = self.builder.buildGEP(buf_type, buf, &indices, "f64tostr.buf_ptr");
+
+        const fmt_str = self.builder.buildGlobalStringPtr("%g", "fmt_f64");
+        const snprintf_fn = self.getOrCreateSnprintfFn();
+        const size = llvm.Const.int64(self.ctx, buf_size);
+        var snprintf_args = [_]llvm.ValueRef{ buf_ptr, size, fmt_str, f64_val };
+        const fn_type = llvm.c.LLVMGlobalGetValueType(snprintf_fn);
+        const len_result = self.builder.buildCall(fn_type, snprintf_fn, &snprintf_args, "f64tostr.len");
+
+        // Clamp len to [0, buf_size-1] to prevent buffer overread
+        // snprintf returns negative on error, or >= buf_size if truncated
+        const max_len = llvm.Const.int32(self.ctx, buf_size - 1);
+        const len_negative = self.builder.buildICmp(llvm.c.LLVMIntSLT, len_result, llvm.Const.int32(self.ctx, 0), "len_neg");
+        const len_clamped_neg = self.builder.buildSelect(len_negative, llvm.Const.int32(self.ctx, 0), len_result, "len_clamp_neg");
+        const len_too_large = self.builder.buildICmp(llvm.c.LLVMIntSGT, len_clamped_neg, max_len, "len_big");
+        const len_clamped = self.builder.buildSelect(len_too_large, max_len, len_clamped_neg, "len_clamped");
+
+        // Extend len to i64 for malloc, add 1 for null terminator
+        const len_i64 = self.builder.buildSExt(len_clamped, i64_type, "f64tostr.len64");
+        const one_i64 = llvm.Const.int64(self.ctx, 1);
+        const alloc_size = self.builder.buildAdd(len_i64, one_i64, "f64tostr.alloc_size");
+
+        // Allocate heap memory for the string
+        const malloc_fn = self.getOrCreateMallocFn();
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const malloc_type = llvm.c.LLVMGlobalGetValueType(malloc_fn);
+        const heap_ptr = self.builder.buildCall(malloc_type, malloc_fn, &malloc_args, "f64tostr.heap");
+
+        // Copy from stack buffer to heap
+        const memcpy_fn = self.getOrCreateMemcpyFn();
+        var memcpy_args = [_]llvm.ValueRef{ heap_ptr, buf_ptr, alloc_size };
+        const memcpy_type = llvm.c.LLVMGlobalGetValueType(memcpy_fn);
+        _ = self.builder.buildCall(memcpy_type, memcpy_fn, &memcpy_args, "");
+
+        // Build String header: { ptr, len, capacity }
+        const header_type = self.getStringHeaderType();
+        const hdr_ptr = self.allocateStringHeader();
+
+        const hdr_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 0, "f64tostr.hdr.ptr");
+        _ = self.builder.buildStore(heap_ptr, hdr_ptr_field);
+
+        const len_i32 = self.builder.buildTrunc(len_i64, i32_type, "f64tostr.len32");
+        const hdr_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 1, "f64tostr.hdr.len");
+        _ = self.builder.buildStore(len_i32, hdr_len_field);
+
+        const cap_i32 = self.builder.buildTrunc(alloc_size, i32_type, "f64tostr.cap32");
+        const hdr_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 2, "f64tostr.hdr.cap");
+        _ = self.builder.buildStore(cap_i32, hdr_cap_field);
+
+        const normal_str = self.buildStringFromHeader(hdr_ptr);
+        _ = llvm.c.LLVMBuildBr(self.builder.ref, merge_bb);
+        const normal_exit = llvm.c.LLVMGetInsertBlock(self.builder.ref);
+
+        // Merge block: phi node for all 4 paths
+        llvm.c.LLVMPositionBuilderAtEnd(self.builder.ref, merge_bb);
+        const string_type = self.getStringStructType();
+        const phi = llvm.c.LLVMBuildPhi(self.builder.ref, string_type, "f64tostr.result");
+        var incoming_vals = [_]llvm.ValueRef{ nan_str, pos_inf_str, neg_inf_str, normal_str };
+        var incoming_blocks = [_]llvm.BasicBlockRef{ nan_exit, pos_inf_exit, neg_inf_exit, normal_exit };
+        llvm.c.LLVMAddIncoming(phi, &incoming_vals, &incoming_blocks, 4);
+
+        return phi;
+    }
+
+    /// Helper to create a heap-indirected String from a compile-time string literal.
+    /// Used by emitF64ToString for special float values (nan, inf, -inf).
+    fn emitStringFromLiteral(self: *Emitter, str: [:0]const u8) llvm.ValueRef {
+        const i32_type = llvm.Types.int32(self.ctx);
+        const len: u32 = @intCast(str.len);
+
+        // Allocate heap memory and copy the literal
+        const malloc_fn = self.getOrCreateMallocFn();
+        const alloc_size = llvm.Const.int64(self.ctx, len + 1);
+        var malloc_args = [_]llvm.ValueRef{alloc_size};
+        const malloc_type = llvm.c.LLVMGlobalGetValueType(malloc_fn);
+        const heap_ptr = self.builder.buildCall(malloc_type, malloc_fn, &malloc_args, "strlit.heap");
+
+        const src_ptr = self.builder.buildGlobalStringPtr(str, "strlit.src");
+        const memcpy_fn = self.getOrCreateMemcpyFn();
+        var memcpy_args = [_]llvm.ValueRef{ heap_ptr, src_ptr, alloc_size };
+        const memcpy_type = llvm.c.LLVMGlobalGetValueType(memcpy_fn);
+        _ = self.builder.buildCall(memcpy_type, memcpy_fn, &memcpy_args, "");
+
+        // Build String header
+        const header_type = self.getStringHeaderType();
+        const hdr_ptr = self.allocateStringHeader();
+
+        const hdr_ptr_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 0, "strlit.hdr.ptr");
+        _ = self.builder.buildStore(heap_ptr, hdr_ptr_field);
+
+        const hdr_len_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 1, "strlit.hdr.len");
+        _ = self.builder.buildStore(llvm.Const.int(i32_type, len, false), hdr_len_field);
+
+        const hdr_cap_field = llvm.c.LLVMBuildStructGEP2(self.builder.ref, header_type, hdr_ptr, 2, "strlit.hdr.cap");
+        _ = self.builder.buildStore(llvm.Const.int(i32_type, len + 1, false), hdr_cap_field);
+
         return self.buildStringFromHeader(hdr_ptr);
     }
 
