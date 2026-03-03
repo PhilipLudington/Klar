@@ -115,17 +115,17 @@ Key changes:
 
 ---
 
-## [ ] Bug 6: Returning strings through Result tuples from helper functions causes SIGSEGV
+## [x] Bug 6: Returning strings through Result tuples from helper functions causes SIGSEGV (fixed 2026-03-02)
 
 **Symptom:** A function that returns `Result#[(string, i32), TomlError]` and is called from within another function (e.g., `parse_basic_string`) causes a SIGSEGV at runtime. The calling function itself returns the same type and works fine. Simple string returns work; the crash only occurs when a *called* helper returns a string inside a Result tuple.
 
-**Root cause:** Unclear. Likely related to how string memory is managed when returned through nested `Ok((string_val, i32))` tuples from a callee back to the caller. The string pointer may become invalid after the callee's stack frame is cleaned up.
+**Root cause:** The old flat string representation `{ptr, len, cap}` (16 bytes) — when a string was returned inside a Result tuple via sret, the flat struct copy could hold a stale pointer after the callee's stack frame was cleaned up.
 
-**Workaround:** Keep string-producing escape logic inline rather than extracting to a shared helper function. This means escape-sequence handling is duplicated between `parse_basic_string` and `parse_ml_basic_string_val` in `stdlib/toml.kl`.
+**Fix:** Already resolved by the Bug 3 fix (String heap indirection). With the new `{header_ptr}` (8 bytes) representation, strings are shared via a single heap pointer. Copies through Result tuples always point to valid heap data.
 
-**Fix approach:** Investigate LLVM IR for functions returning `Result#[(string, i32), E]` when called from other functions. Check if the string pointer component of the tuple is correctly copied/moved when unwinding through the Result match in the caller.
+**Workaround (can now be removed):** The TOML parser's duplicated escape handling between `parse_basic_string` and `parse_ml_basic_string_val` in `stdlib/toml.kl` can now be deduplicated by extracting a shared helper. This is a separate cleanup task.
 
-**Repro:** Extract escape handling from `parse_basic_string` into a `parse_escape_sequence(chars, pos, len) -> Result#[(string, i32), TomlError]` helper and call it. The compiled binary will SIGSEGV on any input containing escape sequences (e.g., `"msg = \"hello\\nworld\""`).
+**Test:** `test/native/result_tuple_string_helper.kl` — tests helper returning `Result#[(string, i32), ParseError]` with struct error type, string building via `from_byte()`, error propagation, and double-nested call patterns.
 
 ---
 
