@@ -1,0 +1,117 @@
+// Regression test for Bug 6: returning strings through Result tuples from helpers
+// Previously caused SIGSEGV when string was inside Result#[(string, i32), StructError]
+// Fixed by String heap indirection (Bug 3 fix) — copies share heap header pointer
+
+struct ParseError { message: string, line: i32 }
+
+// Helper that builds a string and returns it in a Result tuple (the Bug 6 pattern)
+fn parse_escape(ch: string, pos: i32) -> Result#[(string, i32), ParseError] {
+    if ch == "n" {
+        return Ok((from_byte(10.as#[u8]), pos + 1))
+    }
+    if ch == "t" {
+        return Ok((from_byte(9.as#[u8]), pos + 1))
+    }
+    if ch == "\\" {
+        return Ok(("\\", pos + 1))
+    }
+    return Err(ParseError { message: "unknown escape: " + ch, line: 1 })
+}
+
+// Caller that calls the helper, matches, and returns its own Result (nested pattern)
+fn parse_segment(input: string, pos: i32) -> Result#[(string, i32), ParseError] {
+    let r: Result#[(string, i32), ParseError] = parse_escape(input, pos)
+    match r {
+        Ok((s, new_pos)) => {
+            let built: string = "[" + s + "]"
+            return Ok((built, new_pos))
+        }
+        Err(e) => { return Err(e) }
+    }
+}
+
+// Double-nested: calls parse_segment which calls parse_escape
+fn parse_full(input: string, pos: i32) -> Result#[(string, i32), ParseError] {
+    let r: Result#[(string, i32), ParseError] = parse_segment(input, pos)
+    match r {
+        Ok((s, new_pos)) => {
+            return Ok(("result:" + s, new_pos + 100))
+        }
+        Err(e) => { return Err(e) }
+    }
+}
+
+fn main() -> i32 {
+    // Test 1: Direct helper call - Ok path with from_byte string building
+    let r1: Result#[(string, i32), ParseError] = parse_escape("n", 0)
+    match r1 {
+        Ok((s, n)) => {
+            assert_eq(s.len(), 1)
+            assert_eq(n, 1)
+        }
+        Err(e) => { return 1 }
+    }
+
+    // Test 2: Direct helper call - another Ok path
+    let r2: Result#[(string, i32), ParseError] = parse_escape("t", 5)
+    match r2 {
+        Ok((s, n)) => {
+            assert_eq(s.len(), 1)
+            assert_eq(n, 6)
+        }
+        Err(e) => { return 2 }
+    }
+
+    // Test 3: Direct helper call - string literal return
+    let r3: Result#[(string, i32), ParseError] = parse_escape("\\", 10)
+    match r3 {
+        Ok((s, n)) => {
+            assert_eq(s, "\\")
+            assert_eq(n, 11)
+        }
+        Err(e) => { return 3 }
+    }
+
+    // Test 4: Error propagation - struct error with string field
+    let r4: Result#[(string, i32), ParseError] = parse_escape("z", 0)
+    match r4 {
+        Ok((s, n)) => { return 4 }
+        Err(e) => {
+            assert(e.message.contains("unknown"))
+            assert_eq(e.line, 1)
+        }
+    }
+
+    // Test 5: Nested call pattern - caller wraps helper result
+    let r5: Result#[(string, i32), ParseError] = parse_segment("n", 0)
+    match r5 {
+        Ok((s, n)) => {
+            assert(s.contains("["))
+            assert(s.contains("]"))
+            assert_eq(n, 1)
+        }
+        Err(e) => { return 5 }
+    }
+
+    // Test 6: Double-nested call - string built across three stack frames
+    let r6: Result#[(string, i32), ParseError] = parse_full("t", 3)
+    match r6 {
+        Ok((s, n)) => {
+            assert(s.starts_with("result:"))
+            assert_eq(n, 104)
+        }
+        Err(e) => { return 6 }
+    }
+
+    // Test 7: Error propagation through nested calls
+    let r7: Result#[(string, i32), ParseError] = parse_full("z", 0)
+    match r7 {
+        Ok((s, n)) => { return 7 }
+        Err(e) => {
+            assert(e.message.contains("unknown"))
+        }
+    }
+
+    println("All result_tuple_string_helper tests passed!")
+    return 42
+}

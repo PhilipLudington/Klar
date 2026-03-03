@@ -816,6 +816,9 @@ fn checkTypeCast(tc: anytype, cast: *ast.TypeCast) Type {
     const expr_type = checkExpr(tc, cast.expr);
     const target_type = tc.resolveTypeExpr(cast.target_type) catch return tc.type_builder.unknownType();
 
+    // Annotate signedness for codegen (prevents wrong sext/zext on widening casts)
+    cast.source_is_signed = expr_type.isSigned();
+
     // Validate the cast is between compatible types (numeric to numeric, etc.)
     const expr_numeric = expr_type.isNumeric();
     const target_numeric = target_type.isNumeric();

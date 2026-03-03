@@ -6,36 +6,54 @@
 //!
 //! ## Provided by this module
 //!
-//! - `ListField`: Struct field index constants
-//! - `list_struct_size`: Size constant (16 bytes)
+//! - `ListField`: Outer list struct field index (header_ptr = 0)
+//! - `ListHeaderField`: Header struct field indices (data, len, capacity)
+//! - `list_struct_size`: Size constant (8 bytes — single pointer)
+//! - `list_header_size`: Size constant (16 bytes — heap-allocated header)
 //! - `initial_capacity` / `growth_factor`: Growth policy constants
-//! - `createListStructType`: Build the LLVM struct type for List
+//! - `createListStructType`: Build the LLVM type for List (outer wrapper)
+//! - `createListHeaderType`: Build the LLVM type for ListHeader (heap data)
 //! - `growCapacity`: Calculate new capacity after growth
 //!
-//! ## List Struct Layout
+//! ## List Struct Layout (Heap-Indirected)
 //!
 //! ```
 //! struct List#[T] {
+//!     header: *ListHeader,  // Pointer to shared heap header
+//! }
+//!
+//! struct ListHeader {
 //!     data: *T,      // Pointer to element array
 //!     len: i32,      // Current number of elements
 //!     capacity: i32, // Allocated capacity (number of T)
 //! }
 //! ```
 //!
-//! Total size: 16 bytes (8 + 4 + 4). Growth is 2x when capacity is exceeded.
+//! Outer struct: 8 bytes (single pointer). When copied, both copies share
+//! the same heap header, so mutations through either are visible to both.
+//! Header: 16 bytes (8 + 4 + 4), heap-allocated. Growth is 2x when
+//! capacity is exceeded.
 
 const std = @import("std");
 const llvm = @import("llvm.zig");
 
-/// List struct field indices.
+/// Outer list struct field index (just the header pointer).
 pub const ListField = struct {
+    pub const header_ptr = 0;
+};
+
+/// Header struct field indices (heap-allocated).
+pub const ListHeaderField = struct {
     pub const data = 0;
     pub const len = 1;
     pub const capacity = 2;
 };
 
-/// Size of the List struct in bytes (excluding element storage).
-pub const list_struct_size = 16;
+/// Size of the outer List struct in bytes (single pointer).
+pub const list_struct_size = 8;
+
+/// Size of the heap-allocated ListHeader in bytes.
+pub const list_header_size = 16;
 
 /// Initial capacity for new lists.
 pub const initial_capacity = 4;
@@ -43,8 +61,16 @@ pub const initial_capacity = 4;
 /// Growth factor when resizing.
 pub const growth_factor = 2;
 
-/// Create the LLVM type for Klar's List struct.
+/// Create the LLVM type for Klar's outer List struct: { ptr }
 pub fn createListStructType(ctx: llvm.Context) llvm.TypeRef {
+    var fields = [_]llvm.TypeRef{
+        llvm.Types.pointer(ctx), // header pointer
+    };
+    return llvm.Types.struct_(ctx, &fields, false);
+}
+
+/// Create the LLVM type for the heap-allocated ListHeader: { ptr, i32, i32 }
+pub fn createListHeaderType(ctx: llvm.Context) llvm.TypeRef {
     var fields = [_]llvm.TypeRef{
         llvm.Types.pointer(ctx), // data pointer
         llvm.Types.int32(ctx), // len

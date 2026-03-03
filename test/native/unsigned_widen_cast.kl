@@ -1,0 +1,75 @@
+// Test unsigned integer widening casts use zero-extension, not sign-extension.
+// Regression test: u8 values >= 128 were incorrectly sign-extended to u32/u64,
+// e.g. 128u8.as#[u32] produced 0xFFFFFF80 instead of 0x00000080.
+// expect: 0
+
+fn check(cond: bool, code: i32) -> i32 {
+    if cond {
+        return 0
+    }
+    return code
+}
+
+fn main() -> i32 {
+    // u8 → u32: values below sign bit
+    let a: u8 = 0
+    let a32: u32 = a.as#[u32]
+    let expect_a: u32 = 0
+    var r: i32 = check(a32 == expect_a, 1)
+    if r != 0 { return r }
+
+    let b: u8 = 127
+    let b32: u32 = b.as#[u32]
+    let expect_b: u32 = 127
+    r = check(b32 == expect_b, 2)
+    if r != 0 { return r }
+
+    // u8 → u32: values at and above sign bit (the regression cases)
+    let c: u8 = 128
+    let c32: u32 = c.as#[u32]
+    let expect_c: u32 = 128
+    r = check(c32 == expect_c, 3)
+    if r != 0 { return r }
+
+    let d: u8 = 200
+    let d32: u32 = d.as#[u32]
+    let expect_d: u32 = 200
+    r = check(d32 == expect_d, 4)
+    if r != 0 { return r }
+
+    let e: u8 = 255
+    let e32: u32 = e.as#[u32]
+    let expect_e: u32 = 255
+    r = check(e32 == expect_e, 5)
+    if r != 0 { return r }
+
+    // u8 → u64
+    let f: u8 = 200
+    let f64_val: u64 = f.as#[u64]
+    let expect_f: u64 = 200
+    r = check(f64_val == expect_f, 6)
+    if r != 0 { return r }
+
+    // u16 → u32
+    let g: u16 = 40000
+    let g32: u32 = g.as#[u32]
+    let expect_g: u32 = 40000
+    r = check(g32 == expect_g, 7)
+    if r != 0 { return r }
+
+    // u16 → u64
+    let h: u16 = 65535
+    let h64: u64 = h.as#[u64]
+    let expect_h: u64 = 65535
+    r = check(h64 == expect_h, 8)
+    if r != 0 { return r }
+
+    // u32 → u64
+    let i_val: u32 = 3000000000
+    let i64_val: u64 = i_val.as#[u64]
+    let expect_i: u64 = 3000000000
+    r = check(i64_val == expect_i, 9)
+    if r != 0 { return r }
+
+    return 0
+}

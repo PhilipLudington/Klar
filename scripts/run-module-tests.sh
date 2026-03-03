@@ -209,6 +209,192 @@ else
     echo "⊘ meta_import (test not found, skipping)"
 fi
 
+# Test 9: JSON library (stdlib/json.kl)
+echo "--- json: JSON library (stdlib/json.kl) ---"
+temp_bin="/tmp/klar_module_json"
+if [ -d "$TEST_DIR/json" ]; then
+    if $KLAR build $TEST_DIR/json/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ json (exit: $result)"
+            record_success "json"
+        else
+            echo "✗ json (expected: 0, got: $result)"
+            record_failure "json" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ json (build failed)"
+        record_failure "json" "build failed"
+    fi
+else
+    echo "⊘ json (test not found, skipping)"
+fi
+
+# Test 10: String.as_str() use-after-free fix
+echo "--- string_as_str: String.as_str() returns safe copy ---"
+temp_bin="/tmp/klar_module_string_as_str"
+if [ -d "$TEST_DIR/string_as_str" ]; then
+    if $KLAR build $TEST_DIR/string_as_str/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_as_str (exit: $result)"
+            record_success "string_as_str"
+        else
+            echo "✗ string_as_str (expected: 0, got: $result)"
+            record_failure "string_as_str" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_as_str (build failed)"
+        record_failure "string_as_str" "build failed"
+    fi
+else
+    echo "⊘ string_as_str (test not found, skipping)"
+fi
+
+# Test 11: SHA-256 library (stdlib/sha256.kl)
+echo "--- sha256: SHA-256 library (stdlib/sha256.kl) ---"
+temp_bin="/tmp/klar_module_sha256"
+if [ -d "$TEST_DIR/sha256" ]; then
+    if $KLAR build $TEST_DIR/sha256/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ sha256 (exit: $result)"
+            record_success "sha256"
+        else
+            echo "✗ sha256 (expected: 0, got: $result)"
+            record_failure "sha256" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ sha256 (build failed)"
+        record_failure "sha256" "build failed"
+    fi
+else
+    echo "⊘ sha256 (test not found, skipping)"
+fi
+
+# Test 12: CLI library (stdlib/cli.kl)
+echo "--- cli: CLI argument parsing (stdlib/cli.kl) ---"
+temp_bin="/tmp/klar_module_cli"
+if [ -d "$TEST_DIR/cli" ]; then
+    if $KLAR build $TEST_DIR/cli/main.kl -o "$temp_bin" 2>/dev/null; then
+        output=$("$temp_bin" 2>/dev/null)
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ cli (exit: $result)"
+            record_success "cli"
+        else
+            echo "✗ cli (expected: 0, got: $result)"
+            echo "    output: $output"
+            record_failure "cli" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ cli (build failed)"
+        record_failure "cli" "build failed"
+    fi
+else
+    echo "⊘ cli (test not found, skipping)"
+fi
+
+# Test 13: Cross-module string enum payload
+echo "--- string_enum: Cross-module string enum .len() ---"
+temp_bin="/tmp/klar_module_string_enum"
+if [ -d "$TEST_DIR/string_enum" ]; then
+    if $KLAR build $TEST_DIR/string_enum/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_enum (exit: $result)"
+            record_success "string_enum"
+        else
+            echo "✗ string_enum (expected: 0, got: $result)"
+            record_failure "string_enum" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_enum (build failed)"
+        record_failure "string_enum" "build failed"
+    fi
+else
+    echo "⊘ string_enum (test not found, skipping)"
+fi
+
+# Test 14: Cross-module string enum complex (index_of, starts_with, contains)
+echo "--- string_enum_complex: Cross-module string enum methods ---"
+temp_bin="/tmp/klar_module_string_enum_complex"
+if [ -d "$TEST_DIR/string_enum_complex" ]; then
+    if $KLAR build $TEST_DIR/string_enum_complex/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_enum_complex (exit: $result)"
+            record_success "string_enum_complex"
+        else
+            echo "✗ string_enum_complex (expected: 0, got: $result)"
+            record_failure "string_enum_complex" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_enum_complex (build failed)"
+        record_failure "string_enum_complex" "build failed"
+    fi
+else
+    echo "⊘ string_enum_complex (test not found, skipping)"
+fi
+
+# Test 15: TOML library (stdlib/toml.kl)
+echo "--- toml: TOML library (stdlib/toml.kl) ---"
+temp_bin="/tmp/klar_module_toml"
+if [ -d "$TEST_DIR/toml" ]; then
+    if $KLAR build $TEST_DIR/toml/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ toml (exit: $result)"
+            record_success "toml"
+        else
+            echo "✗ toml (expected: 0, got: $result)"
+            record_failure "toml" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ toml (build failed)"
+        record_failure "toml" "build failed"
+    fi
+else
+    echo "⊘ toml (test not found, skipping)"
+fi
+
+# Test 16: Integration test (all stdlib libraries together)
+echo "--- integration: All stdlib libraries composed ---"
+temp_bin="/tmp/klar_module_integration"
+if [ -d "$TEST_DIR/integration" ]; then
+    if $KLAR build $TEST_DIR/integration/main.kl -o "$temp_bin" 2>/dev/null; then
+        output=$("$temp_bin" 2>/dev/null)
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ integration (exit: $result)"
+            record_success "integration"
+        else
+            echo "✗ integration (expected: 0, got: $result)"
+            echo "    output: $output"
+            record_failure "integration" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ integration (build failed)"
+        record_failure "integration" "build failed"
+    fi
+else
+    echo "⊘ integration (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON

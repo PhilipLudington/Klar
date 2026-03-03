@@ -1,0 +1,13 @@
+// Test String.as_str() use-after-free fix
+// Bug fix: as_str() returned raw pointer to String's internal buffer,
+// which was freed when the String was dropped.
+
+import helper.{get_greeting}
+
+fn main() -> i32 {
+    let greeting: string = get_greeting()
+    if greeting == "hello" {
+        return 0
+    }
+    return 1
+}

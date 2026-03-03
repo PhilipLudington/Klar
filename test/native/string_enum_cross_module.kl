@@ -1,0 +1,65 @@
+// Test: string extracted from enum payload preserves .len() and methods
+// Bug 5 repro: bindPatternVariables didn't set is_string for primitive strings
+
+enum Wrapper {
+    Text(string),
+    Number(i32),
+    Empty
+}
+
+fn make_wrapper(s: string) -> Wrapper {
+    return Wrapper::Text(s)
+}
+
+fn extract_and_check(w: Wrapper) -> i32 {
+    match w {
+        Text(s) => {
+            // These should all work correctly after the fix
+            let len: i32 = s.len()
+            assert_eq(len, 5)
+
+            let idx: ?i32 = s.index_of("ll")
+            assert_eq(idx ?? -1, 2)
+
+            assert(s == "hello")
+            assert(s != "world")
+
+            let upper: string = s.to_uppercase()
+            assert(upper == "HELLO")
+
+            return 0
+        }
+        Number(n) => { return n }
+        Empty => { return -1 }
+    }
+}
+
+fn main() -> i32 {
+    // Create enum with string payload, pass through function
+    let w: Wrapper = make_wrapper("hello")
+    let result: i32 = extract_and_check(w)
+    assert_eq(result, 0)
+
+    // Also test direct construction + match
+    let w2: Wrapper = Wrapper::Text("world")
+    match w2 {
+        Text(s) => {
+            assert_eq(s.len(), 5)
+            assert(s.starts_with("wor"))
+            assert(s.ends_with("rld"))
+        }
+        _ => { assert(false) }
+    }
+
+    // Test empty string in enum payload
+    let w3: Wrapper = Wrapper::Text("")
+    match w3 {
+        Text(s) => {
+            assert_eq(s.len(), 0)
+            assert(s == "")
+        }
+        _ => { assert(false) }
+    }
+
+    return 0
+}

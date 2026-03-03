@@ -1,0 +1,25 @@
+// Test return None in function returning ?T
+// Bug fix: "return None" was rejected because None is registered as fn() -> ?i32
+
+fn find_positive(x: i32) -> ?i32 {
+    if x > 0 {
+        return Some(x)
+    }
+    return None
+}
+
+fn main() -> i32 {
+    let found: ?i32 = find_positive(42)
+    let not_found: ?i32 = find_positive(-1)
+
+    let a: i32 = found ?? 0          // 42
+    let b: i32 = not_found ?? 99     // 99
+
+    // 42 - 99 = -57, but we want a positive exit code
+    // a(42) + b(99) = 141, too large for exit code
+    // Just return 0 if both are correct
+    if a == 42 and b == 99 {
+        return 0
+    }
+    return 1
+}

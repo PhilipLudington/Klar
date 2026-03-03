@@ -1,0 +1,1119 @@
+// test/module/toml/main.kl - Comprehensive tests for stdlib/toml.kl
+// Tests: parsing primitives, sections, dotted keys, inline tables, arrays,
+//        array of tables, accessors, error handling, and lodex.toml-style config
+// Returns 0 on success, non-zero test number on failure
+
+import stdlib.toml.*
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn expect_str(actual: string, expected: string, test_num: i32) -> i32 {
+    if actual != expected {
+        print("FAIL test ")
+        print(test_num.to_string().as_str())
+        print(": expected '")
+        print(expected)
+        print("' got '")
+        print(actual)
+        println("'")
+        return test_num
+    }
+    return 0
+}
+
+fn expect_ok(r: Result#[TomlValue, TomlError], test_num: i32) -> i32 {
+    match r {
+        Ok(_) => { return 0 }
+        Err(e) => {
+            print("FAIL test ")
+            print(test_num.to_string().as_str())
+            print(": expected Ok, got Err: ")
+            print(e.message)
+            print(" at line ")
+            println(e.line.to_string().as_str())
+            return test_num
+        }
+    }
+}
+
+fn expect_err(r: Result#[TomlValue, TomlError], test_num: i32) -> i32 {
+    match r {
+        Ok(_) => { return fail(test_num, "expected Err, got Ok") }
+        Err(_) => { return 0 }
+    }
+}
+
+// ============================================================================
+// Test: Parse Basic Key-Value Pairs
+// ============================================================================
+
+fn test_string_value() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("name = \"Tom\"")
+    match r {
+        Ok(v) => {
+            let s: ?string = toml_get_string(v, "name")
+            match s {
+                Some(val) => {
+                    if val == "Tom" { return 0 }
+                    return fail(1, "expected 'Tom'")
+                }
+                None => { return fail(1, "key not found") }
+            }
+        }
+        Err(e) => {
+            print("parse error: ")
+            println(e.message)
+            return fail(1, "parse failed")
+        }
+    }
+}
+
+fn test_integer_value() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("port = 8080")
+    match r {
+        Ok(v) => {
+            let n: ?i64 = toml_get_integer(v, "port")
+            match n {
+                Some(val) => {
+                    if val == 8080.as#[i64] { return 0 }
+                    return fail(2, "expected 8080")
+                }
+                None => { return fail(2, "key not found") }
+            }
+        }
+        Err(_) => { return fail(2, "parse failed") }
+    }
+}
+
+fn test_negative_integer() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("offset = -42")
+    match r {
+        Ok(v) => {
+            let n: ?i64 = toml_get_integer(v, "offset")
+            match n {
+                Some(val) => {
+                    let expected: i64 = 0.as#[i64] - 42.as#[i64]
+                    if val == expected { return 0 }
+                    return fail(3, "expected -42")
+                }
+                None => { return fail(3, "key not found") }
+            }
+        }
+        Err(_) => { return fail(3, "parse failed") }
+    }
+}
+
+fn test_float_value() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("pi = 3.14")
+    match r {
+        Ok(v) => {
+            let n: ?f64 = toml_get_float(v, "pi")
+            match n {
+                Some(val) => {
+                    // Approximate comparison
+                    if val > 3.13 and val < 3.15 { return 0 }
+                    return fail(4, "expected ~3.14")
+                }
+                None => { return fail(4, "key not found") }
+            }
+        }
+        Err(_) => { return fail(4, "parse failed") }
+    }
+}
+
+fn test_bool_true() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("enabled = true")
+    match r {
+        Ok(v) => {
+            let b: ?bool = toml_get_bool(v, "enabled")
+            match b {
+                Some(val) => {
+                    if val { return 0 }
+                    return fail(5, "expected true")
+                }
+                None => { return fail(5, "key not found") }
+            }
+        }
+        Err(_) => { return fail(5, "parse failed") }
+    }
+}
+
+fn test_bool_false() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("debug = false")
+    match r {
+        Ok(v) => {
+            let b: ?bool = toml_get_bool(v, "debug")
+            match b {
+                Some(val) => {
+                    if not val { return 0 }
+                    return fail(6, "expected false")
+                }
+                None => { return fail(6, "key not found") }
+            }
+        }
+        Err(_) => { return fail(6, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: String Types
+// ============================================================================
+
+fn test_literal_string() -> i32 {
+    let input: string = "path = 'C:\\Users\\me'"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let s: ?string = toml_get_string(v, "path")
+            match s {
+                Some(val) => {
+                    // Literal strings have no escapes, backslashes are literal
+                    if val == "C:\\Users\\me" { return 0 }
+                    return fail(10, "literal string mismatch")
+                }
+                None => { return fail(10, "key not found") }
+            }
+        }
+        Err(_) => { return fail(10, "parse failed") }
+    }
+}
+
+fn test_escape_sequences() -> i32 {
+    // Test that \n escape is properly decoded by comparing against a string with actual newline
+    let r: Result#[TomlValue, TomlError] = toml_parse("msg = \"hello\\nworld\"")
+    match r {
+        Ok(v) => {
+            let s: ?string = toml_get_string(v, "msg")
+            match s {
+                Some(val) => {
+                    // Build expected string with actual newline
+                    let expected: string = "hello" + from_byte(10.as#[u8]) + "world"
+                    if val == expected { return 0 }
+                    return fail(11, "escape decode mismatch")
+                }
+                None => { return fail(11, "key not found") }
+            }
+        }
+        Err(_) => { return fail(11, "parse failed") }
+    }
+}
+
+fn test_empty_string() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("empty = \"\"")
+    match r {
+        Ok(v) => {
+            let s: ?string = toml_get_string(v, "empty")
+            match s {
+                Some(val) => {
+                    if val == "" { return 0 }
+                    return fail(12, "expected empty string")
+                }
+                None => { return fail(12, "key not found") }
+            }
+        }
+        Err(_) => { return fail(12, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Sections (Tables)
+// ============================================================================
+
+fn test_simple_section() -> i32 {
+    let input: string = "[server]\nhost = \"localhost\"\nport = 9090"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let server: ?TomlValue = toml_get(v, "server")
+            match server {
+                Some(sv) => {
+                    let host: ?string = toml_get_string(sv, "host")
+                    match host {
+                        Some(h) => {
+                            if h != "localhost" { return fail(20, "expected 'localhost'") }
+                            let port: ?i64 = toml_get_integer(sv, "port")
+                            match port {
+                                Some(p) => {
+                                    if p == 9090.as#[i64] { return 0 }
+                                    return fail(20, "expected port 9090")
+                                }
+                                None => { return fail(20, "port not found") }
+                            }
+                        }
+                        None => { return fail(20, "host not found") }
+                    }
+                }
+                None => { return fail(20, "server section not found") }
+            }
+        }
+        Err(_) => { return fail(20, "parse failed") }
+    }
+}
+
+fn test_nested_sections() -> i32 {
+    let input: string = "[database]\nname = \"mydb\"\n\n[database.connection]\nhost = \"db.local\"\nport = 5432"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let db: ?TomlValue = toml_get(v, "database")
+            match db {
+                Some(dbv) => {
+                    let name: ?string = toml_get_string(dbv, "name")
+                    match name {
+                        Some(n) => {
+                            if n != "mydb" { return fail(21, "expected 'mydb'") }
+                        }
+                        None => { return fail(21, "name not found") }
+                    }
+                    let conn: ?TomlValue = toml_get(dbv, "connection")
+                    match conn {
+                        Some(cv) => {
+                            let host: ?string = toml_get_string(cv, "host")
+                            match host {
+                                Some(h) => {
+                                    if h == "db.local" { return 0 }
+                                    return fail(21, "expected 'db.local'")
+                                }
+                                None => { return fail(21, "host not found") }
+                            }
+                        }
+                        None => { return fail(21, "connection section not found") }
+                    }
+                }
+                None => { return fail(21, "database section not found") }
+            }
+        }
+        Err(_) => { return fail(21, "parse failed") }
+    }
+}
+
+fn test_multiple_sections() -> i32 {
+    let input: string = "[alpha]\na = 1\n\n[beta]\nb = 2"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let alpha: ?TomlValue = toml_get(v, "alpha")
+            match alpha {
+                Some(av) => {
+                    let a: ?i64 = toml_get_integer(av, "a")
+                    match a {
+                        Some(val) => {
+                            if val != 1.as#[i64] { return fail(22, "expected a=1") }
+                        }
+                        None => { return fail(22, "a not found") }
+                    }
+                }
+                None => { return fail(22, "alpha not found") }
+            }
+            let beta: ?TomlValue = toml_get(v, "beta")
+            match beta {
+                Some(bv) => {
+                    let b: ?i64 = toml_get_integer(bv, "b")
+                    match b {
+                        Some(val) => {
+                            if val == 2.as#[i64] { return 0 }
+                            return fail(22, "expected b=2")
+                        }
+                        None => { return fail(22, "b not found") }
+                    }
+                }
+                None => { return fail(22, "beta not found") }
+            }
+        }
+        Err(_) => { return fail(22, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Dotted Keys
+// ============================================================================
+
+fn test_dotted_key() -> i32 {
+    let input: string = "server.host = \"localhost\"\nserver.port = 8080"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let server: ?TomlValue = toml_get(v, "server")
+            match server {
+                Some(sv) => {
+                    let host: ?string = toml_get_string(sv, "host")
+                    match host {
+                        Some(h) => {
+                            if h == "localhost" { return 0 }
+                            return fail(30, "expected 'localhost'")
+                        }
+                        None => { return fail(30, "host not found") }
+                    }
+                }
+                None => { return fail(30, "server not found") }
+            }
+        }
+        Err(_) => { return fail(30, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Arrays
+// ============================================================================
+
+fn test_integer_array() -> i32 {
+    let input: string = "ports = [80, 443, 8080]"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let arr: ?List#[TomlValue] = toml_get_array(v, "ports")
+            match arr {
+                Some(a) => {
+                    if a.len() != 3 { return fail(40, "expected 3 elements") }
+                    let first: TomlValue = a.get(0)!
+                    match first {
+                        TomlValue.Integer(n) => {
+                            if n != 80.as#[i64] { return fail(40, "expected first=80") }
+                        }
+                        _ => { return fail(40, "expected Integer") }
+                    }
+                    let last: TomlValue = a.get(2)!
+                    match last {
+                        TomlValue.Integer(n) => {
+                            if n != 8080.as#[i64] { return fail(40, "expected last=8080") }
+                        }
+                        _ => { return fail(40, "expected Integer") }
+                    }
+                    return 0
+                }
+                None => { return fail(40, "ports not found") }
+            }
+        }
+        Err(_) => { return fail(40, "parse failed") }
+    }
+}
+
+fn test_string_array() -> i32 {
+    let input: string = "tags = [\"web\", \"api\", \"v2\"]"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let arr: ?List#[TomlValue] = toml_get_array(v, "tags")
+            match arr {
+                Some(a) => {
+                    if a.len() != 3 { return fail(41, "expected 3 elements") }
+                    let first: TomlValue = a.get(0)!
+                    match first {
+                        TomlValue.Str(s) => {
+                            if s != "web" { return fail(41, "expected first='web'") }
+                        }
+                        _ => { return fail(41, "expected Str") }
+                    }
+                    let last: TomlValue = a.get(2)!
+                    match last {
+                        TomlValue.Str(s) => {
+                            if s != "v2" { return fail(41, "expected last='v2'") }
+                        }
+                        _ => { return fail(41, "expected Str") }
+                    }
+                    return 0
+                }
+                None => { return fail(41, "tags not found") }
+            }
+        }
+        Err(_) => { return fail(41, "parse failed") }
+    }
+}
+
+fn test_empty_array() -> i32 {
+    let input: string = "empty = []"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let arr: ?List#[TomlValue] = toml_get_array(v, "empty")
+            match arr {
+                Some(a) => {
+                    if a.len() == 0 { return 0 }
+                    return fail(42, "expected empty array")
+                }
+                None => { return fail(42, "empty not found") }
+            }
+        }
+        Err(_) => { return fail(42, "parse failed") }
+    }
+}
+
+fn test_multiline_array() -> i32 {
+    let input: string = "items = [\n  1,\n  2,\n  3,\n]"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let arr: ?List#[TomlValue] = toml_get_array(v, "items")
+            match arr {
+                Some(a) => {
+                    if a.len() == 3 { return 0 }
+                    return fail(43, "expected 3 elements")
+                }
+                None => { return fail(43, "items not found") }
+            }
+        }
+        Err(_) => { return fail(43, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Inline Tables
+// ============================================================================
+
+fn test_inline_table() -> i32 {
+    let input: string = "point = {x = 1, y = 2}"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let pt: ?TomlValue = toml_get(v, "point")
+            match pt {
+                Some(pv) => {
+                    let x: ?i64 = toml_get_integer(pv, "x")
+                    match x {
+                        Some(xv) => {
+                            if xv != 1.as#[i64] { return fail(50, "expected x=1") }
+                            let y: ?i64 = toml_get_integer(pv, "y")
+                            match y {
+                                Some(yv) => {
+                                    if yv == 2.as#[i64] { return 0 }
+                                    return fail(50, "expected y=2")
+                                }
+                                None => { return fail(50, "y not found") }
+                            }
+                        }
+                        None => { return fail(50, "x not found") }
+                    }
+                }
+                None => { return fail(50, "point not found") }
+            }
+        }
+        Err(_) => { return fail(50, "parse failed") }
+    }
+}
+
+fn test_empty_inline_table() -> i32 {
+    let input: string = "empty = {}"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let t: ?Map#[string, TomlValue] = toml_get_table(v, "empty")
+            match t {
+                Some(m) => {
+                    if m.keys().len() == 0 { return 0 }
+                    return fail(51, "expected empty table")
+                }
+                None => { return fail(51, "empty not found") }
+            }
+        }
+        Err(_) => { return fail(51, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Array of Tables
+// ============================================================================
+
+fn test_array_of_tables() -> i32 {
+    let input: string = "[[products]]\nname = \"Hammer\"\n\n[[products]]\nname = \"Nail\""
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let prods: ?List#[TomlValue] = toml_get_array(v, "products")
+            match prods {
+                Some(a) => {
+                    if a.len() != 2 { return fail(60, "expected 2 products") }
+                    let first: TomlValue = a.get(0)!
+                    let name1: ?string = toml_get_string(first, "name")
+                    match name1 {
+                        Some(n) => {
+                            if n != "Hammer" { return fail(60, "expected 'Hammer'") }
+                        }
+                        None => { return fail(60, "name not found in first") }
+                    }
+                    let second: TomlValue = a.get(1)!
+                    let name2: ?string = toml_get_string(second, "name")
+                    match name2 {
+                        Some(n) => {
+                            if n == "Nail" { return 0 }
+                            return fail(60, "expected 'Nail'")
+                        }
+                        None => { return fail(60, "name not found in second") }
+                    }
+                }
+                None => { return fail(60, "products not found") }
+            }
+        }
+        Err(_) => { return fail(60, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Comments
+// ============================================================================
+
+fn test_comments() -> i32 {
+    let input: string = "# This is a comment\nname = \"value\" # inline comment\n# Another comment"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let s: ?string = toml_get_string(v, "name")
+            match s {
+                Some(val) => {
+                    if val == "value" { return 0 }
+                    return fail(70, "expected 'value'")
+                }
+                None => { return fail(70, "key not found") }
+            }
+        }
+        Err(_) => { return fail(70, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Number Formats
+// ============================================================================
+
+fn test_hex_integer() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("color = 0xFF")
+    match r {
+        Ok(v) => {
+            let n: ?i64 = toml_get_integer(v, "color")
+            match n {
+                Some(val) => {
+                    if val == 255.as#[i64] { return 0 }
+                    return fail(80, "expected 255")
+                }
+                None => { return fail(80, "key not found") }
+            }
+        }
+        Err(_) => { return fail(80, "parse failed") }
+    }
+}
+
+fn test_underscore_number() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("big = 1_000_000")
+    match r {
+        Ok(v) => {
+            let n: ?i64 = toml_get_integer(v, "big")
+            match n {
+                Some(val) => {
+                    if val == 1000000.as#[i64] { return 0 }
+                    return fail(81, "expected 1000000")
+                }
+                None => { return fail(81, "key not found") }
+            }
+        }
+        Err(_) => { return fail(81, "parse failed") }
+    }
+}
+
+fn test_float_exponent() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("sci = 1e2")
+    match r {
+        Ok(v) => {
+            let n: ?f64 = toml_get_float(v, "sci")
+            match n {
+                Some(val) => {
+                    if val > 99.0 and val < 101.0 { return 0 }
+                    return fail(82, "expected ~100.0")
+                }
+                None => { return fail(82, "key not found") }
+            }
+        }
+        Err(_) => { return fail(82, "parse failed") }
+    }
+}
+
+fn test_positive_sign() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("pos = +99")
+    match r {
+        Ok(v) => {
+            let n: ?i64 = toml_get_integer(v, "pos")
+            match n {
+                Some(val) => {
+                    if val == 99.as#[i64] { return 0 }
+                    return fail(83, "expected 99")
+                }
+                None => { return fail(83, "key not found") }
+            }
+        }
+        Err(_) => { return fail(83, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Accessor Edge Cases
+// ============================================================================
+
+fn test_get_missing_key() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("a = 1")
+    match r {
+        Ok(v) => {
+            let missing: ?string = toml_get_string(v, "nope")
+            match missing {
+                Some(_) => { return fail(90, "should be None") }
+                None => { return 0 }
+            }
+        }
+        Err(_) => { return fail(90, "parse failed") }
+    }
+}
+
+fn test_get_wrong_type() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("count = 42")
+    match r {
+        Ok(v) => {
+            let s: ?string = toml_get_string(v, "count")
+            match s {
+                Some(_) => { return fail(91, "should be None for wrong type") }
+                None => { return 0 }
+            }
+        }
+        Err(_) => { return fail(91, "parse failed") }
+    }
+}
+
+fn test_get_on_non_table() -> i32 {
+    let v: TomlValue = toml_integer(42.as#[i64])
+    let result: ?i64 = toml_get_integer(v, "anything")
+    match result {
+        Some(_) => { return fail(92, "should be None on non-table") }
+        None => { return 0 }
+    }
+}
+
+// ============================================================================
+// Test: Error Cases
+// ============================================================================
+
+fn test_error_empty() -> i32 {
+    // Empty input is valid TOML (empty table)
+    let r: Result#[TomlValue, TomlError] = toml_parse("")
+    return expect_ok(r, 100)
+}
+
+fn test_error_unterminated_string() -> i32 {
+    return expect_err(toml_parse("name = \"hello"), 101)
+}
+
+fn test_error_missing_value() -> i32 {
+    return expect_err(toml_parse("name = "), 102)
+}
+
+fn test_error_missing_equals() -> i32 {
+    return expect_err(toml_parse("name \"value\""), 103)
+}
+
+fn test_error_bad_section() -> i32 {
+    return expect_err(toml_parse("["), 104)
+}
+
+// ============================================================================
+// Test: Stringify
+// ============================================================================
+
+fn test_stringify_basic() -> i32 {
+    let r: Result#[TomlValue, TomlError] = toml_parse("name = \"hello\"\ncount = 42\nenabled = true")
+    match r {
+        Ok(v) => {
+            let s: string = toml_stringify(v)
+            // Should contain the key-value pairs
+            let idx1: ?i32 = s.index_of("name")
+            match idx1 {
+                Some(_) => {}
+                None => { return fail(110, "stringify missing 'name'") }
+            }
+            let idx2: ?i32 = s.index_of("count")
+            match idx2 {
+                Some(_) => {}
+                None => { return fail(110, "stringify missing 'count'") }
+            }
+            return 0
+        }
+        Err(_) => { return fail(110, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Lodex-style Config
+// ============================================================================
+
+fn test_lodex_config() -> i32 {
+    let input: string = "[project]\nname = \"my-app\"\nversion = \"0.1.0\"\n\n[evaluation]\nmax_checkpoints = 100\nauto_checkpoint = true\n\n[evaluation.suites]\nunit = \"test/unit\"\nintegration = \"test/integration\""
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            // Check project section
+            let proj: ?TomlValue = toml_get(v, "project")
+            match proj {
+                Some(pv) => {
+                    let name: ?string = toml_get_string(pv, "name")
+                    match name {
+                        Some(n) => {
+                            if n != "my-app" { return fail(120, "expected 'my-app'") }
+                        }
+                        None => { return fail(120, "name not found") }
+                    }
+                }
+                None => { return fail(120, "project section not found") }
+            }
+
+            // Check evaluation section
+            let eval_sec: ?TomlValue = toml_get(v, "evaluation")
+            match eval_sec {
+                Some(ev) => {
+                    let mc: ?i64 = toml_get_integer(ev, "max_checkpoints")
+                    match mc {
+                        Some(val) => {
+                            if val != 100.as#[i64] { return fail(120, "expected max_checkpoints=100") }
+                        }
+                        None => { return fail(120, "max_checkpoints not found") }
+                    }
+
+                    let ac: ?bool = toml_get_bool(ev, "auto_checkpoint")
+                    match ac {
+                        Some(val) => {
+                            if not val { return fail(120, "expected auto_checkpoint=true") }
+                        }
+                        None => { return fail(120, "auto_checkpoint not found") }
+                    }
+
+                    // Check nested suites
+                    let suites: ?TomlValue = toml_get(ev, "suites")
+                    match suites {
+                        Some(sv) => {
+                            let unit: ?string = toml_get_string(sv, "unit")
+                            match unit {
+                                Some(u) => {
+                                    if u != "test/unit" { return fail(120, "expected unit='test/unit'") }
+                                }
+                                None => { return fail(120, "unit not found") }
+                            }
+                            let integ: ?string = toml_get_string(sv, "integration")
+                            match integ {
+                                Some(ig) => {
+                                    if ig == "test/integration" { return 0 }
+                                    return fail(120, "expected integration='test/integration'")
+                                }
+                                None => { return fail(120, "integration not found") }
+                            }
+                        }
+                        None => { return fail(120, "suites section not found") }
+                    }
+                }
+                None => { return fail(120, "evaluation section not found") }
+            }
+        }
+        Err(e) => {
+            print("parse error: ")
+            print(e.message)
+            print(" at line ")
+            println(e.line.to_string().as_str())
+            return fail(120, "parse failed")
+        }
+    }
+}
+
+// ============================================================================
+// Test: Top-level key-value pairs before sections
+// ============================================================================
+
+fn test_toplevel_and_sections() -> i32 {
+    let input: string = "title = \"My Config\"\n\n[server]\nhost = \"0.0.0.0\""
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let title: ?string = toml_get_string(v, "title")
+            match title {
+                Some(t) => {
+                    if t != "My Config" { return fail(130, "expected 'My Config'") }
+                    let server: ?TomlValue = toml_get(v, "server")
+                    match server {
+                        Some(sv) => {
+                            let host: ?string = toml_get_string(sv, "host")
+                            match host {
+                                Some(h) => {
+                                    if h == "0.0.0.0" { return 0 }
+                                    return fail(130, "expected '0.0.0.0'")
+                                }
+                                None => { return fail(130, "host not found") }
+                            }
+                        }
+                        None => { return fail(130, "server not found") }
+                    }
+                }
+                None => { return fail(130, "title not found") }
+            }
+        }
+        Err(_) => { return fail(130, "parse failed") }
+    }
+}
+
+// ============================================================================
+// Test: Quoted keys
+// ============================================================================
+
+fn test_quoted_key() -> i32 {
+    let input: string = "\"special key\" = \"value\""
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let s: ?string = toml_get_string(v, "special key")
+            match s {
+                Some(val) => {
+                    if val == "value" { return 0 }
+                    return fail(140, "expected 'value'")
+                }
+                None => { return fail(140, "key not found") }
+            }
+        }
+        Err(_) => { return fail(140, "parse failed") }
+    }
+}
+
+// NOTE: Multiline string tests (""" and ''') are omitted because the native
+// codegen crashes on multiline string parsing. This is a pre-existing compiler
+// bug, not a TOML library issue.
+
+// ============================================================================
+// Test: Unicode Escapes
+// ============================================================================
+
+fn test_unicode_escape_4digit() -> i32 {
+    // \u0041 = 'A' (1-byte UTF-8)
+    let input: string = "ch = \"\\u0041\""
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let s: ?string = toml_get_string(v, "ch")
+            match s {
+                Some(val) => {
+                    if val == "A" { return 0 }
+                    return fail(152, "expected 'A'")
+                }
+                None => { return fail(152, "ch not found") }
+            }
+        }
+        Err(e) => {
+            print("FAIL 152: ")
+            println(e.message)
+            return 152
+        }
+    }
+}
+
+fn test_unicode_surrogate_rejected() -> i32 {
+    // \uD800 is a surrogate — must be rejected
+    let input: string = "bad = \"\\uD800\""
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(_) => { return fail(153, "expected Err for surrogate, got Ok") }
+        Err(_) => { return 0 }
+    }
+}
+
+// ============================================================================
+// Test: Octal and Binary Integers
+// ============================================================================
+
+fn test_octal_integer() -> i32 {
+    let input: string = "n = 0o17"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let n: ?i64 = toml_get_integer(v, "n")
+            match n {
+                Some(val) => {
+                    if val == 15.as#[i64] { return 0 }
+                    return fail(154, "expected 15")
+                }
+                None => { return fail(154, "n not found") }
+            }
+        }
+        Err(e) => {
+            print("FAIL 154: ")
+            println(e.message)
+            return 154
+        }
+    }
+}
+
+fn test_binary_integer() -> i32 {
+    let input: string = "n = 0b1010"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(v) => {
+            let n: ?i64 = toml_get_integer(v, "n")
+            match n {
+                Some(val) => {
+                    if val == 10.as#[i64] { return 0 }
+                    return fail(155, "expected 10")
+                }
+                None => { return fail(155, "n not found") }
+            }
+        }
+        Err(e) => {
+            print("FAIL 155: ")
+            println(e.message)
+            return 155
+        }
+    }
+}
+
+// NOTE: Special float tests (inf, nan, -inf) are omitted because the native
+// codegen crashes on f64 infinity/NaN operations. This is a pre-existing
+// compiler bug, not a TOML library issue.
+
+// ============================================================================
+// Test: Dotted key conflict detection
+// ============================================================================
+
+fn test_dotted_key_conflict() -> i32 {
+    // a = 1 then a.b = 2 should error (a is non-table)
+    let input: string = "a = 1\na.b = 2"
+    let r: Result#[TomlValue, TomlError] = toml_parse(input)
+    match r {
+        Ok(_) => { return fail(159, "expected Err for key conflict, got Ok") }
+        Err(_) => { return 0 }
+    }
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() -> i32 {
+    var e: i32 = 0
+
+    // Basic key-value pairs
+    e = test_string_value()
+    if e != 0 { return e }
+    e = test_integer_value()
+    if e != 0 { return e }
+    e = test_negative_integer()
+    if e != 0 { return e }
+    e = test_float_value()
+    if e != 0 { return e }
+    e = test_bool_true()
+    if e != 0 { return e }
+    e = test_bool_false()
+    if e != 0 { return e }
+
+    // String types
+    e = test_literal_string()
+    if e != 0 { return e }
+    e = test_escape_sequences()
+    if e != 0 { return e }
+    e = test_empty_string()
+    if e != 0 { return e }
+
+    // Sections
+    e = test_simple_section()
+    if e != 0 { return e }
+    e = test_nested_sections()
+    if e != 0 { return e }
+    e = test_multiple_sections()
+    if e != 0 { return e }
+
+    // Dotted keys
+    e = test_dotted_key()
+    if e != 0 { return e }
+
+    // Arrays
+    e = test_integer_array()
+    if e != 0 { return e }
+    e = test_string_array()
+    if e != 0 { return e }
+    e = test_empty_array()
+    if e != 0 { return e }
+    e = test_multiline_array()
+    if e != 0 { return e }
+
+    // Inline tables
+    e = test_inline_table()
+    if e != 0 { return e }
+    e = test_empty_inline_table()
+    if e != 0 { return e }
+
+    // Array of tables
+    e = test_array_of_tables()
+    if e != 0 { return e }
+
+    // Comments
+    e = test_comments()
+    if e != 0 { return e }
+
+    // Number formats
+    e = test_hex_integer()
+    if e != 0 { return e }
+    e = test_underscore_number()
+    if e != 0 { return e }
+    e = test_float_exponent()
+    if e != 0 { return e }
+    e = test_positive_sign()
+    if e != 0 { return e }
+
+    // Accessor edge cases
+    e = test_get_missing_key()
+    if e != 0 { return e }
+    e = test_get_wrong_type()
+    if e != 0 { return e }
+    e = test_get_on_non_table()
+    if e != 0 { return e }
+
+    // Error cases
+    e = test_error_empty()
+    if e != 0 { return e }
+    e = test_error_unterminated_string()
+    if e != 0 { return e }
+    e = test_error_missing_value()
+    if e != 0 { return e }
+    e = test_error_missing_equals()
+    if e != 0 { return e }
+    e = test_error_bad_section()
+    if e != 0 { return e }
+    // Stringify
+    e = test_stringify_basic()
+    if e != 0 { return e }
+
+    // Lodex-style config
+    e = test_lodex_config()
+    if e != 0 { return e }
+
+    // Mixed top-level + sections
+    e = test_toplevel_and_sections()
+    if e != 0 { return e }
+
+    // Quoted keys
+    e = test_quoted_key()
+    if e != 0 { return e }
+
+    // Unicode escapes
+    e = test_unicode_escape_4digit()
+    if e != 0 { return e }
+    e = test_unicode_surrogate_rejected()
+    if e != 0 { return e }
+
+    // Octal and binary integers
+    e = test_octal_integer()
+    if e != 0 { return e }
+    e = test_binary_integer()
+    if e != 0 { return e }
+
+    // Dotted key conflict detection
+    e = test_dotted_key_conflict()
+    if e != 0 { return e }
+
+    println("All TOML tests passed")
+    return 0
+}

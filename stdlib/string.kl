@@ -1,10 +1,10 @@
-//! std/string.kl - String utilities
+//! stdlib/string.kl - String utilities
 //!
 //! Extended string operations beyond the built-in methods.
 
-module std.string
+module stdlib.string
 
-import std.core
+import stdlib.core
 
 // ============================================================================
 // String Type Extensions

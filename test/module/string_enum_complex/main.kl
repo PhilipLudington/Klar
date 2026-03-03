@@ -1,0 +1,97 @@
+// Cross-module test: complex string operations on imported enum payloads
+// Tests the JSON/TOML usage pattern more thoroughly
+
+import lib.{ JsonValue, make_str, make_num, make_bool, make_null, get_greeting }
+
+// Extract string from enum and use string methods
+fn get_str_len(v: JsonValue) -> i32 {
+    match v {
+        Str(s) => {
+            return s.len()
+        }
+        Num(n) => { return -1 }
+        Bool(b) => { return -2 }
+        Null => { return -3 }
+    }
+}
+
+// Test index_of across module boundary
+fn find_char(v: JsonValue, target: string) -> ?i32 {
+    match v {
+        Str(s) => {
+            return s.index_of(target)
+        }
+        _ => { return None }
+    }
+}
+
+// Test starts_with and contains across module boundary
+fn check_prefix(v: JsonValue, prefix: string) -> bool {
+    match v {
+        Str(s) => {
+            return s.starts_with(prefix)
+        }
+        _ => { return false }
+    }
+}
+
+fn main() -> i32 {
+    // Test 1: .len() on cross-module enum string payload
+    let v1: JsonValue = make_str("hello")
+    assert_eq(get_str_len(v1), 5)
+
+    // Test 2: .len() on empty string
+    let v2: JsonValue = make_str("")
+    assert_eq(get_str_len(v2), 0)
+
+    // Test 3: .len() on longer string
+    let v3: JsonValue = make_str("hello world foo bar")
+    assert_eq(get_str_len(v3), 19)
+
+    // Test 4: non-string variants return sentinel
+    let v4: JsonValue = make_num(42)
+    assert_eq(get_str_len(v4), -1)
+
+    let v5: JsonValue = make_null()
+    assert_eq(get_str_len(v5), -3)
+
+    // Test 5: index_of across module boundary
+    let v6: JsonValue = make_str("hello world")
+    assert_eq(find_char(v6, "world") ?? -1, 6)
+    assert_eq(find_char(v6, "xyz") ?? -1, -1)
+    assert_eq(find_char(v6, "h") ?? -1, 0)
+
+    // Test 6: starts_with across module boundary
+    let v7: JsonValue = make_str("hello world")
+    assert(check_prefix(v7, "hello"))
+    assert(check_prefix(v7, "hello world"))
+    assert(not check_prefix(v7, "world"))
+
+    // Test 7: function return value (not just parameter)
+    let v8: JsonValue = get_greeting()
+    assert_eq(get_str_len(v8), 11)
+
+    // Test 8: direct match on return value
+    match get_greeting() {
+        Str(s) => {
+            assert_eq(s.len(), 11)
+            assert(s.starts_with("hello"))
+            assert(s.contains("world"))
+            assert(s == "hello world")
+        }
+        _ => { assert(false) }
+    }
+
+    // Test 9: contains across module boundary
+    let v9: JsonValue = make_str("testing 123")
+    match v9 {
+        Str(s) => {
+            assert(s.contains("test"))
+            assert(s.contains("123"))
+            assert(not s.contains("xyz"))
+        }
+        _ => { assert(false) }
+    }
+
+    return 0
+}

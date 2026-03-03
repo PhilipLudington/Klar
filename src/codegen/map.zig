@@ -6,20 +6,26 @@
 //!
 //! ## Provided by this module
 //!
-//! - `MapField` / `EntryState`: Struct field and entry state constants
-//! - `map_struct_size`: Size constant (20 bytes)
+//! - `MapField` / `MapHeaderField` / `EntryState`: Struct field and entry state constants
+//! - `map_struct_size`: Size constant (8 bytes — single pointer)
+//! - `map_header_size`: Size constant (20 bytes — heap-allocated header)
 //! - `initial_capacity` / `growth_factor` / `max_load_factor`: Policy constants
 //! - `fnv_offset` / `fnv_prime`: FNV-1a hash constants
-//! - `createMapStructType`: Build the LLVM struct type for Map
+//! - `createMapStructType`: Build the LLVM type for Map (outer wrapper)
+//! - `createMapHeaderType`: Build the LLVM type for MapHeader (heap data)
 //! - `slotIndex`: Calculate slot from hash and capacity (power-of-2 mask)
 //! - `needsResize`: Check if load factor exceeds threshold
 //!
-//! ## Map Struct Layout
+//! ## Map Struct Layout (Heap-Indirected)
 //!
 //! Open addressing with linear probing:
 //!
 //! ```
 //! struct Map#[K, V] {
+//!     header: *MapHeader,  // Pointer to shared heap header
+//! }
+//!
+//! struct MapHeader {
 //!     entries: *Entry,   // Pointer to entry array
 //!     len: i32,          // Current number of elements
 //!     capacity: i32,     // Total slots (power of 2)
@@ -27,13 +33,21 @@
 //! }
 //! ```
 //!
+//! Outer struct: 8 bytes (single pointer). When copied, both copies share
+//! the same heap header, so mutations through either are visible to both.
+//! Header: 20 bytes (8 + 4 + 4 + 4), heap-allocated.
 //! Resizes when (len + tombstones) / capacity > 0.75.
 
 const std = @import("std");
 const llvm = @import("llvm.zig");
 
-/// Map struct field indices.
+/// Outer map struct field index (just the header pointer).
 pub const MapField = struct {
+    pub const header_ptr = 0;
+};
+
+/// Header struct field indices (heap-allocated).
+pub const MapHeaderField = struct {
     pub const entries = 0;
     pub const len = 1;
     pub const capacity = 2;
@@ -47,8 +61,11 @@ pub const EntryState = struct {
     pub const tombstone = 2;
 };
 
-/// Size of the Map struct in bytes (excluding entry storage).
-pub const map_struct_size = 20;
+/// Size of the outer Map struct in bytes (single pointer).
+pub const map_struct_size = 8;
+
+/// Size of the heap-allocated MapHeader in bytes.
+pub const map_header_size = 20;
 
 /// Initial capacity for new maps (must be power of 2).
 pub const initial_capacity = 8;
@@ -59,8 +76,16 @@ pub const max_load_factor = 0.75;
 /// Growth factor when resizing.
 pub const growth_factor = 2;
 
-/// Create the LLVM type for Klar's Map struct.
+/// Create the LLVM type for Klar's outer Map struct: { ptr }
 pub fn createMapStructType(ctx: llvm.Context) llvm.TypeRef {
+    var fields = [_]llvm.TypeRef{
+        llvm.Types.pointer(ctx), // header pointer
+    };
+    return llvm.Types.struct_(ctx, &fields, false);
+}
+
+/// Create the LLVM type for the heap-allocated MapHeader: { ptr, i32, i32, i32 }
+pub fn createMapHeaderType(ctx: llvm.Context) llvm.TypeRef {
     var fields = [_]llvm.TypeRef{
         llvm.Types.pointer(ctx), // entries pointer
         llvm.Types.int32(ctx), // len

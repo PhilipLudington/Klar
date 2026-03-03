@@ -1,0 +1,15 @@
+// Library module: defines enum with string payload
+
+pub enum Token {
+    Word(string),
+    Num(i32),
+    Eof
+}
+
+pub fn make_word(s: string) -> Token {
+    return Token::Word(s)
+}
+
+pub fn make_num(n: i32) -> Token {
+    return Token::Num(n)
+}

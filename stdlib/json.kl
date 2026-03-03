@@ -1,0 +1,755 @@
+//! stdlib/json.kl - JSON parsing, stringification, and manipulation
+//!
+//! Pure Klar JSON library providing:
+//! - Parsing: json_parse(string) -> Result#[JsonValue, JsonError]
+//! - Stringification: json_stringify / json_stringify_pretty
+//! - Accessors: json_get, json_get_string, json_get_number, etc.
+//! - Builders: json_null, json_bool, json_number, json_string, json_array, json_object
+
+module stdlib.json
+
+// ============================================================================
+// JSON Value Type
+// ============================================================================
+
+pub enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    Str(string),
+    Array(List#[JsonValue]),
+    Object(Map#[string, JsonValue]),
+}
+
+// ============================================================================
+// JSON Error Type
+// ============================================================================
+
+pub struct JsonError {
+    pub message: string,
+    pub pos: i32,
+}
+
+// ============================================================================
+// Builder Functions
+// ============================================================================
+
+pub fn json_null() -> JsonValue {
+    return JsonValue::Null
+}
+
+pub fn json_bool(b: bool) -> JsonValue {
+    return JsonValue::Bool(b)
+}
+
+pub fn json_number(n: f64) -> JsonValue {
+    return JsonValue::Number(n)
+}
+
+pub fn json_string(s: string) -> JsonValue {
+    return JsonValue::Str(s)
+}
+
+pub fn json_array() -> JsonValue {
+    return JsonValue::Array(List.new#[JsonValue]())
+}
+
+pub fn json_object() -> JsonValue {
+    return JsonValue::Object(Map.new#[string, JsonValue]())
+}
+
+// ============================================================================
+// Accessor Functions
+// ============================================================================
+
+pub fn json_get(obj: JsonValue, key: string) -> ?JsonValue {
+    match obj {
+        JsonValue.Object(m) => {
+            return m.get(key)
+        }
+        _ => {}
+    }
+    // implicit None
+}
+
+pub fn json_get_string(obj: JsonValue, key: string) -> ?string {
+    let val: ?JsonValue = json_get(obj, key)
+    match val {
+        Some(v) => {
+            match v {
+                JsonValue.Str(s) => { return Some(s) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn json_get_number(obj: JsonValue, key: string) -> ?f64 {
+    let val: ?JsonValue = json_get(obj, key)
+    match val {
+        Some(v) => {
+            match v {
+                JsonValue.Number(n) => { return Some(n) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn json_get_bool(obj: JsonValue, key: string) -> ?bool {
+    let val: ?JsonValue = json_get(obj, key)
+    match val {
+        Some(v) => {
+            match v {
+                JsonValue.Bool(b) => { return Some(b) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn json_get_array(obj: JsonValue, key: string) -> ?List#[JsonValue] {
+    let val: ?JsonValue = json_get(obj, key)
+    match val {
+        Some(v) => {
+            match v {
+                JsonValue.Array(a) => { return Some(a) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+pub fn json_get_object(obj: JsonValue, key: string) -> ?Map#[string, JsonValue] {
+    let val: ?JsonValue = json_get(obj, key)
+    match val {
+        Some(v) => {
+            match v {
+                JsonValue.Object(m) => { return Some(m) }
+                _ => {}
+            }
+        }
+        None => {}
+    }
+    // implicit None
+}
+
+// ============================================================================
+// ASCII Reference
+// ============================================================================
+// Tab=9  LF=10  CR=13  Space=32  "=34  +=43  ,=44  -=45  .=46  /=47
+// 0=48  9=57  :=58  E=69  [=91  \=92  ]=93
+// a=97  b=98  e=101  f=102  l=108  n=110  r=114  s=115  t=116  u=117
+// {=123  }=125
+
+// ============================================================================
+// Parser Helpers
+// ============================================================================
+
+fn is_whitespace(code: i32) -> bool {
+    return code == 32 or code == 9 or code == 10 or code == 13
+}
+
+fn is_digit(code: i32) -> bool {
+    return code >= 48 and code <= 57
+}
+
+fn skip_ws(chars: [char], pos: i32, len: i32) -> i32 {
+    var i: i32 = pos
+    while i < len {
+        if not is_whitespace(chars[i].as#[i32]) {
+            break
+        }
+        i = i + 1
+    }
+    return i
+}
+
+fn make_error(msg: string, pos: i32) -> JsonError {
+    return JsonError { message: msg, pos: pos }
+}
+
+fn hex_digit_char(n: i32) -> string {
+    if n < 10 { return from_byte((48 + n).as#[u8]) }
+    return from_byte((97 + n - 10).as#[u8])
+}
+
+fn hex_value(c: i32) -> i32 {
+    if c >= 48 and c <= 57 { return c - 48 }
+    if c >= 97 and c <= 102 { return c - 97 + 10 }
+    if c >= 65 and c <= 70 { return c - 65 + 10 }
+    return -1
+}
+
+// ============================================================================
+// JSON Parser — Recursive Descent (no ? operator — codegen workaround)
+// ============================================================================
+
+pub fn json_parse(input: string) -> Result#[JsonValue, JsonError] {
+    let chars: [char] = input.chars()
+    let len: i32 = input.len()
+    var pos: i32 = 0
+
+    pos = skip_ws(chars, pos, len)
+    let pv_result: Result#[(JsonValue, i32), JsonError] = parse_value(chars, pos, len)
+    match pv_result {
+        Ok(pv) => {
+            pos = pv.1
+            pos = skip_ws(chars, pos, len)
+            if pos < len {
+                return Err(make_error("trailing content after JSON value", pos))
+            }
+            return Ok(pv.0)
+        }
+        Err(e) => { return Err(e) }
+    }
+}
+
+fn parse_value(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
+    var p: i32 = skip_ws(chars, pos, len)
+
+    if p >= len {
+        return Err(make_error("unexpected end of input", p))
+    }
+
+    let code: i32 = chars[p].as#[i32]
+
+    if code == 110 { return parse_null(chars, p, len) }
+    if code == 116 { return parse_true(chars, p, len) }
+    if code == 102 { return parse_false(chars, p, len) }
+    if code == 34 { return parse_string(chars, p, len) }
+    if code == 91 { return parse_array(chars, p, len) }
+    if code == 123 { return parse_object(chars, p, len) }
+    if code == 45 or is_digit(code) { return parse_number(chars, p, len) }
+
+    return Err(make_error("expected a JSON value", p))
+}
+
+fn parse_null(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
+    if pos + 4 > len {
+        return Err(make_error("unexpected end of input", pos))
+    }
+    if chars[pos].as#[i32] == 110 and chars[pos+1].as#[i32] == 117 and
+       chars[pos+2].as#[i32] == 108 and chars[pos+3].as#[i32] == 108 {
+        return Ok((JsonValue::Null, pos + 4))
+    }
+    return Err(make_error("expected 'null'", pos))
+}
+
+fn parse_true(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
+    if pos + 4 > len {
+        return Err(make_error("unexpected end of input", pos))
+    }
+    if chars[pos].as#[i32] == 116 and chars[pos+1].as#[i32] == 114 and
+       chars[pos+2].as#[i32] == 117 and chars[pos+3].as#[i32] == 101 {
+        return Ok((JsonValue::Bool(true), pos + 4))
+    }
+    return Err(make_error("expected 'true'", pos))
+}
+
+fn parse_false(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
+    if pos + 5 > len {
+        return Err(make_error("unexpected end of input", pos))
+    }
+    if chars[pos].as#[i32] == 102 and chars[pos+1].as#[i32] == 97 and
+       chars[pos+2].as#[i32] == 108 and chars[pos+3].as#[i32] == 115 and
+       chars[pos+4].as#[i32] == 101 {
+        return Ok((JsonValue::Bool(false), pos + 5))
+    }
+    return Err(make_error("expected 'false'", pos))
+}
+
+fn parse_string(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
+    let sr: Result#[(string, i32), JsonError] = parse_string_raw(chars, pos, len)
+    match sr {
+        Ok(sv) => { return Ok((JsonValue::Str(sv.0), sv.1)) }
+        Err(e) => { return Err(e) }
+    }
+}
+
+fn char_to_str(c: char) -> string {
+    return from_byte(c.as#[u8])
+}
+
+fn parse_string_raw(chars: [char], pos: i32, len: i32) -> Result#[(string, i32), JsonError] {
+    var p: i32 = pos + 1
+    var result: string = ""
+
+    while p < len {
+        let code: i32 = chars[p].as#[i32]
+
+        if code == 34 {
+            return Ok((result, p + 1))
+        }
+
+        if code == 92 {
+            p = p + 1
+            if p >= len {
+                return Err(make_error("unterminated string escape", p))
+            }
+            let esc: i32 = chars[p].as#[i32]
+            if esc == 34 { result = result + "\"" }
+            else if esc == 92 { result = result + from_byte(92.as#[u8]) }
+            else if esc == 47 { result = result + "/" }
+            else if esc == 98 { result = result + from_byte(8.as#[u8]) }
+            else if esc == 102 { result = result + from_byte(12.as#[u8]) }
+            else if esc == 110 { result = result + from_byte(10.as#[u8]) }
+            else if esc == 114 { result = result + from_byte(13.as#[u8]) }
+            else if esc == 116 { result = result + from_byte(9.as#[u8]) }
+            else if esc == 117 {
+                if p + 4 >= len {
+                    return Err(make_error("incomplete unicode escape", p))
+                }
+                let h0: i32 = hex_value(chars[p+1].as#[i32])
+                let h1: i32 = hex_value(chars[p+2].as#[i32])
+                let h2: i32 = hex_value(chars[p+3].as#[i32])
+                let h3: i32 = hex_value(chars[p+4].as#[i32])
+                if h0 < 0 or h1 < 0 or h2 < 0 or h3 < 0 {
+                    return Err(make_error("invalid unicode escape", p))
+                }
+                var codepoint: i32 = h0 * 4096 + h1 * 256 + h2 * 16 + h3
+                // Handle UTF-16 surrogate pairs (U+D800..U+DFFF)
+                if codepoint >= 55296 and codepoint <= 57343 {
+                    // High surrogate (U+D800..U+DBFF) — expect \uDCxx low surrogate
+                    if codepoint >= 55296 and codepoint <= 56319 {
+                        // Need \uDCxx following
+                        if p + 10 >= len {
+                            return Err(make_error("lone high surrogate", p))
+                        }
+                        if chars[p+5].as#[i32] != 92 or chars[p+6].as#[i32] != 117 {
+                            return Err(make_error("expected \\u after high surrogate", p))
+                        }
+                        let l0: i32 = hex_value(chars[p+7].as#[i32])
+                        let l1: i32 = hex_value(chars[p+8].as#[i32])
+                        let l2: i32 = hex_value(chars[p+9].as#[i32])
+                        let l3: i32 = hex_value(chars[p+10].as#[i32])
+                        if l0 < 0 or l1 < 0 or l2 < 0 or l3 < 0 {
+                            return Err(make_error("invalid low surrogate hex", p + 7))
+                        }
+                        let low: i32 = l0 * 4096 + l1 * 256 + l2 * 16 + l3
+                        if low < 56320 or low > 57343 {
+                            return Err(make_error("expected low surrogate (U+DC00..U+DFFF)", p + 6))
+                        }
+                        // Combine: U+10000 + (high - 0xD800) * 0x400 + (low - 0xDC00)
+                        codepoint = 65536 + (codepoint - 55296) * 1024 + (low - 56320)
+                        p = p + 6  // skip extra \uXXXX (6 chars: \ u X X X X)
+                    } else {
+                        // Lone low surrogate — invalid
+                        return Err(make_error("lone low surrogate", p))
+                    }
+                }
+                // Encode codepoint as UTF-8
+                if codepoint < 128 {
+                    result = result + from_byte(codepoint.as#[u8])
+                } else if codepoint < 2048 {
+                    result = result + from_byte((192 + codepoint / 64).as#[u8])
+                    result = result + from_byte((128 + codepoint - (codepoint / 64) * 64).as#[u8])
+                } else if codepoint < 65536 {
+                    result = result + from_byte((224 + codepoint / 4096).as#[u8])
+                    let mid: i32 = codepoint - (codepoint / 4096) * 4096
+                    result = result + from_byte((128 + mid / 64).as#[u8])
+                    result = result + from_byte((128 + mid - (mid / 64) * 64).as#[u8])
+                } else {
+                    // 4-byte UTF-8 (supplementary plane, U+10000..U+10FFFF)
+                    result = result + from_byte((240 + codepoint / 262144).as#[u8])
+                    let rem3: i32 = codepoint - (codepoint / 262144) * 262144
+                    result = result + from_byte((128 + rem3 / 4096).as#[u8])
+                    let rem2: i32 = rem3 - (rem3 / 4096) * 4096
+                    result = result + from_byte((128 + rem2 / 64).as#[u8])
+                    result = result + from_byte((128 + rem2 - (rem2 / 64) * 64).as#[u8])
+                }
+                p = p + 4
+            }
+            else {
+                return Err(make_error("invalid escape character", p))
+            }
+            p = p + 1
+        } else {
+            result = result + char_to_str(chars[p])
+            p = p + 1
+        }
+    }
+
+    return Err(make_error("unterminated string", pos))
+}
+
+fn parse_number(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
+    var p: i32 = pos
+    var negative: bool = false
+
+    if p < len and chars[p].as#[i32] == 45 {
+        negative = true
+        p = p + 1
+    }
+
+    var int_part: f64 = 0.0
+    var has_digits: bool = false
+    while p < len and is_digit(chars[p].as#[i32]) {
+        int_part = int_part * 10.0 + (chars[p].as#[i32] - 48).as#[f64]
+        p = p + 1
+        has_digits = true
+    }
+
+    if not has_digits {
+        return Err(make_error("invalid number", pos))
+    }
+
+    var result: f64 = int_part
+
+    if p < len and chars[p].as#[i32] == 46 {
+        p = p + 1
+        var decimal: f64 = 0.1
+        var has_frac: bool = false
+        while p < len and is_digit(chars[p].as#[i32]) {
+            result = result + (chars[p].as#[i32] - 48).as#[f64] * decimal
+            decimal = decimal * 0.1
+            p = p + 1
+            has_frac = true
+        }
+        if not has_frac {
+            return Err(make_error("expected digit after decimal point", p))
+        }
+    }
+
+    if p < len {
+        let exp_char: i32 = chars[p].as#[i32]
+        if exp_char == 101 or exp_char == 69 {
+            p = p + 1
+            var exp_neg: bool = false
+            if p < len {
+                let sign: i32 = chars[p].as#[i32]
+                if sign == 45 {
+                    exp_neg = true
+                    p = p + 1
+                } else if sign == 43 {
+                    p = p + 1
+                }
+            }
+            var exp: i32 = 0
+            var has_exp: bool = false
+            while p < len and is_digit(chars[p].as#[i32]) {
+                // Cap accumulation to prevent i32 overflow and DoS
+                // loops. Max accumulated value is ~3999 which keeps
+                // the subsequent power-of-10 loop bounded.
+                if exp < 400 {
+                    exp = exp * 10 + (chars[p].as#[i32] - 48)
+                }
+                p = p + 1
+                has_exp = true
+            }
+            if not has_exp {
+                return Err(make_error("expected digit in exponent", p))
+            }
+            var mul: f64 = 1.0
+            var i: i32 = 0
+            while i < exp {
+                mul = mul * 10.0
+                i = i + 1
+            }
+            if exp_neg {
+                result = result / mul
+            } else {
+                result = result * mul
+            }
+        }
+    }
+
+    if negative {
+        result = 0.0 - result
+    }
+
+    return Ok((JsonValue::Number(result), p))
+}
+
+fn parse_array(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
+    var p: i32 = pos + 1
+    var elements: List#[JsonValue] = List.new#[JsonValue]()
+
+    p = skip_ws(chars, p, len)
+
+    if p < len and chars[p].as#[i32] == 93 {
+        return Ok((JsonValue::Array(elements), p + 1))
+    }
+
+    // Parse first element
+    let first_r: Result#[(JsonValue, i32), JsonError] = parse_value(chars, p, len)
+    match first_r {
+        Ok(first) => {
+            elements.push(first.0)
+            p = first.1
+        }
+        Err(e) => { return Err(e) }
+    }
+    p = skip_ws(chars, p, len)
+
+    // Parse remaining elements
+    while p < len {
+        let c: i32 = chars[p].as#[i32]
+        if c == 93 {
+            return Ok((JsonValue::Array(elements), p + 1))
+        }
+        if c != 44 {
+            return Err(make_error("expected ',' or ']' in array", p))
+        }
+        p = p + 1
+        p = skip_ws(chars, p, len)
+        let elem_r: Result#[(JsonValue, i32), JsonError] = parse_value(chars, p, len)
+        match elem_r {
+            Ok(elem) => {
+                elements.push(elem.0)
+                p = elem.1
+            }
+            Err(e) => { return Err(e) }
+        }
+        p = skip_ws(chars, p, len)
+    }
+
+    return Err(make_error("unterminated array", pos))
+}
+
+fn parse_object(chars: [char], pos: i32, len: i32) -> Result#[(JsonValue, i32), JsonError] {
+    var p: i32 = pos + 1
+    var entries: Map#[string, JsonValue] = Map.new#[string, JsonValue]()
+
+    p = skip_ws(chars, p, len)
+
+    if p < len and chars[p].as#[i32] == 125 {
+        return Ok((JsonValue::Object(entries), p + 1))
+    }
+
+    var first: bool = true
+    while p < len {
+        if not first {
+            if chars[p].as#[i32] != 44 {
+                return Err(make_error("expected ',' or '}' in object", p))
+            }
+            p = p + 1
+            p = skip_ws(chars, p, len)
+        }
+        first = false
+
+        if p >= len or chars[p].as#[i32] != 34 {
+            return Err(make_error("expected string key in object", p))
+        }
+        let key_r: Result#[(string, i32), JsonError] = parse_string_raw(chars, p, len)
+        var key_str: string = ""
+        match key_r {
+            Ok(kv) => {
+                key_str = kv.0
+                p = kv.1
+            }
+            Err(e) => { return Err(e) }
+        }
+        p = skip_ws(chars, p, len)
+
+        if p >= len or chars[p].as#[i32] != 58 {
+            return Err(make_error("expected ':' after object key", p))
+        }
+        p = p + 1
+        p = skip_ws(chars, p, len)
+
+        let val_r: Result#[(JsonValue, i32), JsonError] = parse_value(chars, p, len)
+        match val_r {
+            Ok(vv) => {
+                entries.insert(key_str, vv.0)
+                p = vv.1
+            }
+            Err(e) => { return Err(e) }
+        }
+        p = skip_ws(chars, p, len)
+
+        if p < len and chars[p].as#[i32] == 125 {
+            return Ok((JsonValue::Object(entries), p + 1))
+        }
+    }
+
+    return Err(make_error("unterminated object", pos))
+}
+
+// ============================================================================
+// JSON Stringifier
+// ============================================================================
+
+pub fn json_stringify(value: JsonValue) -> string {
+    return stringify_value(value)
+}
+
+pub fn json_stringify_pretty(value: JsonValue, indent: i32) -> string {
+    return stringify_pretty_at(value, indent, 0)
+}
+
+fn stringify_value(value: JsonValue) -> string {
+    var buf: String = String.new()
+    match value {
+        JsonValue.Null => { buf.push_str("null") }
+        JsonValue.Bool(b) => {
+            if b { buf.push_str("true") }
+            else { buf.push_str("false") }
+        }
+        JsonValue.Number(n) => {
+            buf.push_str(stringify_number(n))
+        }
+        JsonValue.Str(s) => {
+            buf.push_str(escape_string(s))
+        }
+        JsonValue.Array(items) => {
+            buf.push_str("[")
+            var i: i32 = 0
+            let arr_len: i32 = items.len()
+            while i < arr_len {
+                if i > 0 {
+                    buf.push_str(",")
+                }
+                let item: JsonValue = items.get(i)!
+                buf.push_str(stringify_value(item))
+                i = i + 1
+            }
+            buf.push_str("]")
+        }
+        JsonValue.Object(entries) => {
+            buf.push_str("{")
+            let keys: List#[string] = entries.keys()
+            var i: i32 = 0
+            let num_keys: i32 = keys.len()
+            while i < num_keys {
+                if i > 0 {
+                    buf.push_str(",")
+                }
+                let k: string = keys.get(i)!
+                let v: JsonValue = entries.get(k)!
+                buf.push_str(escape_string(k))
+                buf.push_str(":")
+                buf.push_str(stringify_value(v))
+                i = i + 1
+            }
+            buf.push_str("}")
+        }
+    }
+    return buf.as_str()
+}
+
+fn stringify_pretty_at(value: JsonValue, indent: i32, depth: i32) -> string {
+    var buf: String = String.new()
+    match value {
+        JsonValue.Null => { buf.push_str("null") }
+        JsonValue.Bool(b) => {
+            if b { buf.push_str("true") }
+            else { buf.push_str("false") }
+        }
+        JsonValue.Number(n) => {
+            buf.push_str(stringify_number(n))
+        }
+        JsonValue.Str(s) => {
+            buf.push_str(escape_string(s))
+        }
+        JsonValue.Array(items) => {
+            let arr_len: i32 = items.len()
+            if arr_len == 0 {
+                buf.push_str("[]")
+            } else {
+                buf.push_str("[\n")
+                var i: i32 = 0
+                while i < arr_len {
+                    if i > 0 {
+                        buf.push_str(",\n")
+                    }
+                    let item: JsonValue = items.get(i)!
+                    buf.push_str(make_indent(indent, depth + 1))
+                    buf.push_str(stringify_pretty_at(item, indent, depth + 1))
+                    i = i + 1
+                }
+                buf.push_str("\n")
+                buf.push_str(make_indent(indent, depth))
+                buf.push_str("]")
+            }
+        }
+        JsonValue.Object(entries) => {
+            let keys: List#[string] = entries.keys()
+            let num_keys: i32 = keys.len()
+            if num_keys == 0 {
+                buf.push_str("{}")
+            } else {
+                buf.push_str("{\n")
+                var i: i32 = 0
+                while i < num_keys {
+                    if i > 0 {
+                        buf.push_str(",\n")
+                    }
+                    let k: string = keys.get(i)!
+                    let v: JsonValue = entries.get(k)!
+                    buf.push_str(make_indent(indent, depth + 1))
+                    buf.push_str(escape_string(k))
+                    buf.push_str(": ")
+                    buf.push_str(stringify_pretty_at(v, indent, depth + 1))
+                    i = i + 1
+                }
+                buf.push_str("\n")
+                buf.push_str(make_indent(indent, depth))
+                buf.push_str("}")
+            }
+        }
+    }
+    return buf.as_str()
+}
+
+fn make_indent(indent: i32, depth: i32) -> string {
+    var buf: String = String.new()
+    var i: i32 = 0
+    let total: i32 = indent * depth
+    while i < total {
+        buf.push_str(" ")
+        i = i + 1
+    }
+    return buf.as_str()
+}
+
+fn stringify_number(n: f64) -> string {
+    // Guard: NaN and Infinity are not valid JSON — emit null as fallback
+    if not (n == n) {
+        return "null"
+    }
+    // Infinity check: no finite number exceeds this range
+    if n > 9999999999999999999999.0 or n < -9999999999999999999999.0 {
+        return "null"
+    }
+    let int_val: i64 = n.as#[i64]
+    if int_val.as#[f64] == n and n >= -9007199254740992.0 and n <= 9007199254740992.0 {
+        return int_val.to_string().as_str()
+    }
+    return n.to_string().as_str()
+}
+
+fn escape_string(s: string) -> string {
+    var buf: String = String.from("\"")
+    var i: i32 = 0
+    let slen: i32 = s.byte_len()
+    while i < slen {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 34 { buf.push_str("\\\"") }
+        else if c == 92 { buf.push_str("\\\\") }
+        else if c == 10 { buf.push_str("\\n") }
+        else if c == 13 { buf.push_str("\\r") }
+        else if c == 9 { buf.push_str("\\t") }
+        else if c == 8 { buf.push_str("\\b") }
+        else if c == 12 { buf.push_str("\\f") }
+        else if c < 32 {
+            buf.push_str("\\u00")
+            let hi: i32 = c / 16
+            let lo: i32 = c - hi * 16
+            buf.push_str(hex_digit_char(hi))
+            buf.push_str(hex_digit_char(lo))
+        }
+        else { buf.push_str(from_byte(c.as#[u8])) }
+        i = i + 1
+    }
+    buf.push_str("\"")
+    return buf.as_str()
+}

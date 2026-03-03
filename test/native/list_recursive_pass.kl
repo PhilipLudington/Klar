@@ -1,0 +1,28 @@
+// Test that List#[string] passed through recursive function calls doesn't corrupt.
+// This verifies Bug 4 fix: with heap-indirected headers, the pointer stays valid.
+
+fn sum_lengths(keys: List#[string], idx: i32, total: i32) -> i32 {
+    if idx >= keys.len() {
+        return total
+    }
+    let k: string = keys.get(idx)!
+    let new_total: i32 = total + k.len()
+    return sum_lengths(keys, idx + 1, new_total)
+}
+
+fn main() -> i32 {
+    var keys: List#[string] = List.new#[string]()
+    keys.push("hello")
+    keys.push("world")
+    keys.push("test")
+
+    // Recursive traversal — previously crashed after ~2 iterations
+    let total: i32 = sum_lengths(keys, 0, 0)
+
+    // "hello" (5) + "world" (5) + "test" (4) = 14
+    if total != 14 {
+        return 1
+    }
+
+    return 42
+}

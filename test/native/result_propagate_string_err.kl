@@ -1,0 +1,40 @@
+// Test ? operator with Result#[String, String] (droppable types in both Ok and Err)
+// Validates no double-drop when ? propagates error through sret return path.
+
+fn maybe_ok(succeed: bool) -> Result#[String, String] {
+    if succeed {
+        return Ok(String.from("success"))
+    }
+    return Err(String.from("failure"))
+}
+
+fn try_get(succeed: bool) -> Result#[String, String] {
+    let value: String = maybe_ok(succeed)?
+    return Ok(value)
+}
+
+fn main() -> i32 {
+    // Test Ok path
+    let r1: Result#[String, String] = try_get(true)
+    match r1 {
+        Ok(s) => {
+            if s.as_str() != "success" {
+                return 1
+            }
+        }
+        Err(_) => { return 2 }
+    }
+
+    // Test Err path (? propagation with sret + droppable error type)
+    let r2: Result#[String, String] = try_get(false)
+    match r2 {
+        Ok(_) => { return 3 }
+        Err(e) => {
+            if e.as_str() != "failure" {
+                return 4
+            }
+        }
+    }
+
+    return 0
+}

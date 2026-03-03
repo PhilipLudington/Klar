@@ -1,0 +1,75 @@
+// Test that List uses shared semantics: push() inside a function is visible to the caller.
+// This verifies Bug 2 fix: List heap-indirected header means copies share state.
+
+fn push_item(list: List#[i32], item: i32) -> void {
+    list.push(item)
+}
+
+fn main() -> i32 {
+    var list: List#[i32] = List.new#[i32]()
+
+    // Push via function call (previously lost due to value-copy semantics)
+    push_item(list, 10)
+    push_item(list, 20)
+    push_item(list, 30)
+
+    // Caller should see all 3 items
+    let len: i32 = list.len()
+    if len != 3 {
+        return 1
+    }
+
+    // Verify values
+    let v0: i32 = list.get(0)!
+    if v0 != 10 {
+        return 2
+    }
+
+    let v1: i32 = list.get(1)!
+    if v1 != 20 {
+        return 3
+    }
+
+    let v2: i32 = list.get(2)!
+    if v2 != 30 {
+        return 4
+    }
+
+    // Also test with Map extraction (the original Bug 2 scenario)
+    var m: Map#[string, List#[i32]] = Map.new#[string, List#[i32]]()
+    var inner: List#[i32] = List.new#[i32]()
+    m.insert("items", inner)
+
+    // Extract list from map, push to it
+    let got: ?List#[i32] = m.get("items")
+    match got {
+        Some(a) => {
+            a.push(100)
+            a.push(200)
+        }
+        None => {
+            return 5
+        }
+    }
+
+    // The map's list should have the pushed items
+    let got2: ?List#[i32] = m.get("items")
+    match got2 {
+        Some(b) => {
+            if b.len() != 2 {
+                return 6
+            }
+            if b.get(0)! != 100 {
+                return 7
+            }
+            if b.get(1)! != 200 {
+                return 8
+            }
+        }
+        None => {
+            return 9
+        }
+    }
+
+    return 42
+}

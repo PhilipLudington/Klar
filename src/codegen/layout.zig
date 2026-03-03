@@ -91,7 +91,7 @@ pub const LayoutCalculator = struct {
             .isize_, .usize_ => .{ .size = pointer_size, .alignment = pointer_size },
             .bool_ => .{ .size = 1, .alignment = 1 },
             .char_ => .{ .size = 4, .alignment = 4 }, // Unicode scalar value
-            .string_ => .{ .size = pointer_size * 2, .alignment = pointer_size }, // ptr + len
+            .string_ => .{ .size = pointer_size, .alignment = pointer_size }, // pointer to null-terminated C string
         };
     }
 

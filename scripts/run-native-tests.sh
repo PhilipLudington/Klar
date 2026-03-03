@@ -94,6 +94,11 @@ get_expected() {
         optional_propagate) echo 52 ;;  # ? on Optional: 42 + 10 = 52
         result_propagate) echo 52 ;;  # ? on Result: 42 + 10 = 52
         result_propagate_simple) echo 42 ;;  # Simpler ? on Result test
+        result_propagate_string) echo 43 ;;  # ? on Result#[i32, string] (sret)
+        result_propagate_string_err) echo 0 ;;  # ? on Result#[String, String] (droppable sret)
+        return_none) echo 0 ;;  # return None in fn -> ?T
+        string_as_str_safe) echo 0 ;;  # as_str() returns safe copy
+        string_enum_cross_module) echo 0 ;;  # string from enum payload (Bug 5)
         saturating_add) echo 0 ;;  # +| clamps at INT_MAX/INT_MIN
         saturating_sub) echo 0 ;;  # -| clamps at INT_MAX/INT_MIN
         saturating_mul) echo 0 ;;  # *| clamps at INT_MAX/INT_MIN
@@ -111,6 +116,7 @@ get_expected() {
         fs_stat) echo 42 ;;
         process_run) echo 42 ;;
         timestamp_now) echo 42 ;;
+        result_tuple_string_helper) echo 42 ;;
         *) echo -1 ;;  # -1 means accept any result
     esac
 }
@@ -163,9 +169,18 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
     rm -f "$BUILD_DIR/klar_build_stderr_$$"
 
     if echo "$build_stdout" | grep -q "^Built"; then
-        # Run and get exit code
-        "$temp_bin" 2>/dev/null
+        # On Windows, MSVC link.exe adds .exe; use that path if it exists
+        run_bin="$temp_bin"
+        if [[ "$OS" == "Windows_NT" ]] && [ -f "$temp_bin.exe" ]; then
+            run_bin="$temp_bin.exe"
+        fi
+
+        # Run and get exit code (capture stderr for diagnostics on failure)
+        run_stderr_file="$BUILD_DIR/klar_run_stderr_$$"
+        "$run_bin" 2>"$run_stderr_file"
         result=$?
+        run_stderr=$(cat "$run_stderr_file" 2>/dev/null | head -3 || true)
+        rm -f "$run_stderr_file"
 
         # Check against expected (if defined)
         expected=$(get_expected "$name")
@@ -175,6 +190,9 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
             PASSED=$((PASSED + 1))
         else
             echo "✗ $name (expected: $expected, got: $result)"
+            if [ -n "$run_stderr" ]; then
+                echo "  stderr: $run_stderr"
+            fi
             FAILED=$((FAILED + 1))
             if [ -n "$FAILURES" ]; then
                 FAILURES="$FAILURES,"
@@ -182,7 +200,7 @@ for f in $(find "$TEST_DIR" -name "*.kl" | sort); do
             FAILURES="$FAILURES\"$name: expected $expected, got $result\""
         fi
 
-        rm -f "$temp_bin"
+        rm -f "$temp_bin" "$temp_bin.exe"
     else
         # Show build error for diagnosis (first 3 lines)
         build_err_line=$(echo "$build_stderr" | head -3 | tr '\n' ' ')

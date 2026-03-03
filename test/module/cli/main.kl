@@ -1,0 +1,818 @@
+// test/module/cli/main.kl - Comprehensive tests for stdlib/cli.kl
+// Tests: flags, options, subcommands, short flags, --key=value, -- separator,
+//        unknown flags, missing values, help generation, positional args
+// Models the Lodex CLI: init, checkpoint, tree, export
+// Returns 0 on success, non-zero test number on failure
+
+import stdlib.cli.*
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn lodex_parser() -> ArgParser {
+    var fn2: List#[string] = List.new#[string]()
+    var fs2: List#[string] = List.new#[string]()
+    var fd2: List#[string] = List.new#[string]()
+    cli_def_flag(fn2, fs2, fd2, "json", "j", "Output as JSON")
+    cli_def_flag(fn2, fs2, fd2, "verbose", "v", "Verbose output")
+
+    var on2: List#[string] = List.new#[string]()
+    var os2: List#[string] = List.new#[string]()
+    var od2: List#[string] = List.new#[string]()
+    var odef2: List#[string] = List.new#[string]()
+    cli_def_option(on2, os2, od2, odef2, "goal", "g", "Set the goal", "")
+    cli_def_option(on2, os2, od2, odef2, "strategy", "s", "Set the strategy", "")
+    cli_def_option(on2, os2, od2, odef2, "squash-strategy", "", "Squash strategy", "")
+
+    var sn2: List#[string] = List.new#[string]()
+    var sd2: List#[string] = List.new#[string]()
+    cli_def_subcommand(sn2, sd2, "init", "Initialize a new repository")
+    cli_def_subcommand(sn2, sd2, "checkpoint", "Create a checkpoint")
+    cli_def_subcommand(sn2, sd2, "tree", "Show checkpoint tree")
+    cli_def_subcommand(sn2, sd2, "export", "Export changes")
+
+    return ArgParser {
+        name: "lodex", description: "AI-native source control",
+        flag_names: fn2, flag_shorts: fs2, flag_descs: fd2,
+        opt_names: on2, opt_shorts: os2, opt_descs: od2, opt_defaults: odef2,
+        sub_names: sn2, sub_descs: sd2,
+    }
+}
+
+fn simple_parser() -> ArgParser {
+    var fn2: List#[string] = List.new#[string]()
+    var fs2: List#[string] = List.new#[string]()
+    var fd2: List#[string] = List.new#[string]()
+    cli_def_flag(fn2, fs2, fd2, "verbose", "v", "Verbose")
+
+    var on2: List#[string] = List.new#[string]()
+    var os2: List#[string] = List.new#[string]()
+    var od2: List#[string] = List.new#[string]()
+    var odef2: List#[string] = List.new#[string]()
+
+    var sn2: List#[string] = List.new#[string]()
+    var sd2: List#[string] = List.new#[string]()
+
+    return ArgParser {
+        name: "tool", description: "A tool",
+        flag_names: fn2, flag_shorts: fs2, flag_descs: fd2,
+        opt_names: on2, opt_shorts: os2, opt_descs: od2, opt_defaults: odef2,
+        sub_names: sn2, sub_descs: sd2,
+    }
+}
+
+fn default_parser() -> ArgParser {
+    var fn2: List#[string] = List.new#[string]()
+    var fs2: List#[string] = List.new#[string]()
+    var fd2: List#[string] = List.new#[string]()
+
+    var on2: List#[string] = List.new#[string]()
+    var os2: List#[string] = List.new#[string]()
+    var od2: List#[string] = List.new#[string]()
+    var odef2: List#[string] = List.new#[string]()
+    cli_def_option(on2, os2, od2, odef2, "format", "f", "Output format", "text")
+
+    var sn2: List#[string] = List.new#[string]()
+    var sd2: List#[string] = List.new#[string]()
+
+    return ArgParser {
+        name: "tool", description: "A tool",
+        flag_names: fn2, flag_shorts: fs2, flag_descs: fd2,
+        opt_names: on2, opt_shorts: os2, opt_descs: od2, opt_defaults: odef2,
+        sub_names: sn2, sub_descs: sd2,
+    }
+}
+
+fn str_contains(haystack: string, needle: string) -> bool {
+    let h: [char] = haystack.chars()
+    let n: [char] = needle.chars()
+    let hlen: i32 = h.len()
+    let nlen: i32 = n.len()
+    if nlen > hlen { return false }
+    var i: i32 = 0
+    while i <= hlen - nlen {
+        var found: bool = true
+        var j: i32 = 0
+        while j < nlen {
+            if h[i + j] != n[j] {
+                found = false
+                j = nlen
+            } else {
+                j = j + 1
+            }
+        }
+        if found { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// ============================================================================
+// Test 1: Empty args
+// ============================================================================
+
+fn test_empty_args() -> i32 {
+    let p: ArgParser = lodex_parser()
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, List.new#[string]())
+    match r {
+        Ok(parsed) => {
+            if cli_get_flag(parsed, "json") { return fail(1, "json should be false") }
+            let pos: List#[string] = parsed.positional
+            if pos.len() != 0 { return fail(1, "expected 0 positional") }
+            return 0
+        }
+        Err(e) => { return fail(1, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 2: Subcommand only
+// ============================================================================
+
+fn test_subcommand_only() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("init")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if parsed.subcommand != "init" { return fail(2, "expected 'init'") }
+            return 0
+        }
+        Err(e) => { return fail(2, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 3: Long flag
+// ============================================================================
+
+fn test_long_flag() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--json")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if not cli_get_flag(parsed, "json") { return fail(3, "json should be true") }
+            return 0
+        }
+        Err(e) => { return fail(3, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 4: Short flag
+// ============================================================================
+
+fn test_short_flag() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("-j")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if not cli_get_flag(parsed, "json") { return fail(4, "json should be true via -j") }
+            return 0
+        }
+        Err(e) => { return fail(4, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 5: Long option with separate value
+// ============================================================================
+
+fn test_long_option() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--goal")
+    args.push("optimize auth")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            let val: ?string = cli_get_option(parsed, "goal")
+            match val {
+                Some(v) => {
+                    if v != "optimize auth" { return fail(5, "expected 'optimize auth'") }
+                    return 0
+                }
+                None => { return fail(5, "goal not found") }
+            }
+        }
+        Err(e) => { return fail(5, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 6: --key=value syntax
+// ============================================================================
+
+fn test_option_eq_syntax() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--goal=optimize")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            let val: ?string = cli_get_option(parsed, "goal")
+            match val {
+                Some(v) => {
+                    if v != "optimize" { return fail(6, "expected 'optimize'") }
+                    return 0
+                }
+                None => { return fail(6, "goal not found") }
+            }
+        }
+        Err(e) => { return fail(6, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 7: Short option
+// ============================================================================
+
+fn test_short_option() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("-g")
+    args.push("test goal")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            let val: ?string = cli_get_option(parsed, "goal")
+            match val {
+                Some(v) => {
+                    if v != "test goal" { return fail(7, "expected 'test goal'") }
+                    return 0
+                }
+                None => { return fail(7, "goal not found") }
+            }
+        }
+        Err(e) => { return fail(7, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 8: Full Lodex checkpoint command
+// ============================================================================
+
+fn test_lodex_checkpoint() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("checkpoint")
+    args.push("--goal")
+    args.push("optimize auth")
+    args.push("--strategy")
+    args.push("cache")
+    args.push("--json")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if parsed.subcommand != "checkpoint" { return fail(8, "expected 'checkpoint'") }
+            if not cli_get_flag(parsed, "json") { return fail(8, "json should be true") }
+            let g: ?string = cli_get_option(parsed, "goal")
+            match g {
+                Some(v) => { if v != "optimize auth" { return fail(8, "wrong goal") } }
+                None => { return fail(8, "goal not found") }
+            }
+            let s: ?string = cli_get_option(parsed, "strategy")
+            match s {
+                Some(v) => { if v != "cache" { return fail(8, "wrong strategy") } }
+                None => { return fail(8, "strategy not found") }
+            }
+            return 0
+        }
+        Err(e) => { return fail(8, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 9: Lodex export command
+// ============================================================================
+
+fn test_lodex_export() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("export")
+    args.push("--squash-strategy")
+    args.push("logical")
+    args.push("--json")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if parsed.subcommand != "export" { return fail(9, "expected 'export'") }
+            let sq: ?string = cli_get_option(parsed, "squash-strategy")
+            match sq {
+                Some(v) => { if v != "logical" { return fail(9, "wrong squash-strategy") } }
+                None => { return fail(9, "squash-strategy not found") }
+            }
+            if not cli_get_flag(parsed, "json") { return fail(9, "json should be true") }
+            return 0
+        }
+        Err(e) => { return fail(9, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 10: Lodex tree (subcommand, no flags)
+// ============================================================================
+
+fn test_lodex_tree() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("tree")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if parsed.subcommand != "tree" { return fail(10, "expected 'tree'") }
+            if cli_get_flag(parsed, "json") { return fail(10, "json should be false") }
+            return 0
+        }
+        Err(e) => { return fail(10, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 11: Unknown long flag error
+// ============================================================================
+
+fn test_unknown_flag() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--unknown")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(_) => { return fail(11, "expected error") }
+        Err(e) => {
+            if e.message != "unknown flag: --unknown" { return fail(11, "wrong error msg") }
+            return 0
+        }
+    }
+}
+
+// ============================================================================
+// Test 12: Unknown short flag error
+// ============================================================================
+
+fn test_unknown_short_flag() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("-x")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(_) => { return fail(12, "expected error") }
+        Err(e) => {
+            if e.message != "unknown flag: -x" { return fail(12, "wrong error msg") }
+            return 0
+        }
+    }
+}
+
+// ============================================================================
+// Test 13: Missing option value error
+// ============================================================================
+
+fn test_missing_value() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--goal")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(_) => { return fail(13, "expected error") }
+        Err(e) => {
+            if e.message != "option --goal requires a value" { return fail(13, "wrong error msg") }
+            return 0
+        }
+    }
+}
+
+// ============================================================================
+// Test 14: -- separator
+// ============================================================================
+
+fn test_separator() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--json")
+    args.push("--")
+    args.push("--not-a-flag")
+    args.push("positional")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if not cli_get_flag(parsed, "json") { return fail(14, "json should be true") }
+            let pos: List#[string] = parsed.positional
+            if pos.len() != 2 { return fail(14, "expected 2 positional") }
+            let p1: string = pos.get(0)!
+            if p1 != "--not-a-flag" { return fail(14, "wrong first positional") }
+            let p2: string = pos.get(1)!
+            if p2 != "positional" { return fail(14, "wrong second positional") }
+            return 0
+        }
+        Err(e) => { return fail(14, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 15: Positional args (no subcommands parser)
+// ============================================================================
+
+fn test_positional_no_subcmd() -> i32 {
+    let p: ArgParser = simple_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("file1.txt")
+    args.push("--verbose")
+    args.push("file2.txt")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if not cli_get_flag(parsed, "verbose") { return fail(15, "verbose should be true") }
+            let pos: List#[string] = parsed.positional
+            if pos.len() != 2 { return fail(15, "expected 2 positional") }
+            let p1: string = pos.get(0)!
+            if p1 != "file1.txt" { return fail(15, "wrong first positional") }
+            return 0
+        }
+        Err(e) => { return fail(15, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 16: Help flag (--help)
+// ============================================================================
+
+fn test_help_flag() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--help")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if not cli_get_flag(parsed, "help") { return fail(16, "help should be true") }
+            return 0
+        }
+        Err(e) => { return fail(16, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 17: Help flag (-h)
+// ============================================================================
+
+fn test_help_short() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("-h")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if not cli_get_flag(parsed, "help") { return fail(17, "help should be true via -h") }
+            return 0
+        }
+        Err(e) => { return fail(17, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 18: Multiple flags
+// ============================================================================
+
+fn test_multiple_flags() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--json")
+    args.push("--verbose")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if not cli_get_flag(parsed, "json") { return fail(18, "json should be true") }
+            if not cli_get_flag(parsed, "verbose") { return fail(18, "verbose should be true") }
+            return 0
+        }
+        Err(e) => { return fail(18, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 19: Option default value
+// ============================================================================
+
+fn test_option_default() -> i32 {
+    let p: ArgParser = default_parser()
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, List.new#[string]())
+    match r {
+        Ok(parsed) => {
+            let val: ?string = cli_get_option(parsed, "format")
+            match val {
+                Some(v) => {
+                    if v != "text" { return fail(19, "expected default 'text'") }
+                    return 0
+                }
+                None => { return fail(19, "format not found") }
+            }
+        }
+        Err(e) => { return fail(19, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 20: Option overrides default
+// ============================================================================
+
+fn test_option_override() -> i32 {
+    let p: ArgParser = default_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--format")
+    args.push("json")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            let val: ?string = cli_get_option(parsed, "format")
+            match val {
+                Some(v) => {
+                    if v != "json" { return fail(20, "expected 'json' override") }
+                    return 0
+                }
+                None => { return fail(20, "format not found") }
+            }
+        }
+        Err(e) => { return fail(20, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 21: Non-subcommand word becomes positional
+// ============================================================================
+
+fn test_non_subcmd_positional() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("unknown_cmd")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if cli_has_subcommand(parsed) { return fail(21, "expected no subcommand") }
+            let pos: List#[string] = parsed.positional
+            if pos.len() != 1 { return fail(21, "expected 1 positional") }
+            return 0
+        }
+        Err(e) => { return fail(21, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 22: Help generation content
+// ============================================================================
+
+fn test_help_content() -> i32 {
+    let p: ArgParser = lodex_parser()
+    let help: string = cli_help(p)
+    if not str_contains(help, "lodex") { return fail(22, "should contain 'lodex'") }
+    if not str_contains(help, "checkpoint") { return fail(22, "should contain 'checkpoint'") }
+    if not str_contains(help, "--goal") { return fail(22, "should contain '--goal'") }
+    if not str_contains(help, "AI-native source control") { return fail(22, "should contain description") }
+    return 0
+}
+
+// ============================================================================
+// Test 23: Subcommand help generation
+// ============================================================================
+
+fn test_subcommand_help() -> i32 {
+    let p: ArgParser = lodex_parser()
+    let help: string = cli_subcommand_help(p, "checkpoint")
+    if not str_contains(help, "checkpoint") { return fail(23, "should contain 'checkpoint'") }
+    if not str_contains(help, "Create a checkpoint") { return fail(23, "should contain description") }
+    return 0
+}
+
+// ============================================================================
+// Test 24: Missing short option value
+// ============================================================================
+
+fn test_missing_short_value() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("-g")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(_) => { return fail(24, "expected error") }
+        Err(e) => {
+            if not str_contains(e.message, "requires a value") { return fail(24, "wrong error") }
+            return 0
+        }
+    }
+}
+
+// ============================================================================
+// Test 25: Unknown option with = syntax
+// ============================================================================
+
+fn test_unknown_option_eq() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--unknown=value")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(_) => { return fail(25, "expected error") }
+        Err(e) => {
+            if e.message != "unknown option: --unknown" { return fail(25, "wrong error") }
+            return 0
+        }
+    }
+}
+
+// ============================================================================
+// Test 26: Flags before subcommand
+// ============================================================================
+
+fn test_flag_before_subcmd() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("--json")
+    args.push("init")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if not cli_get_flag(parsed, "json") { return fail(26, "json should be true") }
+            if parsed.subcommand != "init" { return fail(26, "expected 'init'") }
+            return 0
+        }
+        Err(e) => { return fail(26, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 27: Unset flag returns false
+// ============================================================================
+
+fn test_unset_flag() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("init")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if cli_get_flag(parsed, "json") { return fail(27, "json should be false") }
+            if cli_get_flag(parsed, "verbose") { return fail(27, "verbose should be false") }
+            return 0
+        }
+        Err(e) => { return fail(27, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 28: Unset option returns None
+// ============================================================================
+
+fn test_unset_option() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("init")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            let val: ?string = cli_get_option(parsed, "goal")
+            match val {
+                Some(_) => { return fail(28, "goal should be None") }
+                None => { return 0 }
+            }
+        }
+        Err(e) => { return fail(28, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 29: Complex mixed args
+// ============================================================================
+
+fn test_complex_mixed() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("-v")
+    args.push("checkpoint")
+    args.push("-g")
+    args.push("optimize auth")
+    args.push("--strategy=cache")
+    args.push("-j")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if parsed.subcommand != "checkpoint" { return fail(29, "expected 'checkpoint'") }
+            if not cli_get_flag(parsed, "verbose") { return fail(29, "verbose should be true") }
+            if not cli_get_flag(parsed, "json") { return fail(29, "json should be true") }
+            let g: ?string = cli_get_option(parsed, "goal")
+            match g {
+                Some(v) => { if v != "optimize auth" { return fail(29, "wrong goal") } }
+                None => { return fail(29, "goal not found") }
+            }
+            let s: ?string = cli_get_option(parsed, "strategy")
+            match s {
+                Some(v) => { if v != "cache" { return fail(29, "wrong strategy") } }
+                None => { return fail(29, "strategy not found") }
+            }
+            return 0
+        }
+        Err(e) => { return fail(29, e.message) }
+    }
+}
+
+// ============================================================================
+// Test 30: cli_has_subcommand
+// ============================================================================
+
+fn test_has_subcommand() -> i32 {
+    let p: ArgParser = lodex_parser()
+    var args: List#[string] = List.new#[string]()
+    args.push("init")
+    let r: Result#[ParsedArgs, ArgError] = cli_parse(p, args)
+    match r {
+        Ok(parsed) => {
+            if not cli_has_subcommand(parsed) { return fail(30, "should have subcommand") }
+            return 0
+        }
+        Err(e) => { return fail(30, e.message) }
+    }
+}
+
+// ============================================================================
+// Main: Run all tests
+// ============================================================================
+
+fn main() -> i32 {
+    var e: i32 = 0
+
+    e = test_empty_args()
+    if e != 0 { return e }
+    e = test_subcommand_only()
+    if e != 0 { return e }
+    e = test_long_flag()
+    if e != 0 { return e }
+    e = test_short_flag()
+    if e != 0 { return e }
+    e = test_long_option()
+    if e != 0 { return e }
+    e = test_option_eq_syntax()
+    if e != 0 { return e }
+    e = test_short_option()
+    if e != 0 { return e }
+    e = test_lodex_checkpoint()
+    if e != 0 { return e }
+    e = test_lodex_export()
+    if e != 0 { return e }
+    e = test_lodex_tree()
+    if e != 0 { return e }
+    e = test_unknown_flag()
+    if e != 0 { return e }
+    e = test_unknown_short_flag()
+    if e != 0 { return e }
+    e = test_missing_value()
+    if e != 0 { return e }
+    e = test_separator()
+    if e != 0 { return e }
+    e = test_positional_no_subcmd()
+    if e != 0 { return e }
+    e = test_help_flag()
+    if e != 0 { return e }
+    e = test_help_short()
+    if e != 0 { return e }
+    e = test_multiple_flags()
+    if e != 0 { return e }
+    e = test_option_default()
+    if e != 0 { return e }
+    e = test_option_override()
+    if e != 0 { return e }
+    e = test_non_subcmd_positional()
+    if e != 0 { return e }
+    e = test_help_content()
+    if e != 0 { return e }
+    e = test_subcommand_help()
+    if e != 0 { return e }
+    e = test_missing_short_value()
+    if e != 0 { return e }
+    e = test_unknown_option_eq()
+    if e != 0 { return e }
+    e = test_flag_before_subcmd()
+    if e != 0 { return e }
+    e = test_unset_flag()
+    if e != 0 { return e }
+    e = test_unset_option()
+    if e != 0 { return e }
+    e = test_complex_mixed()
+    if e != 0 { return e }
+    e = test_has_subcommand()
+    if e != 0 { return e }
+
+    println("All 30 CLI tests passed")
+    return 0
+}

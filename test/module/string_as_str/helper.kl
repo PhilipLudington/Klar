@@ -1,0 +1,6 @@
+// Helper module: returns as_str() from a String that will be dropped
+pub fn get_greeting() -> string {
+    let s: String = String.from("hello")
+    return s.as_str()
+    // s is dropped here — as_str() must return a copy, not a dangling pointer
+}

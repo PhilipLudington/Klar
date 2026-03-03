@@ -1,0 +1,27 @@
+// Test ? operator with Result#[i32, string] (sret return due to >16 byte struct)
+// Bug fix: ? operator used buildRet directly, ignoring sret calling convention
+
+fn maybe_ok(succeed: bool) -> Result#[i32, string] {
+    if succeed {
+        return Ok(42)
+    }
+    return Err("something went wrong")
+}
+
+fn try_get(succeed: bool) -> Result#[i32, string] {
+    let value: i32 = maybe_ok(succeed)?
+    return Ok(value + 1)
+}
+
+fn main() -> i32 {
+    // Test Ok path: 42 + 1 = 43
+    let r1: Result#[i32, string] = try_get(true)
+    let v1: i32 = r1!
+
+    // Test Err path: should propagate the error
+    let r2: Result#[i32, string] = try_get(false)
+    if r2.is_err() {
+        return v1  // 43
+    }
+    return 0
+}

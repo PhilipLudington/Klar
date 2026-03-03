@@ -1,9 +1,9 @@
-//! std/core.kl - Core types and functions (auto-imported)
+//! stdlib/core.kl - Core types and functions (auto-imported)
 //!
 //! This module contains the fundamental types and functions that are
 //! automatically available in every Klar program.
 
-module std.core
+module stdlib.core
 
 // ============================================================================
 // Primitive Types (built-in)
