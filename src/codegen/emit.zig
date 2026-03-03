@@ -14169,12 +14169,19 @@ pub const Emitter = struct {
         const left = try self.emitExpr(args[0]);
         const right = try self.emitExpr(args[1]);
 
+        // Check if both values are strings (pointer or heap-indirected struct)
+        const is_string = self.isStringValue(left) and self.isStringValue(right);
+
         // Get the type for comparison
         const left_type = llvm.typeOf(left);
         const type_kind = llvm.c.LLVMGetTypeKind(left_type);
 
         // Create comparison based on type
-        const cond = switch (type_kind) {
+        const cond = if (is_string) blk: {
+            const lhs_ptr = self.extractStringPtr(left);
+            const rhs_ptr = self.extractStringPtr(right);
+            break :blk self.emitStringPtrEq(lhs_ptr, rhs_ptr);
+        } else switch (type_kind) {
             llvm.c.LLVMIntegerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntEQ, left, right, "assert_eq.cmp"),
             llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildFCmp(llvm.c.LLVMRealOEQ, left, right, "assert_eq.cmp"),
             llvm.c.LLVMPointerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntEQ, left, right, "assert_eq.cmp"),
@@ -14196,28 +14203,36 @@ pub const Emitter = struct {
         const stderr_fn = self.getOrDeclareStderr();
         const stderr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(stderr_fn), stderr_fn, &[_]llvm.ValueRef{}, "stderr");
 
-        // Format string based on type
-        const fmt_str = switch (type_kind) {
-            llvm.c.LLVMIntegerTypeKind => self.builder.buildGlobalStringPtr("assertion failed: left = %lld, right = %lld\n", "assert_eq_fmt"),
-            llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildGlobalStringPtr("assertion failed: left = %g, right = %g\n", "assert_eq_fmt"),
-            llvm.c.LLVMPointerTypeKind => self.builder.buildGlobalStringPtr("assertion failed: left = %p, right = %p\n", "assert_eq_fmt"),
-            else => self.builder.buildGlobalStringPtr("assertion failed: values not equal\n", "assert_eq_fmt"),
-        };
+        // Format string and values based on type
+        if (is_string) {
+            const fmt_str = self.builder.buildGlobalStringPtr("assertion failed: left = \"%s\", right = \"%s\"\n", "assert_eq_fmt");
+            const lhs_ptr = self.extractStringPtr(left);
+            const rhs_ptr = self.extractStringPtr(right);
+            var fail_args = [_]llvm.ValueRef{ stderr, fmt_str, lhs_ptr, rhs_ptr };
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fail_args, "");
+        } else {
+            const fmt_str = switch (type_kind) {
+                llvm.c.LLVMIntegerTypeKind => self.builder.buildGlobalStringPtr("assertion failed: left = %lld, right = %lld\n", "assert_eq_fmt"),
+                llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildGlobalStringPtr("assertion failed: left = %g, right = %g\n", "assert_eq_fmt"),
+                llvm.c.LLVMPointerTypeKind => self.builder.buildGlobalStringPtr("assertion failed: left = %p, right = %p\n", "assert_eq_fmt"),
+                else => self.builder.buildGlobalStringPtr("assertion failed: values not equal\n", "assert_eq_fmt"),
+            };
 
-        // For integer types, extend to i64 for printf compatibility
-        var left_val = left;
-        var right_val = right;
-        if (type_kind == llvm.c.LLVMIntegerTypeKind) {
-            const i64_type = llvm.Types.int64(self.ctx);
-            const bit_width = llvm.c.LLVMGetIntTypeWidth(left_type);
-            if (bit_width < 64) {
-                left_val = llvm.c.LLVMBuildSExt(self.builder.ref, left, i64_type, "left_ext");
-                right_val = llvm.c.LLVMBuildSExt(self.builder.ref, right, i64_type, "right_ext");
+            // For integer types, extend to i64 for printf compatibility
+            var left_val = left;
+            var right_val = right;
+            if (type_kind == llvm.c.LLVMIntegerTypeKind) {
+                const i64_type = llvm.Types.int64(self.ctx);
+                const bit_width = llvm.c.LLVMGetIntTypeWidth(left_type);
+                if (bit_width < 64) {
+                    left_val = llvm.c.LLVMBuildSExt(self.builder.ref, left, i64_type, "left_ext");
+                    right_val = llvm.c.LLVMBuildSExt(self.builder.ref, right, i64_type, "right_ext");
+                }
             }
-        }
 
-        var fail_args = [_]llvm.ValueRef{ stderr, fmt_str, left_val, right_val };
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fail_args, "");
+            var fail_args = [_]llvm.ValueRef{ stderr, fmt_str, left_val, right_val };
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fail_args, "");
+        }
 
         // Call abort
         const abort_fn = self.getOrDeclareAbort();
@@ -14238,10 +14253,17 @@ pub const Emitter = struct {
         const left = try self.emitExpr(args[0]);
         const right = try self.emitExpr(args[1]);
 
+        // Check if both values are strings (pointer or heap-indirected struct)
+        const is_string = self.isStringValue(left) and self.isStringValue(right);
+
         const left_type = llvm.typeOf(left);
         const type_kind = llvm.c.LLVMGetTypeKind(left_type);
 
-        const cond = switch (type_kind) {
+        const cond = if (is_string) blk: {
+            const lhs_ptr = self.extractStringPtr(left);
+            const rhs_ptr = self.extractStringPtr(right);
+            break :blk self.emitStringPtrNeq(lhs_ptr, rhs_ptr);
+        } else switch (type_kind) {
             llvm.c.LLVMIntegerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntNE, left, right, "assert_ne.cmp"),
             llvm.c.LLVMFloatTypeKind, llvm.c.LLVMDoubleTypeKind => self.builder.buildFCmp(llvm.c.LLVMRealONE, left, right, "assert_ne.cmp"),
             llvm.c.LLVMPointerTypeKind => self.builder.buildICmp(llvm.c.LLVMIntNE, left, right, "assert_ne.cmp"),
