@@ -145,13 +145,13 @@ Phase 4 transforms Klar from a working compiler into a complete, usable programm
 
 **Deliverables:**
 - [x] Track type parameters in checker scope
-- [ ] Implement type parameter substitution
-- [ ] Implement monomorphization (generate concrete types at call sites)
-- [ ] Support generic structs: `struct Pair#[A, B] { first: A, second: B }`
-- [ ] Support generic enums: `enum Option#[T] { Some(T), None }`
-- [ ] Support generic functions: `fn swap#[T](inout a: T, inout b: T)`
-- [ ] Implement type inference at call sites
-- [ ] Cache monomorphized instances to avoid duplication
+- [x] Implement type parameter substitution
+- [x] Implement monomorphization (generate concrete types at call sites)
+- [x] Support generic structs: `struct Pair#[A, B] { first: A, second: B }`
+- [x] Support generic enums: `enum Option#[T] { Some(T), None }`
+- [x] Support generic functions: `fn swap#[T](inout a: T, inout b: T)`
+- [x] Implement type inference at call sites
+- [x] Cache monomorphized instances to avoid duplication
 
 **Type Inference Example:**
 ```klar
@@ -193,13 +193,13 @@ src/codegen/emit.zig     # Emit monomorphized functions
 **Objective:** Implement trait definitions, implementations, and bounds.
 
 **Deliverables:**
-- [ ] Trait definition parsing (already done) and checking
-- [ ] Trait implementation (`impl Type: Trait { ... }`)
-- [ ] Trait bounds on generics (`fn sort#[T: Ordered](list: List#[T])`)
-- [ ] Multiple trait bounds (`T: Ordered + Clone`)
+- [x] Trait definition parsing (already done) and checking
+- [x] Trait implementation (`impl Type: Trait { ... }`)
+- [x] Trait bounds on generics (`fn sort#[T: Ordered](list: List#[T])`)
+- [x] Multiple trait bounds (`T: Ordered + Clone`)
 - [ ] Default method implementations
-- [ ] Associated types (`type Item` in traits)
-- [ ] `Self` type in trait methods
+- [x] Associated types (`type Item` in traits)
+- [x] `Self` type in trait methods
 - [ ] Derive macro basics (`#[derive(Eq, Clone)]`)
 
 **Core Traits to Implement:**
@@ -268,14 +268,14 @@ src/types.zig            # Add trait bounds to type system
 
 **Deliverables:**
 - [ ] Module declaration (`module math.vector`)
-- [ ] Import resolution (`import stdlib.collections.List`)
-- [ ] Selective imports (`import stdlib.io.{ read, write }`)
+- [x] Import resolution (`import stdlib.collections.List`)
+- [x] Selective imports (`import stdlib.io.{ read, write }`)
 - [ ] Glob imports (`import stdlib.collections.*`)
-- [ ] Relative imports (`import .sibling`, `import ..parent.child`)
+- [x] Relative imports (`import .sibling`, `import ..parent.child`)
 - [ ] Visibility modifiers (`pub fn`, `pub struct`)
-- [ ] Module dependency graph construction
-- [ ] Cycle detection in imports
-- [ ] Compile multiple files into single binary
+- [x] Module dependency graph construction
+- [x] Cycle detection in imports
+- [x] Compile multiple files into single binary
 
 **Module Resolution Rules:**
 ```
@@ -327,6 +327,10 @@ src/project.zig          # NEW: Project/package handling
 - **Set** — flat `{ entries_ptr, len, capacity, tombstones }` (20 bytes). Not yet heap-indirected.
 
 The deliverables below track the eventual migration from builtins to user-defined stdlib types.
+
+**Stdlib Libraries Implemented:**
+- `stdlib/toml.kl` — Full TOML parser (~1500 lines, pure Klar)
+- `stdlib/cli.kl` — CLI argument parsing library (builder-pattern API)
 
 **Deliverables:**
 - [ ] `Option#[T]` - replaces built-in `?T` with stdlib type
@@ -627,8 +631,8 @@ src/package/
 **Objective:** Developer tooling for productive Klar development.
 
 **Deliverables:**
-- [ ] `klar fmt` - code formatter
-- [ ] `klar check` - type check without compiling (already exists, enhance)
+- [x] `klar fmt` - code formatter
+- [x] `klar check` - type check without compiling
 - [ ] `klar doc` - documentation generator
 - [ ] Language Server Protocol (LSP) implementation
 - [ ] Syntax highlighting definitions (VS Code, etc.)
@@ -717,20 +721,20 @@ Milestone 1: Generics
 **Phase 4 is complete when:**
 
 1. **Language Completeness**
-   - [ ] Generic functions and types work
-   - [ ] Traits can be defined and implemented
-   - [ ] Multi-file projects compile
+   - [x] Generic functions and types work
+   - [x] Traits can be defined and implemented
+   - [x] Multi-file projects compile
    - [ ] Standard library provides core functionality
 
 2. **Usability**
-   - [ ] Can write non-trivial programs (HTTP server, CLI tools)
-   - [ ] Error messages are helpful
-   - [ ] Documentation exists
+   - [x] Can write non-trivial programs (TOML parser, CLI library)
+   - [x] Error messages are helpful
+   - [x] Documentation exists
 
 3. **Tooling**
    - [ ] Package manager works
    - [ ] IDE support via LSP
-   - [ ] Code formatter available
+   - [x] Code formatter available
 
 4. **Example Programs**
    - [ ] JSON parser using generics
@@ -746,7 +750,7 @@ These are valuable but not required for Phase 4 completion:
 1. **Async/Await** - Designed above but complex to implement
 2. **Comptime** - Compile-time evaluation (replaces C preprocessor per design philosophy)
 3. **Self-Hosting** - Compiler written in Klar
-4. **REPL** - Interactive Klar shell
+4. ~~**REPL** - Interactive Klar shell~~ ✅ Complete
 5. **WebAssembly Target** - Compile to WASM
 
 > **Note:** The design philosophy specifically calls for `comptime` blocks instead of macros.
@@ -1175,7 +1179,7 @@ Phase 6 marks the maturation of Klar from a language implemented in Zig to a ful
 - [ ] Diagnostic/error reporting system
 - [ ] Arena allocator for AST nodes
 - [ ] File I/O for source reading
-- [ ] Command-line argument parsing
+- [x] Command-line argument parsing (`stdlib/cli.kl`)
 
 ---
 
@@ -1385,5 +1389,5 @@ A: Initial Klar compiler may be slower than Zig version. Optimization is a stret
 
 ---
 
-*Document version: 2.2*
-*Last updated: January 2026*
+*Document version: 2.3*
+*Last updated: March 2026*
