@@ -2722,6 +2722,16 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     var modules_to_emit = std.ArrayListUnmanaged(ast.Module){};
     defer modules_to_emit.deinit(allocator);
 
+    // Parallel list of module prefixes for namespacing non-pub functions in codegen.
+    // Entry module gets null prefix (its non-pub functions keep their plain names).
+    var module_prefixes = std.ArrayListUnmanaged(?[]const u8){};
+    defer {
+        for (module_prefixes.items) |prefix| {
+            if (prefix) |p| allocator.free(p);
+        }
+        module_prefixes.deinit(allocator);
+    }
+
     // Track source strings that need to be freed after codegen
     var module_sources = std.ArrayListUnmanaged([]const u8){};
     defer {
@@ -2826,6 +2836,33 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
 
                 // Collect for emission
                 try modules_to_emit.append(allocator, mod_ast);
+
+                // Build module prefix for non-pub function namespacing.
+                // Entry module gets null (no prefix) since its functions are the "main" ones.
+                if (mod.is_entry) {
+                    try module_prefixes.append(allocator, null);
+                } else {
+                    // Build "stdlib.json" style prefix from path segments
+                    var prefix_len: usize = 0;
+                    for (mod.path, 0..) |segment, si| {
+                        if (si > 0) prefix_len += 1; // for '.'
+                        prefix_len += segment.len;
+                    }
+                    const prefix = allocator.alloc(u8, prefix_len) catch {
+                        try module_prefixes.append(allocator, null);
+                        continue;
+                    };
+                    var pos: usize = 0;
+                    for (mod.path, 0..) |segment, si| {
+                        if (si > 0) {
+                            prefix[pos] = '.';
+                            pos += 1;
+                        }
+                        @memcpy(prefix[pos..][0..segment.len], segment);
+                        pos += segment.len;
+                    }
+                    try module_prefixes.append(allocator, prefix);
+                }
             }
         }
         // Phase 2: Check all bodies (all exports now available)
@@ -2840,6 +2877,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         // Single-file compilation (no imports)
         checker.checkModule(module);
         try modules_to_emit.append(allocator, module);
+        try module_prefixes.append(allocator, null); // No prefix for single-module
     }
 
     if (checker.hasErrors()) {
@@ -2969,6 +3007,14 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
     // Set the type checker for generic function call resolution
     emitter.setTypeChecker(&checker);
 
+    // Register built-in struct types (FileStat, ProcessOutput) for multi-module compilation
+    emitter.registerBuiltinStructTypes() catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Codegen error (builtin structs): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
+        try stderr.writeAll(msg);
+        return;
+    };
+
     // Register all struct declarations first so their types are available
     // when declaring monomorphized function signatures (for all modules)
     for (modules_to_emit.items) |mod_to_emit| {
@@ -3052,6 +3098,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         // calls can find their targets even with circular dependencies.
         for (modules_to_emit.items, 0..) |mod_to_emit, i| {
             emitter.skip_main = (i != last_idx);
+            emitter.setModulePrefix(module_prefixes.items[i]);
             emitter.declareModuleFunctions(mod_to_emit) catch |err| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Codegen error (decl): {s}\n", .{@errorName(err)}) catch "Codegen error\n";
@@ -3063,6 +3110,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         // Phase 3: Emit all function bodies.
         for (modules_to_emit.items, 0..) |mod_to_emit, i| {
             emitter.skip_main = (i != last_idx);
+            emitter.setModulePrefix(module_prefixes.items[i]);
             emitter.emitModuleBodies(mod_to_emit) catch |err| {
                 var buf: [512]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "Codegen error: {s}\n", .{@errorName(err)}) catch "Codegen error\n";
@@ -3071,6 +3119,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             };
         }
         emitter.skip_main = false;
+        emitter.setModulePrefix(null);
 
         // Generate main wrapper after all modules are emitted (once only)
         if (emitter.main_takes_args and !emitter.freestanding) {

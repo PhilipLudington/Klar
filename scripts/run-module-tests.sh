@@ -371,6 +371,30 @@ else
     echo "⊘ toml (test not found, skipping)"
 fi
 
+# Test 16: Integration test (all stdlib libraries together)
+echo "--- integration: All stdlib libraries composed ---"
+temp_bin="/tmp/klar_module_integration"
+if [ -d "$TEST_DIR/integration" ]; then
+    if $KLAR build $TEST_DIR/integration/main.kl -o "$temp_bin" 2>/dev/null; then
+        output=$("$temp_bin" 2>/dev/null)
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ integration (exit: $result)"
+            record_success "integration"
+        else
+            echo "✗ integration (expected: 0, got: $result)"
+            echo "    output: $output"
+            record_failure "integration" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ integration (build failed)"
+        record_failure "integration" "build failed"
+    fi
+else
+    echo "⊘ integration (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON

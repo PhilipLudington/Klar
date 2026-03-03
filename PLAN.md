@@ -2,7 +2,7 @@
 
 ## Overview
 Build the Klar standard library capabilities that [Lodex](../Lodex/DESIGN.md) (AI-native source control) depends on. These features are general-purpose and benefit the entire Klar ecosystem, not just Lodex. See [Lodex PLAN.md Phase 0](../Lodex/PLAN.md) for the downstream requirements.
-Current status: Phase 4 complete. Phase 5 (Integration Validation) is next.
+Current status: Phase 5 complete. Phases 0-5 all done. Phase 6 (Async I/O and HTTP) is next when Lodex reaches Phase 3.
 
 ## Parallel Workflow Strategy
 
@@ -550,27 +550,37 @@ Before Phase 5, these must be true:
 
 ---
 
-## Phase 5: Integration Validation
+## Phase 5: Integration Validation ✅
+**Status:** Complete (2026-03-02)
 
 **Goal:** Validate all libraries work together in a realistic Lodex-like program.
 **Estimated Effort:** 2-3 days
 
 ### Parallel Workflow
-Pure Klar code in `stdlib/test/`. Zero compiler changes — no conflict risk.
+Test program in `test/module/integration/`. Two compiler bug fixes required (see below).
 
 ### Deliverables
-- End-to-end integration test program in Klar
-- Validation that all Phase 0-4 deliverables compose correctly
+- `test/module/integration/main.kl` — 12 integration tests exercising all Phase 0-4 libraries together (completed 2026-03-02)
+- Integration test added to `scripts/run-module-tests.sh` (completed 2026-03-02)
 
 ### Tasks
-- [ ] Write a Klar program that: parses CLI args, reads a TOML config, reads/writes JSON files, computes SHA-256 hashes, stats files, spawns a subprocess
-- [ ] Verify the program compiles and runs natively via `klar build`
-- [ ] Profile for any performance issues in JSON parsing or SHA-256
-- [ ] Document any bugs or missing features discovered during integration
-- [ ] File issues upstream for any compiler bugs found
+- [x] Write a Klar program that: parses CLI args, reads a TOML config, reads/writes JSON files, computes SHA-256 hashes, stats files, spawns a subprocess (completed 2026-03-02)
+- [x] Verify the program compiles and runs natively via `klar build` (completed 2026-03-02)
+- [x] Profile for any performance issues in JSON parsing or SHA-256 (completed 2026-03-02)
+- [x] Document any bugs or missing features discovered during integration (completed 2026-03-02)
+- [x] File issues upstream for any compiler bugs found (completed 2026-03-02)
+
+### Compiler Bugs Found and Fixed
+
+**Bug 1: Multi-module builtin struct registration** — `registerBuiltinStructTypes()` (FileStat, ProcessOutput) was only called from single-module `emitModule()`, not from multi-module `buildNative()`. Fix: made the function public and added call in `main.zig` before struct registration loop.
+
+**Bug 2: Cross-module non-pub function name collision** — Non-pub functions in different stdlib modules (e.g., `parse_value` in both json.kl and toml.kl) collided in the LLVM module since both compiled into the same LLVM module. The second definition silently overwrote the first, causing the TOML parser to call JSON parser functions, creating wrong enum variants. Fix: added module-prefixed naming for non-pub functions (`stdlib.json__parse_value` vs `stdlib.toml__parse_value`) using `current_module_prefix` on the Emitter. Prefixed lookup in `emitCall` tries module-prefixed name first, then falls back to plain name for pub functions.
+
+### Known Limitation
+- `json_stringify` crashes on deeply nested objects with multiple key-value pairs (pre-existing bug, not introduced by integration work). Integration test uses simpler JSON for round-trip testing.
 
 ### Testing Strategy
-The integration program itself is the test. It exercises all libraries in combination and must produce correct output.
+The integration program exercises 12 test cases: CLI parsing, TOML config, JSON round-trip, SHA-256 hashing, fs_stat, process_run, timestamp, env vars, JSON file I/O, TOML-to-JSON conversion, hash pipeline, and full Lodex-like workflow. All 12 tests pass.
 
 ---
 

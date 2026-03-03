@@ -230,6 +230,12 @@ pub const Emitter = struct {
     /// Custom entry point symbol name (for freestanding mode).
     entry_point: ?[]const u8 = null,
 
+    /// Module prefix for the current module being emitted.
+    /// Used in multi-module compilation to namespace non-pub functions,
+    /// preventing LLVM name collisions between modules with identically-named
+    /// internal functions (e.g., json.kl and toml.kl both having `parse_value`).
+    current_module_prefix: ?[]const u8 = null,
+
     // --- Type declarations (must come after all fields in Zig 0.15+) ---
 
     /// Tracks heap allocations made by resolveTypeExprDirect for cleanup.
@@ -662,6 +668,22 @@ pub const Emitter = struct {
     /// Set custom entry point symbol name.
     pub fn setEntryPoint(self: *Emitter, entry_point: ?[]const u8) void {
         self.entry_point = entry_point;
+    }
+
+    /// Set the module prefix for namespacing non-pub functions.
+    /// In multi-module compilation, this prevents name collisions between
+    /// internal functions in different modules (e.g., both json.kl and toml.kl
+    /// having `parse_value` would become `stdlib.json__parse_value` and
+    /// `stdlib.toml__parse_value` respectively).
+    pub fn setModulePrefix(self: *Emitter, prefix: ?[]const u8) void {
+        self.current_module_prefix = prefix;
+    }
+
+    /// Build a module-prefixed function name for non-pub functions.
+    /// Returns null if no prefix is set or allocation fails.
+    fn buildPrefixedName(self: *Emitter, name: []const u8) ?[]const u8 {
+        const prefix = self.current_module_prefix orelse return null;
+        return std.fmt.allocPrint(self.allocator, "{s}__{s}", .{ prefix, name }) catch return null;
     }
 
     /// Set the target platform for cross-compilation.
@@ -1127,7 +1149,8 @@ pub const Emitter = struct {
     }
 
     /// Register built-in struct types (FileStat, ProcessOutput) so field access works.
-    fn registerBuiltinStructTypes(self: *Emitter) EmitError!void {
+    /// Public for multi-module compilation where this must be called before struct registration.
+    pub fn registerBuiltinStructTypes(self: *Emitter) EmitError!void {
         // FileStat: { size: i64, modified_epoch: i64, is_dir: bool, is_file: bool }
         if (!self.struct_types.contains("FileStat")) {
             const file_stat_type = self.getFileStatStructType();
@@ -1226,7 +1249,17 @@ pub const Emitter = struct {
 
         const fn_type = llvm.Types.function(return_type, param_types.items, false);
 
-        const func_name = self.getFunctionName(func.name, is_main_with_args);
+        const base_name = self.getFunctionName(func.name, is_main_with_args);
+
+        // For non-pub functions in multi-module compilation, prefix with module path
+        // to prevent LLVM name collisions (e.g., json's parse_value vs toml's parse_value)
+        const prefixed = if (!func.is_pub and !std.mem.eql(u8, func.name, "main"))
+            self.buildPrefixedName(base_name)
+        else
+            null;
+        defer if (prefixed) |p| self.allocator.free(p);
+
+        const func_name = prefixed orelse base_name;
         const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
         const llvm_func = llvm.addFunction(self.module, name, fn_type);
@@ -1238,7 +1271,8 @@ pub const Emitter = struct {
             llvm.addAttributeAtIndex(llvm_func, 1, sret_attr); // Index 1 = first param
 
             // Register this function as using sret so call sites can handle it
-            const name_copy = self.allocator.dupe(u8, func.name) catch return EmitError.OutOfMemory;
+            // Use the prefixed name so sret lookups match at call sites
+            const name_copy = self.allocator.dupe(u8, func_name) catch return EmitError.OutOfMemory;
             self.sret_functions.put(name_copy, return_llvm_type) catch return EmitError.OutOfMemory;
         }
 
@@ -1736,7 +1770,16 @@ pub const Emitter = struct {
             func.params.len == 1 and
             self.isStringSliceTypeExpr(func.params[0].type_);
 
-        const func_name = self.getFunctionName(func.name, is_main_with_args);
+        const base_name = self.getFunctionName(func.name, is_main_with_args);
+
+        // For non-pub functions, use module-prefixed name (must match declareFunction)
+        const prefixed = if (!func.is_pub and !std.mem.eql(u8, func.name, "main"))
+            self.buildPrefixedName(base_name)
+        else
+            null;
+        defer if (prefixed) |p| self.allocator.free(p);
+
+        const func_name = prefixed orelse base_name;
         const name = self.allocator.dupeZ(u8, func_name) catch return EmitError.OutOfMemory;
         defer self.allocator.free(name);
 
@@ -5311,10 +5354,33 @@ pub const Emitter = struct {
                 }
             }
 
+            // Try module-prefixed name first (for non-pub same-module functions),
+            // then fall back to plain name (for pub/cross-module functions)
+            const prefixed_name = self.buildPrefixedName(lookup_name);
+            defer if (prefixed_name) |p| self.allocator.free(p);
+
+            const prefixed_z = if (prefixed_name) |p|
+                self.allocator.dupeZ(u8, p) catch null
+            else
+                null;
+            defer if (prefixed_z) |z| self.allocator.free(z);
+
             const name_z = self.allocator.dupeZ(u8, lookup_name) catch return EmitError.OutOfMemory;
             defer self.allocator.free(name_z);
 
-            if (self.module.getNamedFunction(name_z)) |func| {
+            // Try prefixed name first, then plain name
+            const resolved_func = if (prefixed_z) |pz|
+                (self.module.getNamedFunction(pz) orelse self.module.getNamedFunction(name_z))
+            else
+                self.module.getNamedFunction(name_z);
+
+            // Also resolve the effective lookup name for sret map lookup
+            const effective_lookup = if (prefixed_z) |pz|
+                (if (self.module.getNamedFunction(pz) != null) (prefixed_name.?) else lookup_name)
+            else
+                lookup_name;
+
+            if (resolved_func) |func| {
                 // Get function type and parameter types upfront for arg conversion
                 const fn_type = llvm.getGlobalValueType(func);
                 const param_count = llvm.c.LLVMCountParamTypes(fn_type);
@@ -5323,8 +5389,8 @@ pub const Emitter = struct {
                     llvm.c.LLVMGetParamTypes(fn_type, &param_types);
                 }
 
-                // Check if this function uses sret
-                if (self.sret_functions.get(lookup_name)) |sret_return_type| {
+                // Check if this function uses sret (use effective name which may be prefixed)
+                if (self.sret_functions.get(effective_lookup)) |sret_return_type| {
                     // Sret call: allocate space, prepend pointer, call, load result
                     const sret_alloca = self.builder.buildAlloca(sret_return_type, "sret.tmp");
 
