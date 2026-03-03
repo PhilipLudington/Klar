@@ -48,7 +48,7 @@ fn parse_declaration(p: Parser) -> (Parser, string) {
         return (error_and_advance(p2, "expected 'fn' after 'unsafe'"), "null")
     }
     // trait and impl — stub for core subset
-    if k2 == "trait" { return parse_trait_stub(p2, is_pub) }
+    if k2 == "trait" { return parse_trait_decl(p2, is_pub) }
     if k2 == "impl" { return parse_impl_stub(p2) }
 
     return (error_and_advance(p2, "expected declaration"), "null")
@@ -422,8 +422,7 @@ fn parse_extern_decl(p: Parser, is_pub: bool) -> (Parser, string) {
     return (error_and_advance(p2, "expected 'fn', 'type', or '{' after 'extern'"), "null")
 }
 
-// Stubs for trait/impl — deferred to Milestone 9.7
-fn parse_trait_stub(p: Parser, is_pub: bool) -> (Parser, string) {
+fn parse_trait_decl(p: Parser, is_pub: bool) -> (Parser, string) {
     var p2: Parser = advance(p) // skip 'trait'
     let name_result: (Parser, string) = consume_identifier(p2)
     p2 = name_result.0
@@ -444,11 +443,26 @@ fn parse_trait_stub(p: Parser, is_pub: bool) -> (Parser, string) {
         }
     }
 
-    // Skip to matching }
+    // Parse body: trait methods (signatures, optionally with default bodies)
+    var methods: string = ""
     if tk(p2, "l_brace") {
-        p2 = skip_braces(p2)
+        p2 = advance(p2)
+        var first: bool = true
+        while not tk(p2, "r_brace") and not tk(p2, "eof") {
+            if tk(p2, "fn_") {
+                if not first { methods = methods + "," }
+                first = false
+                let fn_result: (Parser, string) = parse_function_decl(p2, false, false, false, false, false)
+                p2 = fn_result.0
+                methods = methods + fn_result.1
+            } else {
+                p2 = advance(p2)
+            }
+        }
+        p2 = consume(p2, "r_brace", "expected '}'")
     }
-    let json: string = "{\"kind\":\"trait_decl\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"is_unsafe\":false,\"type_params\":[],\"super_traits\":[" + super_traits + "],\"associated_types\":[],\"methods\":[]}"
+
+    let json: string = "{\"kind\":\"trait_decl\",\"name\":" + json_str(name_result.1) + ",\"is_pub\":" + json_bool(is_pub) + ",\"is_unsafe\":false,\"type_params\":[],\"super_traits\":[" + super_traits + "],\"associated_types\":[],\"methods\":[" + methods + "]}"
     return (p2, json)
 }
 

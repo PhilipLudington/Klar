@@ -1,23 +1,211 @@
-// selfhost/main.kl — Self-hosted compiler entry point (stub)
-// Milestone 9.3: Bootstrap architecture scaffolding
-// Full pipeline wiring: Milestone 9.11
+// selfhost/main.kl — Self-hosted compiler frontend
+// Milestone 9.11: Unified lexer → parser → checker pipeline
+//
+// Usage:
+//   klar run selfhost/main.kl -- check <file.kl>      Type-check a file
+//   klar run selfhost/main.kl -- dump-tokens <file.kl> Dump lexer tokens as JSON
+//   klar run selfhost/main.kl -- dump-ast <file.kl>    Dump parser AST as JSON
+//   klar run selfhost/main.kl -- help                  Show usage
 
-import lexer.{Lexer, Token}
-import parser.{Parser}
+import lexer.{Lexer, Token, TokenKind, tag_name}
+import parser.{Parser, new_parser}
+import parser_decl.{parse_module}
 import ast.{AstModule}
-import checker.{TypeChecker}
-import types.{KlarType}
+import checker.{TypeChecker, register_builtins, format_error}
+import checker_decl.{check_module}
+import ast_builder.{build_module}
 
-fn main() -> i32 {
-    println("Klar self-hosted compiler — not yet implemented")
-    println("See PLAN.md Milestone 9 for roadmap")
+// ═══════════════════════════════════════════════════════════════════════════
+// Commands
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn cmd_check(path: string) -> i32 {
+    let src: string = read_file(path)
+    if src == "" {
+        return 2
+    }
+
+    // Parse source → JSON
+    let p: Parser = new_parser(src)
+    let parse_result: (Parser, string) = parse_module(p)
+    if parse_result.0.had_error {
+        println("parse error in " + path)
+        return 1
+    }
+    let json: string = parse_result.1
+
+    // Build AST arenas from JSON → type check
+    var tc: TypeChecker = TypeChecker.new()
+    let build_result: (TypeChecker, AstModule) = build_module(tc, json)
+    tc = build_result.0
+    let m: AstModule = build_result.1
+
+    tc = register_builtins(tc)
+    tc = check_module(tc, m.decls_start, m.decls_count)
+
+    if tc.error_count == 0 {
+        println("check-pass")
+        return 0
+    }
+
+    // Output structured errors
+    var i: i32 = 0
+    let err_count: i32 = tc.error_kinds.len()
+    while i < err_count {
+        println(format_error(tc, i))
+        i = i + 1
+    }
+
+    // Fallback: legacy errors if no structured errors
+    if err_count == 0 {
+        var j: i32 = 0
+        while j < tc.errors.len() {
+            println(tc.errors[j])
+            j = j + 1
+        }
+    }
+
     return 1
+}
+
+fn cmd_dump_tokens(path: string) -> i32 {
+    let src: string = read_file(path)
+    if src == "" {
+        return 2
+    }
+
+    var lex: Lexer = Lexer.new(src)
+    var first: bool = true
+    print("[")
+    loop {
+        let tok: Token = lex.next_token()
+        let kind: TokenKind = tok.kind
+        if tag_name(kind) == "eof" {
+            break
+        }
+        if not first {
+            print(",")
+        }
+        first = false
+        print("{\"kind\":\"" + tag_name(kind) + "\"")
+        print(",\"text\":\"" + json_escape(tok.text) + "\"")
+        print(",\"line\":" + tok.line.to_string().as_str())
+        print(",\"column\":" + tok.column.to_string().as_str())
+        print("}")
+    }
+    println("]")
+    return 0
+}
+
+fn cmd_dump_ast(path: string) -> i32 {
+    let src: string = read_file(path)
+    if src == "" {
+        return 2
+    }
+
+    let p: Parser = new_parser(src)
+    let result: (Parser, string) = parse_module(p)
+    println(result.1)
+    if result.0.had_error {
+        return 1
+    }
+    return 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn read_file(path: string) -> string {
+    let result: Result#[String, IoError] = File.read_to_string(path)
+    if not result.is_ok() {
+        println("error: could not read file: " + path)
+        return ""
+    }
+    let content: String = result!
+    return content.as_str()
+}
+
+fn json_escape(s: string) -> string {
+    var out: string = ""
+    var i: i32 = 0
+    while i < s.byte_len() {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 34 { out = out + "\\\"" }
+        else if c == 92 { out = out + "\\\\" }
+        else if c == 10 { out = out + "\\n" }
+        else if c == 13 { out = out + "\\r" }
+        else if c == 9 { out = out + "\\t" }
+        else { out = out + from_byte(c.as#[u8]) }
+        i = i + 1
+    }
+    return out
+}
+
+fn print_usage() -> void {
+    println("Klar self-hosted compiler frontend")
+    println("")
+    println("Usage:")
+    println("  klar-selfhost check <file.kl>       Type-check a file")
+    println("  klar-selfhost dump-tokens <file.kl>  Dump lexer tokens as JSON")
+    println("  klar-selfhost dump-ast <file.kl>     Dump parser AST as JSON")
+    println("  klar-selfhost help                   Show this message")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Entry point
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn main(args: [String]) -> i32 {
+    if args.len() < 2 {
+        print_usage()
+        return 1
+    }
+
+    let cmd_arg: String = args[1]
+    let cmd: string = cmd_arg.as_str()
+
+    if cmd == "help" or cmd == "--help" or cmd == "-h" {
+        print_usage()
+        return 0
+    }
+
+    if cmd == "check" {
+        if args.len() < 3 {
+            println("error: check requires a file path")
+            return 2
+        }
+        let file_arg: String = args[2]
+        return cmd_check(file_arg.as_str())
+    }
+
+    if cmd == "dump-tokens" {
+        if args.len() < 3 {
+            println("error: dump-tokens requires a file path")
+            return 2
+        }
+        let file_arg: String = args[2]
+        return cmd_dump_tokens(file_arg.as_str())
+    }
+
+    if cmd == "dump-ast" {
+        if args.len() < 3 {
+            println("error: dump-ast requires a file path")
+            return 2
+        }
+        let file_arg: String = args[2]
+        return cmd_dump_ast(file_arg.as_str())
+    }
+
+    println("error: unknown command '" + cmd + "'")
+    print_usage()
+    return 2
 }
 
 test main {
     // Verify that all module imports resolve correctly
-    let lexer: Lexer = Lexer.new("")
-    let parser: Parser = Parser.new("")
-    let checker: TypeChecker = TypeChecker.new()
-    assert_eq(checker.error_count, 0)
+    let lex: Lexer = Lexer.new("")
+    let p: Parser = new_parser("")
+    let tc: TypeChecker = TypeChecker.new()
+    assert_eq(tc.error_count, 0)
 }
