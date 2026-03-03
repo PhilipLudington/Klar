@@ -31,7 +31,8 @@ const zig_builtin = @import("builtin");
 // Cross-platform IO helpers
 fn getStdOut() std.fs.File {
     if (comptime zig_builtin.os.tag == .windows) {
-        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE).? };
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
+            @panic("failed to get stdout handle") };
     } else {
         return .{ .handle = std.posix.STDOUT_FILENO };
     }
@@ -39,7 +40,8 @@ fn getStdOut() std.fs.File {
 
 fn getStdErr() std.fs.File {
     if (comptime zig_builtin.os.tag == .windows) {
-        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE).? };
+        return .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
+            @panic("failed to get stderr handle") };
     } else {
         return .{ .handle = std.posix.STDERR_FILENO };
     }

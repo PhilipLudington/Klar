@@ -1348,11 +1348,13 @@ fn handleMessage(
 
 pub fn runStdio(allocator: std.mem.Allocator) !void {
     const stdin_file: std.fs.File = if (comptime builtin.os.tag == .windows)
-        .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE).? }
+        .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_INPUT_HANDLE) orelse
+            @panic("failed to get stdin handle") }
     else
         .{ .handle = std.posix.STDIN_FILENO };
     const stdout_file: std.fs.File = if (comptime builtin.os.tag == .windows)
-        .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE).? }
+        .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
+            @panic("failed to get stdout handle") }
     else
         .{ .handle = std.posix.STDOUT_FILENO };
 

@@ -36,7 +36,8 @@ const meta_query = @import("meta_query.zig");
 // Cross-platform IO helpers
 fn getStdOut() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE).?;
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
+            @panic("failed to get stdout handle");
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDOUT_FILENO };
@@ -45,7 +46,8 @@ fn getStdOut() std.fs.File {
 
 fn getStdErr() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE).?;
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
+            @panic("failed to get stderr handle");
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDERR_FILENO };
@@ -3994,6 +3996,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
 
     var source_buf: ?[]u8 = null;
     defer if (source_buf) |s| allocator.free(s);
+    var had_parse_errors = false;
 
     // Either load AST from JSON or parse from source
     const module = if (options.ast_input_path) |json_path| blk: {
@@ -4030,6 +4033,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
                 return;
             };
             if (parser.errors.items.len > 0) {
+                had_parse_errors = true;
                 var buf: [512]u8 = undefined;
                 const header = std.fmt.bufPrint(&buf, "Parse diagnostics ({d}):\n", .{parser.errors.items.len}) catch "Parse diagnostics:\n";
                 try stderr.writeAll(header);
@@ -4301,7 +4305,7 @@ fn checkFile(allocator: std.mem.Allocator, path: []const u8, options: CheckComma
     }
 
     if (options.partial_mode) {
-        if (!has_type_errors) {
+        if (!has_type_errors and !had_parse_errors) {
             try stdout.writeAll("Partial check completed with no diagnostics\n");
         }
         return;

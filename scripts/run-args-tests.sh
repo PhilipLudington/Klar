@@ -605,22 +605,22 @@ else
     fail "lsp command: unknown method handling failed"
 fi
 
-if printf 'Content-Length: 99999999\r\n\r\n{}' | $KLAR lsp >$LSP_TMP/oversize.out 2>&1; then
+if printf 'Content-Length: 99999999\r\n\r\n{}' | $KLAR lsp >"$LSP_TMP/oversize.out" 2>&1; then
     fail "lsp command: oversized content-length should fail"
 else
     pass "lsp command: oversized content-length is rejected"
 fi
-rm -f $LSP_TMP/oversize.out
+rm -f "$LSP_TMP/oversize.out"
 
 exit_only_payload='{"jsonrpc":"2.0","method":"exit","params":null}'
 if {
     printf 'Content-Length: %d\r\n\r\n%s' "${#exit_only_payload}" "$exit_only_payload"
-} | $KLAR lsp >$LSP_TMP/exit_only.out 2>&1; then
+} | $KLAR lsp >"$LSP_TMP/exit_only.out" 2>&1; then
     fail "lsp command: exit without shutdown should return non-zero"
 else
     pass "lsp command: exit without shutdown returns non-zero"
 fi
-rm -f $LSP_TMP/exit_only.out
+rm -f "$LSP_TMP/exit_only.out"
 
 diag_fixture="$LSP_TMP/klar_lsp_diagnostic_fixture.kl"
 cat > "$diag_fixture" << 'EOF'

@@ -705,9 +705,11 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
         return (c, type_string())
     }
 
-    // Special-case: .as_str() on String returns string
+    // Special-case: .as_str() on String (heap-allocated) returns string
     if data.method_name == "as_str" and data.args_count == 0 {
-        return (c, type_string())
+        if type_kind_name(recv_type.kind) == "StringData" {
+            return (c, type_string())
+        }
     }
 
     // Check method arguments for expression-level errors
@@ -722,8 +724,31 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
                 let mi: ?MethodInfo = c.methods.get(key)
                 match mi {
                     Some(method_info) => {
-                        // For foundation: return the method's return type
                         let fn_data: FunctionData = c.type_functions[method_info.fn_data_idx]
+                        // Validate argument count (params_count excludes self)
+                        if data.args_count != fn_data.params_count {
+                            c = add_typed_error(c, ErrorKind::WrongNumberOfArgs, data.span,
+                                "method '" + data.method_name + "' on '" + struct_data.name +
+                                "' expects " + fn_data.params_count.to_string().as_str() +
+                                " argument(s), got " + data.args_count.to_string().as_str())
+                        }
+                        // Validate argument types
+                        var ai: i32 = 0
+                        while ai < data.args_count and ai < fn_data.params_count {
+                            let arg_eid: ExprId = c.extra_expr_ids[data.args_start + ai]
+                            let ar: (TypeChecker, KlarType) = check_expr(c, arg_eid)
+                            c = ar.0
+                            let arg_type: KlarType = ar.1
+                            let param_type: KlarType = get_resolved_type(c, fn_data.params_start + ai)
+                            if not type_compatible_tc(c, param_type, arg_type) {
+                                c = add_typed_error(c, ErrorKind::TypeMismatch, data.span,
+                                    "argument " + (ai + 1).to_string().as_str() + " of '" +
+                                    struct_data.name + "." + data.method_name +
+                                    "': expected " + type_display(param_type) +
+                                    ", got " + type_display(arg_type))
+                            }
+                            ai = ai + 1
+                        }
                         let ret: KlarType = get_resolved_type(c, fn_data.return_type.id)
                         return (c, ret)
                     }

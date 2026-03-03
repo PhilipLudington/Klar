@@ -802,7 +802,8 @@ const builtin = @import("builtin");
 
 fn getStdOut() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE).?;
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_OUTPUT_HANDLE) orelse
+            @panic("failed to get stdout handle");
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDOUT_FILENO };
@@ -811,7 +812,8 @@ fn getStdOut() std.fs.File {
 
 fn getStdErr() std.fs.File {
     if (comptime builtin.os.tag == .windows) {
-        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE).?;
+        const handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
+            @panic("failed to get stderr handle");
         return .{ .handle = handle };
     } else {
         return .{ .handle = std.posix.STDERR_FILENO };

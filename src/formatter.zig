@@ -1866,7 +1866,8 @@ pub fn format(allocator: Allocator, source: []const u8) ![]u8 {
     const module = parser.parseModule() catch {
         // Write parse error details to stderr before returning
         const stderr: std.fs.File = if (comptime builtin.os.tag == .windows)
-            .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE).? }
+            .{ .handle = std.os.windows.kernel32.GetStdHandle(std.os.windows.STD_ERROR_HANDLE) orelse
+                @panic("failed to get stderr handle") }
         else
             .{ .handle = std.posix.STDERR_FILENO };
         var buf: [512]u8 = undefined;
