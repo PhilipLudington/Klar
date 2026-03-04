@@ -1,0 +1,9 @@
+// Bug 3: Direct method call on array index should work
+fn main(args: [String]) -> i32 {
+    // args[0] is always the program path — should be non-empty
+    let s: string = args[0].as_str()
+    if s.len() == 0 {
+        return 1
+    }
+    return 0
+}

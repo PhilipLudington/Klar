@@ -10589,19 +10589,17 @@ pub const Emitter = struct {
                 if (self.named_values.get(method.object.identifier.name)) |local| {
                     break :blk local.value; // This is the alloca pointer
                 }
-                // Identifier not found in named_values, fall through to emit
-                const obj_val = try self.emitExpr(method.object);
+                // Identifier not found in named_values — use already-emitted value + entry-block alloca
                 const string_type = self.getStringStructType();
-                const tmp_alloca = self.builder.buildAlloca(string_type, "str.tmp");
-                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                const tmp_alloca = self.buildEntryBlockAlloca(string_type, "str.tmp");
+                _ = self.builder.buildStore(object, tmp_alloca);
                 break :blk tmp_alloca;
             } else blk: {
-                // Non-identifier object (e.g., method call result like a.concat(b))
-                // Emit the expression and store to a temporary alloca
-                const obj_val = try self.emitExpr(method.object);
+                // Non-identifier object (e.g., array index, method call result)
+                // Use already-emitted value + entry-block alloca
                 const string_type = self.getStringStructType();
-                const tmp_alloca = self.builder.buildAlloca(string_type, "str.tmp");
-                _ = self.builder.buildStore(obj_val, tmp_alloca);
+                const tmp_alloca = self.buildEntryBlockAlloca(string_type, "str.tmp");
+                _ = self.builder.buildStore(object, tmp_alloca);
                 break :blk tmp_alloca;
             };
 
@@ -15608,6 +15606,18 @@ pub const Emitter = struct {
                 if (self.named_values.get(id.name)) |local| {
                     if (local.is_string_data) {
                         return true;
+                    }
+                }
+            },
+            // Check for index into array/slice of String (e.g., args[0])
+            .index => |i| {
+                if (i.object == .identifier) {
+                    if (self.named_values.get(i.object.identifier.name)) |local| {
+                        if (local.array_element_type) |elem_type| {
+                            if (elem_type == .string_data) {
+                                return true;
+                            }
+                        }
                     }
                 }
             },
