@@ -14,6 +14,7 @@ import ast.{AstModule}
 import checker.{TypeChecker, register_builtins, format_error}
 import checker_decl.{check_module}
 import ast_builder.{build_module}
+// Note: formatter.kl runs standalone due to codegen limitations with Formatter struct
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Commands
@@ -149,6 +150,7 @@ fn print_usage() -> void {
     println("  klar-selfhost check <file.kl>       Type-check a file")
     println("  klar-selfhost dump-tokens <file.kl>  Dump lexer tokens as JSON")
     println("  klar-selfhost dump-ast <file.kl>     Dump parser AST as JSON")
+    println("  klar-selfhost fmt <file.kl>          Format a source file")
     println("  klar-selfhost help                   Show this message")
 }
 

@@ -1685,6 +1685,7 @@ pub fn build_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Decl
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
     return (c, DeclId { id: idx })
@@ -1795,6 +1796,7 @@ fn build_function_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker,
         body_start: br.1, body_count: br.2,
         is_pub: pub_r.0, is_extern: ext_r.0, is_unsafe: uns_r.0,
         is_comptime: cmp_r.0, is_variadic: var_r.0,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
     return (c, DeclId { id: idx })
@@ -1808,7 +1810,8 @@ fn build_test_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Dec
     c = br.0
     let idx: i32 = c.decls.len()
     c.decls.push(Decl::TestDecl(TestDeclData {
-        test_name: nr.0, body_start: br.1, body_count: br.2, span: s(),
+        test_name: nr.0, body_start: br.1, body_count: br.2,
+        meta_start: 0, meta_count: 0, span: s(),
     }))
     return (c, DeclId { id: idx })
 }
@@ -1836,7 +1839,7 @@ fn build_struct_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, D
             let tp: i32 = field_pos(json, ap, "type")
             let tr: (TypeChecker, TypeExprId) = build_type_expr(c, json, tp)
             c = tr.0
-            c.extra_struct_fields.push(StructField { field_name: fnr.0, type_expr: tr.1, span: s() })
+            c.extra_struct_fields.push(StructField { field_name: fnr.0, type_expr: tr.1, meta_start: 0, meta_count: 0, span: s() })
             fields_count = fields_count + 1
             ap = array_next(json, ap)
         }
@@ -1848,6 +1851,7 @@ fn build_struct_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, D
         generics_start: gpr.1, generics_count: gpr.2,
         fields_start: fields_start, fields_count: fields_count,
         is_pub: pub_r.0, is_extern: ext_r.0, is_packed: pak_r.0,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
     return (c, DeclId { id: idx })
@@ -1902,6 +1906,7 @@ fn build_enum_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Dec
                 variant_name: vnr.0,
                 payload_start: payload_start, payload_count: payload_count,
                 discriminant: no_expr(),
+                meta_start: 0, meta_count: 0,
                 span: s(),
             })
             variants_count = variants_count + 1
@@ -1915,6 +1920,7 @@ fn build_enum_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Dec
         generics_start: gpr.1, generics_count: gpr.2,
         variants_start: variants_start, variants_count: variants_count,
         is_pub: pub_r.0,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
     return (c, DeclId { id: idx })
@@ -1982,6 +1988,7 @@ fn build_impl_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Dec
         generics_start: gpr.1, generics_count: gpr.2,
         methods_start: methods_start, methods_count: methods_count,
         assoc_types_start: 0, assoc_types_count: 0,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
     return (c, DeclId { id: idx })
@@ -2041,6 +2048,7 @@ fn build_trait_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, De
         methods_start: methods_start, methods_count: methods_count,
         assoc_types_start: 0, assoc_types_count: 0,
         is_pub: pub_r.0,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
     return (c, DeclId { id: idx })
@@ -2059,7 +2067,7 @@ fn build_const_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, De
     let idx: i32 = c.decls.len()
     c.decls.push(Decl::ConstDecl(ConstDeclData {
         const_name: nr.0, type_expr: tr.1, value: vr.1,
-        is_pub: pub_r.0, span: s(),
+        is_pub: pub_r.0, meta_start: 0, meta_count: 0, span: s(),
     }))
     return (c, DeclId { id: idx })
 }
@@ -2183,6 +2191,8 @@ pub fn build_module(tc: TypeChecker, json: string) -> (TypeChecker, AstModule) {
         imports_count: imports_count,
         decls_start: decls_start,
         decls_count: decls_count,
+        file_meta_start: 0,
+        file_meta_count: 0,
     }
     return (c, m)
 }

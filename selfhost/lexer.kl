@@ -62,6 +62,7 @@ pub enum TokenKind {
     Ref,
     Inout,
     Self_,
+    Meta,
 
     // Operators
     Plus,
@@ -743,6 +744,7 @@ fn lookup_keyword(text: string) -> TokenKind {
     if text == "Self" { return TokenKind::SelfType }
     if text == "ref" { return TokenKind::Ref }
     if text == "inout" { return TokenKind::Inout }
+    if text == "meta" { return TokenKind::Meta }
     return TokenKind::Identifier
 }
 
@@ -802,6 +804,7 @@ pub fn tag_name(kind: TokenKind) -> string {
         TokenKind::Ref => { return "ref" }
         TokenKind::Inout => { return "inout" }
         TokenKind::Self_ => { return "self" }
+        TokenKind::Meta => { return "meta" }
         TokenKind::Plus => { return "plus" }
         TokenKind::Minus => { return "minus" }
         TokenKind::Star => { return "star" }

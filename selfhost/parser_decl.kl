@@ -3,21 +3,431 @@
 // import, module, extern, trait/impl stubs. Also the parse_module entry point.
 
 import lexer.{Lexer, Token, TokenKind, tag_name}
-import parser.{Parser, advance, tk, match_tok, consume, consume_identifier, error_and_advance, synchronize_top_level, is_top_level_start, json_str, json_bool}
+import parser.{Parser, advance, tk, match_tok, consume, consume_identifier, report_error, error_and_advance, synchronize_top_level, is_top_level_start, json_str, json_bool, json_int}
+
 import parser_expr.{parse_expression}
 import parser_type.{parse_type}
 import parser_stmt.{parse_block}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Meta annotation parsing
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Parse zero or more meta annotations. Returns (parser, json_suffix).
+// json_suffix is "" if no annotations, or ","meta":[...]" to append to decl JSON.
+fn parse_meta_annotations(p: Parser) -> (Parser, string) {
+    var p2: Parser = p
+    var items: string = ""
+    var count: i32 = 0
+
+    while tk(p2, "meta") {
+        if count > 0 { items = items + "," }
+        let r: (Parser, string) = parse_one_meta_annotation(p2)
+        p2 = r.0
+        items = items + r.1
+        count = count + 1
+    }
+
+    if count == 0 {
+        return (p2, "")
+    }
+    return (p2, ",\"meta\":[" + items + "]")
+}
+
+// Parse a single meta annotation: meta intent("..."), meta pure, etc.
+fn parse_one_meta_annotation(p: Parser) -> (Parser, string) {
+    var p2: Parser = advance(p) // skip 'meta'
+
+    // Handle keyword tokens that aren't identifiers
+    if tk(p2, "module") {
+        p2 = advance(p2) // skip 'module'
+        return parse_meta_block(p2, "module")
+    }
+    if tk(p2, "in") {
+        p2 = advance(p2) // skip 'in'
+        return parse_meta_string_arg(p2, "in")
+    }
+
+    if not tk(p2, "identifier") {
+        return (error_and_advance(p2, "expected annotation name after 'meta'"), "{\"kind\":\"error\"}")
+    }
+
+    let name: string = p2.current.text
+    p2 = advance(p2) // skip annotation name
+
+    if name == "intent" { return parse_meta_string_arg(p2, "intent") }
+    if name == "decision" { return parse_meta_string_arg(p2, "decision") }
+    if name == "tag" { return parse_meta_string_arg(p2, "tag") }
+    if name == "hint" { return parse_meta_string_arg(p2, "hint") }
+    if name == "deprecated" { return parse_meta_string_arg(p2, "deprecated") }
+    if name == "pure" { return (p2, "{\"kind\":\"pure\"}") }
+    if name == "guide" { return parse_meta_block(p2, "guide") }
+    if name == "related" { return parse_meta_related(p2) }
+    if name == "group" { return parse_meta_group_def(p2) }
+    if name == "define" { return parse_meta_define(p2) }
+
+    // Custom annotation — must have parentheses
+    if not tk(p2, "l_paren") {
+        return (error_and_advance(p2, "unknown meta annotation; custom annotations require parentheses: meta name(args)"), "{\"kind\":\"error\"}")
+    }
+    return parse_meta_custom(p2, name)
+}
+
+// Parse ("string value") for string-valued meta annotations
+fn parse_meta_string_arg(p: Parser, kind: string) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_paren", "expected '(' after meta annotation name")
+
+    if not tk(p2, "string_literal") {
+        return (error_and_advance(p2, "expected string literal in meta annotation"), "{\"kind\":" + json_str(kind) + ",\"value\":\"\"}")
+    }
+
+    let text: string = p2.current.text
+    // Strip outer quotes, process escape sequences, then use json_str to re-escape
+    let content: string = process_escapes(strip_quotes(text))
+    p2 = advance(p2) // skip string literal
+    p2 = consume(p2, "r_paren", "expected ')' after meta annotation string")
+
+    return (p2, "{\"kind\":" + json_str(kind) + ",\"value\":" + json_str(content) + "}")
+}
+
+// Parse { key: value, key: [items], ... } block for module/guide
+fn parse_meta_block(p: Parser, kind: string) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_brace", "expected '{' after meta block annotation name")
+    var entries: string = ""
+    var first: bool = true
+
+    while not tk(p2, "r_brace") and not tk(p2, "eof") {
+        // Key (identifier)
+        if not tk(p2, "identifier") {
+            p2 = error_and_advance(p2, "expected identifier key in meta block")
+            break
+        }
+        let key: string = p2.current.text
+        p2 = advance(p2)
+        p2 = consume(p2, "colon", "expected ':' after meta block key")
+
+        // Value: string literal or [string, string, ...] array
+        var val_json: string = ""
+        if tk(p2, "l_bracket") {
+            p2 = advance(p2) // skip '['
+            var items: string = ""
+            var item_count: i32 = 0
+            while not tk(p2, "r_bracket") and not tk(p2, "eof") {
+                if not tk(p2, "string_literal") {
+                    p2 = error_and_advance(p2, "expected string literal in meta block list")
+                    break
+                }
+                if item_count > 0 { items = items + "," }
+                let item_text: string = p2.current.text
+                items = items + json_str(process_escapes(strip_quotes(item_text)))
+                item_count = item_count + 1
+                p2 = advance(p2)
+                let cr: (Parser, bool) = match_tok(p2, "comma")
+                p2 = cr.0
+            }
+            p2 = consume(p2, "r_bracket", "expected ']' after meta block list")
+            val_json = "[" + items + "]"
+        } else {
+            if not tk(p2, "string_literal") {
+                p2 = error_and_advance(p2, "expected string literal or list in meta block value")
+                break
+            }
+            let val_text: string = p2.current.text
+            val_json = json_str(process_escapes(strip_quotes(val_text)))
+            p2 = advance(p2)
+        }
+
+        if not first { entries = entries + "," }
+        first = false
+        entries = entries + "{\"key\":" + json_str(key) + ",\"value\":" + val_json + "}"
+
+        // Optional comma between entries
+        let cr: (Parser, bool) = match_tok(p2, "comma")
+        p2 = cr.0
+    }
+    p2 = consume(p2, "r_brace", "expected '}' to close meta block")
+
+    return (p2, "{\"kind\":" + json_str(kind) + ",\"entries\":[" + entries + "]}")
+}
+
+// Parse meta related(path, path, ..., "optional description")
+fn parse_meta_related(p: Parser) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_paren", "expected '(' after 'related'")
+    var paths: string = ""
+    var desc: string = "null"
+    var path_count: i32 = 0
+
+    // First path (required)
+    let fp: (Parser, string) = parse_meta_path(p2)
+    p2 = fp.0
+    paths = fp.1
+    path_count = 1
+
+    while tk(p2, "comma") {
+        p2 = advance(p2) // skip ','
+        if tk(p2, "r_paren") { break } // trailing comma
+
+        // Check if next is string literal (description) or identifier (path)
+        if tk(p2, "string_literal") {
+            let desc_text: string = p2.current.text
+            desc = json_str(process_escapes(strip_quotes(desc_text)))
+            p2 = advance(p2)
+            break // description must be last
+        } else {
+            let np: (Parser, string) = parse_meta_path(p2)
+            p2 = np.0
+            paths = paths + "," + np.1
+            path_count = path_count + 1
+        }
+    }
+
+    p2 = consume(p2, "r_paren", "expected ')' after meta related annotation")
+    return (p2, "{\"kind\":\"related\",\"paths\":[" + paths + "],\"description\":" + desc + "}")
+}
+
+// Parse a scoped path: identifier (:: identifier)*
+fn parse_meta_path(p: Parser) -> (Parser, string) {
+    var p2: Parser = p
+    var segments: string = ""
+
+    if not tk(p2, "identifier") {
+        return (error_and_advance(p2, "expected identifier in meta path"), "{\"segments\":[]}")
+    }
+    segments = json_str(p2.current.text)
+    p2 = advance(p2)
+
+    while tk(p2, "colon_colon") {
+        p2 = advance(p2) // skip '::'
+        if not tk(p2, "identifier") {
+            p2 = error_and_advance(p2, "expected identifier after '::' in meta path")
+            break
+        }
+        segments = segments + "," + json_str(p2.current.text)
+        p2 = advance(p2)
+    }
+
+    return (p2, "{\"segments\":[" + segments + "]}")
+}
+
+// Parse meta group "name" { meta_annotation* }
+fn parse_meta_group_def(p: Parser) -> (Parser, string) {
+    var p2: Parser = p
+
+    if not tk(p2, "string_literal") {
+        return (error_and_advance(p2, "expected string literal for group name"), "{\"kind\":\"group\",\"name\":\"\",\"annotations\":[]}")
+    }
+    let name_text: string = p2.current.text
+    let group_name: string = process_escapes(strip_quotes(name_text))
+    p2 = advance(p2)
+
+    p2 = consume(p2, "l_brace", "expected '{' after group name")
+
+    var annotations: string = ""
+    var ann_first: bool = true
+    while tk(p2, "meta") {
+        if not ann_first { annotations = annotations + "," }
+        ann_first = false
+        let r: (Parser, string) = parse_one_meta_annotation(p2)
+        p2 = r.0
+        annotations = annotations + r.1
+    }
+
+    while not tk(p2, "r_brace") and not tk(p2, "eof") {
+        p2 = error_and_advance(p2, "expected 'meta' annotation or '}' inside group definition")
+    }
+    p2 = consume(p2, "r_brace", "expected '}' to close group definition")
+
+    return (p2, "{\"kind\":\"group\",\"name\":" + json_str(group_name) + ",\"annotations\":[" + annotations + "]}")
+}
+
+// Parse meta define name(param: type, ...) [for scope]
+fn parse_meta_define(p: Parser) -> (Parser, string) {
+    var p2: Parser = p
+
+    if not tk(p2, "identifier") {
+        return (error_and_advance(p2, "expected name after 'meta define'"), "{\"kind\":\"define\",\"name\":\"\",\"params\":[],\"scope\":null}")
+    }
+    let def_name: string = p2.current.text
+    p2 = advance(p2)
+
+    p2 = consume(p2, "l_paren", "expected '(' after meta define name")
+
+    var params: string = ""
+    var pfirst: bool = true
+    while not tk(p2, "r_paren") and not tk(p2, "eof") {
+        if not pfirst { params = params + "," }
+        pfirst = false
+        let pr: (Parser, string) = parse_meta_define_param(p2)
+        p2 = pr.0
+        params = params + pr.1
+        let cr: (Parser, bool) = match_tok(p2, "comma")
+        p2 = cr.0
+    }
+    p2 = consume(p2, "r_paren", "expected ')' after meta define parameters")
+
+    // Optional scope: for fn|module|struct|enum|trait|field|variant|test
+    var scope: string = "null"
+    if tk(p2, "for_") {
+        p2 = advance(p2) // skip 'for'
+        if tk(p2, "fn_") { scope = "\"fn\""; p2 = advance(p2) }
+        else if tk(p2, "module") { scope = "\"module\""; p2 = advance(p2) }
+        else if tk(p2, "struct_") { scope = "\"struct\""; p2 = advance(p2) }
+        else if tk(p2, "enum_") { scope = "\"enum\""; p2 = advance(p2) }
+        else if tk(p2, "trait") { scope = "\"trait\""; p2 = advance(p2) }
+        else if tk(p2, "identifier") and p2.current.text == "field" { scope = "\"field\""; p2 = advance(p2) }
+        else if tk(p2, "identifier") and p2.current.text == "variant" { scope = "\"variant\""; p2 = advance(p2) }
+        else if tk(p2, "test_") { scope = "\"test\""; p2 = advance(p2) }
+        else {
+            p2 = error_and_advance(p2, "expected scope (fn, module, struct, enum, trait, field, variant, test) after 'for'")
+        }
+    }
+
+    return (p2, "{\"kind\":\"define\",\"name\":" + json_str(def_name) + ",\"params\":[" + params + "],\"scope\":" + scope + "}")
+}
+
+// Parse a meta define parameter: name: string | name: path | name: "a" | "b" | "c"
+fn parse_meta_define_param(p: Parser) -> (Parser, string) {
+    var p2: Parser = p
+
+    if not tk(p2, "identifier") {
+        return (error_and_advance(p2, "expected parameter name in meta define"), "{\"name\":\"\",\"type\":\"string\"}")
+    }
+    let param_name: string = p2.current.text
+    p2 = advance(p2)
+    p2 = consume(p2, "colon", "expected ':' after parameter name in meta define")
+
+    // Type constraint
+    var type_json: string = ""
+    if tk(p2, "identifier") and p2.current.text == "string" {
+        type_json = "\"string\""
+        p2 = advance(p2)
+    } else if tk(p2, "identifier") and p2.current.text == "path" {
+        type_json = "\"path\""
+        p2 = advance(p2)
+    } else if tk(p2, "string_literal") {
+        // String union: "a" | "b" | "c"
+        var vals: string = ""
+        var vfirst: bool = true
+        while tk(p2, "string_literal") {
+            if not vfirst { vals = vals + "," }
+            vfirst = false
+            let vtext: string = p2.current.text
+            vals = vals + json_str(process_escapes(strip_quotes(vtext)))
+            p2 = advance(p2)
+            if tk(p2, "pipe") {
+                p2 = advance(p2) // skip '|'
+            } else {
+                break
+            }
+        }
+        type_json = "[" + vals + "]"
+    } else {
+        p2 = error_and_advance(p2, "expected 'string', 'path', or string union type in meta define parameter")
+        type_json = "\"string\""
+    }
+
+    return (p2, "{\"name\":" + json_str(param_name) + ",\"type\":" + type_json + "}")
+}
+
+// Parse a custom meta annotation: name(arg1, arg2, ...)
+fn parse_meta_custom(p: Parser, custom_name: string) -> (Parser, string) {
+    var p2: Parser = consume(p, "l_paren", "expected '(' after custom meta annotation name")
+
+    var args: string = ""
+    var afirst: bool = true
+    while not tk(p2, "r_paren") and not tk(p2, "eof") {
+        if not afirst { args = args + "," }
+        afirst = false
+
+        if tk(p2, "string_literal") {
+            let atext: string = p2.current.text
+            args = args + json_str(process_escapes(strip_quotes(atext)))
+            p2 = advance(p2)
+        } else if tk(p2, "identifier") {
+            // Parse scoped path: ident::ident
+            let pr: (Parser, string) = parse_meta_path(p2)
+            p2 = pr.0
+            args = args + pr.1
+        } else {
+            p2 = error_and_advance(p2, "expected string literal or identifier in custom meta annotation argument")
+            break
+        }
+        let cr: (Parser, bool) = match_tok(p2, "comma")
+        p2 = cr.0
+    }
+    p2 = consume(p2, "r_paren", "expected ')' after custom meta annotation arguments")
+
+    return (p2, "{\"kind\":\"custom\",\"name\":" + json_str(custom_name) + ",\"args\":[" + args + "]}")
+}
+
+// Check if the current `meta` token begins a file-level annotation.
+// File-level: meta module { ... }, meta group "..." { ... }, meta guide { ... }, meta define name(...)
+// Since Parser is value-based, we advance a temporary copy to peek at the next token.
+fn is_file_level_meta(p: Parser) -> bool {
+    if not tk(p, "meta") { return false }
+    let p2: Parser = advance(p) // peek at next token
+    if tk(p2, "module") { return true }
+    if tk(p2, "identifier") {
+        let text: string = p2.current.text
+        return text == "group" or text == "guide" or text == "define"
+    }
+    return false
+}
+
+// Strip surrounding quotes from a string literal token text
+fn strip_quotes(text: string) -> string {
+    if text.byte_len() < 2 { return text }
+    return text.slice(1, text.byte_len() - 1)
+}
+
+// Process escape sequences in a string: \" → ", \\ → \, \n → newline, \t → tab, etc.
+// Must be called between strip_quotes and json_str for parity with Zig's processEscapes.
+fn process_escapes(s: string) -> string {
+    var result: string = ""
+    var i: i32 = 0
+    let len: i32 = s.byte_len()
+    while i < len {
+        let c: i32 = s.byte_at(i).as#[i32]
+        if c == 92 and i + 1 < len {
+            // backslash
+            let next: i32 = s.byte_at(i + 1).as#[i32]
+            if next == 110 { result = result + "\n"; i = i + 2 }       // \n
+            else if next == 116 { result = result + "\t"; i = i + 2 }  // \t
+            else if next == 114 { result = result + "\r"; i = i + 2 }  // \r
+            else if next == 92 { result = result + "\\"; i = i + 2 }   // \\
+            else if next == 34 { result = result + "\""; i = i + 2 }   // \"
+            else if next == 48 { result = result + "\0"; i = i + 2 }   // \0
+            else {
+                // Unknown escape — keep as-is
+                result = result + s.slice(i, i + 2)
+                i = i + 2
+            }
+        } else {
+            result = result + s.slice(i, i + 1)
+            i = i + 1
+        }
+    }
+    return result
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Declaration parsing
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn parse_declaration(p: Parser) -> (Parser, string) {
-    let k: string = tag_name(p.current.kind)
+    // Parse leading meta annotations
+    var p2: Parser = p
+    var meta_json: string = ""
+    if tk(p2, "meta") {
+        let mr: (Parser, string) = parse_meta_annotations(p2)
+        p2 = mr.0
+        meta_json = mr.1
+    }
+
+    let k: string = tag_name(p2.current.kind)
 
     // Handle visibility and modifiers
     var is_pub: bool = false
-    var p2: Parser = p
     if k == "pub_" {
         is_pub = true
         p2 = advance(p2)
@@ -32,26 +442,45 @@ fn parse_declaration(p: Parser) -> (Parser, string) {
 
     let k2: string = tag_name(p2.current.kind)
 
-    if k2 == "fn_" { return parse_function_decl(p2, is_pub, false, false, is_async, false) }
-    if k2 == "test_" { return parse_test_decl(p2) }
-    if k2 == "struct_" { return parse_struct_decl(p2, is_pub) }
-    if k2 == "enum_" { return parse_enum_decl(p2, is_pub) }
-    if k2 == "const_" { return parse_const_decl(p2, is_pub) }
-    if k2 == "import" { return parse_import_decl(p2) }
-    if k2 == "module" { return parse_module_decl(p2) }
-    if k2 == "extern_" { return parse_extern_decl(p2, is_pub) }
+    if k2 == "fn_" { return append_meta(parse_function_decl(p2, is_pub, false, false, is_async, false), meta_json) }
+    if k2 == "test_" { return append_meta(parse_test_decl(p2), meta_json) }
+    if k2 == "struct_" { return append_meta(parse_struct_decl(p2, is_pub), meta_json) }
+    if k2 == "enum_" { return append_meta(parse_enum_decl(p2, is_pub), meta_json) }
+    if k2 == "const_" { return append_meta(parse_const_decl(p2, is_pub), meta_json) }
+    if k2 == "import" {
+        if meta_json != "" { p2 = report_error(p2, "meta annotations are not supported on import declarations") }
+        return parse_import_decl(p2)
+    }
+    if k2 == "module" {
+        if meta_json != "" { p2 = report_error(p2, "meta annotations are not supported on module declarations") }
+        return parse_module_decl(p2)
+    }
+    if k2 == "extern_" { return append_meta(parse_extern_decl(p2, is_pub), meta_json) }
     if k2 == "unsafe_" {
         p2 = advance(p2)
         if tk(p2, "fn_") {
-            return parse_function_decl(p2, is_pub, false, true, is_async, false)
+            return append_meta(parse_function_decl(p2, is_pub, false, true, is_async, false), meta_json)
         }
         return (error_and_advance(p2, "expected 'fn' after 'unsafe'"), "null")
     }
-    // trait and impl — stub for core subset
-    if k2 == "trait" { return parse_trait_decl(p2, is_pub) }
-    if k2 == "impl" { return parse_impl_stub(p2) }
+    // trait and impl
+    if k2 == "trait" { return append_meta(parse_trait_decl(p2, is_pub), meta_json) }
+    if k2 == "impl" { return append_meta(parse_impl_stub(p2), meta_json) }
 
     return (error_and_advance(p2, "expected declaration"), "null")
+}
+
+// Append meta JSON suffix to a declaration JSON result.
+// Inserts ,"meta":[...] before the closing "}".
+fn append_meta(result: (Parser, string), meta_json: string) -> (Parser, string) {
+    if meta_json == "" { return result }
+    let json: string = result.1
+    if json == "null" { return result }
+    // Insert meta before the last "}"
+    let len: i32 = json.byte_len()
+    if len < 2 { return result }
+    let prefix: string = json.slice(0, len - 1)
+    return (result.0, prefix + meta_json + "}")
 }
 
 fn parse_function_decl(p: Parser, is_pub: bool, is_extern: bool, is_unsafe: bool, is_async: bool, is_variadic: bool) -> (Parser, string) {
@@ -219,6 +648,14 @@ fn parse_struct_decl(p: Parser, is_pub: bool) -> (Parser, string) {
         if not first { fields = fields + "," }
         first = false
 
+        // Parse field-level meta annotations
+        var field_meta: string = ""
+        if tk(p2, "meta") {
+            let fmr: (Parser, string) = parse_meta_annotations(p2)
+            p2 = fmr.0
+            field_meta = fmr.1
+        }
+
         var field_pub: bool = false
         if tk(p2, "pub_") {
             field_pub = true
@@ -231,7 +668,7 @@ fn parse_struct_decl(p: Parser, is_pub: bool) -> (Parser, string) {
         let field_type_result: (Parser, string) = parse_type(p2)
         p2 = field_type_result.0
 
-        fields = fields + "{\"name\":" + json_str(field_name_result.1) + ",\"type\":" + field_type_result.1 + ",\"is_pub\":" + json_bool(field_pub) + "}"
+        fields = fields + "{\"name\":" + json_str(field_name_result.1) + ",\"type\":" + field_type_result.1 + ",\"is_pub\":" + json_bool(field_pub) + field_meta + "}"
         let comma_result: (Parser, bool) = match_tok(p2, "comma")
         p2 = comma_result.0
     }
@@ -261,6 +698,14 @@ fn parse_enum_decl(p: Parser, is_pub: bool) -> (Parser, string) {
     while not tk(p2, "r_brace") and not tk(p2, "eof") {
         if not first { variants = variants + "," }
         first = false
+
+        // Parse variant-level meta annotations
+        var variant_meta: string = ""
+        if tk(p2, "meta") {
+            let vmr: (Parser, string) = parse_meta_annotations(p2)
+            p2 = vmr.0
+            variant_meta = vmr.1
+        }
 
         let variant_name_result: (Parser, string) = consume_identifier(p2)
         p2 = variant_name_result.0
@@ -304,7 +749,7 @@ fn parse_enum_decl(p: Parser, is_pub: bool) -> (Parser, string) {
             payload = "{\"kind\":\"struct\",\"fields\":[" + fields + "]}"
         }
 
-        variants = variants + "{\"name\":" + json_str(variant_name_result.1) + ",\"value\":null,\"payload\":" + payload + "}"
+        variants = variants + "{\"name\":" + json_str(variant_name_result.1) + ",\"value\":null,\"payload\":" + payload + variant_meta + "}"
         let comma_result: (Parser, bool) = match_tok(p2, "comma")
         p2 = comma_result.0
     }
@@ -451,12 +896,19 @@ fn parse_trait_decl(p: Parser, is_pub: bool) -> (Parser, string) {
     if tk(p2, "l_brace") {
         p2 = advance(p2)
         while not tk(p2, "r_brace") and not tk(p2, "eof") {
+            // Parse method-level meta annotations
+            var method_meta: string = ""
+            if tk(p2, "meta") {
+                let mmr: (Parser, string) = parse_meta_annotations(p2)
+                p2 = mmr.0
+                method_meta = mmr.1
+            }
             if tk(p2, "fn_") {
                 if not method_first { methods = methods + "," }
                 method_first = false
                 let fn_result: (Parser, string) = parse_function_decl(p2, false, false, false, false, false)
                 p2 = fn_result.0
-                methods = methods + fn_result.1
+                methods = methods + append_meta((p2, fn_result.1), method_meta).1
             } else if tk(p2, "type_") {
                 // Associated type: type Name [: Bound1 + Bound2] [= Default]
                 p2 = advance(p2) // skip 'type'
@@ -530,6 +982,13 @@ fn parse_impl_stub(p: Parser) -> (Parser, string) {
     if tk(p2, "l_brace") {
         p2 = advance(p2)
         while not tk(p2, "r_brace") and not tk(p2, "eof") {
+            // Parse method-level meta annotations
+            var impl_method_meta: string = ""
+            if tk(p2, "meta") {
+                let immr: (Parser, string) = parse_meta_annotations(p2)
+                p2 = immr.0
+                impl_method_meta = immr.1
+            }
             // Check for visibility and modifier keywords before fn
             var method_pub: bool = false
             var method_async: bool = false
@@ -551,7 +1010,7 @@ fn parse_impl_stub(p: Parser) -> (Parser, string) {
                 method_first = false
                 let fn_result: (Parser, string) = parse_function_decl(p2, method_pub, false, method_unsafe, method_async, false)
                 p2 = fn_result.0
-                methods = methods + fn_result.1
+                methods = methods + append_meta((p2, fn_result.1), impl_method_meta).1
             } else if tk(p2, "type_") {
                 // Associated type binding: type Name = Type
                 p2 = advance(p2) // skip 'type'
@@ -649,10 +1108,25 @@ pub fn parse_module(p: Parser) -> (Parser, string) {
         imports = imports + imp_result.1
     }
 
-    // Parse declarations
+    // Parse declarations, with file-level meta detection inside the loop.
+    // File-level meta: meta module { ... }, meta group "..." { ... },
+    //   meta guide { ... }, meta define name(...)
+    // All other meta annotations are parsed by parse_declaration and attached to declarations.
+    var file_meta: string = ""
+    var file_meta_count: i32 = 0
     var decls: string = ""
     var decl_first: bool = true
     while not tk(p2, "eof") {
+        // Check for file-level meta annotations
+        if is_file_level_meta(p2) {
+            let one: (Parser, string) = parse_one_meta_annotation(p2)
+            p2 = one.0
+            if file_meta_count > 0 { file_meta = file_meta + "," }
+            file_meta = file_meta + one.1
+            file_meta_count = file_meta_count + 1
+            continue
+        }
+
         if not decl_first { decls = decls + "," }
         decl_first = false
         let prev_errors: i32 = p2.error_count
@@ -668,6 +1142,10 @@ pub fn parse_module(p: Parser) -> (Parser, string) {
         decls = decls + decl_result.1
     }
 
-    let json: string = "{\"module_decl\":" + module_json + ",\"imports\":[" + imports + "],\"declarations\":[" + decls + "]}"
+    var file_meta_json: string = ""
+    if file_meta_count > 0 {
+        file_meta_json = ",\"meta\":[" + file_meta + "]"
+    }
+    let json: string = "{\"module_decl\":" + module_json + ",\"imports\":[" + imports + "],\"declarations\":[" + decls + "]" + file_meta_json + "}"
     return (p2, json)
 }

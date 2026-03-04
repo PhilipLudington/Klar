@@ -822,6 +822,7 @@ fn test_function_declaration() -> i32 {
         body_start: body_start, body_count: 1,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -867,10 +868,10 @@ fn test_struct_declaration_and_field() -> i32 {
     // Struct fields
     let fields_start: i32 = tc.extra_struct_fields.len()
     tc.extra_struct_fields.push(StructField {
-        field_name: "x", type_expr: t_i32_1.1, span: s(),
+        field_name: "x", type_expr: t_i32_1.1, meta_start: 0, meta_count: 0, span: s(),
     })
     tc.extra_struct_fields.push(StructField {
-        field_name: "y", type_expr: t_i32_2.1, span: s(),
+        field_name: "y", type_expr: t_i32_2.1, meta_start: 0, meta_count: 0, span: s(),
     })
 
     // Struct decl
@@ -880,6 +881,7 @@ fn test_struct_declaration_and_field() -> i32 {
         generics_start: 0, generics_count: 0,
         fields_start: fields_start, fields_count: 2,
         is_pub: true, is_extern: false, is_packed: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -907,6 +909,7 @@ fn test_struct_declaration_and_field() -> i32 {
         body_start: body_start, body_count: 1,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -933,8 +936,8 @@ fn test_struct_unknown_field() -> i32 {
     tc = t_i32_ret.0
 
     let fields_start: i32 = tc.extra_struct_fields.len()
-    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t_i32_1.1, span: s() })
-    tc.extra_struct_fields.push(StructField { field_name: "y", type_expr: t_i32_2.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t_i32_1.1, meta_start: 0, meta_count: 0, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "y", type_expr: t_i32_2.1, meta_start: 0, meta_count: 0, span: s() })
 
     let decl_start: i32 = tc.decls.len()
     tc.decls.push(Decl::StructDecl(StructDeclData {
@@ -942,6 +945,7 @@ fn test_struct_unknown_field() -> i32 {
         generics_start: 0, generics_count: 0,
         fields_start: fields_start, fields_count: 2,
         is_pub: true, is_extern: false, is_packed: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -968,6 +972,7 @@ fn test_struct_unknown_field() -> i32 {
         body_start: body_start, body_count: 1,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -1022,6 +1027,7 @@ fn test_user_function_call() -> i32 {
         body_start: add_body, body_count: 1,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -1058,6 +1064,7 @@ fn test_user_function_call() -> i32 {
         body_start: main_body, body_count: 2,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -1917,6 +1924,7 @@ fn test_generic_fn_explicit() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     })
 
@@ -1973,6 +1981,7 @@ fn test_generic_fn_inferred() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     })
 
@@ -2021,6 +2030,7 @@ fn test_generic_fn_cache() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     })
 
@@ -2097,6 +2107,7 @@ fn test_generic_fn_two_params() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     })
 
@@ -2157,6 +2168,7 @@ fn test_generic_fn_wrong_args() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     })
 
@@ -2198,14 +2210,15 @@ fn test_generic_struct_instantiation() -> i32 {
     tc = t_B.0
 
     let fields_start: i32 = tc.extra_struct_fields.len()
-    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, span: s() })
-    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, meta_start: 0, meta_count: 0, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, meta_start: 0, meta_count: 0, span: s() })
 
     tc = register_generic_struct(tc, "Pair", StructDeclData {
         struct_name: "Pair",
         generics_start: gp_start, generics_count: 2,
         fields_start: fields_start, fields_count: 2,
         is_pub: true, is_extern: false, is_packed: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     })
 
@@ -2249,14 +2262,15 @@ fn test_generic_struct_field_access() -> i32 {
     tc = t_B.0
 
     let fields_start: i32 = tc.extra_struct_fields.len()
-    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, span: s() })
-    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, meta_start: 0, meta_count: 0, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, meta_start: 0, meta_count: 0, span: s() })
 
     tc = register_generic_struct(tc, "Pair", StructDeclData {
         struct_name: "Pair",
         generics_start: gp_start, generics_count: 2,
         fields_start: fields_start, fields_count: 2,
         is_pub: true, is_extern: false, is_packed: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     })
 
@@ -2324,14 +2338,15 @@ fn test_generic_struct_cache() -> i32 {
     tc = t_B.0
 
     let fields_start: i32 = tc.extra_struct_fields.len()
-    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, span: s() })
-    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "first", type_expr: t_A.1, meta_start: 0, meta_count: 0, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "second", type_expr: t_B.1, meta_start: 0, meta_count: 0, span: s() })
 
     tc = register_generic_struct(tc, "Pair", StructDeclData {
         struct_name: "Pair",
         generics_start: gp_start, generics_count: 2,
         fields_start: fields_start, fields_count: 2,
         is_pub: true, is_extern: false, is_packed: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     })
 
@@ -2435,6 +2450,7 @@ fn test_generic_fn_explicit_wrong_arg_type() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     })
 
@@ -2517,6 +2533,7 @@ fn test_trait_definition() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -2528,7 +2545,7 @@ fn test_trait_definition() -> i32 {
         parents_start: 0, parents_count: 0,
         methods_start: method_decl_idx, methods_count: 1,
         assoc_types_start: 0, assoc_types_count: 0,
-        is_pub: false, span: s(),
+        is_pub: false, meta_start: 0, meta_count: 0, span: s(),
     }))
 
     tc = register_declarations(tc, trait_decl_idx, 1)
@@ -2564,7 +2581,7 @@ fn test_trait_impl_registers_methods() -> i32 {
     let t_i32_1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
     tc = t_i32_1.0
     let fields_start: i32 = tc.extra_struct_fields.len()
-    tc.extra_struct_fields.push(StructField { field_name: "val", type_expr: t_i32_1.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "val", type_expr: t_i32_1.1, meta_start: 0, meta_count: 0, span: s() })
 
     let decl_start: i32 = tc.decls.len()
     tc.decls.push(Decl::StructDecl(StructDeclData {
@@ -2572,6 +2589,7 @@ fn test_trait_impl_registers_methods() -> i32 {
         generics_start: 0, generics_count: 0,
         fields_start: fields_start, fields_count: 1,
         is_pub: true, is_extern: false, is_packed: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -2593,6 +2611,7 @@ fn test_trait_impl_registers_methods() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
     tc.decls.push(Decl::TraitDecl(TraitDeclData {
@@ -2601,7 +2620,7 @@ fn test_trait_impl_registers_methods() -> i32 {
         parents_start: 0, parents_count: 0,
         methods_start: method_decl_idx, methods_count: 1,
         assoc_types_start: 0, assoc_types_count: 0,
-        is_pub: false, span: s(),
+        is_pub: false, meta_start: 0, meta_count: 0, span: s(),
     }))
 
     // Impl Foo: Summable { fn sum(self) -> i32 { return self.val } }
@@ -2633,6 +2652,7 @@ fn test_trait_impl_registers_methods() -> i32 {
         body_start: body_start, body_count: 1,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -2642,6 +2662,7 @@ fn test_trait_impl_registers_methods() -> i32 {
         generics_start: 0, generics_count: 0,
         methods_start: impl_method_idx, methods_count: 1,
         assoc_types_start: 0, assoc_types_count: 0,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -2668,7 +2689,7 @@ fn test_trait_impl_records_key() -> i32 {
     let t1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
     tc = t1.0
     let fs: i32 = tc.extra_struct_fields.len()
-    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t1.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t1.1, meta_start: 0, meta_count: 0, span: s() })
 
     let ds: i32 = tc.decls.len()
     tc.decls.push(Decl::StructDecl(StructDeclData {
@@ -2676,6 +2697,7 @@ fn test_trait_impl_records_key() -> i32 {
         generics_start: 0, generics_count: 0,
         fields_start: fs, fields_count: 1,
         is_pub: true, is_extern: false, is_packed: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -2686,7 +2708,7 @@ fn test_trait_impl_records_key() -> i32 {
         parents_start: 0, parents_count: 0,
         methods_start: 0, methods_count: 0,
         assoc_types_start: 0, assoc_types_count: 0,
-        is_pub: false, span: s(),
+        is_pub: false, meta_start: 0, meta_count: 0, span: s(),
     }))
 
     // impl Bar: Marker {}
@@ -2696,6 +2718,7 @@ fn test_trait_impl_records_key() -> i32 {
         generics_start: 0, generics_count: 0,
         methods_start: 0, methods_count: 0,
         assoc_types_start: 0, assoc_types_count: 0,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -2736,6 +2759,7 @@ fn test_trait_method_through_bounds() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -2746,7 +2770,7 @@ fn test_trait_method_through_bounds() -> i32 {
         parents_start: 0, parents_count: 0,
         methods_start: method_di, methods_count: 1,
         assoc_types_start: 0, assoc_types_count: 0,
-        is_pub: false, span: s(),
+        is_pub: false, meta_start: 0, meta_count: 0, span: s(),
     }))
 
     // Register declarations first (so trait is available)
@@ -2815,6 +2839,7 @@ fn test_trait_unknown_method_error() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
     let ds: i32 = tc.decls.len()
@@ -2824,7 +2849,7 @@ fn test_trait_unknown_method_error() -> i32 {
         parents_start: 0, parents_count: 0,
         methods_start: method_di, methods_count: 1,
         assoc_types_start: 0, assoc_types_count: 0,
-        is_pub: false, span: s(),
+        is_pub: false, meta_start: 0, meta_count: 0, span: s(),
     }))
     tc = register_declarations(tc, ds, tc.decls.len() - ds)
 
@@ -3047,7 +3072,7 @@ fn test_trait_impl_method_body_checked() -> i32 {
     let t_i32: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
     tc = t_i32.0
     let fs: i32 = tc.extra_struct_fields.len()
-    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t_i32.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t_i32.1, meta_start: 0, meta_count: 0, span: s() })
 
     let ds: i32 = tc.decls.len()
     tc.decls.push(Decl::StructDecl(StructDeclData {
@@ -3055,6 +3080,7 @@ fn test_trait_impl_method_body_checked() -> i32 {
         generics_start: 0, generics_count: 0,
         fields_start: fs, fields_count: 1,
         is_pub: true, is_extern: false, is_packed: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -3085,6 +3111,7 @@ fn test_trait_impl_method_body_checked() -> i32 {
         body_start: bs, body_count: 1,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -3094,6 +3121,7 @@ fn test_trait_impl_method_body_checked() -> i32 {
         generics_start: 0, generics_count: 0,
         methods_start: mi, methods_count: 1,
         assoc_types_start: 0, assoc_types_count: 0,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -3117,7 +3145,7 @@ fn test_trait_inheritance_registered() -> i32 {
         parents_start: 0, parents_count: 1,
         methods_start: 0, methods_count: 0,
         assoc_types_start: 0, assoc_types_count: 0,
-        is_pub: false, span: s(),
+        is_pub: false, meta_start: 0, meta_count: 0, span: s(),
     }))
 
     tc = register_declarations(tc, ds, 1)
@@ -3209,7 +3237,7 @@ fn test_trait_impl_wrong_method() -> i32 {
     let t1: (TypeChecker, TypeExprId) = add_type_named(tc, "i32")
     tc = t1.0
     let fs: i32 = tc.extra_struct_fields.len()
-    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t1.1, span: s() })
+    tc.extra_struct_fields.push(StructField { field_name: "x", type_expr: t1.1, meta_start: 0, meta_count: 0, span: s() })
 
     let ds: i32 = tc.decls.len()
     tc.decls.push(Decl::StructDecl(StructDeclData {
@@ -3217,6 +3245,7 @@ fn test_trait_impl_wrong_method() -> i32 {
         generics_start: 0, generics_count: 0,
         fields_start: fs, fields_count: 1,
         is_pub: true, is_extern: false, is_packed: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -3227,7 +3256,7 @@ fn test_trait_impl_wrong_method() -> i32 {
         parents_start: 0, parents_count: 0,
         methods_start: 0, methods_count: 0,
         assoc_types_start: 0, assoc_types_count: 0,
-        is_pub: false, span: s(),
+        is_pub: false, meta_start: 0, meta_count: 0, span: s(),
     }))
 
     // impl Bar: Marker { fn nonexistent(self) -> void {} }
@@ -3249,6 +3278,7 @@ fn test_trait_impl_wrong_method() -> i32 {
         body_start: 0, body_count: 0,
         is_pub: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -3258,6 +3288,7 @@ fn test_trait_impl_wrong_method() -> i32 {
         generics_start: 0, generics_count: 0,
         methods_start: mi, methods_count: 1,
         assoc_types_start: 0, assoc_types_count: 0,
+        meta_start: 0, meta_count: 0,
         span: s(),
     }))
 
@@ -4569,6 +4600,8 @@ fn test_import_check_module_integration() -> i32 {
         is_unsafe: false,
         is_comptime: false,
         is_variadic: false,
+        meta_start: 0,
+        meta_count: 0,
         span: s(),
     }))
 

@@ -156,6 +156,8 @@ pub struct GenericParam {
 pub struct StructField {
     field_name: string,
     type_expr: TypeExprId,
+    meta_start: i32,
+    meta_count: i32,
     span: Span,
 }
 
@@ -164,6 +166,8 @@ pub struct EnumVariantDecl {
     payload_start: i32,
     payload_count: i32,
     discriminant: ExprId,
+    meta_start: i32,
+    meta_count: i32,
     span: Span,
 }
 
@@ -441,6 +445,8 @@ pub struct FunctionDeclData {
     is_unsafe: bool,
     is_comptime: bool,
     is_variadic: bool,
+    meta_start: i32,
+    meta_count: i32,
     span: Span,
 }
 
@@ -448,6 +454,8 @@ pub struct TestDeclData {
     test_name: string,
     body_start: i32,
     body_count: i32,
+    meta_start: i32,
+    meta_count: i32,
     span: Span,
 }
 
@@ -460,6 +468,8 @@ pub struct StructDeclData {
     is_pub: bool,
     is_extern: bool,
     is_packed: bool,
+    meta_start: i32,
+    meta_count: i32,
     span: Span,
 }
 
@@ -470,6 +480,8 @@ pub struct EnumDeclData {
     variants_start: i32,
     variants_count: i32,
     is_pub: bool,
+    meta_start: i32,
+    meta_count: i32,
     span: Span,
 }
 
@@ -484,6 +496,8 @@ pub struct TraitDeclData {
     assoc_types_start: i32,
     assoc_types_count: i32,
     is_pub: bool,
+    meta_start: i32,
+    meta_count: i32,
     span: Span,
 }
 
@@ -496,6 +510,8 @@ pub struct ImplDeclData {
     methods_count: i32,
     assoc_types_start: i32,
     assoc_types_count: i32,
+    meta_start: i32,
+    meta_count: i32,
     span: Span,
 }
 
@@ -505,6 +521,8 @@ pub struct TypeAliasData {
     generics_count: i32,
     target: TypeExprId,
     is_pub: bool,
+    meta_start: i32,
+    meta_count: i32,
     span: Span,
 }
 
@@ -513,6 +531,8 @@ pub struct ConstDeclData {
     type_expr: TypeExprId,
     value: ExprId,
     is_pub: bool,
+    meta_start: i32,
+    meta_count: i32,
     span: Span,
 }
 
@@ -582,6 +602,105 @@ pub enum TypeExpr {
     Qualified(QualifiedTypeData),
 }
 
+// ─── Meta Annotation Types ────────────────────────────────────────────
+// Meta annotations attach metadata to declarations.
+// Stored as a flat pool in the checker (extra_meta_annotations).
+// Declarations reference meta via (meta_start, meta_count) ranges.
+
+pub enum MetaKind {
+    Intent,
+    Decision,
+    Tag,
+    Hint,
+    Deprecated,
+    Pure,
+    ModuleMeta,
+    Guide,
+    Related,
+    GroupDef,
+    GroupJoin,
+    Define,
+    Custom,
+}
+
+pub fn meta_kind_name(k: MetaKind) -> string {
+    match k {
+        MetaKind::Intent => { return "intent" }
+        MetaKind::Decision => { return "decision" }
+        MetaKind::Tag => { return "tag" }
+        MetaKind::Hint => { return "hint" }
+        MetaKind::Deprecated => { return "deprecated" }
+        MetaKind::Pure => { return "pure" }
+        MetaKind::ModuleMeta => { return "module" }
+        MetaKind::Guide => { return "guide" }
+        MetaKind::Related => { return "related" }
+        MetaKind::GroupDef => { return "group" }
+        MetaKind::GroupJoin => { return "in" }
+        MetaKind::Define => { return "define" }
+        MetaKind::Custom => { return "custom" }
+    }
+}
+
+// A single meta annotation in the arena pool
+pub struct MetaAnnotationData {
+    kind: MetaKind,
+    // For string-value annotations (intent, decision, tag, hint, deprecated, group_join):
+    value: string,
+    // For block annotations (module, guide): entries in extra_meta_entries
+    entries_start: i32,
+    entries_count: i32,
+    // For related: paths in extra_meta_paths, optional description
+    paths_start: i32,
+    paths_count: i32,
+    description: string,
+    // For group_def: nested annotations in extra_meta_annotations
+    nested_start: i32,
+    nested_count: i32,
+    // For define: name, params in extra_meta_define_params, optional scope
+    def_name: string,
+    params_start: i32,
+    params_count: i32,
+    scope: string,
+    // For custom: name, args in extra_meta_custom_args
+    custom_name: string,
+    args_start: i32,
+    args_count: i32,
+    span: Span,
+}
+
+pub struct MetaBlockEntry {
+    key: string,
+    // value is string for simple values; for list values, items in extra_meta_strings
+    value: string,
+    is_list: bool,
+    list_start: i32,
+    list_count: i32,
+}
+
+pub struct MetaPathData {
+    // segments in extra_meta_strings
+    segments_start: i32,
+    segments_count: i32,
+}
+
+pub struct MetaDefineParamData {
+    param_name: string,
+    // "string", "path", or "" for string_union
+    type_kind: string,
+    // For string_union: values in extra_meta_strings
+    union_start: i32,
+    union_count: i32,
+}
+
+pub struct MetaCustomArgData {
+    // If is_path is true, path segments in extra_meta_strings at segments_start/count
+    // If is_path is false, value holds the string
+    is_path: bool,
+    value: string,
+    segments_start: i32,
+    segments_count: i32,
+}
+
 // ─── AstModule ────────────────────────────────────────────────────────
 // Uses index ranges instead of Lists (Lists in structs lose data).
 
@@ -590,6 +709,8 @@ pub struct AstModule {
     imports_count: i32,
     decls_start: i32,
     decls_count: i32,
+    file_meta_start: i32,
+    file_meta_count: i32,
 }
 
 fn new_module() -> AstModule {
@@ -598,6 +719,8 @@ fn new_module() -> AstModule {
         imports_count: 0,
         decls_start: 0,
         decls_count: 0,
+        file_meta_start: 0,
+        file_meta_count: 0,
     }
 }
 
@@ -893,6 +1016,8 @@ fn main() -> i32 {
         is_unsafe: false,
         is_comptime: false,
         is_variadic: false,
+        meta_start: 0,
+        meta_count: 0,
         span: s,
     }))
     decls.push(Decl::StructDecl(StructDeclData {
@@ -904,6 +1029,8 @@ fn main() -> i32 {
         is_pub: true,
         is_extern: false,
         is_packed: false,
+        meta_start: 0,
+        meta_count: 0,
         span: s,
     }))
     if decls.len() != 2 {

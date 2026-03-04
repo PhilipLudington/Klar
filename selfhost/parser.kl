@@ -175,6 +175,7 @@ pub fn is_top_level_start(p: Parser) -> bool {
         or k == "enum_" or k == "trait" or k == "impl" or k == "type_"
         or k == "const_" or k == "import" or k == "module"
         or k == "extern_" or k == "unsafe_" or k == "async_"
+        or k == "meta"
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
