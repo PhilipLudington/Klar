@@ -1,0 +1,42 @@
+// Test string ordering operators: <, >, <=, >=
+
+fn main() -> i32 {
+    let foo: string = "foo"
+    let bar: string = "bar"
+    let abc: string = "abc"
+    let abd: string = "abd"
+    let a: string = "a"
+    let ab: string = "ab"
+
+    // Greater than
+    assert(foo > bar)
+    assert((bar > foo) == false)
+    assert("zebra" > "alpha")
+
+    // Less than
+    assert(bar < foo)
+    assert((foo < bar) == false)
+    assert("alpha" < "zebra")
+
+    // Greater or equal
+    assert(foo >= foo)
+    assert(abd >= abc)
+    assert((abc >= abd) == false)
+
+    // Less or equal
+    assert(foo <= foo)
+    assert(abc <= abd)
+    assert((abd <= abc) == false)
+
+    // Prefix: shorter string is less
+    assert(a < ab)
+    assert(ab > a)
+    assert(a <= ab)
+    assert(ab >= a)
+
+    // Equal strings: not less, not greater
+    assert((foo < foo) == false)
+    assert((foo > foo) == false)
+
+    return 0
+}

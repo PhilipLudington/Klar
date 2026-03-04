@@ -4115,18 +4115,26 @@ pub const Emitter = struct {
                 self.builder.buildICmp(llvm.c.LLVMIntNE, lhs, rhs, "netmp"),
             .lt => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOLT, lhs, rhs, "flttmp")
+            else if (is_string)
+                self.emitStringPtrCmp(lhs_str_ptr, rhs_str_ptr, llvm.c.LLVMIntSLT, "strlt")
             else
                 self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSLT else llvm.c.LLVMIntULT, lhs, rhs, "lttmp"),
             .gt => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOGT, lhs, rhs, "fgttmp")
+            else if (is_string)
+                self.emitStringPtrCmp(lhs_str_ptr, rhs_str_ptr, llvm.c.LLVMIntSGT, "strgt")
             else
                 self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSGT else llvm.c.LLVMIntUGT, lhs, rhs, "gttmp"),
             .lt_eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOLE, lhs, rhs, "fletmp")
+            else if (is_string)
+                self.emitStringPtrCmp(lhs_str_ptr, rhs_str_ptr, llvm.c.LLVMIntSLE, "strle")
             else
                 self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSLE else llvm.c.LLVMIntULE, lhs, rhs, "letmp"),
             .gt_eq => if (is_float)
                 self.builder.buildFCmp(llvm.c.LLVMRealOGE, lhs, rhs, "fgetmp")
+            else if (is_string)
+                self.emitStringPtrCmp(lhs_str_ptr, rhs_str_ptr, llvm.c.LLVMIntSGE, "strge")
             else
                 self.builder.buildICmp(if (is_signed) llvm.c.LLVMIntSGE else llvm.c.LLVMIntUGE, lhs, rhs, "getmp"),
 
@@ -4332,6 +4340,28 @@ pub const Emitter = struct {
             result,
             llvm.Const.int32(self.ctx, 0),
             "strneq",
+        );
+    }
+
+    /// Emit string pointer ordering comparison using strcmp.
+    /// For binary <, <=, >, >= operators on char* strings.
+    /// Returns true (i1) based on the predicate applied to strcmp result.
+    /// Note: strcmp is null-terminated; embedded null bytes would cause early termination.
+    /// This matches the assumption in emitStringPtrEq/emitStringPtrNeq.
+    fn emitStringPtrCmp(self: *Emitter, lhs: llvm.ValueRef, rhs: llvm.ValueRef, predicate: llvm.c.LLVMIntPredicate, name: [:0]const u8) llvm.ValueRef {
+        const strcmp_fn = self.getOrDeclareStrcmp();
+        var args = [_]llvm.ValueRef{ lhs, rhs };
+        const result = self.builder.buildCall(
+            llvm.c.LLVMGlobalGetValueType(strcmp_fn),
+            strcmp_fn,
+            &args,
+            "strcmp.result",
+        );
+        return self.builder.buildICmp(
+            predicate,
+            result,
+            llvm.Const.int32(self.ctx, 0),
+            name,
         );
     }
 
