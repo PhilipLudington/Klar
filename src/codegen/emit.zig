@@ -8477,15 +8477,21 @@ pub const Emitter = struct {
             return self.lookupFieldStructTypeName(parent_struct_name, field.field_name);
         }
 
-        // For index expressions (array[i]), get the element type of the array
+        // For index expressions (array[i] or list[i]), get the element type
         if (expr == .index) {
             const idx = expr.index;
-            // Get the array's element type by looking up the variable type
+            // Get the element type by looking up the variable type
             if (idx.object == .identifier) {
                 const var_name = idx.object.identifier.name;
                 // Look up in local variables first
                 if (self.named_values.get(var_name)) |local| {
                     if (local.array_element_type) |elem_type| {
+                        if (elem_type == .struct_) {
+                            return elem_type.struct_.name;
+                        }
+                    }
+                    // Also check list element type for List#[T] indexing
+                    if (local.list_element_type) |elem_type| {
                         if (elem_type == .struct_) {
                             return elem_type.struct_.name;
                         }
@@ -8500,6 +8506,35 @@ pub const Emitter = struct {
                                 return elem_type.struct_.name;
                             }
                         }
+                        if (sym.type_ == .list) {
+                            const elem_type = sym.type_.list.element;
+                            if (elem_type == .struct_) {
+                                return elem_type.struct_.name;
+                            }
+                        }
+                    }
+                }
+            }
+            // For non-identifier objects (field access, etc.), use getListElementType
+            // which handles named_values, struct field lookups, and type checker fallback
+            if (self.getListElementType(idx.object)) |elem_type| {
+                if (elem_type == .struct_) {
+                    return elem_type.struct_.name;
+                }
+            }
+            // Fall back to type checker for array/slice index expressions
+            if (self.type_checker) |tc| {
+                const tc_mut = @constCast(tc);
+                const obj_type = tc_mut.checkExpr(idx.object);
+                const elem_type = if (obj_type == .array)
+                    obj_type.array.element
+                else if (obj_type == .slice)
+                    obj_type.slice.element
+                else
+                    null;
+                if (elem_type) |et| {
+                    if (et == .struct_) {
+                        return et.struct_.name;
                     }
                 }
             }

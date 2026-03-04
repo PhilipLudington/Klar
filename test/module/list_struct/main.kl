@@ -1,0 +1,22 @@
+// main.kl - Cross-module import of struct with List#[UserStruct] field
+
+import lib.{ make_container, get_first_value, Container }
+
+fn main() -> i32 {
+    let c: Container = make_container()
+
+    // Test 1: Access via imported helper function (within-module field access)
+    let val: i32 = get_first_value(c)
+    if val != 42 {
+        return 1
+    }
+
+    // Test 2: Direct field access on list element in importing module
+    let c2: Container = make_container()
+    let direct_val: i32 = c2.items[0].value
+    if direct_val != 42 {
+        return 2
+    }
+
+    return 0
+}

@@ -1,0 +1,24 @@
+// lib.kl - Module with a struct containing List#[UserStruct] fields
+
+pub struct Item {
+    name: string,
+    value: i32,
+}
+
+pub struct Container {
+    items: List#[Item],
+}
+
+pub fn make_container() -> Container {
+    var items: List#[Item] = List.new#[Item]()
+    let item: Item = Item { name: "hello", value: 42 }
+    items.push(item)
+    return Container { items: items }
+}
+
+pub fn get_first_value(c: Container) -> i32 {
+    if c.items.len() > 0 {
+        return c.items[0].value
+    }
+    return 0
+}

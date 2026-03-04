@@ -395,6 +395,29 @@ else
     echo "⊘ integration (test not found, skipping)"
 fi
 
+# Test 17: Cross-module struct with List fields
+echo "--- list_struct: Cross-module List#[UserStruct] field access ---"
+temp_bin="/tmp/klar_module_list_struct"
+if [ -d "$TEST_DIR/list_struct" ]; then
+    if $KLAR build $TEST_DIR/list_struct/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ list_struct (exit: $result)"
+            record_success "list_struct"
+        else
+            echo "✗ list_struct (expected: 0, got: $result)"
+            record_failure "list_struct" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ list_struct (build failed)"
+        record_failure "list_struct" "build failed"
+    fi
+else
+    echo "⊘ list_struct (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON
