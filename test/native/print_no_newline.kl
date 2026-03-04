@@ -1,8 +1,15 @@
-// Test print without newline
+// Test print without newline and print with % characters (Bug 2 regression)
 fn main() -> i32 {
     print("Hello")
     print(", ")
     print("World!")
+    println("")
+    // Bug 2: print() must not interpret % as printf format specifiers
+    print("100%")
+    println("")
+    print("a % b")
+    println("")
+    print("%d %s %f")
     println("")
     return 0
 }

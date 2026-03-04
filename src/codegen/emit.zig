@@ -13984,9 +13984,10 @@ pub const Emitter = struct {
             const fn_type = llvm.c.LLVMGlobalGetValueType(puts_fn);
             return self.builder.buildCall(fn_type, puts_fn, &call_args, "");
         } else {
-            // Use printf for print (no newline)
+            // Use printf with "%s" format to avoid interpreting % in the string
             const printf_fn = self.getOrDeclarePrintf();
-            var call_args = [_]llvm.ValueRef{arg_value};
+            const fmt_str = self.builder.buildGlobalStringPtr("%s", "print.fmt");
+            var call_args = [_]llvm.ValueRef{ fmt_str, arg_value };
             const fn_type = llvm.c.LLVMGlobalGetValueType(printf_fn);
             return self.builder.buildCall(fn_type, printf_fn, &call_args, "");
         }
@@ -14121,10 +14122,11 @@ pub const Emitter = struct {
         var prefix_args = [_]llvm.ValueRef{ stderr, panic_prefix };
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &prefix_args, "");
 
-        // Print the message if provided
+        // Print the message if provided (use %s to avoid format string interpretation)
         if (args.len > 0) {
             const msg = try self.emitExpr(args[0]);
-            var msg_args = [_]llvm.ValueRef{ stderr, msg };
+            const panic_fmt = self.builder.buildGlobalStringPtr("%s", "panic.fmt");
+            var msg_args = [_]llvm.ValueRef{ stderr, panic_fmt, msg };
             _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &msg_args, "");
         }
 
