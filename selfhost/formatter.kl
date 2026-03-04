@@ -1,0 +1,2602 @@
+// selfhost/formatter.kl — Self-hosted Klar source code formatter
+// Milestone 9.13B: Produces canonically formatted Klar source from parser JSON.
+//
+// Two-pass approach:
+// 1. Extract comments from raw source text
+// 2. Walk parser JSON AST, emit formatted source, interleave comments by position
+
+import json.{
+    skip_whitespace, skip_value, extract_string, extract_int, extract_bool,
+    json_is_null, find_field, field_string, field_int, field_bool,
+    field_is_null, field_pos, array_start, array_next, array_count
+}
+
+import parser.{Parser, json_str, json_bool, json_int, new_parser}
+import lexer.{Lexer, Token, TokenKind, tag_name}
+import parser_decl.{parse_module}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Comment extraction (Pass 1)
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct Comment {
+    kind: string,       // "line" or "block"
+    text: string,       // full text including // or /* */
+    start: i32,         // byte offset in source
+    end_pos: i32,       // byte offset end
+    line: i32,
+    is_trailing: bool,  // same line as code before it
+}
+
+fn extract_comments(source: string) -> List#[Comment] {
+    var comments: List#[Comment] = List.new#[Comment]()
+    var i: i32 = 0
+    var line: i32 = 1
+    var line_has_code: bool = false
+    let len: i32 = source.byte_len()
+
+    while i < len {
+        let c: i32 = source.byte_at(i).as#[i32]
+
+        if c == 10 { // \n
+            line = line + 1
+            line_has_code = false
+            i = i + 1
+        } else if c == 32 or c == 9 or c == 13 { // space, tab, \r
+            i = i + 1
+        } else if c == 47 { // '/'
+            if i + 1 < len and source.byte_at(i + 1).as#[i32] == 47 {
+                // Line comment //
+                let start: i32 = i
+                let comment_line: i32 = line
+                while i < len and source.byte_at(i).as#[i32] != 10 {
+                    i = i + 1
+                }
+                comments.push(Comment {
+                    kind: "line", text: source.slice(start, i),
+                    start: start, end_pos: i, line: comment_line,
+                    is_trailing: line_has_code,
+                })
+            } else if i + 1 < len and source.byte_at(i + 1).as#[i32] == 42 {
+                // Block comment /* */
+                let start: i32 = i
+                let comment_line: i32 = line
+                i = i + 2
+                var terminated: bool = false
+                while i + 1 < len {
+                    if source.byte_at(i).as#[i32] == 42 and source.byte_at(i + 1).as#[i32] == 47 {
+                        i = i + 2
+                        terminated = true
+                        break
+                    }
+                    if source.byte_at(i).as#[i32] == 10 {
+                        line = line + 1
+                    }
+                    i = i + 1
+                }
+                if not terminated {
+                    if i < len { i = i + 1 }
+                }
+                comments.push(Comment {
+                    kind: "block", text: source.slice(start, i),
+                    start: start, end_pos: i, line: comment_line,
+                    is_trailing: line_has_code,
+                })
+            } else {
+                line_has_code = true
+                i = i + 1
+            }
+        } else if c == 34 { // '"' - skip string literals
+            line_has_code = true
+            i = i + 1
+            while i < len and source.byte_at(i).as#[i32] != 34 {
+                if source.byte_at(i).as#[i32] == 92 and i + 1 < len {
+                    i = i + 2
+                } else {
+                    if source.byte_at(i).as#[i32] == 10 { line = line + 1 }
+                    i = i + 1
+                }
+            }
+            if i < len { i = i + 1 }
+        } else if c == 39 { // '\'' - skip char literals
+            line_has_code = true
+            i = i + 1
+            while i < len and source.byte_at(i).as#[i32] != 39 {
+                if source.byte_at(i).as#[i32] == 92 and i + 1 < len {
+                    i = i + 2
+                } else {
+                    i = i + 1
+                }
+            }
+            if i < len { i = i + 1 }
+        } else {
+            line_has_code = true
+            i = i + 1
+        }
+    }
+
+    return comments
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Token list for position tracking
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn lex_all(source: string) -> List#[Token] {
+    var lex: Lexer = Lexer.new(source)
+    var tokens: List#[Token] = List.new#[Token]()
+    var tok: Token = lex.next_token()
+    while tag_name(tok.kind) != "eof" {
+        tokens.push(tok)
+        tok = lex.next_token()
+    }
+    return tokens
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Formatter struct
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct Formatter {
+    source: string,
+    result: string,
+    indent: i32,
+    comments: List#[Comment],
+    comment_idx: i32,
+    tokens: List#[Token],
+    tok_cursor: i32,
+}
+
+fn new_formatter(source: string) -> Formatter {
+    return Formatter {
+        source: source,
+        result: "",
+        indent: 0,
+        comments: extract_comments(source),
+        comment_idx: 0,
+        tokens: lex_all(source),
+        tok_cursor: 0,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Output helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn emit(f: Formatter, s: string) -> Formatter {
+    return Formatter {
+        source: f.source, result: f.result + s,
+        indent: f.indent,
+        comments: f.comments, comment_idx: f.comment_idx,
+        tokens: f.tokens, tok_cursor: f.tok_cursor,
+    }
+}
+
+fn write_newline(f: Formatter) -> Formatter {
+    return emit(f, "\n")
+}
+
+fn write_indent(f: Formatter) -> Formatter {
+    var spaces: string = ""
+    var i: i32 = 0
+    let count: i32 = f.indent * 4
+    while i < count {
+        spaces = spaces + " "
+        i = i + 1
+    }
+    return emit(f, spaces)
+}
+
+fn inc_indent(f: Formatter) -> Formatter {
+    return Formatter {
+        source: f.source, result: f.result,
+        indent: f.indent + 1,
+        comments: f.comments, comment_idx: f.comment_idx,
+        tokens: f.tokens, tok_cursor: f.tok_cursor,
+    }
+}
+
+fn dec_indent(f: Formatter) -> Formatter {
+    return Formatter {
+        source: f.source, result: f.result,
+        indent: f.indent - 1,
+        comments: f.comments, comment_idx: f.comment_idx,
+        tokens: f.tokens, tok_cursor: f.tok_cursor,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Safe list accessors (List.get returns Optional)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn comment_at(comments: List#[Comment], idx: i32) -> Comment {
+    let opt: ?Comment = comments.get(idx)
+    return opt ?? Comment { kind: "", text: "", start: 0, end_pos: 0, line: 0, is_trailing: false }
+}
+
+fn token_at(tokens: List#[Token], idx: i32) -> Token {
+    let opt: ?Token = tokens.get(idx)
+    return opt ?? Token { kind: TokenKind::Eof, text: "", line: 0, column: 0, start: 0, end: 0 }
+}
+
+fn int_at(list: List#[i32], idx: i32) -> i32 {
+    let opt: ?i32 = list.get(idx)
+    return opt ?? 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Comment interleaving
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn flush_comments_before(f: Formatter, before_pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    while fmt.comment_idx < fmt.comments.len() {
+        let c: Comment = comment_at(fmt.comments, fmt.comment_idx)
+        if c.start >= before_pos { break }
+
+        if c.is_trailing {
+            fmt = emit(fmt,"  ")
+            fmt = emit(fmt,c.text)
+            fmt = write_newline(fmt)
+        } else {
+            fmt = write_indent(fmt)
+            fmt = emit(fmt,c.text)
+            fmt = write_newline(fmt)
+        }
+        fmt = set_comment_idx(fmt, fmt.comment_idx + 1)
+    }
+    return fmt
+}
+
+fn flush_trailing_comment(f: Formatter, after_pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    if fmt.comment_idx < fmt.comments.len() {
+        let c: Comment = comment_at(fmt.comments, fmt.comment_idx)
+        if c.is_trailing and c.start >= after_pos {
+            // Check no newline between after_pos and comment start
+            let end: i32 = c.start
+            if end > fmt.source.byte_len() { return fmt }
+            if after_pos > end { return fmt }
+            var has_nl: bool = false
+            var ci: i32 = after_pos
+            while ci < end {
+                if fmt.source.byte_at(ci).as#[i32] == 10 {
+                    has_nl = true
+                    break
+                }
+                ci = ci + 1
+            }
+            if not has_nl {
+                fmt = emit(fmt,"  ")
+                fmt = emit(fmt,c.text)
+                fmt = set_comment_idx(fmt, fmt.comment_idx + 1)
+            }
+        }
+    }
+    return fmt
+}
+
+fn flush_remaining_comments(f: Formatter) -> Formatter {
+    var fmt: Formatter = f
+    while fmt.comment_idx < fmt.comments.len() {
+        let c: Comment = comment_at(fmt.comments, fmt.comment_idx)
+        fmt = write_indent(fmt)
+        fmt = emit(fmt,c.text)
+        fmt = write_newline(fmt)
+        fmt = set_comment_idx(fmt, fmt.comment_idx + 1)
+    }
+    return fmt
+}
+
+fn set_comment_idx(f: Formatter, idx: i32) -> Formatter {
+    return Formatter {
+        source: f.source, result: f.result,
+        indent: f.indent,
+        comments: f.comments, comment_idx: idx,
+        tokens: f.tokens, tok_cursor: f.tok_cursor,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Token cursor — find positions for comment interleaving
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Advance token cursor to find a token matching the given tag name.
+// Returns the byte start position of that token.
+fn find_tok(f: Formatter, tag: string) -> (Formatter, i32) {
+    var fmt: Formatter = f
+    while fmt.tok_cursor < fmt.tokens.len() {
+        let tok: Token = token_at(fmt.tokens, fmt.tok_cursor)
+        if tag_name(tok.kind) == tag {
+            let pos: i32 = tok.start
+            fmt = set_tok_cursor(fmt, fmt.tok_cursor + 1)
+            return (fmt, pos)
+        }
+        fmt = set_tok_cursor(fmt, fmt.tok_cursor + 1)
+    }
+    return (fmt, -1)
+}
+
+// Advance to find a token with specific text (for identifiers)
+fn find_tok_text(f: Formatter, text: string) -> (Formatter, i32) {
+    var fmt: Formatter = f
+    while fmt.tok_cursor < fmt.tokens.len() {
+        let tok: Token = token_at(fmt.tokens, fmt.tok_cursor)
+        if tok.text == text {
+            let pos: i32 = tok.start
+            fmt = set_tok_cursor(fmt, fmt.tok_cursor + 1)
+            return (fmt, pos)
+        }
+        fmt = set_tok_cursor(fmt, fmt.tok_cursor + 1)
+    }
+    return (fmt, -1)
+}
+
+// Peek at the current token's position without advancing
+fn peek_tok_pos(f: Formatter) -> i32 {
+    if f.tok_cursor < f.tokens.len() {
+        return token_at(f.tokens, f.tok_cursor).start
+    }
+    return f.source.byte_len()
+}
+
+// Get the end position of the previous token
+fn prev_tok_end(f: Formatter) -> i32 {
+    if f.tok_cursor > 0 {
+        return token_at(f.tokens, f.tok_cursor - 1).end
+    }
+    return 0
+}
+
+fn set_tok_cursor(f: Formatter, cursor: i32) -> Formatter {
+    return Formatter {
+        source: f.source, result: f.result,
+        indent: f.indent,
+        comments: f.comments, comment_idx: f.comment_idx,
+        tokens: f.tokens, tok_cursor: cursor,
+    }
+}
+
+// Skip tokens until we find one matching a tag (without consuming it)
+fn skip_to_tok(f: Formatter, tag: string) -> Formatter {
+    var fmt: Formatter = f
+    while fmt.tok_cursor < fmt.tokens.len() {
+        let tok: Token = token_at(fmt.tokens, fmt.tok_cursor)
+        if tag_name(tok.kind) == tag { return fmt }
+        fmt = set_tok_cursor(fmt, fmt.tok_cursor + 1)
+    }
+    return fmt
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Blank line counting helper
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn count_blank_lines_between(source: string, start: i32, end_pos: i32) -> i32 {
+    if start >= end_pos or start >= source.byte_len() { return 0 }
+    var cend: i32 = end_pos
+    if cend > source.byte_len() { cend = source.byte_len() }
+    var blank_lines: i32 = 0
+    var consecutive_newlines: i32 = 0
+    var i: i32 = start
+    while i < cend {
+        let ch: i32 = source.byte_at(i).as#[i32]
+        if ch == 10 { // \n
+            consecutive_newlines = consecutive_newlines + 1
+            if consecutive_newlines >= 2 {
+                blank_lines = blank_lines + 1
+            }
+        } else if ch != 32 and ch != 9 and ch != 13 {
+            consecutive_newlines = 0
+        }
+        i = i + 1
+    }
+    return blank_lines
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Operator string helpers
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn binary_op_str(op: string) -> string {
+    if op == "add" { return "+" }
+    if op == "sub" { return "-" }
+    if op == "mul" { return "*" }
+    if op == "div" { return "/" }
+    if op == "mod" { return "%" }
+    if op == "add_wrap" { return "+%" }
+    if op == "sub_wrap" { return "-%" }
+    if op == "mul_wrap" { return "*%" }
+    if op == "add_sat" { return "+|" }
+    if op == "sub_sat" { return "-|" }
+    if op == "mul_sat" { return "*|" }
+    if op == "eq" { return "==" }
+    if op == "not_eq" { return "!=" }
+    if op == "lt" { return "<" }
+    if op == "gt" { return ">" }
+    if op == "lt_eq" { return "<=" }
+    if op == "gt_eq" { return ">=" }
+    if op == "is" { return "is" }
+    if op == "and_" { return "and" }
+    if op == "or_" { return "or" }
+    if op == "bit_and" { return "&" }
+    if op == "bit_or" { return "|" }
+    if op == "bit_xor" { return "^" }
+    if op == "shl" { return "<<" }
+    if op == "shr" { return ">>" }
+    if op == "null_coalesce" { return "??" }
+    if op == "assign" { return "=" }
+    if op == "add_assign" { return "+=" }
+    if op == "sub_assign" { return "-=" }
+    if op == "mul_assign" { return "*=" }
+    if op == "div_assign" { return "/=" }
+    if op == "mod_assign" { return "%=" }
+    return op
+}
+
+fn assign_op_str(op: string) -> string {
+    if op == "assign" { return "=" }
+    if op == "add_assign" { return "+=" }
+    if op == "sub_assign" { return "-=" }
+    if op == "mul_assign" { return "*=" }
+    if op == "div_assign" { return "/=" }
+    if op == "mod_assign" { return "%=" }
+    return "="
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Import sorting helper
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Compare two import path strings for sorting.
+// Paths are like "alpha" or "zebra.zap" — compare segment by segment.
+// Byte-by-byte string comparison (workaround for unreliable native codegen < >)
+fn str_less_than(a: string, b: string) -> bool {
+    let la: i32 = a.byte_len()
+    let lb: i32 = b.byte_len()
+    var min_len: i32 = la
+    if lb < la { min_len = lb }
+    var i: i32 = 0
+    while i < min_len {
+        let ca: i32 = a.byte_at(i).as#[i32]
+        let cb: i32 = b.byte_at(i).as#[i32]
+        if ca < cb { return true }
+        if ca > cb { return false }
+        i = i + 1
+    }
+    return la < lb
+}
+
+fn import_less_than(json: string, pos_a: i32, pos_b: i32) -> bool {
+    let da: i32 = field_pos(json, pos_a, "data")
+    let db: i32 = field_pos(json, pos_b, "data")
+    let pa: (string, bool) = field_string(json, da, "path")
+    let pb: (string, bool) = field_string(json, db, "path")
+    return str_less_than(pa.0, pb.0)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Format Module (entry point)
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub fn format_source(source: string) -> string {
+    let json: string = parse_to_json(source)
+    var f: Formatter = new_formatter(source)
+    f = format_module(f, json, 0)
+    f = flush_remaining_comments(f)
+
+    // Ensure exactly one trailing newline
+    let raw: string = f.result
+    var end: i32 = raw.byte_len()
+    while end > 0 and raw.byte_at(end - 1).as#[i32] == 10 {
+        end = end - 1
+    }
+    return raw.slice(0, end) + "\n"
+}
+
+fn parse_to_json(source: string) -> string {
+    let pr: (Parser, string) = parse_module(new_parser(source))
+    return pr.1
+}
+
+fn format_module(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+
+    // Module declaration
+    let mdp: i32 = field_pos(json, pos, "module_decl")
+    if not field_is_null(json, pos, "module_decl") and mdp >= 0 {
+        let mr: (Formatter, i32) = find_tok(fmt, "module")
+        fmt = mr.0
+        if mr.1 >= 0 { fmt = flush_comments_before(fmt, mr.1) }
+        fmt = emit(fmt,"module ")
+        let mp: (string, bool) = field_string(json, mdp, "path")
+        fmt = emit(fmt,mp.0)
+        fmt = write_newline(fmt)
+        fmt = write_newline(fmt)
+    }
+
+    // Collect import positions for sorting
+    let imp_pos: i32 = field_pos(json, pos, "imports")
+    let imp_count: i32 = array_count(json, imp_pos)
+
+    if imp_count > 0 {
+        // Collect import positions and paths into parallel lists
+        var imp_positions: List#[i32] = List.new#[i32]()
+        var imp_paths: List#[string] = List.new#[string]()
+        var ip: i32 = array_start(json, imp_pos)
+        while ip >= 0 {
+            imp_positions.push(ip)
+            let dp: i32 = field_pos(json, ip, "data")
+            let pp: (string, bool) = field_string(json, dp, "path")
+            imp_paths.push(pp.0)
+            ip = array_next(json, ip)
+        }
+
+        // Insertion sort both lists by path
+        // Note: native codegen has inverted string < and > operators
+        var si: i32 = 1
+        while si < imp_paths.len() {
+            let opt_key_path: ?string = imp_paths.get(si)
+            let key_path: string = opt_key_path ?? ""
+            let key_pos: i32 = int_at(imp_positions, si)
+            var sj: i32 = si - 1
+            while sj >= 0 {
+                let opt_sj_path: ?string = imp_paths.get(sj)
+                let sj_path: string = opt_sj_path ?? ""
+                if str_less_than(key_path, sj_path) {
+                    imp_paths.set(sj + 1, sj_path)
+                    imp_positions.set(sj + 1, int_at(imp_positions, sj))
+                    sj = sj - 1
+                } else {
+                    break
+                }
+            }
+            imp_paths.set(sj + 1, key_path)
+            imp_positions.set(sj + 1, key_pos)
+            si = si + 1
+        }
+
+        // Format sorted imports
+        var ii: i32 = 0
+        while ii < imp_positions.len() {
+            fmt = write_indent(fmt)
+            fmt = format_import(fmt, json, int_at(imp_positions, ii))
+            fmt = write_newline(fmt)
+            ii = ii + 1
+        }
+        fmt = write_newline(fmt)
+    }
+
+    // File-level meta annotations
+    let meta_pos: i32 = field_pos(json, pos, "meta")
+    if meta_pos >= 0 {
+        let meta_count: i32 = array_count(json, meta_pos)
+        if meta_count > 0 {
+            var mp2: i32 = array_start(json, meta_pos)
+            while mp2 >= 0 {
+                fmt = format_one_meta(fmt, json, mp2)
+                fmt = write_newline(fmt)
+                mp2 = array_next(json, mp2)
+            }
+            // Blank line after file meta if there are declarations
+            let dp: i32 = field_pos(json, pos, "declarations")
+            if array_count(json, dp) > 0 {
+                fmt = write_newline(fmt)
+            }
+        }
+    }
+
+    // Declarations
+    let decl_pos: i32 = field_pos(json, pos, "declarations")
+    var dp2: i32 = array_start(json, decl_pos)
+    var decl_idx: i32 = 0
+    while dp2 >= 0 {
+        if decl_idx > 0 {
+            // Blank line between top-level declarations
+            fmt = write_newline(fmt)
+        }
+
+        // Flush comments before this declaration
+        let dpos: i32 = peek_tok_pos(fmt)
+        fmt = flush_comments_before(fmt, dpos)
+
+        fmt = format_decl(fmt, json, dp2)
+        fmt = write_newline(fmt)
+        decl_idx = decl_idx + 1
+        dp2 = array_next(json, dp2)
+    }
+
+    return fmt
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Declaration formatting
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn format_decl(f: Formatter, json: string, pos: i32) -> Formatter {
+    let kind: (string, bool) = field_string(json, pos, "kind")
+    let k: string = kind.0
+
+    if k == "function" { return format_function(f, json, pos, false) }
+    if k == "test_decl" { return format_test_decl(f, json, pos) }
+    if k == "struct_decl" { return format_struct(f, json, pos) }
+    if k == "enum_decl" { return format_enum(f, json, pos) }
+    if k == "trait_decl" { return format_trait(f, json, pos) }
+    if k == "impl_decl" { return format_impl(f, json, pos) }
+    if k == "const_decl" { return format_const(f, json, pos) }
+    if k == "import_decl" { return format_import(f, json, pos) }
+    if k == "module_decl" { return format_module_decl(f, json, pos) }
+    if k == "type_alias" { return format_type_alias(f, json, pos) }
+    if k == "extern_type" { return format_extern_type(f, json, pos) }
+    if k == "extern_block" { return format_extern_block(f, json, pos) }
+    return f
+}
+
+fn format_meta_annotations(f: Formatter, json: string, pos: i32) -> Formatter {
+    let mp: i32 = field_pos(json, pos, "meta")
+    if mp < 0 { return f }
+    let count: i32 = array_count(json, mp)
+    if count == 0 { return f }
+
+    var fmt: Formatter = f
+    var ap: i32 = array_start(json, mp)
+    while ap >= 0 {
+        fmt = write_indent(fmt)
+        fmt = format_one_meta(fmt, json, ap)
+        fmt = write_newline(fmt)
+        ap = array_next(json, ap)
+    }
+    return fmt
+}
+
+fn format_one_meta(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let kind: (string, bool) = field_string(json, pos, "kind")
+    let k: string = kind.0
+
+    if k == "intent" {
+        let v: (string, bool) = field_string(json, pos, "value")
+        fmt = emit(fmt,"meta intent(")
+        fmt = write_meta_string(fmt, v.0)
+        fmt = emit(fmt,")")
+    } else if k == "decision" {
+        let v: (string, bool) = field_string(json, pos, "value")
+        fmt = emit(fmt,"meta decision(")
+        fmt = write_meta_string(fmt, v.0)
+        fmt = emit(fmt,")")
+    } else if k == "tag" {
+        let v: (string, bool) = field_string(json, pos, "value")
+        fmt = emit(fmt,"meta tag(")
+        fmt = write_meta_string(fmt, v.0)
+        fmt = emit(fmt,")")
+    } else if k == "hint" {
+        let v: (string, bool) = field_string(json, pos, "value")
+        fmt = emit(fmt,"meta hint(")
+        fmt = write_meta_string(fmt, v.0)
+        fmt = emit(fmt,")")
+    } else if k == "deprecated" {
+        let v: (string, bool) = field_string(json, pos, "value")
+        fmt = emit(fmt,"meta deprecated(")
+        fmt = write_meta_string(fmt, v.0)
+        fmt = emit(fmt,")")
+    } else if k == "pure" {
+        fmt = emit(fmt,"meta pure")
+    } else if k == "module" {
+        fmt = emit(fmt,"meta module {")
+        fmt = write_newline(fmt)
+        fmt = format_meta_block_entries(fmt, json, pos)
+        fmt = write_indent(fmt)
+        fmt = emit(fmt,"}")
+    } else if k == "guide" {
+        fmt = emit(fmt,"meta guide {")
+        fmt = write_newline(fmt)
+        fmt = format_meta_block_entries(fmt, json, pos)
+        fmt = write_indent(fmt)
+        fmt = emit(fmt,"}")
+    } else if k == "related" {
+        fmt = emit(fmt,"meta related(")
+        let pp: i32 = field_pos(json, pos, "paths")
+        var pa: i32 = array_start(json, pp)
+        var pi: i32 = 0
+        while pa >= 0 {
+            if pi > 0 { fmt = emit(fmt,", ") }
+            fmt = format_meta_path(fmt, json, pa)
+            pi = pi + 1
+            pa = array_next(json, pa)
+        }
+        let desc: (string, bool) = field_string(json, pos, "description")
+        if desc.1 {
+            if pi > 0 { fmt = emit(fmt,", ") }
+            fmt = write_meta_string(fmt, desc.0)
+        }
+        fmt = emit(fmt,")")
+    } else if k == "group" or k == "group_def" {
+        let name: (string, bool) = field_string(json, pos, "name")
+        fmt = emit(fmt,"meta group ")
+        fmt = write_meta_string(fmt, name.0)
+        fmt = emit(fmt," {")
+        fmt = write_newline(fmt)
+        fmt = inc_indent(fmt)
+        let np: i32 = field_pos(json, pos, "annotations")
+        var na: i32 = array_start(json, np)
+        while na >= 0 {
+            fmt = write_indent(fmt)
+            fmt = format_one_meta(fmt, json, na)
+            fmt = write_newline(fmt)
+            na = array_next(json, na)
+        }
+        fmt = dec_indent(fmt)
+        fmt = write_indent(fmt)
+        fmt = emit(fmt,"}")
+    } else if k == "in" {
+        let v: (string, bool) = field_string(json, pos, "value")
+        fmt = emit(fmt,"meta in(")
+        fmt = write_meta_string(fmt, v.0)
+        fmt = emit(fmt,")")
+    } else if k == "define" {
+        let name: (string, bool) = field_string(json, pos, "name")
+        fmt = emit(fmt,"meta define ")
+        fmt = emit(fmt,name.0)
+        fmt = emit(fmt,"(")
+        let pp: i32 = field_pos(json, pos, "params")
+        var pa: i32 = array_start(json, pp)
+        var pi: i32 = 0
+        while pa >= 0 {
+            if pi > 0 { fmt = emit(fmt,", ") }
+            let pn: (string, bool) = field_string(json, pa, "name")
+            fmt = emit(fmt, pn.0)
+            fmt = emit(fmt, ": ")
+            // type can be a string ("string", "path") or an array (union)
+            let tp2: i32 = field_pos(json, pa, "type")
+            let tp3: i32 = skip_whitespace(json, tp2)
+            if tp3 < json.byte_len() and json.byte_at(tp3).as#[i32] == 91 {
+                // Union type — array of strings
+                var ua: i32 = array_start(json, tp2)
+                var ui: i32 = 0
+                while ua >= 0 {
+                    if ui > 0 { fmt = emit(fmt, " | ") }
+                    let uv: string = extract_string(json, ua).0
+                    fmt = write_meta_string(fmt, uv)
+                    ui = ui + 1
+                    ua = array_next(json, ua)
+                }
+            } else {
+                let pt: (string, bool) = field_string(json, pa, "type")
+                fmt = emit(fmt, pt.0)
+            }
+            pi = pi + 1
+            pa = array_next(json, pa)
+        }
+        fmt = emit(fmt,")")
+        let scope: (string, bool) = field_string(json, pos, "scope")
+        if scope.1 {
+            fmt = emit(fmt," for ")
+            fmt = emit(fmt,scope.0)
+        }
+    } else if k == "custom" {
+        let name: (string, bool) = field_string(json, pos, "name")
+        fmt = emit(fmt,"meta ")
+        fmt = emit(fmt,name.0)
+        fmt = emit(fmt,"(")
+        let ap2: i32 = field_pos(json, pos, "args")
+        var aa: i32 = array_start(json, ap2)
+        var ai: i32 = 0
+        while aa >= 0 {
+            if ai > 0 { fmt = emit(fmt,", ") }
+            // Check if it's a string or path
+            let seg_pos: i32 = field_pos(json, aa, "segments")
+            if seg_pos >= 0 {
+                fmt = format_meta_path(fmt, json, aa)
+            } else {
+                let sv: string = extract_string(json, aa).0
+                fmt = write_meta_string(fmt, sv)
+            }
+            ai = ai + 1
+            aa = array_next(json, aa)
+        }
+        fmt = emit(fmt,")")
+    }
+
+    return fmt
+}
+
+fn format_meta_block_entries(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = inc_indent(f)
+    let ep: i32 = field_pos(json, pos, "entries")
+    var ea: i32 = array_start(json, ep)
+    var ei: i32 = 0
+    let ecount: i32 = array_count(json, ep)
+    while ea >= 0 {
+        fmt = write_indent(fmt)
+        let key: (string, bool) = field_string(json, ea, "key")
+        fmt = emit(fmt,key.0)
+        fmt = emit(fmt, ": ")
+        // Value can be a string or an array of strings
+        let vp: i32 = field_pos(json, ea, "value")
+        let vp2: i32 = skip_whitespace(json, vp)
+        if vp2 < json.byte_len() and json.byte_at(vp2).as#[i32] == 91 {
+            // Array value — starts with '['
+            fmt = emit(fmt, "[")
+            var ia: i32 = array_start(json, vp)
+            var ii: i32 = 0
+            while ia >= 0 {
+                if ii > 0 { fmt = emit(fmt, ", ") }
+                let iv: string = extract_string(json, ia).0
+                fmt = write_meta_string(fmt, iv)
+                ii = ii + 1
+                ia = array_next(json, ia)
+            }
+            fmt = emit(fmt, "]")
+        } else {
+            let val: (string, bool) = field_string(json, ea, "value")
+            fmt = write_meta_string(fmt, val.0)
+        }
+        if ei + 1 < ecount {
+            fmt = emit(fmt,",")
+        }
+        fmt = write_newline(fmt)
+        ei = ei + 1
+        ea = array_next(json, ea)
+    }
+    fmt = dec_indent(fmt)
+    return fmt
+}
+
+fn format_meta_path(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let sp: i32 = field_pos(json, pos, "segments")
+    var sa: i32 = array_start(json, sp)
+    var si: i32 = 0
+    while sa >= 0 {
+        if si > 0 { fmt = emit(fmt,"::") }
+        let seg: string = extract_string(json, sa).0
+        fmt = emit(fmt,seg)
+        si = si + 1
+        sa = array_next(json, sa)
+    }
+    return fmt
+}
+
+fn write_meta_string(f: Formatter, value: string) -> Formatter {
+    // Meta string values from parser JSON preserve source-level escape sequences
+    // (e.g., \n as literal backslash+n). Just wrap in quotes without re-escaping.
+    return emit(emit(emit(f, "\""), value), "\"")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Function formatting
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn format_function(f: Formatter, json: string, pos: i32, in_trait: bool) -> Formatter {
+    var fmt: Formatter = format_meta_annotations(f, json, pos)
+    fmt = write_indent(fmt)
+
+    let is_pub: (bool, bool) = field_bool(json, pos, "is_pub")
+    let is_async: (bool, bool) = field_bool(json, pos, "is_async")
+    let is_unsafe: (bool, bool) = field_bool(json, pos, "is_unsafe")
+    let is_extern: (bool, bool) = field_bool(json, pos, "is_extern")
+    let is_comptime: (bool, bool) = field_bool(json, pos, "is_comptime")
+    let is_variadic: (bool, bool) = field_bool(json, pos, "is_variadic")
+
+    if is_pub.0 { fmt = emit(fmt,"pub ") }
+    if is_async.0 { fmt = emit(fmt,"async ") }
+    if is_unsafe.0 { fmt = emit(fmt,"unsafe ") }
+    if is_extern.0 { fmt = emit(fmt,"extern ") }
+
+    let name: (string, bool) = field_string(json, pos, "name")
+    if is_comptime.0 {
+        fmt = emit(fmt,"fn @")
+        fmt = emit(fmt,name.0)
+    } else {
+        fmt = emit(fmt,"fn ")
+        fmt = emit(fmt,name.0)
+    }
+
+    // Type parameters
+    fmt = format_type_params(fmt, json, pos)
+
+    // Parameters
+    fmt = emit(fmt,"(")
+    let pp: i32 = field_pos(json, pos, "params")
+    var pa: i32 = array_start(json, pp)
+    var pi: i32 = 0
+    while pa >= 0 {
+        if pi > 0 { fmt = emit(fmt,", ") }
+        let is_out: (bool, bool) = field_bool(json, pa, "is_out")
+        let is_ctp: (bool, bool) = field_bool(json, pa, "is_comptime")
+        if is_out.0 { fmt = emit(fmt,"out ") }
+        if is_ctp.0 { fmt = emit(fmt,"@") }
+        let pn: (string, bool) = field_string(json, pa, "name")
+        fmt = emit(fmt,pn.0)
+        fmt = emit(fmt,": ")
+        let tp: i32 = field_pos(json, pa, "type")
+        fmt = format_type_expr(fmt, json, tp)
+        // Default value
+        if not field_is_null(json, pa, "default_value") {
+            let dvp: i32 = field_pos(json, pa, "default_value")
+            fmt = emit(fmt," = ")
+            fmt = format_expr(fmt, json, dvp)
+        }
+        pi = pi + 1
+        pa = array_next(json, pa)
+    }
+    if is_variadic.0 {
+        if pi > 0 { fmt = emit(fmt,", ") }
+        fmt = emit(fmt,"...")
+    }
+    fmt = emit(fmt,")")
+
+    // Return type
+    let rtp: i32 = field_pos(json, pos, "return_type")
+    if rtp >= 0 and not field_is_null(json, pos, "return_type") {
+        fmt = emit(fmt," -> ")
+        fmt = format_type_expr(fmt, json, rtp)
+    }
+
+    // Where clause
+    fmt = format_where_clause(fmt, json, pos)
+
+    // Body
+    if not field_is_null(json, pos, "body") {
+        let bp: i32 = field_pos(json, pos, "body")
+        fmt = emit(fmt," {")
+        fmt = write_newline(fmt)
+        fmt = format_block_body(fmt, json, bp)
+        fmt = write_indent(fmt)
+        fmt = emit(fmt,"}")
+    }
+
+    return fmt
+}
+
+fn format_type_params(f: Formatter, json: string, pos: i32) -> Formatter {
+    let tpp: i32 = field_pos(json, pos, "type_params")
+    let tp_count: i32 = array_count(json, tpp)
+    if tp_count == 0 { return f }
+
+    var fmt: Formatter = emit(f,"#[")
+    var ta: i32 = array_start(json, tpp)
+    var ti: i32 = 0
+    while ta >= 0 {
+        if ti > 0 { fmt = emit(fmt,", ") }
+        let tn: (string, bool) = field_string(json, ta, "name")
+        fmt = emit(fmt,tn.0)
+        // Bounds
+        let bp: i32 = field_pos(json, ta, "bounds")
+        let bc: i32 = array_count(json, bp)
+        if bc > 0 {
+            fmt = emit(fmt,": ")
+            var ba: i32 = array_start(json, bp)
+            var bi: i32 = 0
+            while ba >= 0 {
+                if bi > 0 { fmt = emit(fmt," + ") }
+                fmt = format_type_expr(fmt, json, ba)
+                bi = bi + 1
+                ba = array_next(json, ba)
+            }
+        }
+        ti = ti + 1
+        ta = array_next(json, ta)
+    }
+    fmt = emit(fmt,"]")
+    return fmt
+}
+
+fn format_where_clause(f: Formatter, json: string, pos: i32) -> Formatter {
+    if field_is_null(json, pos, "where_clause") { return f }
+    let wp: i32 = field_pos(json, pos, "where_clause")
+    if wp < 0 { return f }
+    let wc: i32 = array_count(json, wp)
+    if wc == 0 { return f }
+
+    var fmt: Formatter = emit(f," where ")
+    var wa: i32 = array_start(json, wp)
+    var wi: i32 = 0
+    while wa >= 0 {
+        if wi > 0 { fmt = emit(fmt,", ") }
+        let tp: (string, bool) = field_string(json, wa, "type_param")
+        fmt = emit(fmt,tp.0)
+        fmt = emit(fmt,": ")
+        let bp: i32 = field_pos(json, wa, "bounds")
+        var ba: i32 = array_start(json, bp)
+        var bi: i32 = 0
+        while ba >= 0 {
+            if bi > 0 { fmt = emit(fmt," + ") }
+            fmt = format_type_expr(fmt, json, ba)
+            bi = bi + 1
+            ba = array_next(json, ba)
+        }
+        wi = wi + 1
+        wa = array_next(json, wa)
+    }
+    return fmt
+}
+
+fn format_test_decl(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = format_meta_annotations(f, json, pos)
+    fmt = write_indent(fmt)
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,"test ")
+    fmt = emit(fmt,name.0)
+    fmt = emit(fmt," ")
+    let bp: i32 = field_pos(json, pos, "body")
+    fmt = format_brace_block(fmt, json, bp)
+    return fmt
+}
+
+fn format_struct(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = format_meta_annotations(f, json, pos)
+    fmt = write_indent(fmt)
+
+    let is_pub: (bool, bool) = field_bool(json, pos, "is_pub")
+    let is_extern: (bool, bool) = field_bool(json, pos, "is_extern")
+    let is_packed: (bool, bool) = field_bool(json, pos, "is_packed")
+
+    if is_pub.0 { fmt = emit(fmt,"pub ") }
+    if is_extern.0 { fmt = emit(fmt,"extern ") }
+    if is_packed.0 { fmt = emit(fmt,"packed ") }
+    fmt = emit(fmt,"struct ")
+
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,name.0)
+
+    // Type parameters
+    fmt = format_type_params(fmt, json, pos)
+
+    // Traits
+    let traits_pos: i32 = field_pos(json, pos, "traits")
+    let traits_count: i32 = array_count(json, traits_pos)
+    if traits_count > 0 {
+        fmt = emit(fmt,": ")
+        var ta: i32 = array_start(json, traits_pos)
+        var ti: i32 = 0
+        while ta >= 0 {
+            if ti > 0 { fmt = emit(fmt," + ") }
+            fmt = format_type_expr(fmt, json, ta)
+            ti = ti + 1
+            ta = array_next(json, ta)
+        }
+    }
+
+    fmt = emit(fmt," {")
+    fmt = write_newline(fmt)
+    fmt = inc_indent(fmt)
+
+    // Fields
+    let fp: i32 = field_pos(json, pos, "fields")
+    var fa: i32 = array_start(json, fp)
+    while fa >= 0 {
+        // Field-level meta
+        fmt = format_meta_annotations(fmt, json, fa)
+        fmt = write_indent(fmt)
+        let fpub: (bool, bool) = field_bool(json, fa, "is_pub")
+        if fpub.0 { fmt = emit(fmt,"pub ") }
+        let fn2: (string, bool) = field_string(json, fa, "name")
+        fmt = emit(fmt,fn2.0)
+        fmt = emit(fmt,": ")
+        let ftp: i32 = field_pos(json, fa, "type")
+        fmt = format_type_expr(fmt, json, ftp)
+        fmt = write_newline(fmt)
+        fa = array_next(json, fa)
+    }
+
+    fmt = dec_indent(fmt)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+fn format_enum(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = format_meta_annotations(f, json, pos)
+    fmt = write_indent(fmt)
+
+    let is_pub: (bool, bool) = field_bool(json, pos, "is_pub")
+    let is_extern: (bool, bool) = field_bool(json, pos, "is_extern")
+
+    if is_pub.0 { fmt = emit(fmt,"pub ") }
+    if is_extern.0 { fmt = emit(fmt,"extern ") }
+    fmt = emit(fmt,"enum ")
+
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,name.0)
+
+    // Type parameters
+    fmt = format_type_params(fmt, json, pos)
+
+    // Repr type
+    if not field_is_null(json, pos, "repr_type") {
+        let rtp: i32 = field_pos(json, pos, "repr_type")
+        fmt = emit(fmt,": ")
+        fmt = format_type_expr(fmt, json, rtp)
+    }
+
+    fmt = emit(fmt," {")
+    fmt = write_newline(fmt)
+    fmt = inc_indent(fmt)
+
+    // Variants
+    let vp: i32 = field_pos(json, pos, "variants")
+    var va2: i32 = array_start(json, vp)
+    while va2 >= 0 {
+        // Variant-level meta
+        fmt = format_meta_annotations(fmt, json, va2)
+        fmt = write_indent(fmt)
+        let vn: (string, bool) = field_string(json, va2, "name")
+        fmt = emit(fmt,vn.0)
+
+        // Payload
+        if not field_is_null(json, va2, "payload") {
+            let plp: i32 = field_pos(json, va2, "payload")
+            let pl_kind: (string, bool) = field_string(json, plp, "kind")
+            if pl_kind.0 == "tuple" {
+                fmt = emit(fmt,"(")
+                let tep: i32 = field_pos(json, plp, "types")
+                var tea: i32 = array_start(json, tep)
+                var tei: i32 = 0
+                while tea >= 0 {
+                    if tei > 0 { fmt = emit(fmt,", ") }
+                    fmt = format_type_expr(fmt, json, tea)
+                    tei = tei + 1
+                    tea = array_next(json, tea)
+                }
+                fmt = emit(fmt,")")
+            } else if pl_kind.0 == "struct" {
+                fmt = emit(fmt," {")
+                fmt = write_newline(fmt)
+                fmt = inc_indent(fmt)
+                let sfp: i32 = field_pos(json, plp, "fields")
+                var sfa: i32 = array_start(json, sfp)
+                while sfa >= 0 {
+                    fmt = write_indent(fmt)
+                    let sfpub: (bool, bool) = field_bool(json, sfa, "is_pub")
+                    if sfpub.0 { fmt = emit(fmt,"pub ") }
+                    let sfn: (string, bool) = field_string(json, sfa, "name")
+                    fmt = emit(fmt,sfn.0)
+                    fmt = emit(fmt,": ")
+                    let sftp: i32 = field_pos(json, sfa, "type")
+                    fmt = format_type_expr(fmt, json, sftp)
+                    fmt = write_newline(fmt)
+                    sfa = array_next(json, sfa)
+                }
+                fmt = dec_indent(fmt)
+                fmt = write_indent(fmt)
+                fmt = emit(fmt,"}")
+            }
+        }
+
+        // Discriminant value
+        if not field_is_null(json, va2, "value") {
+            let dv: (i32, bool) = field_int(json, va2, "value")
+            fmt = emit(fmt," = ")
+            fmt = emit(fmt,dv.0.to_string().as_str())
+        }
+
+        fmt = emit(fmt,",")
+        fmt = write_newline(fmt)
+        va2 = array_next(json, va2)
+    }
+
+    fmt = dec_indent(fmt)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+fn format_trait(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = format_meta_annotations(f, json, pos)
+    fmt = write_indent(fmt)
+
+    let is_pub: (bool, bool) = field_bool(json, pos, "is_pub")
+    if is_pub.0 { fmt = emit(fmt,"pub ") }
+    fmt = emit(fmt,"trait ")
+
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,name.0)
+
+    // Type parameters
+    fmt = format_type_params(fmt, json, pos)
+
+    // Super traits
+    let stp: i32 = field_pos(json, pos, "super_traits")
+    let stc: i32 = array_count(json, stp)
+    if stc > 0 {
+        fmt = emit(fmt,": ")
+        var sta: i32 = array_start(json, stp)
+        var sti: i32 = 0
+        while sta >= 0 {
+            if sti > 0 { fmt = emit(fmt," + ") }
+            fmt = format_type_expr(fmt, json, sta)
+            sti = sti + 1
+            sta = array_next(json, sta)
+        }
+    }
+
+    fmt = emit(fmt," {")
+    fmt = write_newline(fmt)
+    fmt = inc_indent(fmt)
+
+    // Associated types
+    let atp: i32 = field_pos(json, pos, "associated_types")
+    var ata: i32 = array_start(json, atp)
+    while ata >= 0 {
+        fmt = write_indent(fmt)
+        fmt = emit(fmt,"type ")
+        let atn: (string, bool) = field_string(json, ata, "name")
+        fmt = emit(fmt,atn.0)
+        // Bounds
+        let abp: i32 = field_pos(json, ata, "bounds")
+        let abc: i32 = array_count(json, abp)
+        if abc > 0 {
+            fmt = emit(fmt,": ")
+            var aba: i32 = array_start(json, abp)
+            var abi: i32 = 0
+            while aba >= 0 {
+                if abi > 0 { fmt = emit(fmt," + ") }
+                fmt = format_type_expr(fmt, json, aba)
+                abi = abi + 1
+                aba = array_next(json, aba)
+            }
+        }
+        // Default
+        if not field_is_null(json, ata, "default") {
+            let adp: i32 = field_pos(json, ata, "default")
+            fmt = emit(fmt," = ")
+            fmt = format_type_expr(fmt, json, adp)
+        }
+        fmt = write_newline(fmt)
+        ata = array_next(json, ata)
+    }
+
+    // Methods
+    let mtp: i32 = field_pos(json, pos, "methods")
+    var mta: i32 = array_start(json, mtp)
+    var mti: i32 = 0
+    let at_count: i32 = array_count(json, atp)
+    while mta >= 0 {
+        if mti > 0 or at_count > 0 {
+            fmt = write_newline(fmt)
+        }
+        fmt = format_function(fmt, json, mta, true)
+        fmt = write_newline(fmt)
+        mti = mti + 1
+        mta = array_next(json, mta)
+    }
+
+    fmt = dec_indent(fmt)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+fn format_impl(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = format_meta_annotations(f, json, pos)
+    fmt = write_indent(fmt)
+
+    let is_unsafe: (bool, bool) = field_bool(json, pos, "is_unsafe")
+    if is_unsafe.0 { fmt = emit(fmt,"unsafe ") }
+
+    fmt = emit(fmt,"impl")
+
+    // Type parameters (on impl itself)
+    fmt = format_type_params(fmt, json, pos)
+
+    fmt = emit(fmt," ")
+    let ttp: i32 = field_pos(json, pos, "target_type")
+    fmt = format_type_expr(fmt, json, ttp)
+
+    // Trait type
+    if not field_is_null(json, pos, "trait_type") {
+        let trp: i32 = field_pos(json, pos, "trait_type")
+        fmt = emit(fmt,": ")
+        fmt = format_type_expr(fmt, json, trp)
+    }
+
+    // Where clause
+    fmt = format_where_clause(fmt, json, pos)
+
+    fmt = emit(fmt," {")
+    fmt = write_newline(fmt)
+    fmt = inc_indent(fmt)
+
+    // Associated type bindings
+    let atp: i32 = field_pos(json, pos, "associated_types")
+    var ata: i32 = array_start(json, atp)
+    while ata >= 0 {
+        fmt = write_indent(fmt)
+        fmt = emit(fmt,"type ")
+        let atn: (string, bool) = field_string(json, ata, "name")
+        fmt = emit(fmt,atn.0)
+        fmt = emit(fmt," = ")
+        let avp: i32 = field_pos(json, ata, "value")
+        fmt = format_type_expr(fmt, json, avp)
+        fmt = write_newline(fmt)
+        ata = array_next(json, ata)
+    }
+
+    // Methods
+    let mtp: i32 = field_pos(json, pos, "methods")
+    var mta: i32 = array_start(json, mtp)
+    var mti: i32 = 0
+    let at_count: i32 = array_count(json, atp)
+    while mta >= 0 {
+        if mti > 0 or at_count > 0 {
+            fmt = write_newline(fmt)
+        }
+        fmt = format_function(fmt, json, mta, false)
+        fmt = write_newline(fmt)
+        mti = mti + 1
+        mta = array_next(json, mta)
+    }
+
+    fmt = dec_indent(fmt)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+fn format_const(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = format_meta_annotations(f, json, pos)
+    fmt = write_indent(fmt)
+
+    let is_pub: (bool, bool) = field_bool(json, pos, "is_pub")
+    if is_pub.0 { fmt = emit(fmt,"pub ") }
+    fmt = emit(fmt,"const ")
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,name.0)
+
+    if not field_is_null(json, pos, "type") {
+        let tp: i32 = field_pos(json, pos, "type")
+        fmt = emit(fmt,": ")
+        fmt = format_type_expr(fmt, json, tp)
+    }
+
+    fmt = emit(fmt," = ")
+    let vp: i32 = field_pos(json, pos, "value")
+    fmt = format_expr(fmt, json, vp)
+    return fmt
+}
+
+fn format_type_alias(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = format_meta_annotations(f, json, pos)
+    fmt = write_indent(fmt)
+
+    let is_pub: (bool, bool) = field_bool(json, pos, "is_pub")
+    if is_pub.0 { fmt = emit(fmt,"pub ") }
+    fmt = emit(fmt,"type ")
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,name.0)
+
+    // Type params
+    let tpp: i32 = field_pos(json, pos, "type_params")
+    let tpc: i32 = array_count(json, tpp)
+    if tpc > 0 {
+        fmt = emit(fmt,"#[")
+        var ta: i32 = array_start(json, tpp)
+        var ti: i32 = 0
+        while ta >= 0 {
+            if ti > 0 { fmt = emit(fmt,", ") }
+            let tn: (string, bool) = field_string(json, ta, "name")
+            fmt = emit(fmt,tn.0)
+            ti = ti + 1
+            ta = array_next(json, ta)
+        }
+        fmt = emit(fmt,"]")
+    }
+
+    fmt = emit(fmt," = ")
+    let tp: i32 = field_pos(json, pos, "target")
+    fmt = format_type_expr(fmt, json, tp)
+    return fmt
+}
+
+fn format_import(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    fmt = emit(fmt, "import ")
+
+    // Navigate into "data" wrapper
+    let dp: i32 = field_pos(json, pos, "data")
+    let path: (string, bool) = field_string(json, dp, "path")
+    fmt = emit(fmt, path.0)
+
+    // Check is_glob
+    let is_glob: (bool, bool) = field_bool(json, dp, "is_glob")
+    if is_glob.0 {
+        fmt = emit(fmt, ".*")
+        return fmt
+    }
+
+    // Items — simple string array
+    let ip: i32 = field_pos(json, dp, "items")
+    let item_count: i32 = array_count(json, ip)
+    if item_count > 0 {
+        // Collect item strings for sorting
+        var item_strs: List#[string] = List.new#[string]()
+        var ia: i32 = array_start(json, ip)
+        while ia >= 0 {
+            let s: (string, i32) = extract_string(json, ia)
+            item_strs.push(s.0)
+            ia = array_next(json, ia)
+        }
+
+        // Insertion sort alphabetically
+        var si: i32 = 1
+        while si < item_strs.len() {
+            let opt_key: ?string = item_strs.get(si)
+            let key: string = opt_key ?? ""
+            var sj: i32 = si - 1
+            while sj >= 0 {
+                let opt_sj: ?string = item_strs.get(sj)
+                let sj_val: string = opt_sj ?? ""
+                if str_less_than(key, sj_val) {
+                    item_strs.set(sj + 1, sj_val)
+                    sj = sj - 1
+                } else {
+                    break
+                }
+            }
+            item_strs.set(sj + 1, key)
+            si = si + 1
+        }
+
+        // Write sorted items
+        fmt = emit(fmt, ".{ ")
+        var ii: i32 = 0
+        while ii < item_strs.len() {
+            if ii > 0 { fmt = emit(fmt, ", ") }
+            let opt_it: ?string = item_strs.get(ii)
+            let it: string = opt_it ?? ""
+            fmt = emit(fmt, it)
+            ii = ii + 1
+        }
+        fmt = emit(fmt, " }")
+    }
+
+    return fmt
+}
+
+fn format_module_decl(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    fmt = emit(fmt,"module ")
+    let path: (string, bool) = field_string(json, pos, "path")
+    fmt = emit(fmt,path.0)
+    return fmt
+}
+
+fn format_extern_type(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    let is_pub: (bool, bool) = field_bool(json, pos, "is_pub")
+    if is_pub.0 { fmt = emit(fmt,"pub ") }
+    fmt = emit(fmt,"extern type")
+    if not field_is_null(json, pos, "size") {
+        let sz: (i32, bool) = field_int(json, pos, "size")
+        fmt = emit(fmt,"(")
+        fmt = emit(fmt,sz.0.to_string().as_str())
+        fmt = emit(fmt,")")
+    }
+    fmt = emit(fmt," ")
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,name.0)
+    return fmt
+}
+
+fn format_extern_block(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    fmt = emit(fmt,"extern {")
+    fmt = write_newline(fmt)
+    fmt = inc_indent(fmt)
+
+    let fp: i32 = field_pos(json, pos, "functions")
+    var fa: i32 = array_start(json, fp)
+    while fa >= 0 {
+        fmt = format_function(fmt, json, fa, false)
+        fmt = write_newline(fmt)
+        fa = array_next(json, fa)
+    }
+
+    fmt = dec_indent(fmt)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Statement formatting
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn format_stmt(f: Formatter, json: string, pos: i32) -> Formatter {
+    let kind: (string, bool) = field_string(json, pos, "kind")
+    let k: string = kind.0
+
+    if k == "let_decl" { return format_let_decl(f, json, pos) }
+    if k == "var_decl" { return format_var_decl(f, json, pos) }
+    if k == "assignment" { return format_assignment(f, json, pos) }
+    if k == "expr_stmt" { return format_expr_stmt(f, json, pos) }
+    if k == "return_stmt" { return format_return_stmt(f, json, pos) }
+    if k == "break_stmt" { return format_break_stmt(f, json, pos) }
+    if k == "continue_stmt" { return format_continue_stmt(f, json, pos) }
+    if k == "for_loop" { return format_for_loop(f, json, pos) }
+    if k == "while_loop" { return format_while_loop(f, json, pos) }
+    if k == "loop_stmt" { return format_loop_stmt(f, json, pos) }
+    if k == "if_stmt" { return format_if_stmt(f, json, pos) }
+    if k == "match_stmt" { return format_match_stmt(f, json, pos) }
+    return f
+}
+
+fn format_let_decl(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    let is_shadow: (bool, bool) = field_bool(json, pos, "is_shadow")
+    if is_shadow.0 { fmt = emit(fmt,"shadow ") }
+    fmt = emit(fmt,"let ")
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,name.0)
+    fmt = emit(fmt,": ")
+    let tp: i32 = field_pos(json, pos, "type")
+    fmt = format_type_expr(fmt, json, tp)
+    fmt = emit(fmt," = ")
+    let vp: i32 = field_pos(json, pos, "value")
+    fmt = format_expr(fmt, json, vp)
+    return fmt
+}
+
+fn format_var_decl(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    let is_shadow: (bool, bool) = field_bool(json, pos, "is_shadow")
+    if is_shadow.0 { fmt = emit(fmt,"shadow ") }
+    fmt = emit(fmt,"var ")
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,name.0)
+    fmt = emit(fmt,": ")
+    let tp: i32 = field_pos(json, pos, "type")
+    fmt = format_type_expr(fmt, json, tp)
+    fmt = emit(fmt," = ")
+    let vp: i32 = field_pos(json, pos, "value")
+    fmt = format_expr(fmt, json, vp)
+    return fmt
+}
+
+fn format_assignment(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    let tp: i32 = field_pos(json, pos, "target")
+    fmt = format_expr(fmt, json, tp)
+    fmt = emit(fmt," ")
+    let op: (string, bool) = field_string(json, pos, "op")
+    fmt = emit(fmt,assign_op_str(op.0))
+    fmt = emit(fmt," ")
+    let vp: i32 = field_pos(json, pos, "value")
+    fmt = format_expr(fmt, json, vp)
+    return fmt
+}
+
+fn format_expr_stmt(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    let ep: i32 = field_pos(json, pos, "expr")
+    fmt = format_expr(fmt, json, ep)
+    return fmt
+}
+
+fn format_return_stmt(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    fmt = emit(fmt,"return")
+    if not field_is_null(json, pos, "value") {
+        let vp: i32 = field_pos(json, pos, "value")
+        fmt = emit(fmt," ")
+        fmt = format_expr(fmt, json, vp)
+    }
+    return fmt
+}
+
+fn format_break_stmt(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    fmt = emit(fmt,"break")
+    if not field_is_null(json, pos, "value") {
+        let vp: i32 = field_pos(json, pos, "value")
+        fmt = emit(fmt," ")
+        fmt = format_expr(fmt, json, vp)
+    }
+    return fmt
+}
+
+fn format_continue_stmt(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    fmt = emit(fmt,"continue")
+    return fmt
+}
+
+fn format_for_loop(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    fmt = emit(fmt,"for ")
+    let pp: i32 = field_pos(json, pos, "pattern")
+    fmt = format_pattern(fmt, json, pp)
+    fmt = emit(fmt," in ")
+    let ip: i32 = field_pos(json, pos, "iterable")
+    fmt = format_expr(fmt, json, ip)
+    fmt = emit(fmt," {")
+    fmt = write_newline(fmt)
+    let bp: i32 = field_pos(json, pos, "body")
+    fmt = format_block_body(fmt, json, bp)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+fn format_while_loop(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    fmt = emit(fmt,"while ")
+    let cp: i32 = field_pos(json, pos, "condition")
+    fmt = format_expr(fmt, json, cp)
+    fmt = emit(fmt," {")
+    fmt = write_newline(fmt)
+    let bp: i32 = field_pos(json, pos, "body")
+    fmt = format_block_body(fmt, json, bp)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+fn format_loop_stmt(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    fmt = emit(fmt,"loop {")
+    fmt = write_newline(fmt)
+    let bp: i32 = field_pos(json, pos, "body")
+    fmt = format_block_body(fmt, json, bp)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+fn format_if_stmt(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    fmt = format_if_inner(fmt, json, pos)
+    return fmt
+}
+
+fn format_if_inner(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    fmt = emit(fmt,"if ")
+    let cp: i32 = field_pos(json, pos, "condition")
+    fmt = format_expr(fmt, json, cp)
+    fmt = emit(fmt," {")
+    fmt = write_newline(fmt)
+    let tp: i32 = field_pos(json, pos, "then_branch")
+    fmt = format_block_body(fmt, json, tp)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+
+    if not field_is_null(json, pos, "else_branch") {
+        let ep: i32 = field_pos(json, pos, "else_branch")
+        fmt = emit(fmt," else ")
+        // Check if else branch is another if-stmt or a block
+        let ek: (string, bool) = field_string(json, ep, "kind")
+        if ek.0 == "if_stmt" {
+            fmt = format_if_inner(fmt, json, ep)
+        } else {
+            // Block
+            fmt = emit(fmt,"{")
+            fmt = write_newline(fmt)
+            fmt = format_block_body(fmt, json, ep)
+            fmt = write_indent(fmt)
+            fmt = emit(fmt,"}")
+        }
+    }
+    return fmt
+}
+
+fn format_match_stmt(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = write_indent(f)
+    fmt = emit(fmt,"match ")
+    let sp: i32 = field_pos(json, pos, "subject")
+    fmt = format_expr(fmt, json, sp)
+    fmt = emit(fmt," {")
+    fmt = write_newline(fmt)
+    fmt = inc_indent(fmt)
+
+    let ap: i32 = field_pos(json, pos, "arms")
+    var aa: i32 = array_start(json, ap)
+    while aa >= 0 {
+        fmt = write_indent(fmt)
+        let pp: i32 = field_pos(json, aa, "pattern")
+        fmt = format_pattern(fmt, json, pp)
+        // Guard
+        if not field_is_null(json, aa, "guard") {
+            let gp: i32 = field_pos(json, aa, "guard")
+            fmt = emit(fmt," if ")
+            fmt = format_expr(fmt, json, gp)
+        }
+        fmt = emit(fmt," => ")
+        let bp: i32 = field_pos(json, aa, "body")
+        fmt = format_brace_block(fmt, json, bp)
+        fmt = write_newline(fmt)
+        aa = array_next(json, aa)
+    }
+
+    fmt = dec_indent(fmt)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Block formatting
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn is_simple_stmt(json: string, pos: i32) -> bool {
+    let kind: (string, bool) = field_string(json, pos, "kind")
+    let k: string = kind.0
+    return k == "return_stmt" or k == "break_stmt" or k == "continue_stmt"
+        or k == "expr_stmt" or k == "assignment" or k == "let_decl" or k == "var_decl"
+}
+
+fn format_brace_block(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let sp: i32 = field_pos(json, pos, "statements")
+    let sc: i32 = array_count(json, sp)
+    let has_final: bool = not field_is_null(json, pos, "final_expr")
+
+    // Empty block
+    if sc == 0 and not has_final {
+        fmt = emit(fmt,"{ }")
+        return fmt
+    }
+
+    // Single simple statement
+    if sc == 1 and not has_final {
+        let sa: i32 = array_start(json, sp)
+        if is_simple_stmt(json, sa) {
+            fmt = emit(fmt,"{ ")
+            fmt = format_stmt_inline(fmt, json, sa)
+            fmt = emit(fmt," }")
+            return fmt
+        }
+    }
+
+    // Single final expression (no statements)
+    if sc == 0 and has_final {
+        let fep: i32 = field_pos(json, pos, "final_expr")
+        fmt = emit(fmt,"{ ")
+        fmt = format_expr(fmt, json, fep)
+        fmt = emit(fmt," }")
+        return fmt
+    }
+
+    // Multi-line block
+    fmt = emit(fmt,"{")
+    fmt = write_newline(fmt)
+    fmt = format_block_body(fmt, json, pos)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+fn format_block_body(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = inc_indent(f)
+
+    let sp: i32 = field_pos(json, pos, "statements")
+    var sa: i32 = array_start(json, sp)
+    while sa >= 0 {
+        fmt = format_stmt(fmt, json, sa)
+        fmt = write_newline(fmt)
+        sa = array_next(json, sa)
+    }
+
+    // Final expression
+    if not field_is_null(json, pos, "final_expr") {
+        let fep: i32 = field_pos(json, pos, "final_expr")
+        fmt = write_indent(fmt)
+        fmt = format_expr(fmt, json, fep)
+        fmt = write_newline(fmt)
+    }
+
+    fmt = dec_indent(fmt)
+    return fmt
+}
+
+fn format_stmt_inline(f: Formatter, json: string, pos: i32) -> Formatter {
+    let kind: (string, bool) = field_string(json, pos, "kind")
+    let k: string = kind.0
+
+    if k == "return_stmt" {
+        var fmt: Formatter = emit(f,"return")
+        if not field_is_null(json, pos, "value") {
+            let vp: i32 = field_pos(json, pos, "value")
+            fmt = emit(fmt," ")
+            fmt = format_expr(fmt, json, vp)
+        }
+        return fmt
+    }
+    if k == "expr_stmt" {
+        let ep: i32 = field_pos(json, pos, "expr")
+        return format_expr(f, json, ep)
+    }
+    if k == "assignment" {
+        var fmt: Formatter = f
+        let tp: i32 = field_pos(json, pos, "target")
+        fmt = format_expr(fmt, json, tp)
+        fmt = emit(fmt," ")
+        let op: (string, bool) = field_string(json, pos, "op")
+        fmt = emit(fmt,assign_op_str(op.0))
+        fmt = emit(fmt," ")
+        let vp: i32 = field_pos(json, pos, "value")
+        fmt = format_expr(fmt, json, vp)
+        return fmt
+    }
+    // Fallback to full statement formatting (without indent)
+    return format_stmt(f, json, pos)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Expression formatting
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn format_expr(f: Formatter, json: string, pos: i32) -> Formatter {
+    let kind: (string, bool) = field_string(json, pos, "kind")
+    let k: string = kind.0
+
+    if k == "literal" { return format_literal(f, json, pos) }
+    if k == "identifier" { return format_identifier(f, json, pos) }
+    if k == "binary" { return format_binary(f, json, pos) }
+    if k == "unary" { return format_unary(f, json, pos) }
+    if k == "postfix" { return format_postfix(f, json, pos) }
+    if k == "call" { return format_call(f, json, pos) }
+    if k == "method_call" { return format_method_call(f, json, pos) }
+    if k == "field" { return format_field_access(f, json, pos) }
+    if k == "index" { return format_index(f, json, pos) }
+    if k == "closure" { return format_closure(f, json, pos) }
+    if k == "block" { return format_block_expr(f, json, pos) }
+    if k == "range" { return format_range(f, json, pos) }
+    if k == "struct_literal" { return format_struct_literal(f, json, pos) }
+    if k == "array_literal" { return format_array_literal(f, json, pos) }
+    if k == "tuple_literal" { return format_tuple_literal(f, json, pos) }
+    if k == "type_cast" { return format_type_cast(f, json, pos) }
+    if k == "grouped" { return format_grouped(f, json, pos) }
+    if k == "interpolated_string" { return format_interpolated(f, json, pos) }
+    if k == "enum_literal" { return format_enum_literal(f, json, pos) }
+    if k == "comptime_block" { return format_comptime_block(f, json, pos) }
+    if k == "builtin_call" { return format_builtin_call(f, json, pos) }
+    if k == "unsafe_block" { return format_unsafe_block(f, json, pos) }
+    if k == "out_arg" { return format_out_arg(f, json, pos) }
+    if k == "if_expr" { return format_if_expr(f, json, pos) }
+    if k == "match_expr" { return format_match_expr(f, json, pos) }
+    return f
+}
+
+fn format_literal(f: Formatter, json: string, pos: i32) -> Formatter {
+    let typ: (string, bool) = field_string(json, pos, "type")
+    let val: (string, bool) = field_string(json, pos, "value")
+
+    if typ.0 == "string" {
+        return emit(emit(emit(f, "\""), val.0), "\"")
+    }
+    if typ.0 == "char" {
+        return emit(emit(emit(f, "'"), val.0), "'")
+    }
+    if typ.0 == "bool" {
+        let bv: (bool, bool) = field_bool(json, pos, "value")
+        if bv.0 { return emit(f, "true") }
+        return emit(f, "false")
+    }
+    // int or float — use value as-is
+    return emit(f, val.0)
+}
+
+fn format_identifier(f: Formatter, json: string, pos: i32) -> Formatter {
+    let name: (string, bool) = field_string(json, pos, "name")
+    return emit(f, name.0)
+}
+
+fn format_binary(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let lp: i32 = field_pos(json, pos, "left")
+    fmt = format_expr(fmt, json, lp)
+    fmt = emit(fmt," ")
+    let op: (string, bool) = field_string(json, pos, "op")
+    fmt = emit(fmt,binary_op_str(op.0))
+    fmt = emit(fmt," ")
+    let rp: i32 = field_pos(json, pos, "right")
+    fmt = format_expr(fmt, json, rp)
+    return fmt
+}
+
+fn format_unary(f: Formatter, json: string, pos: i32) -> Formatter {
+    let op: (string, bool) = field_string(json, pos, "op")
+    var fmt: Formatter = f
+
+    if op.0 == "negate" {
+        fmt = emit(fmt,"-")
+        let ep: i32 = field_pos(json, pos, "operand")
+        fmt = format_expr(fmt, json, ep)
+    } else if op.0 == "not" {
+        fmt = emit(fmt,"not ")
+        let ep: i32 = field_pos(json, pos, "operand")
+        fmt = format_expr(fmt, json, ep)
+    } else if op.0 == "await_" {
+        fmt = emit(fmt,"await ")
+        let ep: i32 = field_pos(json, pos, "operand")
+        fmt = format_expr(fmt, json, ep)
+    } else if op.0 == "ref" or op.0 == "ref_mut" {
+        fmt = emit(fmt,"ref ")
+        let ep: i32 = field_pos(json, pos, "operand")
+        fmt = format_expr(fmt, json, ep)
+    } else if op.0 == "deref" {
+        fmt = emit(fmt,"*")
+        let ep: i32 = field_pos(json, pos, "operand")
+        fmt = format_expr(fmt, json, ep)
+    } else {
+        let ep: i32 = field_pos(json, pos, "operand")
+        fmt = format_expr(fmt, json, ep)
+    }
+    return fmt
+}
+
+fn format_postfix(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let ep: i32 = field_pos(json, pos, "operand")
+    fmt = format_expr(fmt, json, ep)
+    let op: (string, bool) = field_string(json, pos, "op")
+    if op.0 == "unwrap" { fmt = emit(fmt,"?") }
+    else if op.0 == "force_unwrap" { fmt = emit(fmt,"!") }
+    return fmt
+}
+
+fn format_call(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let cp: i32 = field_pos(json, pos, "callee")
+    fmt = format_expr(fmt, json, cp)
+
+    // Type args
+    if not field_is_null(json, pos, "type_args") {
+        let tap: i32 = field_pos(json, pos, "type_args")
+        let tac: i32 = array_count(json, tap)
+        if tac > 0 {
+            fmt = emit(fmt,"#[")
+            var ta: i32 = array_start(json, tap)
+            var ti: i32 = 0
+            while ta >= 0 {
+                if ti > 0 { fmt = emit(fmt,", ") }
+                fmt = format_type_expr(fmt, json, ta)
+                ti = ti + 1
+                ta = array_next(json, ta)
+            }
+            fmt = emit(fmt,"]")
+        }
+    }
+
+    fmt = emit(fmt,"(")
+    let ap: i32 = field_pos(json, pos, "args")
+    var aa: i32 = array_start(json, ap)
+    var ai: i32 = 0
+    while aa >= 0 {
+        if ai > 0 { fmt = emit(fmt,", ") }
+        fmt = format_expr(fmt, json, aa)
+        ai = ai + 1
+        aa = array_next(json, aa)
+    }
+    fmt = emit(fmt,")")
+    return fmt
+}
+
+fn format_method_call(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let op: i32 = field_pos(json, pos, "object")
+    fmt = format_expr(fmt, json, op)
+    fmt = emit(fmt,".")
+    let mn: (string, bool) = field_string(json, pos, "method_name")
+    fmt = emit(fmt,mn.0)
+
+    // Type args
+    if not field_is_null(json, pos, "type_args") {
+        let tap: i32 = field_pos(json, pos, "type_args")
+        let tac: i32 = array_count(json, tap)
+        if tac > 0 {
+            fmt = emit(fmt,"#[")
+            var ta: i32 = array_start(json, tap)
+            var ti: i32 = 0
+            while ta >= 0 {
+                if ti > 0 { fmt = emit(fmt,", ") }
+                fmt = format_type_expr(fmt, json, ta)
+                ti = ti + 1
+                ta = array_next(json, ta)
+            }
+            fmt = emit(fmt,"]")
+        }
+    }
+
+    fmt = emit(fmt,"(")
+    let ap: i32 = field_pos(json, pos, "args")
+    var aa: i32 = array_start(json, ap)
+    var ai: i32 = 0
+    while aa >= 0 {
+        if ai > 0 { fmt = emit(fmt,", ") }
+        fmt = format_expr(fmt, json, aa)
+        ai = ai + 1
+        aa = array_next(json, aa)
+    }
+    fmt = emit(fmt,")")
+    return fmt
+}
+
+fn format_field_access(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let op: i32 = field_pos(json, pos, "object")
+    fmt = format_expr(fmt, json, op)
+    fmt = emit(fmt,".")
+    let fn2: (string, bool) = field_string(json, pos, "field_name")
+    fmt = emit(fmt,fn2.0)
+    return fmt
+}
+
+fn format_index(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let op: i32 = field_pos(json, pos, "object")
+    fmt = format_expr(fmt, json, op)
+    fmt = emit(fmt,"[")
+    let ip: i32 = field_pos(json, pos, "index")
+    fmt = format_expr(fmt, json, ip)
+    fmt = emit(fmt,"]")
+    return fmt
+}
+
+fn format_closure(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = emit(f,"|")
+    let pp: i32 = field_pos(json, pos, "params")
+    var pa: i32 = array_start(json, pp)
+    var pi: i32 = 0
+    while pa >= 0 {
+        if pi > 0 { fmt = emit(fmt,", ") }
+        let pn: (string, bool) = field_string(json, pa, "name")
+        fmt = emit(fmt,pn.0)
+        fmt = emit(fmt,": ")
+        let tp: i32 = field_pos(json, pa, "type")
+        fmt = format_type_expr(fmt, json, tp)
+        pi = pi + 1
+        pa = array_next(json, pa)
+    }
+    fmt = emit(fmt,"| -> ")
+    let rtp: i32 = field_pos(json, pos, "return_type")
+    fmt = format_type_expr(fmt, json, rtp)
+    fmt = emit(fmt," ")
+
+    // Body — closure body is wrapped: {"kind":"block","body":{"statements":[...]}}
+    let body_expr: i32 = field_pos(json, pos, "body")
+    // Check if it's a block expression wrapper
+    let body_kind: (string, bool) = field_string(json, body_expr, "kind")
+    var bp: i32 = body_expr
+    if body_kind.0 == "block" {
+        bp = field_pos(json, body_expr, "body")
+    }
+    let sp: i32 = field_pos(json, bp, "statements")
+    let sc: i32 = array_count(json, sp)
+    if sc <= 1 and field_is_null(json, bp, "final_expr") {
+        fmt = emit(fmt,"{ ")
+        if sc == 1 {
+            let sa: i32 = array_start(json, sp)
+            fmt = format_stmt_inline(fmt, json, sa)
+        }
+        fmt = emit(fmt," }")
+    } else {
+        fmt = emit(fmt,"{")
+        fmt = write_newline(fmt)
+        fmt = format_block_body(fmt, json, bp)
+        fmt = write_indent(fmt)
+        fmt = emit(fmt,"}")
+    }
+    return fmt
+}
+
+fn format_block_expr(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = emit(f,"{")
+    fmt = write_newline(fmt)
+    fmt = format_block_body(fmt, json, pos)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+fn format_range(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    if not field_is_null(json, pos, "start") {
+        let sp: i32 = field_pos(json, pos, "start")
+        fmt = format_expr(fmt, json, sp)
+    }
+    let incl: (bool, bool) = field_bool(json, pos, "inclusive")
+    if incl.0 {
+        fmt = emit(fmt,"..=")
+    } else {
+        fmt = emit(fmt,"..")
+    }
+    if not field_is_null(json, pos, "end") {
+        let ep: i32 = field_pos(json, pos, "end")
+        fmt = format_expr(fmt, json, ep)
+    }
+    return fmt
+}
+
+fn format_struct_literal(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    if not field_is_null(json, pos, "type_name") {
+        let tnp: i32 = field_pos(json, pos, "type_name")
+        fmt = format_type_expr(fmt, json, tnp)
+        fmt = emit(fmt," ")
+    }
+    fmt = emit(fmt,"{ ")
+    let fp: i32 = field_pos(json, pos, "fields")
+    var fa: i32 = array_start(json, fp)
+    var fi: i32 = 0
+    while fa >= 0 {
+        if fi > 0 { fmt = emit(fmt,", ") }
+        let fn2: (string, bool) = field_string(json, fa, "name")
+        fmt = emit(fmt,fn2.0)
+        fmt = emit(fmt,": ")
+        let vp: i32 = field_pos(json, fa, "value")
+        fmt = format_expr(fmt, json, vp)
+        fi = fi + 1
+        fa = array_next(json, fa)
+    }
+    if not field_is_null(json, pos, "spread") {
+        if fi > 0 { fmt = emit(fmt,", ") }
+        fmt = emit(fmt,"..")
+        let sp: i32 = field_pos(json, pos, "spread")
+        fmt = format_expr(fmt, json, sp)
+    }
+    fmt = emit(fmt," }")
+    return fmt
+}
+
+fn format_array_literal(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = emit(f,"[")
+    let ep: i32 = field_pos(json, pos, "elements")
+    var ea: i32 = array_start(json, ep)
+    var ei: i32 = 0
+    while ea >= 0 {
+        if ei > 0 { fmt = emit(fmt,", ") }
+        fmt = format_expr(fmt, json, ea)
+        ei = ei + 1
+        ea = array_next(json, ea)
+    }
+    fmt = emit(fmt,"]")
+    return fmt
+}
+
+fn format_tuple_literal(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = emit(f,"(")
+    let ep: i32 = field_pos(json, pos, "elements")
+    var ea: i32 = array_start(json, ep)
+    var ei: i32 = 0
+    while ea >= 0 {
+        if ei > 0 { fmt = emit(fmt,", ") }
+        fmt = format_expr(fmt, json, ea)
+        ei = ei + 1
+        ea = array_next(json, ea)
+    }
+    fmt = emit(fmt,")")
+    return fmt
+}
+
+fn format_type_cast(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let ep: i32 = field_pos(json, pos, "expr")
+    fmt = format_expr(fmt, json, ep)
+    let trunc: (bool, bool) = field_bool(json, pos, "truncating")
+    if trunc.0 {
+        fmt = emit(fmt,".trunc#[")
+    } else {
+        let fallible: (bool, bool) = field_bool(json, pos, "fallible")
+        if fallible.0 {
+            fmt = emit(fmt,".to#[")
+        } else {
+            fmt = emit(fmt,".as#[")
+        }
+    }
+    let tp: i32 = field_pos(json, pos, "target_type")
+    fmt = format_type_expr(fmt, json, tp)
+    fmt = emit(fmt,"]")
+    return fmt
+}
+
+fn format_grouped(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = emit(f,"(")
+    let ep: i32 = field_pos(json, pos, "expr")
+    fmt = format_expr(fmt, json, ep)
+    fmt = emit(fmt,")")
+    return fmt
+}
+
+fn format_interpolated(f: Formatter, json: string, pos: i32) -> Formatter {
+    // Interpolated strings need source text — use raw value from JSON
+    let val: (string, bool) = field_string(json, pos, "value")
+    return emit(f, val.0)
+}
+
+fn format_enum_literal(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let etp: i32 = field_pos(json, pos, "enum_type")
+    fmt = format_type_expr(fmt, json, etp)
+    fmt = emit(fmt,"::")
+    let vn: (string, bool) = field_string(json, pos, "variant_name")
+    fmt = emit(fmt,vn.0)
+
+    let pp: i32 = field_pos(json, pos, "payload")
+    let pc: i32 = array_count(json, pp)
+    if pc > 0 {
+        fmt = emit(fmt,"(")
+        var pa: i32 = array_start(json, pp)
+        var pi: i32 = 0
+        while pa >= 0 {
+            if pi > 0 { fmt = emit(fmt,", ") }
+            fmt = format_expr(fmt, json, pa)
+            pi = pi + 1
+            pa = array_next(json, pa)
+        }
+        fmt = emit(fmt,")")
+    }
+    return fmt
+}
+
+fn format_comptime_block(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    let bp: i32 = field_pos(json, pos, "body")
+    let sp: i32 = field_pos(json, bp, "statements")
+    let sc: i32 = array_count(json, sp)
+
+    if sc == 0 and not field_is_null(json, bp, "final_expr") {
+        let fep: i32 = field_pos(json, bp, "final_expr")
+        fmt = emit(fmt,"@{ ")
+        fmt = format_expr(fmt, json, fep)
+        fmt = emit(fmt," }")
+    } else {
+        fmt = emit(fmt,"@{")
+        fmt = write_newline(fmt)
+        fmt = format_block_body(fmt, json, bp)
+        fmt = write_indent(fmt)
+        fmt = emit(fmt,"}")
+    }
+    return fmt
+}
+
+fn format_builtin_call(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    fmt = emit(fmt,"@")
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,name.0)
+    fmt = emit(fmt,"(")
+    let ap: i32 = field_pos(json, pos, "args")
+    var aa: i32 = array_start(json, ap)
+    var ai: i32 = 0
+    while aa >= 0 {
+        if ai > 0 { fmt = emit(fmt,", ") }
+        let ak: (string, bool) = field_string(json, aa, "kind")
+        let avp: i32 = field_pos(json, aa, "value")
+        if ak.0 == "type" {
+            fmt = format_type_expr(fmt, json, avp)
+        } else {
+            fmt = format_expr(fmt, json, avp)
+        }
+        ai = ai + 1
+        aa = array_next(json, aa)
+    }
+    fmt = emit(fmt,")")
+    return fmt
+}
+
+fn format_unsafe_block(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = emit(f,"unsafe {")
+    fmt = write_newline(fmt)
+    let bp: i32 = field_pos(json, pos, "body")
+    fmt = format_block_body(fmt, json, bp)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+fn format_out_arg(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = emit(f,"out ")
+    let name: (string, bool) = field_string(json, pos, "name")
+    fmt = emit(fmt,name.0)
+    return fmt
+}
+
+fn format_if_expr(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    fmt = emit(fmt,"if ")
+    let cp: i32 = field_pos(json, pos, "condition")
+    fmt = format_expr(fmt, json, cp)
+    fmt = emit(fmt," { ")
+    let tp: i32 = field_pos(json, pos, "then")
+    fmt = format_expr(fmt, json, tp)
+    fmt = emit(fmt," } else { ")
+    let ep: i32 = field_pos(json, pos, "else")
+    fmt = format_expr(fmt, json, ep)
+    fmt = emit(fmt," }")
+    return fmt
+}
+
+fn format_match_expr(f: Formatter, json: string, pos: i32) -> Formatter {
+    var fmt: Formatter = f
+    fmt = emit(fmt,"match ")
+    let sp: i32 = field_pos(json, pos, "subject")
+    fmt = format_expr(fmt, json, sp)
+    fmt = emit(fmt," {")
+    fmt = write_newline(fmt)
+    fmt = inc_indent(fmt)
+
+    let ap: i32 = field_pos(json, pos, "arms")
+    var aa: i32 = array_start(json, ap)
+    while aa >= 0 {
+        fmt = write_indent(fmt)
+        let pp: i32 = field_pos(json, aa, "pattern")
+        fmt = format_pattern(fmt, json, pp)
+        fmt = emit(fmt," => ")
+        let bp: i32 = field_pos(json, aa, "body")
+        fmt = format_brace_block(fmt, json, bp)
+        fmt = write_newline(fmt)
+        aa = array_next(json, aa)
+    }
+
+    fmt = dec_indent(fmt)
+    fmt = write_indent(fmt)
+    fmt = emit(fmt,"}")
+    return fmt
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Pattern formatting
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn format_pattern(f: Formatter, json: string, pos: i32) -> Formatter {
+    let kind: (string, bool) = field_string(json, pos, "kind")
+    let k: string = kind.0
+
+    if k == "wildcard" { return emit(f, "_") }
+    if k == "literal" {
+        let val: (string, bool) = field_string(json, pos, "value")
+        let typ: (string, bool) = field_string(json, pos, "type")
+        if typ.0 == "string" { return emit(emit(emit(f, "\""), val.0), "\"") }
+        if typ.0 == "char" { return emit(emit(emit(f, "'"), val.0), "'") }
+        return emit(f, val.0)
+    }
+    if k == "binding" {
+        var fmt: Formatter = f
+        let is_mut: (bool, bool) = field_bool(json, pos, "mutable")
+        if is_mut.0 { fmt = emit(fmt,"var ") }
+        let name: (string, bool) = field_string(json, pos, "name")
+        fmt = emit(fmt,name.0)
+        if not field_is_null(json, pos, "type_annotation") {
+            let tap: i32 = field_pos(json, pos, "type_annotation")
+            fmt = emit(fmt,": ")
+            fmt = format_type_expr(fmt, json, tap)
+        }
+        return fmt
+    }
+    if k == "variant" {
+        var fmt: Formatter = f
+        if not field_is_null(json, pos, "type_expr") {
+            let tep: i32 = field_pos(json, pos, "type_expr")
+            fmt = format_type_expr(fmt, json, tep)
+            fmt = emit(fmt,".")
+        }
+        let vn: (string, bool) = field_string(json, pos, "variant_name")
+        fmt = emit(fmt,vn.0)
+        if not field_is_null(json, pos, "payload") {
+            let pp: i32 = field_pos(json, pos, "payload")
+            fmt = emit(fmt,"(")
+            fmt = format_pattern(fmt, json, pp)
+            fmt = emit(fmt,")")
+        }
+        return fmt
+    }
+    if k == "struct_pattern" {
+        var fmt: Formatter = f
+        if not field_is_null(json, pos, "type_name") {
+            let tn: (string, bool) = field_string(json, pos, "type_name")
+            fmt = emit(fmt,tn.0)
+            fmt = emit(fmt," ")
+        }
+        fmt = emit(fmt,"{ ")
+        let fp: i32 = field_pos(json, pos, "fields")
+        var fa: i32 = array_start(json, fp)
+        var fi: i32 = 0
+        while fa >= 0 {
+            if fi > 0 { fmt = emit(fmt,", ") }
+            let fn2: (string, bool) = field_string(json, fa, "name")
+            fmt = emit(fmt,fn2.0)
+            if not field_is_null(json, fa, "pattern") {
+                let pp: i32 = field_pos(json, fa, "pattern")
+                fmt = emit(fmt,": ")
+                fmt = format_pattern(fmt, json, pp)
+            }
+            fi = fi + 1
+            fa = array_next(json, fa)
+        }
+        fmt = emit(fmt," }")
+        return fmt
+    }
+    if k == "tuple_pattern" {
+        var fmt: Formatter = emit(f,"(")
+        let ep: i32 = field_pos(json, pos, "elements")
+        var ea: i32 = array_start(json, ep)
+        var ei: i32 = 0
+        while ea >= 0 {
+            if ei > 0 { fmt = emit(fmt,", ") }
+            fmt = format_pattern(fmt, json, ea)
+            ei = ei + 1
+            ea = array_next(json, ea)
+        }
+        fmt = emit(fmt,")")
+        return fmt
+    }
+    if k == "or_pattern" {
+        var fmt: Formatter = f
+        let ap: i32 = field_pos(json, pos, "alternatives")
+        var aa: i32 = array_start(json, ap)
+        var ai: i32 = 0
+        while aa >= 0 {
+            if ai > 0 { fmt = emit(fmt," | ") }
+            fmt = format_pattern(fmt, json, aa)
+            ai = ai + 1
+            aa = array_next(json, aa)
+        }
+        return fmt
+    }
+    return f
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Type expression formatting
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn format_type_expr(f: Formatter, json: string, pos: i32) -> Formatter {
+    let kind: (string, bool) = field_string(json, pos, "kind")
+    let k: string = kind.0
+
+    if k == "named" {
+        let name: (string, bool) = field_string(json, pos, "name")
+        return emit(f, name.0)
+    }
+    if k == "array" {
+        var fmt: Formatter = emit(f,"[")
+        let elp: i32 = field_pos(json, pos, "element")
+        fmt = format_type_expr(fmt, json, elp)
+        fmt = emit(fmt,"; ")
+        let szp: i32 = field_pos(json, pos, "size")
+        fmt = format_expr(fmt, json, szp)
+        fmt = emit(fmt,"]")
+        return fmt
+    }
+    if k == "slice" {
+        var fmt: Formatter = emit(f,"[")
+        let elp: i32 = field_pos(json, pos, "element")
+        fmt = format_type_expr(fmt, json, elp)
+        fmt = emit(fmt,"]")
+        return fmt
+    }
+    if k == "tuple" {
+        var fmt: Formatter = emit(f,"(")
+        let ep: i32 = field_pos(json, pos, "elements")
+        var ea: i32 = array_start(json, ep)
+        var ei: i32 = 0
+        while ea >= 0 {
+            if ei > 0 { fmt = emit(fmt,", ") }
+            fmt = format_type_expr(fmt, json, ea)
+            ei = ei + 1
+            ea = array_next(json, ea)
+        }
+        fmt = emit(fmt,")")
+        return fmt
+    }
+    if k == "optional" {
+        var fmt: Formatter = emit(f,"?")
+        let ip: i32 = field_pos(json, pos, "inner")
+        fmt = format_type_expr(fmt, json, ip)
+        return fmt
+    }
+    if k == "result" {
+        var fmt: Formatter = emit(f,"Result#[")
+        let okp: i32 = field_pos(json, pos, "ok_type")
+        fmt = format_type_expr(fmt, json, okp)
+        fmt = emit(fmt,", ")
+        let ep: i32 = field_pos(json, pos, "err_type")
+        fmt = format_type_expr(fmt, json, ep)
+        fmt = emit(fmt,"]")
+        return fmt
+    }
+    if k == "function" {
+        var fmt: Formatter = emit(f,"fn(")
+        let pp: i32 = field_pos(json, pos, "params")
+        var pa: i32 = array_start(json, pp)
+        var pi: i32 = 0
+        while pa >= 0 {
+            if pi > 0 { fmt = emit(fmt,", ") }
+            fmt = format_type_expr(fmt, json, pa)
+            pi = pi + 1
+            pa = array_next(json, pa)
+        }
+        fmt = emit(fmt,") -> ")
+        let rtp: i32 = field_pos(json, pos, "return_type")
+        fmt = format_type_expr(fmt, json, rtp)
+        return fmt
+    }
+    if k == "extern_function" {
+        var fmt: Formatter = emit(f,"extern fn(")
+        let pp: i32 = field_pos(json, pos, "params")
+        var pa: i32 = array_start(json, pp)
+        var pi: i32 = 0
+        while pa >= 0 {
+            if pi > 0 { fmt = emit(fmt,", ") }
+            fmt = format_type_expr(fmt, json, pa)
+            pi = pi + 1
+            pa = array_next(json, pa)
+        }
+        fmt = emit(fmt,") -> ")
+        let rtp: i32 = field_pos(json, pos, "return_type")
+        fmt = format_type_expr(fmt, json, rtp)
+        return fmt
+    }
+    if k == "reference" {
+        let is_mut: (bool, bool) = field_bool(json, pos, "mutable")
+        var fmt: Formatter = f
+        if is_mut.0 {
+            fmt = emit(fmt,"inout ")
+        } else {
+            fmt = emit(fmt,"ref ")
+        }
+        let ip: i32 = field_pos(json, pos, "inner")
+        fmt = format_type_expr(fmt, json, ip)
+        return fmt
+    }
+    if k == "generic_apply" {
+        var fmt: Formatter = f
+        let bp: i32 = field_pos(json, pos, "base")
+        fmt = format_type_expr(fmt, json, bp)
+        fmt = emit(fmt,"#[")
+        let ap: i32 = field_pos(json, pos, "args")
+        var aa: i32 = array_start(json, ap)
+        var ai: i32 = 0
+        while aa >= 0 {
+            if ai > 0 { fmt = emit(fmt,", ") }
+            fmt = format_type_expr(fmt, json, aa)
+            ai = ai + 1
+            aa = array_next(json, aa)
+        }
+        fmt = emit(fmt,"]")
+        return fmt
+    }
+    if k == "qualified" {
+        var fmt: Formatter = f
+        let bp: i32 = field_pos(json, pos, "base")
+        fmt = format_type_expr(fmt, json, bp)
+        fmt = emit(fmt,".")
+        let mn: (string, bool) = field_string(json, pos, "member")
+        fmt = emit(fmt,mn.0)
+        return fmt
+    }
+    return f
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Entry point test
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn main(args: [String]) -> i32 {
+    if args.len() < 2 {
+        println("Usage: klar run selfhost/formatter.kl <file.kl>")
+        return 1
+    }
+    let path_arg: String = args[1]
+    let path: string = path_arg.as_str()
+    let file_result: Result#[String, IoError] = File.read_to_string(path)
+    if not file_result.is_ok() {
+        println("error: could not read file: " + path)
+        return 2
+    }
+    let content: String = file_result!
+    let source: string = content.as_str()
+    let formatted: string = format_source(source)
+    // Use println instead of print to avoid printf format interpretation of %
+    // Strip the trailing newline that format_source adds
+    let flen: i32 = formatted.byte_len()
+    if flen > 0 and formatted.byte_at(flen - 1).as#[i32] == 10 {
+        println(formatted.slice(0, flen - 1))
+    } else {
+        println(formatted)
+    }
+    return 0
+}
