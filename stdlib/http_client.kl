@@ -207,6 +207,7 @@ pub fn http_request(method: string, url: string, headers: Map#[string, string], 
     }
 
     // Read response (read in chunks until we have headers + Content-Length body, or connection closes)
+    // Cap: 1000 iterations * 65536 bytes = ~65 MB max response size
     var response_data: string = ""
     for _i: i32 in 0..1000 {
         let rr: Result#[string, IoError] = tcp_read(stream, 65536)

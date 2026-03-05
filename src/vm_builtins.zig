@@ -627,6 +627,9 @@ var warned_env_set: bool = false;
 var warned_fs_stat: bool = false;
 var warned_process_run: bool = false;
 var warned_process_spawn: bool = false;
+var warned_process_poll: bool = false;
+var warned_process_wait: bool = false;
+var warned_process_read_stdout: bool = false;
 var warned_tcp: bool = false;
 
 /// Reset stub warning flags. Call when initializing a new VM instance so that
@@ -637,6 +640,9 @@ pub fn resetStubWarnings() void {
     warned_fs_stat = false;
     warned_process_run = false;
     warned_process_spawn = false;
+    warned_process_poll = false;
+    warned_process_wait = false;
+    warned_process_read_stdout = false;
     warned_tcp = false;
 }
 
@@ -718,8 +724,8 @@ fn nativeProcessSpawn(allocator: Allocator, args: []const Value) RuntimeError!Va
 
 fn nativeProcessPoll(allocator: Allocator, args: []const Value) RuntimeError!Value {
     _ = args;
-    if (!warned_process_spawn) {
-        warned_process_spawn = true;
+    if (!warned_process_poll) {
+        warned_process_poll = true;
         warnVmStub("process_poll");
     }
     const gc = active_gc orelse return RuntimeError.TypeError;
@@ -731,8 +737,8 @@ fn nativeProcessPoll(allocator: Allocator, args: []const Value) RuntimeError!Val
 
 fn nativeProcessWait(allocator: Allocator, args: []const Value) RuntimeError!Value {
     _ = args;
-    if (!warned_process_spawn) {
-        warned_process_spawn = true;
+    if (!warned_process_wait) {
+        warned_process_wait = true;
         warnVmStub("process_wait");
     }
     const gc = active_gc orelse return RuntimeError.TypeError;
@@ -744,8 +750,8 @@ fn nativeProcessWait(allocator: Allocator, args: []const Value) RuntimeError!Val
 
 fn nativeProcessReadStdout(allocator: Allocator, args: []const Value) RuntimeError!Value {
     _ = args;
-    if (!warned_process_spawn) {
-        warned_process_spawn = true;
+    if (!warned_process_read_stdout) {
+        warned_process_read_stdout = true;
         warnVmStub("process_read_stdout");
     }
     const gc = active_gc orelse return RuntimeError.TypeError;

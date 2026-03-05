@@ -26939,6 +26939,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), wstatus_alloca);
 
         // WNOHANG = 1 on both macOS and Linux
+        // Note: EINTR is theoretically possible but extremely unlikely with WNOHANG
         const waitpid_fn = self.getOrDeclareWaitpid();
         const wp_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(waitpid_fn), waitpid_fn, &[_]llvm.ValueRef{ pid, wstatus_alloca, llvm.Const.int32(self.ctx, 1) }, "poll.wp");
 
@@ -27017,11 +27018,16 @@ pub const Emitter = struct {
         const stderr_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 2, "wait.efd_p");
         const stderr_fd = self.builder.buildLoad(i32_type, stderr_fd_ptr, "wait.efd");
 
+        // Close stderr pipe immediately to prevent deadlock — we don't capture stderr.
+        // If the child fills the stderr pipe buffer (~64 KiB), it blocks on write()
+        // while we block on read(stdout), causing a permanent deadlock.
+        const close_fn = self.getOrDeclareClose();
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stderr_fd}, "");
+
         // Read all stdout into a buffer
         const malloc_fn = self.getOrDeclareMalloc();
         const realloc_fn = self.getOrDeclareRealloc();
         const read_fn = self.getOrDeclareRead();
-        const close_fn = self.getOrDeclareClose();
 
         const init_cap: u64 = 4096;
         const out_buf_alloca = self.builder.buildAlloca(ptr_type, "wait.outbuf");
@@ -27054,6 +27060,12 @@ pub const Emitter = struct {
         self.builder.positionAtEnd(grow_bb);
         const new_cap = llvm.c.LLVMBuildMul(self.builder.ref, cur_cap, llvm.Const.int64(self.ctx, 2), "wait.ncap");
         const new_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &[_]llvm.ValueRef{ cur_buf, new_cap }, "wait.nbuf");
+        // On OOM, realloc returns null but original buffer is still valid — stop reading with truncated output
+        const realloc_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, new_buf, llvm.c.LLVMConstNull(ptr_type), "wait.oom");
+        const realloc_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wait.realloc_ok");
+        _ = self.builder.buildCondBr(realloc_null, read_done_bb, realloc_ok_bb);
+
+        self.builder.positionAtEnd(realloc_ok_bb);
         _ = self.builder.buildStore(new_buf, out_buf_alloca);
         _ = self.builder.buildStore(new_cap, out_cap_alloca);
         _ = self.builder.buildBr(do_read_bb);
@@ -27079,10 +27091,9 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(new_len, out_len_alloca);
         _ = self.builder.buildBr(read_loop_bb);
 
-        // Read done: close fds, waitpid, build result
+        // Read done: close stdout fd, waitpid, build result (stderr already closed above)
         self.builder.positionAtEnd(read_done_bb);
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stdout_fd}, "");
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stderr_fd}, "");
 
         // Null-terminate stdout
         const final_buf = self.builder.buildLoad(ptr_type, out_buf_alloca, "wait.fb");
@@ -27092,6 +27103,7 @@ pub const Emitter = struct {
         _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), term_ptr);
 
         // waitpid(pid, &status, 0) — blocking
+        // Note: EINTR possible on long waits; child is likely already exited since pipes are drained
         const wstatus_alloca = self.builder.buildAlloca(i32_type, "wait.ws");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), wstatus_alloca);
         const waitpid_fn = self.getOrDeclareWaitpid();
@@ -27151,15 +27163,23 @@ pub const Emitter = struct {
         const malloc_fn = self.getOrDeclareMalloc();
         const buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{buf_size}, "prs.buf");
 
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "prs.ok");
+        const err_bb = llvm.appendBasicBlock(self.ctx, func, "prs.err");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "prs.cont");
+
+        // Check malloc for OOM — free(NULL) is safe in err_bb
+        const buf_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, buf, llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx)), "prs.oom");
+        const malloc_ok_bb = llvm.appendBasicBlock(self.ctx, func, "prs.malloc_ok");
+        _ = self.builder.buildCondBr(buf_null, err_bb, malloc_ok_bb);
+
+        self.builder.positionAtEnd(malloc_ok_bb);
+
         // read(stdout_fd, buf, max_bytes)
         const read_fn = self.getOrDeclareRead();
         const bytes_read = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(read_fn), read_fn, &[_]llvm.ValueRef{ stdout_fd, buf, max_i64 }, "prs.nr");
 
         // If bytes_read < 0, error
         const read_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, bytes_read, llvm.Const.int64(self.ctx, 0), "prs.fail");
-        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "prs.ok");
-        const err_bb = llvm.appendBasicBlock(self.ctx, func, "prs.err");
-        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "prs.cont");
         _ = self.builder.buildCondBr(read_fail, err_bb, ok_bb);
 
         // Ok: null-terminate, return string
@@ -27684,13 +27704,21 @@ pub const Emitter = struct {
         const malloc_fn = self.getOrDeclareMalloc();
         const buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{buf_size}, "tcpr.buf");
 
+        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "tcpr.ok");
+        const err_bb = llvm.appendBasicBlock(self.ctx, func, "tcpr.err");
+
+        // Check malloc for OOM — free(NULL) is safe in err_bb
+        const buf_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, buf, llvm.c.LLVMConstNull(llvm.Types.pointer(self.ctx)), "tcpr.oom");
+        const malloc_ok_bb = llvm.appendBasicBlock(self.ctx, func, "tcpr.malloc_ok");
+        _ = self.builder.buildCondBr(buf_null, err_bb, malloc_ok_bb);
+
+        self.builder.positionAtEnd(malloc_ok_bb);
+
         // recv(sock_fd, buf, max_bytes, 0)
         const recv_fn = self.getOrDeclareRecv();
         const bytes_read = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(recv_fn), recv_fn, &[_]llvm.ValueRef{ sock_fd, buf, max_i64, llvm.Const.int32(self.ctx, 0) }, "tcpr.nr");
 
         const read_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, bytes_read, llvm.Const.int64(self.ctx, 0), "tcpr.fail");
-        const ok_bb = llvm.appendBasicBlock(self.ctx, func, "tcpr.ok");
-        const err_bb = llvm.appendBasicBlock(self.ctx, func, "tcpr.err");
         _ = self.builder.buildCondBr(read_fail, err_bb, ok_bb);
 
         // Ok
