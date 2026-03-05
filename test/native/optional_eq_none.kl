@@ -42,7 +42,7 @@ fn main() -> i32 {
         return 6
     }
 
-    // Test 7: optional string
+    // Test 7: optional string with None
     let v3: ?string = None
     if v3 == None {
         // OK
@@ -50,8 +50,40 @@ fn main() -> i32 {
         return 7
     }
 
-    // Test 8: struct literal inside function call in if condition still works
-    // (regression check: no_struct_literal must be reset inside parens)
+    // Test 8: optional string with Some
+    let v4: ?string = Some("hello")
+    if v4 != None {
+        // OK
+    } else {
+        return 8
+    }
+    if v4 == None {
+        return 9
+    }
+
+    // Test 9: reversed None == ?string (v3 is None)
+    if None == v3 {
+        // OK
+    } else {
+        return 10
+    }
+
+    // Test 10: reversed None != ?string (v4 is Some)
+    if None != v4 {
+        // OK — None != Some("hello") is true
+    } else {
+        return 11
+    }
+
+    // Test 10: struct literal inside function call in if condition
+    // (regression: no_struct_literal must be reset inside parens)
+    var m: Map#[string, i32] = Map.new#[string, i32]()
+    m.insert("x", 1)
+    if m.len() == 1 {
+        // OK
+    } else {
+        return 12
+    }
 
     return 0
 }

@@ -4077,6 +4077,10 @@ pub const Emitter = struct {
             const left_is_none = bin.left == .identifier and std.mem.eql(u8, bin.left.identifier.name, "None");
             const right_is_none = bin.right == .identifier and std.mem.eql(u8, bin.right.identifier.name, "None");
             if (left_is_none or right_is_none) {
+                // None == None is trivially true, None != None is trivially false
+                if (left_is_none and right_is_none) {
+                    return llvm.Const.int1(self.ctx, bin.op == .eq);
+                }
                 // Emit the non-None side and extract its tag
                 const opt_val = if (right_is_none) try self.emitExpr(bin.left) else try self.emitExpr(bin.right);
                 const tag = self.builder.buildExtractValue(opt_val, 0, "opt.tag");

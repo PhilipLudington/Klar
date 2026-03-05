@@ -1186,9 +1186,11 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'if'
 
+        const saved_no_struct = self.no_struct_literal;
         self.no_struct_literal = true;
+        defer self.no_struct_literal = saved_no_struct;
         const condition = try self.parseExpression();
-        self.no_struct_literal = false;
+        self.no_struct_literal = saved_no_struct;
         const then_block = try self.parseBlock();
 
         var else_branch: ?*ast.ElseBranch = null;
@@ -1224,9 +1226,11 @@ pub const Parser = struct {
         self.advance(); // consume 'match'
 
         // Klar uses "match value { ... }" syntax (Rust-style)
+        const saved_no_struct_m = self.no_struct_literal;
         self.no_struct_literal = true;
+        defer self.no_struct_literal = saved_no_struct_m;
         const subject = try self.parseExpression();
-        self.no_struct_literal = false;
+        self.no_struct_literal = saved_no_struct_m;
 
         try self.consume(.l_brace, "expected '{' after match subject");
 
@@ -1896,9 +1900,11 @@ pub const Parser = struct {
         }
 
         try self.consume(.in, "expected 'in' after for pattern");
+        const saved_no_struct_f = self.no_struct_literal;
         self.no_struct_literal = true;
+        defer self.no_struct_literal = saved_no_struct_f;
         const iterable = try self.parseExpression();
-        self.no_struct_literal = false;
+        self.no_struct_literal = saved_no_struct_f;
         const body = try self.parseBlock();
 
         const for_loop = try self.create(ast.ForLoop, .{
@@ -1914,9 +1920,11 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'while'
 
+        const saved_no_struct_w = self.no_struct_literal;
         self.no_struct_literal = true;
+        defer self.no_struct_literal = saved_no_struct_w;
         const condition = try self.parseExpression();
-        self.no_struct_literal = false;
+        self.no_struct_literal = saved_no_struct_w;
         const body = try self.parseBlock();
 
         const while_loop = try self.create(ast.WhileLoop, .{

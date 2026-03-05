@@ -442,7 +442,15 @@ fn checkBinary(tc: anytype, bin: *ast.Binary) Type {
                 return tc.type_builder.boolType();
             }
             if (!left_type.eql(right_type)) {
-                tc.addError(.type_mismatch, bin.span, "comparison operands must have same type", .{});
+                // Allow `optional == None` and `None == optional` regardless of inner type,
+                // since codegen just checks the tag bit
+                const left_is_none = bin.left == .identifier and std.mem.eql(u8, bin.left.identifier.name, "None");
+                const right_is_none = bin.right == .identifier and std.mem.eql(u8, bin.right.identifier.name, "None");
+                const left_is_opt = left_type == .optional;
+                const right_is_opt = right_type == .optional;
+                if (!((left_is_none and right_is_opt) or (right_is_none and left_is_opt) or (left_is_none and right_is_none))) {
+                    tc.addError(.type_mismatch, bin.span, "comparison operands must have same type", .{});
+                }
             }
             return tc.type_builder.boolType();
         },
