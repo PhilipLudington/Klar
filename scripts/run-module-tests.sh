@@ -13,6 +13,27 @@ if [ ! -f "$KLAR" ]; then
     cd "$SCRIPT_DIR" && zig build || exit 1
 fi
 
+# Portable timeout: use 'timeout' if available, else 'gtimeout', else a shell fallback
+run_with_timeout() {
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$secs" "$@"
+    else
+        # Shell-based fallback: run in background, kill after timeout
+        "$@" &
+        local pid=$!
+        ( sleep "$secs"; kill "$pid" 2>/dev/null ) &
+        local watchdog=$!
+        wait "$pid" 2>/dev/null
+        local ret=$?
+        kill "$watchdog" 2>/dev/null
+        wait "$watchdog" 2>/dev/null
+        return $ret
+    fi
+}
+
 PASSED=0
 FAILED=0
 FAILURES=""
@@ -395,22 +416,15 @@ else
     echo "⊘ integration (test not found, skipping)"
 fi
 
-# Test 17 & 18: HTTP server/client tests require curl and POSIX (fork/pipe/socket)
-# Skip on Windows (no fork/pipe) or when curl is not installed
-HAS_CURL=false
-if command -v curl >/dev/null 2>&1; then
-    HAS_CURL=true
-fi
-
+# Test 17 & 18: HTTP server/client tests require POSIX process APIs (fork/pipe/execvp)
+# Skip on Windows where these APIs are not available
 echo "--- http_server: HTTP server library ---"
 temp_bin="/tmp/klar_module_http_server"
 if [[ "$OS" == "Windows_NT" ]]; then
     echo "⊘ http_server (skipped on Windows — requires POSIX process APIs)"
-elif [ "$HAS_CURL" = "false" ]; then
-    echo "⊘ http_server (skipped — curl not found)"
 elif [ -d "$TEST_DIR/http_server" ]; then
     if $KLAR build $TEST_DIR/http_server/main.kl -o "$temp_bin" 2>/dev/null; then
-        timeout 30 "$temp_bin" >/dev/null 2>&1
+        run_with_timeout 30 "$temp_bin" >/dev/null 2>&1
         result=$?
         if [ "$result" = "0" ]; then
             echo "✓ http_server (exit: $result)"
@@ -432,11 +446,9 @@ echo "--- http_client: HTTP client library ---"
 temp_bin="/tmp/klar_module_http_client"
 if [[ "$OS" == "Windows_NT" ]]; then
     echo "⊘ http_client (skipped on Windows — requires POSIX process APIs)"
-elif [ "$HAS_CURL" = "false" ]; then
-    echo "⊘ http_client (skipped — curl not found)"
 elif [ -d "$TEST_DIR/http_client" ]; then
     if $KLAR build $TEST_DIR/http_client/main.kl -o "$temp_bin" 2>/dev/null; then
-        timeout 30 "$temp_bin" >/dev/null 2>&1
+        run_with_timeout 30 "$temp_bin" >/dev/null 2>&1
         result=$?
         if [ "$result" = "0" ]; then
             echo "✓ http_client (exit: $result)"
