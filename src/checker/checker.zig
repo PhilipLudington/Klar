@@ -2045,6 +2045,229 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
+        // ProcessHandle struct type: { pid: i32, stdout_fd: i32, stderr_fd: i32 }
+        const process_handle_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "pid", .type_ = self.type_builder.i32Type(), .is_pub = true },
+            .{ .name = "stdout_fd", .type_ = self.type_builder.i32Type(), .is_pub = true },
+            .{ .name = "stderr_fd", .type_ = self.type_builder.i32Type(), .is_pub = true },
+        });
+        const process_handle_struct = try self.allocator.create(types.StructType);
+        process_handle_struct.* = .{
+            .name = "ProcessHandle",
+            .type_params = &.{},
+            .fields = process_handle_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, process_handle_struct);
+        const process_handle_type: types.Type = .{ .struct_ = process_handle_struct };
+        try self.current_scope.define(.{
+            .name = "ProcessHandle",
+            .type_ = process_handle_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // ProcessStatus enum: Running, Exited(i32), Signaled(i32)
+        // Represented as a struct with tag + value for codegen simplicity:
+        // { tag: i32, value: i32 }  tag: 0=Running, 1=Exited, 2=Signaled
+        const process_status_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "tag", .type_ = self.type_builder.i32Type(), .is_pub = true },
+            .{ .name = "value", .type_ = self.type_builder.i32Type(), .is_pub = true },
+        });
+        const process_status_struct = try self.allocator.create(types.StructType);
+        process_status_struct.* = .{
+            .name = "ProcessStatus",
+            .type_params = &.{},
+            .fields = process_status_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, process_status_struct);
+        const process_status_type: types.Type = .{ .struct_ = process_status_struct };
+        try self.current_scope.define(.{
+            .name = "ProcessStatus",
+            .type_ = process_status_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // TcpListener struct type: { fd: i32 }
+        const tcp_listener_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "fd", .type_ = self.type_builder.i32Type(), .is_pub = true },
+        });
+        const tcp_listener_struct = try self.allocator.create(types.StructType);
+        tcp_listener_struct.* = .{
+            .name = "TcpListener",
+            .type_params = &.{},
+            .fields = tcp_listener_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, tcp_listener_struct);
+        const tcp_listener_type: types.Type = .{ .struct_ = tcp_listener_struct };
+        try self.current_scope.define(.{
+            .name = "TcpListener",
+            .type_ = tcp_listener_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // TcpStream struct type: { fd: i32 }
+        const tcp_stream_fields = try self.allocator.dupe(types.StructField, &[_]types.StructField{
+            .{ .name = "fd", .type_ = self.type_builder.i32Type(), .is_pub = true },
+        });
+        const tcp_stream_struct = try self.allocator.create(types.StructType);
+        tcp_stream_struct.* = .{
+            .name = "TcpStream",
+            .type_params = &.{},
+            .fields = tcp_stream_fields,
+            .traits = &.{},
+            .is_copy = true,
+        };
+        try self.generic_struct_types.append(self.allocator, tcp_stream_struct);
+        const tcp_stream_type: types.Type = .{ .struct_ = tcp_stream_struct };
+        try self.current_scope.define(.{
+            .name = "TcpStream",
+            .type_ = tcp_stream_type,
+            .kind = .type_,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // process_spawn(cmd: string, args: List#[string]) -> Result#[ProcessHandle, IoError]
+        const process_spawn_ret = try self.type_builder.resultType(process_handle_type, self.type_builder.ioErrorType());
+        const process_spawn_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), process_args_type }, process_spawn_ret);
+        try self.current_scope.define(.{
+            .name = "process_spawn",
+            .type_ = process_spawn_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // process_poll(handle: ProcessHandle) -> ProcessStatus
+        const process_poll_fn_type = try self.type_builder.functionType(&.{process_handle_type}, process_status_type);
+        try self.current_scope.define(.{
+            .name = "process_poll",
+            .type_ = process_poll_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // process_wait(handle: ProcessHandle) -> Result#[ProcessOutput, IoError]
+        // Reuse process_run's return type (Result#[ProcessOutput, IoError])
+        const process_wait_ret = try self.type_builder.resultType(process_output_type, self.type_builder.ioErrorType());
+        const process_wait_fn_type = try self.type_builder.functionType(&.{process_handle_type}, process_wait_ret);
+        try self.current_scope.define(.{
+            .name = "process_wait",
+            .type_ = process_wait_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // process_read_stdout(handle: ProcessHandle, max_bytes: i32) -> Result#[string, IoError]
+        const process_read_stdout_ret = try self.type_builder.resultType(self.type_builder.stringType(), self.type_builder.ioErrorType());
+        const process_read_stdout_fn_type = try self.type_builder.functionType(&.{ process_handle_type, self.type_builder.i32Type() }, process_read_stdout_ret);
+        try self.current_scope.define(.{
+            .name = "process_read_stdout",
+            .type_ = process_read_stdout_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // tcp_listen(host: string, port: i32) -> Result#[TcpListener, IoError]
+        const tcp_listen_ret = try self.type_builder.resultType(tcp_listener_type, self.type_builder.ioErrorType());
+        const tcp_listen_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.i32Type() }, tcp_listen_ret);
+        try self.current_scope.define(.{
+            .name = "tcp_listen",
+            .type_ = tcp_listen_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // tcp_accept(listener: TcpListener) -> Result#[TcpStream, IoError]
+        const tcp_accept_ret = try self.type_builder.resultType(tcp_stream_type, self.type_builder.ioErrorType());
+        const tcp_accept_fn_type = try self.type_builder.functionType(&.{tcp_listener_type}, tcp_accept_ret);
+        try self.current_scope.define(.{
+            .name = "tcp_accept",
+            .type_ = tcp_accept_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // tcp_connect(host: string, port: i32) -> Result#[TcpStream, IoError]
+        const tcp_connect_ret = try self.type_builder.resultType(tcp_stream_type, self.type_builder.ioErrorType());
+        const tcp_connect_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.i32Type() }, tcp_connect_ret);
+        try self.current_scope.define(.{
+            .name = "tcp_connect",
+            .type_ = tcp_connect_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // tcp_read(stream: TcpStream, max_bytes: i32) -> Result#[string, IoError]
+        const tcp_read_ret = try self.type_builder.resultType(self.type_builder.stringType(), self.type_builder.ioErrorType());
+        const tcp_read_fn_type = try self.type_builder.functionType(&.{ tcp_stream_type, self.type_builder.i32Type() }, tcp_read_ret);
+        try self.current_scope.define(.{
+            .name = "tcp_read",
+            .type_ = tcp_read_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // tcp_write(stream: TcpStream, data: string) -> Result#[i32, IoError]
+        const tcp_write_ret = try self.type_builder.resultType(self.type_builder.i32Type(), self.type_builder.ioErrorType());
+        const tcp_write_fn_type = try self.type_builder.functionType(&.{ tcp_stream_type, self.type_builder.stringType() }, tcp_write_ret);
+        try self.current_scope.define(.{
+            .name = "tcp_write",
+            .type_ = tcp_write_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // tcp_close(stream: TcpStream) -> void
+        const tcp_close_fn_type = try self.type_builder.functionType(&.{tcp_stream_type}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "tcp_close",
+            .type_ = tcp_close_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // tcp_set_nonblocking(stream: TcpStream, nonblocking: bool) -> Result#[void, IoError]
+        const tcp_set_nb_ret = try self.type_builder.resultType(self.type_builder.voidType(), self.type_builder.ioErrorType());
+        const tcp_set_nb_fn_type = try self.type_builder.functionType(&.{ tcp_stream_type, self.type_builder.boolType() }, tcp_set_nb_ret);
+        try self.current_scope.define(.{
+            .name = "tcp_set_nonblocking",
+            .type_ = tcp_set_nb_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // tcp_listener_close(listener: TcpListener) -> void
+        const tcp_listener_close_fn_type = try self.type_builder.functionType(&.{tcp_listener_type}, self.type_builder.voidType());
+        try self.current_scope.define(.{
+            .name = "tcp_listener_close",
+            .type_ = tcp_listener_close_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
         // ====================================================================
         // Register builtin trait implementations for I/O types
         // ====================================================================

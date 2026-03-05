@@ -1,0 +1,102 @@
+// Test HTTP server library
+// Uses curl subprocess as client, dispatch-based routing.
+// Expected exit code: 0
+
+import stdlib.http_server.*
+
+fn main() -> i32 {
+    // Test 1: Parse HTTP request
+    let raw: string = "GET /test HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\n\r\nhello"
+    let pr: Result#[HttpRequest, string] = parse_http_request(raw)
+    if not pr.is_ok() {
+        println("parse failed")
+        return 1
+    }
+    let parsed_req: HttpRequest = pr!
+    assert_eq(parsed_req.method, "GET")
+    assert_eq(parsed_req.path, "/test")
+    assert_eq(parsed_req.body, "hello")
+
+    // Test 2: Route matching — exact
+    let params1: Map#[string, string] = match_route("/health", "/health")
+    assert_eq(route_matched(params1), true)
+
+    // Test 3: Route matching — path parameter
+    // Build pattern with braces (can't use string interpolation for literal braces)
+    let lbrace: string = from_byte(123.as#[u8])
+    let rbrace: string = from_byte(125.as#[u8])
+    let pattern: string = "/api/users/" + lbrace + "user_id" + rbrace
+    let params2: Map#[string, string] = match_route(pattern, "/api/users/42")
+    assert_eq(route_matched(params2), true)
+    let uid: ?string = params2.get("user_id")
+    match uid {
+        Some(v) => { assert_eq(v, "42") }
+        None => { return 3 }
+    }
+
+    // Test 4: Route non-match
+    let params3: Map#[string, string] = match_route("/api/items", "/api/users")
+    assert_eq(route_matched(params3), false)
+
+    // Test 5: Serialize response
+    let resp: HttpResponse = http_ok("test body")
+    let serialized: string = serialize_response(resp)
+    assert_eq(serialized.slice(0, 15), "HTTP/1.1 200 OK")
+
+    // Test 6: Simple GET via curl
+    let args1: List#[string] = List.new#[string]()
+    args1.push("-c")
+    args1.push("sleep 0.5 && curl -s http://127.0.0.1:19877/hello")
+    let sr1: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", args1)
+    if not sr1.is_ok() {
+        println("spawn failed")
+        return 6
+    }
+    let client1: ProcessHandle = sr1!
+
+    let ar1: Result#[HttpConnection, string] = http_server_accept("127.0.0.1", 19877)
+    if not ar1.is_ok() {
+        println("accept failed")
+        return 7
+    }
+    let conn1: HttpConnection = ar1!
+
+    assert_eq(conn1.request.method, "GET")
+    assert_eq(conn1.request.path, "/hello")
+
+    http_server_respond(conn1, http_ok("Hello, World!"))
+
+    let wr1: Result#[ProcessOutput, IoError] = process_wait(client1)
+    if not wr1.is_ok() {
+        return 8
+    }
+    let o1: ProcessOutput = wr1!
+    assert_eq(o1.stdout, "Hello, World!")
+
+    // Test 7: JSON response
+    let args2: List#[string] = List.new#[string]()
+    args2.push("-c")
+    args2.push("sleep 0.5 && curl -s http://127.0.0.1:19878/api/data")
+    let sr2: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", args2)
+    if not sr2.is_ok() {
+        return 9
+    }
+    let client2: ProcessHandle = sr2!
+
+    let ar2: Result#[HttpConnection, string] = http_server_accept("127.0.0.1", 19878)
+    if not ar2.is_ok() {
+        return 10
+    }
+    let conn2: HttpConnection = ar2!
+
+    http_server_respond(conn2, http_json_response("{\"message\":\"ok\"}"))
+
+    let wr2: Result#[ProcessOutput, IoError] = process_wait(client2)
+    if not wr2.is_ok() {
+        return 11
+    }
+    let o2: ProcessOutput = wr2!
+    assert_eq(o2.stdout, "{\"message\":\"ok\"}")
+
+    return 0
+}

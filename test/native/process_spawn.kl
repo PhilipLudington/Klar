@@ -1,0 +1,89 @@
+// Test async subprocess builtins: process_spawn, process_wait, process_read_stdout
+// Expected exit code: 0
+
+fn main() -> i32 {
+    // Test 1: spawn echo, wait for completion, check output
+    let args1: List#[string] = List.new#[string]()
+    args1.push("hello world")
+    let r1: Result#[ProcessHandle, IoError] = process_spawn("/bin/echo", args1)
+    if not r1.is_ok() {
+        return 1
+    }
+    let h1: ProcessHandle = r1!
+    let w1: Result#[ProcessOutput, IoError] = process_wait(h1)
+    if not w1.is_ok() {
+        return 2
+    }
+    let o1: ProcessOutput = w1!
+    assert_eq(o1.exit_code, 0)
+    assert_eq(o1.stdout, "hello world\n")
+
+    // Test 2: spawn with multiple args
+    let args2: List#[string] = List.new#[string]()
+    args2.push("-n")
+    args2.push("no newline")
+    let r2: Result#[ProcessHandle, IoError] = process_spawn("/bin/echo", args2)
+    if not r2.is_ok() {
+        return 3
+    }
+    let h2: ProcessHandle = r2!
+    let w2: Result#[ProcessOutput, IoError] = process_wait(h2)
+    if not w2.is_ok() {
+        return 4
+    }
+    let o2: ProcessOutput = w2!
+    assert_eq(o2.exit_code, 0)
+    assert_eq(o2.stdout, "no newline")
+
+    // Test 3: process_read_stdout (incremental read)
+    let args3: List#[string] = List.new#[string]()
+    args3.push("hello from read")
+    let r3: Result#[ProcessHandle, IoError] = process_spawn("/bin/echo", args3)
+    if not r3.is_ok() {
+        return 5
+    }
+    let h3: ProcessHandle = r3!
+    let rd: Result#[string, IoError] = process_read_stdout(h3, 4096)
+    if not rd.is_ok() {
+        return 6
+    }
+    let data: string = rd!
+    assert_eq(data, "hello from read\n")
+    // Clean up: wait to reap child
+    let _w3: Result#[ProcessOutput, IoError] = process_wait(h3)
+
+    // Test 4: process that exits with non-zero code
+    let args4: List#[string] = List.new#[string]()
+    args4.push("-c")
+    args4.push("exit 42")
+    let r4: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", args4)
+    if not r4.is_ok() {
+        return 7
+    }
+    let h4: ProcessHandle = r4!
+    let w4: Result#[ProcessOutput, IoError] = process_wait(h4)
+    if not w4.is_ok() {
+        return 8
+    }
+    let o4: ProcessOutput = w4!
+    assert_eq(o4.exit_code, 42)
+
+    // Test 5: spawn command that writes to stderr (we just verify it doesn't hang)
+    let args5: List#[string] = List.new#[string]()
+    args5.push("-c")
+    args5.push("echo ok")
+    let r5: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", args5)
+    if not r5.is_ok() {
+        return 9
+    }
+    let h5: ProcessHandle = r5!
+    let w5: Result#[ProcessOutput, IoError] = process_wait(h5)
+    if not w5.is_ok() {
+        return 10
+    }
+    let o5: ProcessOutput = w5!
+    assert_eq(o5.exit_code, 0)
+    assert_eq(o5.stdout, "ok\n")
+
+    return 0
+}

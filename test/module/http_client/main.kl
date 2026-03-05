@@ -1,0 +1,90 @@
+// Test HTTP client library
+// Spawns a simple nc server, then uses http_get to make a request.
+// Expected exit code: 0
+
+import stdlib.http_server.*
+import stdlib.http_client.*
+
+fn main() -> i32 {
+    // Test 1: HTTP GET via http_client to a nc server
+    let server_args: List#[string] = List.new#[string]()
+    server_args.push("-c")
+    server_args.push("printf 'HTTP/1.1 200 OK\\r\\nContent-Length: 5\\r\\nConnection: close\\r\\n\\r\\nhello' | nc -l 19883")
+    let ss: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", server_args)
+    if not ss.is_ok() {
+        println("Failed to spawn server")
+        return 1
+    }
+    let server: ProcessHandle = ss!
+
+    // Wait for server to start
+    let sleep_args: List#[string] = List.new#[string]()
+    sleep_args.push("-c")
+    sleep_args.push("sleep 0.5")
+    let sr: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", sleep_args)
+    if sr.is_ok() {
+        let _sw: Result#[ProcessOutput, IoError] = process_wait(sr!)
+    }
+
+    let resp: Result#[HttpClientResponse, string] = http_get("http://127.0.0.1:19883/test")
+    if not resp.is_ok() {
+        println("http_get failed")
+        let _ws: Result#[ProcessOutput, IoError] = process_wait(server)
+        return 2
+    }
+    let r: HttpClientResponse = resp!
+    assert_eq(r.status, 200)
+    assert_eq(r.body, "hello")
+
+    let _ws: Result#[ProcessOutput, IoError] = process_wait(server)
+
+    // Test 2: HTTP POST
+    let server_args2: List#[string] = List.new#[string]()
+    server_args2.push("-c")
+    server_args2.push("printf 'HTTP/1.1 201 Created\\r\\nContent-Length: 7\\r\\nConnection: close\\r\\n\\r\\ncreated' | nc -l 19884")
+    let ss2: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", server_args2)
+    if not ss2.is_ok() { return 3 }
+    let server2: ProcessHandle = ss2!
+
+    let sleep_args2: List#[string] = List.new#[string]()
+    sleep_args2.push("-c")
+    sleep_args2.push("sleep 0.5")
+    let sr2: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", sleep_args2)
+    if sr2.is_ok() {
+        let _sw2: Result#[ProcessOutput, IoError] = process_wait(sr2!)
+    }
+
+    let resp2: Result#[HttpClientResponse, string] = http_post("http://127.0.0.1:19884/api", "test body")
+    if not resp2.is_ok() {
+        println("http_post failed")
+        let _ws2: Result#[ProcessOutput, IoError] = process_wait(server2)
+        return 4
+    }
+    let r2: HttpClientResponse = resp2!
+    assert_eq(r2.status, 201)
+    assert_eq(r2.body, "created")
+
+    let _ws2: Result#[ProcessOutput, IoError] = process_wait(server2)
+
+    // Test 3: Integration — http_client talks to http_server
+    // Spawn curl as proxy to test server<->client interop
+    let curl_args: List#[string] = List.new#[string]()
+    curl_args.push("-c")
+    curl_args.push("sleep 0.5 && curl -s http://127.0.0.1:19885/api/hello")
+    let curl_proc: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", curl_args)
+    if not curl_proc.is_ok() { return 5 }
+    let curl: ProcessHandle = curl_proc!
+
+    let ar: Result#[HttpConnection, string] = http_server_accept("127.0.0.1", 19885)
+    if not ar.is_ok() { return 6 }
+    let conn: HttpConnection = ar!
+    assert_eq(conn.request.method, "GET")
+    http_server_respond(conn, http_json_response("ok"))
+
+    let wr3: Result#[ProcessOutput, IoError] = process_wait(curl)
+    if not wr3.is_ok() { return 7 }
+    let o3: ProcessOutput = wr3!
+    assert_eq(o3.stdout, "ok")
+
+    return 0
+}

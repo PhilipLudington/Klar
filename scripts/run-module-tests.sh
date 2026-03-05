@@ -395,6 +395,52 @@ else
     echo "⊘ integration (test not found, skipping)"
 fi
 
+# Test 17: HTTP server library (stdlib/http_server.kl)
+echo "--- http_server: HTTP server library ---"
+temp_bin="/tmp/klar_module_http_server"
+if [ -d "$TEST_DIR/http_server" ]; then
+    if $KLAR build $TEST_DIR/http_server/main.kl -o "$temp_bin" 2>/dev/null; then
+        timeout 30 "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ http_server (exit: $result)"
+            record_success "http_server"
+        else
+            echo "✗ http_server (expected: 0, got: $result)"
+            record_failure "http_server" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ http_server (build failed)"
+        record_failure "http_server" "build failed"
+    fi
+else
+    echo "⊘ http_server (test not found, skipping)"
+fi
+
+# Test 18: HTTP client library (stdlib/http_client.kl)
+echo "--- http_client: HTTP client library ---"
+temp_bin="/tmp/klar_module_http_client"
+if [ -d "$TEST_DIR/http_client" ]; then
+    if $KLAR build $TEST_DIR/http_client/main.kl -o "$temp_bin" 2>/dev/null; then
+        timeout 30 "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ http_client (exit: $result)"
+            record_success "http_client"
+        else
+            echo "✗ http_client (expected: 0, got: $result)"
+            record_failure "http_client" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ http_client (build failed)"
+        record_failure "http_client" "build failed"
+    fi
+else
+    echo "⊘ http_client (test not found, skipping)"
+fi
+
 TOTAL=$((PASSED + FAILED))
 
 # Write results JSON

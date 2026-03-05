@@ -1,0 +1,360 @@
+// stdlib/http_server.kl — HTTP/1.1 server built on TCP builtins
+// Supports: GET/POST/PUT/DELETE, Content-Length bodies, path parameters
+
+// ============================================================================
+// Types
+// ============================================================================
+
+pub struct HttpRequest {
+    method: string,
+    path: string,
+    headers: Map#[string, string],
+    body: string,
+    path_params: Map#[string, string]
+}
+
+pub struct HttpResponse {
+    status: i32,
+    headers: Map#[string, string],
+    body: string
+}
+
+pub struct HttpServer {
+    host: string,
+    port: i32,
+    route_methods: List#[string],
+    route_patterns: List#[string]
+}
+
+pub struct HttpConnection {
+    listener: TcpListener,
+    stream: TcpStream,
+    request: HttpRequest
+}
+
+// ============================================================================
+// Response Builders
+// ============================================================================
+
+pub fn http_ok(body: string) -> HttpResponse {
+    var headers: Map#[string, string] = Map.new#[string, string]()
+    headers.insert("Content-Type", "text/plain")
+    return HttpResponse { status: 200, headers: headers, body: body }
+}
+
+pub fn http_json_response(body: string) -> HttpResponse {
+    var headers: Map#[string, string] = Map.new#[string, string]()
+    headers.insert("Content-Type", "application/json")
+    return HttpResponse { status: 200, headers: headers, body: body }
+}
+
+pub fn http_not_found() -> HttpResponse {
+    var headers: Map#[string, string] = Map.new#[string, string]()
+    headers.insert("Content-Type", "text/plain")
+    return HttpResponse { status: 404, headers: headers, body: "Not Found" }
+}
+
+pub fn http_error(status: i32, message: string) -> HttpResponse {
+    var headers: Map#[string, string] = Map.new#[string, string]()
+    headers.insert("Content-Type", "text/plain")
+    return HttpResponse { status: status, headers: headers, body: message }
+}
+
+// ============================================================================
+// Server Creation
+// ============================================================================
+
+pub fn http_server_new(host: string, port: i32) -> HttpServer {
+    let methods: List#[string] = List.new#[string]()
+    let patterns: List#[string] = List.new#[string]()
+    return HttpServer { host: host, port: port, route_methods: methods, route_patterns: patterns }
+}
+
+pub fn http_server_add_route(server: HttpServer, method: string, pattern: string) -> HttpServer {
+    var s: HttpServer = server
+    s.route_methods.push(method)
+    s.route_patterns.push(pattern)
+    return s
+}
+
+// ============================================================================
+// HTTP Parsing Helpers
+// ============================================================================
+
+fn find_byte(s: string, b: u8, start: i32) -> i32 {
+    let len: i32 = s.len()
+    for i: i32 in start..len {
+        if s.byte_at(i) == b {
+            return i
+        }
+    }
+    return -1
+}
+
+fn find_str(s: string, needle: string, start: i32) -> i32 {
+    let slen: i32 = s.len()
+    let nlen: i32 = needle.len()
+    if nlen == 0 {
+        return start
+    }
+    let limit: i32 = slen - nlen + 1
+    for i: i32 in start..limit {
+        if s.slice(i, i + nlen) == needle {
+            return i
+        }
+    }
+    return -1
+}
+
+pub fn status_text(code: i32) -> string {
+    if code == 200 { return "OK" }
+    if code == 201 { return "Created" }
+    if code == 204 { return "No Content" }
+    if code == 400 { return "Bad Request" }
+    if code == 404 { return "Not Found" }
+    if code == 405 { return "Method Not Allowed" }
+    if code == 500 { return "Internal Server Error" }
+    return "Unknown"
+}
+
+// ============================================================================
+// HTTP Request Parsing
+// ============================================================================
+
+fn parse_request_line_method(data: string) -> string {
+    let sp1: i32 = find_byte(data, 32.as#[u8], 0)
+    if sp1 < 0 {
+        return ""
+    }
+    return data.slice(0, sp1)
+}
+
+fn parse_request_line_path(data: string) -> string {
+    let sp1: i32 = find_byte(data, 32.as#[u8], 0)
+    if sp1 < 0 {
+        return ""
+    }
+    let sp2: i32 = find_byte(data, 32.as#[u8], sp1 + 1)
+    if sp2 < 0 {
+        return ""
+    }
+    return data.slice(sp1 + 1, sp2)
+}
+
+fn parse_headers(data: string, start: i32) -> Map#[string, string] {
+    var headers: Map#[string, string] = Map.new#[string, string]()
+    var pos: i32 = start
+    let len: i32 = data.len()
+    for _iter: i32 in 0..200 {
+        if pos >= len {
+            return headers
+        }
+        let line_end: i32 = find_str(data, "\r\n", pos)
+        if line_end < 0 or line_end == pos {
+            return headers
+        }
+        let line: string = data.slice(pos, line_end)
+        let colon: i32 = find_byte(line, 58.as#[u8], 0)
+        if colon > 0 {
+            let key: string = line.slice(0, colon)
+            var val_start: i32 = colon + 1
+            if val_start < line.len() and line.byte_at(val_start) == 32.as#[u8] {
+                val_start = val_start + 1
+            }
+            let value: string = line.slice(val_start, line.len())
+            headers.insert(key, value)
+        }
+        pos = line_end + 2
+    }
+    return headers
+}
+
+pub fn parse_http_request(data: string) -> Result#[HttpRequest, string] {
+    let method: string = parse_request_line_method(data)
+    if method == "" {
+        return Err("invalid request line")
+    }
+    let path: string = parse_request_line_path(data)
+    if path == "" {
+        return Err("invalid request line")
+    }
+
+    let first_crlf: i32 = find_str(data, "\r\n", 0)
+    if first_crlf < 0 {
+        return Err("no CRLF in request")
+    }
+
+    let headers: Map#[string, string] = parse_headers(data, first_crlf + 2)
+
+    let body_start: i32 = find_str(data, "\r\n\r\n", 0)
+    var body: string = ""
+    if body_start >= 0 {
+        body = data.slice(body_start + 4, data.len())
+    }
+
+    let path_params: Map#[string, string] = Map.new#[string, string]()
+    return Ok(HttpRequest {
+        method: method,
+        path: path,
+        headers: headers,
+        body: body,
+        path_params: path_params
+    })
+}
+
+// ============================================================================
+// Route Matching
+// ============================================================================
+
+pub fn match_route(pattern: string, path: string) -> Map#[string, string] {
+    var params: Map#[string, string] = Map.new#[string, string]()
+
+    // Simple exact match
+    if pattern == path {
+        params.insert("_matched", "true")
+        return params
+    }
+
+    // Check for path parameters like /api/{id}
+    var pi: i32 = 0
+    var ri: i32 = 0
+    let plen: i32 = pattern.len()
+    let rlen: i32 = path.len()
+
+    if pi < plen and pattern.byte_at(pi) == 47.as#[u8] { pi = pi + 1 }
+    if ri < rlen and path.byte_at(ri) == 47.as#[u8] { ri = ri + 1 }
+
+    for _iter: i32 in 0..100 {
+        if pi >= plen and ri >= rlen {
+            params.insert("_matched", "true")
+            return params
+        }
+        if pi >= plen or ri >= rlen {
+            return params
+        }
+
+        let p_slash: i32 = find_byte(pattern, 47.as#[u8], pi)
+        var p_end: i32 = plen
+        if p_slash >= 0 { p_end = p_slash }
+
+        let r_slash: i32 = find_byte(path, 47.as#[u8], ri)
+        var r_end: i32 = rlen
+        if r_slash >= 0 { r_end = r_slash }
+
+        let p_seg: string = pattern.slice(pi, p_end)
+        let r_seg: string = path.slice(ri, r_end)
+
+        if p_seg.len() > 2 and p_seg.byte_at(0) == 123.as#[u8] and p_seg.byte_at(p_seg.len() - 1) == 125.as#[u8] {
+            let param_name: string = p_seg.slice(1, p_seg.len() - 1)
+            params.insert(param_name, r_seg)
+        } else {
+            if p_seg != r_seg {
+                return params
+            }
+        }
+
+        pi = p_end
+        ri = r_end
+        if pi < plen and pattern.byte_at(pi) == 47.as#[u8] { pi = pi + 1 }
+        if ri < rlen and path.byte_at(ri) == 47.as#[u8] { ri = ri + 1 }
+    }
+
+    return params
+}
+
+pub fn route_matched(params: Map#[string, string]) -> bool {
+    return params.contains_key("_matched")
+}
+
+// ============================================================================
+// Response Serialization
+// ============================================================================
+
+pub fn serialize_response(resp: HttpResponse) -> string {
+    var result: string = "HTTP/1.1 "
+    result = result + resp.status.to_string().as_str()
+    result = result + " "
+    result = result + status_text(resp.status)
+    result = result + "\r\n"
+
+    let body_len: i32 = resp.body.len()
+    result = result + "Content-Length: "
+    result = result + body_len.to_string().as_str()
+    result = result + "\r\nConnection: close\r\n"
+
+    let keys: List#[string] = resp.headers.keys()
+    let nkeys: i32 = keys.len()
+    for i: i32 in 0..nkeys {
+        let key: string = keys.get(i)!
+        let hval: ?string = resp.headers.get(key)
+        match hval {
+            Some(v) => {
+                result = result + key + ": "
+                result = result + v
+                result = result + "\r\n"
+            }
+            None => {}
+        }
+    }
+
+    result = result + "\r\n"
+    result = result + resp.body
+    return result
+}
+
+// ============================================================================
+// Server Helpers
+// ============================================================================
+
+/// Create a TCP listener for the HTTP server. Call once, reuse for multiple accepts.
+pub fn http_server_listen(host: string, port: i32) -> Result#[TcpListener, string] {
+    let lr: Result#[TcpListener, IoError] = tcp_listen(host, port)
+    if not lr.is_ok() {
+        return Err("failed to listen")
+    }
+    return Ok(lr!)
+}
+
+/// Accept one connection on an existing listener, read request, return connection.
+pub fn http_server_accept_on(listener: TcpListener) -> Result#[HttpConnection, string] {
+    let ar: Result#[TcpStream, IoError] = tcp_accept(listener)
+    if not ar.is_ok() {
+        return Err("failed to accept")
+    }
+    let stream: TcpStream = ar!
+
+    let rr: Result#[string, IoError] = tcp_read(stream, 65536)
+    if not rr.is_ok() {
+        tcp_close(stream)
+        return Err("failed to read")
+    }
+    let data: string = rr!
+
+    let req_result: Result#[HttpRequest, string] = parse_http_request(data)
+    if not req_result.is_ok() {
+        tcp_close(stream)
+        return Err("failed to parse request")
+    }
+
+    let req: HttpRequest = req_result!
+    return Ok(HttpConnection { listener: listener, stream: stream, request: req })
+}
+
+/// Accept one connection, read request, return connection with listener+stream+request.
+/// Convenience wrapper that creates a new listener each call (use http_server_accept_on for reuse).
+pub fn http_server_accept(host: string, port: i32) -> Result#[HttpConnection, string] {
+    let lr: Result#[TcpListener, string] = http_server_listen(host, port)
+    if not lr.is_ok() {
+        return Err("failed to listen")
+    }
+    let listener: TcpListener = lr!
+    return http_server_accept_on(listener)
+}
+
+/// Send response and close connection (stream + listener).
+pub fn http_server_respond(conn: HttpConnection, resp: HttpResponse) -> void {
+    let resp_str: string = serialize_response(resp)
+    let _wr: Result#[i32, IoError] = tcp_write(conn.stream, resp_str)
+    tcp_close(conn.stream)
+    tcp_listener_close(conn.listener)
+}

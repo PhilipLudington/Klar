@@ -1,0 +1,273 @@
+// stdlib/http_client.kl — Simple HTTP/1.1 client built on TCP builtins
+// Supports: GET, POST, custom requests; HTTP only (no HTTPS); Content-Length responses
+
+// ============================================================================
+// Types
+// ============================================================================
+
+pub struct HttpClientResponse {
+    status: i32,
+    headers: Map#[string, string],
+    body: string
+}
+
+// ============================================================================
+// URL Parsing
+// ============================================================================
+
+fn find_byte_in(s: string, b: u8, start: i32) -> i32 {
+    let len: i32 = s.len()
+    for i: i32 in start..len {
+        if s.byte_at(i) == b {
+            return i
+        }
+    }
+    return -1
+}
+
+fn find_str_in(s: string, needle: string, start: i32) -> i32 {
+    let slen: i32 = s.len()
+    let nlen: i32 = needle.len()
+    if nlen == 0 { return start }
+    let limit: i32 = slen - nlen + 1
+    for i: i32 in start..limit {
+        if s.slice(i, i + nlen) == needle {
+            return i
+        }
+    }
+    return -1
+}
+
+struct ParsedUrl {
+    host: string,
+    port: i32,
+    path: string
+}
+
+fn parse_url(url: string) -> Result#[ParsedUrl, string] {
+    // L4: Reject https:// — not supported
+    if url.len() > 8 and url.slice(0, 8) == "https://" {
+        return Err("https is not supported, use http://")
+    }
+
+    // Strip "http://" prefix
+    var start: i32 = 0
+    if url.len() > 7 and url.slice(0, 7) == "http://" {
+        start = 7
+    }
+
+    // Find host:port/path
+    let slash: i32 = find_byte_in(url, 47.as#[u8], start)
+    var host_port: string = ""
+    var path: string = "/"
+
+    if slash < 0 {
+        host_port = url.slice(start, url.len())
+    } else {
+        host_port = url.slice(start, slash)
+        path = url.slice(slash, url.len())
+    }
+
+    // Split host:port
+    let colon: i32 = find_byte_in(host_port, 58.as#[u8], 0)
+    var host: string = host_port
+    var port: i32 = 80
+
+    if colon >= 0 {
+        host = host_port.slice(0, colon)
+        let port_str: string = host_port.slice(colon + 1, host_port.len())
+        let port_opt: ?i64 = parse_int(port_str)
+        match port_opt {
+            Some(p) => { port = p.as#[i32] }
+            None => {}
+        }
+    }
+
+    return Ok(ParsedUrl { host: host, port: port, path: path })
+}
+
+// ============================================================================
+// Response Parsing
+// ============================================================================
+
+fn parse_status_code(data: string) -> i32 {
+    // "HTTP/1.1 200 OK\r\n..." -> 200, or -1 on failure
+    let sp1: i32 = find_byte_in(data, 32.as#[u8], 0)
+    if sp1 < 0 { return -1 }
+    let sp2: i32 = find_byte_in(data, 32.as#[u8], sp1 + 1)
+    var end: i32 = sp2
+    if sp2 < 0 {
+        let cr: i32 = find_byte_in(data, 13.as#[u8], sp1 + 1)
+        if cr < 0 { return -1 }
+        end = cr
+    }
+    let status_str: string = data.slice(sp1 + 1, end)
+    let parsed: ?i64 = parse_int(status_str)
+    match parsed {
+        Some(v) => { return v.as#[i32] }
+        None => { return -1 }
+    }
+    return -1
+}
+
+fn parse_response_headers(data: string, start: i32) -> Map#[string, string] {
+    var headers: Map#[string, string] = Map.new#[string, string]()
+    var pos: i32 = start
+    let len: i32 = data.len()
+    for _iter: i32 in 0..200 {
+        if pos >= len { return headers }
+        let line_end: i32 = find_str_in(data, "\r\n", pos)
+        if line_end < 0 or line_end == pos { return headers }
+        let line: string = data.slice(pos, line_end)
+        let colon: i32 = find_byte_in(line, 58.as#[u8], 0)
+        if colon > 0 {
+            let key: string = line.slice(0, colon)
+            var val_start: i32 = colon + 1
+            if val_start < line.len() and line.byte_at(val_start) == 32.as#[u8] {
+                val_start = val_start + 1
+            }
+            let value: string = line.slice(val_start, line.len())
+            headers.insert(key, value)
+        }
+        pos = line_end + 2
+    }
+    return headers
+}
+
+fn parse_http_response(data: string) -> Result#[HttpClientResponse, string] {
+    let status: i32 = parse_status_code(data)
+    if status < 0 {
+        return Err("invalid status line")
+    }
+
+    let first_crlf: i32 = find_str_in(data, "\r\n", 0)
+    if first_crlf < 0 { return Err("no CRLF in response") }
+
+    let headers: Map#[string, string] = parse_response_headers(data, first_crlf + 2)
+
+    let body_start: i32 = find_str_in(data, "\r\n\r\n", 0)
+    var body: string = ""
+    if body_start >= 0 {
+        body = data.slice(body_start + 4, data.len())
+    }
+
+    return Ok(HttpClientResponse { status: status, headers: headers, body: body })
+}
+
+// ============================================================================
+// HTTP Request Functions
+// ============================================================================
+
+pub fn http_request(method: string, url: string, headers: Map#[string, string], body: string) -> Result#[HttpClientResponse, string] {
+    let parsed: Result#[ParsedUrl, string] = parse_url(url)
+    if not parsed.is_ok() {
+        return Err("invalid URL: " + url)
+    }
+    let p: ParsedUrl = parsed!
+
+    // Connect
+    let cr: Result#[TcpStream, IoError] = tcp_connect(p.host, p.port)
+    if not cr.is_ok() {
+        return Err("connection failed to " + p.host)
+    }
+    let stream: TcpStream = cr!
+
+    // Build request
+    var req: string = method + " " + p.path + " HTTP/1.1\r\n"
+    req = req + "Host: " + p.host + "\r\n"
+    req = req + "Connection: close\r\n"
+
+    // Add user headers
+    let keys: List#[string] = headers.keys()
+    let nkeys: i32 = keys.len()
+    for i: i32 in 0..nkeys {
+        let key: string = keys.get(i)!
+        let val: ?string = headers.get(key)
+        match val {
+            Some(v) => {
+                req = req + key + ": " + v + "\r\n"
+            }
+            None => {}
+        }
+    }
+
+    // Add Content-Length if body is non-empty
+    if body.len() > 0 {
+        req = req + "Content-Length: " + body.len().to_string().as_str() + "\r\n"
+    }
+
+    req = req + "\r\n"
+    req = req + body
+
+    // Send request
+    let wr: Result#[i32, IoError] = tcp_write(stream, req)
+    if not wr.is_ok() {
+        tcp_close(stream)
+        return Err("failed to send request")
+    }
+
+    // Read response (read in chunks until we have headers + Content-Length body, or connection closes)
+    var response_data: string = ""
+    for _i: i32 in 0..1000 {
+        let rr: Result#[string, IoError] = tcp_read(stream, 65536)
+        if not rr.is_ok() {
+            tcp_close(stream)
+            if response_data.len() > 0 {
+                return parse_http_response(response_data)
+            }
+            return Err("failed to read response")
+        }
+        let chunk: string = rr!
+        if chunk.len() == 0 {
+            tcp_close(stream)
+            if response_data.len() > 0 {
+                return parse_http_response(response_data)
+            }
+            return Err("empty response")
+        }
+        response_data = response_data + chunk
+
+        // Check if we have the full response based on Content-Length
+        let hdr_end: i32 = find_str_in(response_data, "\r\n\r\n", 0)
+        if hdr_end >= 0 {
+            let body_offset: i32 = hdr_end + 4
+            // Parse Content-Length from headers
+            let cl_pos: i32 = find_str_in(response_data, "Content-Length: ", 0)
+            if cl_pos >= 0 and cl_pos < hdr_end {
+                let cl_val_start: i32 = cl_pos + 16
+                let cl_end: i32 = find_str_in(response_data, "\r\n", cl_val_start)
+                if cl_end >= 0 {
+                    let cl_str: string = response_data.slice(cl_val_start, cl_end)
+                    let cl_opt: ?i64 = parse_int(cl_str)
+                    match cl_opt {
+                        Some(content_len) => {
+                            let expected_total: i32 = body_offset + content_len.as#[i32]
+                            if response_data.len() >= expected_total {
+                                tcp_close(stream)
+                                return parse_http_response(response_data)
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+    }
+
+    tcp_close(stream)
+    if response_data.len() > 0 {
+        return parse_http_response(response_data)
+    }
+    return Err("response too large")
+}
+
+pub fn http_get(url: string) -> Result#[HttpClientResponse, string] {
+    let headers: Map#[string, string] = Map.new#[string, string]()
+    return http_request("GET", url, headers, "")
+}
+
+pub fn http_post(url: string, body: string) -> Result#[HttpClientResponse, string] {
+    var headers: Map#[string, string] = Map.new#[string, string]()
+    headers.insert("Content-Type", "application/json")
+    return http_request("POST", url, headers, body)
+}
