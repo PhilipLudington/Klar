@@ -26675,6 +26675,15 @@ pub const Emitter = struct {
         return llvm.c.LLVMAddFunction(self.module.ref, "read", fn_type);
     }
 
+    fn getOrDeclarePoll(self: *Emitter) llvm.ValueRef {
+        if (llvm.c.LLVMGetNamedFunction(self.module.ref, "poll")) |func| return func;
+        // int poll(struct pollfd *fds, nfds_t nfds, int timeout)
+        // nfds_t is unsigned int on both macOS and Linux
+        var param_types = [_]llvm.TypeRef{ llvm.Types.pointer(self.ctx), llvm.Types.int32(self.ctx), llvm.Types.int32(self.ctx) };
+        const fn_type = llvm.c.LLVMFunctionType(llvm.Types.int32(self.ctx), &param_types, 3, 0);
+        return llvm.c.LLVMAddFunction(self.module.ref, "poll", fn_type);
+    }
+
     /// Emit process_spawn(cmd: string, args: List#[string]) -> Result#[ProcessHandle, IoError]
     /// Uses fork+execvp for safe argument passing (no shell interpretation).
     fn emitProcessSpawn(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
@@ -27056,38 +27065,64 @@ pub const Emitter = struct {
         const stderr_fd_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, handle_type, handle_alloca, 2, "wait.efd_p");
         const stderr_fd = self.builder.buildLoad(i32_type, stderr_fd_ptr, "wait.efd");
 
-        // Close stderr pipe immediately to prevent deadlock — we don't capture stderr.
-        // If the child fills the stderr pipe buffer (~64 KiB), it blocks on write()
-        // while we block on read(stdout), causing a permanent deadlock.
+        // === Poll-based concurrent drain of stdout and stderr ===
+        // Uses poll() to multiplex reads on both pipes, preventing deadlock when
+        // the child writes >64KB to stderr while we're reading stdout.
         const close_fn = self.getOrDeclareClose();
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stderr_fd}, "");
-
-        // Read all stdout into a buffer
         const malloc_fn = self.getOrDeclareMalloc();
         const realloc_fn = self.getOrDeclareRealloc();
         const read_fn = self.getOrDeclareRead();
+        const poll_fn = self.getOrDeclarePoll();
 
+        const i1_type = llvm.Types.int1(self.ctx);
+        const i16_type = llvm.Types.int16(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
         const init_cap: u64 = 4096;
+        const POLLIN: i16 = 1; // Same on macOS and Linux
+
+        // struct pollfd { int fd; short events; short revents; }
+        var pollfd_fields = [_]llvm.TypeRef{ i32_type, i16_type, i16_type };
+        const pollfd_type = llvm.Types.struct_(self.ctx, &pollfd_fields, false);
+        const pollfd_arr_type = llvm.c.LLVMArrayType2(pollfd_type, 2);
+
+        // Allocate pollfd array on stack
+        const pollfds = self.builder.buildAlloca(pollfd_arr_type, "wait.pollfds");
+
+        // Allocate stdout buffer
         const out_buf_alloca = self.builder.buildAlloca(ptr_type, "wait.outbuf");
         const out_len_alloca = self.builder.buildAlloca(i64_type, "wait.outlen");
         const out_cap_alloca = self.builder.buildAlloca(i64_type, "wait.outcap");
-        const init_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, init_cap + 1)}, "wait.ibuf"); // +1 for null terminator
 
-        // Read loop for stdout
-        const read_loop_bb = llvm.appendBasicBlock(self.ctx, func, "wait.read_loop");
-        const read_done_bb = llvm.appendBasicBlock(self.ctx, func, "wait.read_done");
+        // Allocate stderr buffer
+        const err_buf_alloca = self.builder.buildAlloca(ptr_type, "wait.errbuf");
+        const err_len_alloca = self.builder.buildAlloca(i64_type, "wait.errlen");
+        const err_cap_alloca = self.builder.buildAlloca(i64_type, "wait.errcap");
+
+        // Done flags for each fd
+        const out_done_alloca = self.builder.buildAlloca(i1_type, "wait.out_done");
+        const err_done_alloca = self.builder.buildAlloca(i1_type, "wait.err_done");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), out_done_alloca);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), err_done_alloca);
+
+        // malloc both buffers
+        const out_init_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, init_cap + 1)}, "wait.oibuf");
+        const err_init_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, init_cap + 1)}, "wait.eibuf");
+
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "wait.cont");
-
-        // Check malloc for OOM
-        const init_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, init_buf, llvm.c.LLVMConstNull(ptr_type), "wait.oom");
         const malloc_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wait.malloc_ok");
         const malloc_fail_bb = llvm.appendBasicBlock(self.ctx, func, "wait.malloc_fail");
-        _ = self.builder.buildCondBr(init_null, malloc_fail_bb, malloc_ok_bb);
 
-        // OOM: close stdout fd, waitpid, return Err
+        // Check both mallocs for OOM
+        const out_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, out_init_buf, llvm.c.LLVMConstNull(ptr_type), "wait.onull");
+        const err_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, err_init_buf, llvm.c.LLVMConstNull(ptr_type), "wait.enull");
+        const either_null = llvm.c.LLVMBuildOr(self.builder.ref, out_null, err_null, "wait.oom");
+        _ = self.builder.buildCondBr(either_null, malloc_fail_bb, malloc_ok_bb);
+
+        // OOM: close both fds, waitpid, return Err
         self.builder.positionAtEnd(malloc_fail_bb);
         {
             _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stdout_fd}, "");
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stderr_fd}, "");
             const waitpid_fn_oom = self.getOrDeclareWaitpid();
             const ws_oom = self.builder.buildAlloca(i32_type, "wait.ws_oom");
             _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), ws_oom);
@@ -27099,70 +27134,221 @@ pub const Emitter = struct {
             _ = self.builder.buildBr(cont_bb);
         }
 
+        // Initialize buffers
         self.builder.positionAtEnd(malloc_ok_bb);
-        _ = self.builder.buildStore(init_buf, out_buf_alloca);
+        _ = self.builder.buildStore(out_init_buf, out_buf_alloca);
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), out_len_alloca);
         _ = self.builder.buildStore(llvm.Const.int64(self.ctx, init_cap), out_cap_alloca);
-        _ = self.builder.buildBr(read_loop_bb);
+        _ = self.builder.buildStore(err_init_buf, err_buf_alloca);
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), err_len_alloca);
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, init_cap), err_cap_alloca);
 
-        self.builder.positionAtEnd(read_loop_bb);
-        const cur_buf = self.builder.buildLoad(ptr_type, out_buf_alloca, "wait.cb");
-        const cur_len = self.builder.buildLoad(i64_type, out_len_alloca, "wait.cl");
-        const cur_cap = self.builder.buildLoad(i64_type, out_cap_alloca, "wait.cc");
+        // === Poll loop ===
+        const poll_loop_bb = llvm.appendBasicBlock(self.ctx, func, "wait.poll_loop");
+        _ = self.builder.buildBr(poll_loop_bb);
 
-        // Ensure we have space
-        const remaining = llvm.c.LLVMBuildSub(self.builder.ref, cur_cap, cur_len, "wait.rem");
-        const need_grow = self.builder.buildICmp(llvm.c.LLVMIntEQ, remaining, llvm.Const.int64(self.ctx, 0), "wait.full");
-        const grow_bb = llvm.appendBasicBlock(self.ctx, func, "wait.grow");
-        const do_read_bb = llvm.appendBasicBlock(self.ctx, func, "wait.doread");
-        _ = self.builder.buildCondBr(need_grow, grow_bb, do_read_bb);
+        self.builder.positionAtEnd(poll_loop_bb);
 
-        // Grow buffer
-        self.builder.positionAtEnd(grow_bb);
-        const new_cap = llvm.c.LLVMBuildMul(self.builder.ref, cur_cap, llvm.Const.int64(self.ctx, 2), "wait.ncap");
-        const realloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, new_cap, llvm.Const.int64(self.ctx, 1), "wait.rsz"); // +1 for null terminator
-        const new_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &[_]llvm.ValueRef{ cur_buf, realloc_size }, "wait.nbuf");
-        // On OOM, realloc returns null but original buffer is still valid — stop reading with truncated output
-        const realloc_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, new_buf, llvm.c.LLVMConstNull(ptr_type), "wait.oom");
-        const realloc_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wait.realloc_ok");
-        _ = self.builder.buildCondBr(realloc_null, read_done_bb, realloc_ok_bb);
+        // Check if both fds are done
+        const out_d = self.builder.buildLoad(i1_type, out_done_alloca, "wait.od");
+        const err_d = self.builder.buildLoad(i1_type, err_done_alloca, "wait.ed");
+        const both_done = llvm.c.LLVMBuildAnd(self.builder.ref, out_d, err_d, "wait.both");
+        const drain_done_bb = llvm.appendBasicBlock(self.ctx, func, "wait.drain_done");
+        const setup_poll_bb = llvm.appendBasicBlock(self.ctx, func, "wait.setup_poll");
+        _ = self.builder.buildCondBr(both_done, drain_done_bb, setup_poll_bb);
 
-        self.builder.positionAtEnd(realloc_ok_bb);
-        _ = self.builder.buildStore(new_buf, out_buf_alloca);
-        _ = self.builder.buildStore(new_cap, out_cap_alloca);
-        _ = self.builder.buildBr(do_read_bb);
+        // Set up pollfd entries: fd = -1 if done (poll ignores negative fds)
+        self.builder.positionAtEnd(setup_poll_bb);
+        {
+            // pollfds[0] = { stdout_fd or -1, POLLIN, 0 }
+            const fd0_val = llvm.c.LLVMBuildSelect(self.builder.ref, out_d, llvm.Const.int32(self.ctx, -1), stdout_fd, "wait.fd0");
+            var idx0_fd = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0) };
+            const fd0_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, pollfd_arr_type, pollfds, &idx0_fd, 3, "wait.fd0p");
+            _ = self.builder.buildStore(fd0_val, fd0_ptr);
+            var idx0_ev = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1) };
+            const ev0_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, pollfd_arr_type, pollfds, &idx0_ev, 3, "wait.ev0p");
+            _ = self.builder.buildStore(llvm.Const.int16(self.ctx, POLLIN), ev0_ptr);
+            var idx0_rv = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 2) };
+            const rv0_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, pollfd_arr_type, pollfds, &idx0_rv, 3, "wait.rv0p");
+            _ = self.builder.buildStore(llvm.Const.int16(self.ctx, 0), rv0_ptr);
 
-        // Do read
-        self.builder.positionAtEnd(do_read_bb);
-        const rb = self.builder.buildLoad(ptr_type, out_buf_alloca, "wait.rb");
-        const rl = self.builder.buildLoad(i64_type, out_len_alloca, "wait.rl");
-        const rc = self.builder.buildLoad(i64_type, out_cap_alloca, "wait.rc");
-        const read_rem = llvm.c.LLVMBuildSub(self.builder.ref, rc, rl, "wait.rrem");
-        var read_gep = [_]llvm.ValueRef{rl};
-        const read_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), rb, &read_gep, 1, "wait.rdst");
-        const stdout_fd_i32 = stdout_fd;
-        const bytes_read = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(read_fn), read_fn, &[_]llvm.ValueRef{ stdout_fd_i32, read_dst, read_rem }, "wait.nr");
+            // pollfds[1] = { stderr_fd or -1, POLLIN, 0 }
+            const fd1_val = llvm.c.LLVMBuildSelect(self.builder.ref, err_d, llvm.Const.int32(self.ctx, -1), stderr_fd, "wait.fd1");
+            var idx1_fd = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1), llvm.Const.int32(self.ctx, 0) };
+            const fd1_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, pollfd_arr_type, pollfds, &idx1_fd, 3, "wait.fd1p");
+            _ = self.builder.buildStore(fd1_val, fd1_ptr);
+            var idx1_ev = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1), llvm.Const.int32(self.ctx, 1) };
+            const ev1_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, pollfd_arr_type, pollfds, &idx1_ev, 3, "wait.ev1p");
+            _ = self.builder.buildStore(llvm.Const.int16(self.ctx, POLLIN), ev1_ptr);
+            var idx1_rv = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1), llvm.Const.int32(self.ctx, 2) };
+            const rv1_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, pollfd_arr_type, pollfds, &idx1_rv, 3, "wait.rv1p");
+            _ = self.builder.buildStore(llvm.Const.int16(self.ctx, 0), rv1_ptr);
+        }
 
-        // If bytes_read <= 0, done
-        const read_done_cond = self.builder.buildICmp(llvm.c.LLVMIntSLE, bytes_read, llvm.Const.int64(self.ctx, 0), "wait.rdone");
-        const read_update_bb = llvm.appendBasicBlock(self.ctx, func, "wait.rupdate");
-        _ = self.builder.buildCondBr(read_done_cond, read_done_bb, read_update_bb);
+        // Call poll(pollfds, 2, -1) — block until at least one fd is ready
+        const pollfds_ptr = llvm.c.LLVMBuildBitCast(self.builder.ref, pollfds, ptr_type, "wait.pfptr");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(poll_fn), poll_fn, &[_]llvm.ValueRef{
+            pollfds_ptr,
+            llvm.Const.int32(self.ctx, 2),
+            llvm.Const.int32(self.ctx, -1),
+        }, "wait.pollr");
+        // Ignore poll return value — on EINTR it returns -1 but we just retry the loop.
+        // On error, revents will be 0 for both fds, so we'll just poll again.
 
-        self.builder.positionAtEnd(read_update_bb);
-        const new_len = llvm.c.LLVMBuildAdd(self.builder.ref, rl, bytes_read, "wait.nlen");
-        _ = self.builder.buildStore(new_len, out_len_alloca);
-        _ = self.builder.buildBr(read_loop_bb);
+        // === Check and read stdout ===
+        const check_stderr_bb = llvm.appendBasicBlock(self.ctx, func, "wait.check_err");
+        {
+            const try_out_bb = llvm.appendBasicBlock(self.ctx, func, "wait.try_out");
+            const skip_out_bb = check_stderr_bb;
 
-        // Read done: close stdout fd, waitpid, build result (stderr already closed above)
-        self.builder.positionAtEnd(read_done_bb);
+            // Skip if already done
+            const od2 = self.builder.buildLoad(i1_type, out_done_alloca, "wait.od2");
+            _ = self.builder.buildCondBr(od2, skip_out_bb, try_out_bb);
+
+            self.builder.positionAtEnd(try_out_bb);
+            // Check revents: any bits set means we should try reading
+            var rv0_idx = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 2) };
+            const rv0 = self.builder.buildLoad(i16_type, llvm.c.LLVMBuildGEP2(self.builder.ref, pollfd_arr_type, pollfds, &rv0_idx, 3, "wait.rv0r"), "wait.rv0v");
+            const rv0_any = self.builder.buildICmp(llvm.c.LLVMIntNE, rv0, llvm.Const.int16(self.ctx, 0), "wait.rv0a");
+            const read_out_bb = llvm.appendBasicBlock(self.ctx, func, "wait.read_out");
+            _ = self.builder.buildCondBr(rv0_any, read_out_bb, skip_out_bb);
+
+            // Read from stdout: grow if needed, then read
+            self.builder.positionAtEnd(read_out_bb);
+            const mark_out_done_bb = llvm.appendBasicBlock(self.ctx, func, "wait.mark_od");
+            const update_out_bb = llvm.appendBasicBlock(self.ctx, func, "wait.upd_out");
+
+            // Check remaining space
+            const o_buf = self.builder.buildLoad(ptr_type, out_buf_alloca, "wait.ob");
+            const o_len = self.builder.buildLoad(i64_type, out_len_alloca, "wait.ol");
+            const o_cap = self.builder.buildLoad(i64_type, out_cap_alloca, "wait.oc");
+            const o_rem = llvm.c.LLVMBuildSub(self.builder.ref, o_cap, o_len, "wait.orem");
+            const o_full = self.builder.buildICmp(llvm.c.LLVMIntEQ, o_rem, llvm.Const.int64(self.ctx, 0), "wait.ofull");
+            const grow_out_bb = llvm.appendBasicBlock(self.ctx, func, "wait.grow_out");
+            const do_read_out_bb = llvm.appendBasicBlock(self.ctx, func, "wait.dro");
+            _ = self.builder.buildCondBr(o_full, grow_out_bb, do_read_out_bb);
+
+            // Grow stdout buffer
+            self.builder.positionAtEnd(grow_out_bb);
+            const o_ncap = llvm.c.LLVMBuildMul(self.builder.ref, o_cap, llvm.Const.int64(self.ctx, 2), "wait.oncap");
+            const o_rsz = llvm.c.LLVMBuildAdd(self.builder.ref, o_ncap, llvm.Const.int64(self.ctx, 1), "wait.orsz");
+            const o_nbuf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &[_]llvm.ValueRef{ o_buf, o_rsz }, "wait.onbuf");
+            const o_rnull = self.builder.buildICmp(llvm.c.LLVMIntEQ, o_nbuf, llvm.c.LLVMConstNull(ptr_type), "wait.ooom");
+            const grow_out_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wait.goo");
+            _ = self.builder.buildCondBr(o_rnull, mark_out_done_bb, grow_out_ok_bb);
+
+            self.builder.positionAtEnd(grow_out_ok_bb);
+            _ = self.builder.buildStore(o_nbuf, out_buf_alloca);
+            _ = self.builder.buildStore(o_ncap, out_cap_alloca);
+            _ = self.builder.buildBr(do_read_out_bb);
+
+            // Do the read
+            self.builder.positionAtEnd(do_read_out_bb);
+            const orb = self.builder.buildLoad(ptr_type, out_buf_alloca, "wait.orb");
+            const orl = self.builder.buildLoad(i64_type, out_len_alloca, "wait.orl");
+            const orc = self.builder.buildLoad(i64_type, out_cap_alloca, "wait.orc");
+            const o_rrem = llvm.c.LLVMBuildSub(self.builder.ref, orc, orl, "wait.orrm");
+            var o_gep = [_]llvm.ValueRef{orl};
+            const o_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, orb, &o_gep, 1, "wait.odst");
+            const o_nr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(read_fn), read_fn, &[_]llvm.ValueRef{ stdout_fd, o_dst, o_rrem }, "wait.onr");
+            const o_eof = self.builder.buildICmp(llvm.c.LLVMIntSLE, o_nr, llvm.Const.int64(self.ctx, 0), "wait.oeof");
+            _ = self.builder.buildCondBr(o_eof, mark_out_done_bb, update_out_bb);
+
+            self.builder.positionAtEnd(mark_out_done_bb);
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), out_done_alloca);
+            _ = self.builder.buildBr(skip_out_bb);
+
+            self.builder.positionAtEnd(update_out_bb);
+            const o_nlen = llvm.c.LLVMBuildAdd(self.builder.ref, orl, o_nr, "wait.onl");
+            _ = self.builder.buildStore(o_nlen, out_len_alloca);
+            _ = self.builder.buildBr(skip_out_bb);
+        }
+
+        // === Check and read stderr ===
+        self.builder.positionAtEnd(check_stderr_bb);
+        {
+            const try_err_bb = llvm.appendBasicBlock(self.ctx, func, "wait.try_err");
+
+            // Skip if already done
+            const ed2 = self.builder.buildLoad(i1_type, err_done_alloca, "wait.ed2");
+            _ = self.builder.buildCondBr(ed2, poll_loop_bb, try_err_bb);
+
+            self.builder.positionAtEnd(try_err_bb);
+            // Check revents
+            var rv1_idx = [_]llvm.ValueRef{ llvm.Const.int32(self.ctx, 0), llvm.Const.int32(self.ctx, 1), llvm.Const.int32(self.ctx, 2) };
+            const rv1 = self.builder.buildLoad(i16_type, llvm.c.LLVMBuildGEP2(self.builder.ref, pollfd_arr_type, pollfds, &rv1_idx, 3, "wait.rv1r"), "wait.rv1v");
+            const rv1_any = self.builder.buildICmp(llvm.c.LLVMIntNE, rv1, llvm.Const.int16(self.ctx, 0), "wait.rv1a");
+            const read_err_bb = llvm.appendBasicBlock(self.ctx, func, "wait.read_err");
+            _ = self.builder.buildCondBr(rv1_any, read_err_bb, poll_loop_bb);
+
+            // Read from stderr: grow if needed, then read
+            self.builder.positionAtEnd(read_err_bb);
+            const mark_err_done_bb = llvm.appendBasicBlock(self.ctx, func, "wait.mark_ed");
+            const update_err_bb = llvm.appendBasicBlock(self.ctx, func, "wait.upd_err");
+
+            const e_buf = self.builder.buildLoad(ptr_type, err_buf_alloca, "wait.eb");
+            const e_len = self.builder.buildLoad(i64_type, err_len_alloca, "wait.el");
+            const e_cap = self.builder.buildLoad(i64_type, err_cap_alloca, "wait.ec");
+            const e_rem = llvm.c.LLVMBuildSub(self.builder.ref, e_cap, e_len, "wait.erem");
+            const e_full = self.builder.buildICmp(llvm.c.LLVMIntEQ, e_rem, llvm.Const.int64(self.ctx, 0), "wait.efull");
+            const grow_err_bb = llvm.appendBasicBlock(self.ctx, func, "wait.grow_err");
+            const do_read_err_bb = llvm.appendBasicBlock(self.ctx, func, "wait.dre");
+            _ = self.builder.buildCondBr(e_full, grow_err_bb, do_read_err_bb);
+
+            // Grow stderr buffer
+            self.builder.positionAtEnd(grow_err_bb);
+            const e_ncap = llvm.c.LLVMBuildMul(self.builder.ref, e_cap, llvm.Const.int64(self.ctx, 2), "wait.encap");
+            const e_rsz = llvm.c.LLVMBuildAdd(self.builder.ref, e_ncap, llvm.Const.int64(self.ctx, 1), "wait.ersz");
+            const e_nbuf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &[_]llvm.ValueRef{ e_buf, e_rsz }, "wait.enbuf");
+            const e_rnull = self.builder.buildICmp(llvm.c.LLVMIntEQ, e_nbuf, llvm.c.LLVMConstNull(ptr_type), "wait.eoom");
+            const grow_err_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wait.geo");
+            _ = self.builder.buildCondBr(e_rnull, mark_err_done_bb, grow_err_ok_bb);
+
+            self.builder.positionAtEnd(grow_err_ok_bb);
+            _ = self.builder.buildStore(e_nbuf, err_buf_alloca);
+            _ = self.builder.buildStore(e_ncap, err_cap_alloca);
+            _ = self.builder.buildBr(do_read_err_bb);
+
+            // Do the read
+            self.builder.positionAtEnd(do_read_err_bb);
+            const erb = self.builder.buildLoad(ptr_type, err_buf_alloca, "wait.erb");
+            const erl = self.builder.buildLoad(i64_type, err_len_alloca, "wait.erl");
+            const erc = self.builder.buildLoad(i64_type, err_cap_alloca, "wait.erc");
+            const e_rrem = llvm.c.LLVMBuildSub(self.builder.ref, erc, erl, "wait.errm");
+            var e_gep = [_]llvm.ValueRef{erl};
+            const e_dst = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, erb, &e_gep, 1, "wait.edst");
+            const e_nr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(read_fn), read_fn, &[_]llvm.ValueRef{ stderr_fd, e_dst, e_rrem }, "wait.enr");
+            const e_eof = self.builder.buildICmp(llvm.c.LLVMIntSLE, e_nr, llvm.Const.int64(self.ctx, 0), "wait.eeof");
+            _ = self.builder.buildCondBr(e_eof, mark_err_done_bb, update_err_bb);
+
+            self.builder.positionAtEnd(mark_err_done_bb);
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), err_done_alloca);
+            _ = self.builder.buildBr(poll_loop_bb);
+
+            self.builder.positionAtEnd(update_err_bb);
+            const e_nlen = llvm.c.LLVMBuildAdd(self.builder.ref, erl, e_nr, "wait.enl");
+            _ = self.builder.buildStore(e_nlen, err_len_alloca);
+            _ = self.builder.buildBr(poll_loop_bb);
+        }
+
+        // === Drain complete: close fds, null-terminate buffers ===
+        self.builder.positionAtEnd(drain_done_bb);
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stdout_fd}, "");
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stderr_fd}, "");
 
         // Null-terminate stdout
         const final_buf = self.builder.buildLoad(ptr_type, out_buf_alloca, "wait.fb");
         const final_len = self.builder.buildLoad(i64_type, out_len_alloca, "wait.fl");
         var term_gep = [_]llvm.ValueRef{final_len};
-        const term_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), final_buf, &term_gep, 1, "wait.term");
+        const term_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, final_buf, &term_gep, 1, "wait.term");
         _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), term_ptr);
+
+        // Null-terminate stderr
+        const final_err_buf = self.builder.buildLoad(ptr_type, err_buf_alloca, "wait.efb");
+        const final_err_len = self.builder.buildLoad(i64_type, err_len_alloca, "wait.efl");
+        var eterm_gep = [_]llvm.ValueRef{final_err_len};
+        const eterm_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, final_err_buf, &eterm_gep, 1, "wait.eterm");
+        _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), eterm_ptr);
 
         // waitpid(pid, &status, 0) — blocking, with EINTR retry loop
         const wstatus_alloca = self.builder.buildAlloca(i32_type, "wait.ws");
@@ -27205,7 +27391,7 @@ pub const Emitter = struct {
         const stdout_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_type, proc_ptr, 0, "wait.stdout");
         _ = self.builder.buildStore(final_buf, stdout_f);
         const stderr_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_type, proc_ptr, 1, "wait.stderr");
-        _ = self.builder.buildStore(self.builder.buildGlobalStringPtr("", "wait.empty"), stderr_f);
+        _ = self.builder.buildStore(final_err_buf, stderr_f);
         const exit_f = llvm.c.LLVMBuildStructGEP2(self.builder.ref, proc_type, proc_ptr, 2, "wait.exit");
         _ = self.builder.buildStore(exit_code, exit_f);
 
