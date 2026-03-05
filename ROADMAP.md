@@ -197,6 +197,10 @@ Eliminated syntactic ambiguity between generics and array indexing. `[` is **alw
 | Package registry | Central package repository, versioned dependencies |
 | Documentation site | Auto-generated API docs from doc comments |
 
+### Stretch Goals
+
+- [ ] Windows `process_spawn` via `CreateProcessW` (currently POSIX-only: `fork`+`execvp`)
+
 ## Phase 8: Production Readiness (Planned)
 
 **Goal:** Polish for real-world adoption.
