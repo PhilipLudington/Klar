@@ -1,6 +1,7 @@
 // Test TCP socket builtins: tcp_listen, tcp_accept, tcp_connect, tcp_read, tcp_write, tcp_close
 // Uses process_spawn to create a client subprocess that connects to the server.
 // Expected exit code: 0
+// Skip: windows
 
 fn main() -> i32 {
     // Start a TCP server on a high port

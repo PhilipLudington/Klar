@@ -1,5 +1,6 @@
 // Test async subprocess builtins: process_spawn, process_wait, process_read_stdout
 // Expected exit code: 0
+// Skip: windows
 
 fn main() -> i32 {
     // Test 1: spawn echo, wait for completion, check output
