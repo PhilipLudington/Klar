@@ -134,7 +134,7 @@ fn parse_response_headers(data: string, start: i32) -> Map#[string, string] {
     return headers
 }
 
-fn parse_http_response(data: string) -> Result#[HttpClientResponse, string] {
+pub fn parse_http_response(data: string) -> Result#[HttpClientResponse, string] {
     let status: i32 = parse_status_code(data)
     if status < 0 {
         return Err("invalid status line")

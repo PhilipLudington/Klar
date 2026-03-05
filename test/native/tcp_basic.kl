@@ -1,7 +1,7 @@
 // Test TCP socket builtins: tcp_listen, tcp_accept, tcp_connect, tcp_read, tcp_write, tcp_close
-// Uses process_spawn to create a client subprocess that connects to the server.
+// Uses Klar TCP client directly (no process_spawn) for cross-platform compatibility.
+// The kernel queues the connection when tcp_connect is called before tcp_accept.
 // Expected exit code: 0
-// Skip: windows
 
 fn main() -> i32 {
     // Start a TCP server on a high port
@@ -12,53 +12,72 @@ fn main() -> i32 {
     }
     let listener: TcpListener = lr!
 
-    // Spawn a subprocess that connects and sends data using printf (not echo -n)
-    let args: List#[string] = List.new#[string]()
-    args.push("-c")
-    args.push("sleep 0.1 && printf 'hello tcp' | nc 127.0.0.1 19876")
-    let sr: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", args)
-    if not sr.is_ok() {
+    // Connect a client — the kernel backlog queues this before we accept
+    let cr: Result#[TcpStream, IoError] = tcp_connect("127.0.0.1", 19876)
+    if not cr.is_ok() {
         tcp_listener_close(listener)
-        println("process_spawn failed")
+        println("tcp_connect failed")
         return 2
     }
-    let child: ProcessHandle = sr!
+    let client: TcpStream = cr!
 
-    // Accept a connection
-    let ar: Result#[TcpStream, IoError] = tcp_accept(listener)
-    if not ar.is_ok() {
+    // Send data from client before accepting (buffered by kernel)
+    let wr1: Result#[i32, IoError] = tcp_write(client, "hello tcp")
+    if not wr1.is_ok() {
+        tcp_close(client)
         tcp_listener_close(listener)
-        println("tcp_accept failed")
+        println("tcp_write (client) failed")
         return 3
     }
-    let stream: TcpStream = ar!
 
-    // Read data from the client
-    let rr: Result#[string, IoError] = tcp_read(stream, 4096)
+    // Accept the connection on the server side
+    let ar: Result#[TcpStream, IoError] = tcp_accept(listener)
+    if not ar.is_ok() {
+        tcp_close(client)
+        tcp_listener_close(listener)
+        println("tcp_accept failed")
+        return 4
+    }
+    let server: TcpStream = ar!
+
+    // Read data on the server side
+    let rr: Result#[string, IoError] = tcp_read(server, 4096)
     if not rr.is_ok() {
-        tcp_close(stream)
+        tcp_close(server)
+        tcp_close(client)
         tcp_listener_close(listener)
         println("tcp_read failed")
-        return 4
+        return 5
     }
     let data: string = rr!
     assert_eq(data, "hello tcp")
 
-    // Send a response
-    let wr: Result#[i32, IoError] = tcp_write(stream, "ok")
-    if not wr.is_ok() {
-        tcp_close(stream)
+    // Send a response from server
+    let wr2: Result#[i32, IoError] = tcp_write(server, "ok")
+    if not wr2.is_ok() {
+        tcp_close(server)
+        tcp_close(client)
         tcp_listener_close(listener)
-        println("tcp_write failed")
-        return 5
+        println("tcp_write (server) failed")
+        return 6
     }
 
-    // Clean up
-    tcp_close(stream)
-    tcp_listener_close(listener)
+    // Read response on client side
+    let rr2: Result#[string, IoError] = tcp_read(client, 4096)
+    if not rr2.is_ok() {
+        tcp_close(server)
+        tcp_close(client)
+        tcp_listener_close(listener)
+        println("tcp_read (client) failed")
+        return 7
+    }
+    let resp: string = rr2!
+    assert_eq(resp, "ok")
 
-    // Wait for child
-    let _w: Result#[ProcessOutput, IoError] = process_wait(child)
+    // Clean up
+    tcp_close(server)
+    tcp_close(client)
+    tcp_listener_close(listener)
 
     return 0
 }

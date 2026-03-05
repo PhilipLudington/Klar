@@ -68,7 +68,6 @@ get_link_flags() {
 # Check if test should be skipped (handled by different runner or platform-specific)
 should_skip() {
     head -5 "$1" | grep -q "// Skip: native-tests" && return 0
-    # Skip Windows-only tests on Windows
     if [[ "$OS" == "Windows_NT" ]]; then
         head -5 "$1" | grep -q "// Skip: windows" && return 0
     fi

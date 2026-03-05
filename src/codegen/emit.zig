@@ -782,6 +782,27 @@ pub const Emitter = struct {
         const entry_block = llvm.appendBasicBlock(self.ctx, main_fn, "entry");
         self.builder.positionAtEnd(entry_block);
 
+        // Windows: initialize Winsock2 before any socket operations
+        // WSAStartup(MAKEWORD(2, 2), &wsadata) — MAKEWORD(2,2) = 0x0202
+        if (self.platform.os == .windows) {
+            // WSADATA is 408 bytes on 64-bit Windows
+            const wsadata_size: u64 = 408;
+            const wsadata_type = llvm.c.LLVMArrayType2(llvm.Types.int8(self.ctx), wsadata_size);
+            const wsadata_alloca = self.builder.buildAlloca(wsadata_type, "wsadata");
+
+            // Declare WSAStartup(WORD wVersionRequired, LPWSADATA lpWSAData) -> int
+            const wsa_fn = blk: {
+                if (llvm.c.LLVMGetNamedFunction(self.module.ref, "WSAStartup")) |f| break :blk f;
+                var wsa_params = [_]llvm.TypeRef{ llvm.Types.int16(self.ctx), ptr_type };
+                const wsa_fn_type = llvm.c.LLVMFunctionType(i32_type, &wsa_params, 2, 0);
+                break :blk llvm.c.LLVMAddFunction(self.module.ref, "WSAStartup", wsa_fn_type);
+            };
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wsa_fn), wsa_fn, &[_]llvm.ValueRef{
+                llvm.c.LLVMConstInt(llvm.Types.int16(self.ctx), 0x0202, 0), // MAKEWORD(2, 2)
+                wsadata_alloca,
+            }, "");
+        }
+
         // Get argc and argv parameters
         const argc = llvm.c.LLVMGetParam(main_fn, 0);
         const argv = llvm.c.LLVMGetParam(main_fn, 1);
@@ -817,6 +838,16 @@ pub const Emitter = struct {
             &free_args,
             "",
         );
+
+        // Windows: clean up Winsock2
+        if (self.platform.os == .windows) {
+            const wsa_cleanup_fn = blk: {
+                if (llvm.c.LLVMGetNamedFunction(self.module.ref, "WSACleanup")) |f| break :blk f;
+                const cleanup_fn_type = llvm.c.LLVMFunctionType(i32_type, null, 0, 0);
+                break :blk llvm.c.LLVMAddFunction(self.module.ref, "WSACleanup", cleanup_fn_type);
+            };
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(wsa_cleanup_fn), wsa_cleanup_fn, &[_]llvm.ValueRef{}, "");
+        }
 
         // Return the result
         _ = self.builder.buildRet(result);

@@ -1,8 +1,21 @@
 // Test HTTP server library
-// Uses curl subprocess as client, dispatch-based routing.
+// Uses Klar TCP client directly (no curl/process_spawn) for cross-platform compatibility.
 // Expected exit code: 0
 
 import stdlib.http_server.*
+
+fn find_str(s: string, needle: string, start: i32) -> i32 {
+    let slen: i32 = s.len()
+    let nlen: i32 = needle.len()
+    if nlen == 0 { return start }
+    let limit: i32 = slen - nlen + 1
+    for i: i32 in start..limit {
+        if s.slice(i, i + nlen) == needle {
+            return i
+        }
+    }
+    return -1
+}
 
 fn main() -> i32 {
     // Test 1: Parse HTTP request
@@ -43,19 +56,29 @@ fn main() -> i32 {
     let serialized: string = serialize_response(resp)
     assert_eq(serialized.slice(0, 15), "HTTP/1.1 200 OK")
 
-    // Test 6: Simple GET via curl
-    let args1: List#[string] = List.new#[string]()
-    args1.push("-c")
-    args1.push("sleep 0.5 && curl -s http://127.0.0.1:19877/hello")
-    let sr1: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", args1)
-    if not sr1.is_ok() {
-        println("spawn failed")
+    // Test 6: Simple GET via Klar TCP client
+    let lr1: Result#[TcpListener, IoError] = tcp_listen("127.0.0.1", 19877)
+    if not lr1.is_ok() {
+        println("listen failed")
         return 6
     }
-    let client1: ProcessHandle = sr1!
+    let listener1: TcpListener = lr1!
 
-    let ar1: Result#[HttpConnection, string] = http_server_accept("127.0.0.1", 19877)
+    // Connect client and send raw HTTP GET request
+    let cr1: Result#[TcpStream, IoError] = tcp_connect("127.0.0.1", 19877)
+    if not cr1.is_ok() {
+        tcp_listener_close(listener1)
+        println("connect failed")
+        return 6
+    }
+    let client1: TcpStream = cr1!
+    let _w1: Result#[i32, IoError] = tcp_write(client1, "GET /hello HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+
+    // Accept and process request on server side
+    let ar1: Result#[HttpConnection, string] = http_server_accept_on(listener1)
     if not ar1.is_ok() {
+        tcp_close(client1)
+        tcp_listener_close(listener1)
         println("accept failed")
         return 7
     }
@@ -64,39 +87,74 @@ fn main() -> i32 {
     assert_eq(conn1.request.method, "GET")
     assert_eq(conn1.request.path, "/hello")
 
-    http_server_respond_and_close(conn1, http_ok("Hello, World!"))
+    http_server_respond(conn1, http_ok("Hello, World!"))
 
-    let wr1: Result#[ProcessOutput, IoError] = process_wait(client1)
-    if not wr1.is_ok() {
+    // Read response on client side
+    let rr1: Result#[string, IoError] = tcp_read(client1, 65536)
+    if not rr1.is_ok() {
+        tcp_close(client1)
+        tcp_listener_close(listener1)
         return 8
     }
-    let o1: ProcessOutput = wr1!
-    assert_eq(o1.stdout, "Hello, World!")
+    let resp1: string = rr1!
+    // Response should contain the body
+    let body_start1: i32 = find_str(resp1, "\r\n\r\n", 0)
+    if body_start1 >= 0 {
+        let body1: string = resp1.slice(body_start1 + 4, resp1.len())
+        assert_eq(body1, "Hello, World!")
+    } else {
+        tcp_close(client1)
+        tcp_listener_close(listener1)
+        return 8
+    }
+
+    tcp_close(client1)
+    tcp_listener_close(listener1)
 
     // Test 7: JSON response
-    let args2: List#[string] = List.new#[string]()
-    args2.push("-c")
-    args2.push("sleep 0.5 && curl -s http://127.0.0.1:19878/api/data")
-    let sr2: Result#[ProcessHandle, IoError] = process_spawn("/bin/sh", args2)
-    if not sr2.is_ok() {
+    let lr2: Result#[TcpListener, IoError] = tcp_listen("127.0.0.1", 19878)
+    if not lr2.is_ok() {
         return 9
     }
-    let client2: ProcessHandle = sr2!
+    let listener2: TcpListener = lr2!
 
-    let ar2: Result#[HttpConnection, string] = http_server_accept("127.0.0.1", 19878)
+    let cr2: Result#[TcpStream, IoError] = tcp_connect("127.0.0.1", 19878)
+    if not cr2.is_ok() {
+        tcp_listener_close(listener2)
+        return 9
+    }
+    let client2: TcpStream = cr2!
+    let _w2: Result#[i32, IoError] = tcp_write(client2, "GET /api/data HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+
+    let ar2: Result#[HttpConnection, string] = http_server_accept_on(listener2)
     if not ar2.is_ok() {
+        tcp_close(client2)
+        tcp_listener_close(listener2)
         return 10
     }
     let conn2: HttpConnection = ar2!
 
-    http_server_respond_and_close(conn2, http_json_response("{\"message\":\"ok\"}"))
+    http_server_respond(conn2, http_json_response("{\"message\":\"ok\"}"))
 
-    let wr2: Result#[ProcessOutput, IoError] = process_wait(client2)
-    if not wr2.is_ok() {
+    let rr2: Result#[string, IoError] = tcp_read(client2, 65536)
+    if not rr2.is_ok() {
+        tcp_close(client2)
+        tcp_listener_close(listener2)
         return 11
     }
-    let o2: ProcessOutput = wr2!
-    assert_eq(o2.stdout, "{\"message\":\"ok\"}")
+    let resp2: string = rr2!
+    let body_start2: i32 = find_str(resp2, "\r\n\r\n", 0)
+    if body_start2 >= 0 {
+        let body2: string = resp2.slice(body_start2 + 4, resp2.len())
+        assert_eq(body2, "{\"message\":\"ok\"}")
+    } else {
+        tcp_close(client2)
+        tcp_listener_close(listener2)
+        return 11
+    }
+
+    tcp_close(client2)
+    tcp_listener_close(listener2)
 
     return 0
 }
