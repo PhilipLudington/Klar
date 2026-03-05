@@ -502,7 +502,9 @@ fn parse_binding_or_variant(p: Parser) -> (Parser, string) {
                 let json: string = "{\"kind\":\"variant\",\"type_expr\":null,\"variant_name\":" + json_str(name) + ",\"payload\":" + payload_json + "}"
                 return (p2, json)
             }
-            // Bare uppercase name without ( — treat as binding (type checker disambiguates)
+            // Bare uppercase name without ( — no-payload variant (e.g., None, Red)
+            let json: string = "{\"kind\":\"variant\",\"type_expr\":null,\"variant_name\":" + json_str(name) + ",\"payload\":null}"
+            return (p2, json)
         }
     }
 

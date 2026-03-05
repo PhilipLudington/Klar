@@ -2024,6 +2024,17 @@ pub const Parser = struct {
             return .{ .variant = variant };
         }
 
+        // Uppercase identifier without '(' — no-payload variant (e.g., None, Red, Blue)
+        if (is_type_name) {
+            const variant = try self.create(ast.VariantPattern, .{
+                .type_expr = null,
+                .variant_name = name,
+                .payload = null,
+                .span = start_span,
+            });
+            return .{ .variant = variant };
+        }
+
         // Simple binding - check for type annotation
         var type_annotation: ?ast.TypeExpr = null;
         if (self.match(.colon)) {
