@@ -2,7 +2,7 @@
 
 Build the Klar standard library capabilities that [Lodex](../Lodex/DESIGN.md) (AI-native source control) depends on. These features are general-purpose and benefit the entire Klar ecosystem, not just Lodex. See [Lodex PLAN.md Phase 0](../Lodex/PLAN.md) for the downstream requirements.
 
-Current status: Phases 0–5 complete. Phase 6 (Async I/O and HTTP) deferred until Lodex reaches Phase 3.
+Current status: All phases complete (0–6).
 
 For Phase 5 milestones (Windows, WebAssembly, Self-Hosting, Meta Layer), see [ROADMAP.md](ROADMAP.md).
 
@@ -152,27 +152,35 @@ For Phase 5 milestones (Windows, WebAssembly, Self-Hosting, Meta Layer), see [RO
 
 ---
 
-## Phase 6: Async I/O and HTTP
+## Phase 6: Async I/O and HTTP ✅
+**Status:** Complete (2026-03-05)
 
 **Goal:** Build async I/O and HTTP capabilities needed for Lodex's evaluation engine and HTTP API.
-**Status:** Deferred until Lodex reaches Phase 3.
-**Estimated Effort:** 3-4 weeks
 
 ### Tasks
-- [ ] Design async execution model: event loop, task scheduling, concurrent I/O
-- [ ] Implement async subprocess execution (for evaluation engine: run tests without blocking)
-- [ ] Build HTTP server: listen on port, route requests, serve JSON responses
-- [ ] Build HTTP client: make GET/POST requests, parse response body
-- [ ] Evaluate FFI approach: libuv for event loop, libmicrohttpd or libcurl for HTTP
-- [ ] Write tests: concurrent async tasks, HTTP request/response round-trips
+- [x] Design async execution model: event loop, task scheduling, concurrent I/O
+- [x] Implement async subprocess execution (`process_spawn`, `process_poll`, `process_wait`, `process_read_stdout`)
+- [x] Implement TCP socket builtins (`tcp_listen`, `tcp_accept`, `tcp_connect`, `tcp_read`, `tcp_write`, `tcp_close`, `tcp_set_nonblocking`, `tcp_listener_close`)
+- [x] Build HTTP server: listen on port, route requests, serve JSON responses
+- [x] Build HTTP client: make GET/POST requests, parse response body
+- [x] Write tests: async subprocess, TCP sockets, HTTP server/client
 
 ### Deliverables
-- Improved async execution model (beyond current synchronous-completion Future#[T])
-- `stdlib/http_server.kl` — HTTP server library (request routing, JSON request/response)
-- `stdlib/http_client.kl` — HTTP client library (make requests, parse responses)
+- Async subprocess builtins in checker, codegen, vm_builtins, interpreter
+- TCP socket builtins with non-blocking support
+- `stdlib/http_server.kl` — HTTP server library (pure Klar on TCP builtins)
+- `stdlib/http_client.kl` — HTTP client library (pure Klar on TCP builtins)
+- `test/native/process_spawn.kl`, `test/native/tcp_basic.kl` — native tests
+- `test/native/async_*.kl` — 13 async/await tests
+- `test/module/http_server/main.kl`, `test/module/http_client/main.kl` — module tests
+
+### Implementation Notes
+- Async subprocess uses `posix_spawn` + pipe-based stdout capture
+- TCP sockets use POSIX socket API with platform-specific constants (macOS vs Linux)
+- HTTP server/client are pure Klar libraries built on TCP builtins (no C HTTP dependencies)
+- Builtin struct types registered in both `checker.zig` and `emit.zig`'s `registerBuiltinStructTypes()`
 
 ### Readiness Gate
-Before Lodex Phase 3, these must be true:
-- [ ] Can serve HTTP endpoints from Klar
-- [ ] Can make HTTP requests from Klar
-- [ ] Can run subprocesses asynchronously without blocking the main thread
+- [x] Can serve HTTP endpoints from Klar
+- [x] Can make HTTP requests from Klar
+- [x] Can run subprocesses asynchronously without blocking the main thread
