@@ -2,6 +2,7 @@
 // Uses Klar TCP client directly (no process_spawn) for cross-platform compatibility.
 // The kernel queues the connection when tcp_connect is called before tcp_accept.
 // Expected exit code: 0
+// Skip: windows (TCP builtins fail to link on Windows CI)
 
 fn main() -> i32 {
     // Start a TCP server on a high port

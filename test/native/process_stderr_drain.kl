@@ -3,7 +3,7 @@
 // are drained via poll(), capturing stderr and preventing deadlock when the child
 // writes >64KB to stderr.
 // Expected exit code: 0
-// Skip: windows
+// Skip: windows (process_spawn uses fork/execvp, poll() is POSIX-only)
 
 fn main() -> i32 {
     // Write 70KB of 'x' to stderr and "hello" to stdout
