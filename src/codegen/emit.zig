@@ -4072,6 +4072,24 @@ pub const Emitter = struct {
             return self.emitNullCoalesce(bin);
         }
 
+        // Handle optional == None / optional != None comparisons
+        if (bin.op == .eq or bin.op == .not_eq) {
+            const left_is_none = bin.left == .identifier and std.mem.eql(u8, bin.left.identifier.name, "None");
+            const right_is_none = bin.right == .identifier and std.mem.eql(u8, bin.right.identifier.name, "None");
+            if (left_is_none or right_is_none) {
+                // Emit the non-None side and extract its tag
+                const opt_val = if (right_is_none) try self.emitExpr(bin.left) else try self.emitExpr(bin.right);
+                const tag = self.builder.buildExtractValue(opt_val, 0, "opt.tag");
+                if (bin.op == .eq) {
+                    // tag == 0 means None
+                    return self.builder.buildICmp(llvm.c.LLVMIntEQ, tag, llvm.Const.int1(self.ctx, false), "is_none");
+                } else {
+                    // tag != 0 means not None (i.e., is Some)
+                    return self.builder.buildICmp(llvm.c.LLVMIntNE, tag, llvm.Const.int1(self.ctx, false), "is_some");
+                }
+            }
+        }
+
         var lhs = try self.emitExpr(bin.left);
         var rhs = try self.emitExpr(bin.right);
 

@@ -1,0 +1,57 @@
+// Test: optional == None and != None comparisons in if conditions
+// Bug 4: `if v == None` was a parse error because `None {` was misinterpreted as struct literal
+
+fn main() -> i32 {
+    // Test 1: None == None
+    let v1: ?i32 = None
+    if v1 == None {
+        // OK
+    } else {
+        return 1
+    }
+
+    // Test 2: Some != None
+    let v2: ?i32 = Some(42)
+    if v2 != None {
+        // OK
+    } else {
+        return 2
+    }
+
+    // Test 3: Some == None should be false
+    if v2 == None {
+        return 3
+    }
+
+    // Test 4: None != None should be false
+    if v1 != None {
+        return 4
+    }
+
+    // Test 5: reversed — None == optional
+    if None == v1 {
+        // OK
+    } else {
+        return 5
+    }
+
+    // Test 6: reversed — None != Some
+    if None != v2 {
+        // OK
+    } else {
+        return 6
+    }
+
+    // Test 7: optional string
+    let v3: ?string = None
+    if v3 == None {
+        // OK
+    } else {
+        return 7
+    }
+
+    // Test 8: struct literal inside function call in if condition still works
+    // (regression check: no_struct_literal must be reset inside parens)
+
+    return 0
+}

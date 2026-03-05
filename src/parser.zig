@@ -170,6 +170,7 @@ pub const Parser = struct {
     current: Token,
     previous: Token,
     errors: std.ArrayListUnmanaged(Error),
+    no_struct_literal: bool = false,
 
     pub const Error = struct {
         message: []const u8,
@@ -775,7 +776,7 @@ pub const Parser = struct {
             }
 
             // Check for struct literal with generic type: TypeName#[T, U] { ... }
-            if (self.check(.l_brace)) {
+            if (self.check(.l_brace) and !self.no_struct_literal) {
                 return self.parseStructLiteralWithType(full_type, start_span);
             }
 
@@ -793,7 +794,8 @@ pub const Parser = struct {
         // Check for struct literal: Identifier { ... }
         // Only parse as struct literal if the identifier starts with uppercase (type convention)
         // This prevents `x { ... }` from being parsed as struct literal in contexts like `if x { }`
-        if (self.check(.l_brace) and is_type_name) {
+        // Also skip when no_struct_literal is set (e.g., in if/while/match/for conditions)
+        if (self.check(.l_brace) and is_type_name and !self.no_struct_literal) {
             const base_type: ast.TypeExpr = .{ .named = .{ .name = name, .span = start_span } };
             return self.parseStructLiteralWithType(base_type, start_span);
         }
@@ -884,6 +886,11 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '('
 
+        // Inside parens, struct literals are unambiguous
+        const saved_no_struct = self.no_struct_literal;
+        self.no_struct_literal = false;
+        defer self.no_struct_literal = saved_no_struct;
+
         // Empty tuple
         if (self.check(.r_paren)) {
             const end_span = self.spanFromToken(self.current);
@@ -940,6 +947,11 @@ pub const Parser = struct {
     fn parseArrayLiteral(self: *Parser) ParseError!ast.Expr {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '['
+
+        // Inside brackets, struct literals are unambiguous
+        const saved_no_struct = self.no_struct_literal;
+        self.no_struct_literal = false;
+        defer self.no_struct_literal = saved_no_struct;
 
         var elements = std.ArrayListUnmanaged(ast.Expr){};
 
@@ -1174,7 +1186,9 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'if'
 
+        self.no_struct_literal = true;
         const condition = try self.parseExpression();
+        self.no_struct_literal = false;
         const then_block = try self.parseBlock();
 
         var else_branch: ?*ast.ElseBranch = null;
@@ -1210,7 +1224,9 @@ pub const Parser = struct {
         self.advance(); // consume 'match'
 
         // Klar uses "match value { ... }" syntax (Rust-style)
+        self.no_struct_literal = true;
         const subject = try self.parseExpression();
+        self.no_struct_literal = false;
 
         try self.consume(.l_brace, "expected '{' after match subject");
 
@@ -1396,6 +1412,11 @@ pub const Parser = struct {
 
     fn parseCall(self: *Parser, callee: ast.Expr, type_args: ?[]const ast.TypeExpr) ParseError!ast.Expr {
         self.advance(); // consume '('
+
+        // Inside call parens, struct literals are unambiguous
+        const saved_no_struct = self.no_struct_literal;
+        self.no_struct_literal = false;
+        defer self.no_struct_literal = saved_no_struct;
 
         var args = std.ArrayListUnmanaged(ast.Expr){};
 
@@ -1875,7 +1896,9 @@ pub const Parser = struct {
         }
 
         try self.consume(.in, "expected 'in' after for pattern");
+        self.no_struct_literal = true;
         const iterable = try self.parseExpression();
+        self.no_struct_literal = false;
         const body = try self.parseBlock();
 
         const for_loop = try self.create(ast.ForLoop, .{
@@ -1891,7 +1914,9 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'while'
 
+        self.no_struct_literal = true;
         const condition = try self.parseExpression();
+        self.no_struct_literal = false;
         const body = try self.parseBlock();
 
         const while_loop = try self.create(ast.WhileLoop, .{
