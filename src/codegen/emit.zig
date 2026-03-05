@@ -26943,12 +26943,19 @@ pub const Emitter = struct {
         const waitpid_fn = self.getOrDeclareWaitpid();
         const wp_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(waitpid_fn), waitpid_fn, &[_]llvm.ValueRef{ pid, wstatus_alloca, llvm.Const.int32(self.ctx, 1) }, "poll.wp");
 
-        // If waitpid returned 0, process is still running
+        // waitpid returns: 0 = still running, >0 = status available, -1 = error
         const is_running = self.builder.buildICmp(llvm.c.LLVMIntEQ, wp_result, llvm.Const.int32(self.ctx, 0), "poll.running");
         const running_bb = llvm.appendBasicBlock(self.ctx, func, "poll.running");
+        const not_running_bb = llvm.appendBasicBlock(self.ctx, func, "poll.not_running");
         const check_bb = llvm.appendBasicBlock(self.ctx, func, "poll.check");
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "poll.cont");
-        _ = self.builder.buildCondBr(is_running, running_bb, check_bb);
+        _ = self.builder.buildCondBr(is_running, running_bb, not_running_bb);
+
+        // Not running: check if error (-1) or valid status (>0)
+        self.builder.positionAtEnd(not_running_bb);
+        const is_error = self.builder.buildICmp(llvm.c.LLVMIntSLT, wp_result, llvm.Const.int32(self.ctx, 0), "poll.err");
+        _ = self.builder.buildCondBr(is_error, running_bb, check_bb);
+        // On error, treat as still running (best-effort: avoids bogus Exited(0))
 
         // Running: tag=0, value=0
         self.builder.positionAtEnd(running_bb);

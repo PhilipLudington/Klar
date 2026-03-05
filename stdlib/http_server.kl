@@ -156,7 +156,7 @@ fn parse_headers(data: string, start: i32) -> Map#[string, string] {
         let line: string = data.slice(pos, line_end)
         let colon: i32 = find_byte(line, 58.as#[u8], 0)
         if colon > 0 {
-            let key: string = line.slice(0, colon)
+            let key: string = line.slice(0, colon).to_lowercase()
             var val_start: i32 = colon + 1
             if val_start < line.len() and line.byte_at(val_start) == 32.as#[u8] {
                 val_start = val_start + 1
@@ -316,6 +316,8 @@ pub fn http_server_listen(host: string, port: i32) -> Result#[TcpListener, strin
 }
 
 /// Accept one connection on an existing listener, read request, return connection.
+/// Reads headers in the first chunk, then continues reading until the full body
+/// (per Content-Length) is received, supporting request bodies larger than 64KB.
 pub fn http_server_accept_on(listener: TcpListener) -> Result#[HttpConnection, string] {
     let ar: Result#[TcpStream, IoError] = tcp_accept(listener)
     if not ar.is_ok() {
@@ -323,12 +325,54 @@ pub fn http_server_accept_on(listener: TcpListener) -> Result#[HttpConnection, s
     }
     let stream: TcpStream = ar!
 
+    // Read initial chunk (headers + possibly partial body)
     let rr: Result#[string, IoError] = tcp_read(stream, 65536)
     if not rr.is_ok() {
         tcp_close(stream)
         return Err("failed to read")
     }
-    let data: string = rr!
+    var data: string = rr!
+
+    // Check if we need to read more body data based on Content-Length
+    let hdr_end: i32 = find_str(data, "\r\n\r\n", 0)
+    if hdr_end >= 0 {
+        let body_offset: i32 = hdr_end + 4
+        // Search for content-length in the raw header block (try both casings)
+        var cl_pos: i32 = find_str(data, "Content-Length: ", 0)
+        if cl_pos < 0 or cl_pos >= hdr_end {
+            cl_pos = find_str(data, "content-length: ", 0)
+        }
+        if cl_pos >= 0 and cl_pos < hdr_end {
+            let cl_val_start: i32 = cl_pos + 16
+            let cl_end: i32 = find_str(data, "\r\n", cl_val_start)
+            if cl_end >= 0 {
+                let cl_str: string = data.slice(cl_val_start, cl_end)
+                let cl_opt: ?i64 = parse_int(cl_str)
+                match cl_opt {
+                    Some(content_len) => {
+                        let expected_total: i32 = body_offset + content_len.as#[i32]
+                        // Read remaining body chunks if needed
+                        for _i: i32 in 0..1000 {
+                            if data.len() >= expected_total {
+                                // We have the full body
+                                break
+                            }
+                            let chunk_r: Result#[string, IoError] = tcp_read(stream, 65536)
+                            if not chunk_r.is_ok() {
+                                break
+                            }
+                            let chunk: string = chunk_r!
+                            if chunk.len() == 0 {
+                                break
+                            }
+                            data = data + chunk
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
 
     let req_result: Result#[HttpRequest, string] = parse_http_request(data)
     if not req_result.is_ok() {
