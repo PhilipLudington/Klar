@@ -1402,8 +1402,10 @@ pub const Parser = struct {
         if (!self.check(.r_paren)) {
             while (true) {
                 // Check for 'out' modifier (contextual keyword for FFI out parameters)
+                // Only treat 'out' as a modifier when followed by an identifier (e.g., 'out x')
                 if (self.current.kind == .identifier and
-                    std.mem.eql(u8, self.source[self.current.loc.start..self.current.loc.end], "out"))
+                    std.mem.eql(u8, self.source[self.current.loc.start..self.current.loc.end], "out") and
+                    self.peekNext().kind == .identifier)
                 {
                     const out_span_start = self.spanFromToken(self.current);
                     self.advance(); // consume 'out'
