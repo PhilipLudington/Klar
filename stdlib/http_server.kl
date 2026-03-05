@@ -211,7 +211,7 @@ pub fn match_route(pattern: string, path: string) -> Map#[string, string] {
 
     // Simple exact match
     if pattern == path {
-        params.insert("_matched", "true")
+        params.insert("", "true")
         return params
     }
 
@@ -226,7 +226,7 @@ pub fn match_route(pattern: string, path: string) -> Map#[string, string] {
 
     for _iter: i32 in 0..100 {
         if pi >= plen and ri >= rlen {
-            params.insert("_matched", "true")
+            params.insert("", "true")
             return params
         }
         if pi >= plen or ri >= rlen {
@@ -263,7 +263,7 @@ pub fn match_route(pattern: string, path: string) -> Map#[string, string] {
 }
 
 pub fn route_matched(params: Map#[string, string]) -> bool {
-    return params.contains_key("_matched")
+    return params.contains_key("")
 }
 
 // ============================================================================
@@ -392,7 +392,11 @@ pub fn http_server_accept(host: string, port: i32) -> Result#[HttpConnection, st
         return Err("failed to listen")
     }
     let listener: TcpListener = lr!
-    return http_server_accept_on(listener)
+    let result: Result#[HttpConnection, string] = http_server_accept_on(listener)
+    if not result.is_ok() {
+        tcp_listener_close(listener)
+    }
+    return result
 }
 
 /// Send response and close the stream. The caller is responsible for closing the listener

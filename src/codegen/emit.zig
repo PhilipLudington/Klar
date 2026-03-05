@@ -27133,13 +27133,31 @@ pub const Emitter = struct {
         const term_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, llvm.Types.int8(self.ctx), final_buf, &term_gep, 1, "wait.term");
         _ = self.builder.buildStore(llvm.Const.int8(self.ctx, 0), term_ptr);
 
-        // waitpid(pid, &status, 0) — blocking
-        // Note: EINTR possible on long waits; child is likely already exited since pipes are drained
+        // waitpid(pid, &status, 0) — blocking, with EINTR retry loop
         const wstatus_alloca = self.builder.buildAlloca(i32_type, "wait.ws");
         _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), wstatus_alloca);
         const waitpid_fn = self.getOrDeclareWaitpid();
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(waitpid_fn), waitpid_fn, &[_]llvm.ValueRef{ pid, wstatus_alloca, llvm.Const.int32(self.ctx, 0) }, "wait.wp");
 
+        // EINTR retry loop: waitpid can return -1/EINTR if interrupted by a signal
+        const EINTR: i32 = 4; // Same on macOS and Linux
+        const wp_loop_bb = llvm.appendBasicBlock(self.ctx, func, "wait.wp_loop");
+        const wp_done_bb = llvm.appendBasicBlock(self.ctx, func, "wait.wp_done");
+        _ = self.builder.buildBr(wp_loop_bb);
+
+        self.builder.positionAtEnd(wp_loop_bb);
+        const wp_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(waitpid_fn), waitpid_fn, &[_]llvm.ValueRef{ pid, wstatus_alloca, llvm.Const.int32(self.ctx, 0) }, "wait.wp");
+        const wp_err = self.builder.buildICmp(llvm.c.LLVMIntSLT, wp_result, llvm.Const.int32(self.ctx, 0), "wait.wp_err");
+        const wp_check_eintr_bb = llvm.appendBasicBlock(self.ctx, func, "wait.wp_eintr");
+        _ = self.builder.buildCondBr(wp_err, wp_check_eintr_bb, wp_done_bb);
+
+        // Check if errno == EINTR; if so, retry
+        self.builder.positionAtEnd(wp_check_eintr_bb);
+        const errno_ptr_val = self.getOrDeclareErrno();
+        const errno_val = self.builder.buildLoad(i32_type, errno_ptr_val, "wait.errno");
+        const is_eintr = self.builder.buildICmp(llvm.c.LLVMIntEQ, errno_val, llvm.Const.int32(self.ctx, EINTR), "wait.is_eintr");
+        _ = self.builder.buildCondBr(is_eintr, wp_loop_bb, wp_done_bb);
+
+        self.builder.positionAtEnd(wp_done_bb);
         const wstatus = self.builder.buildLoad(i32_type, wstatus_alloca, "wait.wsv");
 
         // Decode exit code (same as process_run)
