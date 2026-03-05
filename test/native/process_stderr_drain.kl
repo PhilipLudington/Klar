@@ -1,9 +1,9 @@
 // Test that process_wait drains both stdout and stderr concurrently using poll().
+// Expected exit code: 0
+// Skip: windows
 // Previously, stderr was closed immediately to prevent deadlock. Now both pipes
 // are drained via poll(), capturing stderr and preventing deadlock when the child
 // writes >64KB to stderr.
-// Expected exit code: 0
-// Skip: windows (process_spawn uses fork/execvp, poll() is POSIX-only)
 
 fn main() -> i32 {
     // Write 70KB of 'x' to stderr and "hello" to stdout
