@@ -8086,10 +8086,12 @@ pub const Emitter = struct {
                 {
                     return llvm.Types.int1(self.ctx);
                 }
-                // trim(), to_uppercase(), to_lowercase() return string (pointer)
+                // trim(), to_uppercase(), to_lowercase(), slice(), substring() return string (pointer)
                 if (std.mem.eql(u8, m.method_name, "trim") or
                     std.mem.eql(u8, m.method_name, "to_uppercase") or
-                    std.mem.eql(u8, m.method_name, "to_lowercase"))
+                    std.mem.eql(u8, m.method_name, "to_lowercase") or
+                    std.mem.eql(u8, m.method_name, "slice") or
+                    std.mem.eql(u8, m.method_name, "substring"))
                 {
                     return llvm.Types.pointer(self.ctx);
                 }
@@ -14961,14 +14963,22 @@ pub const Emitter = struct {
                 return true;
             },
             .method_call => |m| {
-                // If the method returns a string (like trim, to_uppercase, etc.),
+                // If the method returns a string (like trim, slice, etc.),
                 // the result is a string
                 if (std.mem.eql(u8, m.method_name, "trim") or
                     std.mem.eql(u8, m.method_name, "to_uppercase") or
-                    std.mem.eql(u8, m.method_name, "to_lowercase"))
+                    std.mem.eql(u8, m.method_name, "to_lowercase") or
+                    std.mem.eql(u8, m.method_name, "slice") or
+                    std.mem.eql(u8, m.method_name, "substring"))
                 {
                     // Only if the object is also a string
                     return self.isStringExpr(m.object);
+                }
+                // Fallback: use type checker if available
+                if (self.type_checker) |tc| {
+                    const tc_mut = @constCast(tc);
+                    const expr_type = tc_mut.checkExpr(expr);
+                    return expr_type == .primitive and expr_type.primitive == .string_;
                 }
                 return false;
             },
