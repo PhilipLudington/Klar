@@ -121,7 +121,7 @@ fn parse_response_headers(data: string, start: i32) -> Map#[string, string] {
         let line: string = data.slice(pos, line_end)
         let colon: i32 = find_byte_in(line, 58.as#[u8], 0)
         if colon > 0 {
-            let key: string = line.slice(0, colon)
+            let key: string = line.slice(0, colon).to_lowercase()
             var val_start: i32 = colon + 1
             if val_start < line.len() and line.byte_at(val_start) == 32.as#[u8] {
                 val_start = val_start + 1
@@ -232,8 +232,11 @@ pub fn http_request(method: string, url: string, headers: Map#[string, string], 
         let hdr_end: i32 = find_str_in(response_data, "\r\n\r\n", 0)
         if hdr_end >= 0 {
             let body_offset: i32 = hdr_end + 4
-            // Parse Content-Length from headers
-            let cl_pos: i32 = find_str_in(response_data, "Content-Length: ", 0)
+            // Parse Content-Length from headers (case-insensitive: try canonical and lowercase)
+            var cl_pos: i32 = find_str_in(response_data, "Content-Length: ", 0)
+            if cl_pos < 0 or cl_pos >= hdr_end {
+                cl_pos = find_str_in(response_data, "content-length: ", 0)
+            }
             if cl_pos >= 0 and cl_pos < hdr_end {
                 let cl_val_start: i32 = cl_pos + 16
                 let cl_end: i32 = find_str_in(response_data, "\r\n", cl_val_start)

@@ -64,7 +64,7 @@ fn main() -> i32 {
     assert_eq(conn1.request.method, "GET")
     assert_eq(conn1.request.path, "/hello")
 
-    http_server_respond(conn1, http_ok("Hello, World!"))
+    http_server_respond_and_close(conn1, http_ok("Hello, World!"))
 
     let wr1: Result#[ProcessOutput, IoError] = process_wait(client1)
     if not wr1.is_ok() {
@@ -89,7 +89,7 @@ fn main() -> i32 {
     }
     let conn2: HttpConnection = ar2!
 
-    http_server_respond(conn2, http_json_response("{\"message\":\"ok\"}"))
+    http_server_respond_and_close(conn2, http_json_response("{\"message\":\"ok\"}"))
 
     let wr2: Result#[ProcessOutput, IoError] = process_wait(client2)
     if not wr2.is_ok() {

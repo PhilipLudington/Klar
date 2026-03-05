@@ -23,7 +23,7 @@ fn main() -> i32 {
     }
     let conn1: HttpConnection = ar1!
     assert_eq(conn1.request.method, "GET")
-    http_server_respond(conn1, http_ok("hello"))
+    http_server_respond_and_close(conn1, http_ok("hello"))
 
     let wr1: Result#[ProcessOutput, IoError] = process_wait(curl1!)
     if not wr1.is_ok() {
@@ -50,7 +50,7 @@ fn main() -> i32 {
     }
     let conn2: HttpConnection = ar2!
     assert_eq(conn2.request.method, "POST")
-    http_server_respond(conn2, http_error(201, "created"))
+    http_server_respond_and_close(conn2, http_error(201, "created"))
 
     let wr2: Result#[ProcessOutput, IoError] = process_wait(curl2!)
     if not wr2.is_ok() { return 6 }
@@ -68,7 +68,7 @@ fn main() -> i32 {
     if not ar3.is_ok() { return 8 }
     let conn3: HttpConnection = ar3!
     assert_eq(conn3.request.method, "GET")
-    http_server_respond(conn3, http_json_response("ok"))
+    http_server_respond_and_close(conn3, http_json_response("ok"))
 
     let wr3: Result#[ProcessOutput, IoError] = process_wait(curl3!)
     if not wr3.is_ok() { return 9 }

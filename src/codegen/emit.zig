@@ -27033,15 +27033,38 @@ pub const Emitter = struct {
         const out_buf_alloca = self.builder.buildAlloca(ptr_type, "wait.outbuf");
         const out_len_alloca = self.builder.buildAlloca(i64_type, "wait.outlen");
         const out_cap_alloca = self.builder.buildAlloca(i64_type, "wait.outcap");
-        const init_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, init_cap)}, "wait.ibuf");
-        _ = self.builder.buildStore(init_buf, out_buf_alloca);
-        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), out_len_alloca);
-        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, init_cap), out_cap_alloca);
+        const init_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &[_]llvm.ValueRef{llvm.Const.int64(self.ctx, init_cap + 1)}, "wait.ibuf"); // +1 for null terminator
 
         // Read loop for stdout
         const read_loop_bb = llvm.appendBasicBlock(self.ctx, func, "wait.read_loop");
         const read_done_bb = llvm.appendBasicBlock(self.ctx, func, "wait.read_done");
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "wait.cont");
+
+        // Check malloc for OOM
+        const init_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, init_buf, llvm.c.LLVMConstNull(ptr_type), "wait.oom");
+        const malloc_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wait.malloc_ok");
+        const malloc_fail_bb = llvm.appendBasicBlock(self.ctx, func, "wait.malloc_fail");
+        _ = self.builder.buildCondBr(init_null, malloc_fail_bb, malloc_ok_bb);
+
+        // OOM: close stdout fd, waitpid, return Err
+        self.builder.positionAtEnd(malloc_fail_bb);
+        {
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn), close_fn, &[_]llvm.ValueRef{stdout_fd}, "");
+            const waitpid_fn_oom = self.getOrDeclareWaitpid();
+            const ws_oom = self.builder.buildAlloca(i32_type, "wait.ws_oom");
+            _ = self.builder.buildStore(llvm.Const.int32(self.ctx, 0), ws_oom);
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(waitpid_fn_oom), waitpid_fn_oom, &[_]llvm.ValueRef{ pid, ws_oom, llvm.Const.int32(self.ctx, 0) }, "");
+            const oom_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "wait.oom_tag");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), oom_tag);
+            const oom_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "wait.oom_err");
+            self.emitErrnoToIoError(oom_err);
+            _ = self.builder.buildBr(cont_bb);
+        }
+
+        self.builder.positionAtEnd(malloc_ok_bb);
+        _ = self.builder.buildStore(init_buf, out_buf_alloca);
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), out_len_alloca);
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, init_cap), out_cap_alloca);
         _ = self.builder.buildBr(read_loop_bb);
 
         self.builder.positionAtEnd(read_loop_bb);
@@ -27059,7 +27082,8 @@ pub const Emitter = struct {
         // Grow buffer
         self.builder.positionAtEnd(grow_bb);
         const new_cap = llvm.c.LLVMBuildMul(self.builder.ref, cur_cap, llvm.Const.int64(self.ctx, 2), "wait.ncap");
-        const new_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &[_]llvm.ValueRef{ cur_buf, new_cap }, "wait.nbuf");
+        const realloc_size = llvm.c.LLVMBuildAdd(self.builder.ref, new_cap, llvm.Const.int64(self.ctx, 1), "wait.rsz"); // +1 for null terminator
+        const new_buf = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(realloc_fn), realloc_fn, &[_]llvm.ValueRef{ cur_buf, realloc_size }, "wait.nbuf");
         // On OOM, realloc returns null but original buffer is still valid — stop reading with truncated output
         const realloc_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, new_buf, llvm.c.LLVMConstNull(ptr_type), "wait.oom");
         const realloc_ok_bb = llvm.appendBasicBlock(self.ctx, func, "wait.realloc_ok");
@@ -27442,13 +27466,32 @@ pub const Emitter = struct {
         // sin_addr: inet_pton(AF_INET, host, &sin_addr)
         const sin_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, addr_alloca, self.getSockaddrAddrIndex(), "tcpl.sinaddr");
         const inet_pton_fn = self.getOrDeclareInetPton();
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_pton_fn), inet_pton_fn, &[_]llvm.ValueRef{
+        const pton_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_pton_fn), inet_pton_fn, &[_]llvm.ValueRef{
             llvm.Const.int32(self.ctx, AF_INET),
             host_val,
             sin_addr_ptr,
-        }, "");
+        }, "tcpl.pton");
+
+        // inet_pton returns 1 on success, 0 for invalid address, -1 for other errors
+        const pton_fail = self.builder.buildICmp(llvm.c.LLVMIntSLE, pton_result, llvm.Const.int32(self.ctx, 0), "tcpl.pton_fail");
+        const pton_ok_bb = llvm.appendBasicBlock(self.ctx, func, "tcpl.pok");
+        const pton_err_bb = llvm.appendBasicBlock(self.ctx, func, "tcpl.perr");
+        _ = self.builder.buildCondBr(pton_fail, pton_err_bb, pton_ok_bb);
+
+        // inet_pton error: close socket, return Err
+        self.builder.positionAtEnd(pton_err_bb);
+        {
+            const close_fn_p = self.getOrDeclareClose();
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn_p), close_fn_p, &[_]llvm.ValueRef{sock_fd}, "");
+            const pe_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "tcpl.pe_tag");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), pe_tag);
+            const pe_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "tcpl.pe_err");
+            self.emitErrnoToIoError(pe_err);
+            _ = self.builder.buildBr(cont_bb);
+        }
 
         // bind(sock_fd, &addr, sizeof(addr))
+        self.builder.positionAtEnd(pton_ok_bb);
         const bind_fn = self.getOrDeclareBind();
         const bind_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(bind_fn), bind_fn, &[_]llvm.ValueRef{
             sock_fd,
@@ -27615,13 +27658,32 @@ pub const Emitter = struct {
 
         const sin_addr_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, addr_type, addr_alloca, self.getSockaddrAddrIndex(), "tcpc.sinaddr");
         const inet_pton_fn = self.getOrDeclareInetPton();
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_pton_fn), inet_pton_fn, &[_]llvm.ValueRef{
+        const pton_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(inet_pton_fn), inet_pton_fn, &[_]llvm.ValueRef{
             llvm.Const.int32(self.ctx, AF_INET),
             host_val,
             sin_addr_ptr,
-        }, "");
+        }, "tcpc.pton");
+
+        // inet_pton returns 1 on success, 0 for invalid address, -1 for other errors
+        const pton_fail = self.builder.buildICmp(llvm.c.LLVMIntSLE, pton_result, llvm.Const.int32(self.ctx, 0), "tcpc.pton_fail");
+        const pton_ok_bb = llvm.appendBasicBlock(self.ctx, func, "tcpc.pok");
+        const pton_err_bb = llvm.appendBasicBlock(self.ctx, func, "tcpc.perr");
+        _ = self.builder.buildCondBr(pton_fail, pton_err_bb, pton_ok_bb);
+
+        // inet_pton error: close socket, return Err
+        self.builder.positionAtEnd(pton_err_bb);
+        {
+            const close_fn_p = self.getOrDeclareClose();
+            _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(close_fn_p), close_fn_p, &[_]llvm.ValueRef{sock_fd}, "");
+            const pe_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "tcpc.pe_tag");
+            _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), pe_tag);
+            const pe_err = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "tcpc.pe_err");
+            self.emitErrnoToIoError(pe_err);
+            _ = self.builder.buildBr(cont_bb);
+        }
 
         // connect(sock_fd, &addr, sizeof(addr))
+        self.builder.positionAtEnd(pton_ok_bb);
         const connect_fn = self.getOrDeclareConnectFn();
         const connect_result = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(connect_fn), connect_fn, &[_]llvm.ValueRef{
             sock_fd,

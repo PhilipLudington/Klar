@@ -351,10 +351,18 @@ pub fn http_server_accept(host: string, port: i32) -> Result#[HttpConnection, st
     return http_server_accept_on(listener)
 }
 
-/// Send response and close connection (stream + listener).
+/// Send response and close the stream. The caller is responsible for closing the listener
+/// (via tcp_listener_close) when done accepting connections.
 pub fn http_server_respond(conn: HttpConnection, resp: HttpResponse) -> void {
     let resp_str: string = serialize_response(resp)
     let _wr: Result#[i32, IoError] = tcp_write(conn.stream, resp_str)
     tcp_close(conn.stream)
+}
+
+/// Send response and close both the stream and the listener.
+/// Convenience for single-request servers; for multi-request servers use http_server_respond
+/// and close the listener separately.
+pub fn http_server_respond_and_close(conn: HttpConnection, resp: HttpResponse) -> void {
+    http_server_respond(conn, resp)
     tcp_listener_close(conn.listener)
 }
