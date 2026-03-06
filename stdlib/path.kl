@@ -1,0 +1,272 @@
+//! stdlib/path.kl - Path manipulation utilities
+//!
+//! Pure Klar path parsing and manipulation for Unix-style paths.
+//! No new compiler builtins needed — uses string primitives only.
+//!
+//! Usage:
+//!   let parent: ?string = path_parent("/usr/local/bin/klar")  // Some("/usr/local/bin")
+//!   let joined: string = path_join("src", "main.kl")          // "src/main.kl"
+//!   let ext: ?string = path_extension("main.kl")              // Some("kl")
+
+module stdlib.path
+
+import stdlib.string_builder.*
+
+// ============================================================================
+// Path Join
+// ============================================================================
+
+/// Join two path segments, handling trailing/leading slashes.
+/// path_join("a", "b")   -> "a/b"
+/// path_join("a/", "b")  -> "a/b"
+/// path_join("a", "/b")  -> "/b"  (absolute component replaces base)
+/// path_join("", "b")    -> "b"
+/// path_join("a", "")    -> "a"
+pub fn path_join(base: string, component: string) -> string {
+    if component.len() > 0 and component.byte_at(0) == 47.as#[u8] {
+        return component
+    }
+    if base.len() == 0 {
+        return component
+    }
+    if component.len() == 0 {
+        return base
+    }
+    let base_has_slash: bool = base.byte_at(base.len() - 1) == 47.as#[u8]
+    if base_has_slash {
+        return base + component
+    }
+    return base + "/" + component
+}
+
+// ============================================================================
+// Path Parent
+// ============================================================================
+
+/// Return the directory portion of a path. None for bare filenames without slashes.
+/// path_parent("/usr/local/bin") -> Some("/usr/local")
+/// path_parent("/usr/local/")    -> Some("/usr/local")
+/// path_parent("foo/bar")        -> Some("foo")
+/// path_parent("foo")            -> None
+/// path_parent("/")              -> None
+/// path_parent("")               -> None
+pub fn path_parent(path: string) -> ?string {
+    if path.len() == 0 {
+        return None
+    }
+    // Strip trailing slash (unless the entire path is "/")
+    var end: i32 = path.len()
+    if end > 1 and path.byte_at(end - 1) == 47.as#[u8] {
+        end = end - 1
+    }
+    // Find last slash in 0..end
+    let last: i32 = rfind_byte(path, 47.as#[u8], end)
+    if last < 0 {
+        return None
+    }
+    if last == 0 {
+        // Parent is root "/"
+        if end == 1 {
+            // path was "/" itself — no parent
+            return None
+        }
+        return Some("/")
+    }
+    return Some(path.slice(0, last))
+}
+
+// ============================================================================
+// Path File Name
+// ============================================================================
+
+/// Return the filename component (after the last slash). None for empty or slash-only paths.
+/// path_file_name("/usr/local/bin/klar") -> Some("klar")
+/// path_file_name("foo/bar.kl")          -> Some("bar.kl")
+/// path_file_name("bar.kl")              -> Some("bar.kl")
+/// path_file_name("/")                   -> None
+/// path_file_name("")                    -> None
+pub fn path_file_name(path: string) -> ?string {
+    if path.len() == 0 {
+        return None
+    }
+    // Strip trailing slash
+    var end: i32 = path.len()
+    if end > 1 and path.byte_at(end - 1) == 47.as#[u8] {
+        end = end - 1
+    }
+    let last: i32 = rfind_byte(path, 47.as#[u8], end)
+    if last < 0 {
+        // No slash — entire string is filename
+        if end == path.len() {
+            return Some(path)
+        }
+        return Some(path.slice(0, end))
+    }
+    let start: i32 = last + 1
+    if start >= end {
+        return None
+    }
+    return Some(path.slice(start, end))
+}
+
+// ============================================================================
+// Path Extension
+// ============================================================================
+
+/// Return the file extension without the leading dot. None if no extension.
+/// path_extension("main.kl")     -> Some("kl")
+/// path_extension("archive.tar.gz") -> Some("gz")
+/// path_extension(".hidden")     -> None  (dot-files have no extension)
+/// path_extension("Makefile")    -> None
+/// path_extension("")            -> None
+pub fn path_extension(path: string) -> ?string {
+    let name: ?string = path_file_name(path)
+    if name == None {
+        return None
+    }
+    let filename: string = name!
+    // Find last dot in filename
+    let dot: i32 = rfind_byte(filename, 46.as#[u8], filename.len())
+    if dot <= 0 {
+        // No dot, or dot is first char (dot-file)
+        return None
+    }
+    if dot == filename.len() - 1 {
+        // Trailing dot — no extension
+        return None
+    }
+    return Some(filename.slice(dot + 1, filename.len()))
+}
+
+// ============================================================================
+// Path Stem
+// ============================================================================
+
+/// Return the filename without its extension. None if no filename.
+/// path_stem("main.kl")      -> Some("main")
+/// path_stem("archive.tar.gz") -> Some("archive.tar")
+/// path_stem(".hidden")       -> Some(".hidden")
+/// path_stem("Makefile")      -> Some("Makefile")
+/// path_stem("/usr/bin/klar") -> Some("klar")
+/// path_stem("")              -> None
+pub fn path_stem(path: string) -> ?string {
+    let name: ?string = path_file_name(path)
+    if name == None {
+        return None
+    }
+    let filename: string = name!
+    let dot: i32 = rfind_byte(filename, 46.as#[u8], filename.len())
+    if dot <= 0 {
+        // No dot, or dot-file — entire name is stem
+        return Some(filename)
+    }
+    return Some(filename.slice(0, dot))
+}
+
+// ============================================================================
+// Path Is Absolute
+// ============================================================================
+
+/// Check if a path starts with "/".
+pub fn path_is_absolute(path: string) -> bool {
+    return path.len() > 0 and path.byte_at(0) == 47.as#[u8]
+}
+
+// ============================================================================
+// Path Normalize
+// ============================================================================
+
+/// Resolve "." and ".." segments in a path.
+/// path_normalize("a/./b/../c")  -> "a/c"
+/// path_normalize("/a/b/../c")   -> "/a/c"
+/// path_normalize("../a/b")      -> "../a/b"
+/// path_normalize("a/b/../../..") -> ".."
+/// path_normalize("")            -> "."
+/// path_normalize("/")           -> "/"
+pub fn path_normalize(path: string) -> string {
+    if path.len() == 0 {
+        return "."
+    }
+    let is_abs: bool = path.byte_at(0) == 47.as#[u8]
+
+    // Split into segments
+    var segments: List#[string] = List.new#[string]()
+    var start: i32 = 0
+    if is_abs {
+        start = 1
+    }
+    var i: i32 = start
+    while i <= path.len() {
+        let is_sep: bool = i == path.len() or path.byte_at(i) == 47.as#[u8]
+        if is_sep {
+            if i > start {
+                let seg: string = path.slice(start, i)
+                segments.push(seg)
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+
+    // Process segments into a stack
+    var stack: List#[string] = List.new#[string]()
+    var si: i32 = 0
+    while si < segments.len() {
+        let seg: string = segments.get(si)!
+        if seg == "." {
+            // skip
+        } else if seg == ".." {
+            if stack.len() > 0 {
+                let top: string = stack.get(stack.len() - 1)!
+                if top == ".." {
+                    stack.push("..")
+                } else {
+                    stack.pop()
+                }
+            } else if not is_abs {
+                stack.push("..")
+            }
+        } else {
+            stack.push(seg)
+        }
+        si = si + 1
+    }
+
+    // Rebuild path
+    if stack.len() == 0 {
+        if is_abs {
+            return "/"
+        }
+        return "."
+    }
+
+    var sb: StringBuilder = StringBuilder.new()
+    if is_abs {
+        sb.append("/")
+    }
+    var ri: i32 = 0
+    while ri < stack.len() {
+        if ri > 0 {
+            sb.append("/")
+        }
+        sb.append(stack.get(ri)!)
+        ri = ri + 1
+    }
+    return sb.build()
+}
+
+// ============================================================================
+// Internal Helpers
+// ============================================================================
+
+/// Find last occurrence of byte `b` in `s[0..end)`. Returns -1 if not found.
+fn rfind_byte(s: string, b: u8, end: i32) -> i32 {
+    var i: i32 = end - 1
+    while i >= 0 {
+        if s.byte_at(i) == b {
+            return i
+        }
+        i = i - 1
+    }
+    return -1
+}

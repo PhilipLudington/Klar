@@ -1,0 +1,383 @@
+// test/module/path/main.kl - Path manipulation test suite
+// Tests all path functions including cross-module import.
+// Returns 0 on success, non-zero test number on failure.
+
+import stdlib.path.*
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn main() -> i32 {
+    // ========================================================================
+    // path_join tests
+    // ========================================================================
+
+    // Test 1: Basic join
+    if path_join("a", "b") != "a/b" {
+        return fail(1, "path_join('a', 'b') should be 'a/b'")
+    }
+
+    // Test 2: Base with trailing slash
+    if path_join("a/", "b") != "a/b" {
+        return fail(2, "path_join('a/', 'b') should be 'a/b'")
+    }
+
+    // Test 3: Absolute component replaces base
+    if path_join("a", "/b") != "/b" {
+        return fail(3, "path_join('a', '/b') should be '/b'")
+    }
+
+    // Test 4: Empty base
+    if path_join("", "b") != "b" {
+        return fail(4, "path_join('', 'b') should be 'b'")
+    }
+
+    // Test 5: Empty component
+    if path_join("a", "") != "a" {
+        return fail(5, "path_join('a', '') should be 'a'")
+    }
+
+    // Test 6: Both empty
+    if path_join("", "") != "" {
+        return fail(6, "path_join('', '') should be ''")
+    }
+
+    // Test 7: Multi-segment join
+    let p7: string = path_join(path_join("usr", "local"), "bin")
+    if p7 != "usr/local/bin" {
+        return fail(7, "chained path_join should be 'usr/local/bin'")
+    }
+
+    // ========================================================================
+    // path_parent tests
+    // ========================================================================
+
+    // Test 8: Absolute path parent
+    let p8: ?string = path_parent("/usr/local/bin")
+    if p8 == None {
+        return fail(8, "path_parent('/usr/local/bin') should not be None")
+    }
+    if p8! != "/usr/local" {
+        return fail(8, "path_parent('/usr/local/bin') should be '/usr/local'")
+    }
+
+    // Test 9: Trailing slash stripped
+    let p9: ?string = path_parent("/usr/local/")
+    if p9 == None {
+        return fail(9, "path_parent('/usr/local/') should not be None")
+    }
+    if p9! != "/usr" {
+        return fail(9, "path_parent('/usr/local/') should be '/usr'")
+    }
+
+    // Test 10: Relative path parent
+    let p10: ?string = path_parent("foo/bar")
+    if p10 == None {
+        return fail(10, "path_parent('foo/bar') should not be None")
+    }
+    if p10! != "foo" {
+        return fail(10, "path_parent('foo/bar') should be 'foo'")
+    }
+
+    // Test 11: Bare filename — no parent
+    let p11: ?string = path_parent("foo")
+    if p11 != None {
+        return fail(11, "path_parent('foo') should be None")
+    }
+
+    // Test 12: Root has no parent
+    let p12: ?string = path_parent("/")
+    if p12 != None {
+        return fail(12, "path_parent('/') should be None")
+    }
+
+    // Test 13: Empty path
+    let p13: ?string = path_parent("")
+    if p13 != None {
+        return fail(13, "path_parent('') should be None")
+    }
+
+    // Test 14: File directly under root
+    let p14: ?string = path_parent("/file.kl")
+    if p14 == None {
+        return fail(14, "path_parent('/file.kl') should not be None")
+    }
+    if p14! != "/" {
+        return fail(14, "path_parent('/file.kl') should be '/'")
+    }
+
+    // ========================================================================
+    // path_file_name tests
+    // ========================================================================
+
+    // Test 15: Absolute path filename
+    let p15: ?string = path_file_name("/usr/local/bin/klar")
+    if p15 == None {
+        return fail(15, "path_file_name should not be None")
+    }
+    if p15! != "klar" {
+        return fail(15, "path_file_name('/usr/local/bin/klar') should be 'klar'")
+    }
+
+    // Test 16: Relative path filename
+    let p16: ?string = path_file_name("foo/bar.kl")
+    if p16 == None {
+        return fail(16, "path_file_name should not be None")
+    }
+    if p16! != "bar.kl" {
+        return fail(16, "path_file_name('foo/bar.kl') should be 'bar.kl'")
+    }
+
+    // Test 17: Bare filename
+    let p17: ?string = path_file_name("bar.kl")
+    if p17 == None {
+        return fail(17, "path_file_name should not be None")
+    }
+    if p17! != "bar.kl" {
+        return fail(17, "path_file_name('bar.kl') should be 'bar.kl'")
+    }
+
+    // Test 18: Root has no filename
+    let p18: ?string = path_file_name("/")
+    if p18 != None {
+        return fail(18, "path_file_name('/') should be None")
+    }
+
+    // Test 19: Empty path
+    let p19: ?string = path_file_name("")
+    if p19 != None {
+        return fail(19, "path_file_name('') should be None")
+    }
+
+    // Test 20: Trailing slash stripped
+    let p20: ?string = path_file_name("foo/bar/")
+    if p20 == None {
+        return fail(20, "path_file_name should not be None")
+    }
+    if p20! != "bar" {
+        return fail(20, "path_file_name('foo/bar/') should be 'bar'")
+    }
+
+    // ========================================================================
+    // path_extension tests
+    // ========================================================================
+
+    // Test 21: Simple extension
+    let p21: ?string = path_extension("main.kl")
+    if p21 == None {
+        return fail(21, "path_extension should not be None")
+    }
+    if p21! != "kl" {
+        return fail(21, "path_extension('main.kl') should be 'kl'")
+    }
+
+    // Test 22: Multiple dots — last extension
+    let p22: ?string = path_extension("archive.tar.gz")
+    if p22 == None {
+        return fail(22, "path_extension should not be None")
+    }
+    if p22! != "gz" {
+        return fail(22, "path_extension('archive.tar.gz') should be 'gz'")
+    }
+
+    // Test 23: Dot-file has no extension
+    let p23: ?string = path_extension(".hidden")
+    if p23 != None {
+        return fail(23, "path_extension('.hidden') should be None")
+    }
+
+    // Test 24: No extension
+    let p24: ?string = path_extension("Makefile")
+    if p24 != None {
+        return fail(24, "path_extension('Makefile') should be None")
+    }
+
+    // Test 25: Extension with path
+    let p25: ?string = path_extension("/usr/src/main.zig")
+    if p25 == None {
+        return fail(25, "path_extension should not be None")
+    }
+    if p25! != "zig" {
+        return fail(25, "path_extension('/usr/src/main.zig') should be 'zig'")
+    }
+
+    // Test 26: Empty path
+    let p26: ?string = path_extension("")
+    if p26 != None {
+        return fail(26, "path_extension('') should be None")
+    }
+
+    // ========================================================================
+    // path_stem tests
+    // ========================================================================
+
+    // Test 27: Simple stem
+    let p27: ?string = path_stem("main.kl")
+    if p27 == None {
+        return fail(27, "path_stem should not be None")
+    }
+    if p27! != "main" {
+        return fail(27, "path_stem('main.kl') should be 'main'")
+    }
+
+    // Test 28: Multiple dots
+    let p28: ?string = path_stem("archive.tar.gz")
+    if p28 == None {
+        return fail(28, "path_stem should not be None")
+    }
+    if p28! != "archive.tar" {
+        return fail(28, "path_stem('archive.tar.gz') should be 'archive.tar'")
+    }
+
+    // Test 29: Dot-file — entire name is stem
+    let p29: ?string = path_stem(".hidden")
+    if p29 == None {
+        return fail(29, "path_stem should not be None")
+    }
+    if p29! != ".hidden" {
+        return fail(29, "path_stem('.hidden') should be '.hidden'")
+    }
+
+    // Test 30: No extension — entire name is stem
+    let p30: ?string = path_stem("Makefile")
+    if p30 == None {
+        return fail(30, "path_stem should not be None")
+    }
+    if p30! != "Makefile" {
+        return fail(30, "path_stem('Makefile') should be 'Makefile'")
+    }
+
+    // Test 31: Stem with path
+    let p31: ?string = path_stem("/usr/bin/klar")
+    if p31 == None {
+        return fail(31, "path_stem should not be None")
+    }
+    if p31! != "klar" {
+        return fail(31, "path_stem('/usr/bin/klar') should be 'klar'")
+    }
+
+    // ========================================================================
+    // path_is_absolute tests
+    // ========================================================================
+
+    // Test 32: Absolute path
+    if not path_is_absolute("/usr/bin") {
+        return fail(32, "'/usr/bin' should be absolute")
+    }
+
+    // Test 33: Relative path
+    if path_is_absolute("usr/bin") {
+        return fail(33, "'usr/bin' should not be absolute")
+    }
+
+    // Test 34: Root
+    if not path_is_absolute("/") {
+        return fail(34, "'/' should be absolute")
+    }
+
+    // Test 35: Empty is not absolute
+    if path_is_absolute("") {
+        return fail(35, "'' should not be absolute")
+    }
+
+    // ========================================================================
+    // path_normalize tests
+    // ========================================================================
+
+    // Test 36: Resolve dots
+    if path_normalize("a/./b") != "a/b" {
+        return fail(36, "path_normalize('a/./b') should be 'a/b'")
+    }
+
+    // Test 37: Resolve double-dots
+    if path_normalize("a/b/../c") != "a/c" {
+        return fail(37, "path_normalize('a/b/../c') should be 'a/c'")
+    }
+
+    // Test 38: Mixed
+    if path_normalize("a/./b/../c") != "a/c" {
+        return fail(38, "path_normalize('a/./b/../c') should be 'a/c'")
+    }
+
+    // Test 39: Absolute with double-dots
+    if path_normalize("/a/b/../c") != "/a/c" {
+        return fail(39, "path_normalize('/a/b/../c') should be '/a/c'")
+    }
+
+    // Test 40: Relative leading double-dots preserved
+    if path_normalize("../a/b") != "../a/b" {
+        return fail(40, "path_normalize('../a/b') should be '../a/b'")
+    }
+
+    // Test 41: Collapse past root for relative
+    if path_normalize("a/b/../../..") != ".." {
+        return fail(41, "path_normalize('a/b/../../..') should be '..'")
+    }
+
+    // Test 42: Empty normalizes to "."
+    if path_normalize("") != "." {
+        return fail(42, "path_normalize('') should be '.'")
+    }
+
+    // Test 43: Root normalizes to "/"
+    if path_normalize("/") != "/" {
+        return fail(43, "path_normalize('/') should be '/'")
+    }
+
+    // Test 44: Double slashes collapsed
+    if path_normalize("a//b///c") != "a/b/c" {
+        return fail(44, "path_normalize('a//b///c') should be 'a/b/c'")
+    }
+
+    // Test 45: Absolute double-dot at root doesn't go past root
+    if path_normalize("/a/../..") != "/" {
+        return fail(45, "path_normalize('/a/../..') should be '/'")
+    }
+
+    // Test 46: Just a dot
+    if path_normalize(".") != "." {
+        return fail(46, "path_normalize('.') should be '.'")
+    }
+
+    // ========================================================================
+    // Roundtrip / composition tests
+    // ========================================================================
+
+    // Test 47: stem + extension == file_name
+    let full: string = "/usr/src/main.kl"
+    let stem: string = path_stem(full)!
+    let ext: string = path_extension(full)!
+    let reconstructed: string = stem + "." + ext
+    let fname: string = path_file_name(full)!
+    if reconstructed != fname {
+        return fail(47, "stem + '.' + extension should equal file_name")
+    }
+
+    // Test 48: parent + file_name roundtrip
+    let parent: string = path_parent(full)!
+    let name: string = path_file_name(full)!
+    let rejoined: string = path_join(parent, name)
+    if rejoined != full {
+        return fail(48, "path_join(parent, file_name) should reconstruct original")
+    }
+
+    // Test 49: Trailing dot — no extension
+    let p49: ?string = path_extension("file.")
+    if p49 != None {
+        return fail(49, "path_extension('file.') should be None")
+    }
+
+    // Test 50: path_stem of empty string
+    let p50: ?string = path_stem("")
+    if p50 != None {
+        return fail(50, "path_stem('') should be None")
+    }
+
+    println("All path tests passed")
+    return 0
+}

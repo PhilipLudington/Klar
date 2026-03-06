@@ -415,8 +415,30 @@ else
     echo "⊘ string_builder (test not found, skipping)"
 fi
 
-# Test 17: Integration test (all stdlib libraries together)
-# (was Test 16 before string_builder was added)
+# Test 17: Path library (stdlib/path.kl)
+echo "--- path: Path manipulation library (stdlib/path.kl) ---"
+temp_bin="/tmp/klar_module_path"
+if [ -d "$TEST_DIR/path" ]; then
+    if $KLAR build $TEST_DIR/path/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ path (exit: $result)"
+            record_success "path"
+        else
+            echo "✗ path (expected: 0, got: $result)"
+            record_failure "path" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ path (build failed)"
+        record_failure "path" "build failed"
+    fi
+else
+    echo "⊘ path (test not found, skipping)"
+fi
+
+# Test 18: Integration test (all stdlib libraries together)
 echo "--- integration: All stdlib libraries composed ---"
 temp_bin="/tmp/klar_module_integration"
 if [ -d "$TEST_DIR/integration" ]; then
@@ -440,7 +462,7 @@ else
     echo "⊘ integration (test not found, skipping)"
 fi
 
-# Test 18 & 19: HTTP server/client tests using Klar TCP
+# Test 19 & 20: HTTP server/client tests using Klar TCP
 # Skipped on Windows — TCP builtins fail to link on Windows CI
 echo "--- http_server: HTTP server library ---"
 temp_bin="/tmp/klar_module_http_server"
