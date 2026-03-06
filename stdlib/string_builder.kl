@@ -1,0 +1,62 @@
+//! stdlib/string_builder.kl - Efficient string building
+//!
+//! StringBuilder collects string parts and joins them into a single string.
+//! Uses List#[string] internally for O(1) amortized appends.
+//! Note: build() joins via repeated concatenation — O(n) in total length.
+//!
+//! Usage:
+//!   var sb: StringBuilder = StringBuilder.new()
+//!   sb.append("hello")
+//!   sb.append(" world")
+//!   let result: string = sb.build()  // "hello world"
+
+module stdlib.string_builder
+
+pub struct StringBuilder {
+    parts: List#[string],
+}
+
+impl StringBuilder {
+    pub fn new() -> StringBuilder {
+        return StringBuilder { parts: List.new#[string]() }
+    }
+
+    pub fn append(self: StringBuilder, s: string) -> void {
+        self.parts.push(s)
+    }
+
+    pub fn append_char(self: StringBuilder, c: char) -> void {
+        self.parts.push(from_byte(c.as#[u8]))
+    }
+
+    pub fn build(self: StringBuilder) -> string {
+        var result: string = ""
+        var i: i32 = 0
+        while i < self.parts.len() {
+            result = result + self.parts.get(i)!
+            i = i + 1
+        }
+        return result
+    }
+
+    pub fn total_len(self: StringBuilder) -> i32 {
+        var total: i32 = 0
+        var i: i32 = 0
+        while i < self.parts.len() {
+            let part: string = self.parts.get(i)!
+            total = total + part.len()
+            i = i + 1
+        }
+        return total
+    }
+
+    pub fn is_empty(self: StringBuilder) -> bool {
+        return self.parts.len() == 0
+    }
+
+    // Returns a new empty StringBuilder. The original is unchanged;
+    // you must capture the return value: sb = sb.clear()
+    pub fn clear(self: StringBuilder) -> StringBuilder {
+        return StringBuilder.new()
+    }
+}

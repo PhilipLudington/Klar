@@ -1,0 +1,165 @@
+// test/module/string_builder/main.kl - StringBuilder test suite
+// Tests all StringBuilder methods including cross-module import.
+// Returns 0 on success, non-zero test number on failure.
+
+import stdlib.string_builder.*
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn main() -> i32 {
+    // Test 1: Empty builder produces empty string
+    var sb1: StringBuilder = StringBuilder.new()
+    let empty: string = sb1.build()
+    if empty != "" {
+        return fail(1, "empty build should produce empty string")
+    }
+
+    // Test 2: Empty builder is_empty
+    if not sb1.is_empty() {
+        return fail(2, "new builder should be empty")
+    }
+
+    // Test 3: Empty builder total_len is 0
+    if sb1.total_len() != 0 {
+        return fail(3, "new builder total_len should be 0")
+    }
+
+    // Test 4: Single append
+    var sb2: StringBuilder = StringBuilder.new()
+    sb2.append("hello")
+    let single: string = sb2.build()
+    if single != "hello" {
+        return fail(4, "single append failed")
+    }
+
+    // Test 5: Multiple appends
+    var sb3: StringBuilder = StringBuilder.new()
+    sb3.append("hello")
+    sb3.append(" ")
+    sb3.append("world")
+    let multi: string = sb3.build()
+    if multi != "hello world" {
+        return fail(5, "multiple appends failed")
+    }
+
+    // Test 6: append_char
+    var sb4: StringBuilder = StringBuilder.new()
+    sb4.append_char('a')
+    sb4.append_char('b')
+    sb4.append_char('c')
+    let chars: string = sb4.build()
+    if chars != "abc" {
+        return fail(6, "append_char failed")
+    }
+
+    // Test 7: Mixed append and append_char
+    var sb5: StringBuilder = StringBuilder.new()
+    sb5.append("key")
+    sb5.append_char('=')
+    sb5.append("value")
+    let mixed: string = sb5.build()
+    if mixed != "key=value" {
+        return fail(7, "mixed append/append_char failed")
+    }
+
+    // Test 8: total_len tracking
+    var sb6: StringBuilder = StringBuilder.new()
+    sb6.append("hello")
+    if sb6.total_len() != 5 {
+        return fail(8, "total_len after 'hello' should be 5")
+    }
+    sb6.append(" world")
+    if sb6.total_len() != 11 {
+        return fail(8, "total_len after 'hello world' should be 11")
+    }
+
+    // Test 9: is_empty after append
+    var sb7: StringBuilder = StringBuilder.new()
+    sb7.append("x")
+    if sb7.is_empty() {
+        return fail(9, "should not be empty after append")
+    }
+
+    // Test 10: clear returns empty builder
+    var sb8: StringBuilder = StringBuilder.new()
+    sb8.append("data")
+    var sb8c: StringBuilder = sb8.clear()
+    if not sb8c.is_empty() {
+        return fail(10, "should be empty after clear")
+    }
+    let cleared: string = sb8c.build()
+    if cleared != "" {
+        return fail(10, "build after clear should be empty string")
+    }
+
+    // Test 11: Build is idempotent (can call build multiple times)
+    var sb9: StringBuilder = StringBuilder.new()
+    sb9.append("test")
+    let first: string = sb9.build()
+    let second: string = sb9.build()
+    if first != second {
+        return fail(11, "build should be idempotent")
+    }
+
+    // Test 12: Append empty string
+    var sb10: StringBuilder = StringBuilder.new()
+    sb10.append("a")
+    sb10.append("")
+    sb10.append("b")
+    let with_empty: string = sb10.build()
+    if with_empty != "ab" {
+        return fail(12, "append empty string should be no-op")
+    }
+
+    // Test 13: Large number of appends
+    var sb11: StringBuilder = StringBuilder.new()
+    var i: i32 = 0
+    while i < 100 {
+        sb11.append("x")
+        i = i + 1
+    }
+    if sb11.total_len() != 100 {
+        return fail(13, "100 appends of 'x' should have total_len 100")
+    }
+    let long: string = sb11.build()
+    if long.len() != 100 {
+        return fail(13, "built string should have len 100")
+    }
+
+    // Test 14: append_char total_len
+    var sb12: StringBuilder = StringBuilder.new()
+    sb12.append_char('x')
+    if sb12.total_len() != 1 {
+        return fail(14, "append_char total_len should be 1")
+    }
+
+    // Test 15: StringBuilder produces same result as direct concatenation
+    let expected: string = "foo" + "bar" + "baz"
+    var sb13: StringBuilder = StringBuilder.new()
+    sb13.append("foo")
+    sb13.append("bar")
+    sb13.append("baz")
+    let actual: string = sb13.build()
+    if actual != expected {
+        return fail(15, "should match direct concatenation")
+    }
+
+    // Test 16: Clear then append then build
+    var sb14: StringBuilder = StringBuilder.new()
+    sb14.append("old")
+    var sb14c: StringBuilder = sb14.clear()
+    sb14c.append("new")
+    let after_clear: string = sb14c.build()
+    if after_clear != "new" {
+        return fail(16, "clear then append should produce 'new'")
+    }
+
+    println("All StringBuilder tests passed")
+    return 0
+}

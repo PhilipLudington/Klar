@@ -392,7 +392,31 @@ else
     echo "⊘ toml (test not found, skipping)"
 fi
 
-# Test 16: Integration test (all stdlib libraries together)
+# Test 16: StringBuilder library (stdlib/string_builder.kl)
+echo "--- string_builder: StringBuilder library (stdlib/string_builder.kl) ---"
+temp_bin="/tmp/klar_module_string_builder"
+if [ -d "$TEST_DIR/string_builder" ]; then
+    if $KLAR build $TEST_DIR/string_builder/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_builder (exit: $result)"
+            record_success "string_builder"
+        else
+            echo "✗ string_builder (expected: 0, got: $result)"
+            record_failure "string_builder" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_builder (build failed)"
+        record_failure "string_builder" "build failed"
+    fi
+else
+    echo "⊘ string_builder (test not found, skipping)"
+fi
+
+# Test 17: Integration test (all stdlib libraries together)
+# (was Test 16 before string_builder was added)
 echo "--- integration: All stdlib libraries composed ---"
 temp_bin="/tmp/klar_module_integration"
 if [ -d "$TEST_DIR/integration" ]; then
@@ -416,7 +440,7 @@ else
     echo "⊘ integration (test not found, skipping)"
 fi
 
-# Test 17 & 18: HTTP server/client tests using Klar TCP
+# Test 18 & 19: HTTP server/client tests using Klar TCP
 # Skipped on Windows — TCP builtins fail to link on Windows CI
 echo "--- http_server: HTTP server library ---"
 temp_bin="/tmp/klar_module_http_server"

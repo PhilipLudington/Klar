@@ -22,62 +22,8 @@ import stdlib.core
 // - chars() -> [char]
 // - bytes() -> [u8]
 
-// ============================================================================
-// StringBuilder
-// ============================================================================
-
-/// Efficiently build strings by appending parts.
-struct StringBuilder {
-    parts: [string]
-}
-
-impl StringBuilder {
-    /// Create a new empty StringBuilder.
-    pub fn new() -> StringBuilder {
-        StringBuilder { parts: [] }
-    }
-
-    /// Create a StringBuilder with initial capacity hint.
-    pub fn with_capacity(cap: usize) -> StringBuilder {
-        StringBuilder { parts: [] }
-    }
-
-    /// Append a string.
-    pub fn append(self: &mut Self, s: string) -> &mut Self {
-        // Implementation would push to parts array
-        self
-    }
-
-    /// Append a character.
-    pub fn append_char(self: &mut Self, c: char) -> &mut Self {
-        self
-    }
-
-    /// Build the final string.
-    pub fn build(self) -> string {
-        // Implementation would join all parts
-        ""
-    }
-
-    /// Get current length.
-    pub fn len(self) -> usize {
-        var total = 0
-        for part in self.parts {
-            total = total + part.len()
-        }
-        total
-    }
-
-    /// Check if empty.
-    pub fn is_empty(self) -> bool {
-        self.parts.len() == 0
-    }
-
-    /// Clear the builder.
-    pub fn clear(self: &mut Self) -> void {
-        // Implementation would clear parts
-    }
-}
+// StringBuilder is now in stdlib/string_builder.kl
+// Import via: import stdlib.string_builder.*
 
 // ============================================================================
 // Parsing Functions

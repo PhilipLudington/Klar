@@ -183,14 +183,40 @@ Eliminated syntactic ambiguity between generics and array indexing. `[` is **alw
 - [x] `stdlib/http_client.kl` — pure Klar HTTP client built on TCP builtins
 - [x] GET/POST requests, response parsing
 
-## Phase 7: Standard Library & Ecosystem (Planned)
+## Phase 7: Standard Library for Self-Hosting (Planned)
+
+**Goal:** Build the stdlib modules required to complete the self-hosting bootstrap.
+
+| Area | Description |
+|------|-------------|
+| StringBuilder | Efficient string building to replace 263+ concatenation sites in selfhost |
+| Path manipulation | Path parsing, joining, resolution for multi-file import handling |
+| Directory walking | Enumerate files in a directory for module discovery |
+| File writing | Write output files (serialized AST/IR) for the Zig backend |
+
+---
+
+## Phase 8: Self-Hosting Completion (Planned)
+
+**Goal:** Complete the bootstrap loop — the selfhost compiler compiles itself.
+
+Resumes from Milestone 9.8 (paused in Phase 5). The selfhost frontend (lexer, parser, checker) is at full parity. Remaining work:
+
+| Area | Description |
+|------|-------------|
+| 9.9+ | Selfhost compiler produces output consumable by Zig backend |
+| Bootstrap | Selfhost compiles itself (Stage 2), output matches Stage 1 |
+| Validation | Bit-for-bit reproducible builds across bootstrap stages |
+
+---
+
+## Phase 9: Standard Library & Ecosystem (Planned)
 
 **Goal:** Build a production-quality standard library and package ecosystem.
 
 | Area | Description |
 |------|-------------|
 | Collections | HashMap improvements, BTreeMap, Deque, PriorityQueue |
-| I/O | Path manipulation, directory walking |
 | Networking | TCP/UDP sockets beyond HTTP |
 | Serialization | YAML, binary formats |
 | Concurrency | Channel-based communication, thread pool |
@@ -201,7 +227,7 @@ Eliminated syntactic ambiguity between generics and array indexing. `[` is **alw
 
 - [ ] Windows `process_spawn` via `CreateProcessW` (currently POSIX-only: `fork`+`execvp`)
 
-## Phase 8: Production Readiness (Planned)
+## Phase 10: Production Readiness (Planned)
 
 **Goal:** Polish for real-world adoption.
 
@@ -213,7 +239,7 @@ Eliminated syntactic ambiguity between generics and array indexing. `[` is **alw
 | Stability | Fuzzing, property-based testing of compiler |
 | Platform support | Linux ARM64, Windows ARM64 |
 
-## Phase 9: Advanced Language Features (Exploratory)
+## Phase 11: Advanced Language Features (Exploratory)
 
 **Goal:** Evaluate and selectively adopt features that align with Klar's philosophy.
 
