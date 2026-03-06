@@ -9,7 +9,7 @@ For the active milestone plan, see [PLAN.md](PLAN.md).
 
 Klar is a compiled language targeting application-level programming (like C#/Go) with ownership-based memory safety, explicit types, and AI-optimized syntax. The compiler is implemented in Zig with LLVM codegen, a bytecode VM, and a tree-walking interpreter.
 
-Current status: **Phase 6 complete.** All milestones done (1–10, M, Phase 6). **2,052 tests passing.**
+Current status: **Phase 7 in progress.** All milestones done (1–10, M, Phase 6). **2,058 tests passing.**
 
 ---
 
@@ -183,14 +183,56 @@ Eliminated syntactic ambiguity between generics and array indexing. `[` is **alw
 - [x] `stdlib/http_client.kl` — pure Klar HTTP client built on TCP builtins
 - [x] GET/POST requests, response parsing
 
-## Phase 7: Standard Library & Ecosystem (Planned)
+## Phase 7: Standard Library for Self-Hosting (In Progress)
+
+**Goal:** Build the stdlib modules required to complete the self-hosting bootstrap (Phase 8).
+
+See [PLAN.md](PLAN.md) for full detail.
+
+### 7.0: StringBuilder ✅
+- [x] `stdlib/string_builder.kl` — efficient string building via `List#[string]` backing store
+- [x] Module test (15 tests)
+
+### 7.1: Path Manipulation ✅
+- [x] `stdlib/path.kl` — path join, parent, file_name, extension, stem, is_absolute, normalize
+- [x] Module test (48 tests)
+
+### 7.2: Directory Walking ✅
+- [x] `stdlib/dir.kl` — dir_list, dir_list_ext, dir_walk, dir_walk_ext
+- [x] Module test (21 tests)
+
+### 7.3: File Writing
+- [ ] `stdlib/file.kl` — file_write, file_write_lines, file_append
+- [ ] Module test
+
+### 7.4: Integration & Selfhost Validation
+- [ ] Integration test combining all four modules
+- [ ] Update stdlib docs
+- [ ] No regressions in full test suite
+
+---
+
+## Phase 8: Self-Hosting Completion (Planned)
+
+**Goal:** Complete the bootstrap loop — the selfhost compiler compiles itself.
+
+Resumes from Milestone 9.8 (paused in Phase 5). The selfhost frontend (lexer, parser, checker) is at full parity. Remaining work:
+
+| Area | Description |
+|------|-------------|
+| 9.9+ | Selfhost compiler produces output consumable by Zig backend |
+| Bootstrap | Selfhost compiles itself (Stage 2), output matches Stage 1 |
+| Validation | Bit-for-bit reproducible builds across bootstrap stages |
+
+---
+
+## Phase 9: Standard Library & Ecosystem (Planned)
 
 **Goal:** Build a production-quality standard library and package ecosystem.
 
 | Area | Description |
 |------|-------------|
 | Collections | HashMap improvements, BTreeMap, Deque, PriorityQueue |
-| I/O | Path manipulation, directory walking |
 | Networking | TCP/UDP sockets beyond HTTP |
 | Serialization | YAML, binary formats |
 | Concurrency | Channel-based communication, thread pool |
@@ -201,7 +243,7 @@ Eliminated syntactic ambiguity between generics and array indexing. `[` is **alw
 
 - [ ] Windows `process_spawn` via `CreateProcessW` (currently POSIX-only: `fork`+`execvp`)
 
-## Phase 8: Production Readiness (Planned)
+## Phase 10: Production Readiness (Planned)
 
 **Goal:** Polish for real-world adoption.
 
@@ -213,7 +255,7 @@ Eliminated syntactic ambiguity between generics and array indexing. `[` is **alw
 | Stability | Fuzzing, property-based testing of compiler |
 | Platform support | Linux ARM64, Windows ARM64 |
 
-## Phase 9: Advanced Language Features (Exploratory)
+## Phase 11: Advanced Language Features (Exploratory)
 
 **Goal:** Evaluate and selectively adopt features that align with Klar's philosophy.
 

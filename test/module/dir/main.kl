@@ -1,0 +1,268 @@
+// test/module/dir/main.kl - Directory walking test suite
+// Tests dir_list, dir_list_ext, dir_walk, dir_walk_ext.
+// Uses temp directories as test fixtures.
+// Returns 0 on success, non-zero test number on failure.
+
+import stdlib.dir.*
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn setup_test_dir() -> bool {
+    let base: string = "/tmp/klar_dir_test"
+    // Clean up any leftovers first
+    cleanup_test_dir()
+
+    // Create structure:
+    //   /tmp/klar_dir_test/
+    //     hello.kl
+    //     world.kl
+    //     readme.md
+    //     sub/
+    //       deep.txt
+    let r1: Result#[void, IoError] = fs_create_dir_all(base + "/sub")
+    if not r1.is_ok() {
+        println("setup: failed to create dirs")
+        return false
+    }
+    let r2: Result#[void, IoError] = fs_write_string(base + "/hello.kl", "// hello")
+    let r3: Result#[void, IoError] = fs_write_string(base + "/world.kl", "// world")
+    let r4: Result#[void, IoError] = fs_write_string(base + "/readme.md", "# readme")
+    let r5: Result#[void, IoError] = fs_write_string(base + "/sub/deep.txt", "deep")
+    if not r2.is_ok() or not r3.is_ok() or not r4.is_ok() or not r5.is_ok() {
+        println("setup: failed to create files")
+        return false
+    }
+    return true
+}
+
+fn cleanup_test_dir() -> void {
+    let base: string = "/tmp/klar_dir_test"
+    let _r1: Result#[void, IoError] = fs_remove_file(base + "/sub/deep.txt")
+    let _r2: Result#[void, IoError] = fs_remove_dir(base + "/sub")
+    let _r3: Result#[void, IoError] = fs_remove_file(base + "/hello.kl")
+    let _r4: Result#[void, IoError] = fs_remove_file(base + "/world.kl")
+    let _r5: Result#[void, IoError] = fs_remove_file(base + "/readme.md")
+    let _r6: Result#[void, IoError] = fs_remove_dir(base)
+}
+
+fn contains(list: List#[string], value: string) -> bool {
+    var i: i32 = 0
+    while i < list.len() {
+        if list.get(i)! == value {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fn main() -> i32 {
+    let base: string = "/tmp/klar_dir_test"
+
+    if not setup_test_dir() {
+        return fail(0, "setup failed")
+    }
+
+    // ========================================================================
+    // dir_list tests
+    // ========================================================================
+
+    // Test 1: dir_list returns Ok
+    let list_result: Result#[List#[string], string] = dir_list(base)
+    if not list_result.is_ok() {
+        cleanup_test_dir()
+        return fail(1, "dir_list should succeed")
+    }
+
+    // Test 2: dir_list returns 4 entries (hello.kl, world.kl, readme.md, sub)
+    let entries: List#[string] = list_result!
+    if entries.len() != 4 {
+        cleanup_test_dir()
+        return fail(2, "dir_list should return 4 entries")
+    }
+
+    // Test 3: dir_list returns full paths
+    if not contains(entries, base + "/hello.kl") {
+        cleanup_test_dir()
+        return fail(3, "dir_list should contain hello.kl")
+    }
+
+    // Test 4: dir_list contains readme.md
+    if not contains(entries, base + "/readme.md") {
+        cleanup_test_dir()
+        return fail(4, "dir_list should contain readme.md")
+    }
+
+    // Test 5: dir_list contains sub directory
+    if not contains(entries, base + "/sub") {
+        cleanup_test_dir()
+        return fail(5, "dir_list should contain sub/")
+    }
+
+    // Test 6: dir_list on non-existent directory returns Err
+    let bad_result: Result#[List#[string], string] = dir_list("/tmp/klar_dir_test_nonexistent")
+    if bad_result.is_ok() {
+        cleanup_test_dir()
+        return fail(6, "dir_list on nonexistent dir should fail")
+    }
+
+    // ========================================================================
+    // dir_list_ext tests
+    // ========================================================================
+
+    // Test 7: dir_list_ext for "kl" returns 2 files
+    let kl_result: Result#[List#[string], string] = dir_list_ext(base, "kl")
+    if not kl_result.is_ok() {
+        cleanup_test_dir()
+        return fail(7, "dir_list_ext should succeed")
+    }
+    let kl_files: List#[string] = kl_result!
+    if kl_files.len() != 2 {
+        cleanup_test_dir()
+        return fail(7, "dir_list_ext kl should return 2 files")
+    }
+
+    // Test 8: dir_list_ext for "kl" contains hello.kl
+    if not contains(kl_files, base + "/hello.kl") {
+        cleanup_test_dir()
+        return fail(8, "dir_list_ext kl should contain hello.kl")
+    }
+
+    // Test 9: dir_list_ext for "kl" contains world.kl
+    if not contains(kl_files, base + "/world.kl") {
+        cleanup_test_dir()
+        return fail(9, "dir_list_ext kl should contain world.kl")
+    }
+
+    // Test 10: dir_list_ext for "md" returns 1 file
+    let md_result: Result#[List#[string], string] = dir_list_ext(base, "md")
+    if not md_result.is_ok() {
+        cleanup_test_dir()
+        return fail(10, "dir_list_ext md should succeed")
+    }
+    let md_files: List#[string] = md_result!
+    if md_files.len() != 1 {
+        cleanup_test_dir()
+        return fail(10, "dir_list_ext md should return 1 file")
+    }
+
+    // Test 11: dir_list_ext for "xyz" returns 0 files
+    let xyz_result: Result#[List#[string], string] = dir_list_ext(base, "xyz")
+    if not xyz_result.is_ok() {
+        cleanup_test_dir()
+        return fail(11, "dir_list_ext xyz should succeed")
+    }
+    let xyz_files: List#[string] = xyz_result!
+    if xyz_files.len() != 0 {
+        cleanup_test_dir()
+        return fail(11, "dir_list_ext xyz should return 0 files")
+    }
+
+    // ========================================================================
+    // dir_walk tests
+    // ========================================================================
+
+    // Test 12: dir_walk returns Ok
+    let walk_result: Result#[List#[string], string] = dir_walk(base)
+    if not walk_result.is_ok() {
+        cleanup_test_dir()
+        return fail(12, "dir_walk should succeed")
+    }
+
+    // Test 13: dir_walk returns 4 files (hello.kl, world.kl, readme.md, sub/deep.txt)
+    let all_files: List#[string] = walk_result!
+    if all_files.len() != 4 {
+        cleanup_test_dir()
+        return fail(13, "dir_walk should return 4 files")
+    }
+
+    // Test 14: dir_walk includes files from subdirectory
+    if not contains(all_files, base + "/sub/deep.txt") {
+        cleanup_test_dir()
+        return fail(14, "dir_walk should contain sub/deep.txt")
+    }
+
+    // Test 15: dir_walk includes top-level files
+    if not contains(all_files, base + "/hello.kl") {
+        cleanup_test_dir()
+        return fail(15, "dir_walk should contain hello.kl")
+    }
+
+    // Test 16: dir_walk on non-existent directory returns Err
+    let bad_walk: Result#[List#[string], string] = dir_walk("/tmp/klar_dir_test_nonexistent")
+    if bad_walk.is_ok() {
+        cleanup_test_dir()
+        return fail(16, "dir_walk on nonexistent dir should fail")
+    }
+
+    // ========================================================================
+    // dir_walk_ext tests
+    // ========================================================================
+
+    // Test 17: dir_walk_ext for "kl" returns 2 files
+    let walk_kl: Result#[List#[string], string] = dir_walk_ext(base, "kl")
+    if not walk_kl.is_ok() {
+        cleanup_test_dir()
+        return fail(17, "dir_walk_ext kl should succeed")
+    }
+    let kl_walked: List#[string] = walk_kl!
+    if kl_walked.len() != 2 {
+        cleanup_test_dir()
+        return fail(17, "dir_walk_ext kl should return 2 files")
+    }
+
+    // Test 18: dir_walk_ext for "txt" returns 1 file (sub/deep.txt)
+    let walk_txt: Result#[List#[string], string] = dir_walk_ext(base, "txt")
+    if not walk_txt.is_ok() {
+        cleanup_test_dir()
+        return fail(18, "dir_walk_ext txt should succeed")
+    }
+    let txt_walked: List#[string] = walk_txt!
+    if txt_walked.len() != 1 {
+        cleanup_test_dir()
+        return fail(18, "dir_walk_ext txt should return 1 file")
+    }
+
+    // Test 19: dir_walk_ext for "txt" contains sub/deep.txt
+    if not contains(txt_walked, base + "/sub/deep.txt") {
+        cleanup_test_dir()
+        return fail(19, "dir_walk_ext txt should contain sub/deep.txt")
+    }
+
+    // Test 20: dir_walk_ext for "xyz" returns 0 files
+    let walk_xyz: Result#[List#[string], string] = dir_walk_ext(base, "xyz")
+    if not walk_xyz.is_ok() {
+        cleanup_test_dir()
+        return fail(20, "dir_walk_ext xyz should succeed")
+    }
+    let xyz_walked: List#[string] = walk_xyz!
+    if xyz_walked.len() != 0 {
+        cleanup_test_dir()
+        return fail(20, "dir_walk_ext xyz should return 0 files")
+    }
+
+    // Test 21: dir_walk_ext for "md" returns 1 file
+    let walk_md: Result#[List#[string], string] = dir_walk_ext(base, "md")
+    if not walk_md.is_ok() {
+        cleanup_test_dir()
+        return fail(21, "dir_walk_ext md should succeed")
+    }
+    let md_walked: List#[string] = walk_md!
+    if md_walked.len() != 1 {
+        cleanup_test_dir()
+        return fail(21, "dir_walk_ext md should return 1 file")
+    }
+
+    // ========================================================================
+    // Cleanup
+    // ========================================================================
+    cleanup_test_dir()
+    println("All 21 dir tests passed")
+    return 0
+}

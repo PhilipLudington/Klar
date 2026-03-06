@@ -392,7 +392,76 @@ else
     echo "⊘ toml (test not found, skipping)"
 fi
 
-# Test 16: Integration test (all stdlib libraries together)
+# Test 16: StringBuilder library (stdlib/string_builder.kl)
+echo "--- string_builder: StringBuilder library (stdlib/string_builder.kl) ---"
+temp_bin="/tmp/klar_module_string_builder"
+if [ -d "$TEST_DIR/string_builder" ]; then
+    if $KLAR build $TEST_DIR/string_builder/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_builder (exit: $result)"
+            record_success "string_builder"
+        else
+            echo "✗ string_builder (expected: 0, got: $result)"
+            record_failure "string_builder" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_builder (build failed)"
+        record_failure "string_builder" "build failed"
+    fi
+else
+    echo "⊘ string_builder (test not found, skipping)"
+fi
+
+# Test 17: Path library (stdlib/path.kl)
+echo "--- path: Path manipulation library (stdlib/path.kl) ---"
+temp_bin="/tmp/klar_module_path"
+if [ -d "$TEST_DIR/path" ]; then
+    if $KLAR build $TEST_DIR/path/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ path (exit: $result)"
+            record_success "path"
+        else
+            echo "✗ path (expected: 0, got: $result)"
+            record_failure "path" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ path (build failed)"
+        record_failure "path" "build failed"
+    fi
+else
+    echo "⊘ path (test not found, skipping)"
+fi
+
+# Test 18: Dir library (stdlib/dir.kl)
+echo "--- dir: Directory walking library (stdlib/dir.kl) ---"
+temp_bin="/tmp/klar_module_dir"
+if [ -d "$TEST_DIR/dir" ]; then
+    if $KLAR build $TEST_DIR/dir/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ dir (exit: $result)"
+            record_success "dir"
+        else
+            echo "✗ dir (expected: 0, got: $result)"
+            record_failure "dir" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ dir (build failed)"
+        record_failure "dir" "build failed"
+    fi
+else
+    echo "⊘ dir (test not found, skipping)"
+fi
+
+# Test 19: Integration test (all stdlib libraries together)
 echo "--- integration: All stdlib libraries composed ---"
 temp_bin="/tmp/klar_module_integration"
 if [ -d "$TEST_DIR/integration" ]; then
@@ -416,7 +485,7 @@ else
     echo "⊘ integration (test not found, skipping)"
 fi
 
-# Test 17 & 18: HTTP server/client tests using Klar TCP
+# Test 19 & 20: HTTP server/client tests using Klar TCP
 # Skipped on Windows — TCP builtins fail to link on Windows CI
 echo "--- http_server: HTTP server library ---"
 temp_bin="/tmp/klar_module_http_server"

@@ -1,0 +1,135 @@
+//! stdlib/dir.kl - Directory listing and walking utilities
+//!
+//! Provides directory enumeration built on the `fs_read_dir` and `fs_is_dir` builtins.
+//! Uses `stdlib.path` for path joining.
+//!
+//! Usage:
+//!   let files: Result#[List#[string], string] = dir_list("src")
+//!   let kl_files: Result#[List#[string], string] = dir_list_ext("src", "kl")
+//!   let all_kl: Result#[List#[string], string] = dir_walk_ext("src", "kl")
+
+module stdlib.dir
+
+import stdlib.path.*
+
+// ============================================================================
+// dir_list — list directory entries as full paths
+// ============================================================================
+
+/// List all entries in a directory, returning full paths (path/entry).
+/// Excludes "." and ".." (already filtered by fs_read_dir).
+/// Returns Err with message on failure.
+pub fn dir_list(path: string) -> Result#[List#[string], string] {
+    let result: Result#[List#[String], IoError] = fs_read_dir(path)
+    if not result.is_ok() {
+        return Err("dir_list: failed to read directory: " + path)
+    }
+    let entries: List#[String] = result!
+    var paths: List#[string] = List.new#[string]()
+    var i: i32 = 0
+    while i < entries.len() {
+        let entry: String = entries.get(i)!
+        let name: string = entry.as_str()
+        paths.push(path_join(path, name))
+        i = i + 1
+    }
+    return Ok(paths)
+}
+
+// ============================================================================
+// dir_list_ext — list entries filtered by file extension
+// ============================================================================
+
+/// List directory entries that have the given extension (without dot).
+/// Returns full paths. Example: dir_list_ext("src", "kl")
+pub fn dir_list_ext(path: string, ext: string) -> Result#[List#[string], string] {
+    let result: Result#[List#[String], IoError] = fs_read_dir(path)
+    if not result.is_ok() {
+        return Err("dir_list_ext: failed to read directory: " + path)
+    }
+    let entries: List#[String] = result!
+    var paths: List#[string] = List.new#[string]()
+    var i: i32 = 0
+    while i < entries.len() {
+        let entry: String = entries.get(i)!
+        let name: string = entry.as_str()
+        let full: string = path_join(path, name)
+        let file_ext: ?string = path_extension(full)
+        if file_ext != None {
+            if file_ext! == ext {
+                paths.push(full)
+            }
+        }
+        i = i + 1
+    }
+    return Ok(paths)
+}
+
+// ============================================================================
+// dir_walk — recursive directory listing
+// ============================================================================
+
+/// Recursively list all files under a directory.
+/// Returns full paths for all files (not directories).
+pub fn dir_walk(path: string) -> Result#[List#[string], string] {
+    var files: List#[string] = List.new#[string]()
+    let err: ?string = dir_walk_impl(path, files)
+    if err != None {
+        return Err(err!)
+    }
+    return Ok(files)
+}
+
+/// Recursively list all files under a directory that have the given extension.
+/// Returns full paths. Example: dir_walk_ext("src", "kl")
+pub fn dir_walk_ext(path: string, ext: string) -> Result#[List#[string], string] {
+    var all_files: List#[string] = List.new#[string]()
+    let err: ?string = dir_walk_impl(path, all_files)
+    if err != None {
+        return Err(err!)
+    }
+    // Filter by extension
+    var filtered: List#[string] = List.new#[string]()
+    var i: i32 = 0
+    while i < all_files.len() {
+        let f: string = all_files.get(i)!
+        let file_ext: ?string = path_extension(f)
+        if file_ext != None {
+            if file_ext! == ext {
+                filtered.push(f)
+            }
+        }
+        i = i + 1
+    }
+    return Ok(filtered)
+}
+
+// ============================================================================
+// Internal helpers
+// ============================================================================
+
+/// Recursive helper: walks `path` and appends all file paths to `files`.
+/// Returns None on success, Some(error_message) on failure.
+fn dir_walk_impl(path: string, files: List#[string]) -> ?string {
+    let result: Result#[List#[String], IoError] = fs_read_dir(path)
+    if not result.is_ok() {
+        return Some("dir_walk: failed to read directory: " + path)
+    }
+    let entries: List#[String] = result!
+    var i: i32 = 0
+    while i < entries.len() {
+        let entry: String = entries.get(i)!
+        let name: string = entry.as_str()
+        let full: string = path_join(path, name)
+        if fs_is_dir(full) {
+            let sub_err: ?string = dir_walk_impl(full, files)
+            if sub_err != None {
+                return sub_err
+            }
+        } else {
+            files.push(full)
+        }
+        i = i + 1
+    }
+    return None
+}
