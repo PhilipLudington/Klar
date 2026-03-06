@@ -9,6 +9,7 @@ on:
 jobs:
   test-macos:
     name: macOS (full suite)
+    needs: test-linux
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,6 +30,7 @@ jobs:
 
   test-windows:
     name: Windows (full suite)
+    needs: test-macos
     runs-on: windows-latest
     defaults:
       run:
