@@ -28071,22 +28071,50 @@ pub const Emitter = struct {
         const sock_fd = self.builder.buildLoad(i32_type, fd_ptr, "tcpw.fd");
 
         // Get string length
+        const i64_type = llvm.Types.int64(self.ctx);
+        const i8_type = llvm.Types.int8(self.ctx);
         const strlen_fn = self.getOrDeclareStrlen();
         const data_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &[_]llvm.ValueRef{data_val}, "tcpw.len");
 
-        // send(sock_fd, data, len, 0)
-        const send_fn = self.getOrDeclareSend();
-        const bytes_sent = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(send_fn), send_fn, &[_]llvm.ValueRef{ sock_fd, data_val, data_len, llvm.Const.int32(self.ctx, 0) }, "tcpw.ns");
+        // Loop to handle partial writes: send() may not send all bytes at once
+        const offset_alloca = self.builder.buildAlloca(i64_type, "tcpw.offset");
+        _ = self.builder.buildStore(llvm.Const.int64(self.ctx, 0), offset_alloca);
 
-        const send_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, bytes_sent, llvm.Const.int64(self.ctx, 0), "tcpw.fail");
+        const send_loop_bb = llvm.appendBasicBlock(self.ctx, func, "tcpw.send_loop");
         const ok_bb = llvm.appendBasicBlock(self.ctx, func, "tcpw.ok");
         const err_bb = llvm.appendBasicBlock(self.ctx, func, "tcpw.err");
         const cont_bb = llvm.appendBasicBlock(self.ctx, func, "tcpw.cont");
-        _ = self.builder.buildCondBr(send_fail, err_bb, ok_bb);
+        _ = self.builder.buildBr(send_loop_bb);
 
-        // Ok
+        // Send loop: while offset < data_len, send remaining bytes
+        self.builder.positionAtEnd(send_loop_bb);
+        const cur_offset = self.builder.buildLoad(i64_type, offset_alloca, "tcpw.off");
+        const remaining = llvm.c.LLVMBuildSub(self.builder.ref, data_len, cur_offset, "tcpw.rem");
+        const done = self.builder.buildICmp(llvm.c.LLVMIntSLE, remaining, llvm.Const.int64(self.ctx, 0), "tcpw.done");
+        const send_bb = llvm.appendBasicBlock(self.ctx, func, "tcpw.send");
+        _ = self.builder.buildCondBr(done, ok_bb, send_bb);
+
+        // Send from data + offset
+        self.builder.positionAtEnd(send_bb);
+        var gep_indices = [_]llvm.ValueRef{cur_offset};
+        const data_ptr = llvm.c.LLVMBuildGEP2(self.builder.ref, i8_type, data_val, &gep_indices, 1, "tcpw.ptr");
+        const send_fn = self.getOrDeclareSend();
+        const bytes_sent = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(send_fn), send_fn, &[_]llvm.ValueRef{ sock_fd, data_ptr, remaining, llvm.Const.int32(self.ctx, 0) }, "tcpw.ns");
+
+        const send_fail = self.builder.buildICmp(llvm.c.LLVMIntSLT, bytes_sent, llvm.Const.int64(self.ctx, 0), "tcpw.fail");
+        const update_bb = llvm.appendBasicBlock(self.ctx, func, "tcpw.update");
+        _ = self.builder.buildCondBr(send_fail, err_bb, update_bb);
+
+        // Update offset += bytes_sent, then loop back
+        self.builder.positionAtEnd(update_bb);
+        const new_offset = llvm.c.LLVMBuildAdd(self.builder.ref, cur_offset, bytes_sent, "tcpw.newoff");
+        _ = self.builder.buildStore(new_offset, offset_alloca);
+        _ = self.builder.buildBr(send_loop_bb);
+
+        // Ok — all bytes sent
         self.builder.positionAtEnd(ok_bb);
-        const sent_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, bytes_sent, i32_type, "tcpw.sent32");
+        const total_sent = self.builder.buildLoad(i64_type, offset_alloca, "tcpw.total");
+        const sent_i32 = llvm.c.LLVMBuildTrunc(self.builder.ref, total_sent, i32_type, "tcpw.sent32");
         const ok_tag = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "tcpw.ok_tag");
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), ok_tag);
         const ok_val = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 1, "tcpw.ok_val");

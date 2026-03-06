@@ -245,8 +245,8 @@ pub fn http_request(method: string, url: string, headers: Map#[string, string], 
                     let cl_opt: ?i64 = parse_int(cl_str)
                     match cl_opt {
                         Some(content_len) => {
-                            let expected_total: i32 = body_offset + content_len.as#[i32]
-                            if response_data.len() >= expected_total {
+                            let expected_total: i64 = body_offset.as#[i64] + content_len
+                            if response_data.len().as#[i64] >= expected_total {
                                 tcp_close(stream)
                                 return parse_http_response(response_data)
                             }
