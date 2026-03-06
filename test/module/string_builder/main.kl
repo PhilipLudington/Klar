@@ -86,16 +86,16 @@ fn main() -> i32 {
         return fail(9, "should not be empty after append")
     }
 
-    // Test 10: clear returns empty builder
+    // Test 10: new_empty returns empty builder
     var sb8: StringBuilder = StringBuilder.new()
     sb8.append("data")
-    var sb8c: StringBuilder = sb8.clear()
+    var sb8c: StringBuilder = sb8.new_empty()
     if not sb8c.is_empty() {
-        return fail(10, "should be empty after clear")
+        return fail(10, "should be empty after new_empty")
     }
     let cleared: string = sb8c.build()
     if cleared != "" {
-        return fail(10, "build after clear should be empty string")
+        return fail(10, "build after new_empty should be empty string")
     }
 
     // Test 11: Build is idempotent (can call build multiple times)
@@ -150,14 +150,14 @@ fn main() -> i32 {
         return fail(15, "should match direct concatenation")
     }
 
-    // Test 16: Clear then append then build
+    // Test 16: new_empty then append then build
     var sb14: StringBuilder = StringBuilder.new()
     sb14.append("old")
-    var sb14c: StringBuilder = sb14.clear()
+    var sb14c: StringBuilder = sb14.new_empty()
     sb14c.append("new")
-    let after_clear: string = sb14c.build()
-    if after_clear != "new" {
-        return fail(16, "clear then append should produce 'new'")
+    let after_new_empty: string = sb14c.build()
+    if after_new_empty != "new" {
+        return fail(16, "new_empty then append should produce 'new'")
     }
 
     println("All StringBuilder tests passed")

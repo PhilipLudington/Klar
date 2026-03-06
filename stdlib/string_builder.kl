@@ -56,9 +56,8 @@ impl StringBuilder {
         return self.total_len() == 0
     }
 
-    // Returns a new empty StringBuilder. The original is unchanged;
-    // you must capture the return value: sb = sb.clear()
-    pub fn clear(self: StringBuilder) -> StringBuilder {
+    // Returns a new empty StringBuilder. The original is unchanged.
+    pub fn new_empty(self: StringBuilder) -> StringBuilder {
         return StringBuilder.new()
     }
 }
