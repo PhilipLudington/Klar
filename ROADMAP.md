@@ -202,13 +202,20 @@ See [PLAN.md](PLAN.md) for full detail.
 - [x] Module test (21 tests)
 
 ### 7.3: File Writing
-- [ ] `stdlib/file.kl` — file_write, file_write_lines, file_append
-- [ ] Module test
+- [ ] `stdlib/file.kl` — `file_write(path, content)`, `file_write_lines(path, lines)`, `file_append(path, content)`
+- [ ] Module test (`test/module/file/main.kl`) — write/read-back, append, overwrite, write_lines round-trip (follow pattern of 7.0–7.2 tests)
 
 ### 7.4: Integration & Selfhost Validation
-- [ ] Integration test combining all four modules
-- [ ] Update stdlib docs
-- [ ] No regressions in full test suite
+- [ ] Integration test (`test/module/stdlib_integration/main.kl`) — use path.kl to construct paths, dir.kl to walk directories, string_builder.kl to build content, file.kl to write output, then read back and verify
+- [ ] Update `docs/README.md` table of contents to include file.kl, path.kl, dir.kl API references
+- [ ] No regressions in full test suite (`./run-tests.sh` passes)
+
+### Phase 7 Readiness Gate
+Before Phase 8, these must be true:
+- [ ] All four stdlib modules (string_builder, path, dir, file) have passing module tests
+- [ ] Integration test passes end-to-end
+- [ ] `./run-tests.sh` passes with no regressions
+- [ ] Selfhost compiler files can import and use these modules (smoke test)
 
 ---
 
@@ -216,13 +223,29 @@ See [PLAN.md](PLAN.md) for full detail.
 
 **Goal:** Complete the bootstrap loop — the selfhost compiler compiles itself.
 
-Resumes from Milestone 9.8 (paused in Phase 5). The selfhost frontend (lexer, parser, checker) is at full parity. Remaining work:
+Resumes from Milestone 9.8 (paused in Phase 5). The selfhost frontend (lexer, parser, checker) is at full parity (284/284 checker, 258/258 E2E).
 
-| Area | Description |
-|------|-------------|
-| 9.9+ | Selfhost compiler produces output consumable by Zig backend |
-| Bootstrap | Selfhost compiles itself (Stage 2), output matches Stage 1 |
-| Validation | Bit-for-bit reproducible builds across bootstrap stages |
+### 8.1: Selfhost Frontend Output
+- [ ] Define serialization format for typed AST (JSON schema or binary) consumable by Zig codegen backend
+- [ ] Selfhost frontend (`selfhost/`) emits typed AST for all test/native/ files
+- [ ] Zig backend (`src/codegen/`) accepts `--typed-ast-input` and produces identical binaries to the standard pipeline
+- [ ] Validation: compile test/native/ files via both pipelines, compare exit codes and stdout
+
+### 8.2: Bootstrap Stage 1
+- [ ] Selfhost frontend compiles its own source files (lexer.kl, parser.kl, checker.kl, etc.) and emits typed AST
+- [ ] Zig backend consumes that AST and produces a working selfhost binary (Stage 1 binary)
+- [ ] Stage 1 binary passes the same E2E test suite as the Zig-compiled selfhost
+
+### 8.3: Bootstrap Stage 2 (Reproducibility)
+- [ ] Stage 1 binary compiles selfhost source → produces Stage 2 typed AST
+- [ ] Stage 2 typed AST matches Stage 1 typed AST (bit-for-bit or normalized comparison)
+- [ ] Document the bootstrap process in docs/
+
+### Phase 8 Readiness Gate
+Before Phase 9, these must be true:
+- [ ] Selfhost frontend emits typed AST accepted by Zig backend
+- [ ] Stage 1 binary passes full E2E suite
+- [ ] Stage 2 AST matches Stage 1 AST (bootstrap is stable)
 
 ---
 
@@ -230,41 +253,108 @@ Resumes from Milestone 9.8 (paused in Phase 5). The selfhost frontend (lexer, pa
 
 **Goal:** Build a production-quality standard library and package ecosystem.
 
-| Area | Description |
-|------|-------------|
-| Collections | HashMap improvements, BTreeMap, Deque, PriorityQueue |
-| Networking | TCP/UDP sockets beyond HTTP |
-| Serialization | YAML, binary formats |
-| Concurrency | Channel-based communication, thread pool |
-| Package registry | Central package repository, versioned dependencies |
-| Documentation site | Auto-generated API docs from doc comments |
+### 9.1: Collections
+- [ ] BTreeMap with ordered iteration, insert, get, remove
+- [ ] Deque (double-ended queue) with push_front, push_back, pop_front, pop_back
+- [ ] PriorityQueue (min-heap) with push, pop, peek
+- [ ] Module tests for each collection
+
+### 9.2: Networking
+- [ ] UDP socket builtins: udp_bind, udp_send_to, udp_recv_from
+- [ ] DNS resolution builtin: dns_lookup(hostname) -> List#[string]
+- [ ] Module tests for UDP and DNS
+
+### 9.3: Serialization
+- [ ] YAML parser/stringify (`stdlib/yaml.kl`)
+- [ ] Module tests for YAML
+
+### 9.4: Concurrency
+- [ ] Channel-based communication: channel#[T](), Sender, Receiver (as specified in DESIGN.md)
+- [ ] Thread pool: spawn tasks across worker threads
+- [ ] Module tests for channels and thread pool
+
+### 9.5: Package Registry
+- [ ] `klar add <package>` fetches from a registry URL
+- [ ] `klar publish` uploads package to registry
+- [ ] deps.lock file generation and resolution
+- [ ] Registry server (minimal HTTP API for package upload/download)
+
+### 9.6: Documentation Site
+- [ ] `klar doc` generates HTML from doc comments (extend existing doc generator)
+- [ ] Index page with module listing and search
 
 ### Stretch Goals
+- [ ] Windows `process_spawn` via `CreateProcessW` (currently POSIX-only)
 
-- [ ] Windows `process_spawn` via `CreateProcessW` (currently POSIX-only: `fork`+`execvp`)
+### Phase 9 Readiness Gate
+Before Phase 10, these must be true:
+- [ ] All new collections have module tests passing
+- [ ] Networking and serialization modules have module tests passing
+- [ ] `klar add` and `klar publish` work end-to-end against registry
+- [ ] `./run-tests.sh` passes with no regressions
 
 ## Phase 10: Production Readiness (Planned)
 
 **Goal:** Polish for real-world adoption.
 
-| Area | Description |
-|------|-------------|
-| Error messages | Rich diagnostics with source snippets and suggestions |
-| Debugging | DWARF debug info improvements, debugger integration |
-| Performance | Compilation speed, runtime benchmarks, optimization passes |
-| Stability | Fuzzing, property-based testing of compiler |
-| Platform support | Linux ARM64, Windows ARM64 |
+### 10.1: Error Messages
+- [ ] Source snippets in error output: show the offending line with underline caret pointing to error location
+- [ ] "Did you mean X?" suggestions for undefined variables and typos (edit distance matching)
+- [ ] Multi-line error context for type mismatch errors (show expected vs actual with source)
+
+### 10.2: Debugging
+- [ ] Verify `-g` flag produces correct DWARF debug info for lldb: stepping, breakpoints, variable inspection
+- [ ] Fix any missing or incorrect source location mappings in LLVM codegen
+- [ ] Document debugging workflow in docs/ (lldb commands for Klar binaries)
+
+### 10.3: Compilation Performance
+- [ ] Benchmark compilation speed on selfhost source files, establish baseline
+- [ ] Profile and optimize slowest compilation phases (parser, checker, or codegen)
+
+### 10.4: Runtime Performance
+- [ ] Establish runtime benchmark suite (fibonacci, sorting, string processing)
+- [ ] Add at least one new LLVM optimization pass or improve existing pass pipeline
+
+### 10.5: Stability
+- [ ] Fuzz the parser with AFL or libFuzzer — no crashes on arbitrary input
+- [ ] Property-based tests for type checker (random valid programs type-check successfully)
+
+### 10.6: Platform Support
+- [ ] Linux ARM64: CI job, full test suite passing
+- [ ] Windows ARM64: CI job, full test suite passing
+
+### Phase 10 Readiness Gate
+Before Phase 11, these must be true:
+- [ ] Error messages include source snippets for all type errors
+- [ ] `klar build -g` + lldb can step through a simple Klar program
+- [ ] Parser fuzzer runs 1M+ inputs with zero crashes
+- [ ] All CI platforms (x64 + ARM64) pass full test suite
 
 ## Phase 11: Advanced Language Features (Exploratory)
 
 **Goal:** Evaluate and selectively adopt features that align with Klar's philosophy.
 
-| Feature | Notes |
-|---------|-------|
-| Effect system | Algebraic effects for controlled side effects |
-| Constrained decoding | Grammar spec for LLM-guided code generation (MoonBit-inspired) |
-| Formal verification | Lightweight contracts and invariants (Nanolang-inspired) |
-| Incremental compilation | Module-level caching for faster rebuilds |
+Each feature follows an evaluate-then-implement pattern. Evaluation may conclude with "not pursuing" — that is a valid outcome.
+
+### 11.1: Effect System
+- [ ] Research: write design doc evaluating algebraic effects for Klar (syntax, semantics, interaction with ownership)
+- [ ] Decision: go/no-go based on complexity vs value for application-level programming
+- [ ] If go: implement effect declarations, handler syntax, and checker support
+
+### 11.2: Constrained Decoding
+- [ ] Research: write design doc for grammar spec format (GBNF, JSON schema, or custom) enabling LLM-guided Klar code generation
+- [ ] Decision: go/no-go based on LLM tooling ecosystem compatibility
+- [ ] If go: implement `klar grammar` CLI command that outputs the Klar grammar spec
+
+### 11.3: Formal Verification
+- [ ] Research: write design doc for lightweight contracts (preconditions, postconditions, invariants) — runtime checks vs static analysis
+- [ ] Decision: go/no-go based on alignment with "no ambiguity, no surprises" philosophy
+- [ ] If go: implement contract syntax and checker/runtime support
+
+### 11.4: Incremental Compilation
+- [ ] Research: profile full rebuild to identify caching opportunities (AST, typed AST, object files)
+- [ ] Decision: go/no-go based on measured rebuild times vs implementation effort
+- [ ] If go: implement module-level caching with invalidation based on file content hash
 
 ---
 
