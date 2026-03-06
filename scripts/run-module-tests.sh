@@ -438,7 +438,30 @@ else
     echo "⊘ path (test not found, skipping)"
 fi
 
-# Test 18: Integration test (all stdlib libraries together)
+# Test 18: Dir library (stdlib/dir.kl)
+echo "--- dir: Directory walking library (stdlib/dir.kl) ---"
+temp_bin="/tmp/klar_module_dir"
+if [ -d "$TEST_DIR/dir" ]; then
+    if $KLAR build $TEST_DIR/dir/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ dir (exit: $result)"
+            record_success "dir"
+        else
+            echo "✗ dir (expected: 0, got: $result)"
+            record_failure "dir" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ dir (build failed)"
+        record_failure "dir" "build failed"
+    fi
+else
+    echo "⊘ dir (test not found, skipping)"
+fi
+
+# Test 19: Integration test (all stdlib libraries together)
 echo "--- integration: All stdlib libraries composed ---"
 temp_bin="/tmp/klar_module_integration"
 if [ -d "$TEST_DIR/integration" ]; then

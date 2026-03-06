@@ -9,7 +9,7 @@ For the active milestone plan, see [PLAN.md](PLAN.md).
 
 Klar is a compiled language targeting application-level programming (like C#/Go) with ownership-based memory safety, explicit types, and AI-optimized syntax. The compiler is implemented in Zig with LLVM codegen, a bytecode VM, and a tree-walking interpreter.
 
-Current status: **Phase 6 complete.** All milestones done (1–10, M, Phase 6). **2,052 tests passing.**
+Current status: **Phase 7 in progress.** All milestones done (1–10, M, Phase 6). **2,058 tests passing.**
 
 ---
 
@@ -183,16 +183,32 @@ Eliminated syntactic ambiguity between generics and array indexing. `[` is **alw
 - [x] `stdlib/http_client.kl` — pure Klar HTTP client built on TCP builtins
 - [x] GET/POST requests, response parsing
 
-## Phase 7: Standard Library for Self-Hosting (Planned)
+## Phase 7: Standard Library for Self-Hosting (In Progress)
 
-**Goal:** Build the stdlib modules required to complete the self-hosting bootstrap.
+**Goal:** Build the stdlib modules required to complete the self-hosting bootstrap (Phase 8).
 
-| Area | Description |
-|------|-------------|
-| StringBuilder | Efficient string building to replace 263+ concatenation sites in selfhost |
-| Path manipulation | Path parsing, joining, resolution for multi-file import handling |
-| Directory walking | Enumerate files in a directory for module discovery |
-| File writing | Write output files (serialized AST/IR) for the Zig backend |
+See [PLAN.md](PLAN.md) for full detail.
+
+### 7.0: StringBuilder ✅
+- [x] `stdlib/string_builder.kl` — efficient string building via `List#[string]` backing store
+- [x] Module test (15 tests)
+
+### 7.1: Path Manipulation ✅
+- [x] `stdlib/path.kl` — path join, parent, file_name, extension, stem, is_absolute, normalize
+- [x] Module test (48 tests)
+
+### 7.2: Directory Walking ✅
+- [x] `stdlib/dir.kl` — dir_list, dir_list_ext, dir_walk, dir_walk_ext
+- [x] Module test (21 tests)
+
+### 7.3: File Writing
+- [ ] `stdlib/file.kl` — file_write, file_write_lines, file_append
+- [ ] Module test
+
+### 7.4: Integration & Selfhost Validation
+- [ ] Integration test combining all four modules
+- [ ] Update stdlib docs
+- [ ] No regressions in full test suite
 
 ---
 
