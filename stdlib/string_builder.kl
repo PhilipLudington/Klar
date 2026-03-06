@@ -1,8 +1,10 @@
 //! stdlib/string_builder.kl - Efficient string building
 //!
 //! StringBuilder collects string parts and joins them into a single string.
-//! Uses List#[string] internally for O(1) amortized appends.
-//! Note: build() joins via repeated concatenation — O(n) in total length.
+//! Note: build() joins via repeated concatenation — O(n²) in total characters
+//! (each concatenation copies the accumulated string). For best performance,
+//! use when appending a small number of large parts. For character-by-character
+//! building, a join-all-at-once strategy would be more efficient.
 //!
 //! Usage:
 //!   var sb: StringBuilder = StringBuilder.new()
