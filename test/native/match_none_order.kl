@@ -1,0 +1,46 @@
+// Bug 1 regression: None before Some must work correctly
+// Previously, None was parsed as a binding (always matches) instead of a variant pattern
+
+fn main() -> i32 {
+    var m: Map#[string, i32] = Map.new#[string, i32]()
+    m.insert("hello", 42)
+
+    // Test 1: None first, value exists — must take Some arm
+    let v1: ?i32 = m.get("hello")
+    match v1 {
+        None => { return 1 }
+        Some(x) => {
+            if x != 42 {
+                return 2
+            }
+        }
+    }
+
+    // Test 2: None first, value missing — must take None arm
+    let v2: ?i32 = m.get("missing")
+    match v2 {
+        None => { }
+        Some(x) => { return 3 }
+    }
+
+    // Test 3: Some first, value exists — must take Some arm
+    let v3: ?i32 = m.get("hello")
+    match v3 {
+        Some(x) => {
+            if x != 42 {
+                return 4
+            }
+        }
+        None => { return 5 }
+    }
+
+    // Test 4: Some first, value missing — must take None arm
+    let v4: ?i32 = m.get("missing")
+    match v4 {
+        Some(x) => { return 6 }
+        None => { }
+    }
+
+    // Test 5: User-defined enum with no-payload variants
+    return 0
+}

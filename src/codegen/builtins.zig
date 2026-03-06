@@ -67,6 +67,19 @@ pub const BuiltinName = struct {
     pub const fs_stat = "fs_stat";
     pub const timestamp_now = "timestamp_now";
     pub const process_run = "process_run";
+    // Phase 6: async subprocess and TCP socket builtins
+    pub const process_spawn = "process_spawn";
+    pub const process_poll = "process_poll";
+    pub const process_wait = "process_wait";
+    pub const process_read_stdout = "process_read_stdout";
+    pub const tcp_listen = "tcp_listen";
+    pub const tcp_accept = "tcp_accept";
+    pub const tcp_connect = "tcp_connect";
+    pub const tcp_read = "tcp_read";
+    pub const tcp_write = "tcp_write";
+    pub const tcp_close = "tcp_close";
+    pub const tcp_set_nonblocking = "tcp_set_nonblocking";
+    pub const tcp_listener_close = "tcp_listener_close";
 };
 
 /// Check if a function name is a built-in.
@@ -93,7 +106,19 @@ pub fn isBuiltin(name: []const u8) bool {
         std.mem.eql(u8, name, BuiltinName.env_set) or
         std.mem.eql(u8, name, BuiltinName.fs_stat) or
         std.mem.eql(u8, name, BuiltinName.timestamp_now) or
-        std.mem.eql(u8, name, BuiltinName.process_run);
+        std.mem.eql(u8, name, BuiltinName.process_run) or
+        std.mem.eql(u8, name, BuiltinName.process_spawn) or
+        std.mem.eql(u8, name, BuiltinName.process_poll) or
+        std.mem.eql(u8, name, BuiltinName.process_wait) or
+        std.mem.eql(u8, name, BuiltinName.process_read_stdout) or
+        std.mem.eql(u8, name, BuiltinName.tcp_listen) or
+        std.mem.eql(u8, name, BuiltinName.tcp_accept) or
+        std.mem.eql(u8, name, BuiltinName.tcp_connect) or
+        std.mem.eql(u8, name, BuiltinName.tcp_read) or
+        std.mem.eql(u8, name, BuiltinName.tcp_write) or
+        std.mem.eql(u8, name, BuiltinName.tcp_close) or
+        std.mem.eql(u8, name, BuiltinName.tcp_set_nonblocking) or
+        std.mem.eql(u8, name, BuiltinName.tcp_listener_close);
 }
 
 /// Check if a built-in is a print function.

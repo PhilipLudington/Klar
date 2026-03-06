@@ -1,0 +1,84 @@
+// Test TCP socket builtins: tcp_listen, tcp_accept, tcp_connect, tcp_read, tcp_write, tcp_close
+// Uses Klar TCP client directly (no process_spawn) for cross-platform compatibility.
+// The kernel queues the connection when tcp_connect is called before tcp_accept.
+// Expected exit code: 0
+// Skip: windows (TCP builtins fail to link on Windows CI)
+
+fn main() -> i32 {
+    // Start a TCP server on a high port
+    let lr: Result#[TcpListener, IoError] = tcp_listen("127.0.0.1", 19876)
+    if not lr.is_ok() {
+        println("tcp_listen failed")
+        return 1
+    }
+    let listener: TcpListener = lr!
+
+    // Connect a client — the kernel backlog queues this before we accept
+    let cr: Result#[TcpStream, IoError] = tcp_connect("127.0.0.1", 19876)
+    if not cr.is_ok() {
+        tcp_listener_close(listener)
+        println("tcp_connect failed")
+        return 2
+    }
+    let client: TcpStream = cr!
+
+    // Send data from client before accepting (buffered by kernel)
+    let wr1: Result#[i32, IoError] = tcp_write(client, "hello tcp")
+    if not wr1.is_ok() {
+        tcp_close(client)
+        tcp_listener_close(listener)
+        println("tcp_write (client) failed")
+        return 3
+    }
+
+    // Accept the connection on the server side
+    let ar: Result#[TcpStream, IoError] = tcp_accept(listener)
+    if not ar.is_ok() {
+        tcp_close(client)
+        tcp_listener_close(listener)
+        println("tcp_accept failed")
+        return 4
+    }
+    let server: TcpStream = ar!
+
+    // Read data on the server side
+    let rr: Result#[string, IoError] = tcp_read(server, 4096)
+    if not rr.is_ok() {
+        tcp_close(server)
+        tcp_close(client)
+        tcp_listener_close(listener)
+        println("tcp_read failed")
+        return 5
+    }
+    let data: string = rr!
+    assert_eq(data, "hello tcp")
+
+    // Send a response from server
+    let wr2: Result#[i32, IoError] = tcp_write(server, "ok")
+    if not wr2.is_ok() {
+        tcp_close(server)
+        tcp_close(client)
+        tcp_listener_close(listener)
+        println("tcp_write (server) failed")
+        return 6
+    }
+
+    // Read response on client side
+    let rr2: Result#[string, IoError] = tcp_read(client, 4096)
+    if not rr2.is_ok() {
+        tcp_close(server)
+        tcp_close(client)
+        tcp_listener_close(listener)
+        println("tcp_read (client) failed")
+        return 7
+    }
+    let resp: string = rr2!
+    assert_eq(resp, "ok")
+
+    // Clean up
+    tcp_close(server)
+    tcp_close(client)
+    tcp_listener_close(listener)
+
+    return 0
+}

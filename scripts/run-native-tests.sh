@@ -65,9 +65,13 @@ get_link_flags() {
     head -5 "$1" | grep '// Requires:' | grep -o -- '-l[^ ]*' | tr '\n' ' '
 }
 
-# Check if test should be skipped (handled by different runner)
+# Check if test should be skipped (handled by different runner or platform-specific)
 should_skip() {
-    head -5 "$1" | grep -q "// Skip: native-tests"
+    head -5 "$1" | grep -q "// Skip: native-tests" && return 0
+    if [[ "$OS" == "Windows_NT" ]]; then
+        head -5 "$1" | grep -q "// Skip: windows" && return 0
+    fi
+    return 1
 }
 
 # Get expected result for a test

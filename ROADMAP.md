@@ -9,7 +9,7 @@ For the active milestone plan, see [PLAN.md](PLAN.md).
 
 Klar is a compiled language targeting application-level programming (like C#/Go) with ownership-based memory safety, explicit types, and AI-optimized syntax. The compiler is implemented in Zig with LLVM codegen, a bytecode VM, and a tree-walking interpreter.
 
-Current status: **Phase 5 complete.** All milestones done (1–10, M). Phase 6 (Async I/O and HTTP) deferred until Lodex Phase 3. **2,048 tests passing.**
+Current status: **Phase 6 complete.** All milestones done (1–10, M, Phase 6). **2,052 tests passing.**
 
 ---
 
@@ -77,7 +77,7 @@ Current status: **Phase 5 complete.** All milestones done (1–10, M). Phase 6 (
 
 ### Standard Library (Lodex Infrastructure) ✅
 
-**Status:** Complete — Phases 0–5 done. See [PLAN.md](PLAN.md) for full detail.
+**Status:** Complete — Phases 0–6 done. See [PLAN.md](PLAN.md) for full detail.
 
 Built general-purpose stdlib libraries needed by [Lodex](../Lodex/DESIGN.md):
 
@@ -87,6 +87,7 @@ Built general-purpose stdlib libraries needed by [Lodex](../Lodex/DESIGN.md):
 - [x] TOML parser/stringify (`stdlib/toml.kl`)
 - [x] CLI argument parsing (`stdlib/cli.kl`)
 - [x] Integration validation (`test/module/integration/`)
+- [x] Async I/O and HTTP ([Phase 6](#phase-6-async-io-and-http-))
 
 ---
 
@@ -159,17 +160,28 @@ Eliminated syntactic ambiguity between generics and array indexing. `[` is **alw
 
 ---
 
-## Phase 6: Async I/O and HTTP (Planned — when Lodex reaches Phase 3)
+## Phase 6: Async I/O and HTTP ✅
+
+**Status:** Complete (2026-03-05)
 
 **Goal:** Build async I/O and HTTP capabilities for Lodex's evaluation engine and HTTP API.
 
-| Area | Description |
-|------|-------------|
-| Async execution | Event loop, task scheduling, concurrent I/O |
-| Async subprocess | Non-blocking subprocess execution for test runners |
-| HTTP server | Listen, route requests, serve JSON responses |
-| HTTP client | GET/POST requests, parse responses |
-| FFI evaluation | libuv (event loop), libmicrohttpd/libcurl (HTTP) |
+### 6A: Async Subprocess
+- [x] `process_spawn`, `process_poll`, `process_wait`, `process_read_stdout` builtins
+- [x] Non-blocking subprocess execution via `posix_spawn` + pipe-based stdout capture
+
+### 6B: TCP Sockets
+- [x] `tcp_listen`, `tcp_accept`, `tcp_connect`, `tcp_read`, `tcp_write`, `tcp_close` builtins
+- [x] `tcp_set_nonblocking`, `tcp_listener_close` builtins
+- [x] Platform-specific constants (macOS vs Linux)
+
+### 6C: HTTP Server
+- [x] `stdlib/http_server.kl` — pure Klar HTTP server built on TCP builtins
+- [x] Request routing, JSON request/response
+
+### 6D: HTTP Client
+- [x] `stdlib/http_client.kl` — pure Klar HTTP client built on TCP builtins
+- [x] GET/POST requests, response parsing
 
 ## Phase 7: Standard Library & Ecosystem (Planned)
 
@@ -184,6 +196,10 @@ Eliminated syntactic ambiguity between generics and array indexing. `[` is **alw
 | Concurrency | Channel-based communication, thread pool |
 | Package registry | Central package repository, versioned dependencies |
 | Documentation site | Auto-generated API docs from doc comments |
+
+### Stretch Goals
+
+- [ ] Windows `process_spawn` via `CreateProcessW` (currently POSIX-only: `fork`+`execvp`)
 
 ## Phase 8: Production Readiness (Planned)
 

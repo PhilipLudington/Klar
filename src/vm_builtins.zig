@@ -82,6 +82,19 @@ pub const builtins = [_]NativeDesc{
     .{ .name = "timestamp_now", .arity = 0, .function = nativeTimestampNow },
     .{ .name = "fs_stat", .arity = 1, .function = nativeFsStat },
     .{ .name = "process_run", .arity = 2, .function = nativeProcessRun },
+    // Phase 6: async subprocess and TCP socket builtins
+    .{ .name = "process_spawn", .arity = 2, .function = nativeProcessSpawn },
+    .{ .name = "process_poll", .arity = 1, .function = nativeProcessPoll },
+    .{ .name = "process_wait", .arity = 1, .function = nativeProcessWait },
+    .{ .name = "process_read_stdout", .arity = 2, .function = nativeProcessReadStdout },
+    .{ .name = "tcp_listen", .arity = 2, .function = nativeTcpListen },
+    .{ .name = "tcp_accept", .arity = 1, .function = nativeTcpAccept },
+    .{ .name = "tcp_connect", .arity = 2, .function = nativeTcpConnect },
+    .{ .name = "tcp_read", .arity = 2, .function = nativeTcpRead },
+    .{ .name = "tcp_write", .arity = 2, .function = nativeTcpWrite },
+    .{ .name = "tcp_close", .arity = 1, .function = nativeTcpClose },
+    .{ .name = "tcp_set_nonblocking", .arity = 2, .function = nativeTcpSetNonblocking },
+    .{ .name = "tcp_listener_close", .arity = 1, .function = nativeTcpListenerClose },
 };
 
 // ============================================================================
@@ -613,6 +626,11 @@ var warned_env_get: bool = false;
 var warned_env_set: bool = false;
 var warned_fs_stat: bool = false;
 var warned_process_run: bool = false;
+var warned_process_spawn: bool = false;
+var warned_process_poll: bool = false;
+var warned_process_wait: bool = false;
+var warned_process_read_stdout: bool = false;
+var warned_tcp: bool = false;
 
 /// Reset stub warning flags. Call when initializing a new VM instance so that
 /// warnings are emitted again if multiple VMs are created in the same process.
@@ -621,6 +639,11 @@ pub fn resetStubWarnings() void {
     warned_env_set = false;
     warned_fs_stat = false;
     warned_process_run = false;
+    warned_process_spawn = false;
+    warned_process_poll = false;
+    warned_process_wait = false;
+    warned_process_read_stdout = false;
+    warned_tcp = false;
 }
 
 fn warnVmStub(name: []const u8) void {
@@ -683,6 +706,97 @@ fn nativeProcessRun(allocator: Allocator, args: []const Value) RuntimeError!Valu
     result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
     result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
     return .{ .struct_ = result_struct };
+}
+
+// Phase 6: Async subprocess stubs
+fn nativeProcessSpawn(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = args;
+    if (!warned_process_spawn) {
+        warned_process_spawn = true;
+        warnVmStub("process_spawn");
+    }
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+fn nativeProcessPoll(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = args;
+    if (!warned_process_poll) {
+        warned_process_poll = true;
+        warnVmStub("process_poll");
+    }
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "ProcessStatus") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "tag", .{ .int = 0 }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .{ .int = 0 }) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+fn nativeProcessWait(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = args;
+    if (!warned_process_wait) {
+        warned_process_wait = true;
+        warnVmStub("process_wait");
+    }
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+fn nativeProcessReadStdout(allocator: Allocator, args: []const Value) RuntimeError!Value {
+    _ = args;
+    if (!warned_process_read_stdout) {
+        warned_process_read_stdout = true;
+        warnVmStub("process_read_stdout");
+    }
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+// Phase 6: TCP socket stubs
+fn vmTcpStub(allocator: Allocator, name: []const u8) RuntimeError!Value {
+    if (!warned_tcp) {
+        warned_tcp = true;
+        warnVmStub(name);
+    }
+    const gc = active_gc orelse return RuntimeError.TypeError;
+    const result_struct = ObjStruct.createGC(gc, "Result") catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "is_ok", .{ .bool_ = false }) catch return RuntimeError.OutOfMemory;
+    result_struct.setField(allocator, "value", .void_) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = result_struct };
+}
+
+fn nativeTcpListen(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    return vmTcpStub(allocator, "tcp_listen");
+}
+fn nativeTcpAccept(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    return vmTcpStub(allocator, "tcp_accept");
+}
+fn nativeTcpConnect(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    return vmTcpStub(allocator, "tcp_connect");
+}
+fn nativeTcpRead(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    return vmTcpStub(allocator, "tcp_read");
+}
+fn nativeTcpWrite(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    return vmTcpStub(allocator, "tcp_write");
+}
+fn nativeTcpClose(_: Allocator, _: []const Value) RuntimeError!Value {
+    return .void_;
+}
+fn nativeTcpSetNonblocking(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    return vmTcpStub(allocator, "tcp_set_nonblocking");
+}
+fn nativeTcpListenerClose(_: Allocator, _: []const Value) RuntimeError!Value {
+    return .void_;
 }
 
 // ============================================================================

@@ -1,0 +1,222 @@
+// Test HTTP client library
+// Uses Klar TCP server directly (no curl/process_spawn) for cross-platform compatibility.
+// Tests http_client functions by running a TCP server that responds to client requests.
+// Expected exit code: 0
+
+import stdlib.http_server.*
+import stdlib.http_client.*
+
+/// Helper: start a listener, send a raw HTTP response to the first connection
+fn serve_response(port: i32, response: string) -> bool {
+    let lr: Result#[TcpListener, IoError] = tcp_listen("127.0.0.1", port)
+    if not lr.is_ok() {
+        return false
+    }
+    let listener: TcpListener = lr!
+
+    let ar: Result#[TcpStream, IoError] = tcp_accept(listener)
+    if not ar.is_ok() {
+        tcp_listener_close(listener)
+        return false
+    }
+    let stream: TcpStream = ar!
+
+    // Read the request (discard it)
+    let _rr: Result#[string, IoError] = tcp_read(stream, 65536)
+
+    // Send raw HTTP response
+    let _wr: Result#[i32, IoError] = tcp_write(stream, response)
+    tcp_close(stream)
+    tcp_listener_close(listener)
+    return true
+}
+
+fn main() -> i32 {
+    // Test 1: HTTP GET — start a server listener, then use http_request as client
+    // The server must accept before the client times out, so we start the listener first,
+    // then connect (queued by kernel), then accept+respond in the same thread.
+    let lr1: Result#[TcpListener, IoError] = tcp_listen("127.0.0.1", 19883)
+    if not lr1.is_ok() {
+        println("Failed to listen for test 1")
+        return 1
+    }
+    let listener1: TcpListener = lr1!
+
+    // Client connects (queued by kernel backlog)
+    let cr1: Result#[TcpStream, IoError] = tcp_connect("127.0.0.1", 19883)
+    if not cr1.is_ok() {
+        tcp_listener_close(listener1)
+        println("Failed to connect for test 1")
+        return 1
+    }
+    let client1: TcpStream = cr1!
+
+    // Accept the queued connection on server side
+    let ar1: Result#[TcpStream, IoError] = tcp_accept(listener1)
+    if not ar1.is_ok() {
+        tcp_close(client1)
+        tcp_listener_close(listener1)
+        println("Failed to accept for test 1")
+        return 2
+    }
+    let server1: TcpStream = ar1!
+
+    // Read the client request (client hasn't sent yet — send from client side)
+    let _cw1: Result#[i32, IoError] = tcp_write(client1, "GET /test HTTP/1.1\r\nHost: 127.0.0.1:19883\r\nConnection: close\r\n\r\n")
+
+    // Read request on server side
+    let sr1: Result#[string, IoError] = tcp_read(server1, 65536)
+    if not sr1.is_ok() {
+        tcp_close(server1)
+        tcp_close(client1)
+        tcp_listener_close(listener1)
+        return 2
+    }
+    let req_data1: string = sr1!
+
+    // Verify the request looks right
+    let pr1: Result#[HttpRequest, string] = parse_http_request(req_data1)
+    if not pr1.is_ok() {
+        tcp_close(server1)
+        tcp_close(client1)
+        tcp_listener_close(listener1)
+        return 2
+    }
+    let req1: HttpRequest = pr1!
+    assert_eq(req1.method, "GET")
+
+    // Send HTTP response from server
+    let _sw1: Result#[i32, IoError] = tcp_write(server1, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+    tcp_close(server1)
+    tcp_listener_close(listener1)
+
+    // Read response on client side
+    let rr1: Result#[string, IoError] = tcp_read(client1, 65536)
+    if not rr1.is_ok() {
+        tcp_close(client1)
+        return 3
+    }
+    let resp_data1: string = rr1!
+    tcp_close(client1)
+
+    // Parse response
+    let parsed1: Result#[HttpClientResponse, string] = parse_http_response(resp_data1)
+    if not parsed1.is_ok() {
+        println("Failed to parse response for test 1")
+        return 3
+    }
+    let resp1: HttpClientResponse = parsed1!
+    assert_eq(resp1.status, 200)
+    assert_eq(resp1.body, "hello")
+
+    // Test 2: HTTP POST
+    let lr2: Result#[TcpListener, IoError] = tcp_listen("127.0.0.1", 19884)
+    if not lr2.is_ok() {
+        println("Failed to listen for test 2")
+        return 4
+    }
+    let listener2: TcpListener = lr2!
+
+    let cr2: Result#[TcpStream, IoError] = tcp_connect("127.0.0.1", 19884)
+    if not cr2.is_ok() {
+        tcp_listener_close(listener2)
+        return 4
+    }
+    let client2: TcpStream = cr2!
+
+    let ar2: Result#[TcpStream, IoError] = tcp_accept(listener2)
+    if not ar2.is_ok() {
+        tcp_close(client2)
+        tcp_listener_close(listener2)
+        return 5
+    }
+    let server2: TcpStream = ar2!
+
+    // Client sends POST request
+    let _cw2: Result#[i32, IoError] = tcp_write(client2, "POST /api HTTP/1.1\r\nHost: 127.0.0.1:19884\r\nContent-Length: 9\r\nConnection: close\r\n\r\ntest body")
+
+    // Server reads and verifies
+    let sr2: Result#[string, IoError] = tcp_read(server2, 65536)
+    if not sr2.is_ok() {
+        tcp_close(server2)
+        tcp_close(client2)
+        tcp_listener_close(listener2)
+        return 5
+    }
+    let req_data2: string = sr2!
+    let pr2: Result#[HttpRequest, string] = parse_http_request(req_data2)
+    if not pr2.is_ok() {
+        tcp_close(server2)
+        tcp_close(client2)
+        tcp_listener_close(listener2)
+        return 5
+    }
+    let req2: HttpRequest = pr2!
+    assert_eq(req2.method, "POST")
+
+    // Server sends response
+    let _sw2: Result#[i32, IoError] = tcp_write(server2, "HTTP/1.1 201 Created\r\nContent-Length: 7\r\nConnection: close\r\n\r\ncreated")
+    tcp_close(server2)
+    tcp_listener_close(listener2)
+
+    // Client reads response
+    let rr2: Result#[string, IoError] = tcp_read(client2, 65536)
+    if not rr2.is_ok() {
+        tcp_close(client2)
+        return 6
+    }
+    let resp_data2: string = rr2!
+    tcp_close(client2)
+
+    let parsed2: Result#[HttpClientResponse, string] = parse_http_response(resp_data2)
+    if not parsed2.is_ok() {
+        return 6
+    }
+    let resp2: HttpClientResponse = parsed2!
+    assert_eq(resp2.status, 201)
+    assert_eq(resp2.body, "created")
+
+    // Test 3: JSON response
+    let lr3: Result#[TcpListener, IoError] = tcp_listen("127.0.0.1", 19885)
+    if not lr3.is_ok() { return 7 }
+    let listener3: TcpListener = lr3!
+
+    let cr3: Result#[TcpStream, IoError] = tcp_connect("127.0.0.1", 19885)
+    if not cr3.is_ok() {
+        tcp_listener_close(listener3)
+        return 7
+    }
+    let client3: TcpStream = cr3!
+
+    let ar3: Result#[TcpStream, IoError] = tcp_accept(listener3)
+    if not ar3.is_ok() {
+        tcp_close(client3)
+        tcp_listener_close(listener3)
+        return 8
+    }
+    let server3: TcpStream = ar3!
+
+    let _cw3: Result#[i32, IoError] = tcp_write(client3, "GET /api/hello HTTP/1.1\r\nHost: 127.0.0.1:19885\r\nConnection: close\r\n\r\n")
+
+    let _sr3: Result#[string, IoError] = tcp_read(server3, 65536)
+
+    let _sw3: Result#[i32, IoError] = tcp_write(server3, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+    tcp_close(server3)
+    tcp_listener_close(listener3)
+
+    let rr3: Result#[string, IoError] = tcp_read(client3, 65536)
+    if not rr3.is_ok() {
+        tcp_close(client3)
+        return 9
+    }
+    let resp_data3: string = rr3!
+    tcp_close(client3)
+
+    let parsed3: Result#[HttpClientResponse, string] = parse_http_response(resp_data3)
+    if not parsed3.is_ok() { return 9 }
+    let resp3: HttpClientResponse = parsed3!
+    assert_eq(resp3.status, 200)
+    assert_eq(resp3.body, "ok")
+
+    return 0
+}

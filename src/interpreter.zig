@@ -276,6 +276,17 @@ pub const Interpreter = struct {
         if (self.global_env.get("process_run")) |v| {
             if (v == .builtin) self.allocator.destroy(v.builtin);
         }
+        // Phase 6 builtins
+        const phase6_names = [_][]const u8{
+            "process_spawn", "process_poll", "process_wait", "process_read_stdout",
+            "tcp_listen",    "tcp_accept",   "tcp_connect",  "tcp_read",
+            "tcp_write",     "tcp_close",    "tcp_set_nonblocking", "tcp_listener_close",
+        };
+        for (phase6_names) |name| {
+            if (self.global_env.get(name)) |v| {
+                if (v == .builtin) self.allocator.destroy(v.builtin);
+            }
+        }
         self.global_env.deinit();
         self.allocator.destroy(self.global_env);
     }
@@ -405,6 +416,27 @@ pub const Interpreter = struct {
         const process_run_fn = try self.allocator.create(values.BuiltinFunction);
         process_run_fn.* = .{ .name = "process_run", .func = &builtinStubProcessRun };
         try self.global_env.define("process_run", .{ .builtin = process_run_fn }, false);
+
+        // Phase 6: async subprocess and TCP socket stubs
+        const builtins_phase6 = [_]struct { name: []const u8, func: *const fn (Allocator, []const Value) RuntimeError!Value }{
+            .{ .name = "process_spawn", .func = &builtinStubProcessSpawn },
+            .{ .name = "process_poll", .func = &builtinStubProcessPoll },
+            .{ .name = "process_wait", .func = &builtinStubProcessWait },
+            .{ .name = "process_read_stdout", .func = &builtinStubProcessReadStdout },
+            .{ .name = "tcp_listen", .func = &builtinStubTcp },
+            .{ .name = "tcp_accept", .func = &builtinStubTcp },
+            .{ .name = "tcp_connect", .func = &builtinStubTcp },
+            .{ .name = "tcp_read", .func = &builtinStubTcp },
+            .{ .name = "tcp_write", .func = &builtinStubTcp },
+            .{ .name = "tcp_close", .func = &builtinStubTcpVoid },
+            .{ .name = "tcp_set_nonblocking", .func = &builtinStubTcp },
+            .{ .name = "tcp_listener_close", .func = &builtinStubTcpVoid },
+        };
+        for (builtins_phase6) |b| {
+            const fn_obj = try self.allocator.create(values.BuiltinFunction);
+            fn_obj.* = .{ .name = b.name, .func = b.func };
+            try self.global_env.define(b.name, .{ .builtin = fn_obj }, false);
+        }
     }
 
     // ========================================================================
@@ -2875,6 +2907,8 @@ var interp_warned_env_get: bool = false;
 var interp_warned_env_set: bool = false;
 var interp_warned_fs_stat: bool = false;
 var interp_warned_process_run: bool = false;
+var interp_warned_process_spawn: bool = false;
+var interp_warned_tcp: bool = false;
 
 /// Reset stub warning flags. Call when initializing a new interpreter instance
 /// so that warnings are emitted again if multiple interpreters run in the same process.
@@ -2883,6 +2917,8 @@ pub fn resetStubWarnings() void {
     interp_warned_env_set = false;
     interp_warned_fs_stat = false;
     interp_warned_process_run = false;
+    interp_warned_process_spawn = false;
+    interp_warned_tcp = false;
 }
 
 fn warnInterpStub(name: []const u8) void {
@@ -2946,6 +2982,64 @@ fn builtinTimestampNow(_: Allocator, args: []const Value) RuntimeError!Value {
     if (args.len != 0) return RuntimeError.InvalidOperation;
     const now: i64 = std.time.timestamp();
     return .{ .int = .{ .value = now, .type_ = .i64_ } };
+}
+
+// Phase 6: Async subprocess and TCP stubs
+fn interpErrResult(allocator: Allocator) RuntimeError!Value {
+    const err_val = allocator.create(Value) catch return RuntimeError.OutOfMemory;
+    err_val.* = .void_;
+    const res = allocator.create(values.ResultValue) catch return RuntimeError.OutOfMemory;
+    res.* = .{ .is_ok = false, .value = err_val };
+    return .{ .result = res };
+}
+
+fn builtinStubProcessSpawn(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_process_spawn) {
+        interp_warned_process_spawn = true;
+        warnInterpStub("process_spawn");
+    }
+    return interpErrResult(allocator);
+}
+
+fn builtinStubProcessPoll(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_process_spawn) {
+        interp_warned_process_spawn = true;
+        warnInterpStub("process_poll");
+    }
+    // Return ProcessStatus { tag: 0 (Running), value: 0 }
+    const struct_val = allocator.create(values.StructValue) catch return RuntimeError.OutOfMemory;
+    struct_val.* = .{ .type_name = "ProcessStatus", .fields = .{} };
+    struct_val.fields.put(allocator, "tag", .{ .int = .{ .value = 0, .type_ = .i32_ } }) catch return RuntimeError.OutOfMemory;
+    struct_val.fields.put(allocator, "value", .{ .int = .{ .value = 0, .type_ = .i32_ } }) catch return RuntimeError.OutOfMemory;
+    return .{ .struct_ = struct_val };
+}
+
+fn builtinStubProcessWait(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_process_spawn) {
+        interp_warned_process_spawn = true;
+        warnInterpStub("process_wait");
+    }
+    return interpErrResult(allocator);
+}
+
+fn builtinStubProcessReadStdout(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_process_spawn) {
+        interp_warned_process_spawn = true;
+        warnInterpStub("process_read_stdout");
+    }
+    return interpErrResult(allocator);
+}
+
+fn builtinStubTcp(allocator: Allocator, _: []const Value) RuntimeError!Value {
+    if (!interp_warned_tcp) {
+        interp_warned_tcp = true;
+        warnInterpStub("tcp_*");
+    }
+    return interpErrResult(allocator);
+}
+
+fn builtinStubTcpVoid(_: Allocator, _: []const Value) RuntimeError!Value {
+    return .void_;
 }
 
 // ============================================================================

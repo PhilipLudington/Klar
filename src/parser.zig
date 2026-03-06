@@ -170,6 +170,7 @@ pub const Parser = struct {
     current: Token,
     previous: Token,
     errors: std.ArrayListUnmanaged(Error),
+    no_struct_literal: bool = false,
 
     pub const Error = struct {
         message: []const u8,
@@ -775,7 +776,7 @@ pub const Parser = struct {
             }
 
             // Check for struct literal with generic type: TypeName#[T, U] { ... }
-            if (self.check(.l_brace)) {
+            if (self.check(.l_brace) and !self.no_struct_literal) {
                 return self.parseStructLiteralWithType(full_type, start_span);
             }
 
@@ -793,7 +794,8 @@ pub const Parser = struct {
         // Check for struct literal: Identifier { ... }
         // Only parse as struct literal if the identifier starts with uppercase (type convention)
         // This prevents `x { ... }` from being parsed as struct literal in contexts like `if x { }`
-        if (self.check(.l_brace) and is_type_name) {
+        // Also skip when no_struct_literal is set (e.g., in if/while/match/for conditions)
+        if (self.check(.l_brace) and is_type_name and !self.no_struct_literal) {
             const base_type: ast.TypeExpr = .{ .named = .{ .name = name, .span = start_span } };
             return self.parseStructLiteralWithType(base_type, start_span);
         }
@@ -884,6 +886,11 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '('
 
+        // Inside parens, struct literals are unambiguous
+        const saved_no_struct = self.no_struct_literal;
+        self.no_struct_literal = false;
+        defer self.no_struct_literal = saved_no_struct;
+
         // Empty tuple
         if (self.check(.r_paren)) {
             const end_span = self.spanFromToken(self.current);
@@ -940,6 +947,11 @@ pub const Parser = struct {
     fn parseArrayLiteral(self: *Parser) ParseError!ast.Expr {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '['
+
+        // Inside brackets, struct literals are unambiguous
+        const saved_no_struct = self.no_struct_literal;
+        self.no_struct_literal = false;
+        defer self.no_struct_literal = saved_no_struct;
 
         var elements = std.ArrayListUnmanaged(ast.Expr){};
 
@@ -1174,7 +1186,11 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'if'
 
+        const saved_no_struct = self.no_struct_literal;
+        self.no_struct_literal = true;
+        defer self.no_struct_literal = saved_no_struct;
         const condition = try self.parseExpression();
+        self.no_struct_literal = saved_no_struct;
         const then_block = try self.parseBlock();
 
         var else_branch: ?*ast.ElseBranch = null;
@@ -1210,7 +1226,11 @@ pub const Parser = struct {
         self.advance(); // consume 'match'
 
         // Klar uses "match value { ... }" syntax (Rust-style)
+        const saved_no_struct_m = self.no_struct_literal;
+        self.no_struct_literal = true;
+        defer self.no_struct_literal = saved_no_struct_m;
         const subject = try self.parseExpression();
+        self.no_struct_literal = saved_no_struct_m;
 
         try self.consume(.l_brace, "expected '{' after match subject");
 
@@ -1397,13 +1417,20 @@ pub const Parser = struct {
     fn parseCall(self: *Parser, callee: ast.Expr, type_args: ?[]const ast.TypeExpr) ParseError!ast.Expr {
         self.advance(); // consume '('
 
+        // Inside call parens, struct literals are unambiguous
+        const saved_no_struct = self.no_struct_literal;
+        self.no_struct_literal = false;
+        defer self.no_struct_literal = saved_no_struct;
+
         var args = std.ArrayListUnmanaged(ast.Expr){};
 
         if (!self.check(.r_paren)) {
             while (true) {
                 // Check for 'out' modifier (contextual keyword for FFI out parameters)
+                // Only treat 'out' as a modifier when followed by an identifier (e.g., 'out x')
                 if (self.current.kind == .identifier and
-                    std.mem.eql(u8, self.source[self.current.loc.start..self.current.loc.end], "out"))
+                    std.mem.eql(u8, self.source[self.current.loc.start..self.current.loc.end], "out") and
+                    self.peekNext().kind == .identifier)
                 {
                     const out_span_start = self.spanFromToken(self.current);
                     self.advance(); // consume 'out'
@@ -1873,7 +1900,11 @@ pub const Parser = struct {
         }
 
         try self.consume(.in, "expected 'in' after for pattern");
+        const saved_no_struct_f = self.no_struct_literal;
+        self.no_struct_literal = true;
+        defer self.no_struct_literal = saved_no_struct_f;
         const iterable = try self.parseExpression();
+        self.no_struct_literal = saved_no_struct_f;
         const body = try self.parseBlock();
 
         const for_loop = try self.create(ast.ForLoop, .{
@@ -1889,7 +1920,11 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume 'while'
 
+        const saved_no_struct_w = self.no_struct_literal;
+        self.no_struct_literal = true;
+        defer self.no_struct_literal = saved_no_struct_w;
         const condition = try self.parseExpression();
+        self.no_struct_literal = saved_no_struct_w;
         const body = try self.parseBlock();
 
         const while_loop = try self.create(ast.WhileLoop, .{
@@ -2020,6 +2055,17 @@ pub const Parser = struct {
                 .variant_name = name,
                 .payload = payload,
                 .span = ast.Span.merge(start_span, end_span),
+            });
+            return .{ .variant = variant };
+        }
+
+        // Uppercase identifier without '(' — no-payload variant (e.g., None, Red, Blue)
+        if (is_type_name) {
+            const variant = try self.create(ast.VariantPattern, .{
+                .type_expr = null,
+                .variant_name = name,
+                .payload = null,
+                .span = start_span,
             });
             return .{ .variant = variant };
         }

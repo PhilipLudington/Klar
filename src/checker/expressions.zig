@@ -224,7 +224,17 @@ pub fn checkExpr(tc: anytype, expr: ast.Expr) Type {
 pub fn checkExprWithHint(tc: anytype, expr: ast.Expr, hint: ?Type) Type {
     return switch (expr) {
         .literal => |l| checkLiteralWithHint(tc, l, hint),
-        .identifier => |i| checkIdentifier(tc, i),
+        .identifier => |i| blk: {
+            // Set expected_type for bare None so it can infer the optional type
+            if (std.mem.eql(u8, i.name, "None") and hint != null) {
+                const prev_expected = tc.expected_type;
+                tc.expected_type = hint;
+                const result = checkIdentifier(tc, i);
+                tc.expected_type = prev_expected;
+                break :blk result;
+            }
+            break :blk checkIdentifier(tc, i);
+        },
         .binary => |b| checkBinary(tc, b),
         .unary => |u| checkUnary(tc, u),
         .postfix => |p| checkPostfix(tc, p),
@@ -303,6 +313,16 @@ fn checkInterpolatedString(tc: anytype, interp: *ast.InterpolatedString) Type {
 
 fn checkIdentifier(tc: anytype, id: ast.Identifier) Type {
     if (tc.current_scope.lookup(id.name)) |sym| {
+        // Bare `None` used as a value (not a call) — treat as optional None
+        if (std.mem.eql(u8, id.name, "None") and sym.kind == .function) {
+            if (tc.expected_type) |expected| {
+                if (expected == .optional) {
+                    return expected;
+                }
+            }
+            // No type context — default to ?i32
+            return tc.type_builder.optionalType(tc.type_builder.i32Type()) catch tc.type_builder.unknownType();
+        }
         // Track captures if we're inside a closure
         if (tc.closure_scope) |closure_scope| {
             // Check if this variable is from outside the closure's scope
@@ -348,7 +368,17 @@ fn isInClosureScope(tc: anytype, closure_scope: anytype, name: []const u8) bool 
 
 fn checkBinary(tc: anytype, bin: *ast.Binary) Type {
     const left_type = checkExpr(tc, bin.left);
+
+    // For == and != comparisons, propagate left type as expected_type for right side
+    // so bare `None` can infer the correct optional type from context
+    const saved_expected = tc.expected_type;
+    if (bin.op == .eq or bin.op == .not_eq) {
+        if (left_type == .optional) {
+            tc.expected_type = left_type;
+        }
+    }
     const right_type = checkExpr(tc, bin.right);
+    tc.expected_type = saved_expected;
 
     // Handle assignment operators
     switch (bin.op) {
@@ -412,7 +442,15 @@ fn checkBinary(tc: anytype, bin: *ast.Binary) Type {
                 return tc.type_builder.boolType();
             }
             if (!left_type.eql(right_type)) {
-                tc.addError(.type_mismatch, bin.span, "comparison operands must have same type", .{});
+                // Allow `optional == None` and `None == optional` regardless of inner type,
+                // since codegen just checks the tag bit
+                const left_is_none = bin.left == .identifier and std.mem.eql(u8, bin.left.identifier.name, "None");
+                const right_is_none = bin.right == .identifier and std.mem.eql(u8, bin.right.identifier.name, "None");
+                const left_is_opt = left_type == .optional;
+                const right_is_opt = right_type == .optional;
+                if (!((left_is_none and right_is_opt) or (right_is_none and left_is_opt) or (left_is_none and right_is_none))) {
+                    tc.addError(.type_mismatch, bin.span, "comparison operands must have same type", .{});
+                }
             }
             return tc.type_builder.boolType();
         },

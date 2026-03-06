@@ -215,6 +215,8 @@ fn linkForPlatform(
                     "legacy_stdio_definitions.lib",
                     // __acrt_iob_func (for stdin/stdout/stderr access) lives in ucrt
                     "ucrt.lib",
+                    // Winsock2 for TCP socket functions (socket, bind, connect, etc.)
+                    "ws2_32.lib",
                 }) catch return LinkerError.OutOfMemory;
             }
         },
