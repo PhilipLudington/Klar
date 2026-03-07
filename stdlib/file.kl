@@ -50,15 +50,20 @@ pub fn file_write_lines(path: string, lines: List#[string]) -> Result#[bool, IoE
         let line: string = lines.get(i)!
         let write_result: Result#[i32, IoError] = file.write_string(line)
         if not write_result.is_ok() {
+            let _close: Result#[void, IoError] = file.close()
             return Err(write_result.unwrap_err())
         }
         let nl_result: Result#[i32, IoError] = file.write_string("\n")
         if not nl_result.is_ok() {
+            let _close: Result#[void, IoError] = file.close()
             return Err(nl_result.unwrap_err())
         }
         i = i + 1
     }
-    let _flush: Result#[void, IoError] = file.flush()
+    let flush_result: Result#[void, IoError] = file.flush()
     let _close: Result#[void, IoError] = file.close()
+    if not flush_result.is_ok() {
+        return Err(flush_result.unwrap_err())
+    }
     return Ok(true)
 }
