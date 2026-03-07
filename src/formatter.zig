@@ -1977,14 +1977,13 @@ test "format: simple function" {
 test "binaryOpStr covers all variants" {
     // Just ensure it doesn't crash for all variants
     const ops = [_]ast.BinaryOp{
-        .add, .sub, .mul, .div, .mod,
-        .add_wrap, .sub_wrap, .mul_wrap,
-        .add_sat,  .sub_sat,  .mul_sat,
-        .eq,       .not_eq,   .lt,       .gt, .lt_eq, .gt_eq, .is,
-        .and_,     .or_,
-        .bit_and,  .bit_or,   .bit_xor,  .shl, .shr,
-        .null_coalesce,
-        .assign,   .add_assign, .sub_assign, .mul_assign, .div_assign, .mod_assign,
+        .add,           .sub,        .mul,        .div,        .mod,
+        .add_wrap,      .sub_wrap,   .mul_wrap,   .add_sat,    .sub_sat,
+        .mul_sat,       .eq,         .not_eq,     .lt,         .gt,
+        .lt_eq,         .gt_eq,      .is,         .and_,       .or_,
+        .bit_and,       .bit_or,     .bit_xor,    .shl,        .shr,
+        .null_coalesce, .assign,     .add_assign, .sub_assign, .mul_assign,
+        .div_assign,    .mod_assign,
     };
     for (ops) |op| {
         const s = Formatter.binaryOpStr(op);

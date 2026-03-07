@@ -500,7 +500,7 @@ fn traverseDecls(
     module: ast.Module,
     matches: *std.ArrayListUnmanaged(MetaMatch),
     ctx: Ctx,
-    comptime matchFn: fn(Ctx, []const ast.MetaAnnotation, []const ast.MetaAnnotation) bool,
+    comptime matchFn: fn (Ctx, []const ast.MetaAnnotation, []const ast.MetaAnnotation) bool,
 ) void {
     // Check file-level meta
     if (matchFn(ctx, module.file_meta, module.file_meta)) {
@@ -1069,7 +1069,10 @@ fn metaOutputJsonMeta(out: std.fs.File, meta: []const ast.MetaAnnotation) !void 
     // Tags array
     var has_tags = false;
     for (meta) |ann| {
-        if (ann == .tag) { has_tags = true; break; }
+        if (ann == .tag) {
+            has_tags = true;
+            break;
+        }
     }
     if (has_tags) {
         try out.writeAll("\"tag\":[");
@@ -1169,7 +1172,10 @@ fn metaOutputJsonMeta(out: std.fs.File, meta: []const ast.MetaAnnotation) !void 
     // Aggregate all .custom annotations into a single "custom" array
     var has_custom = false;
     for (meta) |ann| {
-        if (ann == .custom) { has_custom = true; break; }
+        if (ann == .custom) {
+            has_custom = true;
+            break;
+        }
     }
     if (has_custom) {
         if (wrote_field) try out.writeAll(",");
@@ -1205,7 +1211,10 @@ fn metaOutputJsonMeta(out: std.fs.File, meta: []const ast.MetaAnnotation) !void 
     // Aggregate all .related annotations into a single "related" array
     var has_related = false;
     for (meta) |ann| {
-        if (ann == .related) { has_related = true; break; }
+        if (ann == .related) {
+            has_related = true;
+            break;
+        }
     }
     if (has_related) {
         if (wrote_field) try out.writeAll(",");

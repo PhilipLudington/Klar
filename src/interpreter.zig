@@ -278,8 +278,8 @@ pub const Interpreter = struct {
         }
         // Phase 6 builtins
         const phase6_names = [_][]const u8{
-            "process_spawn", "process_poll", "process_wait", "process_read_stdout",
-            "tcp_listen",    "tcp_accept",   "tcp_connect",  "tcp_read",
+            "process_spawn", "process_poll", "process_wait",        "process_read_stdout",
+            "tcp_listen",    "tcp_accept",   "tcp_connect",         "tcp_read",
             "tcp_write",     "tcp_close",    "tcp_set_nonblocking", "tcp_listener_close",
         };
         for (phase6_names) |name| {
@@ -3209,6 +3209,7 @@ test "await returns completed future value in interpreter runtime" {
     const testing = std.testing;
     var interp = try Interpreter.init(testing.allocator);
     defer interp.deinit();
+    interp.ensureBuilderInitialized();
 
     const ready = try interp.builder.futureCompleted(1, interp.builder.i32Val(42));
     try interp.current_env.define("ready", ready, false);
@@ -3235,6 +3236,7 @@ test "await on pending future returns invalid operation" {
     const testing = std.testing;
     var interp = try Interpreter.init(testing.allocator);
     defer interp.deinit();
+    interp.ensureBuilderInitialized();
 
     const pending = try interp.builder.futurePending(2);
     try interp.current_env.define("pending", pending, false);
@@ -3265,6 +3267,7 @@ test "await on failed future returns invalid operation with runtime message" {
     const testing = std.testing;
     var interp = try Interpreter.init(testing.allocator);
     defer interp.deinit();
+    interp.ensureBuilderInitialized();
 
     const failed = try interp.builder.futureFailed(3, interp.builder.i32Val(9));
     try interp.current_env.define("failed", failed, false);
@@ -3294,6 +3297,7 @@ test "await on cancelled future returns invalid operation with runtime message" 
     const testing = std.testing;
     var interp = try Interpreter.init(testing.allocator);
     defer interp.deinit();
+    interp.ensureBuilderInitialized();
 
     const cancelled = try interp.builder.futureCancelled(4);
     try interp.current_env.define("cancelled", cancelled, false);
