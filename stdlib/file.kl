@@ -15,7 +15,7 @@ module stdlib.file
 /// Write string content to a file, creating or overwriting it.
 /// Returns Ok(true) on success, Err(IoError) on failure.
 pub fn file_write(path: string, content: string) -> Result#[bool, IoError] {
-    let open_result: Result#[File, IoError] = File.open(path, "w")
+    let open_result: Result#[File, IoError] = File.open(path, "wb")
     if not open_result.is_ok() {
         return Err(open_result.unwrap_err())
     }
@@ -40,7 +40,7 @@ pub fn file_write(path: string, content: string) -> Result#[bool, IoError] {
 /// Write a list of strings to a file, each followed by a newline.
 /// Creates or overwrites the file. Returns Ok(true) on success.
 pub fn file_write_lines(path: string, lines: List#[string]) -> Result#[bool, IoError] {
-    let open_result: Result#[File, IoError] = File.open(path, "w")
+    let open_result: Result#[File, IoError] = File.open(path, "wb")
     if not open_result.is_ok() {
         return Err(open_result.unwrap_err())
     }
