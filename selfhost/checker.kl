@@ -176,6 +176,10 @@ pub struct TypeChecker {
     pub error_lines: List#[i32],
     pub error_cols: List#[i32],
     pub error_msgs: List#[string],
+
+    // Per-expression resolved types (Phase 8: typed AST emission)
+    // Indexed by ExprId.id. Pre-filled with type_unknown() after AST build.
+    pub expr_types: List#[KlarType],
 }
 
 impl TypeChecker {
@@ -260,6 +264,8 @@ impl TypeChecker {
             error_lines: List.new#[i32](),
             error_cols: List.new#[i32](),
             error_msgs: List.new#[string](),
+
+            expr_types: List.new#[KlarType](),
         }
         // Push global scope
         tc.scopes.push(Map.new#[string, SymbolInfo]())
@@ -954,6 +960,34 @@ fn register_mono_impl_method(tc: TypeChecker, fn_data: FunctionDeclData,
 pub fn add_error_with_type(tc: TypeChecker, span: Span, msg: string) -> (TypeChecker, KlarType) {
     let c: TypeChecker = add_error(tc, span, msg)
     return (c, type_error())
+}
+
+// ─── Expression Type Storage (Phase 8) ──────────────────────────────
+// Pre-fill expr_types with type_unknown() so check_expr can store results.
+
+pub fn init_expr_types(tc: TypeChecker, count: i32) -> TypeChecker {
+    var c: TypeChecker = tc
+    var i: i32 = 0
+    while i < count {
+        c.expr_types.push(type_unknown())
+        i = i + 1
+    }
+    return c
+}
+
+pub fn store_expr_type(tc: TypeChecker, eid_id: i32, kt: KlarType) -> TypeChecker {
+    var c: TypeChecker = tc
+    if eid_id >= 0 and eid_id < c.expr_types.len() {
+        c.expr_types[eid_id] = kt
+    }
+    return c
+}
+
+pub fn get_expr_type(tc: TypeChecker, eid_id: i32) -> KlarType {
+    if eid_id >= 0 and eid_id < tc.expr_types.len() {
+        return tc.expr_types[eid_id]
+    }
+    return type_unknown()
 }
 
 // ─── Type Store Helpers ─────────────────────────────────────────────

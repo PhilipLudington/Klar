@@ -52,7 +52,8 @@ import checker.{
     mangle_generic_name, substitute_type, unify_types,
     resolve_type_expr_with_type_vars,
     find_trait_method, has_trait_impl,
-    bind_pattern
+    bind_pattern,
+    store_expr_type
 }
 
 import checker_builtins.{check_builtin_method}
@@ -60,6 +61,16 @@ import checker_builtins.{check_builtin_method}
 // ─── Main Expression Dispatch ───────────────────────────────────────
 
 pub fn check_expr(tc: TypeChecker, eid: ExprId) -> (TypeChecker, KlarType) {
+    let result: (TypeChecker, KlarType) = check_expr_dispatch(tc, eid)
+    // Store the resolved type for typed AST emission
+    if eid.id >= 0 and eid.id < result.0.expr_types.len() {
+        let c: TypeChecker = store_expr_type(result.0, eid.id, result.1)
+        return (c, result.1)
+    }
+    return result
+}
+
+fn check_expr_dispatch(tc: TypeChecker, eid: ExprId) -> (TypeChecker, KlarType) {
     if eid.id < 0 {
         return (tc, type_void())
     }

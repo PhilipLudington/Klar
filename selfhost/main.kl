@@ -5,15 +5,17 @@
 //   klar run selfhost/main.kl -- check <file.kl>      Type-check a file
 //   klar run selfhost/main.kl -- dump-tokens <file.kl> Dump lexer tokens as JSON
 //   klar run selfhost/main.kl -- dump-ast <file.kl>    Dump parser AST as JSON
+//   klar run selfhost/main.kl -- emit-typed-ast <file.kl> Emit typed AST JSON
 //   klar run selfhost/main.kl -- help                  Show usage
 
 import lexer.{Lexer, Token, TokenKind, tag_name}
 import parser.{Parser, new_parser}
 import parser_decl.{parse_module}
 import ast.{AstModule}
-import checker.{TypeChecker, register_builtins, format_error}
+import checker.{TypeChecker, register_builtins, format_error, init_expr_types}
 import checker_decl.{check_module}
 import ast_builder.{build_module}
+import emitter.{emit_typed_ast}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Commands
@@ -112,6 +114,43 @@ fn cmd_dump_ast(path: string) -> i32 {
     return 0
 }
 
+fn cmd_emit_typed_ast(path: string) -> i32 {
+    let src: string = read_file(path)
+    if src == "" {
+        return 2
+    }
+
+    // Parse source → JSON
+    let p: Parser = new_parser(src)
+    let parse_result: (Parser, string) = parse_module(p)
+    if parse_result.0.had_error {
+        println("parse error in " + path)
+        return 1
+    }
+    let json: string = parse_result.1
+
+    // Build AST arenas from JSON → type check
+    var tc: TypeChecker = TypeChecker.new()
+    let build_result: (TypeChecker, AstModule) = build_module(tc, json)
+    tc = build_result.0
+    let m: AstModule = build_result.1
+
+    // Pre-fill expr_types for type storage during checking
+    tc = init_expr_types(tc, tc.exprs.len())
+
+    tc = register_builtins(tc)
+    tc = check_module(tc, m.decls_start, m.decls_count)
+
+    // Emit typed AST JSON (even if there are errors, for debugging)
+    let output: string = emit_typed_ast(tc, m)
+    println(output)
+
+    if tc.error_count > 0 {
+        return 1
+    }
+    return 0
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
@@ -149,6 +188,7 @@ fn print_usage() -> void {
     println("  klar-selfhost check <file.kl>       Type-check a file")
     println("  klar-selfhost dump-tokens <file.kl>  Dump lexer tokens as JSON")
     println("  klar-selfhost dump-ast <file.kl>     Dump parser AST as JSON")
+    println("  klar-selfhost emit-typed-ast <file.kl> Emit typed AST JSON")
     println("  klar-selfhost help                   Show this message")
 }
 
@@ -195,6 +235,15 @@ fn main(args: [String]) -> i32 {
         }
         let file_arg: String = args[2]
         return cmd_dump_ast(file_arg.as_str())
+    }
+
+    if cmd == "emit-typed-ast" {
+        if args.len() < 3 {
+            println("error: emit-typed-ast requires a file path")
+            return 2
+        }
+        let file_arg: String = args[2]
+        return cmd_emit_typed_ast(file_arg.as_str())
     }
 
     println("error: unknown command '" + cmd + "'")
