@@ -25520,10 +25520,23 @@ pub const Emitter = struct {
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_err_args, "fs_write.close_err");
         _ = self.builder.buildBr(cont_bb);
 
-        // Write OK - close file and return success
+        // Write OK - close file and check fclose return
         self.builder.positionAtEnd(write_succ_bb);
         var fclose_args = [_]llvm.ValueRef{file_ptr};
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "fs_write.close");
+        const fclose_ret = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "fs_write.close");
+        const fclose_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, fclose_ret, llvm.Const.int(llvm.Types.int32(self.ctx), 0, false), "fs_write.close_ok");
+        const close_ok_bb = llvm.appendBasicBlock(self.ctx, func, "fs_write.close_succ");
+        const close_err_bb = llvm.appendBasicBlock(self.ctx, func, "fs_write.close_fail");
+        _ = self.builder.buildCondBr(fclose_ok, close_ok_bb, close_err_bb);
+
+        // fclose failed - return error
+        self.builder.positionAtEnd(close_err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // fclose succeeded - return success
+        self.builder.positionAtEnd(close_ok_bb);
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
         _ = self.builder.buildBr(cont_bb);
 
@@ -25602,10 +25615,23 @@ pub const Emitter = struct {
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_err_args, "fs_append.close_err");
         _ = self.builder.buildBr(cont_bb);
 
-        // Write OK - close file and return success
+        // Write OK - close file and check fclose return
         self.builder.positionAtEnd(write_succ_bb);
         var fclose_args = [_]llvm.ValueRef{file_ptr};
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "fs_append.close");
+        const fclose_ret = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "fs_append.close");
+        const fclose_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, fclose_ret, llvm.Const.int(llvm.Types.int32(self.ctx), 0, false), "fs_append.close_ok");
+        const close_ok_bb = llvm.appendBasicBlock(self.ctx, func, "fs_append.close_succ");
+        const close_err_bb = llvm.appendBasicBlock(self.ctx, func, "fs_append.close_fail");
+        _ = self.builder.buildCondBr(fclose_ok, close_ok_bb, close_err_bb);
+
+        // fclose failed - return error
+        self.builder.positionAtEnd(close_err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // fclose succeeded - return success
+        self.builder.positionAtEnd(close_ok_bb);
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
         _ = self.builder.buildBr(cont_bb);
 
