@@ -473,7 +473,7 @@ fn emit_pattern(tc: TypeChecker, pid: PatternId) -> string {
                 elems = elems + emit_pattern(tc, sub_pid)
                 i = i + 1
             }
-            return "{\"kind\":\"tuple\",\"elements\":[" + elems + "]}"
+            return "{\"kind\":\"tuple_pattern\",\"elements\":[" + elems + "]}"
         }
         Pattern::OrPat(data) => {
             return "{\"kind\":\"or\",\"left\":" + emit_pattern(tc, data.left) + ",\"right\":" + emit_pattern(tc, data.right) + "}"
@@ -784,7 +784,7 @@ fn emit_stmt(tc: TypeChecker, sid: StmtId) -> string {
         Stmt::ForLoop(data) => {
             var s: string = "{\"kind\":\"for_loop\""
             if data.binding2 != "" {
-                s = s + ",\"pattern\":{\"kind\":\"tuple\",\"elements\":[{\"kind\":\"binding\",\"name\":" + j_str(data.binding) + ",\"mutable\":false,\"type_annotation\":null},{\"kind\":\"binding\",\"name\":" + j_str(data.binding2) + ",\"mutable\":false,\"type_annotation\":null}]}"
+                s = s + ",\"pattern\":{\"kind\":\"tuple_pattern\",\"elements\":[{\"kind\":\"binding\",\"name\":" + j_str(data.binding) + ",\"mutable\":false,\"type_annotation\":null},{\"kind\":\"binding\",\"name\":" + j_str(data.binding2) + ",\"mutable\":false,\"type_annotation\":null}]}"
             } else {
                 s = s + ",\"pattern\":{\"kind\":\"binding\",\"name\":" + j_str(data.binding) + ",\"mutable\":false,\"type_annotation\":" + emit_type_expr(tc, data.binding_type) + "}"
             }
