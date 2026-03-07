@@ -9,7 +9,7 @@ For the active milestone plan, see [PLAN.md](PLAN.md).
 
 Klar is a compiled language targeting application-level programming (like C#/Go) with ownership-based memory safety, explicit types, and AI-optimized syntax. The compiler is implemented in Zig with LLVM codegen, a bytecode VM, and a tree-walking interpreter.
 
-Current status: **Phase 7 in progress.** All milestones done (1–10, M, Phase 6). **2,058 tests passing.**
+Current status: **Phase 7 in progress.** All milestones done (1–10, M, Phase 6).
 
 ---
 
@@ -201,18 +201,18 @@ See [PLAN.md](PLAN.md) for full detail.
 - [x] `stdlib/dir.kl` — dir_list, dir_list_ext, dir_walk, dir_walk_ext
 - [x] Module test (21 tests)
 
-### 7.3: File Writing
-- [ ] `stdlib/file.kl` — `file_write(path, content)`, `file_write_lines(path, lines)`, `file_append(path, content)`
-- [ ] Module test (`test/module/file/main.kl`) — write/read-back, append, overwrite, write_lines round-trip (follow pattern of 7.0–7.2 tests)
+### 7.3: File Writing ✅
+- [x] `stdlib/file.kl` — `file_write(path, content)`, `file_write_lines(path, lines)`, `file_append(path, content)`
+- [x] Module test (`test/module/file/main.kl`) — write/read-back, append, overwrite, write_lines round-trip (follow pattern of 7.0–7.2 tests)
 
 ### 7.4: Integration & Selfhost Validation
 - [ ] Integration test (`test/module/stdlib_integration/main.kl`) — use path.kl to construct paths, dir.kl to walk directories, string_builder.kl to build content, file.kl to write output, then read back and verify
-- [ ] Update `docs/README.md` table of contents to include file.kl, path.kl, dir.kl API references
+- [x] Update `docs/README.md` table of contents to include file.kl, path.kl, dir.kl API references
 - [ ] No regressions in full test suite (`./run-tests.sh` passes)
 
 ### Phase 7 Readiness Gate
 Before Phase 8, these must be true:
-- [ ] All four stdlib modules (string_builder, path, dir, file) have passing module tests
+- [x] All four stdlib modules (string_builder, path, dir, file) have passing module tests
 - [ ] Integration test passes end-to-end
 - [ ] `./run-tests.sh` passes with no regressions
 - [ ] Selfhost compiler files can import and use these modules (smoke test)
@@ -293,65 +293,176 @@ Before Phase 10, these must be true:
 - [ ] `klar add` and `klar publish` work end-to-end against registry
 - [ ] `./run-tests.sh` passes with no regressions
 
-## Phase 10: Production Readiness (Planned)
+---
+
+## Phase 10: Kira Interop — Consume Manifests (Planned)
+
+**Goal:** Klar can read a Kira type manifest (JSON) and auto-generate the extern block, removing the manual copy-paste step.
+
+Companion plan: `~/Fun/Kira/PLAN-interop.md` (Kira-side work).
+Reference: [DESIGN.md](DESIGN.md) section "C Interoperability", [docs/advanced/ffi.md](docs/advanced/ffi.md).
+
+### 10.1: Manifest Schema
+- [ ] Define Kira type manifest JSON schema from Klar's perspective (function signatures, ADT definitions, type mappings)
+- [ ] Coordinate with Kira's `PLAN-interop.md` Phase 4 on agreed format
+
+### 10.2: Manifest Parser
+- [ ] Implement manifest parser in `src/main.zig` or `src/interop/` module
+- [ ] Map Kira types to Klar FFI types (i32→i32, f64→f64, string→CStr, bool→Bool, void→void, ADTs→extern struct)
+
+### 10.3: CLI Command
+- [ ] `klar import-kira <manifest.json> -o <output.kl>` — generate `.kl` file with extern block and extern struct/enum definitions
+
+### 10.4: Module Resolution
+- [ ] Generated `.kl` file integrates with module resolution (`import kira_mylib` finds the generated file)
+
+---
+
+## Phase 11: Kira Interop — ADT Consumption (Planned)
+
+**Goal:** Klar can work with Kira algebraic data types through extern structs and pattern matching on tags.
+
+### 11.1: Extern Enum Generation
+- [ ] Generate `extern enum` for ADT tags (e.g., `extern enum ShapeTag: i32 { Circle = 0, Rectangle = 1 }`)
+
+### 11.2: Extern Struct Generation
+- [ ] Generate `extern struct` matching Kira's C struct layout (tag field + data union)
+
+### 11.3: Safe Wrappers
+- [ ] Generate wrapper functions for ADT access (e.g., `fn as_circle(shape: ref Shape) -> ?f64`)
+- [ ] Generate match-friendly helpers returning tag enum values
+
+### 11.4: Documentation
+- [ ] Write `docs/advanced/kira-interop.md` — calling Kira functions, matching on ADTs
+
+### Phase 11 Readiness Gate
+Before Phase 12, these must be true:
+- [ ] Klar can consume all Kira primitive types and ADTs
+- [ ] Tag-based matching works for sum types
+- [ ] Record types are accessible as extern structs
+- [ ] Documentation covers the full workflow
+
+---
+
+## Phase 12: Kira Interop — String Interop (Planned)
+
+**Goal:** Strings cross the Kira-Klar boundary safely with clear ownership.
+
+### 12.1: String Wrappers
+- [ ] Generate CStr wrappers for Kira string parameters (`.as_cstr()`)
+- [ ] Generate string conversion for Kira string returns (`.to_string()`)
+- [ ] Generate `kira_free` extern declaration for Kira-allocated memory
+
+### 12.2: Ownership Documentation
+- [ ] Document string ownership rules in `docs/advanced/kira-interop.md` (borrow for calls, own after conversion)
+
+---
+
+## Phase 13: Kira Interop — Build Integration (Planned)
+
+**Goal:** Klar's build process can automatically build Kira dependencies and link them.
+
+### 13.1: Dependency Configuration
+- [ ] Define Kira dependency format in Klar's build configuration (`[[deps.kira]]` with `name` and `path`)
+
+### 13.2: Build Orchestration
+- [ ] During `klar build`, detect Kira dependencies, invoke `kira build --lib`, copy `.a` and `.kl` files, add `-l` flags
+- [ ] Auto-import generated extern blocks (user writes `import kira_mylib` without managing files)
+- [ ] `klar clean` removes interop artifacts (generated `.kl`, `.h`, `.a` files)
+
+### 13.3: Documentation
+- [ ] Document build integration in `docs/advanced/kira-interop.md` (project layout, config format, AI agent instructions)
+
+### Phase 13 Readiness Gate
+Before Phase 14, these must be true:
+- [ ] A Klar project can declare a Kira dependency and build with zero manual steps
+- [ ] Type mapping covers all primitive types, strings, and ADTs
+- [ ] Memory safety is maintained across the boundary (no leaks, no use-after-free)
+- [ ] An AI agent can follow the documentation to set up a cross-language project
+
+---
+
+## Phase 14: Kira Interop — Effect Awareness (Stretch)
+
+**Goal:** Surface Kira's purity information so developers and AI agents know which imported functions are side-effect-free.
+
+- [ ] Consume `effect` boolean per function from Kira manifest
+- [ ] Emit `// pure` or `// effect` comments in generated extern blocks
+- [ ] (Optional) Emit `@meta(pure)` annotations if Klar's meta system supports custom annotations
+
+### Kira Interop Cross-Project Dependencies
+
+```
+Kira Phase 0 (fix types)     ──→  Klar Phase 10 (consume manifest)
+Kira Phase 1 (--lib build)   ──→  Klar Phase 13 (build integration)
+Kira Phase 2 (ADT layout)    ──→  Klar Phase 11 (ADT consumption)
+Kira Phase 3 (string conv)   ──→  Klar Phase 12 (string interop)
+Kira Phase 4 (manifest JSON) ──→  Klar Phase 10 (consume manifest)
+```
+
+Critical path: Kira Phase 0 → Kira Phase 4 → Klar Phase 10 → Klar Phases 11–13 (parallel with remaining Kira phases as they complete).
+
+---
+
+## Phase 15: Production Readiness (Planned)
 
 **Goal:** Polish for real-world adoption.
 
-### 10.1: Error Messages
+### 15.1: Error Messages
 - [ ] Source snippets in error output: show the offending line with underline caret pointing to error location
 - [ ] "Did you mean X?" suggestions for undefined variables and typos (edit distance matching)
 - [ ] Multi-line error context for type mismatch errors (show expected vs actual with source)
 
-### 10.2: Debugging
+### 15.2: Debugging
 - [ ] Verify `-g` flag produces correct DWARF debug info for lldb: stepping, breakpoints, variable inspection
 - [ ] Fix any missing or incorrect source location mappings in LLVM codegen
 - [ ] Document debugging workflow in docs/ (lldb commands for Klar binaries)
 
-### 10.3: Compilation Performance
+### 15.3: Compilation Performance
 - [ ] Benchmark compilation speed on selfhost source files, establish baseline
 - [ ] Profile and optimize slowest compilation phases (parser, checker, or codegen)
 
-### 10.4: Runtime Performance
+### 15.4: Runtime Performance
 - [ ] Establish runtime benchmark suite (fibonacci, sorting, string processing)
 - [ ] Add at least one new LLVM optimization pass or improve existing pass pipeline
 
-### 10.5: Stability
+### 15.5: Stability
 - [ ] Fuzz the parser with AFL or libFuzzer — no crashes on arbitrary input
 - [ ] Property-based tests for type checker (random valid programs type-check successfully)
 
-### 10.6: Platform Support
+### 15.6: Platform Support
 - [ ] Linux ARM64: CI job, full test suite passing
 - [ ] Windows ARM64: CI job, full test suite passing
 
-### Phase 10 Readiness Gate
-Before Phase 11, these must be true:
+### Phase 15 Readiness Gate
+Before Phase 16, these must be true:
 - [ ] Error messages include source snippets for all type errors
 - [ ] `klar build -g` + lldb can step through a simple Klar program
 - [ ] Parser fuzzer runs 1M+ inputs with zero crashes
 - [ ] All CI platforms (x64 + ARM64) pass full test suite
 
-## Phase 11: Advanced Language Features (Exploratory)
+## Phase 16: Advanced Language Features (Exploratory)
 
 **Goal:** Evaluate and selectively adopt features that align with Klar's philosophy.
 
 Each feature follows an evaluate-then-implement pattern. Evaluation may conclude with "not pursuing" — that is a valid outcome.
 
-### 11.1: Effect System
+### 16.1: Effect System
 - [ ] Research: write design doc evaluating algebraic effects for Klar (syntax, semantics, interaction with ownership)
 - [ ] Decision: go/no-go based on complexity vs value for application-level programming
 - [ ] If go: implement effect declarations, handler syntax, and checker support
 
-### 11.2: Constrained Decoding
+### 16.2: Constrained Decoding
 - [ ] Research: write design doc for grammar spec format (GBNF, JSON schema, or custom) enabling LLM-guided Klar code generation
 - [ ] Decision: go/no-go based on LLM tooling ecosystem compatibility
 - [ ] If go: implement `klar grammar` CLI command that outputs the Klar grammar spec
 
-### 11.3: Formal Verification
+### 16.3: Formal Verification
 - [ ] Research: write design doc for lightweight contracts (preconditions, postconditions, invariants) — runtime checks vs static analysis
 - [ ] Decision: go/no-go based on alignment with "no ambiguity, no surprises" philosophy
 - [ ] If go: implement contract syntax and checker/runtime support
 
-### 11.4: Incremental Compilation
+### 16.4: Incremental Compilation
 - [ ] Research: profile full rebuild to identify caching opportunities (AST, typed AST, object files)
 - [ ] Decision: go/no-go based on measured rebuild times vs implementation effort
 - [ ] If go: implement module-level caching with invalidation based on file content hash
