@@ -461,7 +461,30 @@ else
     echo "⊘ dir (test not found, skipping)"
 fi
 
-# Test 19: Integration test (all stdlib libraries together)
+# Test 19: File write library (stdlib/file.kl)
+echo "--- file_write: File write library (stdlib/file.kl) ---"
+temp_bin="/tmp/klar_module_file_write"
+if [ -d "$TEST_DIR/file_write" ]; then
+    if $KLAR build $TEST_DIR/file_write/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ file_write (exit: $result)"
+            record_success "file_write"
+        else
+            echo "✗ file_write (expected: 0, got: $result)"
+            record_failure "file_write" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ file_write (build failed)"
+        record_failure "file_write" "build failed"
+    fi
+else
+    echo "⊘ file_write (test not found, skipping)"
+fi
+
+# Test 20: Integration test (all stdlib libraries together)
 echo "--- integration: All stdlib libraries composed ---"
 temp_bin="/tmp/klar_module_integration"
 if [ -d "$TEST_DIR/integration" ]; then

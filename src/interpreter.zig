@@ -278,8 +278,8 @@ pub const Interpreter = struct {
         }
         // Phase 6 builtins
         const phase6_names = [_][]const u8{
-            "process_spawn", "process_poll", "process_wait", "process_read_stdout",
-            "tcp_listen",    "tcp_accept",   "tcp_connect",  "tcp_read",
+            "process_spawn", "process_poll", "process_wait",        "process_read_stdout",
+            "tcp_listen",    "tcp_accept",   "tcp_connect",         "tcp_read",
             "tcp_write",     "tcp_close",    "tcp_set_nonblocking", "tcp_listener_close",
         };
         for (phase6_names) |name| {
@@ -3211,6 +3211,10 @@ test "await returns completed future value in interpreter runtime" {
     defer interp.deinit();
 
     const ready = try interp.builder.futureCompleted(1, interp.builder.i32Val(42));
+    defer {
+        testing.allocator.destroy(ready.future.value.?);
+        testing.allocator.destroy(ready.future);
+    }
     try interp.current_env.define("ready", ready, false);
 
     const unary = try testing.allocator.create(ast.Unary);
@@ -3237,6 +3241,7 @@ test "await on pending future returns invalid operation" {
     defer interp.deinit();
 
     const pending = try interp.builder.futurePending(2);
+    defer testing.allocator.destroy(pending.future);
     try interp.current_env.define("pending", pending, false);
 
     const unary = try testing.allocator.create(ast.Unary);
@@ -3267,6 +3272,10 @@ test "await on failed future returns invalid operation with runtime message" {
     defer interp.deinit();
 
     const failed = try interp.builder.futureFailed(3, interp.builder.i32Val(9));
+    defer {
+        testing.allocator.destroy(failed.future.value.?);
+        testing.allocator.destroy(failed.future);
+    }
     try interp.current_env.define("failed", failed, false);
 
     const unary = try testing.allocator.create(ast.Unary);
@@ -3296,6 +3305,7 @@ test "await on cancelled future returns invalid operation with runtime message" 
     defer interp.deinit();
 
     const cancelled = try interp.builder.futureCancelled(4);
+    defer testing.allocator.destroy(cancelled.future);
     try interp.current_env.define("cancelled", cancelled, false);
 
     const unary = try testing.allocator.create(ast.Unary);
