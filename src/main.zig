@@ -3606,7 +3606,6 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
     }
 }
 
-
 fn parseFile(allocator: std.mem.Allocator, path: []const u8) !void {
     const source = readSourceFile(allocator, path) catch |err| {
         var buf: [512]u8 = undefined;
@@ -4597,215 +4596,215 @@ fn runTestPath(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
         return;
     } else {
         var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-                var buf: [512]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "Error opening directory '{s}': {}\n", .{ path, err }) catch "Error opening directory\n";
-                try stderr.writeAll(msg);
-                return error.TestsFailed;
-            };
-            defer dir.close();
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error opening directory '{s}': {}\n", .{ path, err }) catch "Error opening directory\n";
+            try stderr.writeAll(msg);
+            return error.TestsFailed;
+        };
+        defer dir.close();
 
-            var walker = try dir.walk(allocator);
-            defer walker.deinit();
+        var walker = try dir.walk(allocator);
+        defer walker.deinit();
 
-            var files_run: usize = 0;
-            var files_failed: usize = 0;
-            var tests_run: usize = 0;
-            var per_file_options = options;
-            per_file_options.require_tests = false;
-            per_file_options.emit_output = !options.json_output;
+        var files_run: usize = 0;
+        var files_failed: usize = 0;
+        var tests_run: usize = 0;
+        var per_file_options = options;
+        per_file_options.require_tests = false;
+        per_file_options.emit_output = !options.json_output;
 
-            var json_file_results = std.ArrayListUnmanaged(JsonFileSummary){};
-            defer {
-                for (json_file_results.items) |item| {
-                    allocator.free(item.path);
-                    freeJsonTestResults(allocator, item.test_results);
-                    freeJsonCompilerErrors(allocator, item.compile_errors);
-                }
-                json_file_results.deinit(allocator);
+        var json_file_results = std.ArrayListUnmanaged(JsonFileSummary){};
+        defer {
+            for (json_file_results.items) |item| {
+                allocator.free(item.path);
+                freeJsonTestResults(allocator, item.test_results);
+                freeJsonCompilerErrors(allocator, item.compile_errors);
             }
+            json_file_results.deinit(allocator);
+        }
 
-            while (try walker.next()) |entry| {
-                if (entry.kind != .file) continue;
-                if (!std.mem.endsWith(u8, entry.path, ".kl")) continue;
+        while (try walker.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.path, ".kl")) continue;
 
-                const full_path = try std.fs.path.join(allocator, &.{ path, entry.path });
-                defer allocator.free(full_path);
+            const full_path = try std.fs.path.join(allocator, &.{ path, entry.path });
+            defer allocator.free(full_path);
 
-                files_run += 1;
-                const file_result = runTestFile(allocator, full_path, per_file_options) catch |err| {
-                    if (err == error.TestsFailed) {
-                        files_failed += 1;
-                        if (options.json_output) {
-                            const owned_path = try allocator.dupe(u8, full_path);
-                            const compile_errors = try allocator.alloc(JsonCompileError, 1);
-                            compile_errors[0] = .{
-                                .stage = "runtime_setup",
-                                .message = try allocator.dupe(u8, @errorName(err)),
-                            };
-                            try json_file_results.append(allocator, .{
-                                .path = owned_path,
-                                .total = 0,
-                                .passed = 0,
-                                // Compile/setup errors are file failures, not failed test assertions.
-                                .failed = 0,
-                                .test_results = try allocator.alloc(JsonTestSummary, 0),
-                                .compile_errors = compile_errors,
-                            });
-                        }
-                        continue;
-                    }
-                    return err;
-                };
-                tests_run += file_result.tests_discovered;
-                if (file_result.tests_failed > 0 or file_result.file_failed) {
+            files_run += 1;
+            const file_result = runTestFile(allocator, full_path, per_file_options) catch |err| {
+                if (err == error.TestsFailed) {
                     files_failed += 1;
+                    if (options.json_output) {
+                        const owned_path = try allocator.dupe(u8, full_path);
+                        const compile_errors = try allocator.alloc(JsonCompileError, 1);
+                        compile_errors[0] = .{
+                            .stage = "runtime_setup",
+                            .message = try allocator.dupe(u8, @errorName(err)),
+                        };
+                        try json_file_results.append(allocator, .{
+                            .path = owned_path,
+                            .total = 0,
+                            .passed = 0,
+                            // Compile/setup errors are file failures, not failed test assertions.
+                            .failed = 0,
+                            .test_results = try allocator.alloc(JsonTestSummary, 0),
+                            .compile_errors = compile_errors,
+                        });
+                    }
+                    continue;
                 }
-                if (options.json_output) {
-                    const owned_path = try allocator.dupe(u8, full_path);
-                    try json_file_results.append(allocator, .{
-                        .path = owned_path,
-                        .total = file_result.tests_discovered,
-                        .passed = file_result.tests_passed,
-                        .failed = file_result.tests_failed,
-                        .test_results = file_result.test_results,
-                        .compile_errors = file_result.compile_errors,
-                    });
-                } else {
-                    freeJsonTestResults(allocator, file_result.test_results);
-                    freeJsonCompilerErrors(allocator, file_result.compile_errors);
-                }
+                return err;
+            };
+            tests_run += file_result.tests_discovered;
+            if (file_result.tests_failed > 0 or file_result.file_failed) {
+                files_failed += 1;
             }
-
-            if (files_run == 0) {
-                var buf: [512]u8 = undefined;
-                if (options.json_output) {
-                    try stdout.writeAll("{\"path\":");
-                    try writeJsonEscaped(stdout, path);
-                    try stdout.writeAll(",\"files\":[],\"summary\":{\"files\":0,\"failed_files\":0,\"tests\":0,\"passed\":0,\"failed\":0}}\n");
-                } else {
-                    const msg = std.fmt.bufPrint(&buf, "No .kl files found in '{s}'\n", .{path}) catch "No .kl files found\n";
-                    try stdout.writeAll(msg);
-                }
-                if (options.require_tests) {
-                    const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
-                    try stderr.writeAll(err_msg);
-                    return error.TestsFailed;
-                }
-                if (options.strict_tests) {
-                    const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
-                    try stderr.writeAll(warn_msg);
-                }
-                return;
+            if (options.json_output) {
+                const owned_path = try allocator.dupe(u8, full_path);
+                try json_file_results.append(allocator, .{
+                    .path = owned_path,
+                    .total = file_result.tests_discovered,
+                    .passed = file_result.tests_passed,
+                    .failed = file_result.tests_failed,
+                    .test_results = file_result.test_results,
+                    .compile_errors = file_result.compile_errors,
+                });
+            } else {
+                freeJsonTestResults(allocator, file_result.test_results);
+                freeJsonCompilerErrors(allocator, file_result.compile_errors);
             }
+        }
 
+        if (files_run == 0) {
             var buf: [512]u8 = undefined;
             if (options.json_output) {
-                var total_passed: usize = 0;
-                var total_failed: usize = 0;
-                for (json_file_results.items) |item| {
-                    total_passed += item.passed;
-                    total_failed += item.failed;
-                }
-
                 try stdout.writeAll("{\"path\":");
                 try writeJsonEscaped(stdout, path);
-                try stdout.writeAll(",\"files\":[");
-                for (json_file_results.items, 0..) |item, idx| {
-                    if (idx > 0) try stdout.writeAll(",");
-                    try stdout.writeAll("{\"file\":");
-                    try writeJsonEscaped(stdout, item.path);
-                    try stdout.writeAll(",\"total\":");
-                    try writeJsonUsize(stdout, item.total);
-                    try stdout.writeAll(",\"passed\":");
-                    try writeJsonUsize(stdout, item.passed);
-                    try stdout.writeAll(",\"failed\":");
-                    try writeJsonUsize(stdout, item.failed);
-                    try stdout.writeAll(",\"tests\":[");
-                    for (item.test_results, 0..) |test_result, test_idx| {
-                        if (test_idx > 0) try stdout.writeAll(",");
-                        try stdout.writeAll("{\"name\":");
-                        try writeJsonEscaped(stdout, test_result.name);
-                        try stdout.writeAll(",\"status\":");
-                        try writeJsonEscaped(stdout, if (test_result.passed) "PASS" else "FAIL");
-                        if (test_result.error_name) |error_name| {
-                            try stdout.writeAll(",\"error\":");
-                            try writeJsonEscaped(stdout, error_name);
-                        }
-                        if (test_result.source) |test_source| {
-                            try stdout.writeAll(",\"source\":");
-                            try writeJsonEscaped(stdout, test_source);
-                        }
-                        try stdout.writeAll(",\"assertions\":[");
-                        for (test_result.assertions, 0..) |assertion, assertion_idx| {
-                            if (assertion_idx > 0) try stdout.writeAll(",");
-                            try stdout.writeAll("{\"type\":");
-                            try writeJsonEscaped(stdout, assertion.assertion_type);
-                            try stdout.writeAll(",\"passed\":");
-                            try writeJsonBool(stdout, assertion.passed);
-                            if (assertion.expected) |expected| {
-                                try stdout.writeAll(",\"expected\":");
-                                try writeJsonEscaped(stdout, expected);
-                            }
-                            if (assertion.actual) |actual| {
-                                try stdout.writeAll(",\"actual\":");
-                                try writeJsonEscaped(stdout, actual);
-                            }
-                            try stdout.writeAll("}");
-                        }
-                        try stdout.writeAll("]}");
+                try stdout.writeAll(",\"files\":[],\"summary\":{\"files\":0,\"failed_files\":0,\"tests\":0,\"passed\":0,\"failed\":0}}\n");
+            } else {
+                const msg = std.fmt.bufPrint(&buf, "No .kl files found in '{s}'\n", .{path}) catch "No .kl files found\n";
+                try stdout.writeAll(msg);
+            }
+            if (options.require_tests) {
+                const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
+                try stderr.writeAll(err_msg);
+                return error.TestsFailed;
+            }
+            if (options.strict_tests) {
+                const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
+                try stderr.writeAll(warn_msg);
+            }
+            return;
+        }
+
+        var buf: [512]u8 = undefined;
+        if (options.json_output) {
+            var total_passed: usize = 0;
+            var total_failed: usize = 0;
+            for (json_file_results.items) |item| {
+                total_passed += item.passed;
+                total_failed += item.failed;
+            }
+
+            try stdout.writeAll("{\"path\":");
+            try writeJsonEscaped(stdout, path);
+            try stdout.writeAll(",\"files\":[");
+            for (json_file_results.items, 0..) |item, idx| {
+                if (idx > 0) try stdout.writeAll(",");
+                try stdout.writeAll("{\"file\":");
+                try writeJsonEscaped(stdout, item.path);
+                try stdout.writeAll(",\"total\":");
+                try writeJsonUsize(stdout, item.total);
+                try stdout.writeAll(",\"passed\":");
+                try writeJsonUsize(stdout, item.passed);
+                try stdout.writeAll(",\"failed\":");
+                try writeJsonUsize(stdout, item.failed);
+                try stdout.writeAll(",\"tests\":[");
+                for (item.test_results, 0..) |test_result, test_idx| {
+                    if (test_idx > 0) try stdout.writeAll(",");
+                    try stdout.writeAll("{\"name\":");
+                    try writeJsonEscaped(stdout, test_result.name);
+                    try stdout.writeAll(",\"status\":");
+                    try writeJsonEscaped(stdout, if (test_result.passed) "PASS" else "FAIL");
+                    if (test_result.error_name) |error_name| {
+                        try stdout.writeAll(",\"error\":");
+                        try writeJsonEscaped(stdout, error_name);
                     }
-                    try stdout.writeAll("]");
-                    try stdout.writeAll(",\"errors\":[");
-                    for (item.compile_errors, 0..) |compile_error, err_idx| {
-                        if (err_idx > 0) try stdout.writeAll(",");
-                        try stdout.writeAll("{\"stage\":");
-                        try writeJsonEscaped(stdout, compile_error.stage);
-                        try stdout.writeAll(",\"message\":");
-                        try writeJsonEscaped(stdout, compile_error.message);
-                        if (compile_error.line) |line| {
-                            try stdout.writeAll(",\"line\":");
-                            try writeJsonUsize(stdout, line);
+                    if (test_result.source) |test_source| {
+                        try stdout.writeAll(",\"source\":");
+                        try writeJsonEscaped(stdout, test_source);
+                    }
+                    try stdout.writeAll(",\"assertions\":[");
+                    for (test_result.assertions, 0..) |assertion, assertion_idx| {
+                        if (assertion_idx > 0) try stdout.writeAll(",");
+                        try stdout.writeAll("{\"type\":");
+                        try writeJsonEscaped(stdout, assertion.assertion_type);
+                        try stdout.writeAll(",\"passed\":");
+                        try writeJsonBool(stdout, assertion.passed);
+                        if (assertion.expected) |expected| {
+                            try stdout.writeAll(",\"expected\":");
+                            try writeJsonEscaped(stdout, expected);
                         }
-                        if (compile_error.column) |column| {
-                            try stdout.writeAll(",\"column\":");
-                            try writeJsonUsize(stdout, column);
+                        if (assertion.actual) |actual| {
+                            try stdout.writeAll(",\"actual\":");
+                            try writeJsonEscaped(stdout, actual);
                         }
                         try stdout.writeAll("}");
                     }
-                    try stdout.writeAll("]");
+                    try stdout.writeAll("]}");
+                }
+                try stdout.writeAll("]");
+                try stdout.writeAll(",\"errors\":[");
+                for (item.compile_errors, 0..) |compile_error, err_idx| {
+                    if (err_idx > 0) try stdout.writeAll(",");
+                    try stdout.writeAll("{\"stage\":");
+                    try writeJsonEscaped(stdout, compile_error.stage);
+                    try stdout.writeAll(",\"message\":");
+                    try writeJsonEscaped(stdout, compile_error.message);
+                    if (compile_error.line) |line| {
+                        try stdout.writeAll(",\"line\":");
+                        try writeJsonUsize(stdout, line);
+                    }
+                    if (compile_error.column) |column| {
+                        try stdout.writeAll(",\"column\":");
+                        try writeJsonUsize(stdout, column);
+                    }
                     try stdout.writeAll("}");
                 }
-                try stdout.writeAll("],\"summary\":{\"files\":");
-                try writeJsonUsize(stdout, files_run);
-                try stdout.writeAll(",\"failed_files\":");
-                try writeJsonUsize(stdout, files_failed);
-                try stdout.writeAll(",\"tests\":");
-                try writeJsonUsize(stdout, tests_run);
-                try stdout.writeAll(",\"passed\":");
-                try writeJsonUsize(stdout, total_passed);
-                try stdout.writeAll(",\"failed\":");
-                try writeJsonUsize(stdout, total_failed);
-                try stdout.writeAll("}}\n");
-            } else {
-                const summary = std.fmt.bufPrint(&buf, "Directory test result: {d} file(s), {d} failed\n", .{ files_run, files_failed }) catch "Directory test result\n";
-                try stdout.writeAll(summary);
+                try stdout.writeAll("]");
+                try stdout.writeAll("}");
             }
+            try stdout.writeAll("],\"summary\":{\"files\":");
+            try writeJsonUsize(stdout, files_run);
+            try stdout.writeAll(",\"failed_files\":");
+            try writeJsonUsize(stdout, files_failed);
+            try stdout.writeAll(",\"tests\":");
+            try writeJsonUsize(stdout, tests_run);
+            try stdout.writeAll(",\"passed\":");
+            try writeJsonUsize(stdout, total_passed);
+            try stdout.writeAll(",\"failed\":");
+            try writeJsonUsize(stdout, total_failed);
+            try stdout.writeAll("}}\n");
+        } else {
+            const summary = std.fmt.bufPrint(&buf, "Directory test result: {d} file(s), {d} failed\n", .{ files_run, files_failed }) catch "Directory test result\n";
+            try stdout.writeAll(summary);
+        }
 
-            if (tests_run == 0 and files_failed == 0) {
-                if (options.require_tests) {
-                    const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
-                    try stderr.writeAll(err_msg);
-                    return error.TestsFailed;
-                }
-                if (options.strict_tests) {
-                    const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
-                    try stderr.writeAll(warn_msg);
-                }
-            }
-
-            if (files_failed > 0) {
+        if (tests_run == 0 and files_failed == 0) {
+            if (options.require_tests) {
+                const err_msg = std.fmt.bufPrint(&buf, "Error: --require-tests enabled, but no tests found in '{s}'\n", .{path}) catch "Error: no tests found\n";
+                try stderr.writeAll(err_msg);
                 return error.TestsFailed;
             }
+            if (options.strict_tests) {
+                const warn_msg = std.fmt.bufPrint(&buf, "Warning: no tests found in '{s}'\n", .{path}) catch "Warning: no tests found\n";
+                try stderr.writeAll(warn_msg);
+            }
+        }
+
+        if (files_failed > 0) {
+            return error.TestsFailed;
+        }
     }
 }
 
@@ -5583,7 +5582,7 @@ fn runTestFile(allocator: std.mem.Allocator, path: []const u8, options: TestRunO
                 }
                 try stdout.writeAll("]}");
             }
-                try stdout.writeAll("],\"errors\":[]}\n");
+            try stdout.writeAll("],\"errors\":[]}\n");
         } else if (options.emit_output) {
             const summary = std.fmt.bufPrint(&buf, "Test result: {d} passed, {d} failed\n", .{ passed, failed }) catch "Test result\n";
             try stdout.writeAll(summary);
@@ -6330,7 +6329,6 @@ fn initProject(allocator: std.mem.Allocator, name_arg: ?[]const u8, is_lib: bool
 }
 
 // Meta command is in meta_query.zig
-
 
 fn printUsage() !void {
     try getStdOut().writeAll(

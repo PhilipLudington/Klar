@@ -1169,11 +1169,13 @@ pub const TypeChecker = struct {
         // Provides explicit cloning for types. All primitives implement Clone.
         // Create a proper Self type variable so the type_var handler can resolve it
         // Note: Use type_builder for function types so params are on the arena.
-        const clone_self_type = Type{ .type_var = .{
-            .id = 999, // Use a high unique ID to avoid conflicts
-            .name = "Self",
-            .bounds = &.{},
-        } };
+        const clone_self_type = Type{
+            .type_var = .{
+                .id = 999, // Use a high unique ID to avoid conflicts
+                .name = "Self",
+                .bounds = &.{},
+            },
+        };
         const clone_self_ref = try self.type_builder.referenceType(clone_self_type, false);
         const clone_func = try self.type_builder.functionType(&.{clone_self_ref}, clone_self_type);
         const clone_method = types.TraitMethod{
@@ -1252,11 +1254,13 @@ pub const TypeChecker = struct {
         // Provides a default value for types. All primitives have builtin Default:
         // i32, i64, etc. -> 0, f32, f64 -> 0.0, bool -> false, string -> ""
         // Note: This is a static method (no &self), it returns a new value of type Self.
-        const default_self_type = Type{ .type_var = .{
-            .id = 998, // Use a unique ID to avoid conflicts
-            .name = "Self",
-            .bounds = &.{},
-        } };
+        const default_self_type = Type{
+            .type_var = .{
+                .id = 998, // Use a unique ID to avoid conflicts
+                .name = "Self",
+                .bounds = &.{},
+            },
+        };
         const default_method_sig = types.FunctionType{
             .params = &.{}, // No parameters - static method
             .return_type = default_self_type, // Returns Self
@@ -1915,6 +1919,16 @@ pub const TypeChecker = struct {
         try self.current_scope.define(.{
             .name = "fs_write_string",
             .type_ = fs_write_string_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
+        // fs_append_string(path: string, content: string) -> Result#[void, IoError]
+        const fs_append_string_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.stringType() }, fs_create_dir_ret);
+        try self.current_scope.define(.{
+            .name = "fs_append_string",
+            .type_ = fs_append_string_fn_type,
             .kind = .function,
             .mutable = false,
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
@@ -4424,7 +4438,6 @@ pub const TypeChecker = struct {
         return builtins_check.checkFunctionDeclReturnType(self, func_decl);
     }
 
-
     // ========================================================================
     // Statement Type Checking
     // ========================================================================
@@ -4476,7 +4489,6 @@ pub const TypeChecker = struct {
     pub fn checkDecl(self: *TypeChecker, decl: ast.Decl) void {
         declarations.checkDecl(self, decl);
     }
-
 
     // ========================================================================
     // Trait Checking (delegated to trait_checking.zig)
@@ -4533,7 +4545,6 @@ pub const TypeChecker = struct {
     pub fn typeSatisfiesBounds(self: *TypeChecker, concrete_type: Type, bounds: []const *types.TraitType, span: Span) bool {
         return trait_checking.typeSatisfiesBounds(self, concrete_type, bounds, span);
     }
-
 
     // ========================================================================
     // Pattern Checking
@@ -4824,9 +4835,9 @@ pub const TypeChecker = struct {
                 .mutable = false,
                 .span = import_decl.span,
                 // Keep canonical module name for namespace method resolution.
-            .module_ref = mod_symbols.module_info,
-        }) catch {};
-    }
+                .module_ref = mod_symbols.module_info,
+            }) catch {};
+        }
     }
 
     /// Import all public symbols from a module into current scope.
@@ -5063,7 +5074,6 @@ pub const TypeChecker = struct {
                     }) catch |err| {
                         log.err("failed to register function '{s}': {}", .{ f.name, err });
                     };
-
 
                     // Register comptime functions for compile-time evaluation
                     if (f.is_comptime) {

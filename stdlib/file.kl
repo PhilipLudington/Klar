@@ -1,0 +1,11 @@
+//! stdlib/file.kl - File convenience functions
+//!
+//! Higher-level file operations built on the `fs_*` builtins.
+
+module stdlib.file
+
+/// Append string content to a file, creating it if it does not exist.
+/// Returns Ok(void) on success, Err(IoError) on failure.
+pub fn file_append(path: string, content: string) -> Result#[void, IoError] {
+    return fs_append_string(path, content)
+}
