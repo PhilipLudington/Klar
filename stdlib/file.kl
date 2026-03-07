@@ -25,8 +25,11 @@ pub fn file_write(path: string, content: string) -> Result#[bool, IoError] {
         let _close: Result#[void, IoError] = file.close()
         return Err(write_result.unwrap_err())
     }
-    let _flush: Result#[void, IoError] = file.flush()
+    let flush_result: Result#[void, IoError] = file.flush()
     let _close: Result#[void, IoError] = file.close()
+    if not flush_result.is_ok() {
+        return Err(flush_result.unwrap_err())
+    }
     return Ok(true)
 }
 
