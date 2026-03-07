@@ -20,6 +20,7 @@ const Disassembler = @import("disasm.zig").Disassembler;
 const VM = @import("vm.zig").VM;
 const codegen = if (has_llvm) @import("codegen/mod.zig") else struct {};
 const ast_from_json = @import("ast_from_json.zig");
+const typed_ast_loader = @import("typed_ast_loader.zig");
 const ir = if (has_llvm) @import("ir/mod.zig") else struct {};
 const ownership = @import("ownership/mod.zig");
 const opt = if (has_llvm) @import("opt/mod.zig") else struct {};
@@ -393,6 +394,7 @@ pub fn main() !void {
         var debug_mode = false;
         var use_interpreter = false;
         var run_ast_input_path: ?[]const u8 = null;
+        var run_typed_ast_input_path: ?[]const u8 = null;
         var source_file: ?[]const u8 = null;
         var program_args_start: usize = args.len; // Default: no program args
 
@@ -414,6 +416,11 @@ pub fn main() !void {
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "--ast-input=")) {
                 run_ast_input_path = arg["--ast-input=".len..];
+            } else if (std.mem.eql(u8, arg, "--typed-ast-input") and i + 1 < args.len) {
+                run_typed_ast_input_path = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--typed-ast-input=")) {
+                run_typed_ast_input_path = arg["--typed-ast-input=".len..];
             } else if (!std.mem.startsWith(u8, arg, "-") and source_file == null) {
                 // First non-flag argument is the source file
                 source_file = arg;
@@ -462,8 +469,8 @@ pub fn main() !void {
         const search_paths = if (dep_resolution) |dr| dr.paths.items else &[_][]const u8{};
 
         if (use_vm or use_interpreter) {
-            if (run_ast_input_path != null) {
-                try getStdErr().writeAll("Error: --ast-input is not compatible with --vm or --interpret\n");
+            if (run_ast_input_path != null or run_typed_ast_input_path != null) {
+                try getStdErr().writeAll("Error: --ast-input/--typed-ast-input is not compatible with --vm or --interpret\n");
                 return;
             }
             if (use_interpreter) {
@@ -473,7 +480,7 @@ pub fn main() !void {
             }
         } else if (comptime has_llvm) {
             // Default: compile to native and run
-            try runNativeFileWithOptions(allocator, final_source, program_args, search_paths, run_ast_input_path);
+            try runNativeFileWithOptions(allocator, final_source, program_args, search_paths, run_ast_input_path, run_typed_ast_input_path);
         } else {
             // LLVM not available, fall back to VM
             try runVmFile(allocator, final_source, debug_mode, program_args);
@@ -525,6 +532,7 @@ pub fn main() !void {
         var linker_script: ?[]const u8 = null;
         var compile_only = false;
         var ast_input_path: ?[]const u8 = null;
+        var typed_ast_input_path: ?[]const u8 = null;
         var source_file: ?[]const u8 = null;
 
         var i: usize = 2;
@@ -607,6 +615,11 @@ pub fn main() !void {
                 i += 1;
             } else if (std.mem.startsWith(u8, arg, "--ast-input=")) {
                 ast_input_path = arg["--ast-input=".len..];
+            } else if (std.mem.eql(u8, arg, "--typed-ast-input") and i + 1 < args.len) {
+                typed_ast_input_path = args[i + 1];
+                i += 1;
+            } else if (std.mem.startsWith(u8, arg, "--typed-ast-input=")) {
+                typed_ast_input_path = arg["--typed-ast-input=".len..];
             } else if (!std.mem.startsWith(u8, arg, "-") and source_file == null) {
                 // Non-flag argument is the source file
                 source_file = arg;
@@ -680,7 +693,7 @@ pub fn main() !void {
             .linker_script = linker_script,
             .compile_only = compile_only,
             .search_paths = search_paths,
-        }, ast_input_path);
+        }, ast_input_path, typed_ast_input_path);
     } else if (std.mem.eql(u8, command, "check")) {
         var options = CheckCommandOptions{};
         var input_path: ?[]const u8 = null;
@@ -2704,60 +2717,12 @@ fn discoverImports(
     }
 }
 
-fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.CompileOptions, ast_input_path: ?[]const u8) !void {
+fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.CompileOptions, ast_input_path: ?[]const u8, typed_ast_input_path: ?[]const u8) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
     const stderr = getStdErr();
     const stdout = getStdOut();
-
-    // Either load AST from JSON or parse from source
-    var source_buf: ?[]u8 = null;
-    defer if (source_buf) |s| allocator.free(s);
-
-    const module = if (ast_input_path) |json_path| blk: {
-        const json_content = readSourceFile(allocator, json_path) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error reading AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading AST input\n";
-            try stderr.writeAll(msg);
-            return;
-        };
-        defer allocator.free(json_content);
-        break :blk ast_from_json.moduleFromJson(allocator, arena.allocator(), json_content) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error parsing AST JSON '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error parsing AST JSON\n";
-            try stderr.writeAll(msg);
-            return;
-        };
-    } else blk: {
-        const source = readSourceFile(allocator, path) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
-            try stderr.writeAll(msg);
-            return;
-        };
-        source_buf = source;
-
-        // Parse the source
-        var lexer = Lexer.init(source);
-        var parser = Parser.init(arena.allocator(), &lexer, source);
-
-        break :blk parser.parseModule() catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
-            try stderr.writeAll(msg);
-
-            for (parser.errors.items) |parse_err| {
-                const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
-                    parse_err.span.line,
-                    parse_err.span.column,
-                    parse_err.message,
-                }) catch continue;
-                try stderr.writeAll(err_msg);
-            }
-            return;
-        };
-    };
 
     // Type check
     var checker = TypeChecker.init(allocator);
@@ -2786,143 +2751,205 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         module_sources.deinit(allocator);
     }
 
-    // Check if this module has imports (multi-file compilation)
-    if (module.imports.len > 0) {
-        // Set up module resolver for multi-file compilation
-        var resolver = ModuleResolver.init(allocator);
-        defer resolver.deinit();
-
-        // Try to find standard library
-        if (findStdLibPath(allocator)) |std_path| {
-            resolver.setStdLibPath(std_path);
-            defer allocator.free(std_path);
-        }
-
-        // Add current working directory as a search path
-        // This allows imports to resolve relative to where the command is run,
-        // enabling test files in subdirectories to import from sibling directories
-        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
-            resolver.addSearchPath(cwd_path) catch {};
-        } else |_| {}
-
-        // Add additional search paths (e.g., from package dependencies)
-        for (options.search_paths) |search_path| {
-            resolver.addSearchPath(search_path) catch {};
-        }
-
-        // Register entry module
-        const entry = resolver.resolveEntry(path) catch {
-            try stderr.writeAll("Error: could not resolve entry module\n");
-            return;
-        };
-        entry.module_ast = module;
-        entry.state = .parsed;
-
-        // Discover all imported modules (breadth-first)
-        var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
-        defer modules_to_process.deinit(allocator);
-        try modules_to_process.append(allocator, entry);
-
-        var processed_idx: usize = 0;
-        while (processed_idx < modules_to_process.items.len) {
-            const mod = modules_to_process.items[processed_idx];
-            processed_idx += 1;
-
-            // Parse if not already parsed
-            if (mod.state == .discovered) {
-                const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
-                try module_sources.append(allocator, src);
-            }
-
-            // Discover imports
-            if (mod.module_ast) |mod_ast| {
-                for (mod_ast.imports) |import_decl| {
-                    const dep = resolver.resolve(import_decl.path, mod) catch continue;
-                    if (dep.state == .discovered) {
-                        try modules_to_process.append(allocator, dep);
-                    }
-                }
-            }
-        }
-
-        // Check for resolution errors
-        if (resolver.hasErrors()) {
+    if (typed_ast_input_path) |json_path| {
+        // Typed AST input: load pre-checked AST and populate checker from JSON.
+        // Bypasses lexer/parser/checker — goes directly to codegen.
+        const json_content = readSourceFile(allocator, json_path) catch |err| {
             var buf: [512]u8 = undefined;
-            for (resolver.errors.items) |err| {
-                const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
-                try stderr.writeAll(err_msg);
-            }
-            return;
-        }
-
-        // Get topological order
-        const compilation_order = resolver.getCompilationOrder() catch {
+            const msg = std.fmt.bufPrint(&buf, "Error reading typed AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading typed AST input\n";
+            try stderr.writeAll(msg);
             return;
         };
-        defer allocator.free(compilation_order);
+        defer allocator.free(json_content);
 
-        _ = warnCircularImports(&resolver, stderr);
+        const module = typed_ast_loader.loadTypedAst(allocator, arena.allocator(), json_content, &checker) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Error loading typed AST '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error loading typed AST\n";
+            try stderr.writeAll(msg);
+            return;
+        };
 
-        // Set up checker with module resolver
-        checker.setModuleResolver(&resolver);
+        try modules_to_emit.append(allocator, module);
+        try module_prefixes.append(allocator, null);
+    } else {
+        // Standard path: load AST from JSON or parse from source, then type check.
+        var source_buf: ?[]u8 = null;
+        defer if (source_buf) |s| allocator.free(s);
 
-        // Phase 1: Register all declarations, export symbols, and collect for emission
-        for (compilation_order) |mod| {
-            if (mod.module_ast) |mod_ast| {
-                // Prepare fresh scope for this module (keeps builtins and type registry)
-                checker.prepareForNewModule();
-                checker.setCurrentModule(mod);
-                checker.checkModuleDeclarations(mod_ast);
+        const module = if (ast_input_path) |json_path| blk: {
+            const json_content = readSourceFile(allocator, json_path) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error reading AST input '{s}': {}\n", .{ json_path, err }) catch "Error reading AST input\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+            defer allocator.free(json_content);
+            break :blk ast_from_json.moduleFromJson(allocator, arena.allocator(), json_content) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error parsing AST JSON '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error parsing AST JSON\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+        } else blk: {
+            const source = readSourceFile(allocator, path) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error opening file '{s}': {}\n", .{ path, err }) catch "Error opening file\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+            source_buf = source;
 
-                // Register exports WHILE in this module's scope (before switching)
-                checker.registerModuleExports(mod) catch {};
-                checker.saveModuleScope(mod);
+            // Parse the source
+            var lexer = Lexer.init(source);
+            var parser = Parser.init(arena.allocator(), &lexer, source);
 
-                // Collect for emission
-                try modules_to_emit.append(allocator, mod_ast);
+            break :blk parser.parseModule() catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Parse error: {}\n", .{err}) catch "Parse error\n";
+                try stderr.writeAll(msg);
 
-                // Build module prefix for non-pub function namespacing.
-                // Entry module gets null (no prefix) since its functions are the "main" ones.
-                if (mod.is_entry) {
-                    try module_prefixes.append(allocator, null);
-                } else {
-                    // Build "stdlib.json" style prefix from path segments
-                    var prefix_len: usize = 0;
-                    for (mod.path, 0..) |segment, si| {
-                        if (si > 0) prefix_len += 1; // for '.'
-                        prefix_len += segment.len;
-                    }
-                    const prefix = allocator.alloc(u8, prefix_len) catch {
-                        try module_prefixes.append(allocator, null);
-                        continue;
-                    };
-                    var pos: usize = 0;
-                    for (mod.path, 0..) |segment, si| {
-                        if (si > 0) {
-                            prefix[pos] = '.';
-                            pos += 1;
+                for (parser.errors.items) |parse_err| {
+                    const err_msg = std.fmt.bufPrint(&buf, "  {d}:{d}: {s}\n", .{
+                        parse_err.span.line,
+                        parse_err.span.column,
+                        parse_err.message,
+                    }) catch continue;
+                    try stderr.writeAll(err_msg);
+                }
+                return;
+            };
+        };
+
+        // Check if this module has imports (multi-file compilation)
+        if (module.imports.len > 0) {
+            // Set up module resolver for multi-file compilation
+            var resolver = ModuleResolver.init(allocator);
+            defer resolver.deinit();
+
+            // Try to find standard library
+            if (findStdLibPath(allocator)) |std_path| {
+                resolver.setStdLibPath(std_path);
+                defer allocator.free(std_path);
+            }
+
+            // Add current working directory as a search path
+            var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd_path| {
+                resolver.addSearchPath(cwd_path) catch {};
+            } else |_| {}
+
+            // Add additional search paths (e.g., from package dependencies)
+            for (options.search_paths) |search_path| {
+                resolver.addSearchPath(search_path) catch {};
+            }
+
+            // Register entry module
+            const entry = resolver.resolveEntry(path) catch {
+                try stderr.writeAll("Error: could not resolve entry module\n");
+                return;
+            };
+            entry.module_ast = module;
+            entry.state = .parsed;
+
+            // Discover all imported modules (breadth-first)
+            var modules_to_process = std.ArrayListUnmanaged(*ModuleInfo){};
+            defer modules_to_process.deinit(allocator);
+            try modules_to_process.append(allocator, entry);
+
+            var processed_idx: usize = 0;
+            while (processed_idx < modules_to_process.items.len) {
+                const mod = modules_to_process.items[processed_idx];
+                processed_idx += 1;
+
+                // Parse if not already parsed
+                if (mod.state == .discovered) {
+                    const src = parseModuleSource(allocator, arena.allocator(), mod) catch continue;
+                    try module_sources.append(allocator, src);
+                }
+
+                // Discover imports
+                if (mod.module_ast) |mod_ast| {
+                    for (mod_ast.imports) |import_decl| {
+                        const dep = resolver.resolve(import_decl.path, mod) catch continue;
+                        if (dep.state == .discovered) {
+                            try modules_to_process.append(allocator, dep);
                         }
-                        @memcpy(prefix[pos..][0..segment.len], segment);
-                        pos += segment.len;
                     }
-                    try module_prefixes.append(allocator, prefix);
                 }
             }
-        }
-        // Phase 2: Check all bodies (all exports now available)
-        for (compilation_order) |mod| {
-            if (mod.module_ast) |_| {
-                checker.restoreModuleScope(mod);
-                checker.setCurrentModule(mod);
-                checker.checkModuleBodies(mod.module_ast.?);
+
+            // Check for resolution errors
+            if (resolver.hasErrors()) {
+                var buf: [512]u8 = undefined;
+                for (resolver.errors.items) |err| {
+                    const err_msg = std.fmt.bufPrint(&buf, "Module error: {s}\n", .{err.message}) catch continue;
+                    try stderr.writeAll(err_msg);
+                }
+                return;
             }
+
+            // Get topological order
+            const compilation_order = resolver.getCompilationOrder() catch {
+                return;
+            };
+            defer allocator.free(compilation_order);
+
+            _ = warnCircularImports(&resolver, stderr);
+
+            // Set up checker with module resolver
+            checker.setModuleResolver(&resolver);
+
+            // Phase 1: Register all declarations, export symbols, and collect for emission
+            for (compilation_order) |mod| {
+                if (mod.module_ast) |mod_ast| {
+                    checker.prepareForNewModule();
+                    checker.setCurrentModule(mod);
+                    checker.checkModuleDeclarations(mod_ast);
+
+                    checker.registerModuleExports(mod) catch {};
+                    checker.saveModuleScope(mod);
+
+                    try modules_to_emit.append(allocator, mod_ast);
+
+                    if (mod.is_entry) {
+                        try module_prefixes.append(allocator, null);
+                    } else {
+                        var prefix_len: usize = 0;
+                        for (mod.path, 0..) |segment, si| {
+                            if (si > 0) prefix_len += 1;
+                            prefix_len += segment.len;
+                        }
+                        const prefix = allocator.alloc(u8, prefix_len) catch {
+                            try module_prefixes.append(allocator, null);
+                            continue;
+                        };
+                        var pos: usize = 0;
+                        for (mod.path, 0..) |segment, si| {
+                            if (si > 0) {
+                                prefix[pos] = '.';
+                                pos += 1;
+                            }
+                            @memcpy(prefix[pos..][0..segment.len], segment);
+                            pos += segment.len;
+                        }
+                        try module_prefixes.append(allocator, prefix);
+                    }
+                }
+            }
+            // Phase 2: Check all bodies (all exports now available)
+            for (compilation_order) |mod| {
+                if (mod.module_ast) |_| {
+                    checker.restoreModuleScope(mod);
+                    checker.setCurrentModule(mod);
+                    checker.checkModuleBodies(mod.module_ast.?);
+                }
+            }
+        } else {
+            // Single-file compilation (no imports)
+            checker.checkModule(module);
+            try modules_to_emit.append(allocator, module);
+            try module_prefixes.append(allocator, null);
         }
-    } else {
-        // Single-file compilation (no imports)
-        checker.checkModule(module);
-        try modules_to_emit.append(allocator, module);
-        try module_prefixes.append(allocator, null); // No prefix for single-module
     }
 
     if (checker.hasErrors()) {
@@ -2982,7 +3009,7 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         var lowerer = ir.lower.Lowerer.init(arena.allocator(), &ir_module);
         defer lowerer.deinit();
 
-        lowerer.lowerModule(module) catch |err| {
+        lowerer.lowerModule(modules_to_emit.items[0]) catch |err| {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "IR lowering error: {s}\n", .{@errorName(err)}) catch "IR lowering error\n";
             try stderr.writeAll(msg);
@@ -3421,10 +3448,10 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
 }
 
 fn runNativeFile(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8) !void {
-    return runNativeFileWithOptions(allocator, path, program_args, &.{}, null);
+    return runNativeFileWithOptions(allocator, path, program_args, &.{}, null, null);
 }
 
-fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8, run_ast_input_path: ?[]const u8) !void {
+fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, program_args: []const []const u8, search_paths: []const []const u8, run_ast_input_path: ?[]const u8, run_typed_ast_input_path: ?[]const u8) !void {
     // Generate a unique temp path for the executable (cross-platform)
     const timestamp = std.time.timestamp();
     const exe_ext = comptime if (builtin.os.tag == .windows) ".exe" else "";
@@ -3454,7 +3481,7 @@ fn runNativeFileWithOptions(allocator: std.mem.Allocator, path: []const u8, prog
     };
 
     // Build the executable
-    buildNative(allocator, path, options, run_ast_input_path) catch {
+    buildNative(allocator, path, options, run_ast_input_path, run_typed_ast_input_path) catch {
         // Errors already printed by buildNative
         return;
     };

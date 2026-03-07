@@ -18,7 +18,7 @@ pub const JsonAstError = error{
     OutOfMemory,
 };
 
-const dummy_span = ast.Span{ .start = 0, .end = 0, .line = 0, .column = 0 };
+pub const dummy_span = ast.Span{ .start = 0, .end = 0, .line = 0, .column = 0 };
 
 // ============================================================================
 // Entry point
@@ -615,7 +615,7 @@ fn buildExpr(arena: Allocator, val: Value) anyerror!ast.Expr {
 // Block builder
 // ============================================================================
 
-fn buildBlock(arena: Allocator, val: Value) anyerror!*ast.Block {
+pub fn buildBlock(arena: Allocator, val: Value) anyerror!*ast.Block {
     if (val != .object) return JsonAstError.InvalidValue;
     const obj = val.object;
     const stmts_arr = getArray(obj, "statements") orelse return JsonAstError.MissingField;
@@ -1434,7 +1434,7 @@ fn buildMetaPath(arena: Allocator, val: Value) anyerror!ast.MetaPath {
 // Module builder
 // ============================================================================
 
-fn buildModule(arena: Allocator, root: ObjectMap) anyerror!ast.Module {
+pub fn buildModule(arena: Allocator, root: ObjectMap) anyerror!ast.Module {
     // Module declaration
     const module_decl: ?ast.ModuleDecl = if (!isNull(root, "module_decl")) blk: {
         const md_val = root.get("module_decl").?;
