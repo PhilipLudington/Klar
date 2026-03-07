@@ -67,3 +67,13 @@ pub fn file_write_lines(path: string, lines: List#[string]) -> Result#[bool, IoE
     }
     return Ok(true)
 }
+
+// ============================================================================
+// file_append — append string content to a file (create if not exists)
+// ============================================================================
+
+/// Append string content to a file, creating it if it does not exist.
+/// Returns Ok(void) on success, Err(IoError) on failure.
+pub fn file_append(path: string, content: string) -> Result#[void, IoError] {
+    return fs_append_string(path, content)
+}

@@ -457,6 +457,7 @@ fn isImpureBuiltin(name: []const u8) bool {
     if (std.mem.eql(u8, name, "fs_remove_dir")) return true;
     if (std.mem.eql(u8, name, "fs_read_string")) return true;
     if (std.mem.eql(u8, name, "fs_write_string")) return true;
+    if (std.mem.eql(u8, name, "fs_append_string")) return true;
     if (std.mem.eql(u8, name, "fs_read_dir")) return true;
     // Unsafe memory access (side effects)
     if (std.mem.eql(u8, name, "read")) return true;

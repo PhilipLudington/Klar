@@ -55,6 +55,7 @@
 //! | `fs_remove_dir` | `fn(string) -> Result#[void, IoError]` | Remove directory |
 //! | `fs_read_string` | `fn(string) -> Result#[String, IoError]` | Read file contents |
 //! | `fs_write_string` | `fn(string, string) -> Result#[void, IoError]` | Write file contents |
+//! | `fs_append_string` | `fn(string, string) -> Result#[void, IoError]` | Append to file |
 //! | `fs_read_dir` | `fn(string) -> Result#[List#[String], IoError]` | List directory |
 //!
 //! ## Comptime Builtins

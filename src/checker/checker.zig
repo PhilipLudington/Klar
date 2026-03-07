@@ -1924,6 +1924,16 @@ pub const TypeChecker = struct {
             .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
         });
 
+        // fs_append_string(path: string, content: string) -> Result#[void, IoError]
+        const fs_append_string_fn_type = try self.type_builder.functionType(&.{ self.type_builder.stringType(), self.type_builder.stringType() }, fs_create_dir_ret);
+        try self.current_scope.define(.{
+            .name = "fs_append_string",
+            .type_ = fs_append_string_fn_type,
+            .kind = .function,
+            .mutable = false,
+            .span = .{ .start = 0, .end = 0, .line = 0, .column = 0 },
+        });
+
         // fs_read_dir(path: string) -> Result#[List#[String], IoError]
         const list_string_type = try self.type_builder.listType(string_type);
         const fs_read_dir_ret = try self.type_builder.resultType(list_string_type, self.type_builder.ioErrorType());

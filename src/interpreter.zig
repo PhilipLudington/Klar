@@ -3209,6 +3209,7 @@ test "await returns completed future value in interpreter runtime" {
     const testing = std.testing;
     var interp = try Interpreter.init(testing.allocator);
     defer interp.deinit();
+    interp.ensureBuilderInitialized();
 
     const ready = try interp.builder.futureCompleted(1, interp.builder.i32Val(42));
     defer {
@@ -3239,6 +3240,7 @@ test "await on pending future returns invalid operation" {
     const testing = std.testing;
     var interp = try Interpreter.init(testing.allocator);
     defer interp.deinit();
+    interp.ensureBuilderInitialized();
 
     const pending = try interp.builder.futurePending(2);
     defer testing.allocator.destroy(pending.future);
@@ -3270,6 +3272,7 @@ test "await on failed future returns invalid operation with runtime message" {
     const testing = std.testing;
     var interp = try Interpreter.init(testing.allocator);
     defer interp.deinit();
+    interp.ensureBuilderInitialized();
 
     const failed = try interp.builder.futureFailed(3, interp.builder.i32Val(9));
     defer {
@@ -3303,6 +3306,7 @@ test "await on cancelled future returns invalid operation with runtime message" 
     const testing = std.testing;
     var interp = try Interpreter.init(testing.allocator);
     defer interp.deinit();
+    interp.ensureBuilderInitialized();
 
     const cancelled = try interp.builder.futureCancelled(4);
     defer testing.allocator.destroy(cancelled.future);

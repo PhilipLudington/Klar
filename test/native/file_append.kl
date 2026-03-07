@@ -1,0 +1,68 @@
+// Test file_append (fs_append_string builtin)
+// Tests: append to existing file, append to non-existent file (creates), multiple appends accumulate
+// Expected: 0
+fn main() -> i32 {
+    let path: string = "/tmp/klar_test_file_append.txt"
+
+    // Clean up any leftover file from previous test runs
+    if fs_exists(path) {
+        let rm: Result#[void, IoError] = fs_remove_file(path)
+        if not rm.is_ok() {
+            return 1
+        }
+    }
+
+    // Test 1: Append to non-existent file (should create it)
+    let r1: Result#[void, IoError] = fs_append_string(path, "Hello")
+    if not r1.is_ok() {
+        return 10
+    }
+    let c1: Result#[String, IoError] = File.read_to_string(path)
+    if not c1.is_ok() {
+        return 11
+    }
+    let s1: String = c1!
+    if s1.as_str() != "Hello" {
+        return 12
+    }
+
+    // Test 2: Append to existing file
+    let r2: Result#[void, IoError] = fs_append_string(path, " World")
+    if not r2.is_ok() {
+        return 20
+    }
+    let c2: Result#[String, IoError] = File.read_to_string(path)
+    if not c2.is_ok() {
+        return 21
+    }
+    let s2: String = c2!
+    if s2.as_str() != "Hello World" {
+        return 22
+    }
+
+    // Test 3: Multiple appends accumulate
+    let r3: Result#[void, IoError] = fs_append_string(path, "!")
+    if not r3.is_ok() {
+        return 30
+    }
+    let r4: Result#[void, IoError] = fs_append_string(path, "!")
+    if not r4.is_ok() {
+        return 31
+    }
+    let c3: Result#[String, IoError] = File.read_to_string(path)
+    if not c3.is_ok() {
+        return 32
+    }
+    let s3: String = c3!
+    if s3.as_str() != "Hello World!!" {
+        return 33
+    }
+
+    // Clean up
+    let rm2: Result#[void, IoError] = fs_remove_file(path)
+    if not rm2.is_ok() {
+        return 40
+    }
+
+    return 0
+}
