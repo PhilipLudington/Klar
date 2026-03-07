@@ -1,0 +1,2607 @@
+## Your Task
+
+Design and document the typed AST JSON serialization format in `docs/design/typed-ast-format.md` — define the schema for every AST node post-type-checking (resolved types, monomorphized generics, trait dispatch decisions). (per DESIGN.md section "Generics and Traits" and ROADMAP.md section "8.1: Selfhost Frontend Output") Tests should cover: schema covers all AST node types present in test/native/ files, format is unambiguous and parseable.
+
+## Relevant DESIGN.md Sections
+
+## Generics and Traits
+
+### Generic Functions
+
+```klar
+fn max#[T: Ordered](a: T, b: T) -> T {
+    if a.compare(b) is Ordering.Greater {
+        return a
+    }
+    return b
+}
+
+fn swap#[T](a: inout T, b: inout T) {
+    let temp: T = *a
+    *a = *b
+    *b = temp
+}
+```
+
+### Generic Types
+
+```klar
+struct Pair#[A, B] {
+    first: A
+    second: B
+}
+
+enum Option#[T] {
+    Some(T)
+    None
+}
+```
+
+### Trait Definition
+
+```klar
+trait Ordered {
+    fn compare(self, other: Self) -> Ordering
+}
+
+trait Printable {
+    fn to_string(self) -> String
+
+    // Default implementation
+    fn print(self) {
+        io.write(self.to_string())
+    }
+}
+```
+
+### Trait Implementation
+
+```klar
+impl i32: Ordered {
+    fn compare(self, other: i32) -> Ordering {
+        if self < other {
+            return Ordering.Less
+        } else if self > other {
+            return Ordering.Greater
+        }
+        return Ordering.Equal
+    }
+}
+```
+
+### Trait Bounds
+
+```klar
+fn process#[T: Ordered + Printable](value: T) {
+    print(value)
+}
+
+fn merge#[K, V](a: Map#[K, V], b: Map#[K, V]) -> Map#[K, V]
+where
+    K: Hashable + Eq
+    V: Clone
+{
+    ...
+}
+```
+
+### Generic Trait Method Dispatch
+
+Trait methods can be called through generic type parameters. This works with all receiver types including `ref Self` and `inout Self`:
+
+```klar
+trait Writer {
+    fn write(self: inout Self, data: i32) -> i32
+}
+
+struct Buffer {
+    count: i32,
+}
+
+impl Buffer: Writer {
+    fn write(self: inout Buffer, data: i32) -> i32 {
+        self.count = self.count + data
+        return data
+    }
+}
+
+// Generic function calls trait method through bound
+fn write_to#[W: Writer](writer: inout W, data: i32) -> i32 {
+    return writer.write(data)  // Resolves to W's implementation
+}
+
+fn main() -> i32 {
+    var buf: Buffer = Buffer { count: 0 }
+    write_to(ref buf, 42)  // Calls Buffer.write through trait dispatch
+    return buf.count       // Returns 42
+}
+```
+
+### Associated Types
+
+```klar
+trait Iterator {
+    type Item
+    fn next(self: inout Self) -> Option#[Self.Item]
+}
+
+impl List#[T]: Iterator {
+    type Item = T
+    fn next(self: inout Self) -> Option#[T] { ... }
+}
+```
+
+### Deriving Traits
+
+```klar
+#[derive(Eq, Clone, Hash, Printable)]
+struct User {
+    id: i64
+    name: String
+}
+```
+
+### Operator Overloading
+
+```klar
+trait Add#[Rhs] {
+    type Output
+    fn add(self, rhs: Rhs) -> Self.Output
+}
+
+impl Vec2: Add#[Vec2] {
+    type Output = Vec2
+    fn add(self, rhs: Vec2) -> Vec2 {
+        return Vec2 { x: self.x + rhs.x, y: self.y + rhs.y }
+    }
+}
+
+let c: Vec2 = a + b    // calls a.add(b)
+```
+
+### Trait Objects
+
+```klar
+// Dynamic dispatch
+fn draw_all(shapes: List#[dyn Drawable]) {
+    for shape in shapes {
+        shape.draw()
+    }
+}
+```
+
+---
+
+## Project Configuration
+
+- **Project:** Klar
+- **Language:** zig
+- **Source directory:** src/
+- **Test directory:** src/tests/
+- **Build command:** `zig build`
+- **Test command:** `zig build test`
+- **Format command:** `zig fmt .`
+
+## Existing Source Code
+
+The following files already exist and are relevant to your task:
+
+### `DESIGN.md`
+
+```
+# Klar Programming Language Specification
+
+> **"No ambiguity. No surprises."**
+
+Klar is an application language designed for clarity, safety, and simplicity. It is optimized for AI code generation—specifically Claude Code—prioritizing unambiguous syntax and predictable semantics.
+
+Klar is not a systems language (like C, Rust, or Zig). It targets the same space as C# or Go — compiled, performant, but higher-level than bare metal. This influences design decisions like `.len()` returning `i32` rather than `usize` for ergonomic use with loop counters.
+
+---
+
+## Table of Contents
+
+1. [Design Philosophy](#design-philosophy)
+2. [Lexical Elements](#lexical-elements)
+3. [Syntax and Grammar](#syntax-and-grammar)
+4. [Type System](#type-system)
+5. [Memory and Ownership](#memory-and-ownership)
+6. [Error Handling](#error-handling)
+7. [Concurrency](#concurrency)
+8. [Generics and Traits](#generics-and-traits)
+9. [Standard Library](#standard-library)
+10. [Module and Package System](#module-and-package-system)
+11. [C Interoperability](#c-interoperability)
+
+---
+
+## Design Philosophy
+
+### Core Principles
+
+1. **Unambiguous syntax** — no context needed to parse
+2. **No undefined behavior** — every operation has defined semantics
+3. **Memory safe by default** — with opt-out for performance
+4. **Modules, not headers** — single source of truth
+5. **Explicit over implicit** — no type inference, explicit `return`, statement-based control flow
+6. **One obvious way** — single syntax form for each construct
+7. **Build-aware** — no separate build system needed
+8. **AI-first design** — optimized for AI code generation clarity
+
+### Problems Solved (vs C/C++)
+
+| C/C++ Problem | Klar Solution |
+|---------------|---------------|
+| Ambiguous syntax | Keyword-driven, no context sensitivity |
+| Preprocessor | `comptime` blocks |
+| Undefined behavior | Defined semantics + operators (`+%`, `+|`) |
+| Null danger | `?T` option types |
+| Memory unsafety | Ownership + borrows, no dangling refs |
+| Header/source split | Modules |
+| Implicit conversions | Explicit `.as#[]`, `.to#[]` |
+| Overloading complexity | No overloading, use generics |
+| Build system | In-language or convention-based |
+
+### AI-Native Tooling
+
+Traditional languages assume a human writes code, runs it, reads errors, and iterates. Klar assumes an AI may be generating code and benefits from programmatic verification.
+
+**The AI Verification Loop:**
+
+```
+AI generates code → AI tests in REPL → AI fixes internally → User gets working code
+```
+
+A REPL (Read-Eval-Print Loop) enables AI assistants to:
+
+1. **Self-verify** — Test generated code before presenting to the user
+2. **Explore types** — Probe APIs interactively (`typeof(response.headers)`)
+3. **Build incrementally** — Construct complex code piece by piece, validating each step
+4. **Reduce roundtrips** — Catch mistakes before the user sees them
+
+This transforms the AI from "code suggester" to "code author" — it can validate its own work rather than hoping it compiles.
+
+**Design implications:**
+
+- **Fast startup** — REPL should launch instantly for rapid iteration
+- **Stateful sessions** — Definitions persist for incremental exploration
+- **Rich introspection** — Types, values, and structures easily inspectable
+- **Sandboxed execution** — Safe to run untrusted generated code
+
+The same REPL that aids AI generation also benefits human learners exploring the language interactively.
+
+---
+
+## Lexical Elements
+
+### File Extension
+
+`.kl`
+
+### Keywords
+
+```
+// Declarations
+fn       let      var      struct   enum     trait
+impl     type     const    static   module   import
+pub      async    unsafe   comptime
+
+// Control flow
+if       else     match    for      while    loop
+return   break    continue
+
+// Expressions
+true     false    self     Self
+
+// Operators (word-form)
+and      or       not      is       in       as
+
+// References (keyword-based, not symbols)
+ref      inout
+
+// Special
+where    dyn      mut
+```
+
+### Reserved (Future)
+
+```
+await    yield    macro    move     box      do
+try      catch    throw    virtual  override
+abstract final    sealed   partial
+```
+
+### Operators
+
+```
+// Arithmetic
++   -   *   /   %
++%  -%  *%          // wrapping
++|  -|  *|          // saturating
+
+// Comparison
+==  !=  <   >   <=  >=
+
+// Logical
+and  or  not        // word-form, not && || !
+
+// Bitwise
+&   |   ^   ~   <<  >>
+
+// Assignment
+=   +=  -=  *=  /=  %=
+
+// Reference (keyword-based)
+ref     inout
+
+// Special
+?       !       ??      ..      ..=
+->      =>      :       ::
+```
+
+### Literals
+
+```klar
+// Integers
+42                  // i32 default
+42_000              // underscores allowed
+0xff                // hex
+0b1010              // binary
+0o755               // octal
+42i64               // explicit type suffix
+42u8
+
+// Floats
+3.14                // f64 default
+3.14f32             // explicit type
+1e10                // scientific
+1.5e-3
+
+// Strings
+"hello"             // regular string
+"line 1\nline 2"    // escape sequences
+r"C:\path\to\file"  // raw string
+r#"contains "quotes""#
+
+// Multi-line strings
+"""
+    This is a
+    multi-line string
+    """
+
+// Characters
+'a'
+'\n'
+'\u{1F600}'         // unicode
+
+// Boolean
+true
+false
+```
+
+### Comments
+
+```klar
+// Line comment
+
+/* Block comment */
+
+/// Documentation comment (for next item)
+/// Supports **markdown**
+
+//! Module-level documentation
+```
+
+---
+
+## Syntax and Grammar
+
+### Basic Syntax Rules
+
+- **No semicolons** — newline-terminated
+- **4-space indentation** (convention)
+- **Trailing commas** allowed in multi-line constructs
+- **Line length** — soft limit 100, hard limit 120
+
+### Functions
+
+Functions always use explicit `return` statements. This follows the "explicit over implicit" principle—there is one obvious way to return a value.
+
+```klar
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn greet(name: string) {
+    println("Hello, {name}!")
+}
+
+// Generic function
+fn max#[T: Ordered](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+// Async function
+async fn fetch(url: string) -> Result#[Response, HttpError] {
+    let response: Response = http.get(url).await?
+    return Ok(response)
+}
+```
+
+### Variables
+
+All variables require explicit type annotations. This follows the "explicit over implicit" principle—AI code generation benefits from clarity over brevity.
+
+```klar
+let x: i32 = 5          // immutable
+var y: i32 = 10         // mutable
+let name: string = "Alice"
+var items: List#[i32] = List.new#[i32]()
+```
+
+### Structs
+
+```klar
+struct Point {
+    x: f64
+    y: f64
+}
+
+pub struct User {
+    pub name: String
+    pub email: String
+    password_hash: String  // private field
+}
+
+// Struct with traits
+struct Counter: Clone + Eq {
+    value: i32
+}
+
+// Instantiation
+let p: Point = Point { x: 1.0, y: 2.0 }
+let p2: Point = Point { x: 3.0, ..p }  // spread
+```
+
+### Enums
+
+```klar
+enum Direction {
+    North
+    South
+    East
+    West
+}
+
+// With data
+enum Option#[T] {
+    Some(T)
+    None
+}
+
+enum Result#[T, E] {
+    Ok(T)
+    Err(E)
+}
+
+enum Message {
+    Quit
+    Move { x: i32, y: i32 }
+    Write(String)
+    Color(i32, i32, i32)
+}
+```
+
+### Control Flow
+
+Control flow constructs are statements, not expressions. This follows the "explicit over implicit" principle—values are assigned explicitly, not implicitly returned from blocks.
+
+```klar
+// If statement
+var max: i32
+if a > b {
+    max = a
+} else {
+    max = b
+}
+
+// Match statement
+var name: string
+match direction {
+    Direction.North => { name = "north" }
+    Direction.South => { name = "south" }
+    Direction.East => { name = "east" }
+    Direction.West => { name = "west" }
+}
+
+// Match with guards
+var description: string
+match value {
+    0 => { description = "zero" }
+    n if n < 0 => { description = "negative" }
+    n if n > 100 => { description = "large" }
+    n => { description = "normal: {n}" }
+}
+
+// For loop
+for item: Item in list {
+    process(item)
+}
+
+for i: i32 in 0..10 {
+    print(i)
+}
+
+for (index, item) in list.enumerate() {
+    print("{index}: {item}")
+}
+
+// While loop
+while condition {
+    work()
+}
+
+// Infinite loop
+loop {
+    if done {
+        break
+    }
+}
+```
+
+### Pattern Matching
+
+```klar
+// Destructuring with explicit types
+let x: f64 = point.x
+let y: f64 = point.y
+
+let first: i32 = tuple.0
+let second: i32 = tuple.1
+
+// Match statement with pattern binding
+match value {
+    Option.Some(x) => { use(x) }
+    Option.None => { default() }
+}
+
+// Or patterns
+var category: string
+match value {
+    1 | 2 | 3 => { category = "small" }
+    _ => { category = "other" }
+}
+
+// Nested patterns
+var movement: string
+match value {
+    Message.Move { x: 0, y } => { movement = "vertical" }
+    Message.Move { x, y: 0 } => { movement = "horizontal" }
+    Message.Move { x, y } => { movement = "diagonal" }
+}
+```
+
+### Closures
+
+Closures follow the same rules as functions: explicit parameter types, explicit return types, and explicit `return` statements.
+
+```klar
+// Closures require full type annotations and explicit return
+let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
+let add: fn(i32, i32) -> i32 = |a: i32, b: i32| -> i32 { return a + b }
+
+// Multi-line closure
+let process: fn(i32) -> i32 = |x: i32| -> i32 {
+    let y: i32 = x * 2
+    return y + 1
+}
+
+// Closures without return value
+let print_it: fn(i32) -> void = |x: i32| -> void { print(x) }
+
+// Capturing environment
+let factor: i32 = 10
+let scale: fn(i32) -> i32 = |x: i32| -> i32 { return x * factor }
+```
+
+### Operator Precedence (Highest to Lowest)
+
+| Level | Operators | Associativity |
+|-------|-----------|---------------|
+| 1 | `.` `()` `[]` | Left |
+| 2 | `?` `!` (postfix) | Left |
+| 3 | `-` `not` `ref` `*` (prefix) | Right |
+| 4 | `*` `/` `%` `*%` `*|` | Left |
+| 5 | `+` `-` `+%` `-%` `+|` `-|` | Left |
+| 6 | `<<` `>>` | Left |
+| 7 | `&` (bitwise) | Left |
+| 8 | `^` | Left |
+| 9 | `|` (bitwise) | Left |
+| 10 | `..` `..=` | Neither |
+| 11 | `==` `!=` `<` `>` `<=` `>=` `is` | Neither |
+| 12 | `and` | Left |
+| 13 | `or` | Left |
+| 14 | `??` | Right |
+| 15 | `=` `+=` `-=` etc. | Right |
+
+---
+
+## Type System
+
+### Primitive Types
+
+```klar
+// Integers
+i8, i16, i32, i64, i128    // signed
+u8, u16, u32, u64, u128    // unsigned
+isize, usize               // pointer-sized
+
+// Floats
+f32, f64
+
+// Other
+bool
+char                        // Unicode scalar value
+string                      // UTF-8 string
+```
+
+### Composite Types
+
+```klar
+// Arrays (fixed size)
+let arr: [i32; 5] = [1, 2, 3, 4, 5]
+
+// Slices
+let slice: [i32] = arr[1..4]
+
+// Tuples
+let tuple: (i32, string, bool) = (42, "hello", true)
+
+// Option (built-in)
+let maybe: ?i32 = Some(42)
+let nothing: ?i32 = None
+
+// Function types
+let f: fn(i32, i32) -> i32 = add
+```
+
+### Type Aliases
+
+```klar
+type UserId = i64
+type Callback = fn(Event) -> Result#[void, Error]
+type StringMap#[V] = Map#[String, V]
+```
+
+### No Implicit Conversions
+
+```klar
+let x: i32 = 5
+let y: i64 = x          // ERROR
+
+let y: i64 = x.as#[i64]  // explicit widening (safe)
+let z: i16 = x.to#[i16]  // explicit narrowing (may trap)
+let w: i16 = x.trunc#[i16]  // truncate (never traps)
+```
+
+### Defined Arithmetic Behavior
+
+```klar
+let a: i32 = 2_000_000_000
+let b: i32 = a + a              // trap (default)
+let c: i32 = a +% a             // wrap around
+let d: i32 = a +| a             // saturate to max
+```
+
+---
+
+## Memory and Ownership
+
+### Core Concept
+
+Every value has exactly one owner. When the owner goes out of scope, the value is destroyed.
+
+### Scope-Based Cleanup
+
+Block expressions create scopes for automatic cleanup. When a block ends, all variables declared within it are properly cleaned up:
+
+```klar
+fn process_data() {
+    // Outer scope
+    {
+        // Inner block scope
+        var writer: BufWriter#[File] = BufWriter.new#[File](file)
+        writer.write_string("data")
+        // writer automatically flushed when block ends
+    }
+    // writer is no longer accessible, cleanup completed
+}
+```
+
+Types that need cleanup (BufWriter, Rc, Arc) are automatically handled when their scope ends, including:
+- Function returns
+- Block expression exits
+- Loop iteration boundaries
+- Early returns via `break`, `continue`, or `return`
+
+### Move Semantics
+
+```klar
+let a: Buffer = Buffer.new(1024)
+let b: Buffer = a                    // a is MOVED to b
+// a is no longer valid
+
+let c: Buffer = b.clone()            // explicit copy
+// both b and c are valid
+```
+
+### Copy Types
+
+```klar
+// Primitives are Copy
+let x: i32 = 5
+let y: i32 = x    // x is copied, still valid
+
+// Opt-in for structs
+struct Point: Copy {
+    x: f64
+    y: f64
+}
+```
+
+### Borrowing
+
+Klar uses keyword-based reference syntax following the "keywords over symbols" principle:
+- `ref T` — read-only reference (like `&T` in other languages)
+- `inout T` — mutable reference (like `&mut T` in other languages)
+
+The `ref x` expression creates a reference. Mutability is determined by whether `x` is `var` (mutable) or `let` (immutable).
+
+```klar
+fn print_length(buf: ref Buffer) {    // immutable borrow
+    print(buf.len)
+}
+
+fn modify(buf: inout Buffer) {        // mutable borrow
+    buf.write(data)
+}
+
+var buffer: Buffer = Buffer.new(1024)
+print_length(ref buffer)              // lend (immutable since fn expects ref)
+modify(ref buffer)                    // lend mutably (var -> inout)
+```
+
+### Borrow Rules
+
+1. **One mutable OR many immutable** — never both
+2. **References can't outlive owner**
+
+### Key Simplification: No Stored References
+
+```klar
+// NOT ALLOWED
+struct Parser {
+    source: ref string     // ERROR: no refs in structs
+}
+
+// INSTEAD: own the data
+struct Parser {
+    source: string
+}
+
+// OR: use Rc for sharing
+struct Parser {
+    source: Rc#[string]
+}
+```
+
+This eliminates lifetime annotations entirely.
+
+### Reference Counting
+
+```klar
+// Single-threaded
+let data: Rc#[Buffer] = Rc.new(Buffer.new(1024))
+let alias: Rc#[Buffer] = data.clone()   // cheap increment
+
+// Thread-safe
+let shared: Arc#[Config] = Arc.new(Config.load())
+
+// Weak references (break cycles)
+let weak: Weak#[Config] = strong.downgrade()
+```
+
+### Interior Mutability
+
+```klar
+// Cell for simple values
+let counter: Rc#[Cell#[i32]] = Rc.new(Cell.new(0))
+counter.set(counter.get() + 1)
+
+// RefCell for complex values (runtime checks)
+let buffer: Rc#[RefCell#[Buffer]] = Rc.new(RefCell.new(Buffer.new(1024)))
+buffer.borrow_mut().write(data)
+```
+
+### Unsafe Escape Hatch
+
+```klar
+unsafe {
+    let ptr: RawPtr#[u8] = raw_allocate(1024)
+    ptr.write(0, 42)
+    raw_free(ptr)
+}
+```
+
+---
+
+## Error Handling
+
+### Two Categories
+
+1. **Traps** — bugs, non-recoverable (programmer error)
+2. **Errors** — expected failures, recoverable (use Result)
+
+### Traps (Bugs)
+
+```klar
+let x: i32 = arr[100]    // trap if out of bounds
+let y: i32 = maybe!      // trap if None
+let z: i32 = 1 / 0       // trap
+```
+
+Traps halt execution immediately with a diagnostic.
+
+### Result Type
+
+```klar
+enum Result#[T, E] {
+    Ok(T)
+    Err(E)
+}
+
+fn divide(a: i32, b: i32) -> Result#[i32, MathError] {
+    if b == 0 {
+        return Err(MathError.DivideByZero)
+    }
+    return Ok(a / b)
+}
+```
+
+### Handling Results
+
+```klar
+// Pattern matching (statement-based)
+var value: i32
+match result {
+    Ok(v) => { value = v }
+    Err(e) => {
+        log("Error: {e}")
+        return
+    }
+}
+
+// Default on error
+let value: i32 = result ?? 0
+
+// Trap on error (for "impossible" errors)
+let value: i32 = result!
+
+// Propagate with ?
+fn process() -> Result#[Data, Error] {
+    let content: string = read_file(path)?   // returns early on Err
+    let parsed: Data = parse(content)?
+    return Ok(parsed)
+}
+```
+
+### Defining Errors
+
+```klar
+enum IoError {
+    NotFound { path: string }
+    PermissionDenied { path: string }
+    Timeout { after_ms: i32 }
+}
+
+enum ProcessError {
+    Io(IoError)
+    Parse(ParseError)
+    Validation(ValidationError)
+}
+
+// Conversion for ? propagation
+impl IoError: Into#[ProcessError] {
+    fn into(self) -> ProcessError {
+        return ProcessError.Io(self)
+    }
+}
+```
+
+### Try Blocks
+
+Try blocks allow grouping multiple fallible operations. The block captures errors and assigns the final result.
+
+```klar
+var result: Result#[Data, Error]
+try {
+    let a: Data1 = step_one()?
+    let b: Data2 = step_two(a)?
+    let c: Data3 = step_three(b)?
+    result = Ok(c)
+} catch e {
+    result = Err(e)
+}
+```
+
+---
+
+## Concurrency
+
+### Async/Await (IO-bound)
+
+```klar
+async fn fetch_data(url: string) -> Result#[Data, HttpError] {
+    let response: Response = http.get(url).await?
+    let body: string = response.read_body().await?
+    return Ok(parse(body))
+}
+
+async fn main() -> i32 {
+    let data: Data = fetch_data("https://api.example.com").await?
+    process(data)
+    return 0
+}
+```
+
+### Spawning Tasks
+
+```klar
+// Fire and forget
+spawn handle_connection(conn)
+
+// Await result
+let task: Task#[Data] = spawn fetch_data(url)
+let result: Data = task.await
+
+// Concurrent operations
+let results: (Data, Data, Data) = await_all(
+    fetch("/api/a"),
+    fetch("/api/b"),
+    fetch("/api/c")
+)
+let a: Data = results.0
+let b: Data = results.1
+let c: Data = results.2
+
+// First to complete
+let first: Data = await_first(
+    fetch("/primary"),
+    fetch("/backup")
+)
+```
+
+### Structured Concurrency
+
+```klar
+async fn process_batch(items: List#[Item]) -> List#[ProcessResult] {
+    let mapper: fn(Item) -> Task#[ProcessResult] = |item: Item| -> Task#[ProcessResult] {
+        return spawn process_item(item)
+    }
+    let tasks: List#[Task#[ProcessResult]] = items.map(mapper)
+    let results: List#[ProcessResult] = await_all(tasks)
+    // All tasks guaranteed complete here
+    return results
+}
+```
+
+### Threads (CPU-bound)
+
+```klar
+let scope_fn: fn(Scope) -> void = |s: Scope| -> void {
+    let work_a_fn: fn() -> void = || -> void { work_a() }
+    let work_b_fn: fn() -> void = || -> void { work_b() }
+    s.spawn(work_a_fn)
+    s.spawn(work_b_fn)
+    // Both complete before scope exits
+}
+thread.scope(scope_fn)
+```
+
+### Channels
+
+```klar
+let channel_pair: (Sender#[Message], Receiver#[Message]) = channel#[Message]()
+let tx: Sender#[Message] = channel_pair.0
+let rx: Receiver#[Message] = channel_pair.1
+
+spawn async {
+    tx.send(Message.Data(payload)).await
+}
+
+spawn async {
+    loop {
+        let msg: Message = rx.recv().await
+        match msg {
+            Message.Data(payload) => { process(payload) }
+            Message.Done => { break }
+        }
+    }
+}
+
+// Select
+loop {
+    select {
+        msg from inbox => { handle_message(msg) }
+        tick from timer => { handle_tick() }
+        _ from shutdown => { break }
+    }
+}
+```
+
+### Synchronization
+
+```klar
+// Mutex
+let data: Mutex#[HashMap#[string, i32]] = Mutex.new(HashMap.new#[string, i32]())
+{
+    var guard: MutexGuard#[HashMap#[string, i32]] = data.lock()
+    guard.insert("key", value)
+}
+
+// RwLock
+let cache: RwLock#[HashMap#[string, i32]] = RwLock.new(HashMap.new#[string, i32]())
+{
+    let view: ReadGuard#[HashMap#[string, i32]] = cache.read()      // many readers
+}
+{
+    var edit: WriteGuard#[HashMap#[string, i32]] = cache.write() // exclusive writer
+}
+
+// Atomics
+let counter: Atomic#[i64] = Atomic#[i64].new(0)
+counter.fetch_add(1)
+```
+
+### Send and Sync
+
+```klar
+Rc#[T]      // NOT Send, NOT Sync
+Arc#[T]     // Send + Sync
+Mutex#[T]   // Send + Sync
+RefCell#[T] // NOT Sync
+```
+
+---
+
+## Generics and Traits
+
+### Generic Functions
+
+```klar
+fn max#[T: Ordered](a: T, b: T) -> T {
+    if a.compare(b) is Ordering.Greater {
+        return a
+    }
+    return b
+}
+
+fn swap#[T](a: inout T, b: inout T) {
+    let temp: T = *a
+    *a = *b
+    *b = temp
+}
+```
+
+### Generic Types
+
+```klar
+struct Pair#[A, B] {
+    first: A
+    second: B
+}
+
+enum Option#[T] {
+    Some(T)
+    None
+}
+```
+
+### Trait Definition
+
+```klar
+trait Ordered {
+    fn compare(self, other: Self) -> Ordering
+}
+
+trait Printable {
+    fn to_string(self) -> String
+
+    // Default implementation
+    fn print(self) {
+        io.write(self.to_string())
+    }
+}
+```
+
+### Trait Implementation
+
+```klar
+impl i32: Ordered {
+    fn compare(self, other: i32) -> Ordering {
+        if self < other {
+            return Ordering.Less
+        } else if self > other {
+            return Ordering.Greater
+        }
+        return Ordering.Equal
+    }
+}
+```
+
+### Trait Bounds
+
+```klar
+fn process#[T: Ordered + Printable](value: T) {
+    print(value)
+}
+
+fn merge#[K, V](a: Map#[K, V], b: Map#[K, V]) -> Map#[K, V]
+where
+    K: Hashable + Eq
+    V: Clone
+{
+    ...
+}
+```
+
+### Generic Trait Method Dispatch
+
+Trait methods can be called through generic type parameters. This works with all receiver types including `ref Self` and `inout Self`:
+
+```klar
+trait Writer {
+    fn write(self: inout Self, data: i32) -> i32
+}
+
+struct Buffer {
+    count: i32,
+}
+
+impl Buffer: Writer {
+    fn write(self: inout Buffer, data: i32) -> i32 {
+        self.count = self.count + data
+        return data
+    }
+}
+
+// Generic function calls trait method through bound
+fn write_to#[W: Writer](writer: inout W, data: i32) -> i32 {
+    return writer.write(data)  // Resolves to W's implementation
+}
+
+fn main() -> i32 {
+    var buf: Buffer = Buffer { count: 0 }
+    write_to(ref buf, 42)  // Calls Buffer.write through trait dispatch
+    return buf.count       // Returns 42
+}
+```
+
+### Associated Types
+
+```klar
+trait Iterator {
+    type Item
+    fn next(self: inout Self) -> Option#[Self.Item]
+}
+
+impl List#[T]: Iterator {
+    type Item = T
+    fn next(self: inout Self) -> Option#[T] { ... }
+}
+```
+
+### Deriving Traits
+
+```klar
+#[derive(Eq, Clone, Hash, Printable)]
+struct User {
+    id: i64
+    name: String
+}
+```
+
+### Operator Overloading
+
+```klar
+trait Add#[Rhs] {
+    type Output
+    fn add(self, rhs: Rhs) -> Self.Output
+}
+
+impl Vec2: Add#[Vec2] {
+    type Output = Vec2
+    fn add(self, rhs: Vec2) -> Vec2 {
+        return Vec2 { x: self.x + rhs.x, y: self.y + rhs.y }
+    }
+}
+
+let c: Vec2 = a + b    // calls a.add(b)
+```
+
+### Trait Objects
+
+```klar
+// Dynamic dispatch
+fn draw_all(shapes: List#[dyn Drawable]) {
+    for shape in shapes {
+        shape.draw()
+    }
+}
+```
+
+---
+
+## Standard Library
+
+### Module Overview
+
+```
+std
+├── core          # Primitives, Option, Result (auto-imported)
+├── collections   # List, Map, Set, Queue
+├── string        # String, StringBuilder
+├── io            # Files, streams, console
+├── net           # TCP, UDP, HTTP
+├── sync          # Mutex, channels, atomics
+├── async         # Async runtime
+├── time          # Duration, DateTime
+├── math          # Extended math
+├── rand          # Random numbers
+├── fs            # Filesystem
+├── path          # Path manipulation
+├── env           # Environment, args
+├── process       # Spawning processes
+├── json          # JSON serialization
+├── testing       # Test framework
+└── fmt           # Formatting
+```
+
+### stdlib.core (Auto-Imported)
+
+```klar
+// Types
+bool, i8, i16, i32, i64, i128
+u8, u16, u32, u64, u128
+f32, f64
+char, string
+Option#[T], Result#[T, E]
+
+// Traits
+Copy, Clone, Eq, Ordered, Hash, Printable, Default
+Into, From, Iterator
+
+// Functions
+print(msg: string)
+println(msg: string)
+assert(condition: bool)
+assert_eq#[T: Eq](a: T, b: T)
+panic(msg: string) -> !
+```
+
+### stdlib.collections
+
+```klar
+struct List#[T] {
+    fn new() -> List#[T]
+    fn push(self: inout Self, item: T)
+    fn pop(self: inout Self) -> Option#[T]
+    fn get(self: ref Self, index: i32) -> Option#[T]
+    fn len(self: ref Self) -> i32  // i32 for ergonomic loop counters
+    fn iter(self: ref Self) -> ListIter#[T]
+    // ...
+}
+
+struct Map#[K: Hash + Eq, V] {
+    fn new() -> Map#[K, V]
+    fn insert(self: inout Self, key: K, value: V) -> Option#[V]
+    fn get(self: ref Self, key: ref K) -> Option#[V]
+    fn contains_key(self: ref Self, key: ref K) -> bool
+    // ...
+}
+
+struct Set#[T: Hash + Eq] {
+    fn new() -> Set#[T]
+    fn insert(self: inout Self, item: T) -> bool
+    fn contains(self: ref Self, item: ref T) -> bool
+    fn union(self: ref Self, other: ref Set#[T]) -> Set#[T]
+    // ...
+}
+```
+
+### stdlib.string
+
+```klar
+struct String {
+    fn new() -> String
+    fn len(self: ref Self) -> i32
+    fn chars(self: ref Self) -> CharIter
+    fn contains(self: ref Self, pattern: ref str) -> bool
+    fn split(self: ref Self, sep: ref str) -> List#[String]
+    fn trim(self: ref Self) -> string
+    fn to_uppercase(self: ref Self) -> String
+    fn replace(self: ref Self, from: ref str, to: ref str) -> String
+    // ...
+}
+
+struct StringBuilder {
+    fn new() -> StringBuilder
+    fn append(self: inout Self, s: ref str) -> inout Self
+    fn build(self) -> String
+}
+```
+
+### stdlib.io
+
+```klar
+trait Read {
+    fn read(self: inout Self, buf: inout [u8]) -> Result#[i32, IoError]
+    fn read_all(self: inout Self) -> Result#[List#[u8], IoError]
+    fn read_string(self: inout Self) -> Result#[String, IoError]
+}
+
+trait Write {
+    fn write(self: inout Self, buf: ref [u8]) -> Result#[i32, IoError]
+    fn flush(self: inout Self) -> Result#[void, IoError]
+}
+
+fn stdin() -> Stdin
+fn stdout() -> Stdout
+fn stderr() -> Stderr
+
+// Buffered I/O wrappers
+struct BufReader#[R: Read] {
+    fn new(reader: R) -> BufReader#[R]
+    fn read(self: inout Self, buf: ref [u8]) -> Result#[i32, IoError]
+    fn read_line(self: inout Self) -> Result#[String, IoError]
+}
+
+struct BufWriter#[W: Write] {
+    fn new(writer: W) -> BufWriter#[W]
+    fn write_string(self: inout Self, s: string) -> Result#[i32, IoError]
+    fn flush(self: inout Self) -> Result#[void, IoError]
+    // Note: BufWriter automatically flushes when going out of scope
+}
+```
+
+Note: I/O methods accept both slices (`[u8]`) and fixed-size arrays (`[u8; N]`). Use `@repeat(value, count)` to create mutable buffers:
+
+```klar
+// Create mutable buffer with @repeat
+var buf: [u8; 256] = @repeat(0.as#[u8], 256)
+
+// Read from stdin into the buffer
+var input: Stdin = stdin()
+let bytes_read: i32 = input.read(ref buf)?
+
+// Read from file into the buffer
+var file: File = File.open("/path/to/file", "r")!
+let n: i32 = file.read(ref buf)!
+
+// Access bytes in the buffer
+if buf[0] == 72.as#[u8] {  // 'H'
+    print("First byte is H")
+}
+```
+
+### stdlib.fs
+
+**Currently implemented** on `File`:
+
+```klar
+// Static convenience methods (implemented)
+File.open(path: string, mode: string) -> Result#[File, IoError]
+File.read_to_string(path: string) -> Result#[String, IoError]
+File.read_all(path: string) -> Result#[List#[u8], IoError]
+
+// Instance methods (implemented)
+file.read(buf: inout [u8]) -> Result#[i32, IoError]
+file.write(buf: ref [u8]) -> Result#[i32, IoError]
+file.write_string(s: string) -> Result#[i32, IoError]
+file.flush() -> Result#[void, IoError]
+file.close() -> Result#[void, IoError]
+```
+
+**Planned** (future standard library):
+
+```klar
+fn read(path: ref Path) -> Result#[List#[u8], IoError]
+fn read_string(path: ref Path) -> Result#[String, IoError]
+fn write(path: ref Path, data: [u8]) -> Result#[void, IoError]
+fn write_string(path: ref Path, s: ref str) -> Result#[void, IoError]
+fn exists(path: ref Path) -> bool
+fn create_dir(path: ref Path) -> Result#[void, IoError]
+fn remove(path: ref Path) -> Result#[void, IoError]
+fn read_dir(path: ref Path) -> Result#[DirIter, IoError]
+```
+
+### stdlib.net.http
+
+```klar
+async fn get(url: ref str) -> Result#[Response, HttpError]
+async fn post(url: ref str, body: [u8]) -> Result#[Response, HttpError]
+
+struct Response {
+    status: u16
+    headers: Map#[String, String]
+    async fn text(self) -> Result#[String, HttpError]
+    async fn json#[T: Deserialize](self) -> Result#[T, HttpError]
+}
+```
+
+### stdlib.time
+
+```klar
+struct Duration {
+    fn from_secs(secs: u64) -> Duration
+    fn from_millis(ms: u64) -> Duration
+    fn as_secs(self: ref Self) -> u64
+}
+
+struct Instant {
+    fn now() -> Instant
+    fn elapsed(self: ref Self) -> Duration
+}
+
+struct DateTime {
+    fn now() -> DateTime
+    fn format(self: ref Self, format: ref str) -> String
+}
+
+async fn sleep(duration: Duration)
+```
+
+### stdlib.json
+
+```klar
+enum Json {
+    Null
+    Bool(bool)
+    Number(f64)
+    String(String)
+    Array(List#[Json])
+    Object(Map#[String, Json])
+}
+
+impl Json {
+    fn parse(s: ref str) -> Result#[Json, JsonError]
+    fn to_string(self: ref Self) -> String
+}
+
+trait Serialize {
+    fn to_json(self: ref Self) -> Json
+}
+
+trait Deserialize {
+    fn from_json(json: ref Json) -> Result#[Self, JsonError]
+}
+
+#[derive(Serialize, Deserialize)]
+struct User {
+    name: String
+    age: i32
+}
+```
+
+### stdlib.testing
+
+```klar
+#[test]
+fn test_addition() {
+    assert_eq(2 + 2, 4)
+}
+
+#[test]
+#[should_panic]
+fn test_panic() {
+    panic("expected")
+}
+```
+
+---
+
+## Module and Package System
+
+### Module Basics
+
+One file = one module.
+
+```klar
+// src/math/vector.kl
+module math.vector
+
+pub struct Vec2 {
+    pub x: f64
+    pub y: f64
+}
+
+pub fn add(a: Vec2, b: Vec2) -> Vec2 {
+    return Vec2 { x: a.x + b.x, y: a.y + b.y }
+}
+
+fn helper() { ... }  // private
+```
+
+### Imports
+
+```klar
+import stdlib.collections
+import stdlib.collections.{ List, Map }
+import stdlib.collections.*
+import stdlib.collections.HashMap as Map
+import .sibling_module
+import ..parent.other
+```
+
+### Visibility
+
+```klar
+pub fn public_function() { }
+fn private_function() { }
+pub(package) fn internal_api() { }
+
+pub struct User {
+    pub name: String      // public field
+    password: String      // private field
+}
+```
+
+### Package Structure
+
+```
+my_project/
+├── package.kl           # manifest
+├── src/
+│   ├── lib.kl           # library root
+│   ├── main.kl          # binary entry
+│   └── utils.kl
+├── tests/
+│   └── utils_test.kl
+└── deps.lock
+```
+
+### Package Manifest
+
+```klar
+// package.kl
+
+package {
+    name: "myproject"
+    version: "1.0.0"
+    authors: ["Author <author@example.com>"]
+    license: "MIT"
+}
+
+targets {
+    lib {
+        path: "src/lib.kl"
+    }
+    bin "myapp" {
+        path: "src/main.kl"
+    }
+}
+
+dependencies {
+    "json": "2.1.0"
+    "http": ">=1.0.0, <2.0.0"
+    "utils": { git: "https://github.com/example/utils", tag: "v1.2.3" }
+}
+
+dev_dependencies {
+    "mocking": "1.0.0"
+}
+```
+
+### CLI Commands
+
+```bash
+klar new myproject       # create package
+klar build               # build
+klar run                 # run default binary
+klar test                # run tests
+klar fmt                 # format
+klar check               # type check only
+klar add json            # add dependency
+klar publish             # publish to registry
+```
+
+### Conditional Compilation
+
+```klar
+const DEBUG: bool = env.var("DEBUG") ?? false
+
+fn log(msg: string) {
+    if comptime DEBUG {
+        print(msg)
+    }
+}
+```
+
+---
+
+## C Interoperability
+
+### Extern Functions
+
+Klar can declare and call C functions using `extern fn` syntax:
+
+```klar
+// Individual extern declarations
+extern fn printf(format: *const u8, ...) -> i32
+extern fn malloc(size: usize) -> *mut void
+extern fn free(ptr: *mut void)
+
+// Block syntax for grouping
+extern "C" {
+    fn puts(s: *const u8) -> i32
+    fn getenv(name: *const u8) -> *const u8
+    fn exit(status: i32) -> !
+}
+```
+
+Use `@link_name` to map a Klar function name to a different C symbol:
+
+```klar
+@link_name("SDL_Init")
+extern fn sdl_init(flags: u32) -> i32
+```
+
+Variadic functions use `...` after the last typed parameter:
+
+```klar
+extern fn printf(format: *const u8, ...) -> i32
+```
+
+### Raw Pointer Types
+
+C interop introduces raw pointer types for direct memory access:
+
+```klar
+// Immutable pointer (like const T* in C)
+let ptr: *const i32 = &value
+
+// Mutable pointer (like T* in C)
+let ptr: *mut i32 = &mut value
+
+// Void pointer (like void* in C)
+let ptr: *void = raw_ptr
+let ptr: *mut void = raw_mut_ptr
+
+// Nullable pointer (optional pointer)
+let maybe_ptr: ?*i32 = get_optional_ptr()
+
+// Pointer to many (like T* array in C)
+let arr_ptr: [*]i32 = get_array_ptr()
+let arr_ptr: [*:0]u8 = get_null_terminated_string()  // Sentinel-terminated
+```
+
+Pointer arithmetic is allowed inside `unsafe` blocks:
+
+```klar
+unsafe {
+    let next: *i32 = ptr + 1  // Advance by sizeof(i32)
+}
+```
+
+### C-Compatible Integer Types
+
+Platform-specific C integer types ensure correct ABI matching:
+
+```klar
+c_char, c_short, c_int, c_long, c_longlong
+c_uchar, c_ushort, c_uint, c_ulong, c_ulonglong
+c_size_t, c_ssize_t, c_ptrdiff_t
+```
+
+The null pointer constant:
+
+```klar
+let ptr: *void = null
+```
+
+### C-Compatible Structs and Unions
+
+`@repr(C)` ensures C-compatible memory layout (fields in declaration order, C alignment rules). `@packed` eliminates padding.
+
+```klar
+@repr(C)
+struct SDL_Rect {
+    x: c_int
+    y: c_int
+    w: c_int
+    h: c_int
+}
+
+@repr(C)
+@packed
+struct PackedData {
+    flag: u8
+    value: u32  // No padding before this
+}
+```
+
+Opaque types represent incomplete C types:
+
+```klar
+@opaque
+struct SDL_Window
+
+@opaque
+struct SDL_Renderer
+```
+
+Union types provide C-compatible untagged unions:
+
+```klar
+@repr(C)
+union Value {
+    i: c_int
+    f: f64
+    p: *void
+}
+```
+
+### Library Linking
+
+The `@link` attribute specifies which C library to link:
+
+```klar
+@link("SDL3")
+extern fn SDL_Init(flags: u32) -> c_int
+
+@link("ssl")
+@link("crypto")
+extern fn SSL_library_init() -> c_int
+
+// macOS framework
+@link(framework: "Cocoa")
+extern fn NSApplicationMain(argc: c_int, argv: *const *const u8) -> c_int
+```
+
+Libraries can also be specified in `klar.toml`:
+
+```toml
+[native-dependencies]
+SDL3 = { pkg-config = "sdl3" }
+sqlite = { path = "/usr/lib/libsqlite3.a", kind = "static" }
+```
+
+### Binding Generator
+
+`klar bindgen` generates Klar bindings from C headers using libclang:
+
+```bash
+klar bindgen SDL3/SDL.h -o src/sdl3.kl
+klar bindgen sqlite3.h --config bindgen.toml -o src/sqlite.kl
+```
+
+The generator produces `extern fn` declarations, `@repr(C)` struct definitions, type aliases, and preprocessor macro constants.
+
+### Safe Wrapper Patterns
+
+Idiomatic Klar wrappers provide safety over raw C APIs using RAII, error integration, and type-safe conversions:
+
+```klar
+// RAII wrapper — Drop cleans up C resource
+pub struct Window {
+    ptr: *sdl.Window
+}
+
+impl Window {
+    pub fn create(ref title: string, width: i32, height: i32) -> Result#[Window, SdlError] {
+        let c_title: CString = CString.from(title)
+        let ptr: ?*sdl.Window = unsafe {
+            sdl.CreateWindow(c_title.as_ptr(), width, height, sdl.WINDOW_SHOWN)
+        }
+        match ptr {
+            Some(p) => { return Ok(Window { ptr: p }) }
+            None => { return Err(SdlError.from_last()) }
+        }
+    }
+}
+
+impl Window: Drop {
+    fn drop(inout self: Window) -> void {
+        unsafe { sdl.DestroyWindow(self.ptr) }
+    }
+}
+```
+
+**String conversions** between Klar and C:
+
+```klar
+// Klar string → C string
+let c_str: CString = CString.from("hello")
+let ptr: *const u8 = c_str.as_ptr()
+
+// C string → Klar string
+let klar_str: string = CString.to_string(c_ptr)
+```
+
+**Callback wrappers** bridge Klar closures to C function pointers:
+
+```klar
+// C expects: void (*callback)(void* userdata)
+// Klar wrapper provides type safety
+fn set_callback(window: ref Window, handler: fn(Event) -> void) {
+    // Internal: converts closure to C function pointer + userdata
+}
+```
+
+---
+
+*See [ROADMAP.md](ROADMAP.md) for implementation phases and project roadmap.*
+
+```
+
+### `ROADMAP.md`
+
+```
+# Klar — Project Roadmap
+
+> **"No ambiguity. No surprises."** — An AI-native application programming language.
+
+For the language specification and design philosophy, see [DESIGN.md](DESIGN.md).
+For the active milestone plan, see [PLAN.md](PLAN.md).
+
+---
+
+Klar is a compiled language targeting application-level programming (like C#/Go) with ownership-based memory safety, explicit types, and AI-optimized syntax. The compiler is implemented in Zig with LLVM codegen, a bytecode VM, and a tree-walking interpreter.
+
+Current status: **Phase 7 in progress.** All milestones done (1–10, M, Phase 6). **2,058 tests passing.**
+
+---
+
+## Phase 1–3: Compiler Foundation ✅
+
+**Status:** Complete
+
+- [x] Lexer → Parser → AST → Type Checker pipeline
+- [x] Three backends: interpreter, bytecode VM, LLVM native
+- [x] Ownership-based memory management (Rc/Arc, automatic drop)
+- [x] Basic types, structs, enums, closures, optionals, results
+- [x] 252x speedup for native vs VM
+
+### Implementation Language: Zig
+
+**Reasons:** Simple, fast, explicit. Powerful comptime. No hidden allocations. Fast compilation.
+
+---
+
+## Phase 4: Language Completion ✅
+
+**Status:** Complete (13 milestones)
+
+> **Goal:** Complete the Klar language with generics, traits, modules, and standard library.
+>
+> **Archive:** [docs/history/phase4-language-completion.md](docs/history/phase4-language-completion.md)
+
+- [x] Generic type checking
+- [x] Generic structs and enums
+- [x] Trait definitions and implementations
+- [x] Trait bounds and method dispatch
+- [x] Trait inheritance
+- [x] Builtin traits (Eq, Ordered, Clone, Drop)
+- [x] Associated types
+- [x] Module system (imports)
+- [x] Standard library (List, Map, Set, String)
+- [x] Iterators and error handling (`?` operator)
+- [x] REPL and comptime
+- [x] FFI (including function pointers)
+- [x] Package manager, formatter, doc generator
+
+---
+
+## Phase 5: AI-Native Language Improvements ✅
+
+> **Goal:** Strengthen Klar's AI-native story across documentation, language features, testing, and tooling.
+>
+> **Inspiration:** [Nanolang](docs/design/nanolang-inspiration.md) · [MoonBit Semantic Sampler](docs/design/moonbit-semantic-sampler.md) · [DSPy](docs/design/dspy-opportunities.md)
+>
+> **Archive (Milestones 1–6, 8):** [docs/history/phase5-milestones.md](docs/history/phase5-milestones.md)
+
+### Completed Milestones
+
+- [x] LLM Reference File (Nanolang-inspired)
+- [x] Mandatory Function Return Types (MoonBit-inspired)
+- [x] Inline Test Blocks (`test`) (Nanolang-inspired)
+- [x] Structured Test Output (`--json`) (DSPy-inspired)
+- [x] LSP and Incremental Type Checking (MoonBit-inspired)
+- [x] Async/Await
+- [x] [Windows Support](#milestone-7-windows-support)
+- [x] [WebAssembly Target](#milestone-10-unambiguous-generic-syntax-t)
+- [x] [Self-Hosting](#milestone-9-self-hosting) (paused at 9.8)
+- [x] [Unambiguous Generic Syntax (`#[T]`)](#milestone-10-unambiguous-generic-syntax-t)
+- [x] [Meta Layer](#milestone-m-meta-layer)
+
+### Standard Library (Lodex Infrastructure) ✅
+
+**Status:** Complete — Phases 0–6 done. See [PLAN.md](PLAN.md) for full detail.
+
+Built general-purpose stdlib libraries needed by [Lodex](../Lodex/DESIGN.md):
+
+- [x] Foundational builtins: env, fs_stat, process_run, timestamp
+- [x] JSON parser/stringify (`stdlib/json.kl`)
+- [x] SHA-256 hashing, FIPS 180-4 (`stdlib/sha256.kl`)
+- [x] TOML parser/stringify (`stdlib/toml.kl`)
+- [x] CLI argument parsing (`stdlib/cli.kl`)
+- [x] Integration validation (`test/module/integration/`)
+- [x] Async I/O and HTTP ([Phase 6](#phase-6-async-io-and-http-))
+
+---
+
+### Milestone 7: Windows Support ✅
+
+**Objective:** First-class Windows developer and runtime support across build, test, and tooling workflows.
+
+**Status:** Complete
+
+- [x] **7.1–7.11** Compiler cross-platform changes
+- [x] **7.12** Windows on-device testing (CI runs on `windows-latest` with MSVC + LLVM)
+- [x] **7.13** CI: Windows matrix job in `.github/workflows/ci.yml`
+- [x] **7.14** Documentation: Windows setup guide in `docs/getting-started/installation.md`
+
+**Known Limitations:**
+- Test scripts (`run-tests.sh`, etc.) require WSL or Git Bash on Windows
+- `klar run` on Windows shows temp binary path as `args[0]` instead of source path
+- Cross-compilation of filesystem operations to Windows from non-Windows is not supported
+
+**Success Criteria:**
+- [x] Repository builds on macOS with zero regressions
+- [x] Repository builds and full test suite pass on supported Windows environments
+- [x] CLI and LSP workflows behave consistently with macOS/Linux
+- [x] Windows-specific path/stdio regressions are covered by tests
+- [x] Contributor docs include complete Windows development setup
+
+---
+
+### Milestone M: Meta Layer ✅
+
+**Objective:** Implement the `meta` keyword system for embedding intent, architecture, and design decisions in Klar source code — compiler-validated, CLI-queryable, zero runtime cost.
+
+**Status:** Complete (M.1–M.8)
+
+- [x] Token, AST, and declaration fields (M.1)
+- [x] Simple annotation parsing: intent, decision, tag, hint, deprecated, pure (M.2)
+- [x] Block and group parsing: module, guide, related, group def/join (M.3)
+- [x] Backend passthrough and formatter (M.4)
+- [x] Checker validation: related targets, group refs, deprecation warnings, scope rules (M.5)
+- [x] Pure verification: side-effect analysis with transitive purity checking (M.6)
+- [x] Custom annotations: `meta define`, string union constraints, scope restrictions, cross-module import (M.7)
+- [x] `klar meta` CLI command: --tag, --module, --related, --deprecated, --hints, --json (M.8)
+
+**Design Spec:** [docs/design/meta-layer.md](docs/design/meta-layer.md)
+
+---
+
+### Milestone 9: Self-Hosting ✅ (paused at 9.8)
+
+**Objective:** Implement the Klar compiler front-end (lexer through type checker) in Klar itself, enabling the language to compile its own compiler.
+
+**Status:** Paused — 9.1–9.8 complete. Lexer, AST, parser at full parity (259/259 files, 789/789 tests). Type system definitions done. Checker parity 284/284 (100%). E2E pipeline 258/258 (100%). Bootstrap validation passed (Stage 1 self-parsing). 9.9+ paused pending further work.
+
+**Scope:** Frontend only (lexer through type checker). The LLVM codegen stays in Zig. The self-hosted frontend serializes AST/typed-AST for the Zig backend to consume.
+
+**Estimated Total:** ~11,000–16,000 lines of Klar
+
+---
+
+### Milestone 10: Unambiguous Generic Syntax (`#[T]`) ✅
+
+**Status:** Complete
+
+Eliminated syntactic ambiguity between generics and array indexing. `[` is **always** arrays; `#[` is **always** generics. Deleted `isTypeArgsFollowedByCall()` lookahead heuristic entirely. Updated all 139+ `.kl` source files, selfhost parser, and documentation.
+
+**Design Decisions:**
+1. Two tokens (`hash` + `l_bracket`), not one compound token — lexer stays simple
+2. `#[T]` everywhere — declarations, type applications, method calls, casts
+3. `isTypeArgsFollowedByCall()` deleted — the entire lookahead heuristic became unnecessary
+
+---
+
+## Phase 6: Async I/O and HTTP ✅
+
+**Status:** Complete (2026-03-05)
+
+**Goal:** Build async I/O and HTTP capabilities for Lodex's evaluation engine and HTTP API.
+
+### 6A: Async Subprocess
+- [x] `process_spawn`, `process_poll`, `process_wait`, `process_read_stdout` builtins
+- [x] Non-blocking subprocess execution via `posix_spawn` + pipe-based stdout capture
+
+### 6B: TCP Sockets
+- [x] `tcp_listen`, `tcp_accept`, `tcp_connect`, `tcp_read`, `tcp_write`, `tcp_close` builtins
+- [x] `tcp_set_nonblocking`, `tcp_listener_close` builtins
+- [x] Platform-specific constants (macOS vs Linux)
+
+### 6C: HTTP Server
+- [x] `stdlib/http_server.kl` — pure Klar HTTP server built on TCP builtins
+- [x] Request routing, JSON request/response
+
+### 6D: HTTP Client
+- [x] `stdlib/http_client.kl` — pure Klar HTTP client built on TCP builtins
+- [x] GET/POST requests, response parsing
+
+## Phase 7: Standard Library for Self-Hosting (In Progress)
+
+**Goal:** Build the stdlib modules required to complete the self-hosting bootstrap (Phase 8).
+
+See [PLAN.md](PLAN.md) for full detail.
+
+### 7.0: StringBuilder ✅
+- [x] `stdlib/string_builder.kl` — efficient string building via `List#[string]` backing store
+- [x] Module test (15 tests)
+
+### 7.1: Path Manipulation ✅
+- [x] `stdlib/path.kl` — path join, parent, file_name, extension, stem, is_absolute, normalize
+- [x] Module test (48 tests)
+
+### 7.2: Directory Walking ✅
+- [x] `stdlib/dir.kl` — dir_list, dir_list_ext, dir_walk, dir_walk_ext
+- [x] Module test (21 tests)
+
+### 7.3: File Writing
+- [ ] `stdlib/file.kl` — `file_write(path, content)`, `file_write_lines(path, lines)`, `file_append(path, content)`
+- [ ] Module test (`test/module/file/main.kl`) — write/read-back, append, overwrite, write_lines round-trip (follow pattern of 7.0–7.2 tests)
+
+### 7.4: Integration & Selfhost Validation
+- [ ] Integration test (`test/module/stdlib_integration/main.kl`) — use path.kl to construct paths, dir.kl to walk directories, string_builder.kl to build content, file.kl to write output, then read back and verify
+- [ ] Update `docs/README.md` table of contents to include file.kl, path.kl, dir.kl API references
+- [ ] No regressions in full test suite (`./run-tests.sh` passes)
+
+### Phase 7 Readiness Gate
+Before Phase 8, these must be true:
+- [ ] All four stdlib modules (string_builder, path, dir, file) have passing module tests
+- [ ] Integration test passes end-to-end
+- [ ] `./run-tests.sh` passes with no regressions
+- [ ] Selfhost compiler files can import and use these modules (smoke test)
+
+---
+
+## Phase 8: Self-Hosting Completion (Planned)
+
+**Goal:** Complete the bootstrap loop — the selfhost compiler compiles itself.
+
+Resumes from Milestone 9.8 (paused in Phase 5). The selfhost frontend (lexer, parser, checker) is at full parity (284/284 checker, 258/258 E2E).
+
+### 8.1: Selfhost Frontend Output
+- [ ] Define serialization format for typed AST (JSON schema or binary) consumable by Zig codegen backend
+- [ ] Selfhost frontend (`selfhost/`) emits typed AST for all test/native/ files
+- [ ] Zig backend (`src/codegen/`) accepts `--typed-ast-input` and produces identical binaries to the standard pipeline
+- [ ] Validation: compile test/native/ files via both pipelines, compare exit codes and stdout
+
+### 8.2: Bootstrap Stage 1
+- [ ] Selfhost frontend compiles its own source files (lexer.kl, parser.kl, checker.kl, etc.) and emits typed AST
+- [ ] Zig backend consumes that AST and produces a working selfhost binary (Stage 1 binary)
+- [ ] Stage 1 binary passes the same E2E test suite as the Zig-compiled selfhost
+
+### 8.3: Bootstrap Stage 2 (Reproducibility)
+- [ ] Stage 1 binary compiles selfhost source → produces Stage 2 typed AST
+- [ ] Stage 2 typed AST matches Stage 1 typed AST (bit-for-bit or normalized comparison)
+- [ ] Document the bootstrap process in docs/
+
+### Phase 8 Readiness Gate
+Before Phase 9, these must be true:
+- [ ] Selfhost frontend emits typed AST accepted by Zig backend
+- [ ] Stage 1 binary passes full E2E suite
+- [ ] Stage 2 AST matches Stage 1 AST (bootstrap is stable)
+
+---
+
+## Phase 9: Standard Library & Ecosystem (Planned)
+
+**Goal:** Build a production-quality standard library and package ecosystem.
+
+### 9.1: Collections
+- [ ] BTreeMap with ordered iteration, insert, get, remove
+- [ ] Deque (double-ended queue) with push_front, push_back, pop_front, pop_back
+- [ ] PriorityQueue (min-heap) with push, pop, peek
+- [ ] Module tests for each collection
+
+### 9.2: Networking
+- [ ] UDP socket builtins: udp_bind, udp_send_to, udp_recv_from
+- [ ] DNS resolution builtin: dns_lookup(hostname) -> List#[string]
+- [ ] Module tests for UDP and DNS
+
+### 9.3: Serialization
+- [ ] YAML parser/stringify (`stdlib/yaml.kl`)
+- [ ] Module tests for YAML
+
+### 9.4: Concurrency
+- [ ] Channel-based communication: channel#[T](), Sender, Receiver (as specified in DESIGN.md)
+- [ ] Thread pool: spawn tasks across worker threads
+- [ ] Module tests for channels and thread pool
+
+### 9.5: Package Registry
+- [ ] `klar add <package>` fetches from a registry URL
+- [ ] `klar publish` uploads package to registry
+- [ ] deps.lock file generation and resolution
+- [ ] Registry server (minimal HTTP API for package upload/download)
+
+### 9.6: Documentation Site
+- [ ] `klar doc` generates HTML from doc comments (extend existing doc generator)
+- [ ] Index page with module listing and search
+
+### Stretch Goals
+- [ ] Windows `process_spawn` via `CreateProcessW` (currently POSIX-only)
+
+### Phase 9 Readiness Gate
+Before Phase 10, these must be true:
+- [ ] All new collections have module tests passing
+- [ ] Networking and serialization modules have module tests passing
+- [ ] `klar add` and `klar publish` work end-to-end against registry
+- [ ] `./run-tests.sh` passes with no regressions
+
+## Phase 10: Production Readiness (Planned)
+
+**Goal:** Polish for real-world adoption.
+
+### 10.1: Error Messages
+- [ ] Source snippets in error output: show the offending line with underline caret pointing to error location
+- [ ] "Did you mean X?" suggestions for undefined variables and typos (edit distance matching)
+- [ ] Multi-line error context for type mismatch errors (show expected vs actual with source)
+
+### 10.2: Debugging
+- [ ] Verify `-g` flag produces correct DWARF debug info for lldb: stepping, breakpoints, variable inspection
+- [ ] Fix any missing or incorrect source location mappings in LLVM codegen
+- [ ] Document debugging workflow in docs/ (lldb commands for Klar binaries)
+
+### 10.3: Compilation Performance
+- [ ] Benchmark compilation speed on selfhost source files, establish baseline
+- [ ] Profile and optimize slowest compilation phases (parser, checker, or codegen)
+
+### 10.4: Runtime Performance
+- [ ] Establish runtime benchmark suite (fibonacci, sorting, string processing)
+- [ ] Add at least one new LLVM optimization pass or improve existing pass pipeline
+
+### 10.5: Stability
+- [ ] Fuzz the parser with AFL or libFuzzer — no crashes on arbitrary input
+- [ ] Property-based tests for type checker (random valid programs type-check successfully)
+
+### 10.6: Platform Support
+- [ ] Linux ARM64: CI job, full test suite passing
+- [ ] Windows ARM64: CI job, full test suite passing
+
+### Phase 10 Readiness Gate
+Before Phase 11, these must be true:
+- [ ] Error messages include source snippets for all type errors
+- [ ] `klar build -g` + lldb can step through a simple Klar program
+- [ ] Parser fuzzer runs 1M+ inputs with zero crashes
+- [ ] All CI platforms (x64 + ARM64) pass full test suite
+
+## Phase 11: Advanced Language Features (Exploratory)
+
+**Goal:** Evaluate and selectively adopt features that align with Klar's philosophy.
+
+Each feature follows an evaluate-then-implement pattern. Evaluation may conclude with "not pursuing" — that is a valid outcome.
+
+### 11.1: Effect System
+- [ ] Research: write design doc evaluating algebraic effects for Klar (syntax, semantics, interaction with ownership)
+- [ ] Decision: go/no-go based on complexity vs value for application-level programming
+- [ ] If go: implement effect declarations, handler syntax, and checker support
+
+### 11.2: Constrained Decoding
+- [ ] Research: write design doc for grammar spec format (GBNF, JSON schema, or custom) enabling LLM-guided Klar code generation
+- [ ] Decision: go/no-go based on LLM tooling ecosystem compatibility
+- [ ] If go: implement `klar grammar` CLI command that outputs the Klar grammar spec
+
+### 11.3: Formal Verification
+- [ ] Research: write design doc for lightweight contracts (preconditions, postconditions, invariants) — runtime checks vs static analysis
+- [ ] Decision: go/no-go based on alignment with "no ambiguity, no surprises" philosophy
+- [ ] If go: implement contract syntax and checker/runtime support
+
+### 11.4: Incremental Compilation
+- [ ] Research: profile full rebuild to identify caching opportunities (AST, typed AST, object files)
+- [ ] Decision: go/no-go based on measured rebuild times vs implementation effort
+- [ ] If go: implement module-level caching with invalidation based on file content hash
+
+---
+
+### References
+
+**Nanolang:**
+- [Nanolang GitHub](https://github.com/jordanhubbard/nanolang)
+- [Design Analysis](docs/design/nanolang-inspiration.md)
+
+**MoonBit:**
+- [MoonBit Paper (IEEE)](https://ieeexplore.ieee.org/document/10734654/)
+- [MoonBit Paper (ACM)](https://dl.acm.org/doi/10.1145/3643795.3648376)
+- [Design Analysis](docs/design/moonbit-semantic-sampler.md)
+
+**DSPy:**
+- [DSPy Paper (arXiv)](https://arxiv.org/abs/2310.03714)
+- [DSPy Paper (ICLR 2024)](https://openreview.net/pdf?id=sY5N0zY5Od)
+- [Design Analysis](docs/design/dspy-opportunities.md)
+
+---
+
+### Backlog: Selfhost Parser Known Limitations
+
+Deferred tech debt from the Milestone 9.6 selfhost parser work.
+
+- [ ] `parse_int_value`: hex/binary/octal literals use i64 computation (overflow possible for values > i64 max)
+- [ ] `process_string_escapes`: `\u` and `\x` escape sequences not handled (falls through to unknown escape)
+- [ ] `final_expr` detection in `parse_block` uses fragile JSON prefix string matching (acknowledged by COUPLING comment)
+- [ ] `is_extern` exemption in mandatory return type check is moot: Zig parser rejects standalone `extern fn`, so the selfhost exemption has no test coverage
+
+```
+
+## Project Conventions (CLAUDE.md)
+
+The following are the project coding conventions:
+
+```markdown
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Klar is an **AI-native application programming language** designed for AI code generation. Three principles govern the design: **"No ambiguity. No surprises."** + **"The code explains itself."** + **"Explicitness earns its characters."** (See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md))
+
+### Design Principles
+
+1. **Parseable at a glance** — Syntax should be understandable without surrounding context. Every construct is self-describing. This benefits both humans reading code and AI generating it.
+   - `[i32; 3]` not `i32[3]` — array type is self-contained, no lookahead needed
+   - `and`, `or`, `not` not `&&`, `||`, `!` — keywords over symbols
+   - Explicit type annotations — `let x: i32 = 5` not `let x = 5`
+
+2. **No undefined behavior** — Every operation has defined semantics.
+   - Explicit overflow: `+%` (wrapping), `+|` (saturating)
+   - Bounds checking on array access
+   - No null pointers (use `?T` optionals)
+
+3. **No implicit conversions** — Type changes must be explicit.
+   - `.as#[T]` for safe conversions
+   - `.to#[T]` for fallible conversions
+   - `.trunc#[T]` for truncating conversions
+
+4. **Ownership without complexity** — Memory safety via ownership, but simpler than Rust.
+   - No lifetime annotations
+   - Reference counting where needed (`Rc#[T]`, `Arc#[T]`)
+
+Klar targets application-level programming (like C#/Go), not bare-metal systems (like C/Rust/Zig). This is why `.len()` returns `i32` for ergonomic loop counter usage.
+
+## Documentation
+
+Comprehensive language documentation is available in the `docs/` directory:
+
+- **[docs/README.md](docs/README.md)** - Entry point with table of contents
+- **Getting Started** - Installation, hello world, CLI reference, REPL guide
+- **Language Guide** - Variables, functions, control flow, structs, enums, traits, generics, error handling, modules
+- **Type System** - Primitives, arrays, tuples, optional, result, collections, smart pointers, I/O
+- **Memory Model** - Ownership, references, reference counting
+- **Advanced** - Operators, comptime, builtin traits
+- **Appendix** - Built-in functions, keywords
+
+## Build Commands
+
+```bash
+# Build the compiler (ALWAYS use wrapper script)
+./run-build.sh
+
+# Run ALL tests (ALWAYS use this for AirTower integration)
+./run-tests.sh           # Runs all test suites (unit, native, app, module)
+
+# Run individual test suites (in scripts/ directory)
+./scripts/run-unit-tests.sh     # Zig unit tests
+./scripts/run-native-tests.sh   # Native compilation tests (test/native/)
+./scripts/run-app-tests.sh      # Reference application tests
+./scripts/run-module-tests.sh   # Module system tests
+./scripts/run-benchmarks.sh     # VM vs native benchmarks (not included in run-tests.sh)
+
+# DO NOT run `zig build` or `zig build test` directly
+```
+
+## Klar Command Rules
+
+**NEVER** use `./zig-out/bin/klar` directly in Bash commands. Always use the corresponding skill:
+
+| Action | Use Skill |
+|--------|-----------|
+| Run a .kl file | `/klar-run` |
+| Test a .kl file | `/klar-test` |
+| Build an executable | `/klar-build` |
+| Type-check a file | `/klar-check` |
+
+If you find yourself typing `./zig-out/bin/klar` in a Bash command, **STOP** and use the skill instead.
+
+## Running Klar Programs
+
+```bash
+# Run with bytecode VM (default)
+./zig-out/bin/klar run program.kl
+
+# Run with tree-walking interpreter
+./zig-out/bin/klar run program.kl --interpret
+
+# Compile to native executable (outputs to build/ by default)
+./zig-out/bin/klar build program.kl              # -> build/program
+./zig-out/bin/klar build program.kl -o myapp     # -> myapp (explicit path)
+./zig-out/bin/klar build program.kl -O2          # -> build/program (optimized)
+./zig-out/bin/klar build program.kl -g           # -> build/program (debug info)
+
+# Debug output
+./zig-out/bin/klar build program.kl --emit-llvm         # Output .ll file
+./zig-out/bin/klar build program.kl --emit-asm          # Output .s file
+./zig-out/bin/klar build program.kl --emit-ir           # Output internal IR
+```
+
+**Build output convention:** When no `-o` flag is specified, executables are placed in the `build/` directory (gitignored). Use `-o` to specify a custom output path.
+
+## Interactive REPL
+
+The REPL (Read-Eval-Print Loop) enables interactive code exploration using the interpreter backend:
+
+```bash
+# Start the REPL
+./zig-out/bin/klar repl
+```
+
+### REPL Commands
+
+| Command | Description |
+|---------|-------------|
+| `:help` | Show available commands |
+| `:type <expr>` | Show the type of an expression without evaluating |
+| `:list` | Show all current bindings (variables, functions, types) |
+| `:load <file>` | Load definitions from a Klar file |
+| `:reset` | Clear all bindings and start fresh |
+| `:quit` or `:q` | Exit the REPL |
+
+### REPL Usage Examples
+
+```
+klar> let x: i32 = 42
+klar> x + 10
+52
+klar> fn double(n: i32) -> i32 { return n * 2 }
+klar> double(x)
+84
+klar> :type double(x)
+i32
+klar> :list
+Variables:
+  x: i32
+Functions:
+  double: fn(i32) -> i32
+```
+
+**Notes:**
+- State persists across inputs (variables, functions, structs remain defined)
+- Uses the interpreter backend (not VM or native compilation)
+- Errors don't crash the session - you can continue after errors
+- Multi-file imports not yet supported in REPL
+
+## Compiler Architecture
+
+The compiler is a multi-stage pipeline with three execution backends:
+
+```
+Source (.kl) → Lexer → Parser → AST → Type Checker → [Backend]
+                                            ↓
+              ┌─────────────────────────────┴─────────────────────────────┐
+              │                             │                             │
+         Interpreter              Bytecode Compiler              IR Builder
+         (--interpret)               (default)                      ↓
+              │                         │                      LLVM Codegen
+              ↓                         ↓                           ↓
+           Output                      VM                    Native Binary
+```
+
+### Key Source Files
+
+| File | Purpose | Lines |
+|------|---------|-------|
+| `src/main.zig` | CLI entry point, command routing | 1,650 |
+| `src/lexer.zig` | Tokenization | 595 |
+| `src/parser.zig` | Recursive descent parser with generics/traits | 2,600+ |
+| `src/checker.zig` | Type checking, trait resolution, monomorphization | **5,700+** |
+| `src/codegen/emit.zig` | LLVM IR generation | **11,000+** |
+| `src/vm.zig` | Bytecode virtual machine | 2,570 |
+| `src/compiler.zig` | AST to bytecode compiler | 2,100 |
+| `src/interpreter.zig` | Tree-walking interpreter | 2,500 |
+| `src/types.zig` | Type representation and operations | 975 |
+
+### Module Organization
+
+- **Frontend**: `lexer.zig`, `parser.zig`, `ast.zig`, `token.zig`
+- **Type System**: `checker.zig`, `types.zig`
+- **Ownership**: `src/ownership/` - borrow checking, drop insertion, state tracking
+- **Optimization**: `src/opt/` - constant folding, DCE, simplification
+- **IR**: `src/ir/` - intermediate representation for native codegen
+- **Codegen**: `src/codegen/` - LLVM backend
+- **Runtime**: `src/runtime/` - Rc, Arc, allocator definitions
+
+## Current Implementation Status
+
+**Phase 3: Language Completion** (in progress) - See `PLAN.md` for full roadmap.
+
+| Feature | Status |
+|---------|--------|
+| Generic functions/structs/enums | ✅ Complete |
+| Monomorphization | ✅ Complete |
+| Trait definitions/implementations | ✅ Complete |
+| Trait bounds on generics | ✅ Complete |
+| Trait inheritance | ✅ Complete |
+| Builtin traits (Eq, Ordered, Clone, Drop) | ✅ Complete |
+| Associated types | ✅ Complete |
+| Module system (imports) | ✅ Complete |
+| Standard library | ❌ Not started |
+
+**Note:** `Option#[T]` and `Result#[T, E]` are built-in generic enums handled by the compiler, not yet user-definable types.
+
+## Language Syntax Quick Reference
+
+```klar
+// Variables (explicit types required)
+let x: i32 = 42         // immutable
+let y: i64 = 100        // all types must be declared
+var counter: i32 = 0    // mutable
+
+// Functions (always use explicit return)
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn max#[T: Ordered](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+// Entry point with command-line arguments
+fn main(args: [String]) -> i32 {
+    println(args.len().to_string())  // Print arg count
+    return 0
+}
+// args[0] is the program path (source file for klar run, binary for standalone)
+// args[1..] are user arguments
+// Use `klar run file.kl arg1 arg2` or `klar run file.kl -- --flag`
+
+// Closures (explicit types and return required)
+let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
+
+// Structs and methods
+struct Point { x: f64, y: f64 }
+impl Point {
+    fn distance(self) -> f64 {
+        return sqrt(self.x * self.x + self.y * self.y)
+    }
+}
+
+// Enums with data
+enum Option#[T] { Some(T), None }
+enum Result#[T, E] { Ok(T), Err(E) }
+
+// Traits
+trait Drawable { fn draw(self) -> void }
+impl Circle: Drawable { fn draw(self) -> void { ... } }
+
+// Control flow (statement-based, not expressions)
+var max: i32
+if a > b {
+    max = a
+} else {
+    max = b
+}
+
+for i: i32 in 0..10 { ... }
+
+var result: string
+match value {
+    Pattern => { result = "matched" }
+    _ => { result = "default" }
+}
+
+// Error handling
+let maybe: ?i32 = Some(42)
+let value: i32 = maybe ?? 0          // default if None
+
+fn read_config() -> Result#[Config, Error] {
+    let content: string = read_file(path)?   // propagate error
+    return Ok(parse(content))
+}
+```
+
+## Development Guidelines
+
+### Zig 0.15 Gotchas
+
+- `ArrayListUnmanaged`: zero-init with `{}`, not `.init()`. Pass allocator to every method (`append`, `deinit`, `toOwnedSlice`).
+- `root_source_file` is deprecated in build.zig — use `root_module` pattern instead.
+- `var x: u32 = undefined; x += 1;` is a compile error — initialize before arithmetic.
+- `File.Writer` has no `.print()` — use `std.fmt.bufPrint()` + `writeAll()`.
+- `usingnamespace` is removed — use explicit imports.
+
+### When Adding Language Features
+
+1. **Parser** (`parser.zig`): Add AST nodes and parsing rules
+2. **AST** (`ast.zig`): Define node structures
+3. **Checker** (`checker.zig`): Implement type checking and validation
+4. **All three backends**: Update interpreter, bytecode compiler, and native codegen
+
+### When Debugging
+
+- **Use `klar run` for quick testing** - Don't build to a temp file and execute separately. Use `./zig-out/bin/klar run file.kl` instead of `./zig-out/bin/klar build file.kl -o /tmp/test && /tmp/test`
+- Use `--interpret` flag with `klar run` to use the tree-walking interpreter instead of the bytecode VM
+- Use `--emit-llvm` to inspect generated LLVM IR
+- Use `--emit-ir` to inspect internal IR before LLVM
+- The VM has `--debug` flag for bytecode tracing
+- Tests in `test/native/` cover most language features
+
+### AirTower Integration
+
+Wrapper scripts write results to JSON files read by AirTower:
+- `.build-results.json` - Build status
+- `.test-results.json` - Unit test results
+- `.native-test-results.json` - Native compilation test results
+
+## Scratch Directory
+
+The `scratch/` directory is your sandbox. You have full freedom to:
+- Create any files or directories
+- Modify or delete anything
+- Run experiments and tests
+- Store working notes and analysis
+
+Use it liberally for:
+- Trying out Klar code implementations before proposing changes
+- Creating test fixtures and sample `.kl` files
+- Writing analysis and comparisons of approaches
+- Any temporary work that doesn't belong in the main codebase
+
+The scratch directory is gitignored and can be cleaned at any time.
+```
+
+## Known Issues (BUG.md)
+
+These bugs are currently open and may be relevant to your task:
+
+```markdown
+## [ ] Bug 1: Task 26 stuck — Implement `file_append(path, content)` in `stdlib/file.kl` — append string content to an existing file, creating if not exists. (per DESIGN.md section "Standard Library", `stdlib.fs`) Tests should cover: append to existing file, append to non-existent file (creates it), multiple appends accumulate.
+
+**Task:** 26
+**Logged:** 2026-03-07T00:07:20Z
+
+## Blocker Report: Task 26
+
+**Step:** implement
+**Timestamp:** 2026-03-07T00:07:17Z
+
+### What Was Attempted
+
+Blueprint step "implement" for task 26.
+
+### What Failed
+
+```
+No source files were created or modified by the implementation step.
+```
+
+### Root Cause Hypothesis
+--
+## [ ] Bug 2: Task 28 stuck — Write integration test `test/module/stdlib_integration/main.kl` — use path.kl to construct paths, dir.kl to walk directories, string_builder.kl to build content, file.kl to write output, then read back and verify. Register in `scripts/run-module-tests.sh`. (per ROADMAP.md section "7.4: Integration & Selfhost Validation") Tests should cover: end-to-end pipeline combining all four stdlib modules, path construction + directory listing + content building + file writing + read-back verification.
+
+**Task:** 28
+**Logged:** 2026-03-07T00:59:04Z
+
+No blocker report available.
+
+---
+```
+

@@ -81,7 +81,8 @@ const stat_size_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.
 /// On macOS/BSD, the field is st_mtimespec (struct timespec); tv_sec is at offset 0 within it.
 /// On Linux (glibc), the field is st_mtim (struct timespec).
 /// We read the time_t value (first field of timespec) at this offset.
-const stat_mtime_offset: u32 = if (has_posix_headers) blk: {
+const stat_mtime_offset: u32 = if (has_posix_headers)
+blk: {
     break :blk if (@hasField(posix.struct_stat, "st_mtimespec"))
         @offsetOf(posix.struct_stat, "st_mtimespec") // macOS/BSD
     else if (@hasField(posix.struct_stat, "st_mtim"))
@@ -6549,8 +6550,7 @@ pub const Emitter = struct {
                             return null;
                         },
                     }
-                } else {
-                }
+                } else {}
                 break;
             }
         }

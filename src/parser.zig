@@ -48,7 +48,7 @@ fn isValidExpressionContent(content: []const u8) bool {
     var pos: usize = 0;
     while (pos < content.len and
         (content[pos] == ' ' or content[pos] == '\t' or
-        content[pos] == '\n' or content[pos] == '\r'))
+            content[pos] == '\n' or content[pos] == '\r'))
     {
         pos += 1;
     }
@@ -103,7 +103,7 @@ fn hasValidInterpolation(content: []const u8) bool {
             var first_char_pos: usize = 0;
             while (first_char_pos < inner.len and
                 (inner[first_char_pos] == ' ' or inner[first_char_pos] == '\t' or
-                inner[first_char_pos] == '\n' or inner[first_char_pos] == '\r'))
+                    inner[first_char_pos] == '\n' or inner[first_char_pos] == '\r'))
             {
                 first_char_pos += 1;
             }
@@ -1090,11 +1090,22 @@ pub const Parser = struct {
                 const next = self.peekNext();
                 switch (next.kind) {
                     // Binary operators indicate this is an expression
-                    .plus, .minus, .star, .slash, .percent,
-                    .eq_eq, .not_eq, .lt, .lt_eq, .gt, .gt_eq,
-                    .and_, .or_,
+                    .plus,
+                    .minus,
+                    .star,
+                    .slash,
+                    .percent,
+                    .eq_eq,
+                    .not_eq,
+                    .lt,
+                    .lt_eq,
+                    .gt,
+                    .gt_eq,
+                    .and_,
+                    .or_,
                     // These also indicate expression continuation
-                    .dot, .l_paren,
+                    .dot,
+                    .l_paren,
                     => return .{ .expr_arg = try self.parseExpression() },
                     // For comma/rparen, default to trying as type first
                     // This handles @typeInfo(UserType) correctly
@@ -1525,20 +1536,15 @@ pub const Parser = struct {
 
         // Accept either identifier or integer literal for field name
         // Integer literals are used for tuple indexing: tuple.0, tuple.1
-        const field_name = if (self.check(.identifier))
-            blk: {
-                const name = self.tokenText(self.current);
-                self.advance();
-                break :blk name;
-            }
-        else if (self.check(.int_literal))
-            blk: {
-                const name = self.tokenText(self.current);
-                self.advance();
-                break :blk name;
-            }
-        else
-            return ParseError.ExpectedIdentifier;
+        const field_name = if (self.check(.identifier)) blk: {
+            const name = self.tokenText(self.current);
+            self.advance();
+            break :blk name;
+        } else if (self.check(.int_literal)) blk: {
+            const name = self.tokenText(self.current);
+            self.advance();
+            break :blk name;
+        } else return ParseError.ExpectedIdentifier;
 
         // Check for method call with optional type arguments: foo.method[T]() or foo.method()
         if (self.check(.l_paren)) {

@@ -113,7 +113,7 @@ pub const OwnershipChecker = struct {
             .named => |n| {
                 // Primitive types are Copy
                 const copy_types = [_][]const u8{
-                    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                    "i8",  "i16", "i32",  "i64",  "u8",   "u16",   "u32",   "u64",
                     "f32", "f64", "bool", "char", "void", "usize", "isize",
                 };
                 for (copy_types) |ct| {
@@ -121,8 +121,8 @@ pub const OwnershipChecker = struct {
                 }
                 // Non-Copy named types
                 const non_copy_types = [_][]const u8{
-                    "String", "string", "Rc", "Arc", "List", "Map", "Set",
-                    "File", "Path", "BufReader", "BufWriter",
+                    "String", "string", "Rc",        "Arc",       "List", "Map", "Set",
+                    "File",   "Path",   "BufReader", "BufWriter",
                 };
                 for (non_copy_types) |nct| {
                     if (std.mem.eql(u8, n.name, nct)) return false;
