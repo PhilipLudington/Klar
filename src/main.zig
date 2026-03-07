@@ -2751,6 +2751,10 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         module_sources.deinit(allocator);
     }
 
+    // Source buffer must outlive codegen — AST string slices point into it.
+    var source_buf: ?[]u8 = null;
+    defer if (source_buf) |s| allocator.free(s);
+
     if (typed_ast_input_path) |json_path| {
         // Typed AST input: load pre-checked AST and populate checker from JSON.
         // Bypasses lexer/parser/checker — goes directly to codegen.
@@ -2773,8 +2777,6 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         try module_prefixes.append(allocator, null);
     } else {
         // Standard path: load AST from JSON or parse from source, then type check.
-        var source_buf: ?[]u8 = null;
-        defer if (source_buf) |s| allocator.free(s);
 
         const module = if (ast_input_path) |json_path| blk: {
             const json_content = readSourceFile(allocator, json_path) catch |err| {
