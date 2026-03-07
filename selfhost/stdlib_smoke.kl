@@ -1,0 +1,55 @@
+// selfhost/stdlib_smoke.kl — Smoke test: selfhost files can import and use stdlib modules
+// Phase 7 Readiness Gate validation
+//
+// Imports from both selfhost modules and all 4 stdlib modules to prove
+// they can coexist in a single compilation unit.
+
+import lexer.{Lexer, Token, TokenKind, tag_name}
+import parser.{Parser, new_parser}
+import ast.{AstModule}
+import stdlib.string_builder.*
+import stdlib.path.*
+import stdlib.dir.*
+import stdlib.file.*
+
+fn main(args: [String]) -> i32 {
+    // 1. Verify selfhost imports work (lexer, parser, ast)
+    var lex: Lexer = Lexer.new("let x: i32 = 1")
+    let tok: Token = lex.next_token()
+    assert_eq(tag_name(tok.kind), "let")
+    let p: Parser = new_parser("fn main() -> i32 { return 0 }")
+    let tc_placeholder: AstModule = AstModule { decls_start: 0, decls_count: 0 }
+    assert_eq(tc_placeholder.decls_count, 0)
+
+    // 2. Verify stdlib.string_builder works
+    var sb: StringBuilder = StringBuilder.new()
+    sb.append("hello")
+    sb.append(" world")
+    let built: string = sb.build()
+    assert_eq(built, "hello world")
+
+    // 3. Verify stdlib.path works
+    let joined: string = path_join("src", "main.kl")
+    assert_eq(joined, "src/main.kl")
+    let ext: ?string = path_extension("main.kl")
+    assert_eq(ext ?? "none", "kl")
+
+    // 4. Verify stdlib.dir works
+    let dir_res: Result#[List#[string], string] = dir_list("selfhost")
+    assert(dir_res.is_ok())
+    let entries: List#[string] = dir_res!
+    assert(entries.len() > 0)
+
+    // 5. Verify stdlib.file works (write + read round-trip)
+    let tmp_path: string = "/tmp/klar_selfhost_stdlib_smoke.txt"
+    let content: string = "selfhost stdlib smoke test"
+    let write_res: Result#[bool, IoError] = file_write(tmp_path, content)
+    assert(write_res.is_ok())
+    let read_res: Result#[String, IoError] = File.read_to_string(tmp_path)
+    assert(read_res.is_ok())
+    let read_back: String = read_res!
+    assert_eq(read_back.as_str(), content)
+
+    println("selfhost-stdlib smoke: all passed")
+    return 0
+}
