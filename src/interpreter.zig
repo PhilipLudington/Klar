@@ -168,7 +168,7 @@ pub const Interpreter = struct {
 
     /// Initialize the builder's allocator to use the runtime arena.
     /// Must be called after the Interpreter is in its final memory location.
-    fn ensureBuilderInitialized(self: *Interpreter) void {
+    pub fn ensureBuilderInitialized(self: *Interpreter) void {
         if (!self.builder_initialized) {
             self.builder = ValueBuilder.init(self.runtime_arena.allocator());
             self.builder_initialized = true;

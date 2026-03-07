@@ -1,0 +1,1330 @@
+## Your Task
+
+Write module test `test/module/file/main.kl` and register in `scripts/run-module-tests.sh` — follow the pattern of existing module tests (7.0–7.2). (per ROADMAP.md section "7.3: File Writing") Tests should cover: write/read-back round-trip, append, overwrite, write_lines with multi-element list and read-back verification.
+
+## Project Configuration
+
+- **Project:** Klar
+- **Language:** zig
+- **Source directory:** src/
+- **Test directory:** src/tests/
+- **Build command:** `zig build`
+- **Test command:** `zig build test`
+- **Format command:** `zig fmt .`
+
+## Existing Source Code
+
+The following files already exist and are relevant to your task:
+
+### `ROADMAP.md`
+
+```
+# Klar — Project Roadmap
+
+> **"No ambiguity. No surprises."** — An AI-native application programming language.
+
+For the language specification and design philosophy, see [DESIGN.md](DESIGN.md).
+For the active milestone plan, see [PLAN.md](PLAN.md).
+
+---
+
+Klar is a compiled language targeting application-level programming (like C#/Go) with ownership-based memory safety, explicit types, and AI-optimized syntax. The compiler is implemented in Zig with LLVM codegen, a bytecode VM, and a tree-walking interpreter.
+
+Current status: **Phase 7 in progress.** All milestones done (1–10, M, Phase 6). **2,058 tests passing.**
+
+---
+
+## Phase 1–3: Compiler Foundation ✅
+
+**Status:** Complete
+
+- [x] Lexer → Parser → AST → Type Checker pipeline
+- [x] Three backends: interpreter, bytecode VM, LLVM native
+- [x] Ownership-based memory management (Rc/Arc, automatic drop)
+- [x] Basic types, structs, enums, closures, optionals, results
+- [x] 252x speedup for native vs VM
+
+### Implementation Language: Zig
+
+**Reasons:** Simple, fast, explicit. Powerful comptime. No hidden allocations. Fast compilation.
+
+---
+
+## Phase 4: Language Completion ✅
+
+**Status:** Complete (13 milestones)
+
+> **Goal:** Complete the Klar language with generics, traits, modules, and standard library.
+>
+> **Archive:** [docs/history/phase4-language-completion.md](docs/history/phase4-language-completion.md)
+
+- [x] Generic type checking
+- [x] Generic structs and enums
+- [x] Trait definitions and implementations
+- [x] Trait bounds and method dispatch
+- [x] Trait inheritance
+- [x] Builtin traits (Eq, Ordered, Clone, Drop)
+- [x] Associated types
+- [x] Module system (imports)
+- [x] Standard library (List, Map, Set, String)
+- [x] Iterators and error handling (`?` operator)
+- [x] REPL and comptime
+- [x] FFI (including function pointers)
+- [x] Package manager, formatter, doc generator
+
+---
+
+## Phase 5: AI-Native Language Improvements ✅
+
+> **Goal:** Strengthen Klar's AI-native story across documentation, language features, testing, and tooling.
+>
+> **Inspiration:** [Nanolang](docs/design/nanolang-inspiration.md) · [MoonBit Semantic Sampler](docs/design/moonbit-semantic-sampler.md) · [DSPy](docs/design/dspy-opportunities.md)
+>
+> **Archive (Milestones 1–6, 8):** [docs/history/phase5-milestones.md](docs/history/phase5-milestones.md)
+
+### Completed Milestones
+
+- [x] LLM Reference File (Nanolang-inspired)
+- [x] Mandatory Function Return Types (MoonBit-inspired)
+- [x] Inline Test Blocks (`test`) (Nanolang-inspired)
+- [x] Structured Test Output (`--json`) (DSPy-inspired)
+- [x] LSP and Incremental Type Checking (MoonBit-inspired)
+- [x] Async/Await
+- [x] [Windows Support](#milestone-7-windows-support)
+- [x] [WebAssembly Target](#milestone-10-unambiguous-generic-syntax-t)
+- [x] [Self-Hosting](#milestone-9-self-hosting) (paused at 9.8)
+- [x] [Unambiguous Generic Syntax (`#[T]`)](#milestone-10-unambiguous-generic-syntax-t)
+- [x] [Meta Layer](#milestone-m-meta-layer)
+
+### Standard Library (Lodex Infrastructure) ✅
+
+**Status:** Complete — Phases 0–6 done. See [PLAN.md](PLAN.md) for full detail.
+
+Built general-purpose stdlib libraries needed by [Lodex](../Lodex/DESIGN.md):
+
+- [x] Foundational builtins: env, fs_stat, process_run, timestamp
+- [x] JSON parser/stringify (`stdlib/json.kl`)
+- [x] SHA-256 hashing, FIPS 180-4 (`stdlib/sha256.kl`)
+- [x] TOML parser/stringify (`stdlib/toml.kl`)
+- [x] CLI argument parsing (`stdlib/cli.kl`)
+- [x] Integration validation (`test/module/integration/`)
+- [x] Async I/O and HTTP ([Phase 6](#phase-6-async-io-and-http-))
+
+---
+
+### Milestone 7: Windows Support ✅
+
+**Objective:** First-class Windows developer and runtime support across build, test, and tooling workflows.
+
+**Status:** Complete
+
+- [x] **7.1–7.11** Compiler cross-platform changes
+- [x] **7.12** Windows on-device testing (CI runs on `windows-latest` with MSVC + LLVM)
+- [x] **7.13** CI: Windows matrix job in `.github/workflows/ci.yml`
+- [x] **7.14** Documentation: Windows setup guide in `docs/getting-started/installation.md`
+
+**Known Limitations:**
+- Test scripts (`run-tests.sh`, etc.) require WSL or Git Bash on Windows
+- `klar run` on Windows shows temp binary path as `args[0]` instead of source path
+- Cross-compilation of filesystem operations to Windows from non-Windows is not supported
+
+**Success Criteria:**
+- [x] Repository builds on macOS with zero regressions
+- [x] Repository builds and full test suite pass on supported Windows environments
+- [x] CLI and LSP workflows behave consistently with macOS/Linux
+- [x] Windows-specific path/stdio regressions are covered by tests
+- [x] Contributor docs include complete Windows development setup
+
+---
+
+### Milestone M: Meta Layer ✅
+
+**Objective:** Implement the `meta` keyword system for embedding intent, architecture, and design decisions in Klar source code — compiler-validated, CLI-queryable, zero runtime cost.
+
+**Status:** Complete (M.1–M.8)
+
+- [x] Token, AST, and declaration fields (M.1)
+- [x] Simple annotation parsing: intent, decision, tag, hint, deprecated, pure (M.2)
+- [x] Block and group parsing: module, guide, related, group def/join (M.3)
+- [x] Backend passthrough and formatter (M.4)
+- [x] Checker validation: related targets, group refs, deprecation warnings, scope rules (M.5)
+- [x] Pure verification: side-effect analysis with transitive purity checking (M.6)
+- [x] Custom annotations: `meta define`, string union constraints, scope restrictions, cross-module import (M.7)
+- [x] `klar meta` CLI command: --tag, --module, --related, --deprecated, --hints, --json (M.8)
+
+**Design Spec:** [docs/design/meta-layer.md](docs/design/meta-layer.md)
+
+---
+
+### Milestone 9: Self-Hosting ✅ (paused at 9.8)
+
+**Objective:** Implement the Klar compiler front-end (lexer through type checker) in Klar itself, enabling the language to compile its own compiler.
+
+**Status:** Paused — 9.1–9.8 complete. Lexer, AST, parser at full parity (259/259 files, 789/789 tests). Type system definitions done. Checker parity 284/284 (100%). E2E pipeline 258/258 (100%). Bootstrap validation passed (Stage 1 self-parsing). 9.9+ paused pending further work.
+
+**Scope:** Frontend only (lexer through type checker). The LLVM codegen stays in Zig. The self-hosted frontend serializes AST/typed-AST for the Zig backend to consume.
+
+**Estimated Total:** ~11,000–16,000 lines of Klar
+
+---
+
+### Milestone 10: Unambiguous Generic Syntax (`#[T]`) ✅
+
+**Status:** Complete
+
+Eliminated syntactic ambiguity between generics and array indexing. `[` is **always** arrays; `#[` is **always** generics. Deleted `isTypeArgsFollowedByCall()` lookahead heuristic entirely. Updated all 139+ `.kl` source files, selfhost parser, and documentation.
+
+**Design Decisions:**
+1. Two tokens (`hash` + `l_bracket`), not one compound token — lexer stays simple
+2. `#[T]` everywhere — declarations, type applications, method calls, casts
+3. `isTypeArgsFollowedByCall()` deleted — the entire lookahead heuristic became unnecessary
+
+---
+
+## Phase 6: Async I/O and HTTP ✅
+
+**Status:** Complete (2026-03-05)
+
+**Goal:** Build async I/O and HTTP capabilities for Lodex's evaluation engine and HTTP API.
+
+### 6A: Async Subprocess
+- [x] `process_spawn`, `process_poll`, `process_wait`, `process_read_stdout` builtins
+- [x] Non-blocking subprocess execution via `posix_spawn` + pipe-based stdout capture
+
+### 6B: TCP Sockets
+- [x] `tcp_listen`, `tcp_accept`, `tcp_connect`, `tcp_read`, `tcp_write`, `tcp_close` builtins
+- [x] `tcp_set_nonblocking`, `tcp_listener_close` builtins
+- [x] Platform-specific constants (macOS vs Linux)
+
+### 6C: HTTP Server
+- [x] `stdlib/http_server.kl` — pure Klar HTTP server built on TCP builtins
+- [x] Request routing, JSON request/response
+
+### 6D: HTTP Client
+- [x] `stdlib/http_client.kl` — pure Klar HTTP client built on TCP builtins
+- [x] GET/POST requests, response parsing
+
+## Phase 7: Standard Library for Self-Hosting (In Progress)
+
+**Goal:** Build the stdlib modules required to complete the self-hosting bootstrap (Phase 8).
+
+See [PLAN.md](PLAN.md) for full detail.
+
+### 7.0: StringBuilder ✅
+- [x] `stdlib/string_builder.kl` — efficient string building via `List#[string]` backing store
+- [x] Module test (15 tests)
+
+### 7.1: Path Manipulation ✅
+- [x] `stdlib/path.kl` — path join, parent, file_name, extension, stem, is_absolute, normalize
+- [x] Module test (48 tests)
+
+### 7.2: Directory Walking ✅
+- [x] `stdlib/dir.kl` — dir_list, dir_list_ext, dir_walk, dir_walk_ext
+- [x] Module test (21 tests)
+
+### 7.3: File Writing
+- [ ] `stdlib/file.kl` — `file_write(path, content)`, `file_write_lines(path, lines)`, `file_append(path, content)`
+- [ ] Module test (`test/module/file/main.kl`) — write/read-back, append, overwrite, write_lines round-trip (follow pattern of 7.0–7.2 tests)
+
+### 7.4: Integration & Selfhost Validation
+- [ ] Integration test (`test/module/stdlib_integration/main.kl`) — use path.kl to construct paths, dir.kl to walk directories, string_builder.kl to build content, file.kl to write output, then read back and verify
+- [ ] Update `docs/README.md` table of contents to include file.kl, path.kl, dir.kl API references
+- [ ] No regressions in full test suite (`./run-tests.sh` passes)
+
+### Phase 7 Readiness Gate
+Before Phase 8, these must be true:
+- [ ] All four stdlib modules (string_builder, path, dir, file) have passing module tests
+- [ ] Integration test passes end-to-end
+- [ ] `./run-tests.sh` passes with no regressions
+- [ ] Selfhost compiler files can import and use these modules (smoke test)
+
+---
+
+## Phase 8: Self-Hosting Completion (Planned)
+
+**Goal:** Complete the bootstrap loop — the selfhost compiler compiles itself.
+
+Resumes from Milestone 9.8 (paused in Phase 5). The selfhost frontend (lexer, parser, checker) is at full parity (284/284 checker, 258/258 E2E).
+
+### 8.1: Selfhost Frontend Output
+- [ ] Define serialization format for typed AST (JSON schema or binary) consumable by Zig codegen backend
+- [ ] Selfhost frontend (`selfhost/`) emits typed AST for all test/native/ files
+- [ ] Zig backend (`src/codegen/`) accepts `--typed-ast-input` and produces identical binaries to the standard pipeline
+- [ ] Validation: compile test/native/ files via both pipelines, compare exit codes and stdout
+
+### 8.2: Bootstrap Stage 1
+- [ ] Selfhost frontend compiles its own source files (lexer.kl, parser.kl, checker.kl, etc.) and emits typed AST
+- [ ] Zig backend consumes that AST and produces a working selfhost binary (Stage 1 binary)
+- [ ] Stage 1 binary passes the same E2E test suite as the Zig-compiled selfhost
+
+### 8.3: Bootstrap Stage 2 (Reproducibility)
+- [ ] Stage 1 binary compiles selfhost source → produces Stage 2 typed AST
+- [ ] Stage 2 typed AST matches Stage 1 typed AST (bit-for-bit or normalized comparison)
+- [ ] Document the bootstrap process in docs/
+
+### Phase 8 Readiness Gate
+Before Phase 9, these must be true:
+- [ ] Selfhost frontend emits typed AST accepted by Zig backend
+- [ ] Stage 1 binary passes full E2E suite
+- [ ] Stage 2 AST matches Stage 1 AST (bootstrap is stable)
+
+---
+
+## Phase 9: Standard Library & Ecosystem (Planned)
+
+**Goal:** Build a production-quality standard library and package ecosystem.
+
+### 9.1: Collections
+- [ ] BTreeMap with ordered iteration, insert, get, remove
+- [ ] Deque (double-ended queue) with push_front, push_back, pop_front, pop_back
+- [ ] PriorityQueue (min-heap) with push, pop, peek
+- [ ] Module tests for each collection
+
+### 9.2: Networking
+- [ ] UDP socket builtins: udp_bind, udp_send_to, udp_recv_from
+- [ ] DNS resolution builtin: dns_lookup(hostname) -> List#[string]
+- [ ] Module tests for UDP and DNS
+
+### 9.3: Serialization
+- [ ] YAML parser/stringify (`stdlib/yaml.kl`)
+- [ ] Module tests for YAML
+
+### 9.4: Concurrency
+- [ ] Channel-based communication: channel#[T](), Sender, Receiver (as specified in DESIGN.md)
+- [ ] Thread pool: spawn tasks across worker threads
+- [ ] Module tests for channels and thread pool
+
+### 9.5: Package Registry
+- [ ] `klar add <package>` fetches from a registry URL
+- [ ] `klar publish` uploads package to registry
+- [ ] deps.lock file generation and resolution
+- [ ] Registry server (minimal HTTP API for package upload/download)
+
+### 9.6: Documentation Site
+- [ ] `klar doc` generates HTML from doc comments (extend existing doc generator)
+- [ ] Index page with module listing and search
+
+### Stretch Goals
+- [ ] Windows `process_spawn` via `CreateProcessW` (currently POSIX-only)
+
+### Phase 9 Readiness Gate
+Before Phase 10, these must be true:
+- [ ] All new collections have module tests passing
+- [ ] Networking and serialization modules have module tests passing
+- [ ] `klar add` and `klar publish` work end-to-end against registry
+- [ ] `./run-tests.sh` passes with no regressions
+
+## Phase 10: Production Readiness (Planned)
+
+**Goal:** Polish for real-world adoption.
+
+### 10.1: Error Messages
+- [ ] Source snippets in error output: show the offending line with underline caret pointing to error location
+- [ ] "Did you mean X?" suggestions for undefined variables and typos (edit distance matching)
+- [ ] Multi-line error context for type mismatch errors (show expected vs actual with source)
+
+### 10.2: Debugging
+- [ ] Verify `-g` flag produces correct DWARF debug info for lldb: stepping, breakpoints, variable inspection
+- [ ] Fix any missing or incorrect source location mappings in LLVM codegen
+- [ ] Document debugging workflow in docs/ (lldb commands for Klar binaries)
+
+### 10.3: Compilation Performance
+- [ ] Benchmark compilation speed on selfhost source files, establish baseline
+- [ ] Profile and optimize slowest compilation phases (parser, checker, or codegen)
+
+### 10.4: Runtime Performance
+- [ ] Establish runtime benchmark suite (fibonacci, sorting, string processing)
+- [ ] Add at least one new LLVM optimization pass or improve existing pass pipeline
+
+### 10.5: Stability
+- [ ] Fuzz the parser with AFL or libFuzzer — no crashes on arbitrary input
+- [ ] Property-based tests for type checker (random valid programs type-check successfully)
+
+### 10.6: Platform Support
+- [ ] Linux ARM64: CI job, full test suite passing
+- [ ] Windows ARM64: CI job, full test suite passing
+
+### Phase 10 Readiness Gate
+Before Phase 11, these must be true:
+- [ ] Error messages include source snippets for all type errors
+- [ ] `klar build -g` + lldb can step through a simple Klar program
+- [ ] Parser fuzzer runs 1M+ inputs with zero crashes
+- [ ] All CI platforms (x64 + ARM64) pass full test suite
+
+## Phase 11: Advanced Language Features (Exploratory)
+
+**Goal:** Evaluate and selectively adopt features that align with Klar's philosophy.
+
+Each feature follows an evaluate-then-implement pattern. Evaluation may conclude with "not pursuing" — that is a valid outcome.
+
+### 11.1: Effect System
+- [ ] Research: write design doc evaluating algebraic effects for Klar (syntax, semantics, interaction with ownership)
+- [ ] Decision: go/no-go based on complexity vs value for application-level programming
+- [ ] If go: implement effect declarations, handler syntax, and checker support
+
+### 11.2: Constrained Decoding
+- [ ] Research: write design doc for grammar spec format (GBNF, JSON schema, or custom) enabling LLM-guided Klar code generation
+- [ ] Decision: go/no-go based on LLM tooling ecosystem compatibility
+- [ ] If go: implement `klar grammar` CLI command that outputs the Klar grammar spec
+
+### 11.3: Formal Verification
+- [ ] Research: write design doc for lightweight contracts (preconditions, postconditions, invariants) — runtime checks vs static analysis
+- [ ] Decision: go/no-go based on alignment with "no ambiguity, no surprises" philosophy
+- [ ] If go: implement contract syntax and checker/runtime support
+
+### 11.4: Incremental Compilation
+- [ ] Research: profile full rebuild to identify caching opportunities (AST, typed AST, object files)
+- [ ] Decision: go/no-go based on measured rebuild times vs implementation effort
+- [ ] If go: implement module-level caching with invalidation based on file content hash
+
+---
+
+### References
+
+**Nanolang:**
+- [Nanolang GitHub](https://github.com/jordanhubbard/nanolang)
+- [Design Analysis](docs/design/nanolang-inspiration.md)
+
+**MoonBit:**
+- [MoonBit Paper (IEEE)](https://ieeexplore.ieee.org/document/10734654/)
+- [MoonBit Paper (ACM)](https://dl.acm.org/doi/10.1145/3643795.3648376)
+- [Design Analysis](docs/design/moonbit-semantic-sampler.md)
+
+**DSPy:**
+- [DSPy Paper (arXiv)](https://arxiv.org/abs/2310.03714)
+- [DSPy Paper (ICLR 2024)](https://openreview.net/pdf?id=sY5N0zY5Od)
+- [Design Analysis](docs/design/dspy-opportunities.md)
+
+---
+
+### Backlog: Selfhost Parser Known Limitations
+
+Deferred tech debt from the Milestone 9.6 selfhost parser work.
+
+- [ ] `parse_int_value`: hex/binary/octal literals use i64 computation (overflow possible for values > i64 max)
+- [ ] `process_string_escapes`: `\u` and `\x` escape sequences not handled (falls through to unknown escape)
+- [ ] `final_expr` detection in `parse_block` uses fragile JSON prefix string matching (acknowledged by COUPLING comment)
+- [ ] `is_extern` exemption in mandatory return type check is moot: Zig parser rejects standalone `extern fn`, so the selfhost exemption has no test coverage
+
+```
+
+### `scripts/run-module-tests.sh`
+
+```
+#!/bin/bash
+# AirTower test wrapper for Klar module/multi-file compilation tests
+# Tests import resolution, visibility, circular detection, etc.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESULTS_FILE="$SCRIPT_DIR/.module-test-results.json"
+KLAR="$SCRIPT_DIR/zig-out/bin/klar"
+TEST_DIR="$SCRIPT_DIR/test/module"
+
+# Ensure compiler is built
+if [ ! -f "$KLAR" ]; then
+    echo "Building Klar compiler first..."
+    cd "$SCRIPT_DIR" && zig build || exit 1
+fi
+
+# Portable timeout: use 'timeout' if available, else 'gtimeout', else a shell fallback
+run_with_timeout() {
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$secs" "$@"
+    else
+        # Shell-based fallback: run in background, kill after timeout
+        "$@" &
+        local pid=$!
+        ( sleep "$secs"; kill "$pid" 2>/dev/null ) &
+        local watchdog=$!
+        wait "$pid" 2>/dev/null
+        local ret=$?
+        kill "$watchdog" 2>/dev/null
+        wait "$watchdog" 2>/dev/null
+        return $ret
+    fi
+}
+
+PASSED=0
+FAILED=0
+FAILURES=""
+
+# Helper to record a failure
+record_failure() {
+    local name="$1"
+    local msg="$2"
+    FAILED=$((FAILED + 1))
+    if [ -n "$FAILURES" ]; then
+        FAILURES="$FAILURES,"
+    fi
+    FAILURES="$FAILURES\"$name: $msg\""
+}
+
+# Helper to record success
+record_success() {
+    local name="$1"
+    PASSED=$((PASSED + 1))
+}
+
+echo "=== Module Tests ==="
+echo ""
+
+# Test 1: Basic multi-file import
+echo "--- basic: Multi-file import ---"
+temp_bin="/tmp/klar_module_basic"
+if $KLAR build $TEST_DIR/basic/main.kl -o "$temp_bin" 2>/dev/null; then
+    result=$("$temp_bin" 2>/dev/null; echo $?)
+    # greet() returns 42, add(10, 20) returns 30, total = 72
+    if [ "$result" = "72" ]; then
+        echo "✓ basic (exit: $result)"
+        record_success "basic"
+    else
+        echo "✗ basic (expected: 72, got: $result)"
+        record_failure "basic" "expected 72, got $result"
+    fi
+    rm -f "$temp_bin"
+else
+    echo "✗ basic (build failed)"
+    record_failure "basic" "build failed"
+fi
+
+# Test 2: Nested module paths
+echo "--- nested: Nested module paths ---"
+temp_bin="/tmp/klar_module_nested"
+if $KLAR build $TEST_DIR/nested/main.kl -o "$temp_bin" 2>/dev/null; then
+    result=$("$temp_bin" 2>/dev/null; echo $?)
+    # add(5, 3) = 8, multiply(4, 2) = 8, total = 16
+    if [ "$result" = "16" ]; then
+        echo "✓ nested (exit: $result)"
+        record_success "nested"
+    else
+        echo "✗ nested (expected: 16, got: $result)"
+        record_failure "nested" "expected 16, got $result"
+    fi
+    rm -f "$temp_bin"
+else
+    echo "✗ nested (build failed)"
+    record_failure "nested" "build failed"
+fi
+
+# Test 3: Visibility enforcement (should FAIL to compile)
+echo "--- visibility: Private symbol import rejected ---"
+temp_bin="/tmp/klar_module_visibility"
+error_output=$($KLAR build $TEST_DIR/visibility/main.kl -o "$temp_bin" 2>&1)
+# Check if output contains error (compiler may return 0 even with errors)
+if echo "$error_output" | grep -q "not found\|not exported\|private\|error"; then
+    if echo "$error_output" | grep -q "private_fn.*not found\|symbol.*not found"; then
+        echo "✓ visibility (correctly rejected private import)"
+        record_success "visibility"
+    else
+        echo "✗ visibility (failed but wrong error)"
+        record_failure "visibility" "wrong error message"
+    fi
+    rm -f "$temp_bin" 2>/dev/null
+else
+    echo "✗ visibility (should have failed but succeeded)"
+    record_failure "visibility" "should have rejected private import"
+    rm -f "$temp_bin"
+fi
+
+# Test 4: Circular import detection (should FAIL to compile)
+echo "--- circular: Circular import detected ---"
+temp_bin="/tmp/klar_module_circular"
+if [ -d "$TEST_DIR/circular" ]; then
+    error_output=$($KLAR build $TEST_DIR/circular/main.kl -o "$temp_bin" 2>&1)
+    # Check output for circular detection
+    if echo "$error_output" | grep -qi "circular"; then
+        echo "✓ circular (correctly detected circular import)"
+        record_success "circular"
+    else
+        echo "✗ circular (should have detected circular import)"
+        echo "    output: $error_output"
+        record_failure "circular" "should have detected circular import"
+    fi
+    rm -f "$temp_bin" 2>/dev/null
+else
+    echo "⊘ circular (test not found, skipping)"
+fi
+
+# Test 5: Glob imports
+echo "--- glob: Glob import (.*) ---"
+temp_bin="/tmp/klar_module_glob"
+if [ -d "$TEST_DIR/glob" ]; then
+    if $KLAR build $TEST_DIR/glob/main.kl -o "$temp_bin" 2>/dev/null; then
+        result=$("$temp_bin" 2>/dev/null; echo $?)
+        if [ "$result" = "42" ]; then
+            echo "✓ glob (exit: $result)"
+            record_success "glob"
+        else
+            echo "✗ glob (expected: 42, got: $result)"
+            record_failure "glob" "expected 42, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ glob (build failed)"
+        record_failure "glob" "build failed"
+    fi
+else
+    echo "⊘ glob (test not found, skipping)"
+fi
+
+# Test 6: Aliased imports
+echo "--- alias: Aliased import (as) ---"
+temp_bin="/tmp/klar_module_alias"
+if [ -d "$TEST_DIR/alias" ]; then
+    if $KLAR build $TEST_DIR/alias/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "42" ]; then
+            echo "✓ alias (exit: $result)"
+            record_success "alias"
+        else
+            echo "✗ alias (expected: 42, got: $result)"
+            record_failure "alias" "expected 42, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ alias (build failed)"
+        record_failure "alias" "build failed"
+    fi
+else
+    echo "⊘ alias (test not found, skipping)"
+fi
+
+# Test 7: Sibling directory imports (test file imports from sibling lib/)
+# This tests that imports resolve relative to cwd, not just relative to entry file
+echo "--- sibling: Import from sibling directory ---"
+temp_bin="/tmp/klar_module_sibling"
+if [ -d "$TEST_DIR/sibling" ]; then
+    # Run from the sibling test directory (simulating running tests from project root)
+    pushd "$TEST_DIR/sibling" > /dev/null
+    if $KLAR build tests/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "42" ]; then
+            echo "✓ sibling (exit: $result)"
+            record_success "sibling"
+        else
+            echo "✗ sibling (expected: 42, got: $result)"
+            record_failure "sibling" "expected 42, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ sibling (build failed)"
+        record_failure "sibling" "build failed"
+    fi
+    popd > /dev/null
+else
+    echo "⊘ sibling (test not found, skipping)"
+fi
+
+# Test 8: Meta annotation import
+echo "--- meta_import: Import custom meta annotations ---"
+temp_bin="/tmp/klar_module_meta_import"
+if [ -d "$TEST_DIR/meta_import" ]; then
+    if $KLAR build $TEST_DIR/meta_import/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ meta_import (exit: $result)"
+            record_success "meta_import"
+        else
+            echo "✗ meta_import (expected: 0, got: $result)"
+            record_failure "meta_import" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ meta_import (build failed)"
+        record_failure "meta_import" "build failed"
+    fi
+else
+    echo "⊘ meta_import (test not found, skipping)"
+fi
+
+# Test 9: JSON library (stdlib/json.kl)
+echo "--- json: JSON library (stdlib/json.kl) ---"
+temp_bin="/tmp/klar_module_json"
+if [ -d "$TEST_DIR/json" ]; then
+    if $KLAR build $TEST_DIR/json/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ json (exit: $result)"
+            record_success "json"
+        else
+            echo "✗ json (expected: 0, got: $result)"
+            record_failure "json" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ json (build failed)"
+        record_failure "json" "build failed"
+    fi
+else
+    echo "⊘ json (test not found, skipping)"
+fi
+
+# Test 10: String.as_str() use-after-free fix
+echo "--- string_as_str: String.as_str() returns safe copy ---"
+temp_bin="/tmp/klar_module_string_as_str"
+if [ -d "$TEST_DIR/string_as_str" ]; then
+    if $KLAR build $TEST_DIR/string_as_str/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_as_str (exit: $result)"
+            record_success "string_as_str"
+        else
+            echo "✗ string_as_str (expected: 0, got: $result)"
+            record_failure "string_as_str" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_as_str (build failed)"
+        record_failure "string_as_str" "build failed"
+    fi
+else
+    echo "⊘ string_as_str (test not found, skipping)"
+fi
+
+# Test 11: SHA-256 library (stdlib/sha256.kl)
+echo "--- sha256: SHA-256 library (stdlib/sha256.kl) ---"
+temp_bin="/tmp/klar_module_sha256"
+if [ -d "$TEST_DIR/sha256" ]; then
+    if $KLAR build $TEST_DIR/sha256/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ sha256 (exit: $result)"
+            record_success "sha256"
+        else
+            echo "✗ sha256 (expected: 0, got: $result)"
+            record_failure "sha256" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ sha256 (build failed)"
+        record_failure "sha256" "build failed"
+    fi
+else
+    echo "⊘ sha256 (test not found, skipping)"
+fi
+
+# Test 12: CLI library (stdlib/cli.kl)
+echo "--- cli: CLI argument parsing (stdlib/cli.kl) ---"
+temp_bin="/tmp/klar_module_cli"
+if [ -d "$TEST_DIR/cli" ]; then
+    if $KLAR build $TEST_DIR/cli/main.kl -o "$temp_bin" 2>/dev/null; then
+        output=$("$temp_bin" 2>/dev/null)
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ cli (exit: $result)"
+            record_success "cli"
+        else
+            echo "✗ cli (expected: 0, got: $result)"
+            echo "    output: $output"
+            record_failure "cli" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ cli (build failed)"
+        record_failure "cli" "build failed"
+    fi
+else
+    echo "⊘ cli (test not found, skipping)"
+fi
+
+# Test 13: Cross-module string enum payload
+echo "--- string_enum: Cross-module string enum .len() ---"
+temp_bin="/tmp/klar_module_string_enum"
+if [ -d "$TEST_DIR/string_enum" ]; then
+    if $KLAR build $TEST_DIR/string_enum/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_enum (exit: $result)"
+            record_success "string_enum"
+        else
+            echo "✗ string_enum (expected: 0, got: $result)"
+            record_failure "string_enum" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_enum (build failed)"
+        record_failure "string_enum" "build failed"
+    fi
+else
+    echo "⊘ string_enum (test not found, skipping)"
+fi
+
+# Test 14: Cross-module string enum complex (index_of, starts_with, contains)
+echo "--- string_enum_complex: Cross-module string enum methods ---"
+temp_bin="/tmp/klar_module_string_enum_complex"
+if [ -d "$TEST_DIR/string_enum_complex" ]; then
+    if $KLAR build $TEST_DIR/string_enum_complex/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_enum_complex (exit: $result)"
+            record_success "string_enum_complex"
+        else
+            echo "✗ string_enum_complex (expected: 0, got: $result)"
+            record_failure "string_enum_complex" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_enum_complex (build failed)"
+        record_failure "string_enum_complex" "build failed"
+    fi
+else
+    echo "⊘ string_enum_complex (test not found, skipping)"
+fi
+
+# Test 15: TOML library (stdlib/toml.kl)
+echo "--- toml: TOML library (stdlib/toml.kl) ---"
+temp_bin="/tmp/klar_module_toml"
+if [ -d "$TEST_DIR/toml" ]; then
+    if $KLAR build $TEST_DIR/toml/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ toml (exit: $result)"
+            record_success "toml"
+        else
+            echo "✗ toml (expected: 0, got: $result)"
+            record_failure "toml" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ toml (build failed)"
+        record_failure "toml" "build failed"
+    fi
+else
+    echo "⊘ toml (test not found, skipping)"
+fi
+
+# Test 16: StringBuilder library (stdlib/string_builder.kl)
+echo "--- string_builder: StringBuilder library (stdlib/string_builder.kl) ---"
+temp_bin="/tmp/klar_module_string_builder"
+if [ -d "$TEST_DIR/string_builder" ]; then
+    if $KLAR build $TEST_DIR/string_builder/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ string_builder (exit: $result)"
+            record_success "string_builder"
+        else
+            echo "✗ string_builder (expected: 0, got: $result)"
+            record_failure "string_builder" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ string_builder (build failed)"
+        record_failure "string_builder" "build failed"
+    fi
+else
+    echo "⊘ string_builder (test not found, skipping)"
+fi
+
+# Test 17: Path library (stdlib/path.kl)
+echo "--- path: Path manipulation library (stdlib/path.kl) ---"
+temp_bin="/tmp/klar_module_path"
+if [ -d "$TEST_DIR/path" ]; then
+    if $KLAR build $TEST_DIR/path/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ path (exit: $result)"
+            record_success "path"
+        else
+            echo "✗ path (expected: 0, got: $result)"
+            record_failure "path" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ path (build failed)"
+        record_failure "path" "build failed"
+    fi
+else
+    echo "⊘ path (test not found, skipping)"
+fi
+
+# Test 18: Dir library (stdlib/dir.kl)
+echo "--- dir: Directory walking library (stdlib/dir.kl) ---"
+temp_bin="/tmp/klar_module_dir"
+if [ -d "$TEST_DIR/dir" ]; then
+    if $KLAR build $TEST_DIR/dir/main.kl -o "$temp_bin" 2>/dev/null; then
+        "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ dir (exit: $result)"
+            record_success "dir"
+        else
+            echo "✗ dir (expected: 0, got: $result)"
+            record_failure "dir" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ dir (build failed)"
+        record_failure "dir" "build failed"
+    fi
+else
+    echo "⊘ dir (test not found, skipping)"
+fi
+
+# Test 19: Integration test (all stdlib libraries together)
+echo "--- integration: All stdlib libraries composed ---"
+temp_bin="/tmp/klar_module_integration"
+if [ -d "$TEST_DIR/integration" ]; then
+    if $KLAR build $TEST_DIR/integration/main.kl -o "$temp_bin" 2>/dev/null; then
+        output=$("$temp_bin" 2>/dev/null)
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ integration (exit: $result)"
+            record_success "integration"
+        else
+            echo "✗ integration (expected: 0, got: $result)"
+            echo "    output: $output"
+            record_failure "integration" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ integration (build failed)"
+        record_failure "integration" "build failed"
+    fi
+else
+    echo "⊘ integration (test not found, skipping)"
+fi
+
+# Test 19 & 20: HTTP server/client tests using Klar TCP
+# Skipped on Windows — TCP builtins fail to link on Windows CI
+echo "--- http_server: HTTP server library ---"
+temp_bin="/tmp/klar_module_http_server"
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ http_server (skipped on Windows — TCP builtins fail to link)"
+elif [ -d "$TEST_DIR/http_server" ]; then
+    if $KLAR build $TEST_DIR/http_server/main.kl -o "$temp_bin" 2>/dev/null; then
+        run_with_timeout 30 "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ http_server (exit: $result)"
+            record_success "http_server"
+        else
+            echo "✗ http_server (expected: 0, got: $result)"
+            record_failure "http_server" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ http_server (build failed)"
+        record_failure "http_server" "build failed"
+    fi
+else
+    echo "⊘ http_server (test not found, skipping)"
+fi
+
+echo "--- http_client: HTTP client library ---"
+temp_bin="/tmp/klar_module_http_client"
+if [[ "$OS" == "Windows_NT" ]]; then
+    echo "⊘ http_client (skipped on Windows — TCP builtins fail to link)"
+elif [ -d "$TEST_DIR/http_client" ]; then
+    if $KLAR build $TEST_DIR/http_client/main.kl -o "$temp_bin" 2>/dev/null; then
+        run_with_timeout 30 "$temp_bin" >/dev/null 2>&1
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ http_client (exit: $result)"
+            record_success "http_client"
+        else
+            echo "✗ http_client (expected: 0, got: $result)"
+            record_failure "http_client" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ http_client (build failed)"
+        record_failure "http_client" "build failed"
+    fi
+else
+    echo "⊘ http_client (test not found, skipping)"
+fi
+
+TOTAL=$((PASSED + FAILED))
+
+# Write results JSON
+cat > "$RESULTS_FILE" << EOF
+{
+  "passed": $PASSED,
+  "failed": $FAILED,
+  "total": $TOTAL,
+  "failures": [$FAILURES]
+}
+EOF
+
+# Print summary
+echo ""
+if [ $FAILED -eq 0 ]; then
+    echo "All $PASSED module tests passed"
+else
+    echo "$FAILED/$TOTAL module tests failed"
+    exit 1
+fi
+
+```
+
+## Project Conventions (CLAUDE.md)
+
+The following are the project coding conventions:
+
+```markdown
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Klar is an **AI-native application programming language** designed for AI code generation. Three principles govern the design: **"No ambiguity. No surprises."** + **"The code explains itself."** + **"Explicitness earns its characters."** (See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md))
+
+### Design Principles
+
+1. **Parseable at a glance** — Syntax should be understandable without surrounding context. Every construct is self-describing. This benefits both humans reading code and AI generating it.
+   - `[i32; 3]` not `i32[3]` — array type is self-contained, no lookahead needed
+   - `and`, `or`, `not` not `&&`, `||`, `!` — keywords over symbols
+   - Explicit type annotations — `let x: i32 = 5` not `let x = 5`
+
+2. **No undefined behavior** — Every operation has defined semantics.
+   - Explicit overflow: `+%` (wrapping), `+|` (saturating)
+   - Bounds checking on array access
+   - No null pointers (use `?T` optionals)
+
+3. **No implicit conversions** — Type changes must be explicit.
+   - `.as#[T]` for safe conversions
+   - `.to#[T]` for fallible conversions
+   - `.trunc#[T]` for truncating conversions
+
+4. **Ownership without complexity** — Memory safety via ownership, but simpler than Rust.
+   - No lifetime annotations
+   - Reference counting where needed (`Rc#[T]`, `Arc#[T]`)
+
+Klar targets application-level programming (like C#/Go), not bare-metal systems (like C/Rust/Zig). This is why `.len()` returns `i32` for ergonomic loop counter usage.
+
+## Documentation
+
+Comprehensive language documentation is available in the `docs/` directory:
+
+- **[docs/README.md](docs/README.md)** - Entry point with table of contents
+- **Getting Started** - Installation, hello world, CLI reference, REPL guide
+- **Language Guide** - Variables, functions, control flow, structs, enums, traits, generics, error handling, modules
+- **Type System** - Primitives, arrays, tuples, optional, result, collections, smart pointers, I/O
+- **Memory Model** - Ownership, references, reference counting
+- **Advanced** - Operators, comptime, builtin traits
+- **Appendix** - Built-in functions, keywords
+
+## Build Commands
+
+```bash
+# Build the compiler (ALWAYS use wrapper script)
+./run-build.sh
+
+# Run ALL tests (ALWAYS use this for AirTower integration)
+./run-tests.sh           # Runs all test suites (unit, native, app, module)
+
+# Run individual test suites (in scripts/ directory)
+./scripts/run-unit-tests.sh     # Zig unit tests
+./scripts/run-native-tests.sh   # Native compilation tests (test/native/)
+./scripts/run-app-tests.sh      # Reference application tests
+./scripts/run-module-tests.sh   # Module system tests
+./scripts/run-benchmarks.sh     # VM vs native benchmarks (not included in run-tests.sh)
+
+# DO NOT run `zig build` or `zig build test` directly
+```
+
+## Klar Command Rules
+
+**NEVER** use `./zig-out/bin/klar` directly in Bash commands. Always use the corresponding skill:
+
+| Action | Use Skill |
+|--------|-----------|
+| Run a .kl file | `/klar-run` |
+| Test a .kl file | `/klar-test` |
+| Build an executable | `/klar-build` |
+| Type-check a file | `/klar-check` |
+
+If you find yourself typing `./zig-out/bin/klar` in a Bash command, **STOP** and use the skill instead.
+
+## Running Klar Programs
+
+```bash
+# Run with bytecode VM (default)
+./zig-out/bin/klar run program.kl
+
+# Run with tree-walking interpreter
+./zig-out/bin/klar run program.kl --interpret
+
+# Compile to native executable (outputs to build/ by default)
+./zig-out/bin/klar build program.kl              # -> build/program
+./zig-out/bin/klar build program.kl -o myapp     # -> myapp (explicit path)
+./zig-out/bin/klar build program.kl -O2          # -> build/program (optimized)
+./zig-out/bin/klar build program.kl -g           # -> build/program (debug info)
+
+# Debug output
+./zig-out/bin/klar build program.kl --emit-llvm         # Output .ll file
+./zig-out/bin/klar build program.kl --emit-asm          # Output .s file
+./zig-out/bin/klar build program.kl --emit-ir           # Output internal IR
+```
+
+**Build output convention:** When no `-o` flag is specified, executables are placed in the `build/` directory (gitignored). Use `-o` to specify a custom output path.
+
+## Interactive REPL
+
+The REPL (Read-Eval-Print Loop) enables interactive code exploration using the interpreter backend:
+
+```bash
+# Start the REPL
+./zig-out/bin/klar repl
+```
+
+### REPL Commands
+
+| Command | Description |
+|---------|-------------|
+| `:help` | Show available commands |
+| `:type <expr>` | Show the type of an expression without evaluating |
+| `:list` | Show all current bindings (variables, functions, types) |
+| `:load <file>` | Load definitions from a Klar file |
+| `:reset` | Clear all bindings and start fresh |
+| `:quit` or `:q` | Exit the REPL |
+
+### REPL Usage Examples
+
+```
+klar> let x: i32 = 42
+klar> x + 10
+52
+klar> fn double(n: i32) -> i32 { return n * 2 }
+klar> double(x)
+84
+klar> :type double(x)
+i32
+klar> :list
+Variables:
+  x: i32
+Functions:
+  double: fn(i32) -> i32
+```
+
+**Notes:**
+- State persists across inputs (variables, functions, structs remain defined)
+- Uses the interpreter backend (not VM or native compilation)
+- Errors don't crash the session - you can continue after errors
+- Multi-file imports not yet supported in REPL
+
+## Compiler Architecture
+
+The compiler is a multi-stage pipeline with three execution backends:
+
+```
+Source (.kl) → Lexer → Parser → AST → Type Checker → [Backend]
+                                            ↓
+              ┌─────────────────────────────┴─────────────────────────────┐
+              │                             │                             │
+         Interpreter              Bytecode Compiler              IR Builder
+         (--interpret)               (default)                      ↓
+              │                         │                      LLVM Codegen
+              ↓                         ↓                           ↓
+           Output                      VM                    Native Binary
+```
+
+### Key Source Files
+
+| File | Purpose | Lines |
+|------|---------|-------|
+| `src/main.zig` | CLI entry point, command routing | 1,650 |
+| `src/lexer.zig` | Tokenization | 595 |
+| `src/parser.zig` | Recursive descent parser with generics/traits | 2,600+ |
+| `src/checker.zig` | Type checking, trait resolution, monomorphization | **5,700+** |
+| `src/codegen/emit.zig` | LLVM IR generation | **11,000+** |
+| `src/vm.zig` | Bytecode virtual machine | 2,570 |
+| `src/compiler.zig` | AST to bytecode compiler | 2,100 |
+| `src/interpreter.zig` | Tree-walking interpreter | 2,500 |
+| `src/types.zig` | Type representation and operations | 975 |
+
+### Module Organization
+
+- **Frontend**: `lexer.zig`, `parser.zig`, `ast.zig`, `token.zig`
+- **Type System**: `checker.zig`, `types.zig`
+- **Ownership**: `src/ownership/` - borrow checking, drop insertion, state tracking
+- **Optimization**: `src/opt/` - constant folding, DCE, simplification
+- **IR**: `src/ir/` - intermediate representation for native codegen
+- **Codegen**: `src/codegen/` - LLVM backend
+- **Runtime**: `src/runtime/` - Rc, Arc, allocator definitions
+
+## Current Implementation Status
+
+**Phase 3: Language Completion** (in progress) - See `PLAN.md` for full roadmap.
+
+| Feature | Status |
+|---------|--------|
+| Generic functions/structs/enums | ✅ Complete |
+| Monomorphization | ✅ Complete |
+| Trait definitions/implementations | ✅ Complete |
+| Trait bounds on generics | ✅ Complete |
+| Trait inheritance | ✅ Complete |
+| Builtin traits (Eq, Ordered, Clone, Drop) | ✅ Complete |
+| Associated types | ✅ Complete |
+| Module system (imports) | ✅ Complete |
+| Standard library | ❌ Not started |
+
+**Note:** `Option#[T]` and `Result#[T, E]` are built-in generic enums handled by the compiler, not yet user-definable types.
+
+## Language Syntax Quick Reference
+
+```klar
+// Variables (explicit types required)
+let x: i32 = 42         // immutable
+let y: i64 = 100        // all types must be declared
+var counter: i32 = 0    // mutable
+
+// Functions (always use explicit return)
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn max#[T: Ordered](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+// Entry point with command-line arguments
+fn main(args: [String]) -> i32 {
+    println(args.len().to_string())  // Print arg count
+    return 0
+}
+// args[0] is the program path (source file for klar run, binary for standalone)
+// args[1..] are user arguments
+// Use `klar run file.kl arg1 arg2` or `klar run file.kl -- --flag`
+
+// Closures (explicit types and return required)
+let double: fn(i32) -> i32 = |x: i32| -> i32 { return x * 2 }
+
+// Structs and methods
+struct Point { x: f64, y: f64 }
+impl Point {
+    fn distance(self) -> f64 {
+        return sqrt(self.x * self.x + self.y * self.y)
+    }
+}
+
+// Enums with data
+enum Option#[T] { Some(T), None }
+enum Result#[T, E] { Ok(T), Err(E) }
+
+// Traits
+trait Drawable { fn draw(self) -> void }
+impl Circle: Drawable { fn draw(self) -> void { ... } }
+
+// Control flow (statement-based, not expressions)
+var max: i32
+if a > b {
+    max = a
+} else {
+    max = b
+}
+
+for i: i32 in 0..10 { ... }
+
+var result: string
+match value {
+    Pattern => { result = "matched" }
+    _ => { result = "default" }
+}
+
+// Error handling
+let maybe: ?i32 = Some(42)
+let value: i32 = maybe ?? 0          // default if None
+
+fn read_config() -> Result#[Config, Error] {
+    let content: string = read_file(path)?   // propagate error
+    return Ok(parse(content))
+}
+```
+
+## Development Guidelines
+
+### Zig 0.15 Gotchas
+
+- `ArrayListUnmanaged`: zero-init with `{}`, not `.init()`. Pass allocator to every method (`append`, `deinit`, `toOwnedSlice`).
+- `root_source_file` is deprecated in build.zig — use `root_module` pattern instead.
+- `var x: u32 = undefined; x += 1;` is a compile error — initialize before arithmetic.
+- `File.Writer` has no `.print()` — use `std.fmt.bufPrint()` + `writeAll()`.
+- `usingnamespace` is removed — use explicit imports.
+
+### When Adding Language Features
+
+1. **Parser** (`parser.zig`): Add AST nodes and parsing rules
+2. **AST** (`ast.zig`): Define node structures
+3. **Checker** (`checker.zig`): Implement type checking and validation
+4. **All three backends**: Update interpreter, bytecode compiler, and native codegen
+
+### When Debugging
+
+- **Use `klar run` for quick testing** - Don't build to a temp file and execute separately. Use `./zig-out/bin/klar run file.kl` instead of `./zig-out/bin/klar build file.kl -o /tmp/test && /tmp/test`
+- Use `--interpret` flag with `klar run` to use the tree-walking interpreter instead of the bytecode VM
+- Use `--emit-llvm` to inspect generated LLVM IR
+- Use `--emit-ir` to inspect internal IR before LLVM
+- The VM has `--debug` flag for bytecode tracing
+- Tests in `test/native/` cover most language features
+
+### AirTower Integration
+
+Wrapper scripts write results to JSON files read by AirTower:
+- `.build-results.json` - Build status
+- `.test-results.json` - Unit test results
+- `.native-test-results.json` - Native compilation test results
+
+## Scratch Directory
+
+The `scratch/` directory is your sandbox. You have full freedom to:
+- Create any files or directories
+- Modify or delete anything
+- Run experiments and tests
+- Store working notes and analysis
+
+Use it liberally for:
+- Trying out Klar code implementations before proposing changes
+- Creating test fixtures and sample `.kl` files
+- Writing analysis and comparisons of approaches
+- Any temporary work that doesn't belong in the main codebase
+
+The scratch directory is gitignored and can be cleaned at any time.
+```
+
+## Known Issues (BUG.md)
+
+These bugs are currently open and may be relevant to your task:
+
+```markdown
+## [ ] Bug 1: Task 26 stuck — Implement `file_append(path, content)` in `stdlib/file.kl` — append string content to an existing file, creating if not exists. (per DESIGN.md section "Standard Library", `stdlib.fs`) Tests should cover: append to existing file, append to non-existent file (creates it), multiple appends accumulate.
+
+**Task:** 26
+**Logged:** 2026-03-07T00:07:20Z
+
+## Blocker Report: Task 26
+
+**Step:** implement
+**Timestamp:** 2026-03-07T00:07:17Z
+
+### What Was Attempted
+
+Blueprint step "implement" for task 26.
+
+### What Failed
+
+```
+No source files were created or modified by the implementation step.
+```
+
+### Root Cause Hypothesis
+```
+

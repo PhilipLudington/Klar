@@ -50,7 +50,7 @@ On wasm32, pointers are 32 bits (4 bytes). The `isize` and `usize` types are 32-
 
 The following features are not available on WebAssembly targets and will trap at runtime if called:
 
-- **Filesystem operations**: `fs_exists`, `fs_is_file`, `fs_is_dir`, `fs_create_dir`, `fs_create_dir_all`, `fs_remove_file`, `fs_remove_dir`, `fs_read_string`, `fs_write_string`, `fs_read_dir`
+- **Filesystem operations**: `fs_exists`, `fs_is_file`, `fs_is_dir`, `fs_create_dir`, `fs_create_dir_all`, `fs_remove_file`, `fs_remove_dir`, `fs_read_string`, `fs_write_string`, `fs_append_string`, `fs_read_dir`
 - **Standard input**: `readline`
 
 Print functions (`print`, `println`) work by importing `puts`/`printf` from the host environment.

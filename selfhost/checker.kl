@@ -1982,6 +1982,13 @@ pub fn register_builtins(tc: TypeChecker) -> TypeChecker {
     c = rfsw1.0
     c = define_builtin(c, "fs_write_string", rfsw1.1)
 
+    // fs_append_string(path: string, content: string) -> Result#[void, IoError]
+    let rfsa1a: (TypeChecker, KlarType) = make_result_type(c, type_void(), type_unknown())
+    c = rfsa1a.0
+    let rfsa1: (TypeChecker, KlarType) = make_fn_type_2(c, type_string(), type_string(), rfsa1a.1)
+    c = rfsa1.0
+    c = define_builtin(c, "fs_append_string", rfsa1.1)
+
     // fs_remove_file(path: string) -> Result#[void, IoError]
     let rfsr1a: (TypeChecker, KlarType) = make_result_type(c, type_void(), type_unknown())
     c = rfsr1a.0
