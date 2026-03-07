@@ -416,6 +416,33 @@ fn emit_pattern(tc: TypeChecker, pid: PatternId) -> string {
             return "{\"kind\":\"wildcard\"}"
         }
         Pattern::LiteralPat(data) => {
+            // Emit flat literal pattern matching dump-ast format
+            if data.value.id >= 0 {
+                let lit_expr: Expr = tc.exprs[data.value.id]
+                match lit_expr {
+                    Expr::IntLiteral(ld) => {
+                        return "{\"kind\":\"literal\",\"type\":\"int\",\"value\":" + j_str(ld.text) + "}"
+                    }
+                    Expr::FloatLiteral(ld) => {
+                        return "{\"kind\":\"literal\",\"type\":\"float\",\"value\":" + j_str(ld.text) + "}"
+                    }
+                    Expr::StringLiteral(ld) => {
+                        return "{\"kind\":\"literal\",\"type\":\"string\",\"value\":" + j_str(ld.value) + "}"
+                    }
+                    Expr::BoolLiteral(ld) => {
+                        if ld.value {
+                            return "{\"kind\":\"literal\",\"type\":\"bool\",\"value\":\"true\"}"
+                        }
+                        return "{\"kind\":\"literal\",\"type\":\"bool\",\"value\":\"false\"}"
+                    }
+                    Expr::CharLiteral(ld) => {
+                        return "{\"kind\":\"literal\",\"type\":\"char\",\"value\":" + j_str(ld.value) + "}"
+                    }
+                    _ => {
+                        return "{\"kind\":\"literal\",\"value\":" + emit_expr(tc, data.value) + "}"
+                    }
+                }
+            }
             return "{\"kind\":\"literal\",\"value\":" + emit_expr(tc, data.value) + "}"
         }
         Pattern::BindingPat(data) => {
@@ -588,7 +615,9 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
             return "{\"kind\":\"index\",\"object\":" + emit_expr(tc, data.object) + ",\"index\":" + emit_expr(tc, data.index) + id_s + rt + "}"
         }
         Expr::Cast(data) => {
-            return "{\"kind\":\"cast\",\"expr\":" + emit_expr(tc, data.expr) + ",\"target\":" + emit_type_expr(tc, data.target) + ",\"cast_kind\":" + j_str(data.cast_kind) + id_s + rt + "}"
+            var trunc: string = "false"
+            if data.cast_kind == "trunc" { trunc = "true" }
+            return "{\"kind\":\"type_cast\",\"truncating\":" + trunc + ",\"target_type\":" + emit_type_expr(tc, data.target) + ",\"expr\":" + emit_expr(tc, data.expr) + id_s + rt + "}"
         }
         Expr::Closure(data) => {
             var params: string = ""
@@ -706,7 +735,8 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
             while i < data.args_count {
                 if i > 0 { args = args + "," }
                 let sub: ExprId = tc.extra_expr_ids[data.args_start + i]
-                args = args + emit_expr(tc, sub)
+                // Builtin args use structured format: {"kind":"expr","value":{...}}
+                args = args + "{\"kind\":\"expr\",\"value\":" + emit_expr(tc, sub) + "}"
                 i = i + 1
             }
             return "{\"kind\":\"builtin_call\",\"name\":" + j_str(data.builtin_name) + ",\"args\":[" + args + "]" + id_s + rt + "}"
@@ -894,7 +924,7 @@ fn emit_decl(tc: TypeChecker, did: DeclId) -> string {
         }
         Decl::TestDecl(data) => {
             let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
-            return "{\"kind\":\"test\",\"name\":" + j_str(data.test_name) + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}}"
+            return "{\"kind\":\"test_decl\",\"name\":" + j_str(data.test_name) + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}}"
         }
         Decl::StructDecl(data) => {
             return emit_struct_decl(tc, data)
