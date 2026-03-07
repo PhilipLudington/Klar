@@ -63,6 +63,12 @@ klar run hello.kl
 - [References](memory/references.md) - `ref` and `inout` parameters
 - [Reference Counting](memory/reference-counting.md) - Rc and Arc patterns
 
+### Standard Library
+
+- [Path Manipulation](stdlib/path.md) - `path_join`, `path_parent`, `path_extension`, `path_normalize`
+- [Directory Walking](stdlib/dir.md) - `dir_list`, `dir_list_ext`, `dir_walk`, `dir_walk_ext`
+- [File Utilities](stdlib/file.md) - `file_write`, `file_append`, `file_write_lines` *(planned)*
+
 ### Guides
 
 - [WebAssembly](guides/wasm.md) - Compile to WebAssembly
