@@ -508,6 +508,30 @@ else
     echo "⊘ integration (test not found, skipping)"
 fi
 
+# Test 21: stdlib integration (path + dir + string_builder + file)
+echo "--- stdlib_integration: Path + Dir + StringBuilder + File pipeline ---"
+temp_bin="/tmp/klar_module_stdlib_integration"
+if [ -d "$TEST_DIR/stdlib_integration" ]; then
+    if $KLAR build $TEST_DIR/stdlib_integration/main.kl -o "$temp_bin" 2>/dev/null; then
+        output=$("$temp_bin" 2>/dev/null)
+        result=$?
+        if [ "$result" = "0" ]; then
+            echo "✓ stdlib_integration (exit: $result)"
+            record_success "stdlib_integration"
+        else
+            echo "✗ stdlib_integration (expected: 0, got: $result)"
+            echo "    output: $output"
+            record_failure "stdlib_integration" "expected 0, got $result"
+        fi
+        rm -f "$temp_bin"
+    else
+        echo "✗ stdlib_integration (build failed)"
+        record_failure "stdlib_integration" "build failed"
+    fi
+else
+    echo "⊘ stdlib_integration (test not found, skipping)"
+fi
+
 # Test 19 & 20: HTTP server/client tests using Klar TCP
 # Skipped on Windows — TCP builtins fail to link on Windows CI
 echo "--- http_server: HTTP server library ---"

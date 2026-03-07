@@ -1,0 +1,263 @@
+// test/module/stdlib_integration/main.kl
+// End-to-end pipeline combining path.kl, dir.kl, string_builder.kl, and file.kl.
+// Pipeline: construct paths -> create directory structure -> walk directories ->
+//           build content with StringBuilder -> write file -> read back and verify.
+// Returns 0 on success, non-zero test number on failure.
+
+import stdlib.path.*
+import stdlib.dir.*
+import stdlib.string_builder.*
+import stdlib.file.*
+
+fn main() -> i32 {
+    let base: string = "/tmp/klar_stdlib_integration_test"
+
+    // Clean up from previous runs
+    cleanup(base)
+
+    // Set up test directory structure
+    let setup_err: i32 = setup(base)
+    if setup_err != 0 {
+        return setup_err
+    }
+
+    // Test 1: path_join constructs correct paths
+    let sub_a: string = path_join(base, "sub_a")
+    let sub_b: string = path_join(base, "sub_b")
+    let file_a1: string = path_join(sub_a, "one.txt")
+    let file_a2: string = path_join(sub_a, "two.txt")
+    let file_b1: string = path_join(sub_b, "three.kl")
+
+    if sub_a != base + "/sub_a" {
+        return 1
+    }
+    if file_a1 != base + "/sub_a/one.txt" {
+        return 2
+    }
+
+    // Test 2: path_extension and path_file_name work on constructed paths
+    let ext1: ?string = path_extension(file_a1)
+    if ext1 == None {
+        return 10
+    }
+    if ext1! != "txt" {
+        return 11
+    }
+    let ext2: ?string = path_extension(file_b1)
+    if ext2 == None {
+        return 12
+    }
+    if ext2! != "kl" {
+        return 13
+    }
+    let name1: ?string = path_file_name(file_a2)
+    if name1 == None {
+        return 14
+    }
+    if name1! != "two.txt" {
+        return 15
+    }
+
+    // Test 3: path_parent returns the directory
+    let parent_a1: ?string = path_parent(file_a1)
+    if parent_a1 == None {
+        return 20
+    }
+    if parent_a1! != sub_a {
+        return 21
+    }
+
+    // Test 4: dir_list lists entries in sub_a
+    let list_result: Result#[List#[string], string] = dir_list(sub_a)
+    if not list_result.is_ok() {
+        return 30
+    }
+    let entries: List#[string] = list_result!
+    if entries.len() != 2 {
+        return 31
+    }
+
+    // Test 5: dir_list_ext filters by extension
+    let txt_result: Result#[List#[string], string] = dir_list_ext(sub_a, "txt")
+    if not txt_result.is_ok() {
+        return 40
+    }
+    let txt_files: List#[string] = txt_result!
+    if txt_files.len() != 2 {
+        return 41
+    }
+
+    // Test 6: dir_walk_ext recursively finds .txt files across subdirs
+    let walk_result: Result#[List#[string], string] = dir_walk_ext(base, "txt")
+    if not walk_result.is_ok() {
+        return 50
+    }
+    let all_txt: List#[string] = walk_result!
+    // sub_a has one.txt and two.txt = 2 txt files total
+    if all_txt.len() != 2 {
+        return 51
+    }
+
+    // Test 7: dir_walk_ext finds .kl files
+    let kl_result: Result#[List#[string], string] = dir_walk_ext(base, "kl")
+    if not kl_result.is_ok() {
+        return 52
+    }
+    let all_kl: List#[string] = kl_result!
+    if all_kl.len() != 1 {
+        return 53
+    }
+
+    // Test 8: StringBuilder builds content from walked file list
+    var sb: StringBuilder = StringBuilder.new()
+    sb.append("Files found:\n")
+    let walk_all: Result#[List#[string], string] = dir_walk(base)
+    if not walk_all.is_ok() {
+        return 60
+    }
+    let all_files: List#[string] = walk_all!
+    var i: i32 = 0
+    while i < all_files.len() {
+        let f: string = all_files.get(i)!
+        let fname: ?string = path_file_name(f)
+        if fname != None {
+            sb.append("- ")
+            sb.append(fname!)
+            sb.append("\n")
+        }
+        i = i + 1
+    }
+    let report: string = sb.build()
+    if report.len() == 0 {
+        return 61
+    }
+
+    // Test 9: file_write writes the report, then read back and verify
+    let output_path: string = path_join(base, "report.txt")
+    let wr: Result#[bool, IoError] = file_write(output_path, report)
+    if not wr.is_ok() {
+        return 70
+    }
+    let rd: Result#[String, IoError] = File.read_to_string(output_path)
+    if not rd.is_ok() {
+        return 71
+    }
+    let read_back: String = rd!
+    if read_back.as_str() != report {
+        return 72
+    }
+
+    // Test 10: file_append appends to the report, read back and verify
+    let extra: string = "Total: " + all_files.len().to_string().as_str() + " files\n"
+    let ap: Result#[void, IoError] = file_append(output_path, extra)
+    if not ap.is_ok() {
+        return 80
+    }
+    let rd2: Result#[String, IoError] = File.read_to_string(output_path)
+    if not rd2.is_ok() {
+        return 81
+    }
+    let read_back2: String = rd2!
+    let expected: string = report + extra
+    if read_back2.as_str() != expected {
+        return 82
+    }
+
+    // Test 11: file_write_lines writes structured output
+    let lines_path: string = path_join(base, "lines.txt")
+    var lines: List#[string] = List.new#[string]()
+    lines.push("alpha")
+    lines.push("beta")
+    lines.push("gamma")
+    let wl: Result#[bool, IoError] = file_write_lines(lines_path, lines)
+    if not wl.is_ok() {
+        return 90
+    }
+    let rd3: Result#[String, IoError] = File.read_to_string(lines_path)
+    if not rd3.is_ok() {
+        return 91
+    }
+    let lines_content: String = rd3!
+    if lines_content.as_str() != "alpha\nbeta\ngamma\n" {
+        return 92
+    }
+
+    // Test 12: path_normalize on constructed paths
+    let messy: string = path_join(base, "sub_a/../sub_b/./three.kl")
+    let clean: string = path_normalize(messy)
+    if clean != base + "/sub_b/three.kl" {
+        return 100
+    }
+
+    // Clean up
+    cleanup(base)
+
+    println("All stdlib integration tests passed")
+    return 0
+}
+
+fn setup(base: string) -> i32 {
+    let sub_a: string = path_join(base, "sub_a")
+    let sub_b: string = path_join(base, "sub_b")
+
+    // Create directories
+    let r1: Result#[void, IoError] = fs_create_dir(base)
+    if not r1.is_ok() {
+        return 200
+    }
+    let r2: Result#[void, IoError] = fs_create_dir(sub_a)
+    if not r2.is_ok() {
+        return 201
+    }
+    let r3: Result#[void, IoError] = fs_create_dir(sub_b)
+    if not r3.is_ok() {
+        return 202
+    }
+
+    // Create test files
+    let w1: Result#[bool, IoError] = file_write(path_join(sub_a, "one.txt"), "content one")
+    if not w1.is_ok() {
+        return 203
+    }
+    let w2: Result#[bool, IoError] = file_write(path_join(sub_a, "two.txt"), "content two")
+    if not w2.is_ok() {
+        return 204
+    }
+    let w3: Result#[bool, IoError] = file_write(path_join(sub_b, "three.kl"), "fn main() -> i32 { return 0 }")
+    if not w3.is_ok() {
+        return 205
+    }
+
+    return 0
+}
+
+fn cleanup(base: string) -> void {
+    // Remove files then directories (best effort)
+    let sub_a: string = path_join(base, "sub_a")
+    let sub_b: string = path_join(base, "sub_b")
+
+    if fs_exists(path_join(base, "report.txt")) {
+        let _r: Result#[void, IoError] = fs_remove_file(path_join(base, "report.txt"))
+    }
+    if fs_exists(path_join(base, "lines.txt")) {
+        let _r: Result#[void, IoError] = fs_remove_file(path_join(base, "lines.txt"))
+    }
+    if fs_exists(path_join(sub_a, "one.txt")) {
+        let _r: Result#[void, IoError] = fs_remove_file(path_join(sub_a, "one.txt"))
+    }
+    if fs_exists(path_join(sub_a, "two.txt")) {
+        let _r: Result#[void, IoError] = fs_remove_file(path_join(sub_a, "two.txt"))
+    }
+    if fs_exists(path_join(sub_b, "three.kl")) {
+        let _r: Result#[void, IoError] = fs_remove_file(path_join(sub_b, "three.kl"))
+    }
+    if fs_exists(sub_a) {
+        let _r: Result#[void, IoError] = fs_remove_dir(sub_a)
+    }
+    if fs_exists(sub_b) {
+        let _r: Result#[void, IoError] = fs_remove_dir(sub_b)
+    }
+    if fs_exists(base) {
+        let _r: Result#[void, IoError] = fs_remove_dir(base)
+    }
+}
