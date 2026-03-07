@@ -8,7 +8,8 @@
 import json.{
     skip_whitespace, skip_value, extract_string, extract_int, extract_bool,
     json_is_null, find_field, field_string, field_int, field_bool,
-    field_is_null, field_pos, array_start, array_next, array_count
+    field_is_null, field_pos, field_number_as_string,
+    array_start, array_next, array_count
 }
 
 import ast.{
@@ -404,7 +405,7 @@ fn build_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprI
         return (c, ExprId { id: idx })
     }
     if lt == "float" {
-        let vr: (string, bool) = field_string(json, pos, "value")
+        let vr: (string, bool) = field_number_as_string(json, pos, "value")
         c.exprs.push(Expr::FloatLiteral(FloatLiteralData { text: vr.0, span: s() }))
         return (c, ExprId { id: idx })
     }
@@ -475,7 +476,7 @@ fn build_postfix(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprI
     var c: TypeChecker = r.0
     let opr: (string, bool) = field_string(json, pos, "op")
     var pf_op: PostfixOp = PostfixOp::Unwrap
-    if opr.0 == "unwrap" { pf_op = PostfixOp::Unwrap }
+    if opr.0 == "unwrap" { pf_op = PostfixOp::Try }
     if opr.0 == "force_unwrap" { pf_op = PostfixOp::Unwrap }
     if opr.0 == "try" { pf_op = PostfixOp::Try }
     let idx: i32 = c.exprs.len()
@@ -1401,6 +1402,22 @@ fn build_expr_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stm
     return (c, StmtId { id: idx })
 }
 
+// Build a raw expression as a statement — handles assign ops correctly
+fn build_expr_as_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtId) {
+    let kr: (string, bool) = field_string(json, pos, "kind")
+    if kr.0 == "binary" {
+        let opr: (string, bool) = field_string(json, pos, "op")
+        if is_assign_op(opr.0) {
+            return build_assignment_from_binary(tc, json, pos, opr.0)
+        }
+    }
+    let er: (TypeChecker, ExprId) = build_expr(tc, json, pos)
+    var c: TypeChecker = er.0
+    let idx: i32 = c.stmts.len()
+    c.stmts.push(Stmt::ExprStmt(ExprStmtData { expr: er.1, span: s() }))
+    return (c, StmtId { id: idx })
+}
+
 fn build_assignment_from_binary(tc: TypeChecker, json: string, pos: i32, op_str: string) -> (TypeChecker, StmtId) {
     let lp: i32 = field_pos(json, pos, "left")
     let lr: (TypeChecker, ExprId) = build_expr(tc, json, lp)
@@ -1436,6 +1453,14 @@ fn build_if_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtI
                 ap = array_next(json, ap)
             }
         }
+        // Handle final_expr if present
+        let fe_then: i32 = field_pos(json, tbp, "final_expr")
+        if fe_then >= 0 and not json_is_null(json, fe_then) {
+            let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fe_then)
+            c = fer.0
+            then_collected.push(fer.1)
+            then_count = then_count + 1
+        }
     }
     let then_start: i32 = c.extra_stmt_ids.len()
     var ti: i32 = 0
@@ -1458,8 +1483,17 @@ fn build_if_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtI
             else_collected.push(eir.1)
             else_count = 1
         } else {
-            // Regular else body
-            let stmts_p: i32 = field_pos(json, ebp, "statements")
+            // Regular else body — may be raw {statements,...} or wrapped {kind:block,body:{statements,...}}
+            var body_obj_p: i32 = ebp
+            var stmts_p: i32 = field_pos(json, ebp, "statements")
+            if stmts_p < 0 {
+                // Wrapped block format: look inside body.statements
+                let body_p: i32 = field_pos(json, ebp, "body")
+                if body_p >= 0 {
+                    body_obj_p = body_p
+                    stmts_p = field_pos(json, body_p, "statements")
+                }
+            }
             if stmts_p >= 0 {
                 var ap: i32 = array_start(json, stmts_p)
                 while ap >= 0 {
@@ -1469,6 +1503,14 @@ fn build_if_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, StmtI
                     else_count = else_count + 1
                     ap = array_next(json, ap)
                 }
+            }
+            // Handle final_expr if present
+            let fe_else: i32 = field_pos(json, body_obj_p, "final_expr")
+            if fe_else >= 0 and not json_is_null(json, fe_else) {
+                let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fe_else)
+                c = fer.0
+                else_collected.push(fer.1)
+                else_count = else_count + 1
             }
         }
     }
@@ -1507,6 +1549,14 @@ fn build_while_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, St
                 body_count = body_count + 1
                 ap = array_next(json, ap)
             }
+        }
+        // Handle final_expr if present
+        let fep: i32 = field_pos(json, bp, "final_expr")
+        if fep >= 0 and not json_is_null(json, fep) {
+            let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fep)
+            c = fer.0
+            body_collected.push(fer.1)
+            body_count = body_count + 1
         }
     }
     let body_start: i32 = c.extra_stmt_ids.len()
@@ -1577,6 +1627,14 @@ fn build_for_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stmt
                 ap = array_next(json, ap)
             }
         }
+        // Handle final_expr if present (parser puts last expr_stmt here)
+        let fep: i32 = field_pos(json, bp, "final_expr")
+        if fep >= 0 and not json_is_null(json, fep) {
+            let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fep)
+            c = fer.0
+            body_collected.push(fer.1)
+            body_count = body_count + 1
+        }
     }
     let body_start: i32 = c.extra_stmt_ids.len()
     var bj: i32 = 0
@@ -1611,6 +1669,14 @@ fn build_loop_stmt(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Stm
                 body_count = body_count + 1
                 ap = array_next(json, ap)
             }
+        }
+        // Handle final_expr if present
+        let fep: i32 = field_pos(json, bp, "final_expr")
+        if fep >= 0 and not json_is_null(json, fep) {
+            let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fep)
+            c = fer.0
+            body_collected.push(fer.1)
+            body_count = body_count + 1
         }
     }
     let body_start: i32 = c.extra_stmt_ids.len()
@@ -1735,6 +1801,14 @@ fn build_body_stmts(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, i3
             count = count + 1
             ap = array_next(json, ap)
         }
+    }
+    // Handle final_expr if present
+    let fep: i32 = field_pos(json, pos, "final_expr")
+    if fep >= 0 and not json_is_null(json, fep) {
+        let fer: (TypeChecker, StmtId) = build_expr_as_stmt(c, json, fep)
+        c = fer.0
+        collected.push(fer.1)
+        count = count + 1
     }
     // Push all collected stmts as a contiguous block
     let start: i32 = c.extra_stmt_ids.len()

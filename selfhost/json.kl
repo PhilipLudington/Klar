@@ -302,6 +302,29 @@ pub fn field_string(json: string, obj_pos: i32, field_name: string) -> (string, 
     return (r.0, true)
 }
 
+pub fn field_number_as_string(json: string, obj_pos: i32, field_name: string) -> (string, bool) {
+    let vp: i32 = find_field(json, obj_pos, field_name)
+    if vp < 0 { return ("", false) }
+    // Read raw number text: digits, dots, minus, e, E, +
+    var p: i32 = skip_whitespace(json, vp)
+    var result: string = ""
+    while p < json.byte_len() {
+        let ch: i32 = json.byte_at(p).as#[i32]
+        if (ch >= 48 and ch <= 57) or ch == 46 or ch == 45 or ch == 43 or ch == 101 or ch == 69 {
+            result = result + from_byte(ch.as#[u8])
+            p = p + 1
+        } else {
+            // Also handle if it's a quoted string (for compatibility)
+            if ch == 34 {
+                let r: (string, i32) = extract_string(json, vp)
+                return (r.0, true)
+            }
+            return (result, result != "")
+        }
+    }
+    return (result, result != "")
+}
+
 pub fn field_int(json: string, obj_pos: i32, field_name: string) -> (i32, bool) {
     let vp: i32 = find_field(json, obj_pos, field_name)
     if vp < 0 { return (0, false) }

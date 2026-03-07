@@ -94,7 +94,7 @@ fn binary_op_json(op: BinaryOp) -> string {
         BinaryOp::Sub => { return "sub" }
         BinaryOp::Mul => { return "mul" }
         BinaryOp::Div => { return "div" }
-        BinaryOp::Mod => { return "mod_" }
+        BinaryOp::Mod => { return "mod" }
         BinaryOp::AddWrap => { return "add_wrap" }
         BinaryOp::SubWrap => { return "sub_wrap" }
         BinaryOp::MulWrap => { return "mul_wrap" }
@@ -136,8 +136,8 @@ fn unary_op_json(op: UnaryOp) -> string {
 
 fn postfix_op_json(op: PostfixOp) -> string {
     match op {
-        PostfixOp::Try => { return "try" }
-        PostfixOp::Unwrap => { return "unwrap" }
+        PostfixOp::Try => { return "unwrap" }
+        PostfixOp::Unwrap => { return "force_unwrap" }
     }
 }
 
@@ -380,7 +380,7 @@ fn emit_type_expr(tc: TypeChecker, te_id: TypeExprId) -> string {
                 params = params + emit_type_expr(tc, te_sub)
                 i = i + 1
             }
-            return "{\"kind\":\"function\",\"params\":[" + params + "],\"return\":" + emit_type_expr(tc, data.ret) + "}"
+            return "{\"kind\":\"function\",\"params\":[" + params + "],\"return_type\":" + emit_type_expr(tc, data.ret) + "}"
         }
         TypeExpr::Reference(data) => {
             return "{\"kind\":\"reference\",\"inner\":" + emit_type_expr(tc, data.inner) + ",\"mutable\":" + j_bool(data.is_mut) + "}"
@@ -397,7 +397,7 @@ fn emit_type_expr(tc: TypeChecker, te_id: TypeExprId) -> string {
             return "{\"kind\":\"generic_apply\",\"base\":" + emit_type_expr(tc, data.base) + ",\"args\":[" + args + "]}"
         }
         TypeExpr::Qualified(data) => {
-            return "{\"kind\":\"qualified\",\"qualifier\":" + emit_type_expr(tc, data.qualifier) + ",\"name\":" + j_str(data.qualified_name) + "}"
+            return "{\"kind\":\"qualified\",\"base\":" + emit_type_expr(tc, data.qualifier) + ",\"member\":" + j_str(data.qualified_name) + "}"
         }
     }
 }
@@ -493,13 +493,25 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
             return "{\"kind\":\"literal\",\"type\":\"int\",\"value\":" + j_str(data.text) + id_s + rt + "}"
         }
         Expr::FloatLiteral(data) => {
-            return "{\"kind\":\"literal\",\"type\":\"float\",\"value\":" + j_str(data.text) + id_s + rt + "}"
+            return "{\"kind\":\"literal\",\"type\":\"float\",\"value\":" + data.text + id_s + rt + "}"
         }
         Expr::StringLiteral(data) => {
             return "{\"kind\":\"literal\",\"type\":\"string\",\"value\":" + j_str(data.value) + id_s + rt + "}"
         }
         Expr::CharLiteral(data) => {
-            return "{\"kind\":\"literal\",\"type\":\"char\",\"value\":" + j_str(data.value) + id_s + rt + "}"
+            // data.value may be a single char "a" or a numeric string "97"
+            var code: i32 = 0
+            if data.value.byte_len() == 1 {
+                code = data.value.byte_at(0).as#[i32]
+            } else {
+                // Numeric string from int conversion — parse it back
+                let parsed: ?i64 = parse_int(data.value)
+                match parsed {
+                    Some(v) => { code = v.as#[i32] }
+                    None => { code = data.value.byte_at(0).as#[i32] }
+                }
+            }
+            return "{\"kind\":\"literal\",\"type\":\"char\",\"value\":" + j_int(code) + id_s + rt + "}"
         }
         Expr::BoolLiteral(data) => {
             return "{\"kind\":\"literal\",\"type\":\"bool\",\"value\":" + j_bool(data.value) + id_s + rt + "}"
@@ -508,7 +520,14 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
             return "{\"kind\":\"identifier\",\"name\":" + j_str(data.ident_name) + id_s + rt + "}"
         }
         Expr::Binary(data) => {
-            return "{\"kind\":\"binary\",\"op\":" + j_str(binary_op_json(data.op)) + ",\"left\":" + emit_expr(tc, data.left) + ",\"right\":" + emit_expr(tc, data.right) + id_s + rt + "}"
+            let op_name: string = binary_op_json(data.op)
+            if op_name == "range" {
+                return "{\"kind\":\"range\",\"inclusive\":false,\"start\":" + emit_expr(tc, data.left) + ",\"end\":" + emit_expr(tc, data.right) + id_s + rt + "}"
+            }
+            if op_name == "range_inclusive" {
+                return "{\"kind\":\"range\",\"inclusive\":true,\"start\":" + emit_expr(tc, data.left) + ",\"end\":" + emit_expr(tc, data.right) + id_s + rt + "}"
+            }
+            return "{\"kind\":\"binary\",\"op\":" + j_str(op_name) + ",\"left\":" + emit_expr(tc, data.left) + ",\"right\":" + emit_expr(tc, data.right) + id_s + rt + "}"
         }
         Expr::Unary(data) => {
             return "{\"kind\":\"unary\",\"op\":" + j_str(unary_op_json(data.op)) + ",\"operand\":" + emit_expr(tc, data.operand) + id_s + rt + "}"
@@ -583,7 +602,7 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
             return "{\"kind\":\"closure\",\"params\":[" + params + "],\"return_type\":" + emit_type_expr(tc, data.return_type) + ",\"body\":" + emit_expr(tc, data.body) + id_s + rt + "}"
         }
         Expr::Block(data) => {
-            return emit_block_body(tc, data.stmts_start, data.stmts_count)
+            return "{\"kind\":\"block\",\"body\":" + emit_block_body(tc, data.stmts_start, data.stmts_count) + "}"
         }
         Expr::IfExpr(data) => {
             var s: string = "{\"kind\":\"if_expr\",\"condition\":" + emit_expr(tc, data.condition) + ",\"then_branch\":" + emit_expr(tc, data.then_body)
@@ -636,16 +655,19 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
                 fields = fields + "{\"name\":" + j_str(fi.field_name) + ",\"value\":" + emit_expr(tc, fi.value) + "}"
                 i = i + 1
             }
-            return "{\"kind\":\"struct_literal\",\"type_name\":{\"kind\":\"named\",\"name\":" + j_str(data.struct_name) + "},\"fields\":[" + fields + "]" + id_s + rt + "}"
+            return "{\"kind\":\"struct_literal\",\"type_name\":{\"kind\":\"named\",\"name\":" + j_str(data.struct_name) + "},\"fields\":[" + fields + "],\"spread\":null" + id_s + rt + "}"
         }
         Expr::EnumVariant(data) => {
-            var s: string = "{\"kind\":\"enum_literal\",\"enum_type\":" + j_str(data.type_name) + ",\"variant\":" + j_str(data.variant_name)
-            if data.args_count > 0 {
-                let payload_eid: ExprId = tc.extra_expr_ids[data.args_start]
-                s = s + ",\"payload\":" + emit_expr(tc, payload_eid)
-            } else {
-                s = s + ",\"payload\":null"
+            var s: string = "{\"kind\":\"enum_literal\",\"enum_type\":{\"kind\":\"named\",\"name\":" + j_str(data.type_name) + "},\"variant_name\":" + j_str(data.variant_name)
+            var payloads: string = ""
+            var j: i32 = 0
+            while j < data.args_count {
+                if j > 0 { payloads = payloads + "," }
+                let payload_eid: ExprId = tc.extra_expr_ids[data.args_start + j]
+                payloads = payloads + emit_expr(tc, payload_eid)
+                j = j + 1
             }
+            s = s + ",\"payload\":[" + payloads + "]"
             return s + id_s + rt + "}"
         }
         Expr::InterpolatedString(data) => {
@@ -654,7 +676,15 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
             while i < data.parts_count {
                 if i > 0 { parts = parts + "," }
                 let sub: ExprId = tc.extra_expr_ids[data.parts_start + i]
-                parts = parts + emit_expr(tc, sub)
+                let sub_expr: Expr = tc.exprs[sub.id]
+                match sub_expr {
+                    Expr::StringLiteral(lit) => {
+                        parts = parts + "{\"kind\":\"string\",\"value\":" + j_str(lit.value) + "}"
+                    }
+                    _ => {
+                        parts = parts + "{\"kind\":\"expr\",\"value\":" + emit_expr(tc, sub) + "}"
+                    }
+                }
                 i = i + 1
             }
             return "{\"kind\":\"interpolated_string\",\"parts\":[" + parts + "]" + id_s + rt + "}"
@@ -722,11 +752,12 @@ fn emit_stmt(tc: TypeChecker, sid: StmtId) -> string {
             return "{\"kind\":\"continue_stmt\"}"
         }
         Stmt::ForLoop(data) => {
-            var s: string = "{\"kind\":\"for_loop\",\"binding\":" + j_str(data.binding)
+            var s: string = "{\"kind\":\"for_loop\""
             if data.binding2 != "" {
-                s = s + ",\"binding2\":" + j_str(data.binding2)
+                s = s + ",\"pattern\":{\"kind\":\"tuple\",\"elements\":[{\"kind\":\"binding\",\"name\":" + j_str(data.binding) + ",\"mutable\":false,\"type_annotation\":null},{\"kind\":\"binding\",\"name\":" + j_str(data.binding2) + ",\"mutable\":false,\"type_annotation\":null}]}"
+            } else {
+                s = s + ",\"pattern\":{\"kind\":\"binding\",\"name\":" + j_str(data.binding) + ",\"mutable\":false,\"type_annotation\":" + emit_type_expr(tc, data.binding_type) + "}"
             }
-            s = s + ",\"binding_type\":" + emit_type_expr(tc, data.binding_type)
             s = s + ",\"iterable\":" + emit_expr(tc, data.iterable)
             let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
             s = s + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}}"
@@ -755,11 +786,11 @@ fn emit_stmt(tc: TypeChecker, sid: StmtId) -> string {
                             s = s + ",\"else_branch\":" + emit_stmt(tc, else_sid)
                         }
                         _ => {
-                            s = s + ",\"else_branch\":{\"statements\":[" + else_body + "],\"final_expr\":null}"
+                            s = s + ",\"else_branch\":{\"kind\":\"block\",\"body\":{\"statements\":[" + else_body + "],\"final_expr\":null}}"
                         }
                     }
                 } else {
-                    s = s + ",\"else_branch\":{\"statements\":[" + else_body + "],\"final_expr\":null}"
+                    s = s + ",\"else_branch\":{\"kind\":\"block\",\"body\":{\"statements\":[" + else_body + "],\"final_expr\":null}}"
                 }
             } else {
                 s = s + ",\"else_branch\":null"
@@ -787,9 +818,24 @@ fn emit_match_arm(tc: TypeChecker, arm: MatchArm) -> string {
     } else {
         s = s + ",\"guard\":null"
     }
-    // arm.body is a block expression
-    s = s + ",\"body\":" + emit_expr(tc, arm.body)
+    // arm.body: emit as raw block (buildBlock expects {statements, final_expr})
+    s = s + ",\"body\":" + emit_expr_as_raw_block(tc, arm.body)
     return s + "}"
+}
+
+fn emit_expr_as_raw_block(tc: TypeChecker, eid: ExprId) -> string {
+    if eid.id < 0 {
+        return "{\"statements\":[],\"final_expr\":null}"
+    }
+    let expr: Expr = tc.exprs[eid.id]
+    match expr {
+        Expr::Block(data) => {
+            return emit_block_body(tc, data.stmts_start, data.stmts_count)
+        }
+        _ => {
+            return "{\"statements\":[{\"kind\":\"expr_stmt\",\"expr\":" + emit_expr(tc, eid) + "}],\"final_expr\":null}"
+        }
+    }
 }
 
 fn emit_block_stmts(tc: TypeChecker, start: i32, count: i32) -> string {
@@ -933,12 +979,14 @@ fn emit_function_decl(tc: TypeChecker, data: FunctionDeclData) -> string {
     s = s + ",\"return_type\":" + emit_type_expr(tc, data.return_type)
     s = s + ",\"where_clause\":null"
 
-    // body
-    if data.body_count > 0 {
+    // body — extern functions have no body, all others get an empty block
+    if data.is_extern {
+        s = s + ",\"body\":null"
+    } else if data.body_count > 0 {
         let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
         s = s + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}"
     } else {
-        s = s + ",\"body\":null"
+        s = s + ",\"body\":{\"statements\":[],\"final_expr\":null}"
     }
 
     return s + "}"
@@ -1007,12 +1055,12 @@ fn emit_enum_decl(tc: TypeChecker, data: EnumDeclData) -> string {
                 payloads = payloads + emit_type_expr(tc, te)
                 j = j + 1
             }
-            variants = variants + ",\"payload\":[" + payloads + "]"
+            variants = variants + ",\"payload\":{\"kind\":\"tuple\",\"types\":[" + payloads + "]}"
         } else {
             variants = variants + ",\"payload\":null"
         }
         if has_expr(ev.discriminant) {
-            variants = variants + ",\"discriminant\":" + emit_expr(tc, ev.discriminant)
+            variants = variants + ",\"value\":0"
         }
         variants = variants + "}"
         i = i + 1
@@ -1046,7 +1094,7 @@ fn emit_trait_decl(tc: TypeChecker, data: TraitDeclData) -> string {
         parents = parents + emit_type_expr(tc, te)
         i = i + 1
     }
-    s = s + ",\"parents\":[" + parents + "]"
+    s = s + ",\"super_traits\":[" + parents + "]"
 
     // methods (TraitMethod structs are stored differently — use DeclIds for methods)
     var methods: string = ""
