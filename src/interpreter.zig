@@ -3212,6 +3212,10 @@ test "await returns completed future value in interpreter runtime" {
     interp.ensureBuilderInitialized();
 
     const ready = try interp.builder.futureCompleted(1, interp.builder.i32Val(42));
+    defer {
+        testing.allocator.destroy(ready.future.value.?);
+        testing.allocator.destroy(ready.future);
+    }
     try interp.current_env.define("ready", ready, false);
 
     const unary = try testing.allocator.create(ast.Unary);
@@ -3239,6 +3243,7 @@ test "await on pending future returns invalid operation" {
     interp.ensureBuilderInitialized();
 
     const pending = try interp.builder.futurePending(2);
+    defer testing.allocator.destroy(pending.future);
     try interp.current_env.define("pending", pending, false);
 
     const unary = try testing.allocator.create(ast.Unary);
@@ -3270,6 +3275,10 @@ test "await on failed future returns invalid operation with runtime message" {
     interp.ensureBuilderInitialized();
 
     const failed = try interp.builder.futureFailed(3, interp.builder.i32Val(9));
+    defer {
+        testing.allocator.destroy(failed.future.value.?);
+        testing.allocator.destroy(failed.future);
+    }
     try interp.current_env.define("failed", failed, false);
 
     const unary = try testing.allocator.create(ast.Unary);
@@ -3300,6 +3309,7 @@ test "await on cancelled future returns invalid operation with runtime message" 
     interp.ensureBuilderInitialized();
 
     const cancelled = try interp.builder.futureCancelled(4);
+    defer testing.allocator.destroy(cancelled.future);
     try interp.current_env.define("cancelled", cancelled, false);
 
     const unary = try testing.allocator.create(ast.Unary);
