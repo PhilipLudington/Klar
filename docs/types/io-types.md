@@ -438,6 +438,7 @@ match entries {
 | `fs_remove_dir(path) -> Result#[void, IoError]` | Delete empty directory |
 | `fs_read_string(path) -> Result#[String, IoError]` | Read file contents |
 | `fs_write_string(path, content) -> Result#[void, IoError]` | Write file contents |
+| `fs_append_string(path, content) -> Result#[void, IoError]` | Append to file |
 | `fs_read_dir(path) -> Result#[List#[String], IoError]` | List directory entries |
 
 > **Note:** Filesystem operations currently support macOS and Linux only. Windows is not implemented.
