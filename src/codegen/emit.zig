@@ -81,7 +81,8 @@ const stat_size_bits: u32 = if (has_posix_headers) @bitSizeOf(@TypeOf(@as(posix.
 /// On macOS/BSD, the field is st_mtimespec (struct timespec); tv_sec is at offset 0 within it.
 /// On Linux (glibc), the field is st_mtim (struct timespec).
 /// We read the time_t value (first field of timespec) at this offset.
-const stat_mtime_offset: u32 = if (has_posix_headers) blk: {
+const stat_mtime_offset: u32 = if (has_posix_headers)
+blk: {
     break :blk if (@hasField(posix.struct_stat, "st_mtimespec"))
         @offsetOf(posix.struct_stat, "st_mtimespec") // macOS/BSD
     else if (@hasField(posix.struct_stat, "st_mtim"))
@@ -5394,6 +5395,8 @@ pub const Emitter = struct {
                 return self.emitFsReadString(call);
             } else if (std.mem.eql(u8, name, "fs_write_string")) {
                 return self.emitFsWriteString(call);
+            } else if (std.mem.eql(u8, name, "fs_append_string")) {
+                return self.emitFsAppendString(call);
             } else if (std.mem.eql(u8, name, "fs_read_dir")) {
                 return self.emitFsReadDir(call);
             }
@@ -6549,8 +6552,7 @@ pub const Emitter = struct {
                             return null;
                         },
                     }
-                } else {
-                }
+                } else {}
                 break;
             }
         }
@@ -25502,19 +25504,114 @@ pub const Emitter = struct {
 
         // Write content
         var fwrite_args = [_]llvm.ValueRef{ content_val, llvm.Const.int(i64_type, 1, false), content_len, file_ptr };
-        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "fs_write.written");
+        const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "fs_write.written");
 
-        // Close file
+        // Check if all bytes were written
+        const write_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, written, content_len, "fs_write.cmp");
+        const write_succ_bb = llvm.appendBasicBlock(self.ctx, func, "fs_write.write_ok");
+        const write_fail_bb = llvm.appendBasicBlock(self.ctx, func, "fs_write.write_err");
+        _ = self.builder.buildCondBr(write_ok, write_succ_bb, write_fail_bb);
+
+        // Write error - close file and return error
+        self.builder.positionAtEnd(write_fail_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        var fclose_err_args = [_]llvm.ValueRef{file_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_err_args, "fs_write.close_err");
+        _ = self.builder.buildBr(cont_bb);
+
+        // Write OK - close file and return success
+        self.builder.positionAtEnd(write_succ_bb);
         var fclose_args = [_]llvm.ValueRef{file_ptr};
         _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "fs_write.close");
-
-        // Success
         _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
         _ = self.builder.buildBr(cont_bb);
 
         // Continue
         self.builder.positionAtEnd(cont_bb);
         return self.builder.buildLoad(result_type, result_alloca, "fs_write.val");
+    }
+
+    /// Emit fs_append_string(path: string, content: string) -> Result#[void, IoError]
+    fn emitFsAppendString(self: *Emitter, call: *ast.Call) EmitError!llvm.ValueRef {
+        if (self.platform.isWasm()) return self.emitWasmUnsupportedTrap("error: fs_append_string is not supported on WebAssembly targets");
+        if (call.args.len != 2) return EmitError.InvalidAST;
+
+        const path_val = try self.emitExpr(call.args[0]);
+        const content_val = try self.emitExpr(call.args[1]);
+
+        const ptr_type = llvm.Types.pointer(self.ctx);
+        const i64_type = llvm.Types.int64(self.ctx);
+
+        const fopen_fn = self.getOrDeclareFopen();
+        const fwrite_fn = self.getOrDeclareFwrite();
+        const fclose_fn = self.getOrDeclareFclose();
+        const strlen_fn = self.getOrDeclareStrlen();
+
+        // Open file for appending (creates if not exists)
+        const mode_str = self.builder.buildGlobalStringPtr("a", "mode.a");
+        var fopen_args = [_]llvm.ValueRef{ path_val, mode_str };
+        const file_ptr = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fopen_fn), fopen_fn, &fopen_args, "fs_append.file");
+
+        // Build Result#[void, IoError]
+        const result_type = self.getVoidResultType();
+        const result_alloca = self.builder.buildAlloca(result_type, "fs_append.result");
+
+        const tag_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 0, "fs_append.tag_ptr");
+        const err_field_ptr = llvm.c.LLVMBuildStructGEP2(self.builder.ref, result_type, result_alloca, 2, "fs_append.err_ptr");
+
+        // Check if fopen returned null
+        const null_ptr = llvm.c.LLVMConstPointerNull(ptr_type);
+        const is_null = self.builder.buildICmp(llvm.c.LLVMIntEQ, file_ptr, null_ptr, "fs_append.is_null");
+
+        const func = self.current_function orelse return EmitError.InvalidAST;
+        const open_ok_bb = llvm.appendBasicBlock(self.ctx, func, "fs_append.open_ok");
+        const open_err_bb = llvm.appendBasicBlock(self.ctx, func, "fs_append.open_err");
+        const cont_bb = llvm.appendBasicBlock(self.ctx, func, "fs_append.cont");
+
+        _ = self.builder.buildCondBr(is_null, open_err_bb, open_ok_bb);
+
+        // Open error
+        self.builder.positionAtEnd(open_err_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Open OK - append content
+        self.builder.positionAtEnd(open_ok_bb);
+
+        // Get content length
+        var strlen_args = [_]llvm.ValueRef{content_val};
+        const content_len = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, "fs_append.len");
+
+        // Write content
+        var fwrite_args = [_]llvm.ValueRef{ content_val, llvm.Const.int(i64_type, 1, false), content_len, file_ptr };
+        const written = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fwrite_fn), fwrite_fn, &fwrite_args, "fs_append.written");
+
+        // Check if all bytes were written
+        const write_ok = self.builder.buildICmp(llvm.c.LLVMIntEQ, written, content_len, "fs_append.cmp");
+        const write_succ_bb = llvm.appendBasicBlock(self.ctx, func, "fs_append.write_ok");
+        const write_fail_bb = llvm.appendBasicBlock(self.ctx, func, "fs_append.write_err");
+        _ = self.builder.buildCondBr(write_ok, write_succ_bb, write_fail_bb);
+
+        // Write error - close file and return error
+        self.builder.positionAtEnd(write_fail_bb);
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, false), tag_ptr);
+        self.emitErrnoToIoError(err_field_ptr);
+        var fclose_err_args = [_]llvm.ValueRef{file_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_err_args, "fs_append.close_err");
+        _ = self.builder.buildBr(cont_bb);
+
+        // Write OK - close file and return success
+        self.builder.positionAtEnd(write_succ_bb);
+        var fclose_args = [_]llvm.ValueRef{file_ptr};
+        _ = self.builder.buildCall(llvm.c.LLVMGlobalGetValueType(fclose_fn), fclose_fn, &fclose_args, "fs_append.close");
+        _ = self.builder.buildStore(llvm.Const.int1(self.ctx, true), tag_ptr);
+        _ = self.builder.buildBr(cont_bb);
+
+        // Continue
+        self.builder.positionAtEnd(cont_bb);
+        return self.builder.buildLoad(result_type, result_alloca, "fs_append.val");
     }
 
     /// Get the LLVM struct type for Result#[List#[String], IoError]
