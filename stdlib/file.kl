@@ -1,0 +1,69 @@
+//! stdlib/file.kl - File convenience functions
+//!
+//! Provides top-level helpers for common file operations.
+//!
+//! Usage:
+//!   let res: Result#[bool, IoError] = file_write("/tmp/out.txt", "hello")
+//!   let res2: Result#[bool, IoError] = file_write_lines("/tmp/out.txt", lines)
+
+module stdlib.file
+
+// ============================================================================
+// file_write — write a string to a file path (overwrite if exists)
+// ============================================================================
+
+/// Write string content to a file, creating or overwriting it.
+/// Returns Ok(true) on success, Err(IoError) on failure.
+pub fn file_write(path: string, content: string) -> Result#[bool, IoError] {
+    let open_result: Result#[File, IoError] = File.open(path, "wb")
+    if not open_result.is_ok() {
+        return Err(open_result.unwrap_err())
+    }
+    var file: File = open_result!
+    let write_result: Result#[i32, IoError] = file.write_string(content)
+    if not write_result.is_ok() {
+        let _close: Result#[void, IoError] = file.close()
+        return Err(write_result.unwrap_err())
+    }
+    let flush_result: Result#[void, IoError] = file.flush()
+    let _close: Result#[void, IoError] = file.close()
+    if not flush_result.is_ok() {
+        return Err(flush_result.unwrap_err())
+    }
+    return Ok(true)
+}
+
+// ============================================================================
+// file_write_lines — write a list of strings as lines to a file
+// ============================================================================
+
+/// Write a list of strings to a file, each followed by a newline.
+/// Creates or overwrites the file. Returns Ok(true) on success.
+pub fn file_write_lines(path: string, lines: List#[string]) -> Result#[bool, IoError] {
+    let open_result: Result#[File, IoError] = File.open(path, "wb")
+    if not open_result.is_ok() {
+        return Err(open_result.unwrap_err())
+    }
+    var file: File = open_result!
+    var i: i32 = 0
+    while i < lines.len() {
+        let line: string = lines.get(i)!
+        let write_result: Result#[i32, IoError] = file.write_string(line)
+        if not write_result.is_ok() {
+            let _close: Result#[void, IoError] = file.close()
+            return Err(write_result.unwrap_err())
+        }
+        let nl_result: Result#[i32, IoError] = file.write_string("\n")
+        if not nl_result.is_ok() {
+            let _close: Result#[void, IoError] = file.close()
+            return Err(nl_result.unwrap_err())
+        }
+        i = i + 1
+    }
+    let flush_result: Result#[void, IoError] = file.flush()
+    let _close: Result#[void, IoError] = file.close()
+    if not flush_result.is_ok() {
+        return Err(flush_result.unwrap_err())
+    }
+    return Ok(true)
+}

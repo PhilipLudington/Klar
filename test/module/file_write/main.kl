@@ -1,0 +1,143 @@
+// test/module/file_write/main.kl - Tests for stdlib/file.kl
+// Tests file_write and file_write_lines convenience functions.
+// Returns 0 on success, non-zero test number on failure.
+
+import stdlib.file.*
+
+fn fail(test_num: i32, msg: string) -> i32 {
+    print("FAIL test ")
+    print(test_num.to_string().as_str())
+    print(": ")
+    println(msg)
+    return test_num
+}
+
+fn cleanup() -> void {
+    let _r1: Result#[void, IoError] = fs_remove_file("/tmp/klar_file_write_test.txt")
+    let _r2: Result#[void, IoError] = fs_remove_file("/tmp/klar_file_write_lines_test.txt")
+    let _r3: Result#[void, IoError] = fs_remove_file("/tmp/klar_file_write_empty.txt")
+    let _r4: Result#[void, IoError] = fs_remove_file("/tmp/klar_file_write_overwrite.txt")
+}
+
+fn main() -> i32 {
+    // Clean up any leftovers first
+    cleanup()
+
+    // ========================================================================
+    // Test 1: file_write writes a string and can be read back
+    // ========================================================================
+    let path1: string = "/tmp/klar_file_write_test.txt"
+    let w1: Result#[bool, IoError] = file_write(path1, "Hello from file_write!")
+    if not w1.is_ok() {
+        cleanup()
+        return fail(1, "file_write should succeed")
+    }
+    let r1: Result#[String, IoError] = File.read_to_string(path1)
+    if not r1.is_ok() {
+        cleanup()
+        return fail(1, "read_to_string after file_write should succeed")
+    }
+    let content1: String = r1!
+    if content1.len() != 22 {
+        cleanup()
+        return fail(1, "file_write content length mismatch")
+    }
+
+    // ========================================================================
+    // Test 2: file_write with empty string
+    // ========================================================================
+    let path2: string = "/tmp/klar_file_write_empty.txt"
+    let w2: Result#[bool, IoError] = file_write(path2, "")
+    if not w2.is_ok() {
+        cleanup()
+        return fail(2, "file_write empty string should succeed")
+    }
+    let r2: Result#[String, IoError] = File.read_to_string(path2)
+    if not r2.is_ok() {
+        cleanup()
+        return fail(2, "read_to_string after empty write should succeed")
+    }
+    let content2: String = r2!
+    if content2.len() != 0 {
+        cleanup()
+        return fail(2, "empty write should produce empty file")
+    }
+
+    // ========================================================================
+    // Test 3: file_write overwrites existing content
+    // ========================================================================
+    let path3: string = "/tmp/klar_file_write_overwrite.txt"
+    let w3a: Result#[bool, IoError] = file_write(path3, "first content that is longer")
+    if not w3a.is_ok() {
+        cleanup()
+        return fail(3, "first file_write should succeed")
+    }
+    let w3b: Result#[bool, IoError] = file_write(path3, "second")
+    if not w3b.is_ok() {
+        cleanup()
+        return fail(3, "second file_write should succeed")
+    }
+    let r3: Result#[String, IoError] = File.read_to_string(path3)
+    if not r3.is_ok() {
+        cleanup()
+        return fail(3, "read_to_string after overwrite should succeed")
+    }
+    let content3: String = r3!
+    if content3.len() != 6 {
+        cleanup()
+        return fail(3, "overwrite should replace content entirely")
+    }
+
+    // ========================================================================
+    // Test 4: file_write_lines writes lines with newlines
+    // ========================================================================
+    let path4: string = "/tmp/klar_file_write_lines_test.txt"
+    var lines: List#[string] = List.new#[string]()
+    lines.push("line one")
+    lines.push("line two")
+    lines.push("line three")
+    let w4: Result#[bool, IoError] = file_write_lines(path4, lines)
+    if not w4.is_ok() {
+        cleanup()
+        return fail(4, "file_write_lines should succeed")
+    }
+    let r4: Result#[String, IoError] = File.read_to_string(path4)
+    if not r4.is_ok() {
+        cleanup()
+        return fail(4, "read_to_string after file_write_lines should succeed")
+    }
+    let content4: String = r4!
+    // "line one\nline two\nline three\n" = 8+1+8+1+10+1 = 29
+    if content4.len() != 29 {
+        cleanup()
+        return fail(4, "file_write_lines content length mismatch")
+    }
+
+    // ========================================================================
+    // Test 5: file_write_lines with empty list
+    // ========================================================================
+    let path5: string = "/tmp/klar_file_write_overwrite.txt"
+    var empty_lines: List#[string] = List.new#[string]()
+    let w5: Result#[bool, IoError] = file_write_lines(path5, empty_lines)
+    if not w5.is_ok() {
+        cleanup()
+        return fail(5, "file_write_lines empty list should succeed")
+    }
+    let r5: Result#[String, IoError] = File.read_to_string(path5)
+    if not r5.is_ok() {
+        cleanup()
+        return fail(5, "read_to_string after empty lines write should succeed")
+    }
+    let content5: String = r5!
+    if content5.len() != 0 {
+        cleanup()
+        return fail(5, "empty lines write should produce empty file")
+    }
+
+    // ========================================================================
+    // Cleanup
+    // ========================================================================
+    cleanup()
+    println("All 5 file_write tests passed")
+    return 0
+}

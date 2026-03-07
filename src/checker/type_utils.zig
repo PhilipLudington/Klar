@@ -66,9 +66,7 @@ pub fn isUnsizedExternType(tc: anytype, t: Type) bool {
 pub fn isIntegerPrimitive(tc: anytype, prim: types.Primitive) bool {
     _ = tc;
     return switch (prim) {
-        .i8_, .i16_, .i32_, .i64_,
-        .u8_, .u16_, .u32_, .u64_,
-        .isize_, .usize_ => true,
+        .i8_, .i16_, .i32_, .i64_, .u8_, .u16_, .u32_, .u64_, .isize_, .usize_ => true,
         else => false,
     };
 }
