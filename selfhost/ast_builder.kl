@@ -1749,7 +1749,7 @@ pub fn build_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, Decl
         params_start: 0, params_count: 0,
         return_type: no_type_expr(),
         body_start: 0, body_count: 0,
-        is_pub: false, is_extern: false, is_unsafe: false,
+        is_pub: false, is_async: false, is_extern: false, is_unsafe: false,
         is_comptime: false, is_variadic: false,
         span: s(),
     }))
@@ -1823,6 +1823,7 @@ fn build_body_stmts(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, i3
 fn build_function_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, DeclId) {
     let nr: (string, bool) = field_string(json, pos, "name")
     let pub_r: (bool, bool) = field_bool(json, pos, "is_pub")
+    let asy_r: (bool, bool) = field_bool(json, pos, "is_async")
     let ext_r: (bool, bool) = field_bool(json, pos, "is_extern")
     let uns_r: (bool, bool) = field_bool(json, pos, "is_unsafe")
     let cmp_r: (bool, bool) = field_bool(json, pos, "is_comptime")
@@ -1867,7 +1868,7 @@ fn build_function_decl(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker,
         params_start: params_start, params_count: params_count,
         return_type: rr.1,
         body_start: br.1, body_count: br.2,
-        is_pub: pub_r.0, is_extern: ext_r.0, is_unsafe: uns_r.0,
+        is_pub: pub_r.0, is_async: asy_r.0, is_extern: ext_r.0, is_unsafe: uns_r.0,
         is_comptime: cmp_r.0, is_variadic: var_r.0,
         span: s(),
     }))

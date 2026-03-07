@@ -212,6 +212,7 @@ fn loadMonomorphizedStructs(
             .type_args = type_args,
             .concrete_type = struct_type,
         }) catch continue;
+
     }
 }
 
@@ -525,7 +526,7 @@ fn buildMonoFunctionDecl(arena: Allocator, obj: ObjectMap, mangled_name: []const
         .type_params = &.{},
         .where_clause = null,
         .is_pub = false,
-        .is_async = false,
+        .is_async = getBool(obj, "is_async") orelse false,
         .is_comptime = false,
         .is_unsafe = false,
         .is_extern = false,

@@ -2283,9 +2283,10 @@ pub const Emitter = struct {
                     _ = self.builder.buildStore(value, alloca);
                 }
                 const is_signed = self.isTypeSigned(decl.type_);
-                // Extract struct type name - try expression first, then type annotation
-                const struct_type_name = self.getStructTypeName(decl.value) orelse
-                    self.getStructTypeNameFromAnnotation(decl.type_);
+                // Extract struct type name - try annotation first (has full generic info),
+                // then fall back to expression-based name
+                const struct_type_name = self.getStructTypeNameFromAnnotation(decl.type_) orelse
+                    self.getStructTypeName(decl.value);
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
@@ -2435,9 +2436,10 @@ pub const Emitter = struct {
                     _ = self.builder.buildStore(value, alloca);
                 }
                 const is_signed = self.isTypeSigned(decl.type_);
-                // Extract struct type name - try expression first, then type annotation
-                const struct_type_name = self.getStructTypeName(decl.value) orelse
-                    self.getStructTypeNameFromAnnotation(decl.type_);
+                // Extract struct type name - try annotation first (has full generic info),
+                // then fall back to expression-based name
+                const struct_type_name = self.getStructTypeNameFromAnnotation(decl.type_) orelse
+                    self.getStructTypeName(decl.value);
                 // For Rc/Arc types, track the inner type for dereferencing
                 const inner_type = self.tryGetRcInnerType(decl.value);
                 const is_arc = self.isArcType(decl.value);
@@ -5533,6 +5535,41 @@ pub const Emitter = struct {
             }
         }
 
+        // Fallback: check monomorphized functions by original_name when
+        // call_resolutions is empty (typed-ast-input pipeline)
+        if (func_name) |name| {
+            if (self.type_checker) |checker| {
+                var monos = checker.getMonomorphizedFunctions();
+                while (monos.next()) |mono| {
+                    if (std.mem.eql(u8, mono.original_name, name)) {
+                        const mangled_z = self.allocator.dupeZ(u8, mono.mangled_name) catch break;
+                        defer self.allocator.free(mangled_z);
+                        if (self.module.getNamedFunction(mangled_z)) |func| {
+                            const fn_type = llvm.getGlobalValueType(func);
+                            const param_count = llvm.c.LLVMCountParamTypes(fn_type);
+                            var param_types: [32]llvm.TypeRef = undefined;
+                            if (param_count <= 32) {
+                                llvm.c.LLVMGetParamTypes(fn_type, &param_types);
+                            }
+                            var args = std.ArrayListUnmanaged(llvm.ValueRef){};
+                            defer args.deinit(self.allocator);
+                            for (call.args, 0..) |arg, i| {
+                                const arg_value = try self.emitExpr(arg);
+                                const converted = if (param_count <= 32 and i < param_count)
+                                    self.convertArgIfNeeded(arg_value, param_types[i])
+                                else
+                                    arg_value;
+                                args.append(self.allocator, converted) catch return EmitError.OutOfMemory;
+                            }
+                            const return_type = llvm.getReturnType(fn_type);
+                            const call_name_str: [:0]const u8 = if (llvm.isVoidType(return_type)) "" else "calltmp";
+                            return self.builder.buildCall(fn_type, func, args.items, call_name_str);
+                        }
+                    }
+                }
+            }
+        }
+
         // Try to find as a module-level function
         if (func_name) |name| {
             // First, try to find the function directly by name
@@ -8493,9 +8530,30 @@ pub const Emitter = struct {
     /// Used as fallback when the expression doesn't provide a struct name
     /// (e.g., for method calls that return structs).
     fn getStructTypeNameFromAnnotation(self: *Emitter, type_expr: ast.TypeExpr) ?[]const u8 {
-        _ = self;
         return switch (type_expr) {
             .named => |n| n.name,
+            .generic_apply => |g| {
+                // Build mangled name for user-defined generic structs
+                if (g.base == .named) {
+                    const base_name = g.base.named.name;
+                    // Skip builtin generics
+                    if (std.mem.eql(u8, base_name, "Result") or
+                        std.mem.eql(u8, base_name, "Option") or
+                        std.mem.eql(u8, base_name, "List") or
+                        std.mem.eql(u8, base_name, "Map") or
+                        std.mem.eql(u8, base_name, "Set") or
+                        std.mem.eql(u8, base_name, "Future"))
+                        return null;
+                    var mangled = std.ArrayListUnmanaged(u8){};
+                    mangled.appendSlice(self.allocator, base_name) catch return null;
+                    for (g.args) |arg| {
+                        mangled.append(self.allocator, '$') catch return null;
+                        self.appendTypeNameForMangling(&mangled, arg) catch return null;
+                    }
+                    return mangled.items;
+                }
+                return null;
+            },
             else => null,
         };
     }
@@ -34693,6 +34751,7 @@ pub const Emitter = struct {
             .field_indices = field_indices,
             .field_names = field_names,
         }) catch return EmitError.OutOfMemory;
+
     }
 
     // =========================================================================

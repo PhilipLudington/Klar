@@ -978,7 +978,7 @@ fn emit_decl(tc: TypeChecker, did: DeclId) -> string {
 fn emit_function_decl(tc: TypeChecker, data: FunctionDeclData) -> string {
     var s: string = "{\"kind\":\"function\",\"name\":" + j_str(data.fn_name)
     s = s + ",\"is_pub\":" + j_bool(data.is_pub)
-    s = s + ",\"is_async\":false"
+    s = s + ",\"is_async\":" + j_bool(data.is_async)
     s = s + ",\"is_comptime\":" + j_bool(data.is_comptime)
     s = s + ",\"is_unsafe\":" + j_bool(data.is_unsafe)
     s = s + ",\"is_extern\":" + j_bool(data.is_extern)
@@ -1199,6 +1199,142 @@ fn emit_import_decl(tc: TypeChecker, data: ImportDeclData) -> string {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Monomorphized Table Emission
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Extract original name from mangled name (e.g., "Pair$i32_i64" -> "Pair")
+fn extract_original_name(mangled: string) -> string {
+    var i: i32 = 0
+    while i < mangled.byte_len() {
+        if mangled.byte_at(i) == 36.as#[u8] {
+            return mangled.slice(0, i)
+        }
+        i = i + 1
+    }
+    return mangled
+}
+
+fn emit_mono_structs(tc: TypeChecker) -> string {
+    let keys: List#[string] = tc.mono_structs.keys()
+    if keys.len() == 0 { return "[]" }
+    var result: string = "["
+    var ki: i32 = 0
+    while ki < keys.len() {
+        if ki > 0 { result = result + "," }
+        let mangled: string = keys[ki]
+        let original: string = extract_original_name(mangled)
+        let opt_kt: ?KlarType = tc.mono_structs.get(mangled)
+        match opt_kt {
+            Some(kt) => {
+                if kt.payload >= 0 and kt.payload < tc.type_structs.len() {
+                    let sd: StructData = tc.type_structs[kt.payload]
+                    result = result + "{\"original_name\":" + j_str(original)
+                    result = result + ",\"mangled_name\":" + j_str(mangled)
+                    result = result + ",\"type_args\":[]"
+                    // Emit fields
+                    var fields: string = ""
+                    var fi: i32 = 0
+                    while fi < sd.fields_count {
+                        if fi > 0 { fields = fields + "," }
+                        let fd: StructFieldData = tc.struct_fields[sd.fields_start + fi]
+                        let ft: KlarType = get_resolved_type(tc, fd.field_type.id)
+                        fields = fields + "{\"name\":" + j_str(fd.name) + ",\"type\":" + type_to_json(tc, ft) + ",\"is_pub\":true}"
+                        fi = fi + 1
+                    }
+                    result = result + ",\"fields\":[" + fields + "]}"
+                } else {
+                    result = result + "{\"original_name\":" + j_str(original) + ",\"mangled_name\":" + j_str(mangled) + ",\"type_args\":[],\"fields\":[]}"
+                }
+            }
+            None => {
+                result = result + "{\"original_name\":" + j_str(original) + ",\"mangled_name\":" + j_str(mangled) + ",\"type_args\":[],\"fields\":[]}"
+            }
+        }
+        ki = ki + 1
+    }
+    return result + "]"
+}
+
+fn emit_mono_functions(tc: TypeChecker) -> string {
+    let keys: List#[string] = tc.mono_functions.keys()
+    if keys.len() == 0 { return "[]" }
+    var result: string = "["
+    var ki: i32 = 0
+    while ki < keys.len() {
+        if ki > 0 { result = result + "," }
+        let mangled: string = keys[ki]
+        let original: string = extract_original_name(mangled)
+        let opt_kt: ?KlarType = tc.mono_functions.get(mangled)
+        match opt_kt {
+            Some(kt) => {
+                if kt.payload >= 0 and kt.payload < tc.type_functions.len() {
+                    let fd: FunctionData = tc.type_functions[kt.payload]
+                    result = result + "{\"original_name\":" + j_str(original)
+                    result = result + ",\"mangled_name\":" + j_str(mangled)
+                    result = result + ",\"type_args\":[]"
+                    result = result + ",\"is_async\":" + j_bool(fd.is_async)
+                    // Emit params with concrete types; get names from generic decl
+                    var params: string = ""
+                    let opt_gen_idx: ?i32 = tc.generic_fn_decls.get(original)
+                    var pi: i32 = 0
+                    while pi < fd.params_count {
+                        if pi > 0 { params = params + "," }
+                        let pt: KlarType = get_resolved_type(tc, fd.params_start + pi)
+                        // Try to get param name from generic function declaration
+                        var pname: string = "p" + pi.to_string().as_str()
+                        match opt_gen_idx {
+                            Some(gen_idx) => {
+                                if gen_idx >= 0 and gen_idx < tc.generic_fn_data.len() {
+                                    let gen_fn: FunctionDeclData = tc.generic_fn_data[gen_idx]
+                                    if pi < gen_fn.params_count {
+                                        let fp: FnParam = tc.extra_params[gen_fn.params_start + pi]
+                                        pname = fp.param_name
+                                    }
+                                }
+                            }
+                            None => {}
+                        }
+                        params = params + "{\"name\":" + j_str(pname) + ",\"type\":" + type_to_json(tc, pt) + "}"
+                        pi = pi + 1
+                    }
+                    result = result + ",\"params\":[" + params + "]"
+                    // Return type
+                    let ret: KlarType = get_resolved_type(tc, fd.return_type.id)
+                    result = result + ",\"return_type\":" + type_to_json(tc, ret)
+                    // Body — get from generic function declaration
+                    match opt_gen_idx {
+                        Some(gen_idx) => {
+                            if gen_idx >= 0 and gen_idx < tc.generic_fn_data.len() {
+                                let gen_fn: FunctionDeclData = tc.generic_fn_data[gen_idx]
+                                if gen_fn.body_count > 0 {
+                                    let body: string = emit_block_stmts(tc, gen_fn.body_start, gen_fn.body_count)
+                                    result = result + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}"
+                                } else {
+                                    result = result + ",\"body\":null"
+                                }
+                            } else {
+                                result = result + ",\"body\":null"
+                            }
+                        }
+                        None => {
+                            result = result + ",\"body\":null"
+                        }
+                    }
+                    result = result + "}"
+                } else {
+                    result = result + "{\"original_name\":" + j_str(original) + ",\"mangled_name\":" + j_str(mangled) + ",\"type_args\":[],\"params\":[],\"return_type\":{\"kind\":\"void\"},\"body\":null}"
+                }
+            }
+            None => {
+                result = result + "{\"original_name\":" + j_str(original) + ",\"mangled_name\":" + j_str(mangled) + ",\"type_args\":[],\"params\":[],\"return_type\":{\"kind\":\"void\"},\"body\":null}"
+            }
+        }
+        ki = ki + 1
+    }
+    return result + "]"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Top-Level Emitter
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1239,9 +1375,9 @@ pub fn emit_typed_ast(tc: TypeChecker, m: AstModule) -> string {
     s = s + ",\"imports\":[" + imports + "]"
     s = s + ",\"declarations\":[" + decls + "]"
 
-    // Monomorphized tables (empty for now — populated in later Phase 8 tasks)
-    s = s + ",\"monomorphized_functions\":[]"
-    s = s + ",\"monomorphized_structs\":[]"
+    // Monomorphized tables
+    s = s + ",\"monomorphized_functions\":" + emit_mono_functions(tc)
+    s = s + ",\"monomorphized_structs\":" + emit_mono_structs(tc)
     s = s + ",\"monomorphized_enums\":[]"
     s = s + ",\"monomorphized_methods\":[]"
 

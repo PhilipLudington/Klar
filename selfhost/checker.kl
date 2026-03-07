@@ -1346,12 +1346,10 @@ pub fn type_mangle_name(t: KlarType) -> string {
 }
 
 pub fn mangle_generic_name(tc: TypeChecker, base_name: string, var_id_start: i32, var_count: i32) -> string {
-    var result: string = base_name + "$"
+    var result: string = base_name
     var i: i32 = 0
     while i < var_count {
-        if i > 0 {
-            result = result + "_"
-        }
+        result = result + "$"
         let concrete: KlarType = get_substitution(tc, var_id_start + i)
         result = result + type_mangle_name(concrete)
         i = i + 1
