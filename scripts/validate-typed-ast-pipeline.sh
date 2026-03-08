@@ -71,18 +71,28 @@ for f in $FILES; do
     std_stdout=$("$KLAR" run "$f" 2>/dev/null)
     std_exit=$?
 
-    # Step 2: Selfhost emit-typed-ast
+    # Step 2: Selfhost emit-typed-ast (retry up to 3 times on failure)
     typed_json="$TMPDIR/${name}.json"
-    emit_stderr=$("$SELFHOST_MAIN" emit-typed-ast "$f" > "$typed_json" 2>&1)
-    emit_exit=$?
+    emit_ok=0
+    for attempt in 1 2 3; do
+        emit_stderr=$("$SELFHOST_MAIN" emit-typed-ast "$f" > "$typed_json" 2>&1)
+        emit_exit=$?
+        if [ -s "$typed_json" ]; then
+            emit_ok=1
+            break
+        fi
+        if [ $VERBOSE -eq 1 ] && [ $attempt -lt 3 ]; then
+            echo "  ⟳ $name (emit retry $attempt, exit $emit_exit)"
+        fi
+        rm -f "$typed_json"
+    done
 
-    if [ ! -s "$typed_json" ]; then
+    if [ $emit_ok -eq 0 ]; then
         EMIT_FAIL=$((EMIT_FAIL + 1))
         EMIT_FAIL_LIST="$EMIT_FAIL_LIST $name"
         if [ $VERBOSE -eq 1 ]; then
-            echo "  ✗ $name (emit-typed-ast failed, exit $emit_exit)"
+            echo "  ✗ $name (emit-typed-ast failed after 3 attempts, exit $emit_exit)"
         fi
-        rm -f "$typed_json"
         continue
     fi
 
