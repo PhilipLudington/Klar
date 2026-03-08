@@ -131,6 +131,7 @@ fn unary_op_json(op: UnaryOp) -> string {
         UnaryOp::Deref => { return "deref" }
         UnaryOp::MakeRef => { return "ref" }
         UnaryOp::MakeRefMut => { return "ref_mut" }
+        UnaryOp::Await => { return "await_" }
     }
 }
 
@@ -755,10 +756,24 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
                 fields = fields + "{\"name\":" + j_str(fi.field_name) + ",\"value\":" + emit_expr(tc, fi.value) + "}"
                 i = i + 1
             }
-            return "{\"kind\":\"struct_literal\",\"type_name\":{\"kind\":\"named\",\"name\":" + j_str(data.struct_name) + "},\"fields\":[" + fields + "],\"spread\":null" + id_s + rt + "}"
+            // Use full type expression (preserves generic_apply for Pair#[i32] etc.)
+            var stype_json: string = ""
+            if has_type_expr(data.type_expr) {
+                stype_json = emit_type_expr(tc, data.type_expr)
+            } else {
+                stype_json = "{\"kind\":\"named\",\"name\":" + j_str(data.struct_name) + "}"
+            }
+            return "{\"kind\":\"struct_literal\",\"type_name\":" + stype_json + ",\"fields\":[" + fields + "],\"spread\":null" + id_s + rt + "}"
         }
         Expr::EnumVariant(data) => {
-            var s: string = "{\"kind\":\"enum_literal\",\"enum_type\":{\"kind\":\"named\",\"name\":" + j_str(data.type_name) + "},\"variant_name\":" + j_str(data.variant_name)
+            // Use full type expression (preserves generic_apply for MyOption#[i32] etc.)
+            var enum_type_json: string = ""
+            if has_type_expr(data.type_expr) {
+                enum_type_json = emit_type_expr(tc, data.type_expr)
+            } else {
+                enum_type_json = "{\"kind\":\"named\",\"name\":" + j_str(data.type_name) + "}"
+            }
+            var s: string = "{\"kind\":\"enum_literal\",\"enum_type\":" + enum_type_json + ",\"variant_name\":" + j_str(data.variant_name)
             var payloads: string = ""
             var j: i32 = 0
             while j < data.args_count {
@@ -793,6 +808,19 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
             return emit_expr(tc, data.inner)
         }
         Expr::ComptimeBlock(data) => {
+            // Check if last stmt is ExprStmt — emit as final_expr instead
+            if data.body_count > 0 {
+                let last_sid: StmtId = tc.extra_stmt_ids[data.body_start + data.body_count - 1]
+                let last_stmt: Stmt = tc.stmts[last_sid.id]
+                match last_stmt {
+                    Stmt::ExprStmt(esd) => {
+                        let leading: string = emit_block_stmts(tc, data.body_start, data.body_count - 1)
+                        let fe: string = emit_expr(tc, esd.expr)
+                        return "{\"kind\":\"comptime_block\",\"body\":{\"statements\":[" + leading + "],\"final_expr\":" + fe + "}" + id_s + rt + "}"
+                    }
+                    _ => {}
+                }
+            }
             let body: string = emit_block_stmts(tc, data.body_start, data.body_count)
             return "{\"kind\":\"comptime_block\",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}" + id_s + rt + "}"
         }
@@ -1128,6 +1156,7 @@ fn emit_struct_decl(tc: TypeChecker, data: StructDeclData) -> string {
 fn emit_enum_decl(tc: TypeChecker, data: EnumDeclData) -> string {
     var s: string = "{\"kind\":\"enum_decl\",\"name\":" + j_str(data.enum_name)
     s = s + ",\"is_pub\":" + j_bool(data.is_pub)
+    s = s + ",\"is_extern\":false,\"repr_type\":null"
 
     // type_params
     var type_params: string = ""
@@ -1162,6 +1191,8 @@ fn emit_enum_decl(tc: TypeChecker, data: EnumDeclData) -> string {
         }
         if has_expr(ev.discriminant) {
             variants = variants + ",\"value\":0"
+        } else {
+            variants = variants + ",\"value\":null"
         }
         variants = variants + "}"
         i = i + 1
@@ -1228,10 +1259,20 @@ fn emit_impl_decl(tc: TypeChecker, data: ImplDeclData) -> string {
     }
     s = s + ",\"type_params\":[" + type_params + "]"
 
-    s = s + ",\"target_type\":{\"kind\":\"named\",\"name\":" + j_str(data.target_type) + "}"
+    // Use full type expression for target_type (preserves generic_apply for Box#[T] etc.)
+    if has_type_expr(data.target_type_expr) {
+        s = s + ",\"target_type\":" + emit_type_expr(tc, data.target_type_expr)
+    } else {
+        s = s + ",\"target_type\":{\"kind\":\"named\",\"name\":" + j_str(data.target_type) + "}"
+    }
 
+    // Use full type expression for trait_type (preserves generic_apply for From#[E] etc.)
     if data.impl_trait != "" {
-        s = s + ",\"trait_type\":{\"kind\":\"named\",\"name\":" + j_str(data.impl_trait) + "}"
+        if has_type_expr(data.trait_type_expr) {
+            s = s + ",\"trait_type\":" + emit_type_expr(tc, data.trait_type_expr)
+        } else {
+            s = s + ",\"trait_type\":{\"kind\":\"named\",\"name\":" + j_str(data.impl_trait) + "}"
+        }
     } else {
         s = s + ",\"trait_type\":null"
     }
@@ -1436,7 +1477,20 @@ pub fn emit_typed_ast(tc: TypeChecker, m: AstModule) -> string {
             }
             _ => {
                 if decl_count > 0 { decls = decls + "," }
-                decls = decls + emit_decl(tc, did)
+                var decl_json: string = emit_decl(tc, did)
+                // Inject annotation from stored raw JSON
+                if i < tc.decl_meta_json.len() {
+                    let mj: string = tc.decl_meta_json[i]
+                    if mj != "null" {
+                        // Insert annotation key before final "}"
+                        let mkey: string = "\"" + "m" + "eta\""
+                        let len: i32 = decl_json.len()
+                        if len > 1 {
+                            decl_json = decl_json.slice(0, len - 1) + "," + mkey + ":" + mj + "}"
+                        }
+                    }
+                }
+                decls = decls + decl_json
                 decl_count = decl_count + 1
             }
         }
@@ -1445,6 +1499,8 @@ pub fn emit_typed_ast(tc: TypeChecker, m: AstModule) -> string {
 
     s = s + ",\"imports\":[" + imports + "]"
     s = s + ",\"declarations\":[" + decls + "]"
+    let fmkey: string = "\"file_" + "m" + "eta\""
+    s = s + "," + fmkey + ":" + m.file_meta_json
 
     // Monomorphized tables
     s = s + ",\"monomorphized_functions\":" + emit_mono_functions(tc)

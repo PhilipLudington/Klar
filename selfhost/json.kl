@@ -353,6 +353,22 @@ pub fn field_pos(json: string, obj_pos: i32, field_name: string) -> i32 {
     return find_field(json, obj_pos, field_name)
 }
 
+// Extract raw JSON value at position as a string (handles objects, arrays, strings, etc.)
+pub fn extract_raw(json: string, pos: i32) -> string {
+    if pos < 0 { return "null" }
+    let start: i32 = skip_whitespace(json, pos)
+    let end: i32 = skip_value(json, start)
+    if end <= start { return "null" }
+    return json.slice(start, end)
+}
+
+// Extract raw JSON value of a field as a string
+pub fn field_raw(json: string, obj_pos: i32, field_name: string) -> string {
+    let p: i32 = find_field(json, obj_pos, field_name)
+    if p < 0 { return "null" }
+    return extract_raw(json, p)
+}
+
 // ─── Array Iteration ─────────────────────────────────────────────────
 // array_start: given pos pointing to '[', return position of first element (or -1 if empty)
 // array_next: given pos pointing to start of current element, skip it and return next element pos (or -1)

@@ -2642,6 +2642,7 @@ fn test_trait_impl_registers_methods() -> i32 {
         generics_start: 0, generics_count: 0,
         methods_start: impl_method_idx, methods_count: 1,
         assoc_types_start: 0, assoc_types_count: 0,
+        target_type_expr: no_type_expr(), trait_type_expr: no_type_expr(),
         span: s(),
     }))
 
@@ -2696,6 +2697,7 @@ fn test_trait_impl_records_key() -> i32 {
         generics_start: 0, generics_count: 0,
         methods_start: 0, methods_count: 0,
         assoc_types_start: 0, assoc_types_count: 0,
+        target_type_expr: no_type_expr(), trait_type_expr: no_type_expr(),
         span: s(),
     }))
 
@@ -3094,6 +3096,7 @@ fn test_trait_impl_method_body_checked() -> i32 {
         generics_start: 0, generics_count: 0,
         methods_start: mi, methods_count: 1,
         assoc_types_start: 0, assoc_types_count: 0,
+        target_type_expr: no_type_expr(), trait_type_expr: no_type_expr(),
         span: s(),
     }))
 
@@ -3258,6 +3261,7 @@ fn test_trait_impl_wrong_method() -> i32 {
         generics_start: 0, generics_count: 0,
         methods_start: mi, methods_count: 1,
         assoc_types_start: 0, assoc_types_count: 0,
+        target_type_expr: no_type_expr(), trait_type_expr: no_type_expr(),
         span: s(),
     }))
 

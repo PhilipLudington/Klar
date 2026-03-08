@@ -154,6 +154,7 @@ pub struct TypeChecker {
     pub generic_enum_decls: Map#[string, i32],
     pub generic_enum_data: List#[EnumDeclData],
     pub generic_impl_data: List#[ImplDeclData],
+    pub decl_meta_json: List#[string],
 
     // Trait infrastructure (Milestone 9.10.2)
     pub type_traits: List#[TraitData],
@@ -245,6 +246,7 @@ impl TypeChecker {
             generic_enum_decls: Map.new#[string, i32](),
             generic_enum_data: List.new#[EnumDeclData](),
             generic_impl_data: List.new#[ImplDeclData](),
+            decl_meta_json: List.new#[string](),
 
             type_traits: List.new#[TraitData](),
             trait_methods_data: List.new#[TraitMethodData](),

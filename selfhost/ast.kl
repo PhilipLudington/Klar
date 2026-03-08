@@ -95,6 +95,7 @@ pub enum UnaryOp {
     Deref,
     MakeRef,
     MakeRefMut,
+    Await,
 }
 
 pub enum PostfixOp {
@@ -259,10 +260,10 @@ pub struct TupleLiteralData { elems_start: i32, elems_count: i32, span: Span }
 pub struct ArrayLiteralData { elems_start: i32, elems_count: i32, span: Span }
 
 // StructLiteralData: fields in extra_field_inits
-pub struct StructLiteralData { struct_name: string, fields_start: i32, fields_count: i32, span: Span }
+pub struct StructLiteralData { struct_name: string, fields_start: i32, fields_count: i32, type_expr: TypeExprId, span: Span }
 
 // EnumVariantData: args in extra_expr_ids
-pub struct EnumVariantData { type_name: string, variant_name: string, args_start: i32, args_count: i32, span: Span }
+pub struct EnumVariantData { type_name: string, variant_name: string, args_start: i32, args_count: i32, type_expr: TypeExprId, span: Span }
 
 // InterpolatedStringData: parts alternate between string literal exprs and interpolated exprs
 pub struct InterpolatedStringData { parts_start: i32, parts_count: i32, span: Span }
@@ -497,6 +498,8 @@ pub struct ImplDeclData {
     methods_count: i32,
     assoc_types_start: i32,
     assoc_types_count: i32,
+    target_type_expr: TypeExprId,
+    trait_type_expr: TypeExprId,
     span: Span,
 }
 
@@ -591,6 +594,7 @@ pub struct AstModule {
     imports_count: i32,
     decls_start: i32,
     decls_count: i32,
+    file_meta_json: string,
 }
 
 fn new_module() -> AstModule {
@@ -598,6 +602,7 @@ fn new_module() -> AstModule {
         imports_start: 0,
         imports_count: 0,
         decls_start: 0,
+        file_meta_json: "[]",
         decls_count: 0,
     }
 }
@@ -741,6 +746,7 @@ fn unary_op_name(op: UnaryOp) -> string {
         UnaryOp::Deref => { return "*" }
         UnaryOp::MakeRef => { return "ref" }
         UnaryOp::MakeRefMut => { return "ref mut" }
+        UnaryOp::Await => { return "await" }
     }
 }
 

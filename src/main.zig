@@ -2773,6 +2773,18 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
             return;
         };
 
+        // Phase 2: check function bodies to populate side tables needed by codegen
+        // (closure captures, comptime values, async function names, monomorphization).
+        // Errors are expected since the typed AST may reference types/functions not
+        // fully visible to the checker — we log warnings but proceed to codegen.
+        checker.checkModuleBodies(module);
+        if (checker.error_count > 0) {
+            var buf: [256]u8 = undefined;
+            const warn_msg = std.fmt.bufPrint(&buf, "Warning: {d} type error(s) during body check of typed AST (proceeding anyway)\n", .{checker.error_count}) catch "Warning: type errors during body check of typed AST\n";
+            try stderr.writeAll(warn_msg);
+        }
+        checker.clearErrors();
+
         try modules_to_emit.append(allocator, module);
         try module_prefixes.append(allocator, null);
     } else {

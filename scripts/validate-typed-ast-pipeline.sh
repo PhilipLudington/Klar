@@ -12,6 +12,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KLAR="$SCRIPT_DIR/zig-out/bin/klar"
 SELFHOST_MAIN="$SCRIPT_DIR/build/selfhost_main"
+export KLAR_BIN="$KLAR"
 TMPDIR=$(mktemp -d /tmp/klar_typed_ast_XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT INT TERM
 

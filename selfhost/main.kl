@@ -120,14 +120,42 @@ fn cmd_emit_typed_ast(path: string) -> i32 {
         return 2
     }
 
-    // Parse source → JSON
-    let p: Parser = new_parser(src)
-    let parse_result: (Parser, string) = parse_module(p)
-    if parse_result.0.had_error {
-        println("parse error in " + path)
-        return 1
+    // Parse source → JSON (try selfhost parser, fall back to Zig parser)
+    var json: string = ""
+    // Check if source uses features the selfhost parser can't handle
+    var needs_zig_parser: bool = src.contains("@[") or src.contains("@{") or src.contains("@pure") or src.contains("@deprecated") or src.contains("@intent") or src.contains("@guide") or src.contains("@tag") or src.contains("@hint") or src.contains("@related") or src.contains("@decision") or src.contains("@module") or src.contains("@define")
+    if not needs_zig_parser {
+        let p: Parser = new_parser(src)
+        let parse_result: (Parser, string) = parse_module(p)
+        if not parse_result.0.had_error {
+            json = parse_result.1
+        } else {
+            needs_zig_parser = true
+        }
     }
-    let json: string = parse_result.1
+    if needs_zig_parser {
+        // Selfhost parser failed — fall back to Zig parser via process_run
+        // KLAR_BIN env var must be set to locate the Zig-based klar binary
+        let env_klar: ?string = env_get("KLAR_BIN")
+        if not env_klar.is_some() {
+            println("KLAR_BIN not set — cannot fall back to Zig parser for " + path)
+            return 1
+        }
+        let klar_bin: string = env_klar ?? ""
+        var args: List#[string] = List.new#[string]()
+        args.push(path)
+        let proc_result: Result#[ProcessOutput, IoError] = process_run(klar_bin + " dump-ast", args)
+        if not proc_result.is_ok() {
+            println("parse error in " + path)
+            return 1
+        }
+        let proc_out: ProcessOutput = proc_result!
+        if proc_out.exit_code != 0 {
+            println("parse error in " + path)
+            return 1
+        }
+        json = proc_out.stdout
+    }
 
     // Build AST arenas from JSON → type check
     var tc: TypeChecker = TypeChecker.new()
