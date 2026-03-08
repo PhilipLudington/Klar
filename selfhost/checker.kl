@@ -1323,7 +1323,7 @@ pub fn make_type_var_with_bounds(tc: TypeChecker, var_id: i32, name: string,
 }
 
 // Name mangling for monomorphized generics
-pub fn type_mangle_name(t: KlarType) -> string {
+pub fn type_mangle_name(tc: TypeChecker, t: KlarType) -> string {
     match t.kind {
         TypeKind::Primitive => {
             let pk: ?PrimitiveKind = get_primitive_kind(t)
@@ -1334,13 +1334,26 @@ pub fn type_mangle_name(t: KlarType) -> string {
         }
         TypeKind::Void => { return "void" }
         TypeKind::Never => { return "never" }
-        TypeKind::StructType => { return "s" + t.payload.to_string().as_str() }
-        TypeKind::EnumType => { return "e" + t.payload.to_string().as_str() }
+        TypeKind::StructType => {
+            if t.payload >= 0 and t.payload < tc.type_structs.len() {
+                let sd: StructData = tc.type_structs[t.payload]
+                return sd.name
+            }
+            return "s" + t.payload.to_string().as_str()
+        }
+        TypeKind::EnumType => {
+            if t.payload >= 0 and t.payload < tc.type_enums.len() {
+                let ed: EnumData = tc.type_enums[t.payload]
+                return ed.name
+            }
+            return "e" + t.payload.to_string().as_str()
+        }
         TypeKind::Array => { return "arr" + t.payload.to_string().as_str() }
         TypeKind::Optional => { return "opt" + t.payload.to_string().as_str() }
         TypeKind::Result => { return "res" + t.payload.to_string().as_str() }
         TypeKind::ListType => { return "list" + t.payload.to_string().as_str() }
         TypeKind::MapType => { return "map" + t.payload.to_string().as_str() }
+        TypeKind::StringData => { return "String" }
         _ => { return "t" + t.payload.to_string().as_str() }
     }
 }
@@ -1351,7 +1364,7 @@ pub fn mangle_generic_name(tc: TypeChecker, base_name: string, var_id_start: i32
     while i < var_count {
         result = result + "$"
         let concrete: KlarType = get_substitution(tc, var_id_start + i)
-        result = result + type_mangle_name(concrete)
+        result = result + type_mangle_name(tc, concrete)
         i = i + 1
     }
     return result
@@ -1434,6 +1447,56 @@ pub fn substitute_type(tc: TypeChecker, t: KlarType) -> (TypeChecker, KlarType) 
             let mr: (TypeChecker, KlarType) = make_list_type(c, sr.1)
             return mr
         }
+        TypeKind::Reference => {
+            if t.payload >= 0 and t.payload < tc.type_references.len() {
+                var c: TypeChecker = tc
+                let rd: ReferenceData = c.type_references[t.payload]
+                let inner: KlarType = get_resolved_type(c, rd.inner.id)
+                let sr: (TypeChecker, KlarType) = substitute_type(c, inner)
+                c = sr.0
+                let pr: (TypeChecker, i32) = push_type_ref(c, sr.1)
+                c = pr.0
+                let ref_idx: i32 = c.type_references.len()
+                c.type_references.push(ReferenceData { inner: TypeId { id: pr.1 }, is_mut: rd.is_mut })
+                return (c, KlarType { kind: TypeKind::Reference, payload: ref_idx })
+            }
+            return (tc, t)
+        }
+        TypeKind::Slice => {
+            if t.payload >= 0 and t.payload < tc.type_slices.len() {
+                var c: TypeChecker = tc
+                let sd: SliceData = c.type_slices[t.payload]
+                let elem: KlarType = get_resolved_type(c, sd.element.id)
+                let sr: (TypeChecker, KlarType) = substitute_type(c, elem)
+                c = sr.0
+                let pr: (TypeChecker, i32) = push_type_ref(c, sr.1)
+                c = pr.0
+                let slice_idx: i32 = c.type_slices.len()
+                c.type_slices.push(SliceData { element: TypeId { id: pr.1 } })
+                return (c, KlarType { kind: TypeKind::Slice, payload: slice_idx })
+            }
+            return (tc, t)
+        }
+        TypeKind::Tuple => {
+            if t.payload >= 0 and t.payload < tc.type_tuples.len() {
+                var c: TypeChecker = tc
+                let td: TupleData = c.type_tuples[t.payload]
+                let new_start: i32 = c.resolved_types.len()
+                var i: i32 = 0
+                while i < td.elems_count {
+                    let et: KlarType = get_resolved_type(c, td.elems_start + i)
+                    let sr: (TypeChecker, KlarType) = substitute_type(c, et)
+                    c = sr.0
+                    let pr: (TypeChecker, i32) = push_type_ref(c, sr.1)
+                    c = pr.0
+                    i = i + 1
+                }
+                let tuple_idx: i32 = c.type_tuples.len()
+                c.type_tuples.push(TupleData { elems_start: new_start, elems_count: td.elems_count })
+                return (c, KlarType { kind: TypeKind::Tuple, payload: tuple_idx })
+            }
+            return (tc, t)
+        }
         _ => {
             return (tc, t)
         }
@@ -1494,6 +1557,45 @@ pub fn unify_types(tc: TypeChecker, pattern: KlarType, concrete: KlarType) -> (T
                     let p_err: KlarType = unwrap_result_err(ur_ok.0, pattern)
                     let c_err: KlarType = unwrap_result_err(ur_ok.0, concrete)
                     return unify_types(ur_ok.0, p_err, c_err)
+                }
+                _ => { return (tc, false) }
+            }
+        }
+        TypeKind::Reference => {
+            match concrete.kind {
+                TypeKind::Reference => {
+                    if pattern.payload >= 0 and pattern.payload < tc.type_references.len() and concrete.payload >= 0 and concrete.payload < tc.type_references.len() {
+                        let p_rd: ReferenceData = tc.type_references[pattern.payload]
+                        let c_rd: ReferenceData = tc.type_references[concrete.payload]
+                        let p_inner: KlarType = get_resolved_type(tc, p_rd.inner.id)
+                        let c_inner: KlarType = get_resolved_type(tc, c_rd.inner.id)
+                        return unify_types(tc, p_inner, c_inner)
+                    }
+                    return (tc, false)
+                }
+                _ => {
+                    // Pattern is Reference(TypeVar), concrete is not Reference.
+                    // Try unwrapping: unify inner TypeVar with concrete directly.
+                    if pattern.payload >= 0 and pattern.payload < tc.type_references.len() {
+                        let p_rd: ReferenceData = tc.type_references[pattern.payload]
+                        let p_inner: KlarType = get_resolved_type(tc, p_rd.inner.id)
+                        return unify_types(tc, p_inner, concrete)
+                    }
+                    return (tc, false)
+                }
+            }
+        }
+        TypeKind::Slice => {
+            match concrete.kind {
+                TypeKind::Slice => {
+                    if pattern.payload >= 0 and pattern.payload < tc.type_slices.len() and concrete.payload >= 0 and concrete.payload < tc.type_slices.len() {
+                        let p_sd: SliceData = tc.type_slices[pattern.payload]
+                        let c_sd: SliceData = tc.type_slices[concrete.payload]
+                        let p_elem: KlarType = get_resolved_type(tc, p_sd.element.id)
+                        let c_elem: KlarType = get_resolved_type(tc, c_sd.element.id)
+                        return unify_types(tc, p_elem, c_elem)
+                    }
+                    return (tc, false)
                 }
                 _ => { return (tc, false) }
             }

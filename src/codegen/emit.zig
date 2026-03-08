@@ -5094,8 +5094,11 @@ pub const Emitter = struct {
             const dest_bits = llvm.getIntTypeWidth(dest_type);
 
             if (dest_bits > src_bits) {
-                // Widening
-                const is_signed = cast.source_is_signed;
+                // Widening — use source_is_signed from checker, fallback to expr analysis
+                const is_signed = if (!cast.source_is_signed)
+                    false
+                else
+                    self.isSignedIntType(cast.expr);
                 if (is_signed) {
                     return self.builder.buildSExt(value, dest_type, "sext");
                 } else {

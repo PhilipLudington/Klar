@@ -528,7 +528,10 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
         Expr::CharLiteral(data) => {
             // data.value may be a single char "a" or a numeric string "97"
             var code: i32 = 0
-            if data.value.byte_len() == 1 {
+            let vlen: i32 = data.value.byte_len()
+            if vlen == 0 {
+                code = 0
+            } else if vlen == 1 {
                 code = data.value.byte_at(0).as#[i32]
             } else {
                 // Numeric string from int conversion — parse it back

@@ -12,7 +12,7 @@ import types.{
     type_eq_simple, type_to_string_simple, type_kind_name,
     type_is_numeric, type_is_integer, type_is_float, type_is_signed,
     type_is_primitive, get_primitive_kind,
-    ArrayData, SliceData, TupleData,
+    ArrayData, SliceData, TupleData, ReferenceData,
     FunctionData, StructData, StructFieldData, EnumData,
     TraitData, TraitMethodData, TypeVarData,
     ErrorKind
@@ -390,8 +390,22 @@ fn check_unary(tc: TypeChecker, data: UnaryData) -> (TypeChecker, KlarType) {
             }
             return (c, op_type)
         }
+        UnaryOp::MakeRef => {
+            let pr: (TypeChecker, i32) = push_type_ref(c, op_type)
+            c = pr.0
+            let ref_idx: i32 = c.type_references.len()
+            c.type_references.push(ReferenceData { inner: TypeId { id: pr.1 }, is_mut: false })
+            return (c, KlarType { kind: TypeKind::Reference, payload: ref_idx })
+        }
+        UnaryOp::MakeRefMut => {
+            let pr: (TypeChecker, i32) = push_type_ref(c, op_type)
+            c = pr.0
+            let ref_idx: i32 = c.type_references.len()
+            c.type_references.push(ReferenceData { inner: TypeId { id: pr.1 }, is_mut: true })
+            return (c, KlarType { kind: TypeKind::Reference, payload: ref_idx })
+        }
         _ => {
-            // Deref, MakeRef, MakeRefMut — deferred
+            // Deref — deferred
             return (c, type_unknown())
         }
     }

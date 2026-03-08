@@ -298,6 +298,9 @@ pub fn field_string(json: string, obj_pos: i32, field_name: string) -> (string, 
     let vp: i32 = find_field(json, obj_pos, field_name)
     if vp < 0 { return ("", false) }
     if json_is_null(json, vp) { return ("", false) }
+    // Check that value actually starts with a quote (not a number/bool)
+    let p0: i32 = skip_whitespace(json, vp)
+    if peek(json, p0) != 34 { return ("", false) }
     let r: (string, i32) = extract_string(json, vp)
     return (r.0, true)
 }

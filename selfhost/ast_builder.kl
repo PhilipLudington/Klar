@@ -421,7 +421,7 @@ fn build_literal(tc: TypeChecker, json: string, pos: i32) -> (TypeChecker, ExprI
             c.exprs.push(Expr::CharLiteral(CharLiteralData { value: vr.0, span: s() }))
         } else {
             let ir: (i32, bool) = field_int(json, pos, "value")
-            c.exprs.push(Expr::CharLiteral(CharLiteralData { value: ir.0.to_string().as_str(), span: s() }))
+            c.exprs.push(Expr::CharLiteral(CharLiteralData { value: from_byte(ir.0.as#[u8]), span: s() }))
         }
         return (c, ExprId { id: idx })
     }
