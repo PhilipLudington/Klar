@@ -695,16 +695,18 @@ fn check_method_call(tc: TypeChecker, data: MethodCallData) -> (TypeChecker, Kla
             // NOTE: Keep in sync with register_builtin_opaque_types in checker.kl
             if id_data.ident_name == "Rc" or id_data.ident_name == "Arc"
                 or id_data.ident_name == "Cell" {
-                var c2: TypeChecker = check_method_args(tc, data)
-                return (c2, type_unknown())
+                var c: TypeChecker = tc
+                c = check_method_args(c, data)
+                return (c, type_unknown())
             }
             // IO type static methods: File.open(path), etc.
             // NOTE: Keep in sync with register_builtin_opaque_types in checker.kl
             if id_data.ident_name == "File" or id_data.ident_name == "Stdout"
                 or id_data.ident_name == "Stdin" or id_data.ident_name == "BufReader"
                 or id_data.ident_name == "BufWriter" {
-                var c2: TypeChecker = check_method_args(tc, data)
-                return (c2, type_unknown())
+                var c: TypeChecker = tc
+                c = check_method_args(c, data)
+                return (c, type_unknown())
             }
             // Primitive type static methods: i32.default(), i64.default(), etc.
             if id_data.ident_name == "i32" or id_data.ident_name == "i64" or id_data.ident_name == "f64"
