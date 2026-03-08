@@ -54,6 +54,9 @@ pub enum TypeKind {
     // Range
     Range,
 
+    // Async
+    Future,
+
     // Error context
     ContextError,
 
@@ -557,6 +560,7 @@ pub fn type_kind_name(k: TypeKind) -> string {
         TypeKind::WeakArc => { return "WeakArc" }
         TypeKind::Cell => { return "Cell" }
         TypeKind::Range => { return "Range" }
+        TypeKind::Future => { return "Future" }
         TypeKind::ContextError => { return "ContextError" }
         TypeKind::ListType => { return "ListType" }
         TypeKind::MapType => { return "MapType" }

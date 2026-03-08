@@ -1732,6 +1732,80 @@ pub fn resolve_type_expr_with_type_vars(tc: TypeChecker, te_id: TypeExprId, tvar
             c.type_tuples.push(TupleData { elems_start: elems_start, elems_count: data.elems_count })
             return (c, KlarType { kind: TypeKind::Tuple, payload: tup_idx })
         }
+        TypeExpr::GenericApply(ga_data) => {
+            // Resolve generic apply with type vars — handles cases like
+            // Future#[T], Option#[T], List#[T] where T is a type parameter
+            var c: TypeChecker = tc
+            // Resolve each type arg with type vars and substitute
+            var resolved_args: List#[KlarType] = List.new#[KlarType]()
+            var ai: i32 = 0
+            while ai < ga_data.args_count {
+                let arg_te: TypeExprId = c.extra_type_expr_ids[ga_data.args_start + ai]
+                let r: (TypeChecker, KlarType) = resolve_type_expr_with_type_vars(c, arg_te, tvar_start, tvar_count)
+                c = r.0
+                let sr: (TypeChecker, KlarType) = substitute_type(c, r.1)
+                c = sr.0
+                resolved_args.push(sr.1)
+                ai = ai + 1
+            }
+            // Get the base type name
+            if ga_data.base.id < 0 {
+                return (c, type_unknown())
+            }
+            let base_te: TypeExpr = c.type_exprs[ga_data.base.id]
+            match base_te {
+                TypeExpr::Named(named) => {
+                    let name: string = named.type_name
+                    if name == "List" and resolved_args.len() == 1 {
+                        return make_list_type(c, resolved_args[0])
+                    }
+                    if name == "Map" and resolved_args.len() == 2 {
+                        return make_map_type(c, resolved_args[0], resolved_args[1])
+                    }
+                    if name == "Set" and resolved_args.len() == 1 {
+                        return make_set_type(c, resolved_args[0])
+                    }
+                    if name == "Option" and resolved_args.len() == 1 {
+                        return make_optional_type(c, resolved_args[0])
+                    }
+                    if name == "Result" and resolved_args.len() == 2 {
+                        return make_result_type(c, resolved_args[0], resolved_args[1])
+                    }
+                    if name == "Range" and resolved_args.len() == 1 {
+                        return make_range_type(c, resolved_args[0], false)
+                    }
+                    if name == "Rc" and resolved_args.len() == 1 {
+                        let pr: (TypeChecker, i32) = push_type_ref(c, resolved_args[0])
+                        c = pr.0
+                        let wrap_idx: i32 = c.type_wrappers.len()
+                        c.type_wrappers.push(WrapperData { inner: TypeId { id: pr.1 } })
+                        return (c, KlarType { kind: TypeKind::Rc, payload: wrap_idx })
+                    }
+                    if name == "Arc" and resolved_args.len() == 1 {
+                        let pr: (TypeChecker, i32) = push_type_ref(c, resolved_args[0])
+                        c = pr.0
+                        let wrap_idx: i32 = c.type_wrappers.len()
+                        c.type_wrappers.push(WrapperData { inner: TypeId { id: pr.1 } })
+                        return (c, KlarType { kind: TypeKind::Arc, payload: wrap_idx })
+                    }
+                    if name == "Future" and resolved_args.len() == 1 {
+                        let pr: (TypeChecker, i32) = push_type_ref(c, resolved_args[0])
+                        c = pr.0
+                        let wrap_idx: i32 = c.type_wrappers.len()
+                        c.type_wrappers.push(WrapperData { inner: TypeId { id: pr.1 } })
+                        return (c, KlarType { kind: TypeKind::Future, payload: wrap_idx })
+                    }
+                    // User-defined generic structs
+                    if c.generic_struct_decls.contains_key(name) {
+                        return resolve_user_generic_struct(c, ga_data, name)
+                    }
+                    return (c, type_unknown())
+                }
+                _ => {
+                    return (c, type_unknown())
+                }
+            }
+        }
         _ => {
             return resolve_type_expr(tc, te_id)
         }

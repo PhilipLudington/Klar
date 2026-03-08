@@ -388,6 +388,14 @@ pub fn type_to_json(tc: TypeChecker, kt: KlarType) -> string {
         TypeKind::Stderr => { return "{\"kind\":\"stderr\"}" }
         TypeKind::Stdin => { return "{\"kind\":\"stdin\"}" }
         TypeKind::Path => { return "{\"kind\":\"path\"}" }
+        TypeKind::Future => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"future\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"future\"}"
+        }
         TypeKind::CStr => { return "{\"kind\":\"cstr\"}" }
         TypeKind::CStrOwned => { return "{\"kind\":\"cstr_owned\"}" }
         TypeKind::ExternType => { return "{\"kind\":\"extern_type\"}" }
@@ -1463,6 +1471,120 @@ fn emit_mono_functions(tc: TypeChecker) -> string {
     return result + "]"
 }
 
+fn emit_mono_methods(tc: TypeChecker) -> string {
+    let struct_keys: List#[string] = tc.mono_structs.keys()
+    if struct_keys.len() == 0 { return "[]" }
+
+    var result: string = "["
+    var count: i32 = 0
+
+    // For each monomorphized struct, find its generic impl methods
+    var ski: i32 = 0
+    while ski < struct_keys.len() {
+        let mangled_struct: string = struct_keys[ski]
+        let original_struct: string = extract_original_name(mangled_struct)
+
+        // Scan generic_impl_data for matching impl blocks
+        var ii: i32 = 0
+        while ii < tc.generic_impl_data.len() {
+            let impl_data: ImplDeclData = tc.generic_impl_data[ii]
+            if impl_data.target_type == original_struct {
+                // For each method in this impl block
+                var mi: i32 = 0
+                while mi < impl_data.methods_count {
+                    let method_decl: Decl = tc.decls[impl_data.methods_start + mi]
+                    match method_decl {
+                        Decl::Function(fn_data) => {
+                            let mangled_method: string = mangled_struct + "_" + fn_data.fn_name
+                            // Look up concrete type from methods map
+                            let method_key: string = mangled_struct + "." + fn_data.fn_name
+                            let opt_info: ?MethodInfo = tc.methods.get(method_key)
+                            match opt_info {
+                                Some(info) => {
+                                    if count > 0 { result = result + "," }
+                                    result = result + "{\"struct_name\":" + j_str(original_struct)
+                                    result = result + ",\"method_name\":" + j_str(fn_data.fn_name)
+                                    result = result + ",\"mangled_name\":" + j_str(mangled_method)
+                                    result = result + ",\"mangled_struct_name\":" + j_str(mangled_struct)
+                                    result = result + ",\"type_args\":[]"
+                                    result = result + ",\"is_async\":" + j_bool(fn_data.is_async)
+
+                                    // Emit params with concrete types from MethodInfo
+                                    // FunctionData (from checker) excludes self, so we
+                                    // emit self separately then all FunctionData params.
+                                    let fn_idx: i32 = info.fn_data_idx
+                                    if fn_idx >= 0 and fn_idx < tc.type_functions.len() {
+                                        let fd: FunctionData = tc.type_functions[fn_idx]
+                                        var params: string = ""
+                                        // Determine self type from original AST param's type expression
+                                        if fn_data.params_count > 0 {
+                                            let fp: FnParam = tc.extra_params[fn_data.params_start]
+                                            if fp.param_name == "self" or fp.param_name == "inout self" {
+                                                // Check the type expression to detect ref/inout
+                                                let te: TypeExpr = tc.type_exprs[fp.type_expr.id]
+                                                match te {
+                                                    TypeExpr::Reference(ref_data) => {
+                                                        if ref_data.is_mut {
+                                                            params = "{\"name\":\"self\",\"type\":{\"kind\":\"reference\",\"inner\":{\"kind\":\"struct\",\"name\":" + j_str(mangled_struct) + "},\"mutable\":true}}"
+                                                        } else {
+                                                            params = "{\"name\":\"self\",\"type\":{\"kind\":\"reference\",\"inner\":{\"kind\":\"struct\",\"name\":" + j_str(mangled_struct) + "},\"mutable\":false}}"
+                                                        }
+                                                    }
+                                                    _ => {
+                                                        // By-value self
+                                                        params = "{\"name\":\"self\",\"type\":{\"kind\":\"struct\",\"name\":" + j_str(mangled_struct) + "}}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Add non-self params with concrete types
+                                        var pi: i32 = 0
+                                        while pi < fd.params_count {
+                                            let pt: KlarType = get_resolved_type(tc, fd.params_start + pi)
+                                            if params != "" { params = params + "," }
+                                            // Get param name from original declaration (offset by 1 for self)
+                                            var pname: string = "p" + pi.to_string().as_str()
+                                            let orig_pi: i32 = pi + 1
+                                            if orig_pi < fn_data.params_count {
+                                                let fp: FnParam = tc.extra_params[fn_data.params_start + orig_pi]
+                                                pname = fp.param_name
+                                            }
+                                            params = params + "{\"name\":" + j_str(pname) + ",\"type\":" + type_to_json(tc, pt) + "}"
+                                            pi = pi + 1
+                                        }
+                                        result = result + ",\"params\":[" + params + "]"
+                                        // Return type
+                                        let ret: KlarType = get_resolved_type(tc, fd.return_type.id)
+                                        result = result + ",\"return_type\":" + type_to_json(tc, ret)
+                                    } else {
+                                        result = result + ",\"params\":[],\"return_type\":{\"kind\":\"void\"}"
+                                    }
+
+                                    // Body — from original method declaration
+                                    if fn_data.body_count > 0 {
+                                        let body: string = emit_block_stmts(tc, fn_data.body_start, fn_data.body_count)
+                                        result = result + ",\"body\":{\"statements\":[" + body + "],\"final_expr\":null}"
+                                    } else {
+                                        result = result + ",\"body\":null"
+                                    }
+                                    result = result + "}"
+                                    count = count + 1
+                                }
+                                None => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                    mi = mi + 1
+                }
+            }
+            ii = ii + 1
+        }
+        ski = ski + 1
+    }
+    return result + "]"
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Top-Level Emitter
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1523,7 +1645,7 @@ pub fn emit_typed_ast(tc: TypeChecker, m: AstModule) -> string {
     s = s + ",\"monomorphized_functions\":" + emit_mono_functions(tc)
     s = s + ",\"monomorphized_structs\":" + emit_mono_structs(tc)
     s = s + ",\"monomorphized_enums\":[]"
-    s = s + ",\"monomorphized_methods\":[]"
+    s = s + ",\"monomorphized_methods\":" + emit_mono_methods(tc)
 
     // Side tables (empty for now)
     s = s + ",\"call_resolutions\":{}"

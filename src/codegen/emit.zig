@@ -35340,14 +35340,25 @@ pub const Emitter = struct {
         self.named_values.clearRetainingCapacity();
 
         // Construct the mangled struct name for field resolution (e.g., "Pair$i32")
-        var struct_name_buf = std.ArrayListUnmanaged(u8){};
-        defer struct_name_buf.deinit(self.allocator);
-        struct_name_buf.appendSlice(self.allocator, mono.struct_name) catch return EmitError.OutOfMemory;
-        for (mono.type_args) |type_arg| {
-            struct_name_buf.append(self.allocator, '$') catch return EmitError.OutOfMemory;
-            self.appendCheckerTypeNameForMangling(&struct_name_buf, type_arg) catch return EmitError.OutOfMemory;
-        }
-        const mangled_struct_name = self.allocator.dupe(u8, struct_name_buf.items) catch return EmitError.OutOfMemory;
+        // If type_args is empty, derive from mangled method name (e.g., "Pair$i32_get_first" → "Pair$i32")
+        const mangled_struct_name = if (mono.type_args.len == 0 and mono.method_name.len > 0) blk: {
+            // Find last occurrence of "_" + method_name in mangled_name
+            const suffix_len = mono.method_name.len + 1; // "_" + method_name
+            if (mono.mangled_name.len > suffix_len) {
+                const prefix = mono.mangled_name[0 .. mono.mangled_name.len - suffix_len];
+                break :blk self.allocator.dupe(u8, prefix) catch return EmitError.OutOfMemory;
+            }
+            break :blk self.allocator.dupe(u8, mono.struct_name) catch return EmitError.OutOfMemory;
+        } else blk: {
+            var struct_name_buf = std.ArrayListUnmanaged(u8){};
+            defer struct_name_buf.deinit(self.allocator);
+            struct_name_buf.appendSlice(self.allocator, mono.struct_name) catch return EmitError.OutOfMemory;
+            for (mono.type_args) |type_arg| {
+                struct_name_buf.append(self.allocator, '$') catch return EmitError.OutOfMemory;
+                self.appendCheckerTypeNameForMangling(&struct_name_buf, type_arg) catch return EmitError.OutOfMemory;
+            }
+            break :blk self.allocator.dupe(u8, struct_name_buf.items) catch return EmitError.OutOfMemory;
+        };
 
         // Add parameters to named values with concrete types
         for (func.params, 0..) |param, i| {

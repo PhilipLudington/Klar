@@ -1452,7 +1452,7 @@ fn check_generic_fn_call_impl(tc: TypeChecker, data: CallData, fn_name: string, 
         params_start: mono_params_start,
         params_count: fn_decl.params_count,
         return_type: TypeId { id: pr_ret.1 },
-        is_async: false,
+        is_async: fn_decl.is_async,
         is_unsafe: fn_decl.is_unsafe,
     })
     let mono_fn_type: KlarType = KlarType { kind: TypeKind::Function, payload: fn_idx }

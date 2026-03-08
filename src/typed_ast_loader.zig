@@ -84,6 +84,7 @@ pub fn loadTypedAst(
     loadMonomorphizedFunctions(allocator, arena, root_obj, checker);
     loadMonomorphizedStructs(allocator, arena, root_obj, checker);
     loadMonomorphizedEnums(allocator, arena, root_obj, checker);
+    loadMonomorphizedMethods(allocator, arena, root_obj, checker);
 
     return module;
 }
@@ -324,6 +325,46 @@ fn loadMonomorphizedEnums(
     }
 }
 
+fn loadMonomorphizedMethods(
+    allocator: Allocator,
+    arena: Allocator,
+    root: ObjectMap,
+    checker: *TypeChecker,
+) void {
+    const generics = @import("checker/generics.zig");
+    const arr = getArray(root, "monomorphized_methods") orelse return;
+
+    for (arr.items) |item| {
+        if (item != .object) continue;
+        const obj = item.object;
+
+        const struct_name = getString(obj, "struct_name") orelse continue;
+        const method_name = getString(obj, "method_name") orelse continue;
+        const mangled_name = getString(obj, "mangled_name") orelse continue;
+
+        // Build the function declaration from the JSON body
+        const func_decl = buildMonoFunctionDecl(arena, obj, mangled_name) catch continue;
+
+        // Build concrete function type from params/return_type
+        const concrete_type = buildFunctionTypeFromJson(allocator, checker, obj) catch continue;
+
+        // Build type args (may be empty — we use mangled_struct_name directly)
+        const type_args = buildTypeArgs(allocator, checker, obj) catch continue;
+
+        const mangled_dupe = allocator.dupe(u8, mangled_name) catch continue;
+        const struct_name_dupe = arena.dupe(u8, struct_name) catch continue;
+
+        checker.monomorphized_methods.put(allocator, mangled_dupe, generics.MonomorphizedMethod{
+            .struct_name = struct_name_dupe,
+            .method_name = arena.dupe(u8, method_name) catch continue,
+            .mangled_name = mangled_dupe,
+            .type_args = type_args,
+            .concrete_type = concrete_type,
+            .original_decl = func_decl,
+        }) catch continue;
+    }
+}
+
 // ============================================================================
 // Type resolution from JSON type objects
 // ============================================================================
@@ -443,6 +484,12 @@ fn resolveTypeJsonValue(allocator: Allocator, checker: *TypeChecker, val: Value)
     if (std.mem.eql(u8, kind, "arc")) {
         const inner = try resolveTypeJson(allocator, checker, obj, "inner");
         return checker.type_builder.arcType(inner) catch return checker.type_builder.unknownType();
+    }
+
+    // Future
+    if (std.mem.eql(u8, kind, "future")) {
+        const inner = try resolveTypeJson(allocator, checker, obj, "inner");
+        return checker.type_builder.futureType(inner) catch return checker.type_builder.unknownType();
     }
 
     // Range
