@@ -132,12 +132,8 @@ pub fn consume_identifier(p: Parser) -> (Parser, string) {
 }
 
 pub fn report_error(p: Parser, msg: string) -> Parser {
-    print("Parse error at line ")
-    print(p.current.line.to_string())
-    print(", column ")
-    print(p.current.column.to_string())
-    print(": ")
-    println(msg)
+    // Error output removed — stdout prints corrupt JSON pipeline output.
+    // Callers check had_error flag and error_count for error detection.
     return Parser {
         source: p.source,
         lexer: p.lexer,

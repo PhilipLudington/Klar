@@ -123,7 +123,7 @@ fn cmd_emit_typed_ast(path: string) -> i32 {
     // Parse source → JSON (try selfhost parser, fall back to Zig parser)
     var json: string = ""
     // Check if source uses features the selfhost parser can't handle
-    var needs_zig_parser: bool = src.contains("@[") or src.contains("@{") or src.contains("@pure") or src.contains("@deprecated") or src.contains("@intent") or src.contains("@guide") or src.contains("@tag") or src.contains("@hint") or src.contains("@related") or src.contains("@decision") or src.contains("@module") or src.contains("@define")
+    var needs_zig_parser: bool = src.contains("@[") or src.contains("@{") or src.contains("@pure") or src.contains("@deprecated") or src.contains("@intent") or src.contains("@guide") or src.contains("@tag") or src.contains("@hint") or src.contains("@related") or src.contains("@decision") or src.contains("@module") or src.contains("@define") or src.contains("meta ")
     if not needs_zig_parser {
         let p: Parser = new_parser(src)
         let parse_result: (Parser, string) = parse_module(p)

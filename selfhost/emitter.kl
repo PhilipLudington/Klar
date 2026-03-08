@@ -830,12 +830,29 @@ pub fn emit_expr(tc: TypeChecker, eid: ExprId) -> string {
         }
         Expr::BuiltinCall(data) => {
             var args: string = ""
+            let is_type_builtin: bool = data.builtin_name == "typeName" or data.builtin_name == "typeInfo" or data.builtin_name == "fields" or data.builtin_name == "sizeOf"
             var i: i32 = 0
             while i < data.args_count {
                 if i > 0 { args = args + "," }
                 let sub: ExprId = tc.extra_expr_ids[data.args_start + i]
-                // Builtin args use structured format: {"kind":"expr","value":{...}}
-                args = args + "{\"kind\":\"expr\",\"value\":" + emit_expr(tc, sub) + "}"
+                if is_type_builtin {
+                    // Type args: emit as {"kind":"type","value":{"kind":"named","name":"..."}}
+                    let arg_expr: Expr = tc.exprs[sub.id]
+                    var type_name: string = ""
+                    match arg_expr {
+                        Expr::Identifier(id_data) => {
+                            type_name = id_data.ident_name
+                        }
+                        _ => {}
+                    }
+                    if type_name != "" {
+                        args = args + "{\"kind\":\"type\",\"value\":{\"kind\":\"named\",\"name\":" + j_str(type_name) + "}}"
+                    } else {
+                        args = args + "{\"kind\":\"expr\",\"value\":" + emit_expr(tc, sub) + "}"
+                    }
+                } else {
+                    args = args + "{\"kind\":\"expr\",\"value\":" + emit_expr(tc, sub) + "}"
+                }
                 i = i + 1
             }
             return "{\"kind\":\"builtin_call\",\"name\":" + j_str(data.builtin_name) + ",\"args\":[" + args + "]" + id_s + rt + "}"
