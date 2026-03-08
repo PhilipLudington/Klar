@@ -451,12 +451,51 @@ fn resolveTypeJsonValue(allocator: Allocator, checker: *TypeChecker, val: Value)
         return checker.type_builder.rangeType(elem, false) catch return checker.type_builder.unknownType();
     }
 
+    // Smart pointer variants
+    if (std.mem.eql(u8, kind, "weak_rc")) {
+        const inner = try resolveTypeJson(allocator, checker, obj, "inner");
+        return checker.type_builder.weakRcType(inner) catch return checker.type_builder.unknownType();
+    }
+    if (std.mem.eql(u8, kind, "weak_arc")) {
+        const inner = try resolveTypeJson(allocator, checker, obj, "inner");
+        return checker.type_builder.weakArcType(inner) catch return checker.type_builder.unknownType();
+    }
+    if (std.mem.eql(u8, kind, "cell")) {
+        const inner = try resolveTypeJson(allocator, checker, obj, "inner");
+        return checker.type_builder.cellType(inner) catch return checker.type_builder.unknownType();
+    }
+    if (std.mem.eql(u8, kind, "context_error")) {
+        const inner = try resolveTypeJson(allocator, checker, obj, "inner");
+        return checker.type_builder.contextErrorType(inner) catch return checker.type_builder.unknownType();
+    }
+
+    // Buffered I/O
+    if (std.mem.eql(u8, kind, "buf_reader")) {
+        const inner = try resolveTypeJson(allocator, checker, obj, "inner");
+        return checker.type_builder.bufReaderType(inner) catch return checker.type_builder.unknownType();
+    }
+    if (std.mem.eql(u8, kind, "buf_writer")) {
+        const inner = try resolveTypeJson(allocator, checker, obj, "inner");
+        return checker.type_builder.bufWriterType(inner) catch return checker.type_builder.unknownType();
+    }
+
+    // FFI pointer types with inner
+    if (std.mem.eql(u8, kind, "cptr")) {
+        const inner = try resolveTypeJson(allocator, checker, obj, "inner");
+        return checker.type_builder.cptrType(inner) catch return checker.type_builder.unknownType();
+    }
+    if (std.mem.eql(u8, kind, "copt_ptr")) {
+        const inner = try resolveTypeJson(allocator, checker, obj, "inner");
+        return checker.type_builder.coptPtrType(inner) catch return checker.type_builder.unknownType();
+    }
+
     // I/O types
     if (std.mem.eql(u8, kind, "file")) return checker.type_builder.fileType();
     if (std.mem.eql(u8, kind, "io_error")) return checker.type_builder.ioErrorType();
 
     // FFI types
     if (std.mem.eql(u8, kind, "cstr")) return .{ .cstr = {} };
+    if (std.mem.eql(u8, kind, "cstr_owned")) return .{ .cstr_owned = {} };
 
     return checker.type_builder.unknownType();
 }

@@ -317,12 +317,80 @@ pub fn type_to_json(tc: TypeChecker, kt: KlarType) -> string {
             }
             return "{\"kind\":\"arc\"}"
         }
+        TypeKind::WeakRc => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"weak_rc\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"weak_rc\"}"
+        }
+        TypeKind::WeakArc => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"weak_arc\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"weak_arc\"}"
+        }
+        TypeKind::Cell => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"cell\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"cell\"}"
+        }
+        TypeKind::ContextError => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"context_error\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"context_error\"}"
+        }
+        TypeKind::BufReader => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"buf_reader\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"buf_reader\"}"
+        }
+        TypeKind::BufWriter => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"buf_writer\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"buf_writer\"}"
+        }
+        TypeKind::CPtr => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"cptr\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"cptr\"}"
+        }
+        TypeKind::COptPtr => {
+            if kt.payload >= 0 and kt.payload < tc.type_wrappers.len() {
+                let wd: WrapperData = tc.type_wrappers[kt.payload]
+                let inner: KlarType = get_resolved_type(tc, wd.inner.id)
+                return "{\"kind\":\"copt_ptr\",\"inner\":" + type_to_json(tc, inner) + "}"
+            }
+            return "{\"kind\":\"copt_ptr\"}"
+        }
         TypeKind::File => { return "{\"kind\":\"file\"}" }
         TypeKind::IoError => { return "{\"kind\":\"io_error\"}" }
+        TypeKind::Stdout => { return "{\"kind\":\"stdout\"}" }
+        TypeKind::Stderr => { return "{\"kind\":\"stderr\"}" }
+        TypeKind::Stdin => { return "{\"kind\":\"stdin\"}" }
+        TypeKind::Path => { return "{\"kind\":\"path\"}" }
         TypeKind::CStr => { return "{\"kind\":\"cstr\"}" }
         TypeKind::CStrOwned => { return "{\"kind\":\"cstr_owned\"}" }
-        TypeKind::CPtr => { return "{\"kind\":\"cptr\"}" }
-        TypeKind::COptPtr => { return "{\"kind\":\"copt_ptr\"}" }
+        TypeKind::ExternType => { return "{\"kind\":\"extern_type\"}" }
+        TypeKind::ExternFn => { return "{\"kind\":\"extern_fn\"}" }
         _ => {
             return "{\"kind\":" + j_str(type_kind_name(kt.kind)) + "}"
         }
