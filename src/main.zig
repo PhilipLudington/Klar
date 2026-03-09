@@ -2766,27 +2766,56 @@ fn buildNative(allocator: std.mem.Allocator, path: []const u8, options: codegen.
         };
         defer allocator.free(json_content);
 
-        const module = typed_ast_loader.loadTypedAst(allocator, arena.allocator(), json_content, &checker) catch |err| {
-            var buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Error loading typed AST '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error loading typed AST\n";
-            try stderr.writeAll(msg);
-            return;
-        };
+        if (typed_ast_loader.isMultiModuleFormat(json_content)) {
+            // Multi-module typed AST: load all modules and populate checker
+            typed_ast_loader.loadMultiTypedAst(
+                allocator,
+                arena.allocator(),
+                json_content,
+                &checker,
+                &modules_to_emit,
+                &module_prefixes,
+            ) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error loading multi-module typed AST '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error loading multi-module typed AST\n";
+                try stderr.writeAll(msg);
+                return;
+            };
 
-        // Phase 2: check function bodies to populate side tables needed by codegen
-        // (closure captures, comptime values, async function names, monomorphization).
-        // Errors are expected since the typed AST may reference types/functions not
-        // fully visible to the checker — we log warnings but proceed to codegen.
-        checker.checkModuleBodies(module);
-        if (checker.error_count > 0) {
-            var buf: [256]u8 = undefined;
-            const warn_msg = std.fmt.bufPrint(&buf, "Warning: {d} type error(s) during body check of typed AST (proceeding anyway)\n", .{checker.error_count}) catch "Warning: type errors during body check of typed AST\n";
-            try stderr.writeAll(warn_msg);
+            // Check bodies for all modules to populate side tables for codegen
+            for (modules_to_emit.items) |mod| {
+                checker.checkModuleBodies(mod);
+            }
+            if (checker.error_count > 0) {
+                var buf: [256]u8 = undefined;
+                const warn_msg = std.fmt.bufPrint(&buf, "Warning: {d} type error(s) during body check of multi-module typed AST (proceeding anyway)\n", .{checker.error_count}) catch "Warning: type errors during body check of typed AST\n";
+                try stderr.writeAll(warn_msg);
+            }
+            checker.clearErrors();
+        } else {
+            // Single-module typed AST
+            const module = typed_ast_loader.loadTypedAst(allocator, arena.allocator(), json_content, &checker) catch |err| {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Error loading typed AST '{s}': {s}\n", .{ json_path, @errorName(err) }) catch "Error loading typed AST\n";
+                try stderr.writeAll(msg);
+                return;
+            };
+
+            // Phase 2: check function bodies to populate side tables needed by codegen
+            // (closure captures, comptime values, async function names, monomorphization).
+            // Errors are expected since the typed AST may reference types/functions not
+            // fully visible to the checker — we log warnings but proceed to codegen.
+            checker.checkModuleBodies(module);
+            if (checker.error_count > 0) {
+                var buf: [256]u8 = undefined;
+                const warn_msg = std.fmt.bufPrint(&buf, "Warning: {d} type error(s) during body check of typed AST (proceeding anyway)\n", .{checker.error_count}) catch "Warning: type errors during body check of typed AST\n";
+                try stderr.writeAll(warn_msg);
+            }
+            checker.clearErrors();
+
+            try modules_to_emit.append(allocator, module);
+            try module_prefixes.append(allocator, null);
         }
-        checker.clearErrors();
-
-        try modules_to_emit.append(allocator, module);
-        try module_prefixes.append(allocator, null);
     } else {
         // Standard path: load AST from JSON or parse from source, then type check.
 

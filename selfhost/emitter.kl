@@ -4,7 +4,9 @@
 // Walks AST arenas and produces JSON matching the typed-ast-format.md spec.
 // Uses plain string concatenation for output (avoids buffer codegen issues).
 //
-// Main API: emit_typed_ast(tc, module) -> string
+// Main API:
+//   emit_typed_ast(tc, module) -> string              Single-file typed AST
+//   emit_multi_typed_ast(tc, modules, names, entries) Multi-module typed AST
 
 import types.{
     KlarType, TypeKind, TypeId, PrimitiveKind,
@@ -1652,6 +1654,108 @@ pub fn emit_typed_ast(tc: TypeChecker, m: AstModule) -> string {
     s = s + ",\"comptime_values\":{}"
     s = s + ",\"error_conversions\":{}"
     s = s + ",\"debug_call_types\":{}"
+
+    return s + "}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Multi-Module Typed AST Emitter
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Emit a single module's entry for the multi-module envelope.
+// Contains declarations, imports, and file_meta but no monomorphized tables.
+fn emit_module_entry(tc: TypeChecker, m: AstModule, mod_name: string, is_entry: bool) -> string {
+    var s: string = "{\"name\":" + j_str(mod_name) + ",\"is_entry\":"
+    if is_entry { s = s + "true" } else { s = s + "false" }
+
+    // module_decl — emit path array format for Zig buildModule compatibility
+    var found_module_decl: bool = false
+    var i: i32 = 0
+    while i < m.decls_count {
+        let did: DeclId = DeclId { id: m.decls_start + i }
+        let d: Decl = tc.decls[did.id]
+        match d {
+            Decl::ModuleDecl(data) => {
+                s = s + ",\"module_decl\":{\"path\":[" + j_str(data.mod_name) + "]}"
+                found_module_decl = true
+                break
+            }
+            _ => {}
+        }
+        i = i + 1
+    }
+    if not found_module_decl {
+        s = s + ",\"module_decl\":null"
+    }
+
+    // imports and declarations (same scan as emit_typed_ast)
+    var imports: string = ""
+    var decls: string = ""
+    var import_count: i32 = 0
+    var decl_count: i32 = 0
+    i = 0
+    while i < m.decls_count {
+        let did: DeclId = DeclId { id: m.decls_start + i }
+        let d: Decl = tc.decls[did.id]
+        match d {
+            Decl::ImportDecl(data) => {
+                if import_count > 0 { imports = imports + "," }
+                imports = imports + emit_import_decl(tc, data)
+                import_count = import_count + 1
+            }
+            Decl::ModuleDecl(_) => {}
+            _ => {
+                if decl_count > 0 { decls = decls + "," }
+                var decl_json: string = emit_decl(tc, did)
+                // Inject annotation from stored raw JSON
+                // Use global index (m.decls_start + i) since decl_meta_json
+                // accumulates across all modules in multi-module mode
+                let meta_idx: i32 = m.decls_start + i
+                if meta_idx < tc.decl_meta_json.len() {
+                    let mj: string = tc.decl_meta_json[meta_idx]
+                    if mj != "null" {
+                        let mkey: string = "\"" + "m" + "eta\""
+                        let len: i32 = decl_json.len()
+                        if len > 1 {
+                            decl_json = decl_json.slice(0, len - 1) + "," + mkey + ":" + mj + "}"
+                        }
+                    }
+                }
+                decls = decls + decl_json
+                decl_count = decl_count + 1
+            }
+        }
+        i = i + 1
+    }
+
+    s = s + ",\"imports\":[" + imports + "]"
+    s = s + ",\"declarations\":[" + decls + "]"
+    let fmkey: string = "\"file_" + "m" + "eta\""
+    s = s + "," + fmkey + ":" + m.file_meta_json
+
+    return s + "}"
+}
+
+// Emit the multi-module typed AST envelope.
+// Modules are provided as parallel lists (module ASTs, names, is_entry flags).
+// Monomorphized tables are emitted once at the top level (shared across modules).
+pub fn emit_multi_typed_ast(tc: TypeChecker,
+    modules: List#[AstModule], names: List#[string], is_entries: List#[bool]) -> string {
+    var s: string = "{\"format\":\"typed-ast-multi\",\"version\":1,\"modules\":["
+
+    var i: i32 = 0
+    while i < modules.len() {
+        if i > 0 { s = s + "," }
+        s = s + emit_module_entry(tc, modules[i], names[i], is_entries[i])
+        i = i + 1
+    }
+    s = s + "]"
+
+    // Global monomorphized tables
+    s = s + ",\"monomorphized_functions\":" + emit_mono_functions(tc)
+    s = s + ",\"monomorphized_structs\":" + emit_mono_structs(tc)
+    s = s + ",\"monomorphized_enums\":[]"
+    s = s + ",\"monomorphized_methods\":" + emit_mono_methods(tc)
 
     return s + "}"
 }

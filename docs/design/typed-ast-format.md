@@ -568,6 +568,82 @@ The codegen reads:
 
 ---
 
+## Multi-Module Format
+
+For multi-module programs (programs with `import` declarations), a separate envelope format wraps per-module typed ASTs:
+
+```json
+{
+  "format": "typed-ast-multi",
+  "version": 1,
+
+  "modules": [
+    {
+      "name": "utils",
+      "is_entry": false,
+      "module_decl": {"path": ["utils"]},
+      "imports": [],
+      "declarations": [<declaration>, ...],
+      "file_meta": [...]
+    },
+    {
+      "name": "",
+      "is_entry": true,
+      "module_decl": null,
+      "imports": [<import_decl>, ...],
+      "declarations": [<declaration>, ...],
+      "file_meta": [...]
+    }
+  ],
+
+  "monomorphized_functions": [<mono_function>, ...],
+  "monomorphized_structs": [<mono_struct>, ...],
+  "monomorphized_enums": [<mono_enum>, ...],
+  "monomorphized_methods": [<mono_method>, ...]
+}
+```
+
+### Key differences from single-module format
+
+| Aspect | Single-module (`typed-ast`) | Multi-module (`typed-ast-multi`) |
+|--------|----------------------------|----------------------------------|
+| Format field | `"typed-ast"` | `"typed-ast-multi"` |
+| Declarations | Top-level `"declarations"` | Per-module in `"modules"` array |
+| Imports | Top-level `"imports"` | Per-module in `"modules"` array |
+| Mono tables | Top-level | Top-level (shared across modules) |
+| Module ordering | N/A | Topological (dependencies first) |
+
+### Module entry fields
+
+- **`name`** — Module name (e.g., `"utils"`, `"checker_builtins"`). Empty string for the entry module.
+- **`is_entry`** — `true` for the main entry file, `false` for imported modules.
+- **`module_decl`** — Module declaration with `"path"` array (e.g., `{"path": ["utils"]}`), or `null` for the entry module.
+- **`imports`**, **`declarations`**, **`file_meta`** — Same structure as the single-module format.
+
+### Module prefixes in codegen
+
+Non-entry modules get a prefix derived from `"name"` for symbol resolution. For example, a function `greet` in module `"utils"` is emitted as `utils.greet` in LLVM IR. The entry module has no prefix.
+
+### Monomorphized tables
+
+Monomorphization is global — a generic function defined in module A may be instantiated by a call in module B. All monomorphized definitions are collected at the top level of the envelope, not per-module.
+
+### Zig backend consumption
+
+The `--typed-ast-input` flag auto-detects the format:
+
+1. If `"typed-ast-multi"` is found in the first 100 bytes, use `loadMultiTypedAst()` — loads all modules, registers declarations, populates monomorphized tables.
+2. Otherwise, use `loadTypedAst()` — single-module path.
+
+For multi-module, the backend:
+1. Builds each module's AST via `buildModule()` (reusing the dump-ast infrastructure)
+2. Registers declarations in the checker (accumulating across modules)
+3. Loads monomorphized tables from the top-level envelope
+4. Checks bodies for each module to populate side tables
+5. Emits LLVM IR with module prefixes (3-phase: register structs → declare functions → emit bodies)
+
+---
+
 ## Versioning
 
 The `"version"` field allows forward-compatible evolution:

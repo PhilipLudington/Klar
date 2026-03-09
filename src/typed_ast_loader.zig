@@ -89,6 +89,94 @@ pub fn loadTypedAst(
     return module;
 }
 
+/// Load a multi-module typed AST JSON file. Builds multiple ast.Modules and
+/// populates the TypeChecker with all declarations and monomorphized tables.
+///
+/// The multi-module format uses a top-level "modules" array with per-module
+/// declarations, and global monomorphized tables at the root level.
+///
+/// After this call, the caller should call checker.checkModuleBodies() on
+/// each module to populate side tables for codegen.
+pub fn loadMultiTypedAst(
+    allocator: Allocator,
+    arena: Allocator,
+    json: []const u8,
+    checker: *TypeChecker,
+    modules_out: *std.ArrayListUnmanaged(ast.Module),
+    prefixes_out: *std.ArrayListUnmanaged(?[]const u8),
+) !void {
+    // Parse JSON
+    const parsed = std.json.parseFromSlice(Value, allocator, json, .{}) catch {
+        return TypedAstError.InvalidJson;
+    };
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    if (root != .object) return TypedAstError.InvalidJson;
+    const root_obj = root.object;
+
+    // Validate format and version
+    const format = getString(root_obj, "format") orelse return TypedAstError.NotTypedAst;
+    if (!std.mem.eql(u8, format, "typed-ast-multi")) return TypedAstError.NotTypedAst;
+
+    const version = getInteger(root_obj, "version") orelse return TypedAstError.MissingField;
+    if (version != 1) return TypedAstError.UnsupportedVersion;
+
+    // Load each module from the "modules" array
+    const modules_arr = getArray(root_obj, "modules") orelse return TypedAstError.MissingField;
+
+    for (modules_arr.items) |mod_item| {
+        if (mod_item != .object) continue;
+        const mod_obj = mod_item.object;
+
+        const name = getString(mod_obj, "name") orelse continue;
+        const is_entry = getBool(mod_obj, "is_entry") orelse false;
+
+        // Build AST module from this module entry's declarations/imports
+        const module = ast_from_json.buildModule(arena, mod_obj) catch continue;
+
+        // Register declarations in the checker (accumulates across modules)
+        checker.prepareForNewModule();
+        checker.checkModuleDeclarations(module);
+
+        // Register impl blocks (checkModuleDeclarations skips them)
+        for (module.declarations) |decl| {
+            switch (decl) {
+                .impl_decl => checker.checkDecl(decl),
+                else => {},
+            }
+        }
+        checker.clearErrors();
+
+        try modules_out.append(allocator, module);
+
+        // Set module prefix: entry module gets null, others get the module name
+        if (is_entry or name.len == 0) {
+            try prefixes_out.append(allocator, null);
+        } else {
+            const prefix = try allocator.dupe(u8, name);
+            try prefixes_out.append(allocator, prefix);
+        }
+    }
+
+    // Load global monomorphized tables (shared across all modules)
+    loadMonomorphizedFunctions(allocator, arena, root_obj, checker);
+    loadMonomorphizedStructs(allocator, arena, root_obj, checker);
+    loadMonomorphizedEnums(allocator, arena, root_obj, checker);
+    loadMonomorphizedMethods(allocator, arena, root_obj, checker);
+}
+
+/// Detect whether a JSON string is multi-module typed AST format.
+/// The selfhost emitter always writes `"format"` as the first JSON key,
+/// so the discriminator appears within the first 200 bytes. We scan for
+/// the exact value string "typed-ast-multi" to avoid false positives
+/// from single-module format "typed-ast" (which is a prefix).
+pub fn isMultiModuleFormat(json: []const u8) bool {
+    const limit = @min(json.len, 200);
+    const search = json[0..limit];
+    return std.mem.indexOf(u8, search, "typed-ast-multi") != null;
+}
+
 // ============================================================================
 // Monomorphized table loaders
 // ============================================================================
