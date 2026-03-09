@@ -39,7 +39,8 @@ import checker.{
     push_type_ref, get_resolved_type,
     make_fn_type_0, make_fn_type_1, make_fn_type_2,
     record_trait_impl, find_trait_method,
-    has_module, lookup_module_export
+    has_module, lookup_module_export,
+    begin_module_exports, register_module_export, end_module_exports
 }
 
 import checker_expr.{check_expr}
@@ -837,6 +838,143 @@ pub fn check_module(tc: TypeChecker, decls_start: i32, decls_count: i32) -> Type
     // Pass 2: check function bodies
     c = check_declarations(c, decls_start, decls_count)
 
+    return c
+}
+
+// ─── Module Export Registration ──────────────────────────────────────
+// After checking a module's declarations, collect all `pub` symbols
+// and register them in the TypeChecker's module export registry.
+// Export kinds: 0=function, 1=struct, 2=enum, 3=trait, 4=constant
+
+pub fn register_module_exports_from_decls(tc: TypeChecker, module_name: string,
+    decls_start: i32, decls_count: i32) -> TypeChecker {
+    var c: TypeChecker = tc
+    c = begin_module_exports(c, module_name)
+
+    var i: i32 = 0
+    while i < decls_count {
+        let decl: Decl = c.decls[decls_start + i]
+        match decl {
+            Decl::Function(data) => {
+                if data.is_pub {
+                    let info: ?SymbolInfo = lookup(c, data.fn_name)
+                    match info {
+                        Some(sym) => {
+                            c = register_module_export(c, module_name,
+                                data.fn_name, sym.sym_type, 0)
+                        }
+                        None => {
+                            // Generic functions: check generic registry
+                            let gidx: ?i32 = c.generic_fn_decls.get(data.fn_name)
+                            match gidx {
+                                Some(_) => {
+                                    c = register_module_export(c, module_name,
+                                        data.fn_name, type_unknown(), 0)
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Decl::StructDecl(data) => {
+                if data.is_pub {
+                    let info: ?SymbolInfo = lookup(c, data.struct_name)
+                    match info {
+                        Some(sym) => {
+                            c = register_module_export(c, module_name,
+                                data.struct_name, sym.sym_type, 1)
+                        }
+                        None => {
+                            // Generic structs: check generic registry
+                            let gidx: ?i32 = c.generic_struct_decls.get(data.struct_name)
+                            match gidx {
+                                Some(_) => {
+                                    c = register_module_export(c, module_name,
+                                        data.struct_name, type_unknown(), 1)
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Decl::EnumDecl(data) => {
+                if data.is_pub {
+                    let info: ?SymbolInfo = lookup(c, data.enum_name)
+                    match info {
+                        Some(sym) => {
+                            c = register_module_export(c, module_name,
+                                data.enum_name, sym.sym_type, 2)
+                        }
+                        None => {
+                            // Generic enums: check generic registry
+                            let gidx: ?i32 = c.generic_enum_decls.get(data.enum_name)
+                            match gidx {
+                                Some(_) => {
+                                    c = register_module_export(c, module_name,
+                                        data.enum_name, type_unknown(), 2)
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Decl::TraitDecl(data) => {
+                if data.is_pub {
+                    let info: ?SymbolInfo = lookup(c, data.trait_name)
+                    match info {
+                        Some(sym) => {
+                            c = register_module_export(c, module_name,
+                                data.trait_name, sym.sym_type, 3)
+                        }
+                        None => {
+                            // Trait types registered in trait_types map
+                            let topt: ?KlarType = c.trait_types.get(data.trait_name)
+                            match topt {
+                                Some(tt) => {
+                                    c = register_module_export(c, module_name,
+                                        data.trait_name, tt, 3)
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Decl::ConstDecl(data) => {
+                if data.is_pub {
+                    let info: ?SymbolInfo = lookup(c, data.const_name)
+                    match info {
+                        Some(sym) => {
+                            c = register_module_export(c, module_name,
+                                data.const_name, sym.sym_type, 4)
+                        }
+                        None => {}
+                    }
+                }
+            }
+            Decl::TypeAlias(data) => {
+                if data.is_pub {
+                    let info: ?SymbolInfo = lookup(c, data.alias_name)
+                    match info {
+                        Some(sym) => {
+                            c = register_module_export(c, module_name,
+                                data.alias_name, sym.sym_type, 1)
+                        }
+                        None => {}
+                    }
+                }
+            }
+            _ => {
+                // ImplDecl, TestDecl, ImportDecl — not exported directly
+            }
+        }
+        i = i + 1
+    }
+
+    c = end_module_exports(c, module_name)
     return c
 }
 

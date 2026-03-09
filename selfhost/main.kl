@@ -2,20 +2,23 @@
 // Milestone 9.11: Unified lexer → parser → checker pipeline
 //
 // Usage:
-//   klar run selfhost/main.kl -- check <file.kl>      Type-check a file
-//   klar run selfhost/main.kl -- dump-tokens <file.kl> Dump lexer tokens as JSON
-//   klar run selfhost/main.kl -- dump-ast <file.kl>    Dump parser AST as JSON
-//   klar run selfhost/main.kl -- emit-typed-ast <file.kl> Emit typed AST JSON
-//   klar run selfhost/main.kl -- help                  Show usage
+//   klar run selfhost/main.kl -- check <file.kl>         Type-check a single file
+//   klar run selfhost/main.kl -- check-multi <file.kl>    Type-check with all imports
+//   klar run selfhost/main.kl -- dump-tokens <file.kl>    Dump lexer tokens as JSON
+//   klar run selfhost/main.kl -- dump-ast <file.kl>       Dump parser AST as JSON
+//   klar run selfhost/main.kl -- emit-typed-ast <file.kl>  Emit typed AST JSON
+//   klar run selfhost/main.kl -- help                     Show usage
 
 import lexer.{Lexer, Token, TokenKind, tag_name}
 import parser.{Parser, new_parser}
 import parser_decl.{parse_module}
 import ast.{AstModule}
 import checker.{TypeChecker, register_builtins, format_error, init_expr_types}
-import checker_decl.{check_module}
+import checker_decl.{check_module, process_imports, register_declarations,
+    check_declarations, register_module_exports_from_decls}
 import ast_builder.{build_module}
 import emitter.{emit_typed_ast}
+import module_resolver.{ModuleGraph, discover_modules, topological_sort}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Commands
@@ -179,6 +182,88 @@ fn cmd_emit_typed_ast(path: string) -> i32 {
     return 0
 }
 
+fn cmd_check_multi(path: string) -> i32 {
+    // Discover all modules transitively imported from the entry file
+    let g: ModuleGraph = discover_modules(path)
+    let mod_count: i32 = g.names.len()
+    if mod_count == 0 {
+        println("error: could not discover modules from " + path)
+        return 1
+    }
+
+    // Get compilation order (dependencies before dependents)
+    let order: List#[i32] = topological_sort(g)
+
+    // Create a single TypeChecker shared across all modules
+    var tc: TypeChecker = TypeChecker.new()
+    tc = register_builtins(tc)
+
+    // Process each module in topological order
+    var idx: i32 = 0
+    while idx < order.len() {
+        let mid: i32 = order[idx]
+        let mod_name: string = g.names[mid]
+        let mod_json: string = g.json_asts[mid]
+
+        // Build AST arenas from JSON (shares TypeChecker arenas)
+        let build_result: (TypeChecker, AstModule) = build_module(tc, mod_json)
+        tc = build_result.0
+        let m: AstModule = build_result.1
+
+        // Pre-fill expr_types for this module's expressions
+        tc = init_expr_types(tc, tc.exprs.len())
+
+        // Push module scope (on top of global/builtins scope)
+        tc.push_scope()
+
+        // Pass 0: process imports — use imports range, not decls range
+        // (imports are stored separately by build_module)
+        tc = process_imports(tc, m.imports_start, m.imports_count)
+
+        // Pass 1: register type and function declarations
+        tc = register_declarations(tc, m.decls_start, m.decls_count)
+
+        // Pass 2: check function bodies
+        tc = check_declarations(tc, m.decls_start, m.decls_count)
+
+        // Register this module's pub exports for downstream modules
+        if mod_name != "" {
+            tc = register_module_exports_from_decls(tc, mod_name,
+                m.decls_start, m.decls_count)
+        }
+
+        // Pop module scope (exports are stored in module registry, not scope)
+        tc.pop_scope()
+
+        idx = idx + 1
+    }
+
+    if tc.error_count == 0 {
+        let checked: i32 = order.len()
+        println("check-pass (" + checked.to_string().as_str() + " modules)")
+        return 0
+    }
+
+    // Output structured errors
+    var i: i32 = 0
+    let err_count: i32 = tc.error_kinds.len()
+    while i < err_count {
+        println(format_error(tc, i))
+        i = i + 1
+    }
+
+    // Fallback: legacy errors
+    if err_count == 0 {
+        var j: i32 = 0
+        while j < tc.errors.len() {
+            println(tc.errors[j])
+            j = j + 1
+        }
+    }
+
+    return 1
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
@@ -213,11 +298,12 @@ fn print_usage() -> void {
     println("Klar self-hosted compiler frontend")
     println("")
     println("Usage:")
-    println("  klar-selfhost check <file.kl>       Type-check a file")
-    println("  klar-selfhost dump-tokens <file.kl>  Dump lexer tokens as JSON")
-    println("  klar-selfhost dump-ast <file.kl>     Dump parser AST as JSON")
-    println("  klar-selfhost emit-typed-ast <file.kl> Emit typed AST JSON")
-    println("  klar-selfhost help                   Show this message")
+    println("  klar-selfhost check <file.kl>         Type-check a single file")
+    println("  klar-selfhost check-multi <file.kl>    Type-check with all imports")
+    println("  klar-selfhost dump-tokens <file.kl>    Dump lexer tokens as JSON")
+    println("  klar-selfhost dump-ast <file.kl>       Dump parser AST as JSON")
+    println("  klar-selfhost emit-typed-ast <file.kl>  Emit typed AST JSON")
+    println("  klar-selfhost help                     Show this message")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -272,6 +358,15 @@ fn main(args: [String]) -> i32 {
         }
         let file_arg: String = args[2]
         return cmd_emit_typed_ast(file_arg.as_str())
+    }
+
+    if cmd == "check-multi" {
+        if args.len() < 3 {
+            println("error: check-multi requires a file path")
+            return 2
+        }
+        let file_arg: String = args[2]
+        return cmd_check_multi(file_arg.as_str())
     }
 
     println("error: unknown command '" + cmd + "'")

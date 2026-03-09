@@ -1,0 +1,495 @@
+// selfhost/module_resolver.kl — Module discovery, path resolution, topological sort
+// Phase 8.6.0–8.6.1: Multi-module support for Bootstrap Stage 2
+//
+// Given an entry file, discovers all transitive imports, resolves them to
+// file paths, and returns a topological compilation order.
+//
+// Uses lightweight JSON scanning (json.kl) for import extraction — avoids
+// full AST building during the discovery phase.
+
+import json.{
+    field_pos, field_string, array_start, array_next
+}
+import parser.{Parser, new_parser}
+import parser_decl.{parse_module}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// File I/O helper (can't import from main.kl)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn read_file(path: string) -> string {
+    let result: Result#[String, IoError] = File.read_to_string(path)
+    if not result.is_ok() {
+        return ""
+    }
+    let content: String = result!
+    return content.as_str()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Path Utilities (inlined to avoid stdlib chicken-and-egg)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Return the directory portion of a path (everything before the last '/').
+/// Returns "." if no '/' is found.
+pub fn path_dirname(path: string) -> string {
+    var last_slash: i32 = -1
+    var i: i32 = 0
+    while i < path.len() {
+        if path.byte_at(i) == 47.as#[u8] {
+            last_slash = i
+        }
+        i = i + 1
+    }
+    if last_slash < 0 {
+        return "."
+    }
+    if last_slash == 0 {
+        return "/"
+    }
+    return path.slice(0, last_slash)
+}
+
+/// Join two path components with '/'.
+pub fn path_join(base: string, name: string) -> string {
+    if base == "" {
+        return name
+    }
+    if base.byte_at(base.len() - 1) == 47.as#[u8] {
+        return base + name
+    }
+    return base + "/" + name
+}
+
+/// Resolve a module path (dot-separated) to a file path relative to a base directory.
+/// Tries: <base>/<segments>.kl, then <base>/<segments>/mod.kl.
+pub fn resolve_module_path(base_dir: string, module_path: string) -> ?string {
+    // Split module_path on '.'
+    var segments: List#[string] = List.new#[string]()
+    var current: string = ""
+    var i: i32 = 0
+    while i < module_path.len() {
+        let b: u8 = module_path.byte_at(i)
+        if b == 46.as#[u8] {
+            if current.len() > 0 {
+                segments.push(current)
+                current = ""
+            }
+        } else {
+            current = current + from_byte(b)
+        }
+        i = i + 1
+    }
+    if current.len() > 0 {
+        segments.push(current)
+    }
+    if segments.len() == 0 {
+        return None
+    }
+
+    // Build directory path from all segments except the last
+    var dir: string = base_dir
+    var j: i32 = 0
+    while j < segments.len() - 1 {
+        dir = path_join(dir, segments[j])
+        j = j + 1
+    }
+
+    // Try <dir>/<last>.kl
+    let last: string = segments[segments.len() - 1]
+    let file_path: string = path_join(dir, last + ".kl")
+    if fs_exists(file_path) {
+        return Some(file_path)
+    }
+
+    // Try <dir>/<last>/mod.kl
+    let mod_path: string = path_join(path_join(dir, last), "mod.kl")
+    if fs_exists(mod_path) {
+        return Some(mod_path)
+    }
+
+    return None
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Import Extraction (lightweight JSON scanning)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extract import paths from a JSON AST string.
+/// Returns a list of dot-separated module paths (e.g., ["types", "ast", "checker"]).
+pub fn extract_import_paths(json_str: string) -> List#[string] {
+    var paths: List#[string] = List.new#[string]()
+    let imp: i32 = field_pos(json_str, 0, "imports")
+    if imp < 0 {
+        return paths
+    }
+    var ap: i32 = array_start(json_str, imp)
+    while ap >= 0 {
+        // Each import has a "path" field (may be inside a "data" wrapper)
+        let dp: i32 = field_pos(json_str, ap, "data")
+        var pos: i32 = ap
+        if dp >= 0 {
+            pos = dp
+        }
+        let pr: (string, bool) = field_string(json_str, pos, "path")
+        if pr.1 {
+            paths.push(pr.0)
+        }
+        ap = array_next(json_str, ap)
+    }
+    return paths
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Module Graph — parallel-list storage
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub struct ModuleGraph {
+    // Per-module parallel lists (index = module ID)
+    pub names: List#[string],
+    pub file_paths: List#[string],
+    pub json_asts: List#[string],
+    pub is_entry: List#[bool],
+
+    // Dependency edges: dep_ids[dep_starts[i] .. dep_starts[i]+dep_counts[i]]
+    pub dep_starts: List#[i32],
+    pub dep_counts: List#[i32],
+    pub dep_ids: List#[i32],
+
+    // Lookup: canonical name → module ID
+    pub name_to_id: Map#[string, i32],
+}
+
+impl ModuleGraph {
+    pub fn new() -> ModuleGraph {
+        return ModuleGraph {
+            names: List.new#[string](),
+            file_paths: List.new#[string](),
+            json_asts: List.new#[string](),
+            is_entry: List.new#[bool](),
+            dep_starts: List.new#[i32](),
+            dep_counts: List.new#[i32](),
+            dep_ids: List.new#[i32](),
+            name_to_id: Map.new#[string, i32](),
+        }
+    }
+}
+
+/// Add a module to the graph. Returns its ID.
+pub fn graph_add_module(g: ModuleGraph, name: string, file_path: string,
+    json_ast: string, entry: bool) -> (ModuleGraph, i32) {
+    var gr: ModuleGraph = g
+    let id: i32 = gr.names.len()
+    gr.names.push(name)
+    gr.file_paths.push(file_path)
+    gr.json_asts.push(json_ast)
+    gr.is_entry.push(entry)
+    gr.dep_starts.push(0)
+    gr.dep_counts.push(0)
+    gr.name_to_id.insert(name, id)
+    return (gr, id)
+}
+
+/// Set the dependencies for a module (call after all modules are discovered).
+pub fn graph_set_deps(g: ModuleGraph, module_id: i32,
+    deps: List#[i32]) -> ModuleGraph {
+    var gr: ModuleGraph = g
+    let start: i32 = gr.dep_ids.len()
+    var i: i32 = 0
+    while i < deps.len() {
+        gr.dep_ids.push(deps[i])
+        i = i + 1
+    }
+    gr.dep_starts[module_id] = start
+    gr.dep_counts[module_id] = deps.len()
+    return gr
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Module Resolution
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Resolve an import path to a file path. Returns "" if not found.
+/// Tries: relative to importer, stdlib, walk up parent directories.
+fn resolve_import(mod_dir: string, stdlib_dir: string, imp_path: string) -> string {
+    // 1. Try relative to importing module's directory
+    let r1: ?string = resolve_module_path(mod_dir, imp_path)
+    match r1 {
+        Some(fp) => { return fp }
+        None => {}
+    }
+
+    // 2. Try stdlib directory (for "stdlib.xxx" imports)
+    if stdlib_dir != "" {
+        if imp_path.len() > 7 {
+            if imp_path.slice(0, 7) == "stdlib." {
+                let sub: string = imp_path.slice(7, imp_path.len())
+                let r2: ?string = resolve_module_path(stdlib_dir, sub)
+                match r2 {
+                    Some(fp) => { return fp }
+                    None => {}
+                }
+            }
+        }
+        // Also try the full path in case stdlib_dir is parent
+        let r3: ?string = resolve_module_path(path_dirname(stdlib_dir), imp_path)
+        match r3 {
+            Some(fp) => { return fp }
+            None => {}
+        }
+    }
+
+    // 3. Walk up parent directories
+    var walk_dir: string = path_dirname(mod_dir)
+    var attempts: i32 = 0
+    while attempts < 5 {
+        if walk_dir == "/" or walk_dir == "." or walk_dir == "" {
+            break
+        }
+        let r4: ?string = resolve_module_path(walk_dir, imp_path)
+        match r4 {
+            Some(fp) => { return fp }
+            None => {}
+        }
+        walk_dir = path_dirname(walk_dir)
+        attempts = attempts + 1
+    }
+
+    return ""
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Module Discovery (BFS)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Discover all modules transitively imported from an entry file.
+/// Returns the populated ModuleGraph.
+///
+/// Resolution strategy:
+///   1. Look in the same directory as the importing file
+///   2. Look in the stdlib directory (KLAR_STDLIB_PATH or ../stdlib relative to entry)
+///   3. Walk up parent directories from the importing file
+pub fn discover_modules(entry_path: string) -> ModuleGraph {
+    var g: ModuleGraph = ModuleGraph.new()
+
+    // Resolve stdlib path
+    let entry_dir: string = path_dirname(entry_path)
+    var stdlib_dir: string = ""
+    let env_stdlib: ?string = env_get("KLAR_STDLIB_PATH")
+    match env_stdlib {
+        Some(sp) => { stdlib_dir = sp }
+        None => {
+            // Default: ../stdlib relative to entry file directory
+            let candidate: string = path_join(path_dirname(entry_dir), "stdlib")
+            if fs_exists(candidate) {
+                stdlib_dir = candidate
+            }
+        }
+    }
+
+    // Parse entry file
+    let src: string = read_file(entry_path)
+    if src == "" {
+        return g
+    }
+    let parser: Parser = new_parser(src)
+    let parse_result: (Parser, string) = parse_module(parser)
+    if parse_result.0.had_error {
+        return g
+    }
+    let entry_json: string = parse_result.1
+
+    // Add entry module (name = "" for entry)
+    let add_result: (ModuleGraph, i32) = graph_add_module(g, "", entry_path, entry_json, true)
+    g = add_result.0
+
+    // BFS queue: list of (module_id, module_dir) pairs to process
+    var queue_ids: List#[i32] = List.new#[i32]()
+    var queue_dirs: List#[string] = List.new#[string]()
+    queue_ids.push(0)
+    queue_dirs.push(entry_dir)
+
+    var qi: i32 = 0
+    while qi < queue_ids.len() {
+        let mod_id: i32 = queue_ids[qi]
+        let mod_dir: string = queue_dirs[qi]
+        let mod_json: string = g.json_asts[mod_id]
+        qi = qi + 1
+
+        // Extract imports from this module's JSON AST
+        let import_paths: List#[string] = extract_import_paths(mod_json)
+        var dep_list: List#[i32] = List.new#[i32]()
+
+        var ii: i32 = 0
+        while ii < import_paths.len() {
+            let imp_path: string = import_paths[ii]
+            ii = ii + 1
+
+            // Skip if already discovered
+            let existing: ?i32 = g.name_to_id.get(imp_path)
+            match existing {
+                Some(eid) => {
+                    dep_list.push(eid)
+                }
+                None => {
+                    // Resolve module path to file
+                    let resolved_path: string = resolve_import(mod_dir, stdlib_dir, imp_path)
+                    if resolved_path != "" {
+                        // Parse the discovered module
+                        let dep_src: string = read_file(resolved_path)
+                        if dep_src != "" {
+                            let dep_p: Parser = new_parser(dep_src)
+                            let dep_result: (Parser, string) = parse_module(dep_p)
+                            if not dep_result.0.had_error {
+                                let dep_json: string = dep_result.1
+                                let dep_dir: string = path_dirname(resolved_path)
+                                let add_r: (ModuleGraph, i32) = graph_add_module(
+                                    g, imp_path, resolved_path, dep_json, false)
+                                g = add_r.0
+                                let dep_id: i32 = add_r.1
+                                dep_list.push(dep_id)
+                                queue_ids.push(dep_id)
+                                queue_dirs.push(dep_dir)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Record dependencies for this module
+        g = graph_set_deps(g, mod_id, dep_list)
+    }
+
+    return g
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Topological Sort (DFS post-order)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Return module IDs in topological order (dependencies before dependents).
+/// If cycles are detected, they are silently broken (matches Zig behavior).
+pub fn topological_sort(g: ModuleGraph) -> List#[i32] {
+    var order: List#[i32] = List.new#[i32]()
+    let n: i32 = g.names.len()
+
+    // Use List#[bool] indexed by module ID (sequential 0..n)
+    var visited: List#[bool] = List.new#[bool]()
+    var in_stack: List#[bool] = List.new#[bool]()
+    var i: i32 = 0
+    while i < n {
+        visited.push(false)
+        in_stack.push(false)
+        i = i + 1
+    }
+
+    // Visit all modules
+    var k: i32 = 0
+    while k < n {
+        if not visited[k] {
+            let result: (List#[i32], List#[bool], List#[bool]) =
+                topo_visit(g, k, order, visited, in_stack)
+            order = result.0
+            visited = result.1
+            in_stack = result.2
+        }
+        k = k + 1
+    }
+
+    return order
+}
+
+fn topo_visit(g: ModuleGraph, node: i32,
+    order: List#[i32], visited: List#[bool],
+    in_stack: List#[bool]) -> (List#[i32], List#[bool], List#[bool]) {
+
+    var ord: List#[i32] = order
+    var vis: List#[bool] = visited
+    var stk: List#[bool] = in_stack
+
+    // Cycle detection — skip back-edges
+    if stk[node] {
+        return (ord, vis, stk)
+    }
+
+    // Already fully processed
+    if vis[node] {
+        return (ord, vis, stk)
+    }
+
+    stk[node] = true
+
+    // Visit dependencies first
+    let dep_start: i32 = g.dep_starts[node]
+    let dep_count: i32 = g.dep_counts[node]
+    var j: i32 = 0
+    while j < dep_count {
+        let dep_id: i32 = g.dep_ids[dep_start + j]
+        let result: (List#[i32], List#[bool], List#[bool]) =
+            topo_visit(g, dep_id, ord, vis, stk)
+        ord = result.0
+        vis = result.1
+        stk = result.2
+        j = j + 1
+    }
+
+    stk[node] = false
+    vis[node] = true
+    ord.push(node)
+
+    return (ord, vis, stk)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLI Entry Point
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn main(args: [String]) -> i32 {
+    if args.len() < 2 {
+        println("Usage: module_resolver <entry.kl>")
+        println("  Discovers all transitive imports and prints compilation order.")
+        return 1
+    }
+
+    let arg1: String = args[1]
+    let entry: string = arg1.as_str()
+    if not fs_exists(entry) {
+        println("File not found: " + entry)
+        return 1
+    }
+
+    let g: ModuleGraph = discover_modules(entry)
+
+    let mod_count: i32 = g.names.len()
+    println("Found " + mod_count.to_string().as_str() + " modules:")
+    var i: i32 = 0
+    while i < mod_count {
+        var name: string = g.names[i]
+        if name == "" {
+            name = "(entry)"
+        }
+        let dc: i32 = g.dep_counts[i]
+        let line: string = "  [" + i.to_string().as_str() + "] " + name + " -> " + g.file_paths[i] + " (" + dc.to_string().as_str() + " deps)"
+        println(line)
+        i = i + 1
+    }
+
+    let order: List#[i32] = topological_sort(g)
+    println("")
+    let order_count: i32 = order.len()
+    println("Compilation order (" + order_count.to_string().as_str() + " modules):")
+    var j: i32 = 0
+    while j < order_count {
+        let mid: i32 = order[j]
+        var mname: string = g.names[mid]
+        if mname == "" {
+            mname = "(entry)"
+        }
+        let idx: i32 = j + 1
+        println("  " + idx.to_string().as_str() + ". " + mname)
+        j = j + 1
+    }
+
+    return 0
+}
